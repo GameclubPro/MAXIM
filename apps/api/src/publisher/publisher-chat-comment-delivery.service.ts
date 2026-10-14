@@ -56,7 +56,6 @@ type PublisherJobAttempt = {
   maxAttempts: number;
 };
 
-const PUBLISHER_COMMENT_SENDER_ACCESS_FRESH_MS = 15 * 60_000;
 const PUBLISHER_REPLACEMENT_MODE = 'publisher_replace_with_bot_message';
 
 function sourceContentHash(message: Record<string, unknown> | null): string {
@@ -665,23 +664,18 @@ export class PublisherChatCommentDeliveryService {
     job: PublisherChatCommentAttachJob,
     refreshWhenUnknown: boolean,
   ): Promise<boolean> {
-    const readFreshAccess = async () => {
-      const now = new Date();
+    const readRetainedAccess = async () => {
       return this.prisma.managedEntityAccessEdge.findFirst({
         where: {
           chatId: job.chatId,
           userId: job.senderId,
           botId: this.publisherBotId,
           entityType: ChatEntityType.CHAT,
-          checkedAt: {
-            gt: new Date(now.getTime() - PUBLISHER_COMMENT_SENDER_ACCESS_FRESH_MS),
-          },
-          expiresAt: { gt: now },
         },
         select: { state: true, userRole: true },
       });
     };
-    let access = await readFreshAccess();
+    let access = await readRetainedAccess();
     if (!access && refreshWhenUnknown) {
       await this.bindingRefresh.refresh({
         version: 1,
@@ -691,7 +685,7 @@ export class PublisherChatCommentDeliveryService {
         reason: 'webhook_observed',
         requestedAt: new Date().toISOString(),
       });
-      access = await readFreshAccess();
+      access = await readRetainedAccess();
     }
     return (
       access?.state === ManagedEntityAccessState.GRANTED &&

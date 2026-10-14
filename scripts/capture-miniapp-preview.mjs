@@ -1699,6 +1699,23 @@ const scenarioBehaviors = [
     },
   },
   {
+    name: 'publications-publisher-capacity-wait',
+    beforeShot: async (page) => {
+      await page
+        .locator(
+          '[data-publication-id="publication-access-required"] .publication-feed-card__surface',
+        )
+        .click();
+      const details = page.getByRole('dialog', { name: 'Объявление для канала' });
+      await details
+        .getByText('MAX ограничил частоту. Пост остаётся в очереди.')
+        .waitFor({ state: 'visible' });
+      await details.getByText(/Следующая попытка не раньше/).waitFor({ state: 'visible' });
+      await details.getByText(/Срок отправки:/).waitFor({ state: 'visible' });
+      await details.locator('.publication-deliveries').scrollIntoViewIfNeeded();
+    },
+  },
+  {
     name: 'publications-publisher-access-required',
     beforeShot: async (page) => {
       const card = page.locator(
@@ -1755,7 +1772,7 @@ const scenarioBehaviors = [
         .getByText(future ? 'Есть пропущенные отправки' : 'Запуск пропущен', { exact: true })
         .first()
         .waitFor({ state: 'visible' });
-      await details.getByText(/^Ожидает с /u).waitFor({ state: 'visible' });
+      await details.getByText(/^Причина отмечена /u).waitFor({ state: 'visible' });
       await details.getByText(/^Проверено /u).waitFor({ state: 'visible' });
       const retry = details.getByRole('button', { name: /^Отправить пропущенный запуск: /u });
       await retry.waitFor({ state: 'visible' });

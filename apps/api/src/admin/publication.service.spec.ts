@@ -448,13 +448,11 @@ describe('PublicationService', () => {
     expect(reconcileSpy).toHaveBeenCalledWith(200);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
     expect(dispatchSpy).toHaveBeenNthCalledWith(1, 50, [PublicationScheduleMode.NOW]);
-    expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledTimes(
-      1,
-    );
-    expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledWith();
+    expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).not.toHaveBeenCalled();
     expect(managedBroadcastService.processDueDeadlinePublicationBroadcasts).not.toHaveBeenCalled();
     expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
       component: 'publication-materializer',
+      publicationMetadataOnly: true,
       sourceTag: 'managed_broadcast',
       allowRecoveryWindowRun: true,
       allowMaxApiCapacitySlowPath: true,
@@ -463,18 +461,12 @@ describe('PublicationService', () => {
     expect(materializeSpy).not.toHaveBeenCalled();
     expect(rollupOccurrencesSpy).toHaveBeenCalledTimes(1);
     expect(rollupPublicationsSpy).toHaveBeenCalledTimes(1);
-    expect(dispatchSpy.mock.invocationCallOrder[0]).toBeLessThan(
-      managedBroadcastService.processDueImmediatePublicationBroadcasts.mock.invocationCallOrder[0],
-    );
     expect(normalizeSpy.mock.invocationCallOrder[0]).toBeLessThan(
       reconcileOrphansSpy.mock.invocationCallOrder[0],
     );
     expect(reconcileOrphansSpy.mock.invocationCallOrder[0]).toBeLessThan(
       dispatchSpy.mock.invocationCallOrder[0],
     );
-    expect(
-      managedBroadcastService.processDueImmediatePublicationBroadcasts.mock.invocationCallOrder[0],
-    ).toBeLessThan(backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0]);
     expect(rollupOccurrencesSpy.mock.invocationCallOrder[0]).toBeLessThan(
       backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0],
     );
@@ -526,15 +518,9 @@ describe('PublicationService', () => {
       PublicationScheduleMode.SLOTS,
       PublicationScheduleMode.RECURRENCE,
     ]);
-    expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).toHaveBeenCalledWith();
-    expect(managedBroadcastService.processDueDeadlinePublicationBroadcasts).toHaveBeenCalledWith(
-      2,
-      verificationBudget,
-    );
+    expect(managedBroadcastService.processDueImmediatePublicationBroadcasts).not.toHaveBeenCalled();
+    expect(managedBroadcastService.processDueDeadlinePublicationBroadcasts).not.toHaveBeenCalled();
     expect(materializeSpy).toHaveBeenCalledWith(2);
-    expect(backgroundRuntimeGovernorService.decide.mock.invocationCallOrder[0]).toBeLessThan(
-      managedBroadcastService.processDueDeadlinePublicationBroadcasts.mock.invocationCallOrder[0],
-    );
   });
 
   it('cancels only provably stale scheduled occurrences during reconciliation', async () => {
@@ -2830,6 +2816,7 @@ describe('PublicationService', () => {
       requiredBotId: 'publisher-bot',
       schedule: {
         id: 'schedule-blocked',
+        mode: PublicationScheduleMode.NOW,
         revision: 1,
         rule: { mode: 'now', timezone: 'Europe/Moscow' },
       },
@@ -3942,6 +3929,7 @@ describe('PublicationService', () => {
             contentRevisionId: 'content-1',
             scheduledAt: new Date('2026-07-10T09:00:00.000Z'),
             schedule: {
+              mode: PublicationScheduleMode.NOW,
               revision: 3,
               rule: { mode: 'now', timezone: 'UTC' },
             },
@@ -4488,6 +4476,7 @@ describe('PublicationService', () => {
         dispatchBlockerCode: 'PUBLISHER_EXPLICIT_RETRY',
         dispatchBlockedAt: expect.any(Date),
         retryAuthorizedAt: expect.any(Date),
+        retryExpiresAt: expect.any(Date),
       },
     });
     expect(tx.managedBroadcast.findMany).not.toHaveBeenCalled();

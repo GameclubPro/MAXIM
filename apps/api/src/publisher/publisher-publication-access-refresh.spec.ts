@@ -46,7 +46,7 @@ function createHarness(enabled = true) {
 describe('Scheduled publication access refresh', () => {
   afterEach(() => jest.useRealTimers());
 
-  it('nominates only exact persisted targets without a fresh grant or denial', async () => {
+  it('nominates only exact persisted targets without a durable grant or denial', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-13T12:00:00Z'));
     const { service, findMany, enqueue } = createHarness();
     await service.requestActorAccessRefresh(
@@ -71,23 +71,8 @@ describe('Scheduled publication access refresh', () => {
             userId: 'author',
             botId: 'publik',
             OR: [
-              {
-                expiresAt: { gt: new Date('2026-09-13T12:00:00Z') },
-                OR: [
-                  { state: { not: 'GRANTED' } },
-                  { checkedAt: { gt: new Date('2026-09-13T11:45:00Z') } },
-                ],
-              },
-              {
-                expiresAt: null,
-                OR: [
-                  { state: 'GRANTED', checkedAt: { gt: new Date('2026-09-13T11:45:00Z') } },
-                  {
-                    state: { not: 'GRANTED' },
-                    checkedAt: { gt: new Date('2026-09-13T11:45:00Z') },
-                  },
-                ],
-              },
+              { state: 'GRANTED' },
+              { NOT: { source: { startsWith: 'publisher_actor_candidate' } } },
             ],
           },
         },

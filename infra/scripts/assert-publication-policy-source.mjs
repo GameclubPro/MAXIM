@@ -15,7 +15,9 @@ export const PUBLICATION_POLICY_SOURCE_CHECKS = [
     'apps/api/src/admin/publication-late-policy.ts',
     [
       'export async function isPublicationOccurrenceWindowClosed(',
-      'policy.maxDelayMinutes * 60_000',
+      'resolvePublicationDeliveryDeadline(occurrence, now)',
+      'occurrence.deliveryDeadlineAt',
+      'occurrence.retryExpiresAt',
       'prisma.publicationOccurrence.findFirst(',
       'scheduleRevision: occurrence.scheduleRevision',
       'readPublicationRetryAuthorizedAt(occurrence)',
@@ -32,11 +34,25 @@ export const PUBLICATION_POLICY_SOURCE_CHECKS = [
       'readPublicationLatePolicy(occurrence.schedule.rule)',
       'preDispatchClaim.lockToken',
       'remoteMessageId: null',
+      'nextAttemptAt: retryAt',
+      'rateLimitDeferralCount: { increment: 1 }',
     ],
   ],
   [
     'apps/api/src/admin/publication-stopped-dispatch-cleanup.ts',
     ['await isPublicationOccurrenceWindowClosed('],
+  ],
+  [
+    'apps/api/src/admin/publication-runner.service.ts',
+    ['roleRunsPublisher(getAppRole())', 'this.boundary?.dispatchEnabled'],
+  ],
+  [
+    'apps/api/src/admin/publisher-publication-recipient-admission.ts',
+    ['delivery.nextAttemptAt', 'publisherPublicationRecipientRetryAt'],
+  ],
+  [
+    'apps/api/src/admin/publisher-selected-access.service.ts',
+    ['PUBLISHER_DURABLE_ACTOR_AUTHORITY_VERSION = 1', "edge.state !== 'GRANTED'"],
   ],
   [
     'apps/api/src/admin/publication-target-preparation.ts',

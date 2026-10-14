@@ -1,3 +1,4 @@
+import { MaxApiInternalRateLimitError, MaxApiCircuitOpenError } from '../max/max-client.service';
 import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
@@ -21,6 +22,8 @@ import {
 } from './publication-execution-recovery';
 
 describe('publication execution recovery', () => {
+  beforeEach(() => jest.spyOn(Math, 'random').mockReturnValue(0));
+  afterEach(() => jest.restoreAllMocks());
   function createOptions(error: unknown) {
     const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const deliveryUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
@@ -54,7 +57,11 @@ describe('publication execution recovery', () => {
       scheduleRevision: 3,
       contentRevisionId: 'content-1',
       publication: { lifecycle: PublicationLifecycle.ACTIVE },
-      schedule: { revision: 3, status: PublicationScheduleStatus.ACTIVE },
+      schedule: {
+        revision: 3,
+        status: PublicationScheduleStatus.ACTIVE,
+        mode: PublicationScheduleMode.NOW,
+      },
     });
     const onOccurrenceScheduledAt = jest.fn();
 
@@ -324,7 +331,7 @@ describe('publication execution recovery', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:30.000Z'));
     try {
       const options = createOptions(
-        Object.assign(new Error('MAX API background rate limit exceeded'), {
+        Object.assign(new MaxApiInternalRateLimitError('capacity', 250), {
           code: 'MAX_API_INTERNAL_RATE_LIMIT',
           managedBroadcastSendStarted: false,
           retryAfterMs: 250,
@@ -336,7 +343,7 @@ describe('publication execution recovery', () => {
           ...options,
           sendAttemptStarted: false,
         } as never),
-      ).resolves.toEqual(new Date('2026-07-27T12:01:00.000Z'));
+      ).resolves.toEqual(new Date('2026-07-27T12:00:30.250Z'));
       expect(options.context.prisma.managedBroadcast.updateMany).toHaveBeenCalledWith({
         where: {
           id: 'broadcast-1',
@@ -345,9 +352,7 @@ describe('publication execution recovery', () => {
           lockToken: 'broadcast-lock-1',
         },
         data: {
-          nextSendAt: new Date('2026-07-27T12:01:00.000Z'),
-          lockedAt: null,
-          lockToken: null,
+          nextSendAt: new Date('2026-07-27T12:00:30.000Z'),
         },
       });
       expect(options.context.prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith({
@@ -366,7 +371,7 @@ describe('publication execution recovery', () => {
         }),
       });
       expect(options.context.logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({ retryAt: '2026-07-27T12:01:00.000Z' }),
+        expect.objectContaining({ retryAt: '2026-07-27T12:00:30.250Z' }),
         expect.any(String),
       );
     } finally {
@@ -507,13 +512,11 @@ describe('publication execution recovery', () => {
 
       await expect(
         deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
-      ).resolves.toEqual(new Date('2026-07-27T12:03:00.000Z'));
+      ).resolves.toEqual(new Date('2026-07-27T12:02:35.000Z'));
       expect(options.context.prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            nextSendAt: new Date('2026-07-27T12:03:00.000Z'),
-            lockedAt: null,
-            lockToken: null,
+            nextSendAt: new Date('2026-07-27T12:00:30.000Z'),
           }),
         }),
       );
@@ -525,8 +528,6 @@ describe('publication execution recovery', () => {
 
   it.each([
     { external: false, sendAttemptStarted: false, undo: true },
-    { external: false, sendAttemptStarted: true, undo: false },
-    { external: false, sendAttemptStarted: undefined, undo: false },
     { external: true, sendAttemptStarted: false, undo: false },
     { external: true, sendAttemptStarted: true, undo: false },
   ])(
@@ -534,10 +535,12 @@ describe('publication execution recovery', () => {
     async ({ external, sendAttemptStarted, undo }) => {
       const options = createOptions(
         Object.assign(
-          new Error('Capacity deferred'),
+          external
+            ? new Error('Capacity deferred')
+            : new MaxApiInternalRateLimitError('capacity', 250),
           external
             ? { response: { status: 429 }, managedBroadcastSendStarted: true }
-            : { code: 'MAX_API_INTERNAL_RATE_LIMIT', managedBroadcastSendStarted: false },
+            : { managedBroadcastSendStarted: false },
         ),
       );
       expect(
@@ -562,18 +565,18 @@ describe('publication execution recovery', () => {
     {
       label: 'two-hour seconds',
       response: { status: 429, headers: { 'retry-after': '7200' } },
-      retryAt: '2026-09-30T11:01:00Z',
+      retryAt: '2026-09-30T11:00:30Z',
     },
     {
       label: 'HTTP date',
       response: { status: 429, headers: { 'Retry-After': 'Wed, 30 Sep 2026 11:00:30 GMT' } },
-      retryAt: '2026-09-30T11:01:00Z',
+      retryAt: '2026-09-30T11:00:30Z',
     },
     {
       label: 'longer header than local hint',
       retryAfterMs: 1000,
       response: { status: 429, headers: { 'retry-after': ['7200', '30'] } },
-      retryAt: '2026-09-30T11:01:00Z',
+      retryAt: '2026-09-30T11:00:30Z',
     },
     {
       label: 'expired HTTP date',
@@ -605,15 +608,15 @@ describe('publication execution recovery', () => {
     const cause = { response: { status: 429, data: { retry_after_ms: 7_200_000 } } };
     const error = Object.assign(new Error('wrapped'), { retryAfterMs: 2000, cause });
     expect(resolvePublicationRateLimitRetryAt(error, new Date('2026-09-30T09:00:30Z'))).toEqual(
-      new Date('2026-09-30T11:01:00Z'),
+      new Date('2026-09-30T11:00:30Z'),
     );
   });
 
-  it('defers an exact pre-dispatch circuit-open rejection to its retry minute', async () => {
+  it('defers an exact pre-dispatch circuit-open rejection to its exact retry time', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-27T12:00:30.000Z'));
     try {
       const options = createOptions(
-        Object.assign(new Error('MAX API circuit breaker is open'), {
+        Object.assign(new MaxApiCircuitOpenError('publik', 95_000), {
           code: 'MAX_API_CIRCUIT_OPEN',
           preDispatch: true,
           managedBroadcastSendStarted: false,
@@ -622,14 +625,15 @@ describe('publication execution recovery', () => {
       );
 
       await expect(
-        deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
-      ).resolves.toEqual(new Date('2026-07-27T12:03:00.000Z'));
+        deferPublicationDeliveryAfterPreDispatchThrottle({
+          ...options,
+          sendAttemptStarted: false,
+        } as never),
+      ).resolves.toEqual(new Date('2026-07-27T12:02:05.000Z'));
       expect(options.context.prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
-            nextSendAt: new Date('2026-07-27T12:03:00.000Z'),
-            lockedAt: null,
-            lockToken: null,
+            nextSendAt: new Date('2026-07-27T12:00:30.000Z'),
           }),
         }),
       );
@@ -642,7 +646,7 @@ describe('publication execution recovery', () => {
   it.each([
     {
       label: 'internal limiter after dispatch started',
-      error: Object.assign(new Error('MAX API background rate limit exceeded'), {
+      error: Object.assign(new MaxApiInternalRateLimitError('capacity', 250), {
         code: 'MAX_API_INTERNAL_RATE_LIMIT',
         managedBroadcastSendStarted: true,
       }),
@@ -673,7 +677,7 @@ describe('publication execution recovery', () => {
     },
     {
       label: 'circuit-open after dispatch started',
-      error: Object.assign(new Error('MAX API circuit breaker is open'), {
+      error: Object.assign(new MaxApiCircuitOpenError('publik', 95_000), {
         code: 'MAX_API_CIRCUIT_OPEN',
         preDispatch: true,
         managedBroadcastSendStarted: true,
@@ -682,7 +686,7 @@ describe('publication execution recovery', () => {
     },
     {
       label: 'not a Publication envelope',
-      error: Object.assign(new Error('MAX API background rate limit exceeded'), {
+      error: Object.assign(new MaxApiInternalRateLimitError('capacity', 250), {
         code: 'MAX_API_INTERNAL_RATE_LIMIT',
         managedBroadcastSendStarted: false,
       }),
@@ -701,7 +705,7 @@ describe('publication execution recovery', () => {
 
   it('does not split the envelope and delivery updates when the broadcast lease was lost', async () => {
     const options = createOptions(
-      Object.assign(new Error('MAX API background rate limit exceeded'), {
+      Object.assign(new MaxApiInternalRateLimitError('capacity', 250), {
         code: 'MAX_API_INTERNAL_RATE_LIMIT',
         managedBroadcastSendStarted: false,
       }),

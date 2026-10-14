@@ -118,18 +118,11 @@ integration('Publisher publication authority on PostgreSQL', () => {
       requiredBotId: botId,
     });
 
-  it('requires an urgent targeted check for an old positive three-day grant without rewriting it', async () => {
-    const original = await edge({ ageMinutes: 20 });
-    await expect(authorize()).rejects.toBeInstanceOf(PublisherDeliveryDeferredError);
-    expect(enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId,
-        publisherBotId: botId,
-        candidateUserId: actorId,
-        candidateVersion: original.sourceVersion,
-        reason: 'publication_actor_due',
-      }),
-    );
+  it('preserves an expired old grant without any MAX nomination or row rewrite', async () => {
+    const original = await edge({ ageMinutes: 60 * 24 * 60, expiresAt: new Date(0) });
+    await expect(authorize()).resolves.toBeUndefined();
+    await nominate();
+    expect(enqueue).not.toHaveBeenCalled();
     expect(
       await db.managedEntityAccessEdge.findUniqueOrThrow({
         where: { chatId_userId_botId: { chatId, userId: actorId, botId } },
@@ -153,9 +146,9 @@ integration('Publisher publication authority on PostgreSQL', () => {
     'preserves fresh denial with legacy null expiry=%s',
     async (legacyNull) => {
       const original = await edge({
-        ageMinutes: 10,
+        ageMinutes: 60 * 24 * 60,
         state: ManagedEntityAccessState.USER_DENIED,
-        expiresAt: legacyNull ? null : new Date(Date.now() + 15 * 60_000),
+        expiresAt: legacyNull ? null : new Date(0),
       });
       await expect(authorize()).rejects.toBeInstanceOf(PublisherDeliveryDeferredError);
       await nominate(9 * 60_000);
@@ -172,13 +165,11 @@ integration('Publisher publication authority on PostgreSQL', () => {
     },
   );
 
-  it('preflights a ten-minute-old null-expiry grant using the requested nine-minute age', async () => {
+  it('does not renew a null-expiry grant even when a legacy caller requests an age bound', async () => {
     await edge({ ageMinutes: 10, expiresAt: null });
     await nominate(9 * 60_000);
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(enqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'publication_actor_due' }),
-    );
+    expect(enqueue).not.toHaveBeenCalled();
+    await expect(authorize()).resolves.toBeUndefined();
   });
 
   it('never copies a foreign bot grant into Publisher authority', async () => {

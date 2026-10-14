@@ -84,7 +84,7 @@ describe('PublisherPublicationAccessPreflightService', () => {
       [{ chatId: 'chat-1', entityType: 'chat' }],
       'author-1',
       'publik',
-      { maxAgeMs: expect.any(Number), publicationUrgentAt: expect.any(Date), strictEnqueue: true },
+      { publicationUrgentAt: expect.any(Date), strictEnqueue: true },
     );
     expect(f.prisma.publicationOccurrence.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -67,7 +67,7 @@ type PublicationDetailsSheetProps = {
   ) => void;
 };
 
-function formatDateTime(value: string, timezone = 'Europe/Moscow'): string {
+function formatDateTime(value: string, timezone = 'Europe/Moscow', seconds = false): string {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
     ? new Intl.DateTimeFormat('ru-RU', {
@@ -75,6 +75,7 @@ function formatDateTime(value: string, timezone = 'Europe/Moscow'): string {
         month: 'short',
         hour: '2-digit',
         minute: '2-digit',
+        ...(seconds ? { second: '2-digit' as const } : {}),
         timeZone: timezone,
       }).format(date)
     : value;
@@ -515,7 +516,9 @@ export function PublicationDetailsSheet({
                             ) : null}
                             {occurrence.dispatchIssue && occurrence.dispatchBlockedSince ? (
                               <small>
-                                Ожидает с{' '}
+                                {['SCHEDULED', 'IN_PROGRESS'].includes(occurrence.status)
+                                  ? 'Ожидает с'
+                                  : 'Причина отмечена'}{' '}
                                 {formatDateTime(
                                   occurrence.dispatchBlockedSince,
                                   details.schedule?.timezone,
@@ -614,6 +617,31 @@ export function PublicationDetailsSheet({
                             >
                               {DELIVERY_STATUS_LABELS[delivery.status]}
                             </small>
+                            {delivery.status === 'PENDING' && delivery.waitReason ? (
+                              <small>
+                                {delivery.waitReason === 'max_rate_limit'
+                                  ? 'MAX ограничил частоту. Пост остаётся в очереди.'
+                                  : delivery.waitReason === 'circuit_open'
+                                    ? 'Ожидаем восстановления MAX. Пост остаётся в очереди.'
+                                    : 'Ожидаем доступного времени отправки.'}
+                              </small>
+                            ) : null}
+                            {delivery.status === 'PENDING' && delivery.nextAttemptAt ? (
+                              <small>
+                                Следующая попытка не раньше{' '}
+                                {formatDateTime(
+                                  delivery.nextAttemptAt,
+                                  details.schedule?.timezone,
+                                  true,
+                                )}
+                              </small>
+                            ) : null}
+                            {delivery.status === 'PENDING' && delivery.deadlineAt ? (
+                              <small>
+                                Срок отправки:{' '}
+                                {formatDateTime(delivery.deadlineAt, details.schedule?.timezone)}
+                              </small>
+                            ) : null}
                             {delivery.sentAt ? (
                               <small>
                                 Отправлено{' '}

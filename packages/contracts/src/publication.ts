@@ -816,7 +816,18 @@ export const listLegacyPublicationsResponseSchema = z.object({
 });
 export type ListLegacyPublicationsResponse = z.infer<typeof listLegacyPublicationsResponseSchema>;
 
+export const publicationCapacityWaitReasonSchema = z.enum([
+  'max_rate_limit',
+  'local_capacity',
+  'circuit_open',
+]);
+export type PublicationCapacityWaitReason = z.infer<typeof publicationCapacityWaitReasonSchema>;
+
 export const publicationDeliverySchema = z.object({
+  deadlineAt: publicationDateTimeSchema.nullable().optional(),
+  nextAttemptAt: publicationDateTimeSchema.nullable().optional(),
+  waitReason: publicationCapacityWaitReasonSchema.nullable().optional(),
+  firstDeferredAt: publicationDateTimeSchema.nullable().optional(),
   postActions: publicationPostActionsSchema.optional(),
   id: z.string(),
   occurrenceId: z.string(),

@@ -85,6 +85,8 @@ export async function cancelPublicationDeliveryBeforeStoppedDispatch(
         status: occurrence.status,
         dispatchBlockerCode: occurrence.dispatchBlockerCode,
         retryAuthorizedAt: occurrence.retryAuthorizedAt,
+        retryExpiresAt: occurrence.retryExpiresAt,
+        deliveryDeadlineAt: occurrence.deliveryDeadlineAt,
         scheduleRevision: occurrence.scheduleRevision,
         contentRevisionId: occurrence.contentRevisionId,
       },

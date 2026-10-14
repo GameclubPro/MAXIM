@@ -86,6 +86,17 @@ export class PublisherActorAccessExecutor {
         roster.find((member) => identity(member.userId) === identity(params.userId)) ?? null;
       terminalStatusCode = userAccess ? null : statusCode;
     }
+    // FLAG: Absent role fields/empty member responses are not a revocation. Only exact
+    // non-admin evidence, a bot identity, or the validated roster absence above may deny.
+    if (
+      !terminalStatusCode &&
+      (!userAccess ||
+        (!userAccess.isAdmin &&
+          !userAccess.isOwner &&
+          userAccess.isBot !== true &&
+          userAccess.explicitNonPrivilegeEvidence !== true))
+    )
+      throw new Error('MAX actor role evidence is incomplete');
     const checkedAt = params.probeStartedAt;
     const userIsBot = userAccess?.isBot === true;
     const userHasUnverifiedBotType =

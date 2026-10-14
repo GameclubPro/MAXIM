@@ -26,8 +26,6 @@ import {
   PublisherChatCommentQueueService,
 } from './publisher-chat-comment.queue';
 
-const PUBLISHER_ACCESS_LEGACY_GRACE_MS = 7 * 24 * 60 * 60_000;
-
 export class PublisherChatCommentClaimPendingError extends WebhookPreparationDeferredError {
   constructor(cause?: unknown) {
     super(
@@ -89,7 +87,6 @@ export class PublisherChatCommentProducerService {
     const sourceCreatedAt = new Date(update.message?.createdAt ?? '');
 
     const now = new Date();
-    const legacyGraceStart = new Date(now.getTime() - PUBLISHER_ACCESS_LEGACY_GRACE_MS);
     const entity = await this.prisma.chat.findFirst({
       where: {
         id: chatId,
@@ -129,10 +126,7 @@ export class PublisherChatCommentProducerService {
             botId: this.publisherBotId,
             userId: senderId,
             entityType: ChatEntityType.CHAT,
-            OR: [
-              { expiresAt: { gt: now } },
-              { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
-            ],
+            // FLAG: Existing ADMIN/OWNER evidence remains valid until explicit revocation.
           },
           orderBy: { checkedAt: 'desc' },
           take: 1,

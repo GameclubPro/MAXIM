@@ -13,10 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
-import {
-  PublisherReadinessService,
-  PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS,
-} from './publisher-readiness.service';
+import { PublisherReadinessService } from './publisher-readiness.service';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 
 import { PublisherBindingRefreshQueueService } from './publisher-binding-refresh.queue';
@@ -165,7 +162,6 @@ export class PublisherPublicationAccessPreflightService implements OnModuleInit,
             occurrence.publication.actorUserId,
             this.botId,
             {
-              maxAgeMs: PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS - horizonMs,
               publicationUrgentAt: urgentAt,
               strictEnqueue: true,
             },

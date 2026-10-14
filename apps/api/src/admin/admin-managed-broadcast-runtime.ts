@@ -124,6 +124,7 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   createPublicationExecutionObserver,
+  resolvePublicationDeadlineWake,
   type PublicationExecutionTiming,
 } from './publication-delivery-timing';
 import {
@@ -401,7 +402,6 @@ import {
 import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcast-target-failure';
 import {
   cancelPublicationDeliveryBeforeStoppedDispatch,
-  buildCapacityDeferredPublicationOccurrenceResult,
   deferClaimedPublicationEnvelopeAfterTransientPrismaError,
   deferManagedBroadcastWithFreshDeliveryLocks,
   deferPublicationDeliveryAfterPreDispatchThrottle,
@@ -3893,9 +3893,15 @@ export class AdminManagedBroadcastRuntime {
             status: PrismaManagedBroadcastDeliveryStatus.PENDING,
             dispatchProfile: rowDispatchProfile,
             requiredBotId: row.requiredBotId,
+            ...(isPublikExecution
+              ? {
+                  OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }],
+                }
+              : {}),
           },
           data: {
             status: PrismaManagedBroadcastDeliveryStatus.SENDING,
+            ...(isPublikExecution ? { nextAttemptAt: null, waitReason: null } : {}),
             lockedAt: activeLease.lockedAt,
             lockToken: deliveryLockToken,
             attemptCount: { increment: 1 },
@@ -4141,16 +4147,8 @@ export class AdminManagedBroadcastRuntime {
             error,
           });
           if (capacityDeferredUntil) {
-            return buildCapacityDeferredPublicationOccurrenceResult({
-              context: this.context,
-              broadcastId: row.id,
-              occurrenceIndex: currentOccurrence,
-              deliveryCandidates,
-              sentChatIds,
-              failedChatIds,
-              firstSendError,
-              nextSendAt: capacityDeferredUntil,
-            });
+            pendingNotBefore = resolveEarlierDate(pendingNotBefore, capacityDeferredUntil);
+            continue;
           }
           let effectiveError = error;
           let deliveryFailureMessage =
@@ -4549,7 +4547,7 @@ export class AdminManagedBroadcastRuntime {
         sentChatIds,
         failedChatIds,
         firstSendError,
-        { lease: activeLease, pendingNotBefore },
+        { lease: activeLease, pendingNotBefore, deadlineAt: publicationTiming.deadlineAt },
       );
     } catch (error: unknown) {
       const transientRecovery = await recoverPublicationExecutionError({
@@ -5819,7 +5817,11 @@ export class AdminManagedBroadcastRuntime {
     sentChatIds: string[],
     failedChatIds: string[],
     firstSendError: unknown,
-    options: { lease?: ManagedBroadcastLease; pendingNotBefore?: Date | null } = {},
+    options: {
+      lease?: ManagedBroadcastLease;
+      pendingNotBefore?: Date | null;
+      deadlineAt?: Date | null;
+    } = {},
   ): Promise<BroadcastOccurrenceResult> {
     const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
       where: {
@@ -5889,12 +5891,14 @@ export class AdminManagedBroadcastRuntime {
         unverifiedPublicationChats.length > 0
           ? this.publicationVerification.nextAt(deliveredChats)
           : null;
-      const deferredNextSendAt =
+      let deferredNextSendAt =
         pendingChats.length > 0 && !hasImmediatelyReadyPendingDelivery && options.pendingNotBefore
           ? verificationNextSendAt && verificationNextSendAt < options.pendingNotBefore
             ? verificationNextSendAt
             : options.pendingNotBefore
           : defaultNextSendAt;
+      if (pendingChats.length > 0)
+        deferredNextSendAt = resolvePublicationDeadlineWake(deferredNextSendAt, options.deadlineAt);
       const updated = await this.updateManagedBroadcastIfNotCanceled(
         row.id,
         {

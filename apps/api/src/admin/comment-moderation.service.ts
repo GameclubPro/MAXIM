@@ -249,9 +249,16 @@ export class CommentModerationService {
         botId,
         userId: { in: [actorId, targetId] },
         entityType: commentRestrictionKey(scope, actorId).entityType,
-        source: 'publisher_targeted_user_access',
-        checkedAt: { gt: new Date(Date.now() - 30_000) },
-        expiresAt: { gt: new Date() },
+        // FLAG: A confirmed administrator stays authorized/protected. Only non-admin
+        // evidence used to impose a new restriction must be freshly proved by MAX.
+        OR: [
+          { state: 'GRANTED', userRole: { in: ['OWNER', 'ADMIN'] } },
+          {
+            source: 'publisher_targeted_user_access',
+            checkedAt: { gt: new Date(Date.now() - 30_000) },
+            expiresAt: { gt: new Date() },
+          },
+        ],
       },
       select: {
         userId: true,
@@ -291,9 +298,13 @@ export class CommentModerationService {
     release: boolean,
   ) {
     // FLAG: api-admin has no Publisher token. Only the existing Publisher worker may probe MAX;
-    // require its recent, exact-bot successful role evidence before committing a restriction.
+    // retain positive authority and require recent exact-bot non-admin evidence for a target.
     if (await this.publisherRolesReady(this.prisma, scope, actorId, targetId, release)) return;
-    for (const candidateUserId of release ? [actorId] : [actorId, targetId]) {
+    const actorReady = await this.publisherRolesReady(this.prisma, scope, actorId, targetId, true);
+    for (const candidateUserId of [
+      ...(actorReady ? [] : [actorId]),
+      ...(release ? [] : [targetId]),
+    ]) {
       await this.publisherRefresh.enqueue({
         chatId: scope.chatId,
         publisherBotId: this.registry.getPublisherBotDescriptor().id,

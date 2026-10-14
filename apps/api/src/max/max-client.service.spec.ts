@@ -12725,6 +12725,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       permissions: ['add_remove_members', 'change_chat_info'],
       permissionsKnown: true,
       explicitPrivilegeEvidence: true,
+      explicitNonPrivilegeEvidence: false,
     });
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -13920,6 +13921,36 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(limiterRedis.eval).toHaveBeenCalledTimes(3);
     expect(httpService.request).toHaveBeenCalledTimes(1);
 
+    await service.onModuleDestroy();
+  });
+
+  it('yields a Publisher publication slot immediately with the exact cooldown', async () => {
+    const service = createService({}, { MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND: '5000' });
+    const internal = service as any;
+    internal.botRegistry.getPublisherBotDescriptor = () => ({ id: '777000_bot' });
+    const reserve = jest.spyOn(internal, 'tryReserveRateLimitSlot').mockResolvedValue({
+      ok: false,
+      retryAfterMs: 30_000,
+      reason: 'external cooldown',
+    });
+    const sleep = jest.spyOn(internal, 'sleep');
+    jest.spyOn(internal, 'recordRateLimitOutcome').mockResolvedValue(undefined);
+    await expect(
+      internal.reserveRateLimitSlot(
+        '777000_bot',
+        'chat-1',
+        'background',
+        MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+        undefined,
+        { operation: 'send', entityId: 'chat-1' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'MAX_API_INTERNAL_RATE_LIMIT',
+      preDispatch: true,
+      retryAfterMs: 30_000,
+    });
+    expect(reserve).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
     await service.onModuleDestroy();
   });
 

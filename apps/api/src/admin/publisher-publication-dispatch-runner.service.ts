@@ -108,6 +108,14 @@ export class PublisherPublicationDispatchRunnerService implements OnModuleInit, 
     await Promise.allSettled(inFlight);
   }
 
+  notifyMaterializedWork(): void {
+    if (!this.enabled || !this.runtimeBoundary.dispatchEnabled || this.destroyed) return;
+    // FLAG: Scheduling wakes the existing executor; it never creates a second send owner.
+    this.immediateGlobalWakeGeneration += 1;
+    void this.ensureImmediateDrain('scheduled');
+    void this.refreshDeadlineWakeup();
+  }
+
   async wakeAfterPublicationMaterialization(
     publicationId: string,
     occurrenceId?: string,

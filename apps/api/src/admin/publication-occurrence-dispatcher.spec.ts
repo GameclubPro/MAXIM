@@ -19,6 +19,7 @@ const occurrence = {
   scheduledAt: new Date('2026-09-04T10:00:00.000Z'),
   schedule: {
     id: 'schedule-1',
+    mode: PublicationScheduleMode.NOW,
     revision: 3,
     status: PublicationScheduleStatus.ACTIVE,
     rule: { mode: 'now', timezone: 'Europe/Moscow' },

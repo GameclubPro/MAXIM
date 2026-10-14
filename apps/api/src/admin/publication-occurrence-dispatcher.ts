@@ -206,6 +206,8 @@ export async function dispatchScheduledPublicationOccurrences(
               dispatchBlockedAt: occurrence.dispatchBlockedAt ?? null,
               dispatchFirstBlockedAt: occurrence.dispatchFirstBlockedAt ?? null,
               retryAuthorizedAt: occurrence.retryAuthorizedAt ?? null,
+              retryExpiresAt: occurrence.retryExpiresAt ?? null,
+              deliveryDeadlineAt: occurrence.deliveryDeadlineAt ?? null,
               schedule: {
                 is: {
                   revision: occurrence.scheduleRevision,

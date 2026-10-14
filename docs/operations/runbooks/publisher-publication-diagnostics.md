@@ -57,8 +57,9 @@ package manifest required by a root-level `npm run --workspace` invocation.
 ## Current scheduling and recovery
 
 Deadline dispatch and imminent-publication preflight each have one coalesced coordinator
-slot, independent of the serialized recovery slot. The MAX limiter, two refresh workers
-and SQL send fences remain unchanged. `publisher_background_budget_v1` reports a lane
+slot, independent of the serialized recovery slot. The existing MAX limiter, two refresh workers
+and SQL send fences retain their quotas and ownership. Publication scheduling is owned by
+`api-publisher`; `api-action` no longer scans these schedules. `publisher_background_budget_v1` reports a lane
 whose wait or execution exceeds five seconds; this observation never cancels an effect.
 
 Preflight considers the next ten minutes, with at most eight target nominations per
@@ -72,11 +73,31 @@ send still rechecks actor, bot, content, policy and schedule authority.
 New schedules persist an explicit late policy: by default recover for 24 hours and,
 for recurring schedules, retain the latest due durable occurrence of the same revision.
 The author may choose another deadline or all still-current repeats. Existing schedules
-without this field retain their five-minute window. Explicit author retries retain their
-separate five-minute authorization. Expiry fails only unsent claimable recipients and
+without this field retain their five-minute window. New occurrences snapshot `deliveryDeadlineAt`;
+new NOW intent expires after 24 hours. New author retries persist a separate 24-hour
+`retryExpiresAt`; old grants keep their five-minute authorization. Expiry fails only unsent claimable recipients and
 the exact owned pre-HTTP claim; confirmed and uncertain effects retain their evidence.
 No policy permits replay of an ambiguous send. Cancellation still consumes a slot in
 new recurrence limits, and catch-up materialization is capped at 300 slots per pass.
+
+Confirmed Publisher bot and human ADMIN/OWNER rights do not expire. SQL reads enforce
+explicit revocation, exact bot, binding, policy and lifecycle before new effects.
+Never clear existing access edges to activate this release. Bare 403/404 and partial
+MAX responses are unknown; explicit chat/access denial or a valid complete roster
+can revoke rights. There is no periodic all-chat permission scan.
+
+Recipient `nextAttemptAt` persists across restarts. MAX Retry-After is a lower bound;
+without it, external 429 backs off 30/60/120/240/300 seconds plus bounded positive jitter.
+Local capacity and circuit hints retain their exact available time. External cooldown
+is token-scoped in the existing atomic GCRA boundary. Publisher SEND yields immediately
+on local rejection; other tokens and ready recipients retain their own progress.
+A retry beyond intent expiry wakes the envelope for SQL expiry without an early SEND.
+
+The existing Bull wake remains an acceleration hint. SQL occurrences/envelopes are the
+durable queue; a lost post-commit wake is repaired by the 15-second Publisher poll.
+No separate outbox or second executor is required. Polls coalesce and shutdown waits
+for owned work. Automatic fleet MAX degradation permits only bounded SQL preparation;
+manual pause, Publisher identity pause and host pressure remain authoritative.
 
 `publication_delivery_v1` separates `max_acknowledgement_observed` from
 `receipt_persisted`. The former is the observed wrapper-return time, not a MAX server
@@ -87,7 +108,7 @@ publication SLO. Retain release, observation interval, sample size and truncatio
 
 The target-preparation migration replaces only the context constraint/trigger, with no
 history rewrite or validation scan. Its new constraint checks all new writes. Both API
-rollback paths require the current deadline/preparation readers and dispatch wiring;
+rollback paths require the current deadline/recipient-wait/durable-authority readers and Publisher scheduling wiring;
 use reviewed current wrappers and a compatible forward correction if an older image
 fails that source floor.
 

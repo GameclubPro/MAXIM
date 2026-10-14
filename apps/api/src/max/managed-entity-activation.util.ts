@@ -88,6 +88,33 @@ export function hasExplicitManagedEntityPrivilege(row: Record<string, unknown>):
   );
 }
 
+export function hasExplicitManagedEntityNonPrivilege(row: Record<string, unknown>): boolean {
+  // FLAG: Missing privilege fields are unknown, never a revocation of a retained grant.
+  if (hasExplicitManagedEntityPrivilege(row)) return false;
+  const roles = [
+    'role',
+    'member_role',
+    'memberRole',
+    'chat_role',
+    'chatRole',
+    'status',
+    'member_status',
+    'memberStatus',
+  ];
+  if (
+    roles.some(
+      (key) =>
+        typeof row[key] === 'string' &&
+        ['member', 'participant'].includes(row[key].trim().toLowerCase()),
+    )
+  )
+    return true;
+  return (
+    (row.is_admin === false || row.isAdmin === false || row.admin === false) &&
+    (row.is_owner === false || row.isOwner === false || row.owner === false)
+  );
+}
+
 export function isManagedEntityActivationRequired(
   row:
     | { status?: string | null; botAccessState?: string | null; botAccessSource?: string | null }

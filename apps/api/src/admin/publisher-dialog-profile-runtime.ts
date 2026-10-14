@@ -51,7 +51,6 @@ import {
 } from './publisher-suggestion-submission-admission';
 import {
   CHANNEL_DIALOG_MESSAGES_LIMIT,
-  MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS,
   PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
 } from './admin.service.support';
 
@@ -447,7 +446,6 @@ export class PublisherDialogProfileRuntime {
     if (!publisherBotId) {
       throw new ServiceUnavailableException('Профиль Публика временно недоступен.');
     }
-    const now = new Date();
     const rows = await this.context.prisma.managedEntityAccessEdge.findMany({
       where: {
         chatId,
@@ -455,15 +453,6 @@ export class PublisherDialogProfileRuntime {
         botId: publisherBotId,
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-        OR: [
-          { expiresAt: { gt: now } },
-          {
-            expiresAt: null,
-            checkedAt: {
-              gt: new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS),
-            },
-          },
-        ],
       },
       select: { userId: true },
     });

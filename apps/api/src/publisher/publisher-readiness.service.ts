@@ -1,3 +1,4 @@
+import { PUBLISHER_ACCESS_CANDIDATE_SOURCE } from './publisher-entity-binding-lifecycle.service';
 import {
   publisherEntityReadinessSchema,
   type ManagedEntityPublicationPolicy,
@@ -10,7 +11,6 @@ import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
   ChatEntityType,
-  ManagedEntityAccessState,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
@@ -74,8 +74,6 @@ export type PublisherReadyRoute = {
   policyRevision: number;
 };
 
-export const PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS = 15 * 60_000;
-
 @Injectable()
 export class PublisherReadinessService {
   private readonly logger = new Logger(PublisherReadinessService.name);
@@ -112,11 +110,8 @@ export class PublisherReadinessService {
       return;
     }
     const now = new Date();
-    const maxAgeMs = Number.isFinite(options.maxAgeMs)
-      ? Math.max(60_000, Math.min(PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS, options.maxAgeMs!))
-      : PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS;
-    // FLAG: Persisted publication targets may nominate a probe, never grant access. Respect fresh
-    // denials and let the Publisher worker revalidate the exact bot/user under its lifecycle fence.
+    // FLAG: Never renew or reset existing positive/negative authority on a clock. Only a
+    // missing exact actor edge may be nominated by publication demand; activation is explicit.
     const uniqueTargets = [...new Map(targets.map((target) => [target.chatId, target])).values()];
     for (let offset = 0; offset < uniqueTargets.length; offset += 200) {
       const candidates = await this.prisma.chat.findMany({
@@ -133,26 +128,8 @@ export class PublisherReadinessService {
               userId: actorUserId,
               botId: this.publisherBotId,
               OR: [
-                {
-                  expiresAt: { gt: now },
-                  OR: [
-                    { state: { not: ManagedEntityAccessState.GRANTED } },
-                    { checkedAt: { gt: new Date(now.getTime() - maxAgeMs) } },
-                  ],
-                },
-                {
-                  expiresAt: null,
-                  OR: [
-                    {
-                      state: ManagedEntityAccessState.GRANTED,
-                      checkedAt: { gt: new Date(now.getTime() - maxAgeMs) },
-                    },
-                    {
-                      state: { not: ManagedEntityAccessState.GRANTED },
-                      checkedAt: { gt: new Date(now.getTime() - 15 * 60_000) },
-                    },
-                  ],
-                },
+                { state: 'GRANTED' },
+                { NOT: { source: { startsWith: PUBLISHER_ACCESS_CANDIDATE_SOURCE } } },
               ],
             },
           },

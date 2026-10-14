@@ -1,3 +1,4 @@
+import { collectMaxRetryErrorChain } from '../max/max-retry-after';
 import { Inject, Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
@@ -214,9 +215,23 @@ export function classifyPublisherFailure(error: unknown): PublisherFailureClassi
   if (statusCode === 401) {
     return 'global_paused';
   }
-  if (statusCode === 403 || statusCode === 404) {
+  // FLAG: A bare HTTP error (including a missing message) cannot revoke retained rights.
+  // Only an explicit exact-token chat/access denial is authority to mark this binding LOST.
+  if (
+    (statusCode === 403 || statusCode === 404) &&
+    collectMaxRetryErrorChain(error).some((entry) => {
+      const response = (entry as { response?: { status?: number; data?: { code?: unknown } } })
+        .response;
+      return (
+        response?.status === statusCode &&
+        typeof response.data?.code === 'string' &&
+        ['access.denied', 'chat.denied', 'chat.not.found'].includes(
+          response.data.code.trim().toLowerCase(),
+        )
+      );
+    })
+  )
     return 'setup_required';
-  }
   if (
     statusCode === 429 ||
     (error as { code?: unknown } | null)?.code === 'MAX_API_INTERNAL_RATE_LIMIT'

@@ -59,6 +59,8 @@ type PublisherOccurrence = {
   dispatchBlockedAt?: Date | null;
   dispatchBlockerCode?: string | null;
   retryAuthorizedAt?: Date | null;
+  retryExpiresAt?: Date | null;
+  deliveryDeadlineAt?: Date | null;
 };
 
 @Injectable()
@@ -320,6 +322,8 @@ export class PublicationPublisherRoutingService {
         dispatchBlockedAt: occurrence.dispatchBlockedAt ?? null,
         dispatchBlockerCode: occurrence.dispatchBlockerCode ?? null,
         retryAuthorizedAt: occurrence.retryAuthorizedAt ?? null,
+        retryExpiresAt: occurrence.retryExpiresAt ?? null,
+        deliveryDeadlineAt: occurrence.deliveryDeadlineAt ?? null,
         legacyBroadcasts: { none: {} },
       },
       data: {

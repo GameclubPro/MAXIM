@@ -8,7 +8,9 @@ type AdmissionDelivery = Pick<
   ManagedBroadcastDelivery,
   'status' | 'targetChatId' | 'lastErrorCode' | 'updatedAt'
 > &
-  Partial<Pick<ManagedBroadcastDelivery, 'dispatchBlockerCode' | 'dispatchBlockedAt'>>;
+  Partial<
+    Pick<ManagedBroadcastDelivery, 'dispatchBlockerCode' | 'dispatchBlockedAt' | 'nextAttemptAt'>
+  >;
 
 export function isPublicationRecipientAdmissionComplete(
   deliveries: readonly Pick<ManagedBroadcastDelivery, 'status'>[],
@@ -52,14 +54,16 @@ export function resolveManagedBroadcastRecipientAdmission<T extends AdmissionDel
 }
 
 export function publisherPublicationRecipientRetryAt(
-  delivery: Pick<AdmissionDelivery, 'dispatchBlockerCode' | 'dispatchBlockedAt'>,
+  delivery: Pick<AdmissionDelivery, 'dispatchBlockerCode' | 'dispatchBlockedAt' | 'nextAttemptAt'>,
   now: Date,
 ): Date | null {
-  if (!delivery.dispatchBlockerCode || !delivery.dispatchBlockedAt) return null;
+  const capacityAt =
+    delivery.nextAttemptAt && delivery.nextAttemptAt > now ? delivery.nextAttemptAt : null;
+  if (!delivery.dispatchBlockerCode || !delivery.dispatchBlockedAt) return capacityAt;
   const retryAt = new Date(
     delivery.dispatchBlockedAt.getTime() + PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS,
   );
-  return retryAt > now ? retryAt : null;
+  return retryAt > now ? (capacityAt && capacityAt > retryAt ? capacityAt : retryAt) : capacityAt;
 }
 
 export function selectPublisherPublicationAdmissionBatch<T extends AdmissionDelivery>(

@@ -4,7 +4,16 @@ import type { PublicationScheduleMode } from '../prisma/prisma-client';
 export type PublicationExecutionTiming = {
   mode: PublicationScheduleMode;
   intentCreatedAt: Date;
+  deadlineAt?: Date | null;
 };
+
+export function resolvePublicationDeadlineWake(nextAt: Date, deadlineAt?: Date | null): Date {
+  // FLAG: A long Retry-After may outlive author intent. Wake for SQL-only expiry,
+  // retaining the recipient's retry time so no SEND can happen before MAX allows it.
+  return deadlineAt && nextAt.getTime() > deadlineAt.getTime() + 1
+    ? new Date(deadlineAt.getTime() + 1)
+    : nextAt;
+}
 
 type PublicationMediaKind = 'none' | 'image' | 'video' | 'unknown';
 export type PublicationStage =
@@ -53,6 +62,7 @@ export function createPublicationExecutionObserver(
   enabled: boolean,
 ): {
   readonly scheduledAt: Date | null;
+  readonly deadlineAt: Date | null;
   onOccurrenceScheduledAt: (scheduledAt: Date, execution?: PublicationExecutionTiming) => void;
   observeReceipt: () => void;
   observeAcknowledgement: () => void;
@@ -70,6 +80,9 @@ export function createPublicationExecutionObserver(
     });
   };
   return {
+    get deadlineAt() {
+      return execution?.deadlineAt ?? null;
+    },
     get scheduledAt() {
       return scheduledAt;
     },

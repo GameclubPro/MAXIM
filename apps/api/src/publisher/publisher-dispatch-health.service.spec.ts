@@ -403,12 +403,22 @@ describe('PublisherDispatchHealthService', () => {
     });
   });
 
+  it.each([403, 404, 429, 503])(
+    'preserves confirmed permissions on an unqualified HTTP %s',
+    async (status) => {
+      const f = createHarness();
+      await f.service.recordSendFailure('chat-1', { response: { status } });
+      expect(f.prisma.publisherEntityBinding.updateMany).not.toHaveBeenCalled();
+      expect(f.refreshQueue.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([403, 404])('marks only the failed entity setup-required on HTTP %s', async (status) => {
     const { service, prisma, refreshQueue } = createHarness();
 
-    await expect(service.recordSendFailure('chat-1', { response: { status } })).resolves.toBe(
-      'setup_required',
-    );
+    await expect(
+      service.recordSendFailure('chat-1', { response: { status, data: { code: 'chat.denied' } } }),
+    ).resolves.toBe('setup_required');
 
     expect(prisma.publisherEntityBinding.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({

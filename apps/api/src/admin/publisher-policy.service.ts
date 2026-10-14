@@ -118,11 +118,10 @@ export class PublisherPolicyService {
     user: AuthUser,
     entityIds?: readonly string[],
     includeDisabled = false,
-    catalogOnly = false,
+    _catalogOnly = false,
   ): Promise<PublisherEntity[]> {
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
     const now = new Date();
-    const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
     const [runtimeAvailable, edges] = await Promise.all([
       this.readinessService.isRuntimeAvailable(),
       this.prisma.managedEntityAccessEdge.findMany({
@@ -131,16 +130,8 @@ export class PublisherPolicyService {
           userId: user.userId,
           state: ManagedEntityAccessState.GRANTED,
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-          // FLAG: Historical grants display navigation only. Target resolution retains
-          // expiry checks; selected settings and writes independently verify the actor.
-          ...(catalogOnly
-            ? {}
-            : {
-                OR: [
-                  { expiresAt: { gt: now } },
-                  { expiresAt: null, checkedAt: { gt: legacyGraceStart } },
-                ],
-              }),
+          // FLAG: Retained exact-bot grants authorize until MAX explicitly revokes them.
+          // Admission still checks the connected binding, catalog and publication policy.
           botId: publisherBotId,
           chat: {
             ...(!includeDisabled
@@ -475,8 +466,6 @@ export class PublisherPolicyService {
       throw new ServiceUnavailableException('Проверка прав временно недоступна.');
     await this.selectedAccess?.assertAccess(user, entityId, entityType);
     const publisherBotId = this.botRegistry.getPublisherBotDescriptor().id;
-    const now = new Date();
-    const legacyGraceStart = new Date(now.getTime() - 7 * 24 * 60 * 60_000);
     const edges = await this.prisma.managedEntityAccessEdge.findMany({
       where: {
         chatId: entityId,
@@ -484,7 +473,6 @@ export class PublisherPolicyService {
         entityType: entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-        OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
         botId: publisherBotId,
         chat: {
           ...(!includeDisabled
@@ -591,10 +579,6 @@ export class PublisherPolicyService {
             missing.entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
           state: ManagedEntityAccessState.GRANTED,
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-          OR: [
-            { expiresAt: { gt: now } },
-            { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 7 * 86400_000) } },
-          ],
         },
         take: 1,
         include: {

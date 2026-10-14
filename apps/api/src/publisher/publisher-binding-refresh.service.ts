@@ -478,6 +478,27 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       );
       return;
     }
+    // FLAG: Retired clock-driven actor checks must not erase or renew existing authority.
+    // Only a genuinely missing edge/candidate may use publication demand; explicit connection
+    // and refresh commands retain their existing versioned probe protocol.
+    if (
+      ['publication_actor_due', 'stale_user_access', 'selected_actor_access'].includes(
+        job.reason,
+      ) &&
+      candidateUserId
+    ) {
+      const edge = await this.prisma.managedEntityAccessEdge.findUnique({
+        where: {
+          chatId_userId_botId: { chatId, userId: candidateUserId, botId: this.publisherBotId },
+        },
+        select: { state: true, userRole: true, source: true },
+      });
+      if (
+        edge &&
+        (edge.state === 'GRANTED' || !edge.source?.startsWith(PUBLISHER_ACCESS_CANDIDATE_SOURCE))
+      )
+        return;
+    }
     if (job.reason === 'selected_actor_access') {
       await this.refreshSelectedActor(job, timings, outcomes);
       return;
@@ -1430,6 +1451,9 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
         userId,
         botId: this.publisherBotId,
         ...(candidateVersion ? { sourceVersion: candidateVersion } : {}),
+        // FLAG: Candidate completion is not a revocation protocol. Preserve an existing
+        // grant; only exact actor/bot MAX evidence or lifecycle handlers may revoke it.
+        state: { not: ManagedEntityAccessState.GRANTED },
         source: { startsWith: `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_` },
       },
       data: {

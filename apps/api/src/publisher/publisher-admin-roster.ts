@@ -65,6 +65,10 @@ export async function syncPublisherAdminRoster(
   )
     return false;
   const roster = proof.members;
+  // FLAG: An omitted role may hide a current owner/admin. Never turn a partial roster
+  // into mass revocation; retain all stored grants and retry this explicit discovery.
+  if (roster.some((member) => !member.userId || !(member.isAdmin || member.isOwner)))
+    throw new Error('Incomplete MAX administrator role evidence');
   const presentUserIds = [
     ...new Set(
       roster.flatMap((member) =>
@@ -138,10 +142,12 @@ export async function syncPublisherAdminRoster(
         : [];
     const changedUserIds = new Set(membershipChanges.map((row) => row.userId));
     const grantUserIds = humanAdminIds.filter((userId) => !changedUserIds.has(userId));
+    const ownerIds = new Set(
+      roster.filter((member) => member.isOwner).map((member) => member.userId),
+    );
     const grant = {
       entityType: params.entityType,
       state: 'GRANTED' as const,
-      userRole: 'ADMIN' as const,
       botRole:
         params.botAccessState === 'CONFIRMED_OWNER' ? ('OWNER' as const) : ('ADMIN' as const),
       checkedAt: probeStartedAt,
@@ -154,15 +160,21 @@ export async function syncPublisherAdminRoster(
     };
     if (grantUserIds.length > 0) {
       // FLAG: Preserve newer verdicts and candidate versions; the parent lock orders writers.
-      await tx.managedEntityAccessEdge.updateMany({
-        where: {
-          chatId,
-          botId: publisherBotId,
-          userId: { in: grantUserIds },
-          checkedAt: { lte: probeStartedAt },
-        },
-        data: grant,
-      });
+      for (const role of ['OWNER', 'ADMIN'] as const) {
+        const roleUserIds = grantUserIds.filter(
+          (userId) => ownerIds.has(userId) === (role === 'OWNER'),
+        );
+        if (roleUserIds.length === 0) continue;
+        await tx.managedEntityAccessEdge.updateMany({
+          where: {
+            chatId,
+            botId: publisherBotId,
+            userId: { in: roleUserIds },
+            checkedAt: { lte: probeStartedAt },
+          },
+          data: { ...grant, userRole: role },
+        });
+      }
       for (let offset = 0; offset < grantUserIds.length; offset += 250) {
         await tx.managedEntityAccessEdge.createMany({
           data: grantUserIds.slice(offset, offset + 250).map((userId) => ({
@@ -170,6 +182,7 @@ export async function syncPublisherAdminRoster(
             botId: publisherBotId,
             userId,
             ...grant,
+            userRole: ownerIds.has(userId) ? 'OWNER' : 'ADMIN',
           })),
           skipDuplicates: true,
         });

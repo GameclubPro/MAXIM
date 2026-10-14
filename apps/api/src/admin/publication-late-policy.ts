@@ -11,6 +11,8 @@ export const PUBLICATION_SCHEDULED_LATE_GRACE_MS = 5 * 60_000;
 
 type PublicationRetryAuthorization = {
   retryAuthorizedAt?: Date | null;
+  retryExpiresAt?: Date | null;
+  deliveryDeadlineAt?: Date | null;
   dispatchBlockerCode?: string | null;
   dispatchBlockedAt?: Date | null;
 };
@@ -26,6 +28,20 @@ export function readPublicationRetryAuthorizedAt(
   );
 }
 
+export function isPublicationRetryAuthorized(
+  occurrence: PublicationRetryAuthorization,
+  now: Date,
+): boolean {
+  const grantedAt = readPublicationRetryAuthorizedAt(occurrence)?.getTime();
+  if (grantedAt === undefined || !Number.isFinite(grantedAt) || grantedAt > now.getTime())
+    return false;
+  // FLAG: New explicit grants have an immutable expiry. Existing grants retain their original
+  // five-minute authority; neither a technical retry nor migration renews it.
+  const expiresAt =
+    occurrence.retryExpiresAt?.getTime() ?? grantedAt + PUBLICATION_SCHEDULED_LATE_GRACE_MS;
+  return Number.isFinite(expiresAt) && expiresAt >= grantedAt && now.getTime() <= expiresAt;
+}
+
 export function isPublicationScheduledWindowExpired(
   occurrence: PublicationRetryAuthorization & {
     scheduledAt: Date;
@@ -33,25 +49,47 @@ export function isPublicationScheduledWindowExpired(
   },
   now = new Date(),
 ): boolean {
-  if (
-    occurrence.schedule.mode !== PublicationScheduleMode.ONCE &&
-    occurrence.schedule.mode !== PublicationScheduleMode.SLOTS &&
-    occurrence.schedule.mode !== PublicationScheduleMode.RECURRENCE
-  )
-    return false;
-  // FLAG: Access deferrals must not replace or extend the author's explicit retry window.
-  // The shared blocker marker is a read-only compatibility fallback for older retries.
-  const retryAt = readPublicationRetryAuthorizedAt(occurrence)?.getTime();
-  if (
-    retryAt !== undefined &&
-    retryAt <= now.getTime() &&
-    retryAt >= now.getTime() - PUBLICATION_SCHEDULED_LATE_GRACE_MS
-  ) {
-    return false;
-  }
-  const policy = readPublicationLatePolicy(occurrence.schedule.rule);
-  const grace = policy ? policy.maxDelayMinutes * 60_000 : PUBLICATION_SCHEDULED_LATE_GRACE_MS;
-  return occurrence.scheduledAt.getTime() < now.getTime() - grace;
+  if (isPublicationRetryAuthorized(occurrence, now)) return false;
+  const deadline = resolvePublicationDeliveryDeadline(occurrence, now);
+  return deadline !== null && deadline.getTime() < now.getTime();
+}
+
+export function snapshotPublicationDeliveryDeadline(
+  scheduledAt: Date,
+  rule: PublicationScheduleInput,
+): Date {
+  const delay =
+    rule.mode === 'now'
+      ? 24 * 60 * 60_000
+      : (readPublicationLatePolicy(rule)?.maxDelayMinutes ?? 5) * 60_000;
+  return new Date(scheduledAt.getTime() + delay);
+}
+
+export function resolvePublicationDeliveryDeadline(
+  occurrence: PublicationRetryAuthorization & {
+    scheduledAt: Date;
+    schedule: { mode: PublicationScheduleMode; rule?: unknown };
+  },
+  now = new Date(),
+): Date | null {
+  // FLAG: No migration or worker clock renews existing intent. Legacy NOW retains its
+  // previous behavior; newly accepted work carries an immutable deadline snapshot.
+  const original =
+    occurrence.deliveryDeadlineAt ??
+    (occurrence.schedule.mode === PublicationScheduleMode.NOW
+      ? null
+      : new Date(
+          occurrence.scheduledAt.getTime() +
+            (readPublicationLatePolicy(occurrence.schedule.rule)?.maxDelayMinutes ?? 5) * 60_000,
+        ));
+  const authorizedAt = readPublicationRetryAuthorizedAt(occurrence);
+  const retryDeadline =
+    authorizedAt && authorizedAt <= now
+      ? (occurrence.retryExpiresAt ??
+        new Date(authorizedAt.getTime() + PUBLICATION_SCHEDULED_LATE_GRACE_MS))
+      : null;
+  if (!original) return occurrence.retryExpiresAt ? retryDeadline : null;
+  return retryDeadline && retryDeadline > original ? retryDeadline : original;
 }
 
 export function readPublicationLatePolicy(rule: unknown) {
@@ -71,13 +109,7 @@ export async function isPublicationOccurrenceWindowClosed(
   now = new Date(),
 ): Promise<boolean> {
   if (isPublicationScheduledWindowExpired(occurrence, now)) return true;
-  const retryAt = readPublicationRetryAuthorizedAt(occurrence)?.getTime();
-  if (
-    retryAt !== undefined &&
-    retryAt <= now.getTime() &&
-    retryAt >= now.getTime() - PUBLICATION_SCHEDULED_LATE_GRACE_MS
-  )
-    return false;
+  if (isPublicationRetryAuthorized(occurrence, now)) return false;
   const policy = readPublicationLatePolicy(occurrence.schedule.rule);
   if (
     occurrence.schedule.mode !== 'RECURRENCE' ||

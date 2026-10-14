@@ -231,7 +231,7 @@ describe('comment moderation', () => {
 
   it('refreshes unknown Publisher roles through its existing queue, never a shared-role token', async () => {
     const s = setup();
-    s.prisma.managedEntityAccessEdge.findMany.mockResolvedValueOnce([]);
+    s.prisma.managedEntityAccessEdge.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     await s.service.update(scope, user, 'reader', 'thread-1', command);
     expect(s.refresh.enqueue).toHaveBeenCalledTimes(2);
     expect(s.refresh.enqueue).toHaveBeenCalledWith({
@@ -244,10 +244,28 @@ describe('comment moderation', () => {
     expect(s.prisma.managedEntityAccessEdge.findMany.mock.calls[0][0].where).toMatchObject({
       botId: 'publik',
       entityType: 'CHAT',
-      source: 'publisher_targeted_user_access',
-      checkedAt: { gt: expect.any(Date) },
-      expiresAt: { gt: expect.any(Date) },
+      OR: [
+        { state: 'GRANTED', userRole: { in: ['OWNER', 'ADMIN'] } },
+        {
+          source: 'publisher_targeted_user_access',
+          checkedAt: { gt: expect.any(Date) },
+          expiresAt: { gt: expect.any(Date) },
+        },
+      ],
     });
+  });
+
+  it('refreshes only an unverified restriction target while retaining the administrator grant', async () => {
+    const s = setup();
+    const actor = { userId: 'admin', state: 'GRANTED', userRole: 'OWNER' };
+    s.prisma.managedEntityAccessEdge.findMany
+      .mockResolvedValueOnce([actor])
+      .mockResolvedValueOnce([actor]);
+    await s.service.update(scope, user, 'reader', 'thread-1', command);
+    expect(s.refresh.enqueue).toHaveBeenCalledTimes(1);
+    expect(s.refresh.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ candidateUserId: 'reader' }),
+    );
   });
 
   it.each(['ADMIN', 'OWNER'])(

@@ -37,6 +37,7 @@ describe('PublisherBindingRefreshService', () => {
     status: ChatBotMembershipStatus;
     botAccessState: ChatBotAccessState;
     botAccessSource: string | null;
+    permissionsSnapshot?: unknown;
     botAccessCheckedAt: Date | null;
     botAccessExpiresAt?: Date | null;
     lifecycleEventAt: Date | null;
@@ -47,7 +48,13 @@ describe('PublisherBindingRefreshService', () => {
 
   function createHarness(
     accessResult:
-      | { isAdmin: boolean; isOwner: boolean; permissions: string[]; permissionsKnown: boolean }
+      | {
+          isAdmin: boolean;
+          isOwner: boolean;
+          permissions: string[];
+          permissionsKnown: boolean;
+          explicitNonPrivilegeEvidence?: boolean;
+        }
       | Error,
     dispatchEnabled = true,
     publikEnabled: boolean | null = null,
@@ -209,12 +216,25 @@ describe('PublisherBindingRefreshService', () => {
     });
     const maxClient = {
       getChatAdminAccesses: jest.fn().mockResolvedValue([]),
-      getCurrentChatMemberAccess: jest.fn(async () => {
-        if (accessResult instanceof Error) {
-          throw accessResult;
-        }
-        return { explicitPrivilegeEvidence: true, ...accessResult };
-      }),
+      getCurrentChatMemberAccess: jest.fn(
+        async (): Promise<{
+          isAdmin: boolean;
+          isOwner: boolean;
+          permissions: string[];
+          permissionsKnown: boolean;
+          explicitPrivilegeEvidence: boolean;
+          explicitNonPrivilegeEvidence?: boolean;
+        }> => {
+          if (accessResult instanceof Error) {
+            throw accessResult;
+          }
+          return {
+            explicitPrivilegeEvidence: accessResult.isAdmin || accessResult.isOwner,
+            explicitNonPrivilegeEvidence: !accessResult.isAdmin && !accessResult.isOwner,
+            ...accessResult,
+          };
+        },
+      ),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'chat-1',
         title: 'Publisher chat',
@@ -308,74 +328,84 @@ describe('PublisherBindingRefreshService', () => {
     permissionsKnown: true,
   };
 
-  it.each(['granted', 'denied', 'transient'] as const)(
-    'verifies only the selected actor using durable bot proof: %s',
-    async (verdict) => {
+  it.each(['selected_actor_access', 'publication_actor_due', 'stale_user_access'] as const)(
+    'drains retired %s checks without probing or altering an existing grant',
+    async (reason) => {
       const f = createHarness(adminAccess);
-      const old = new Date('2020-01-01T00:00:00Z');
-      const binding = {
-        publisherBotId: 'publik_bot',
-        status: 'ACTIVE',
-        lifecycleEventAt: null,
-        ...buildBotAccessSnapshotPersistence(adminAccess, {
-          source: 'publisher_explicit_start',
-          now: old,
-        }),
-      };
-      Object.assign(f.prisma.publisherEntityBinding, {
-        findUnique: jest.fn().mockResolvedValue(binding),
-      });
-      f.tx.publisherEntityBinding.findUnique.mockResolvedValue(binding as never);
-      f.prisma.managedEntityAccessEdge.findUnique.mockResolvedValue({
-        entityType: 'CHAT',
+      const edge = {
         state: 'GRANTED',
-        userRole: 'ADMIN',
-        checkedAt: old,
-        lastAdminConfirmedAt: old,
-        sourceVersion: 'v1',
-      } as never);
-      f.edgeState.sourceVersion = 'v1';
-      f.edgeState.checkedAt = old;
-      if (verdict === 'transient')
-        f.maxClient.getChatMemberAccess.mockRejectedValue(new Error('MAX timeout'));
-      if (verdict === 'denied')
+        userRole: 'OWNER',
+        checkedAt: new Date(0),
+        expiresAt: new Date(0),
+        source: 'publisher_targeted_user_access',
+      };
+      f.prisma.managedEntityAccessEdge.findUnique.mockResolvedValue(edge as never);
+      await f.service.refresh({ ...job, reason, candidateUserId: 'alice' });
+      expect(f.maxClient.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+      expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
+      expect(f.prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+      expect(f.tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(edge).toMatchObject({
+        state: 'GRANTED',
+        userRole: 'OWNER',
+        checkedAt: new Date(0),
+        expiresAt: new Date(0),
+      });
+    },
+  );
+
+  it.each(['bot', 'actor'] as const)(
+    'preserves retained authority on incomplete %s evidence',
+    async (who) => {
+      const f = createHarness(adminAccess);
+      f.edgeState.source = 'publisher_targeted_user_access';
+      f.edgeState.deniedReason = null;
+      f.edgeState.sourceVersion = 'existing-proof';
+      if (who === 'bot')
+        f.maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+          isAdmin: false,
+          isOwner: false,
+          explicitPrivilegeEvidence: false,
+          permissions: [],
+          permissionsKnown: false,
+        });
+      else
         f.maxClient.getChatMemberAccess.mockResolvedValue({
           userId: 'alice',
           isBot: false,
           isAdmin: false,
           isOwner: false,
-          explicitPrivilegeEvidence: true,
           permissions: [],
-          permissionsKnown: true,
+          permissionsKnown: false,
         });
-      const work = f.service.refresh({
-        ...job,
-        reason: 'selected_actor_access',
-        candidateUserId: 'alice',
-        candidateVersion: 'v1',
-        requestedAt: new Date().toISOString(),
-      });
-      if (verdict === 'transient') {
-        await expect(work).rejects.toThrow('MAX timeout');
-        expect(f.tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
-      } else {
-        await work;
-        expect(f.tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
-          expect.objectContaining({
-            update: expect.objectContaining({
-              state: verdict === 'granted' ? 'GRANTED' : 'USER_DENIED',
-            }),
-          }),
-        );
-      }
-      expect(f.maxClient.getChatMemberAccess).toHaveBeenCalledTimes(1);
-      expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
-      expect(f.maxClient.getChatSnapshot).not.toHaveBeenCalled();
-      expect(f.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
-      expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(f.prisma.managedBotChatCatalog.findUnique).not.toHaveBeenCalled();
+      await expect(
+        f.service.refresh({ ...job, reason: 'manual_recheck', candidateUserId: 'alice' }),
+      ).rejects.toThrow('evidence is incomplete');
+      expect(f.prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+      expect(f.tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      if (who === 'bot') expect(f.prisma.publisherEntityBinding.updateMany).not.toHaveBeenCalled();
     },
   );
+
+  it('retains a known bot permission snapshot when MAX omits capabilities', async () => {
+    const f = createHarness({ ...adminAccess, permissions: [], permissionsKnown: false });
+    const candidate = await f.prisma.chat.findUnique();
+    const snapshot = {
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write', 'pin_message'],
+      permissionsKnown: true,
+    };
+    candidate.publisherBinding!.permissionsSnapshot = snapshot;
+    f.prisma.chat.findUnique.mockResolvedValue(candidate);
+    await expect(f.service.refresh({ ...job, reason: 'manual_recheck' })).rejects.toThrow(
+      'permission evidence is incomplete',
+    );
+    expect(f.prisma.publisherEntityBinding.updateMany).not.toHaveBeenCalled();
+    expect(f.prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+    expect(candidate.publisherBinding!.permissionsSnapshot).toBe(snapshot);
+  });
 
   function dormantActivation(kind: 'start_in_chat' | 'forwarded_message' = 'start_in_chat') {
     const f = createHarness(adminAccess);
@@ -801,6 +831,7 @@ describe('PublisherBindingRefreshService', () => {
         ...adminAccess,
         explicitPrivilegeEvidence: true,
         isAdmin: false,
+        explicitNonPrivilegeEvidence: true,
       });
     if (failure === 'bot-evidence')
       f.maxClient.getCurrentChatMemberAccess.mockResolvedValue({
@@ -905,13 +936,16 @@ describe('PublisherBindingRefreshService', () => {
       f.tx.publisherEntityBinding.findUnique.mockResolvedValue(null);
       if (failure === 'http403')
         f.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
-          Object.assign(new Error('denied'), { response: { status: 403 } }),
+          Object.assign(new Error('denied'), {
+            response: { status: 403, data: { code: 'chat.denied' } },
+          }),
         );
       else
         f.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
           ...adminAccess,
           explicitPrivilegeEvidence: true,
           isAdmin: failure !== 'member',
+          explicitNonPrivilegeEvidence: failure === 'member',
           permissions: ['read_all_messages'],
         });
       await f.service.refresh(f.command);
@@ -1315,6 +1349,7 @@ describe('PublisherBindingRefreshService', () => {
           explicitPrivilegeEvidence: true,
           isBot: false,
           isAdmin: false,
+          explicitNonPrivilegeEvidence: true,
           isOwner: false,
           permissions: [],
           permissionsKnown: true,
@@ -1955,7 +1990,9 @@ describe('PublisherBindingRefreshService', () => {
   });
 
   it('maps a targeted 403 probe to LOST without retrying through a main bot', async () => {
-    const error = Object.assign(new Error('denied'), { response: { status: 403 } });
+    const error = Object.assign(new Error('denied'), {
+      response: { status: 403, data: { code: 'chat.denied' } },
+    });
     const { service, prisma, dispatchHealth } = createHarness(error);
 
     await expect(service.refresh(job)).resolves.toBeUndefined();
@@ -2297,6 +2334,7 @@ describe('PublisherBindingRefreshService', () => {
     edgeState.sourceVersion = 'forwarded:publisher-forward-2';
     maxClient.getChatMemberAccess.mockResolvedValueOnce({
       isAdmin: false,
+      explicitNonPrivilegeEvidence: true,
       isOwner: false,
       permissions: [],
       permissionsKnown: true,
@@ -2505,7 +2543,7 @@ describe('PublisherBindingRefreshService', () => {
       ...job,
       candidateUserId: 'admin-established',
       candidateVersion,
-      reason: 'stale_user_access',
+      reason: 'manual_recheck',
     });
 
     expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
@@ -2549,6 +2587,7 @@ describe('PublisherBindingRefreshService', () => {
           explicitPrivilegeEvidence: true,
           isBot: false,
           isAdmin,
+          explicitNonPrivilegeEvidence: !isAdmin,
           isOwner: false,
           permissions: [],
           permissionsKnown: true,
@@ -2559,7 +2598,7 @@ describe('PublisherBindingRefreshService', () => {
           ...job,
           candidateUserId: 'admin-1',
           candidateVersion: 'edge-v1',
-          reason: 'stale_user_access',
+          reason: 'manual_recheck',
         }),
       ).rejects.toThrow(PublisherCandidateRefreshSupersededError);
       expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
@@ -2588,7 +2627,7 @@ describe('PublisherBindingRefreshService', () => {
           ...job,
           candidateUserId: `admin-${statusCode}`,
           candidateVersion,
-          reason: 'stale_user_access',
+          reason: 'manual_recheck',
         }),
       ).resolves.toBeUndefined();
 
@@ -2673,7 +2712,7 @@ describe('PublisherBindingRefreshService', () => {
     expect(f.tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
   });
 
-  it('keeps retryable stale user-access failures in the queue retry path', async () => {
+  it('keeps retryable explicit user-access failures in the queue retry path', async () => {
     const { service, edgeState, maxClient } = createHarness({
       isAdmin: true,
       isOwner: false,
@@ -2691,7 +2730,7 @@ describe('PublisherBindingRefreshService', () => {
         ...job,
         candidateUserId: 'admin-retryable',
         candidateVersion,
-        reason: 'stale_user_access',
+        reason: 'manual_recheck',
       }),
     ).rejects.toBe(failure);
   });
@@ -2824,6 +2863,7 @@ describe('PublisherBindingRefreshService', () => {
     });
     maxClient.getChatMemberAccess.mockResolvedValueOnce({
       isAdmin: false,
+      explicitNonPrivilegeEvidence: true,
       isOwner: false,
       permissions: [],
       permissionsKnown: true,
@@ -2911,6 +2951,7 @@ describe('PublisherBindingRefreshService', () => {
   it('does not grant a Publisher access edge when the Publisher bot is not an admin', async () => {
     const { service, tx, prisma, maxClient } = createHarness({
       isAdmin: false,
+      explicitNonPrivilegeEvidence: true,
       isOwner: false,
       permissions: ['write'],
       permissionsKnown: true,

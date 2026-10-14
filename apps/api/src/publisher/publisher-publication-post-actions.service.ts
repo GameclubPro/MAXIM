@@ -24,10 +24,7 @@ import {
 } from './publisher-dispatch-health.service';
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
-import {
-  PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS,
-  PublisherReadinessService,
-} from './publisher-readiness.service';
+import { PublisherReadinessService } from './publisher-readiness.service';
 
 const POLL_MS = 5_000;
 const LEASE_MS = 120_000;
@@ -451,11 +448,6 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         botId,
         state: 'GRANTED',
         userRole: { in: ['OWNER', 'ADMIN'] },
-        checkedAt: { gt: new Date(now.getTime() - PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS) },
-        OR: [
-          { expiresAt: { gt: now } },
-          { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 7 * 86400_000) } },
-        ],
         chat: {
           OR: [
             { publicationPolicy: { is: null } },
@@ -487,12 +479,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       where: { chatId: row.targetChatId, userId: publication.actorUserId, botId },
       select: { state: true, userRole: true, expiresAt: true, checkedAt: true },
     });
-    const freshEdge =
-      edge &&
-      (edge.expiresAt
-        ? edge.expiresAt > now
-        : edge.checkedAt > new Date(now.getTime() - 7 * 86400_000));
-    if (freshEdge && (edge.state !== 'GRANTED' || !['ADMIN', 'OWNER'].includes(edge.userRole))) {
+    if (edge && (edge.state !== 'GRANTED' || !['ADMIN', 'OWNER'].includes(edge.userRole))) {
       throw new PinAuthorityUnavailableError(
         'Закрепление отменено: права автора или Публика отозваны.',
         Status.FAILED,

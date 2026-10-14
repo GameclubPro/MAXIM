@@ -391,10 +391,6 @@ describe('PublisherPolicyService', () => {
           botId: 'publik-bot',
           state: ManagedEntityAccessState.GRANTED,
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-          OR: [
-            { expiresAt: { gt: expect.any(Date) } },
-            { expiresAt: null, checkedAt: { gt: expect.any(Date) } },
-          ],
         }),
       }),
     );

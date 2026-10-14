@@ -1,3 +1,4 @@
+import { readMaxRetryAfterMs } from './max-retry-after';
 import {
   markMaxMessageSendAttempted,
   wasMaxMessageSendAttempted,
@@ -16,6 +17,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { readMaxMemberActivity } from './max-member-activity.util';
 import {
   hasExplicitManagedEntityPrivilege,
+  hasExplicitManagedEntityNonPrivilege,
   type ManagedEntityExplicitActivation,
 } from './managed-entity-activation.util';
 import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
@@ -246,6 +248,7 @@ export type MaxChatMemberAccess = {
   permissions: string[];
   permissionsKnown?: boolean;
   explicitPrivilegeEvidence?: boolean;
+  explicitNonPrivilegeEvidence?: boolean;
   activationCapabilityCeiling?: readonly string[];
 };
 
@@ -704,8 +707,13 @@ const MAX_API_CRITICAL_NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
 ]);
 const DEFAULT_MAX_ACTION_FAILED_RETENTION_AGE_SEC = 7 * 24 * 60 * 60;
 const DEFAULT_MAX_ACTION_FAILED_RETENTION_COUNT = 1_000;
-const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
+export const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
 -- MAX_API_GCRA_RESERVE_V1
+-- FLAG: The per-token external cooldown shares this atomic admission boundary;
+-- rejected calls never consume GCRA slots or shorten a concurrent longer cooldown.
+local cooldown = redis.call('PTTL', KEYS[1] .. ':cooldown')
+if cooldown == -1 then return {0, 0, 30000} end
+if cooldown > 0 then return {0, 0, cooldown} end
 local time = redis.call('TIME')
 local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 local ttlFloorMs = tonumber(ARGV[#ARGV])
@@ -737,6 +745,18 @@ for index = 1, keyCount do
 end
 
 return {1, 0, 0}
+`;
+
+export const MAX_API_EXTERNAL_COOLDOWN_SCRIPT = `
+-- MAX_API_EXTERNAL_COOLDOWN_V1
+local requested = tonumber(ARGV[1])
+local existing = redis.call('PTTL', KEYS[1])
+if existing == -1 then return existing end
+if requested > existing then
+  redis.call('SET', KEYS[1], '1', 'PX', requested)
+  return requested
+end
+return existing
 `;
 
 const MAX_API_CIRCUIT_ACQUIRE_SCRIPT = `
@@ -4368,6 +4388,7 @@ export class MaxClientService implements OnModuleDestroy {
       permissions: row ? this.readChatAdminPermissions(row) : [],
       permissionsKnown: row ? this.hasExplicitChatAdminPermissions(row) : false,
       explicitPrivilegeEvidence: row ? hasExplicitManagedEntityPrivilege(row) : false,
+      explicitNonPrivilegeEvidence: row ? hasExplicitManagedEntityNonPrivilege(row) : false,
     };
   }
 
@@ -6903,6 +6924,18 @@ export class MaxClientService implements OnModuleDestroy {
         await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
       }
       if (status === 429) {
+        try {
+          await this.limiterRedis.eval(
+            MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
+            1,
+            `maxapi:gcra:v1:bot:${bot.id}:all:cooldown`,
+            String(Math.max(1, readMaxRetryAfterMs(error, Date.now()) || 30_000)),
+          );
+        } catch {
+          // FLAG: Preserve the actual HTTP 429 for durable retry even if Redis is unavailable.
+          // The next reservation still fails closed when the authoritative limiter is down.
+          this.logger.warn({ botId: bot.id }, 'Failed to retain MAX external rate-limit cooldown');
+        }
         await this.recordRateLimitOutcome({
           origin: 'external_429',
           botId: bot.id,
@@ -7901,11 +7934,15 @@ export class MaxClientService implements OnModuleDestroy {
     maxWaitMsOverride?: number,
     messageMutation?: MaxMessageMutationRateLimitScope,
   ) {
-    const configuredMaxWaitMs = this.resolveTrafficClassRateLimitWaitMs(
-      trafficClass,
-      sourceTag,
-      messageMutation,
-    );
+    // FLAG: Publication SEND owns a durable recipient retry. Yield capacity immediately
+    // instead of occupying its serialized worker during a shared token cooldown.
+    const durablePublisherSend =
+      messageMutation?.operation === 'send' &&
+      this.normalizeMetricSourceTag(sourceTag) === MAX_API_SOURCE_TAGS.MANAGED_BROADCAST &&
+      this.botRegistry.getPublisherBotDescriptor?.().id === botId;
+    const configuredMaxWaitMs = durablePublisherSend
+      ? 0
+      : this.resolveTrafficClassRateLimitWaitMs(trafficClass, sourceTag, messageMutation);
     const maxWaitMs =
       typeof maxWaitMsOverride === 'number' && Number.isFinite(maxWaitMsOverride)
         ? Math.max(0, Math.min(configuredMaxWaitMs, Math.trunc(maxWaitMsOverride)))
@@ -8069,7 +8106,9 @@ export class MaxClientService implements OnModuleDestroy {
       ok: false,
       retryAfterMs: normalizedRetryAfterMs,
       reason:
-        dimensions[Math.trunc(rejectedKeyIndex) - 1]?.reason ??
+        (rejectedKeyIndex === 0
+          ? `MAX API external cooldown for bot ${botId}`
+          : dimensions[Math.trunc(rejectedKeyIndex) - 1]?.reason) ??
         `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`,
     };
   }

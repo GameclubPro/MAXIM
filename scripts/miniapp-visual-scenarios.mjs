@@ -513,6 +513,13 @@ const baseScenarios = [
     'publications',
     ['publications-publisher', { searchParams: { profile: 'publisher' }, features: ['publisher'] }],
     [
+      'publications-publisher-capacity-wait',
+      {
+        searchParams: { profile: 'publisher', publicationWindow: 'capacity' },
+        features: ['publisher', 'publications'],
+      },
+    ],
+    [
       'publications-publisher-access-required',
       { searchParams: { profile: 'publisher' }, features: ['publisher', 'publications'] },
     ],

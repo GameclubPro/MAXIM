@@ -27,10 +27,7 @@ import {
 } from '../publisher/publisher-suggestion-admin.queue';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { ChannelDialogService } from './channel-dialog.service';
-import {
-  MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS,
-  PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST,
-} from './admin.service.support';
+import { PUBLISHER_CHANNEL_DIALOG_ACTION_SUGGEST } from './admin.service.support';
 import { PublisherSuggestionService } from './publisher-suggestion.service';
 
 @Processor(PUBLISHER_SUGGESTION_ADMIN_QUEUE, { concurrency: 1 })
@@ -146,7 +143,6 @@ export class PublisherSuggestionAdminProcessor extends WorkerHost {
     }
 
     try {
-      const now = new Date();
       const accessEdge = await this.prisma.managedEntityAccessEdge.findFirst({
         where: {
           chatId: row.chatId,
@@ -154,32 +150,11 @@ export class PublisherSuggestionAdminProcessor extends WorkerHost {
           botId: job.requiredBotId,
           state: ManagedEntityAccessState.GRANTED,
           userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-          OR: [
-            { expiresAt: { gt: now } },
-            {
-              expiresAt: null,
-              checkedAt: {
-                gt: new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS),
-              },
-            },
-          ],
         },
         select: { chatId: true },
       });
       if (!accessEdge) {
-        throw new ForbiddenException('Publisher access edge is no longer fresh.');
-      }
-      const access = (
-        await this.maxClient.getChatMembersAccess(row.chatId, [job.actor.userId], {
-          botId: job.requiredBotId,
-          trafficClass: 'interactive',
-          actionHealthLane: 'interactive',
-          sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
-          bypassCache: true,
-        })
-      ).get(job.actor.userId);
-      if (!access || (!access.isAdmin && !access.isOwner)) {
-        throw new ForbiddenException('Права администратора канала больше не подтверждены.');
+        throw new ForbiddenException('Publisher administrator access is not granted.');
       }
 
       const result = await this.suggestions.review(

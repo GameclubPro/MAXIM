@@ -96,6 +96,12 @@ describe('PublisherChatCommentProducerService', () => {
 
       await fixture.service.observeWebhook(update);
 
+      expect(fixture.prisma.chat.findFirst.mock.calls[0][0].select.accessEdges.where).toEqual({
+        botId: 'publik-bot',
+        userId: 'user-1',
+        entityType: 'CHAT',
+      });
+
       expect(fixture.markerStore.claimChatAutoComment).toHaveBeenCalledWith(
         expect.objectContaining({
           publisherSettingsRevision: 7,

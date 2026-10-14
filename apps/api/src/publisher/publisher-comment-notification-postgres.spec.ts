@@ -152,6 +152,38 @@ postgres('Publisher comment notification outbox on PostgreSQL', () => {
     expect(sent).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps old owner authority for global subscriptions until explicit revocation', async () => {
+    await db.chat.update({ where: { id: chatId }, data: { catalogKind: 'MANAGED' } });
+    await db.publisherEntityBinding.create({
+      data: {
+        chatId,
+        publisherBotId: botId,
+        status: 'ACTIVE',
+        botAccessState: 'CONFIRMED_ADMIN',
+      },
+    });
+    const edge = await db.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        botId,
+        userId: 'recipient',
+        entityType: 'CHAT',
+        state: 'GRANTED',
+        userRole: 'OWNER',
+        botRole: 'ADMIN',
+        checkedAt: new Date(0),
+        expiresAt: new Date(0),
+        source: 'publisher_admin_roster',
+      },
+    });
+    await service.updateSettings(target(), 'recipient', 'all', 'all_channels');
+    expect(await service.canReceive(target(), 'recipient', false)).toBe(true);
+    const where = { chatId_userId_botId: { chatId, userId: 'recipient', botId } };
+    expect(await db.managedEntityAccessEdge.findUnique({ where })).toEqual(edge);
+    await db.managedEntityAccessEdge.update({ where, data: { state: 'USER_DENIED' } });
+    expect(await service.canReceive(target(), 'recipient', false)).toBe(false);
+  });
+
   it('subscribes an older comment author to replies without re-enabling an explicit OFF', async () => {
     const old = await db.auditLog.create({
       data: {

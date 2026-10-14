@@ -15,6 +15,7 @@ import { stripSupportedMarkdownToPlainText } from '../common/max-markdown.util';
 import {
   ChatEntityType,
   ManagedBroadcastDeliveryStatus,
+  type ManagedBroadcastDelivery,
   Prisma,
   PublicationContentFormat,
   PublicationDispatchProfile,
@@ -35,6 +36,40 @@ import {
 import { buildEffectivePublicationDeliveryStatusSql } from './publication-legacy-automated-absence';
 
 const PUBLICATION_LIST_PREVIEW_TARGETS = 6;
+export const PUBLICATION_DELIVERY_PRESENTATION_INCLUDE = {
+  broadcast: { select: { entityType: true } },
+  contentRevision: { select: { id: true, revision: true, postPublish: true } },
+  publicationOccurrence: {
+    select: {
+      id: true,
+      deliveryDeadlineAt: true,
+      retryExpiresAt: true,
+      publication: { select: { canonicalContentRevisionId: true } },
+    },
+  },
+} as const;
+
+export function mapPublicationDeliveryWait(
+  row: Pick<
+    ManagedBroadcastDelivery,
+    'status' | 'nextAttemptAt' | 'waitReason' | 'firstDeferredAt'
+  > & {
+    publicationOccurrence: { deliveryDeadlineAt: Date | null; retryExpiresAt: Date | null } | null;
+  },
+) {
+  const occurrence = row.publicationOccurrence;
+  const deadlineAt =
+    occurrence?.retryExpiresAt &&
+    (!occurrence.deliveryDeadlineAt || occurrence.retryExpiresAt > occurrence.deliveryDeadlineAt)
+      ? occurrence.retryExpiresAt
+      : occurrence?.deliveryDeadlineAt;
+  return {
+    nextAttemptAt: row.status === 'PENDING' ? (row.nextAttemptAt?.toISOString() ?? null) : null,
+    waitReason: row.status === 'PENDING' ? (row.waitReason ?? null) : null,
+    firstDeferredAt: row.firstDeferredAt?.toISOString() ?? null,
+    deadlineAt: deadlineAt?.toISOString() ?? null,
+  };
+}
 const PUBLICATION_OCCURRENCE_HISTORY_LIMIT = 50;
 const PUBLISHER_CATALOG_LOOKUP_BATCH_SIZE = 200;
 const MAX_PRESENTATION_URL_LENGTH = 2_048;

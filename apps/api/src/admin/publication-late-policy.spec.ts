@@ -83,6 +83,44 @@ describe('Publication scheduled late policy', () => {
       ),
     ).toBe(true);
   });
+  it('retains immutable deadlines for new NOW and explicit retries across technical waits', () => {
+    const occurrence = {
+      scheduledAt: new Date('2026-09-29T08:00:00Z'),
+      deliveryDeadlineAt: new Date('2026-09-30T08:00:00Z'),
+      schedule: { mode: PublicationScheduleMode.NOW },
+    };
+    expect(isPublicationScheduledWindowExpired(occurrence, now)).toBe(true);
+    const retry = {
+      ...occurrence,
+      retryAuthorizedAt: new Date('2026-09-30T08:30:00Z'),
+      retryExpiresAt: new Date('2026-10-01T08:30:00Z'),
+    };
+    expect(isPublicationScheduledWindowExpired(retry, now)).toBe(false);
+    expect(isPublicationScheduledWindowExpired(retry, retry.retryExpiresAt)).toBe(false);
+    expect(
+      isPublicationScheduledWindowExpired(retry, new Date(retry.retryExpiresAt.getTime() + 1)),
+    ).toBe(true);
+    expect(
+      isPublicationScheduledWindowExpired(
+        { ...retry, dispatchBlockedAt: new Date('2026-10-02T00:00:00Z') },
+        new Date('2026-10-02T00:00:00Z'),
+      ),
+    ).toBe(true);
+  });
+
+  it('bounds a new explicit retry of a legacy NOW without rewriting the original intent', () => {
+    const legacy = {
+      scheduledAt: new Date('2026-09-29T08:00:00Z'),
+      schedule: { mode: PublicationScheduleMode.NOW },
+      retryAuthorizedAt: new Date('2026-09-30T08:30:00Z'),
+    };
+    const retry = { ...legacy, retryExpiresAt: new Date('2026-10-01T08:30:00Z') };
+    const expiredAt = new Date(retry.retryExpiresAt.getTime() + 1);
+    expect(isPublicationScheduledWindowExpired(legacy, expiredAt)).toBe(false);
+    expect(isPublicationScheduledWindowExpired(retry, retry.retryExpiresAt)).toBe(false);
+    expect(isPublicationScheduledWindowExpired(retry, expiredAt)).toBe(true);
+  });
+
   it.each(['latest', 'all'] as const)(
     'uses only durable newer occurrences for %s catch-up',
     async (catchUp) => {

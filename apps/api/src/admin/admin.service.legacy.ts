@@ -17697,8 +17697,6 @@ export class AdminService implements OnModuleDestroy {
     if (!botId) {
       return [];
     }
-    const now = new Date();
-    const legacyGraceStart = new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS);
     const rows = await this.prisma.managedEntityAccessEdge.findMany({
       where: {
         chatId,
@@ -17706,7 +17704,6 @@ export class AdminService implements OnModuleDestroy {
         entityType: ChatEntityType.CHANNEL,
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-        OR: [{ expiresAt: { gt: now } }, { expiresAt: null, checkedAt: { gt: legacyGraceStart } }],
       },
       select: { userId: true },
       orderBy: [{ checkedAt: 'desc' }, { userId: 'asc' }],

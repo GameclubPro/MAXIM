@@ -29,7 +29,7 @@ export class PublisherBotAccessExecutor {
     probeStartedAt: Date;
     materializeForwarded: boolean;
     explicitActivation?: ManagedEntityExplicitActivation;
-    previous?: PublisherRefreshProof;
+    previous?: PublisherRefreshProof & { permissionsSnapshot?: unknown };
   }) {
     const botAccess = await this.maxClient.getCurrentChatMemberAccess(params.chatId, {
       botId: this.publisherBotId,
@@ -42,6 +42,21 @@ export class PublisherBotAccessExecutor {
       timeoutMs: 5_000,
       ...(params.explicitActivation ? { explicitActivation: params.explicitActivation } : {}),
     });
+    // FLAG: An incomplete MAX response cannot demote a connected bot or erase its snapshot.
+    if (!botAccess.isAdmin && !botAccess.isOwner && botAccess.explicitNonPrivilegeEvidence !== true)
+      throw new Error('MAX Publisher bot role evidence is incomplete');
+    const previousSnapshot = params.previous?.permissionsSnapshot;
+    // FLAG: A response omitting capabilities cannot erase a previously explicit permission set.
+    // Keep its whole proof intact; a complete newer response or explicit denial can replace it.
+    if (
+      (botAccess.isAdmin || botAccess.isOwner) &&
+      botAccess.permissionsKnown !== true &&
+      previousSnapshot &&
+      typeof previousSnapshot === 'object' &&
+      !Array.isArray(previousSnapshot) &&
+      (previousSnapshot as { permissionsKnown?: unknown }).permissionsKnown === true
+    )
+      throw new Error('MAX Publisher bot permission evidence is incomplete');
     const checkedAt = new Date();
     const snapshot = buildBotAccessSnapshotPersistence(botAccess, {
       source: `publisher_refresh_${params.reason}`,

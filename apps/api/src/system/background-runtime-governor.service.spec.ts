@@ -228,6 +228,32 @@ describe('BackgroundRuntimeGovernorService', () => {
     },
   );
 
+  it('allows only bounded metadata preparation through automatic MAX degradation', async () => {
+    const base = createDecisionSnapshotForTest();
+    const snapshot = { ...base, mode: { ...base.mode, mode: 'degrade', condition: 'max_api' } };
+    const service = new BackgroundRuntimeGovernorService(
+      {} as never,
+      { getEffectiveSnapshot: async () => snapshot.mode } as never,
+      {} as never,
+      createConfigMock(),
+    );
+    jest.spyOn(service as any, 'getPressureSnapshot').mockResolvedValue(snapshot);
+    const request = {
+      component: 'publication-materializer',
+      sourceTag: 'managed_broadcast',
+      publicationMetadataOnly: true,
+    };
+    await expect(service.decide(request)).resolves.toMatchObject({ action: 'slow' });
+    await expect(service.decide({ ...request, component: 'sender' })).resolves.toMatchObject({
+      action: 'pause',
+    });
+    snapshot.systemPressure.ioWaitRatio = 0.5;
+    await expect(service.decide(request)).resolves.toMatchObject({ action: 'pause' });
+    snapshot.systemPressure.ioWaitRatio = 0;
+    snapshot.mode.source = 'manual';
+    await expect(service.decide(request)).resolves.toMatchObject({ action: 'pause' });
+  });
+
   it('keeps aggregate and hottest-bot MAX load observational', () => {
     const service = new BackgroundRuntimeGovernorService(
       {} as never,

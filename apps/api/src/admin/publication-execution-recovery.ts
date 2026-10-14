@@ -1,3 +1,5 @@
+import { resolvePublicationCapacityRetry } from './publication-capacity-retry';
+export { resolvePublicationRateLimitRetryAt } from './publication-capacity-retry';
 import { ConflictException, type Logger } from '@nestjs/common';
 import {
   ChatBotMembershipStatus,
@@ -16,12 +18,8 @@ import {
 import type { PrismaService } from '../prisma/prisma.service';
 import { isMaxActionRouteQuarantinedError } from '../max/max-action-dispatch-error';
 import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from '../max/max-send-route-health';
-import { extractMaxErrorStatus } from './admin-legacy-utils';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
-import {
-  MANAGED_BROADCAST_LOCK_STALE_MS,
-  type BroadcastOccurrenceResult,
-} from './admin.service.support';
+import { MANAGED_BROADCAST_LOCK_STALE_MS } from './admin.service.support';
 import { buildUnsafePublicationExecutionDeliveryWhere } from './publication-execution-safety';
 import {
   buildPublicationDeliveryVerificationScheduledData,
@@ -36,6 +34,7 @@ import { isTransientPublicationPrismaError } from './publication-prisma-retry';
 import {
   isPublicationOccurrenceWindowClosed,
   readPublicationLatePolicy,
+  resolvePublicationDeliveryDeadline,
 } from './publication-late-policy';
 import { PUBLISHER_MISSED_WINDOW_BLOCKER_CODE } from './publication-dispatch-issue';
 import {
@@ -54,105 +53,12 @@ export class ManagedBroadcastPublicationExecutionStopped extends Error {
 }
 
 const PUBLICATION_ROUTE_RECOVERY_SPACING_MS = 15 * 60_000;
-const PUBLICATION_RATE_LIMIT_RETRY_STEP_MS = 60_000;
 const PUBLICATION_PRISMA_RETRY_DELAY_MS = 1_000;
 
 class StalePublicationRouteQuarantineDeferralError extends Error {}
 
 class StalePublicationRateLimitDeferralError extends Error {}
 class StalePublicationPrismaDeferralError extends Error {}
-
-function collectPublicationRateLimitErrorChain(error: unknown): unknown[] {
-  const chain: unknown[] = [];
-  const visited = new Set<unknown>();
-  let current = error;
-  for (let depth = 0; depth < 4 && current && !visited.has(current); depth += 1) {
-    chain.push(current);
-    visited.add(current);
-    current = (current as { cause?: unknown }).cause;
-  }
-  return chain;
-}
-
-function readPublicationRateLimitRetryAfterMs(error: unknown, nowMs: number): number {
-  let requestedDelayMs = 0;
-  const addDelay = (rawValue: unknown, factor: number): boolean => {
-    if (typeof rawValue !== 'number' && typeof rawValue !== 'string') return false;
-    if (typeof rawValue === 'string' && !/^\d+(?:\.\d+)?$/.test(rawValue.trim())) return false;
-    const delayMs = Math.ceil(Number(rawValue) * factor);
-    if (
-      !Number.isFinite(delayMs) ||
-      delayMs < 0 ||
-      delayMs > 8_640_000_000_000_000 - PUBLICATION_RATE_LIMIT_RETRY_STEP_MS - nowMs
-    ) {
-      return false;
-    }
-    requestedDelayMs = Math.max(requestedDelayMs, delayMs);
-    return true;
-  };
-  for (const current of collectPublicationRateLimitErrorChain(error)) {
-    const record = current as {
-      retryAfterMs?: unknown;
-      response?: {
-        data?: { retry_after_ms?: unknown; retryAfterMs?: unknown };
-        headers?: Record<string, unknown>;
-      };
-    };
-    for (const rawValue of [
-      record.retryAfterMs,
-      record.response?.data?.retry_after_ms,
-      record.response?.data?.retryAfterMs,
-    ]) {
-      addDelay(rawValue, 1);
-    }
-
-    const headers = record.response?.headers;
-    const rawHeader = headers?.['retry-after'] ?? headers?.['Retry-After'];
-    for (const header of Array.isArray(rawHeader) ? rawHeader : [rawHeader]) {
-      if (addDelay(header, 1_000)) continue;
-      if (typeof header !== 'string' || !/[A-Za-z]/.test(header)) continue;
-      const retryAtMs = Date.parse(header);
-      if (Number.isFinite(retryAtMs)) {
-        addDelay(Math.max(0, retryAtMs - nowMs), 1);
-      }
-    }
-  }
-  return requestedDelayMs;
-}
-
-export function resolvePublicationRateLimitRetryAt(error: unknown, now = new Date()): Date | null {
-  const errorChain = collectPublicationRateLimitErrorChain(error);
-  const exactExternalRateLimit = errorChain.some(
-    (current) => extractMaxErrorStatus(current) === 429,
-  );
-  const internalPreDispatchRateLimit =
-    (error as { managedBroadcastSendStarted?: unknown })?.managedBroadcastSendStarted === false &&
-    errorChain.some(
-      (current) => (current as { code?: unknown })?.code === 'MAX_API_INTERNAL_RATE_LIMIT',
-    );
-  const exactPreDispatchCircuitOpen =
-    (error as { managedBroadcastSendStarted?: unknown })?.managedBroadcastSendStarted === false &&
-    errorChain.some(
-      (current) =>
-        (current as { code?: unknown; preDispatch?: unknown })?.code === 'MAX_API_CIRCUIT_OPEN' &&
-        (current as { preDispatch?: unknown }).preDispatch === true,
-    );
-  if (!exactExternalRateLimit && !internalPreDispatchRateLimit && !exactPreDispatchCircuitOpen) {
-    return null;
-  }
-
-  const nowMs = now.getTime();
-  const nextMinuteAtMs =
-    Math.floor(nowMs / PUBLICATION_RATE_LIMIT_RETRY_STEP_MS) *
-      PUBLICATION_RATE_LIMIT_RETRY_STEP_MS +
-    PUBLICATION_RATE_LIMIT_RETRY_STEP_MS;
-  const retryAfterMs = readPublicationRateLimitRetryAfterMs(error, nowMs);
-  const requestedRetryAtMs = Math.max(nextMinuteAtMs, nowMs + retryAfterMs);
-  return new Date(
-    Math.ceil(requestedRetryAtMs / PUBLICATION_RATE_LIMIT_RETRY_STEP_MS) *
-      PUBLICATION_RATE_LIMIT_RETRY_STEP_MS,
-  );
-}
 
 export function selectManagedBroadcastDeliveryCandidates<
   T extends Pick<
@@ -212,6 +118,8 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
       dispatchBlockedAt: true,
       dispatchFirstBlockedAt: true,
       retryAuthorizedAt: true,
+      retryExpiresAt: true,
+      deliveryDeadlineAt: true,
       publication: { select: { lifecycle: true } },
       schedule: { select: { id: true, revision: true, status: true, mode: true, rule: true } },
     },
@@ -220,6 +128,7 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
     options.onOccurrenceScheduledAt?.(occurrence.scheduledAt, {
       mode: occurrence.schedule.mode,
       intentCreatedAt: occurrence.createdAt,
+      deadlineAt: resolvePublicationDeliveryDeadline(occurrence),
     });
   }
   const executionStateActive = Boolean(
@@ -286,7 +195,12 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
         : {}),
     };
     if (await options.prisma.managedBroadcastDelivery.count({ where: attemptWhere })) {
-      if (!readPublicationLatePolicy(occurrence.schedule.rule)) return true;
+      if (
+        !readPublicationLatePolicy(occurrence.schedule.rule) &&
+        !occurrence.deliveryDeadlineAt &&
+        !occurrence.retryExpiresAt
+      )
+        return true;
       // FLAG: New author deadlines apply per recipient. Preserve confirmed/uncertain
       // effects and expire only claimable targets, including this exact pre-HTTP
       // claim. Calendar serialization prevents a changed revision from being expired.
@@ -301,6 +215,8 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
             scheduleRevision: occurrence.scheduleRevision,
             contentRevisionId: occurrence.contentRevisionId,
             retryAuthorizedAt: occurrence.retryAuthorizedAt,
+            retryExpiresAt: occurrence.retryExpiresAt,
+            deliveryDeadlineAt: occurrence.deliveryDeadlineAt,
             schedule: {
               is: {
                 revision: occurrence.scheduleRevision,
@@ -367,6 +283,8 @@ export async function ensureManagedBroadcastPublicationExecutionActive(options: 
         dispatchBlockerCode: occurrence.dispatchBlockerCode,
         dispatchBlockedAt: occurrence.dispatchBlockedAt,
         retryAuthorizedAt: occurrence.retryAuthorizedAt,
+        retryExpiresAt: occurrence.retryExpiresAt,
+        deliveryDeadlineAt: occurrence.deliveryDeadlineAt,
         publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
         schedule: {
           is: {
@@ -703,7 +621,13 @@ export async function settlePublicationDeliveryAfterAttemptPersistenceError(opti
 export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: {
   context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'logger'>;
   row: Pick<ManagedBroadcast, 'id' | 'publicationOccurrenceId'>;
-  delivery: Pick<ManagedBroadcastDelivery, 'id' | 'targetChatId' | 'attemptCount'>;
+  delivery: Pick<ManagedBroadcastDelivery, 'id' | 'targetChatId' | 'attemptCount'> &
+    Partial<
+      Pick<
+        ManagedBroadcastDelivery,
+        'capacityDeferralCount' | 'rateLimitDeferralCount' | 'firstDeferredAt'
+      >
+    >;
   reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate' | 'deadline';
   occurrenceIndex: number;
   broadcastLockToken: string;
@@ -714,14 +638,18 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
   // FLAG: Recycle only an exact limiter/circuit rejection before HTTP dispatch or an exact HTTP
   // 429, which is definitive. Timeouts, 5xx responses, and other attempted sends remain terminal.
   const occurrenceId = options.row.publicationOccurrenceId;
-  const retryAt = resolvePublicationRateLimitRetryAt(options.error);
-  const externalRateLimit = collectPublicationRateLimitErrorChain(options.error).some(
-    (error) => extractMaxErrorStatus(error) === 429,
+  const now = new Date();
+  const decision = resolvePublicationCapacityRetry(
+    options.error,
+    now,
+    options.delivery.rateLimitDeferralCount ?? 0,
+    Math.random(),
   );
+  if (!occurrenceId || !decision) return null;
+  const externalRateLimit = decision.reason === 'max_rate_limit';
+  if (!externalRateLimit && options.sendAttemptStarted !== false) return null;
+  const retryAt = decision.retryAt;
   const undoClaim = options.sendAttemptStarted === false && !externalRateLimit;
-  if (!occurrenceId || (options.reason !== 'deadline' && !externalRateLimit) || !retryAt) {
-    return null;
-  }
 
   try {
     const deferred = await options.context.prisma.$transaction(async (tx) => {
@@ -732,7 +660,7 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
           status: ManagedBroadcastStatus.ACTIVE,
           lockToken: options.broadcastLockToken,
         },
-        data: { nextSendAt: retryAt, lockedAt: null, lockToken: null },
+        data: { nextSendAt: now },
       });
       if (broadcastDeferred.count !== 1) {
         return false;
@@ -743,10 +671,18 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
           id: options.delivery.id,
           status: ManagedBroadcastDeliveryStatus.SENDING,
           lockToken: options.deliveryLockToken,
-          attemptCount: undoClaim ? options.delivery.attemptCount + 1 : { gt: 0 },
+          attemptCount: options.delivery.attemptCount + 1,
+          remoteMessageId: null,
+          sentAt: null,
         },
         data: {
           status: ManagedBroadcastDeliveryStatus.PENDING,
+          nextAttemptAt: retryAt,
+          waitReason: decision.reason,
+          capacityDeferralCount: { increment: 1 },
+          ...(externalRateLimit ? { rateLimitDeferralCount: { increment: 1 } } : {}),
+          firstDeferredAt: options.delivery.firstDeferredAt ?? now,
+          lastDeferredAt: now,
           ...(undoClaim ? { attemptCount: { decrement: 1 } } : {}),
           botId: null,
           remoteMessageId: null,
@@ -783,77 +719,9 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
       retryAt: retryAt.toISOString(),
       err: options.error instanceof Error ? options.error.message : String(options.error),
     },
-    'Deferred publication delivery to the next minute after MAX capacity pressure',
+    'Deferred publication recipient until MAX capacity is available',
   );
   return retryAt;
-}
-
-export async function buildCapacityDeferredPublicationOccurrenceResult(options: {
-  context: Pick<AdminManagedBroadcastRuntimeContext, 'prisma' | 'logger'>;
-  broadcastId: string;
-  occurrenceIndex: number;
-  deliveryCandidates: ReadonlyArray<Pick<ManagedBroadcastDelivery, 'status' | 'targetChatId'>>;
-  sentChatIds: string[];
-  failedChatIds: string[];
-  firstSendError: unknown;
-  nextSendAt: Date;
-}): Promise<BroadcastOccurrenceResult> {
-  let deliveries: Array<Pick<ManagedBroadcastDelivery, 'status' | 'targetChatId'>> | null = null;
-  try {
-    deliveries = await options.context.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId: options.broadcastId,
-        occurrenceIndex: options.occurrenceIndex,
-      },
-      select: { status: true, targetChatId: true },
-      orderBy: [{ targetChatId: 'asc' }],
-    });
-  } catch (error: unknown) {
-    options.context.logger.warn(
-      {
-        broadcastId: options.broadcastId,
-        occurrenceIndex: options.occurrenceIndex,
-        err: error instanceof Error ? error.message : String(error),
-      },
-      'Failed to read publication delivery snapshot after MAX capacity deferral',
-    );
-  }
-
-  const terminalChatIds = new Set([...options.sentChatIds, ...options.failedChatIds]);
-  const byStatus = (statuses: ManagedBroadcastDeliveryStatus[]): string[] =>
-    deliveries
-      ? deliveries
-          .filter((delivery) => statuses.includes(delivery.status))
-          .map((delivery) => delivery.targetChatId)
-      : [];
-  return {
-    status: ManagedBroadcastStatus.ACTIVE,
-    currentOccurrence: options.occurrenceIndex,
-    sentChatIds: deliveries ? byStatus([ManagedBroadcastDeliveryStatus.SENT]) : options.sentChatIds,
-    failedChatIds: deliveries
-      ? byStatus([
-          ManagedBroadcastDeliveryStatus.FAILED,
-          ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-          ManagedBroadcastDeliveryStatus.CANCELED,
-        ])
-      : options.failedChatIds,
-    pendingChatIds: deliveries
-      ? byStatus([ManagedBroadcastDeliveryStatus.PENDING, ManagedBroadcastDeliveryStatus.SENDING])
-      : [
-          ...new Set(
-            options.deliveryCandidates
-              .filter(
-                (delivery) =>
-                  delivery.status === ManagedBroadcastDeliveryStatus.PENDING &&
-                  !terminalChatIds.has(delivery.targetChatId),
-              )
-              .map((delivery) => delivery.targetChatId),
-          ),
-        ],
-    canRetry: false,
-    firstSendError: options.firstSendError,
-    nextSendAt: options.nextSendAt,
-  };
 }
 
 export async function deferPublicationDeliveryAfterRouteQuarantine(options: {

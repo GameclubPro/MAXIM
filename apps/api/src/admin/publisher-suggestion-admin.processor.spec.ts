@@ -231,13 +231,7 @@ describe('PublisherSuggestionAdminProcessor', () => {
       },
       select: { id: true },
     });
-    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith('-9001', ['101'], {
-      botId: 'publisher-bot',
-      trafficClass: 'interactive',
-      actionHealthLane: 'interactive',
-      sourceTag: 'suggestion_delivery',
-      bypassCache: true,
-    });
+    expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(fixture.prisma.managedEntityAccessEdge.findFirst).toHaveBeenCalledWith({
       where: {
         chatId: '-9001',
@@ -245,13 +239,6 @@ describe('PublisherSuggestionAdminProcessor', () => {
         botId: 'publisher-bot',
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-        OR: [
-          { expiresAt: { gt: expect.any(Date) } },
-          {
-            expiresAt: null,
-            checkedAt: { gt: expect.any(Date) },
-          },
-        ],
       },
       select: { chatId: true },
     });
@@ -335,24 +322,18 @@ describe('PublisherSuggestionAdminProcessor', () => {
     );
   });
 
-  it('rejects a formerly delivered editor when the live Publisher access recheck no longer confirms admin rights', async () => {
+  it('rejects a formerly delivered editor after explicit revocation of the Publisher access edge', async () => {
     const fixture = createFixture();
     fixture.prisma.auditLog.findFirst.mockResolvedValue({
       id: 'publisher-suggestion-1',
       chatId: '-9001',
     });
     fixture.prisma.channelSuggestionAdminDelivery.findFirst.mockResolvedValue({ id: 'delivery-1' });
-    fixture.maxClient.getChatMembersAccess.mockResolvedValue(
-      new Map([['101', { isAdmin: false, isOwner: false }]]),
-    );
+    fixture.prisma.managedEntityAccessEdge.findFirst.mockResolvedValue(null);
 
     await expect(fixture.processor.process(reviewJob())).resolves.toBeUndefined();
 
-    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
-      '-9001',
-      ['101'],
-      expect.objectContaining({ botId: 'publisher-bot', bypassCache: true }),
-    );
+    expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(fixture.suggestions.review).not.toHaveBeenCalled();
     expect(fixture.queue.enqueueSync).not.toHaveBeenCalled();
     expect(fixture.maxClient.answerCallback).toHaveBeenCalledWith(
@@ -363,7 +344,7 @@ describe('PublisherSuggestionAdminProcessor', () => {
     );
   });
 
-  it('rejects a delivered card with a missing or stale Publisher access edge before probing MAX', async () => {
+  it('rejects a delivered card with a missing Publisher administrator grant', async () => {
     const fixture = createFixture();
     fixture.prisma.auditLog.findFirst.mockResolvedValue({
       id: 'publisher-suggestion-1',
@@ -381,13 +362,6 @@ describe('PublisherSuggestionAdminProcessor', () => {
         botId: 'publisher-bot',
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-        OR: [
-          { expiresAt: { gt: expect.any(Date) } },
-          {
-            expiresAt: null,
-            checkedAt: { gt: expect.any(Date) },
-          },
-        ],
       },
       select: { chatId: true },
     });

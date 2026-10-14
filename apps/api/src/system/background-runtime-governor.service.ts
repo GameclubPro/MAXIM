@@ -247,6 +247,7 @@ export class BackgroundRuntimeGovernorService {
     allowQueueLagSlowPathBelowSec?: number;
     allowQueueBacklogSlowPath?: boolean;
     allowMaxApiCapacitySlowPath?: boolean;
+    publicationMetadataOnly?: boolean;
     ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
   }): Promise<BackgroundRuntimeGovernorDecision> {
     const mode = await this.systemModeService.getEffectiveSnapshot();
@@ -254,6 +255,7 @@ export class BackgroundRuntimeGovernorService {
       mode,
       params.allowRecoveryWindowRun === true,
       params.allowQueueBacklogSlowPath === true,
+      params.component === 'publication-materializer' && params.publicationMetadataOnly === true,
     );
     const decision =
       modeOnlyDecision ??
@@ -267,6 +269,9 @@ export class BackgroundRuntimeGovernorService {
           allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
           allowQueueBacklogSlowPath: params.allowQueueBacklogSlowPath === true,
           allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
+          publicationMetadataOnly:
+            params.component === 'publication-materializer' &&
+            params.publicationMetadataOnly === true,
           ignoredPressureDomains: params.ignoredPressureDomains,
         },
       );
@@ -290,6 +295,7 @@ export class BackgroundRuntimeGovernorService {
     allowQueueLagSlowPathBelowSec?: number;
     allowQueueBacklogSlowPath?: boolean;
     allowMaxApiCapacitySlowPath?: boolean;
+    publicationMetadataOnly?: boolean;
     ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
   }): BackgroundRuntimeGovernorDecision | null {
     const mode = this.systemModeService.peekCachedSnapshot(this.cacheTtlMs);
@@ -298,6 +304,8 @@ export class BackgroundRuntimeGovernorService {
           mode,
           params.allowRecoveryWindowRun === true,
           params.allowQueueBacklogSlowPath === true,
+          params.component === 'publication-materializer' &&
+            params.publicationMetadataOnly === true,
         )
       : null;
     if (modeOnlyDecision) {
@@ -321,6 +329,9 @@ export class BackgroundRuntimeGovernorService {
         allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
         allowQueueBacklogSlowPath: params.allowQueueBacklogSlowPath === true,
         allowMaxApiCapacitySlowPath: params.allowMaxApiCapacitySlowPath === true,
+        publicationMetadataOnly:
+          params.component === 'publication-materializer' &&
+          params.publicationMetadataOnly === true,
         ignoredPressureDomains: params.ignoredPressureDomains,
       },
     );
@@ -528,6 +539,7 @@ export class BackgroundRuntimeGovernorService {
       allowQueueLagSlowPathBelowSec?: number;
       allowQueueBacklogSlowPath?: boolean;
       allowMaxApiCapacitySlowPath?: boolean;
+      publicationMetadataOnly?: boolean;
       ignoredPressureDomains?: readonly BackgroundRuntimeGovernorPressureDomain[];
     } = {},
   ): BackgroundRuntimeGovernorDecision {
@@ -546,13 +558,29 @@ export class BackgroundRuntimeGovernorService {
       snapshot.mode,
       allowRecoveryWindowRun,
       options.allowQueueBacklogSlowPath === true,
+      options.publicationMetadataOnly === true,
     );
     if (modeOnlyDecision) {
       return modeOnlyDecision;
     }
 
+    // FLAG: Publication metadata preparation performs no MAX effects. Automatic fleet MAX
+    // degradation cannot starve it; explicit manual pause and host pressure still win.
+    if (
+      options.publicationMetadataOnly &&
+      snapshot.mode.source === 'auto' &&
+      snapshot.mode.condition === 'max_api'
+    ) {
+      return (
+        this.buildSystemPressureDecision(snapshot.systemPressure) ?? {
+          action: 'slow',
+          retryAfterMs: this.slowRetryAfterMs,
+          reason: 'bounded publication metadata preparation during automatic MAX degradation',
+        }
+      );
+    }
     // FLAG: Bounded publication preparation may advance behind an unrelated webhook backlog,
-    // but host pressure and manual/MAX emergency pauses retain authority over this slow path.
+    // but host pressure and manual emergency pauses retain authority over this slow path.
     if (options.allowQueueBacklogSlowPath) {
       const pressure = this.buildSystemPressureDecision(snapshot.systemPressure);
       if (pressure?.action === 'pause') return pressure;
@@ -616,16 +644,17 @@ export class BackgroundRuntimeGovernorService {
     mode: SystemModeSnapshot,
     allowRecoveryWindowRun: boolean,
     allowQueueBacklogSlowPath = false,
+    publicationMetadataOnly = false,
   ): BackgroundRuntimeGovernorDecision | null {
     if (mode.mode !== 'degrade') {
       return null;
     }
 
     if (
-      allowQueueBacklogSlowPath &&
+      ((allowQueueBacklogSlowPath && mode.condition === 'queue_backlog') ||
+        (publicationMetadataOnly && mode.condition === 'max_api')) &&
       mode.source === 'auto' &&
-      mode.manualMode === null &&
-      mode.condition === 'queue_backlog'
+      mode.manualMode === null
     ) {
       return null;
     }

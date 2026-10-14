@@ -1,5 +1,6 @@
 import {
   readPublicationLatePolicy,
+  snapshotPublicationDeliveryDeadline,
   withDefaultPublicationLatePolicy,
   resolvePublicationRecurrenceFrom,
 } from './publication-late-policy';
@@ -114,7 +115,11 @@ import {
   type PublicationOccurrenceDispatchScope,
 } from './publication-occurrence-dispatcher';
 import { PublicationOccurrenceRollupScanner } from './publication-occurrence-rollup-scanner';
-import { PublicationPresenterService } from './publication-presenter.service';
+import {
+  PublicationPresenterService,
+  PUBLICATION_DELIVERY_PRESENTATION_INCLUDE,
+  mapPublicationDeliveryWait,
+} from './publication-presenter.service';
 import { PublisherPublicationWakeupQueueService } from './publisher-publication-wakeup.queue';
 import {
   buildEffectiveDeliveryListWhere,
@@ -711,6 +716,7 @@ export class PublicationService {
                 contentRevisionId: contentRevision.id,
                 scheduleRevision: persistedSchedule.revision,
                 scheduledAt,
+                deliveryDeadlineAt: snapshotPublicationDeliveryDeadline(scheduledAt, schedule),
                 dispatchProfile: dispatchRoute.dispatchProfile,
                 requiredBotId: dispatchRoute.requiredBotId,
               })),
@@ -1020,6 +1026,7 @@ export class PublicationService {
                   contentRevisionId,
                   scheduleRevision,
                   scheduledAt,
+                  deliveryDeadlineAt: snapshotPublicationDeliveryDeadline(scheduledAt, schedule),
                   dispatchProfile: existing.dispatchProfile,
                   requiredBotId: existing.requiredBotId,
                 })),
@@ -1050,6 +1057,7 @@ export class PublicationService {
                   contentRevisionId,
                   scheduleRevision: persistedSchedule.revision,
                   scheduledAt,
+                  deliveryDeadlineAt: snapshotPublicationDeliveryDeadline(scheduledAt, schedule),
                   dispatchProfile: existing.dispatchProfile,
                   requiredBotId: existing.requiredBotId,
                 })),
@@ -1231,16 +1239,7 @@ export class PublicationService {
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: parsed.data.limit + 1,
       ...(parsed.data.cursor ? { cursor: { id: parsed.data.cursor }, skip: 1 } : {}),
-      include: {
-        broadcast: { select: { entityType: true } },
-        contentRevision: { select: { id: true, revision: true, postPublish: true } },
-        publicationOccurrence: {
-          select: {
-            id: true,
-            publication: { select: { canonicalContentRevisionId: true } },
-          },
-        },
-      },
+      include: PUBLICATION_DELIVERY_PRESENTATION_INCLUDE,
     });
     const hasMore = rows.length > parsed.data.limit;
     const page = hasMore ? rows.slice(0, parsed.data.limit) : rows;
@@ -1277,6 +1276,7 @@ export class PublicationService {
         ),
         status: resolveEffectivePublicationDeliveryStatus(row),
         ...this.publicationPresenterService.mapDeliveryContentRevision(row),
+        ...mapPublicationDeliveryWait(row),
         attemptCount: row.attemptCount,
         remoteMessageId: row.remoteMessageId,
         lastError: row.lastError,
@@ -1526,6 +1526,7 @@ export class PublicationService {
             dispatchBlockerCode: PUBLISHER_EXPLICIT_RETRY_CODE,
             dispatchBlockedAt: retryLockedAt,
             retryAuthorizedAt: retryLockedAt,
+            retryExpiresAt: new Date(retryLockedAt.getTime() + 24 * 60 * 60_000),
             ...(contentMode === 'latest' ? { contentRevisionId: retryContentRevisionId } : {}),
           },
         });
@@ -1775,8 +1776,6 @@ export class PublicationService {
     await this.dispatchScheduledOccurrences(PUBLICATION_DISPATCH_BATCH, [
       PublicationScheduleMode.NOW,
     ]);
-    const verificationBudget =
-      await this.managedBroadcastService.processDueImmediatePublicationBroadcasts();
     await this.rollupActiveOccurrences();
     await this.rollupPublicationLifecycles();
 
@@ -1792,10 +1791,6 @@ export class PublicationService {
       PublicationScheduleMode.SLOTS,
       PublicationScheduleMode.RECURRENCE,
     ]);
-    await this.managedBroadcastService.processDueDeadlinePublicationBroadcasts(
-      backgroundBatch,
-      verificationBudget,
-    );
     await this.materializeRecurringSchedules(
       decision === 'slow' ? PUBLICATION_SLOW_BATCH : PUBLICATION_MATERIALIZE_BATCH,
     );
@@ -2155,6 +2150,7 @@ export class PublicationService {
                 contentRevisionId: currentPublication.canonicalContentRevisionId,
                 scheduleRevision: schedule.revision,
                 scheduledAt,
+                deliveryDeadlineAt: snapshotPublicationDeliveryDeadline(scheduledAt, rule),
                 dispatchProfile: schedule.publication.dispatchProfile,
                 requiredBotId: schedule.publication.requiredBotId,
               })),
@@ -2236,6 +2232,8 @@ export class PublicationService {
           scheduleRevision: occurrence.scheduleRevision,
           contentRevisionId: occurrence.contentRevisionId,
           retryAuthorizedAt: occurrence.retryAuthorizedAt ?? null,
+          retryExpiresAt: occurrence.retryExpiresAt ?? null,
+          deliveryDeadlineAt: occurrence.deliveryDeadlineAt ?? null,
           dispatchBlockerCode: occurrence.dispatchBlockerCode ?? null,
           dispatchBlockedAt: occurrence.dispatchBlockedAt ?? null,
           schedule: {
@@ -2249,7 +2247,7 @@ export class PublicationService {
         data: {
           status: PublicationOccurrenceStatus.IN_PROGRESS,
           // FLAG: Author retry authorization must survive materialization and process restarts.
-          // Execution applies the same five-minute boundary before its first send.
+          // Execution preserves the explicit expiry, including legacy five-minute grants.
           retryAuthorizedAt: readPublicationRetryAuthorizedAt(occurrence),
           dispatchBlockerCode: null,
           dispatchBlockedAt: null,
@@ -3841,6 +3839,7 @@ export class PublicationService {
   ): Promise<'run' | 'slow' | 'pause'> {
     const decision = await this.backgroundRuntimeGovernorService.decide({
       component: 'publication-materializer',
+      publicationMetadataOnly: true,
       sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
       allowRecoveryWindowRun: true,
       allowMaxApiCapacitySlowPath: true,

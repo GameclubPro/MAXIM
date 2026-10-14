@@ -21,7 +21,6 @@ import {
 } from './publication-dispatch-issue';
 import { publisherConnectedBindingWhere } from '../publisher/publisher-entity-connection.util';
 import { isTransientPublicationPrismaError } from './publication-prisma-retry';
-import { PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS } from '../publisher/publisher-readiness.service';
 import {
   recordPublicationDispatchOutcome,
   measurePublicationStage,
@@ -177,10 +176,6 @@ export class PublisherManagedBroadcastDispatch {
       throw new PublisherDeliveryDeferredError(PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE);
     }
 
-    const now = new Date();
-    const authorityFreshAfter = new Date(
-      now.getTime() - PUBLISHER_PUBLICATION_AUTHORITY_MAX_AGE_MS,
-    );
     const entityType =
       params.entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
     const edges = await this.context.prisma.managedEntityAccessEdge.findMany({
@@ -191,8 +186,7 @@ export class PublisherManagedBroadcastDispatch {
         entityType,
         state: ManagedEntityAccessState.GRANTED,
         userRole: { in: [ManagedEntityAccessRole.OWNER, ManagedEntityAccessRole.ADMIN] },
-        checkedAt: { gt: authorityFreshAfter },
-        OR: [{ expiresAt: { gt: now } }, { expiresAt: null }],
+        // FLAG: Exact Publisher grants persist until explicit revocation; TTL is not denial.
         chat: {
           entityType,
           OR: [
@@ -411,7 +405,7 @@ export class PublisherManagedBroadcastDispatch {
     lease: PublisherBroadcastLease | undefined,
     pending: readonly Pick<
       ManagedBroadcastDelivery,
-      'lastErrorCode' | 'dispatchBlockerCode' | 'dispatchBlockedAt'
+      'lastErrorCode' | 'dispatchBlockerCode' | 'dispatchBlockedAt' | 'nextAttemptAt'
     >[],
   ): Promise<{ leaseOwned: boolean; hasImmediatelyReadyPendingDelivery: boolean }> {
     const isPublisher = row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1;

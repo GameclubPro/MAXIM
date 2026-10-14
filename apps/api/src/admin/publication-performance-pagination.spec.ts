@@ -744,6 +744,8 @@ describe('Publication performance and pagination', () => {
           publicationOccurrence: {
             select: {
               id: true,
+              deliveryDeadlineAt: true,
+              retryExpiresAt: true,
               publication: { select: { canonicalContentRevisionId: true } },
             },
           },

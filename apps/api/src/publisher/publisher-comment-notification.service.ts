@@ -207,17 +207,14 @@ export class PublisherCommentNotificationService {
     target: PublisherCommentScope,
     userId: string,
   ): Prisma.ManagedEntityAccessEdgeWhereInput {
-    const now = new Date();
     return {
       botId: this.botId,
       userId,
       entityType: target.entityType === 'channel' ? 'CHANNEL' : 'CHAT',
       state: 'GRANTED',
       userRole: { in: ['OWNER', 'ADMIN'] },
-      OR: [
-        { expiresAt: { gt: now } },
-        { expiresAt: null, checkedAt: { gt: new Date(now.getTime() - 15 * 60_000) } },
-      ],
+      // FLAG: Notification subscriptions use the same durable exact-bot human grant.
+      // Explicit denial, disconnected binding and disabled policy still exclude this user.
       chat: {
         catalogKind: 'MANAGED',
         publisherBinding: { is: publisherConnectedBindingWhere(this.botId) },

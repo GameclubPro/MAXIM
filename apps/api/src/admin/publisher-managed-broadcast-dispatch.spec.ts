@@ -66,7 +66,6 @@ describe('Publisher pre-dispatch claim deferral', () => {
       entityType: 'CHANNEL',
       state: 'GRANTED',
       userRole: { in: ['OWNER', 'ADMIN'] },
-      checkedAt: { gt: expect.any(Date) },
     });
     expect(requestActorAccessRefresh).toHaveBeenCalledWith(
       [{ chatId: 'chat', entityType: 'channel' }],

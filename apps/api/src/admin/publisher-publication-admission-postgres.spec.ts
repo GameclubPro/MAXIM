@@ -1,3 +1,4 @@
+import { MaxApiInternalRateLimitError } from '../max/max-client.service';
 import { PublicationService } from './publication.service';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { PublisherDeliveryDeferredError } from './publisher-managed-broadcast-dispatch';
@@ -167,7 +168,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
             userId: actorId,
             botId,
             entityType: 'CHAT',
-            state: position < blockedHead && position % 2 === 1 ? 'USER_DENIED' : 'GRANTED',
+            state: position < blockedHead ? 'USER_DENIED' : 'GRANTED',
             userRole: 'ADMIN',
             botRole: 'ADMIN',
             checkedAt: position < blockedHead ? new Date(now.getTime() - 20 * 60_000) : now,
@@ -271,6 +272,107 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       ['ACTIVE'],
     );
   }
+
+  it('retains old bot and administrator grants and sends without refreshing rights', async () => {
+    await fixture(2);
+    await db.managedEntityAccessEdge.updateMany({
+      where: { botId, userId: actorId },
+      data: { checkedAt: new Date(0), expiresAt: new Date(0) },
+    });
+    await run();
+    expect(remoteSend).toHaveBeenCalledTimes(2);
+    expect(requestActorAccessRefresh).not.toHaveBeenCalled();
+    const edges = await db.managedEntityAccessEdge.findMany({ where: { botId, userId: actorId } });
+    expect(
+      edges.every(
+        (edge) => edge.state === 'GRANTED' && +edge.checkedAt === 0 && +edge.expiresAt! === 0,
+      ),
+    ).toBe(true);
+  });
+
+  it('persists per-recipient capacity wait across restart and progresses independent recipients', async () => {
+    await fixture(2);
+    let first = true;
+    beforeMutation = async () => {
+      if (first) {
+        first = false;
+        throw new MaxApiInternalRateLimitError('capacity', 30_000);
+      }
+    };
+    await run();
+    expect(remoteSend.mock.calls.map((call) => call[0])).toEqual([chatIds[1]]);
+    const waiting = await db.managedBroadcastDelivery.findFirstOrThrow({
+      where: { broadcastId, targetChatId: chatIds[0] },
+    });
+    expect(waiting).toMatchObject({
+      status: 'PENDING',
+      attemptCount: 0,
+      capacityDeferralCount: 1,
+      waitReason: 'local_capacity',
+      remoteMessageId: null,
+    });
+    expect(waiting.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+    runtime = createRuntime();
+    await run();
+    expect(remoteSend).toHaveBeenCalledTimes(1);
+    // Receipt verification may wake the envelope sooner; it must not bypass the recipient bound.
+    const persisted = await db.managedBroadcastDelivery.findUniqueOrThrow({
+      where: { id: waiting.id },
+    });
+    expect(persisted.nextAttemptAt).toEqual(waiting.nextAttemptAt);
+    expect(persisted.attemptCount).toBe(0);
+    await db.managedBroadcastDelivery.update({
+      where: { id: waiting.id },
+      data: { nextAttemptAt: new Date(Date.now() - 1) },
+    });
+    await run();
+    expect(remoteSend.mock.calls.map((call) => call[0])).toEqual([chatIds[1], chatIds[0]]);
+    expect(
+      await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: waiting.id } }),
+    ).toMatchObject({ status: 'SENT', attemptCount: 1, waitReason: null, nextAttemptAt: null });
+  });
+
+  it('expires new intent before a long rate-limit retry without sending or renewing its deadline', async () => {
+    await fixture(1);
+    const deadline = new Date(Date.now() + 60_000);
+    await db.publicationOccurrence.update({
+      where: { id: occurrenceId },
+      data: { deliveryDeadlineAt: deadline },
+    });
+    beforeMutation = async () => {
+      throw Object.assign(new Error('MAX rate limit'), {
+        response: { status: 429, headers: { 'retry-after': '7200' } },
+      });
+    };
+    await run();
+    expect(remoteSend).not.toHaveBeenCalled();
+    const waiting = await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } });
+    expect(waiting.status).toBe('PENDING');
+    expect(waiting.nextAttemptAt!.getTime()).toBeGreaterThan(deadline.getTime());
+    expect(
+      (await db.managedBroadcast.findUniqueOrThrow({ where: { id: broadcastId } })).nextSendAt,
+    ).toEqual(new Date(deadline.getTime() + 1));
+    // Move only the persisted author deadline to reproduce expiry after worker restart.
+    const expired = new Date(Date.now() - 1);
+    await db.publicationOccurrence.update({
+      where: { id: occurrenceId },
+      data: { deliveryDeadlineAt: expired },
+    });
+    beforeMutation = undefined;
+    runtime = createRuntime();
+    await run();
+    expect(remoteSend).not.toHaveBeenCalled();
+    const terminal = await db.managedBroadcastDelivery.findUniqueOrThrow({
+      where: { id: waiting.id },
+    });
+    expect(terminal.status).toBe('FAILED');
+    expect(terminal.lastErrorCode).toBe('PUBLISHER_MISSED_WINDOW_REVIEW');
+    expect(terminal.remoteMessageId).toBeNull();
+    expect(
+      (await db.publicationOccurrence.findUniqueOrThrow({ where: { id: occurrenceId } }))
+        .deliveryDeadlineAt,
+    ).toEqual(expired);
+  });
 
   it.each([100, 1000])(
     'materializes %s targets and recovers one unavailable target without resending receipts',
@@ -545,12 +647,12 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     ).toMatchObject({ status: 'SENT', attemptCount: 1, lastErrorCode: null });
   });
 
-  it('retains the final author guard when authority expires after admission, without consuming an HTTP attempt', async () => {
+  it('retains the final author guard when MAX revokes authority after admission, without consuming an HTTP attempt', async () => {
     await fixture(1);
     beforeMutation = async () => {
       await db.managedEntityAccessEdge.updateMany({
         where: { chatId: chatIds[0], userId: actorId, botId },
-        data: { checkedAt: new Date(Date.now() - 20 * 60_000) },
+        data: { state: 'USER_DENIED' },
       });
     };
     await run();

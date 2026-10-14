@@ -132,6 +132,27 @@ describe('Publisher administrator discovery', () => {
     expect(f.prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it('retains OWNER role and refuses an incomplete roster without rewriting any grants', async () => {
+    const f = fixture();
+    await syncPublisherAdminRoster(f.params);
+    expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ userId: { in: ['other-admin'] } }),
+        data: expect.objectContaining({ userRole: 'OWNER', state: 'GRANTED' }),
+      }),
+    );
+    f.tx.managedEntityAccessEdge.updateMany.mockClear();
+    f.tx.managedEntityAccessEdge.createMany.mockClear();
+    f.maxClient.getChatAdminAccesses.mockResolvedValue([
+      { userId: 'other-admin', isAdmin: false, isOwner: false },
+    ] as never);
+    await expect(syncPublisherAdminRoster(f.params)).rejects.toThrow(
+      'Incomplete MAX administrator role evidence',
+    );
+    expect(f.tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+    expect(f.tx.managedEntityAccessEdge.createMany).not.toHaveBeenCalled();
+  });
+
   it.each([{ chatId: 'another-chat' }, { publisherBotId: 'major' }, { probeStartedAtMs: 0 }])(
     'rejects a prefetched roster from another entity, bot or probe: %j',
     async (change) => {
