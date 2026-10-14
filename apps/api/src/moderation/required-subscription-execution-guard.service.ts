@@ -19,6 +19,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
 import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 import {
   assertRequiredSubscriptionNoticeAuthority,
   RequiredSubscriptionNoticeRejectedError,
@@ -91,6 +92,7 @@ export class RequiredSubscriptionExecutionGuardService {
       trafficClass: 'critical' as const,
       actionHealthLane: 'critical' as const,
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5_000,
     };
     await assertRequiredSubscriptionNoticeAuthority(this.prisma, proof, {
@@ -233,6 +235,9 @@ export class RequiredSubscriptionExecutionGuardService {
       trafficClass: 'critical' as const,
       actionHealthLane: 'critical' as const,
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      // FLAG: Keep unavailable authority local to this action; no 403/404 grants
+      // absence, membership or execution. Transport/429/5xx still signal pressure.
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5_000,
     };
     const access = await this.max

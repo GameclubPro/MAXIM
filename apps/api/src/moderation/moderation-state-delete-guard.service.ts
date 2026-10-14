@@ -11,6 +11,7 @@ import { ModerationSanctionStateFenceService } from './moderation-sanction-state
 import { resolveModerationSanctionExpiry } from './moderation-sanction-expiry.util';
 import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 
 export const MODERATION_STATE_DELETE_RULES = new Set([
   'MUTE_ACTIVE_DELETE',
@@ -94,6 +95,9 @@ export class ModerationStateDeleteGuardService {
       trafficClass: 'critical' as const,
       actionHealthLane: 'critical' as const,
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      // FLAG: A local authority-read refusal still rejects this action. It is not
+      // a fleet outage or evidence of absence; transport/429/5xx remain pressure.
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5_000,
     };
     const access = await this.max.getChatMemberAccess(params.chatId, userId, options);
@@ -446,6 +450,7 @@ export class ModerationStateDeleteGuardService {
       trafficClass: 'critical',
       actionHealthLane: 'critical',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5_000,
     });
     if (!access || access.isAdmin === true || access.isOwner === true) this.reject();

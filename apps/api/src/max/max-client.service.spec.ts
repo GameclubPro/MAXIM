@@ -60,6 +60,10 @@ import { PublisherStartProcessor } from '../publisher/publisher-start.processor'
 import type { PublisherStartJob } from '../publisher/publisher-start.queue';
 import type { Job } from 'bullmq';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation/moderation.service.support';
+import { ConfigService } from '@nestjs/config';
+import { ModerationStateDeleteGuardService } from '../moderation/moderation-state-delete-guard.service';
+import { RequiredSubscriptionExecutionGuardService } from '../moderation/required-subscription-execution-guard.service';
+import { fingerprintModerationSettings } from '../moderation/message-limits-delete-guard.service';
 
 const TINY_JPEG_BASE64 =
   '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
@@ -11921,6 +11925,110 @@ describe('MaxClientService inline keyboard guardrails', () => {
         expect(health.recordFailureForLane).toHaveBeenCalledWith('critical', true, '777000_bot');
       }
       await service.onModuleDestroy();
+    },
+  );
+
+  describe.each(['state', 'subscription'] as const)(
+    '%s authority read health isolation',
+    (kind) => {
+      it.each(
+        (['member', 'source'] as const).flatMap((boundary) =>
+          [403, 404, 429, 503, 'timeout'].map((failure) => ({ boundary, failure })),
+        ),
+      )(
+        'retains the $boundary refusal after $failure without unrelated pressure',
+        async ({ boundary, failure }) => {
+          const error =
+            failure === 'timeout'
+              ? Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' })
+              : {
+                  response: { status: failure, data: { code: 'not.found' } },
+                  config: { method: 'get' },
+                };
+          const httpService = { request: jest.fn().mockReturnValue(throwError(() => error)) };
+          const client = createService(httpService);
+          const health = (client as any).actionHealthService;
+          const settings = {
+            requiredSubscriptionEnabled: true,
+            requiredSubscriptionChannelIds: ['target'],
+            chat: { entityType: 'CHAT', admins: [] },
+          };
+          const prisma = { chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) } };
+          const bots = { isKnownBotUserId: () => false };
+          const immunity = { consumeForMessage: jest.fn() };
+          const guard =
+            kind === 'state'
+              ? new ModerationStateDeleteGuardService(
+                  prisma as never,
+                  client,
+                  bots as never,
+                  immunity as never,
+                  {} as never,
+                  {} as never,
+                  new ConfigService(),
+                )
+              : new RequiredSubscriptionExecutionGuardService(
+                  prisma as never,
+                  client,
+                  bots as never,
+                  {} as never,
+                  immunity as never,
+                  new ConfigService(),
+                );
+          if (boundary === 'source') {
+            jest.spyOn(client, 'getChatMemberAccess').mockResolvedValue({
+              userId: 'user-1',
+              isAdmin: false,
+              isOwner: false,
+            } as never);
+          }
+          const at = Date.now();
+          try {
+            await expect(
+              guard.authorize({
+                chatId: '-123',
+                messageId: 'mid-guard-read',
+                subjectUserId: 'user-1',
+                botId: '777000_bot',
+                reasons: [
+                  {
+                    ruleCode:
+                      kind === 'state' ? 'MUTE_ACTIVE_DELETE' : 'REQUIRED_SUBSCRIPTION_DELETE',
+                    reasonKey: 'reason',
+                    metadata: {
+                      requiredSubscriptionGuardVersion: 1,
+                      requiredSubscriptionSourceAtMs: at,
+                      requiredSubscriptionDeadlineAtMs: at + 300_000,
+                      requiredSubscriptionPolicySha256: fingerprintModerationSettings(
+                        settings,
+                        'REQUIRED_SUBSCRIPTION',
+                      ),
+                    },
+                  },
+                ],
+              }),
+            ).rejects.toBe(error);
+            expect(immunity.consumeForMessage).not.toHaveBeenCalled();
+            expect(httpService.request).toHaveBeenCalled();
+            expect(
+              httpService.request.mock.calls.every(([request]) => request.method === 'get'),
+            ).toBe(true);
+            expect(health.recordSuccessForLane).not.toHaveBeenCalled();
+            if (failure === 403 || failure === 404) {
+              expect(health.recordFailureForLane).not.toHaveBeenCalled();
+            } else {
+              expect(health.recordFailureForLane).toHaveBeenCalledTimes(1);
+              expect(health.recordFailureForLane).toHaveBeenCalledWith(
+                'critical',
+                true,
+                '777000_bot',
+              );
+            }
+          } finally {
+            await client.onModuleDestroy();
+          }
+        },
+      );
     },
   );
 

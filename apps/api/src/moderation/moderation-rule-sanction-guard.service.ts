@@ -4,6 +4,7 @@ import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 import {
   assertModerationRuleSanctionAuthority,
   type ModerationRuleSanctionAuthority,
@@ -36,6 +37,7 @@ export class ModerationRuleSanctionGuardService {
           trafficClass: 'critical',
           actionHealthLane: 'critical',
           sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+          ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
           timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5_000,
         }),
       consumeImmunity: (input) => this.immunity.consumeForMessage(input),
