@@ -5,7 +5,10 @@ type ReceiptBoundary = {
   persistReceipt(update: MaxUpdate, ip: string | null, raw: unknown): Promise<string>;
 };
 function setup(count = 1) {
-  const tx = { webhookEvent: { createMany: jest.fn().mockResolvedValue({ count }) } };
+  const tx = {
+    webhookEvent: { createMany: jest.fn().mockResolvedValue({ count }) },
+    $executeRaw: jest.fn().mockResolvedValue(1),
+  };
   const prisma = {
     $transaction: jest.fn(async (work: (value: unknown) => Promise<unknown>) => work(tx)),
     webhookEvent: tx.webhookEvent,

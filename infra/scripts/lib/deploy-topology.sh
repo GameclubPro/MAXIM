@@ -417,7 +417,10 @@ maxim_topology_require_bot_publisher_reliability() {
     apps/api/src/admin/admin-manual-group-command-notice-authority.ts \
     apps/api/src/moderation/night-mode-transition-delivery.service.ts \
     apps/api/src/system/max-action-ledger-watchdog.service.ts \
-    apps/api/src/admin/manual-member-unban-attempt.ts; do
+    apps/api/src/admin/manual-member-unban-attempt.ts \
+    apps/api/src/moderation/voice-webhook-source.ts \
+    apps/api/src/moderation/message-limits-delete-guard.service.ts \
+    apps/api/src/webhook/webhook.service.ts; do
     if ! source="$(git show "${commit_sha}:${path}" 2>/dev/null)"; then
       echo "Rollback target predates shared member and Publisher reliability: $path" >&2
       return 1
@@ -438,7 +441,8 @@ maxim_topology_require_bot_publisher_reliability() {
       editing, receipts, video, vk, replies, settings, followupPersistence,
       followupService, followupSanction, followupExecution, moderationModule,
       commercialAuthority, sanctionNoticeDelivery, commandNoticeDelivery,
-      manualRuntime, manualAuthority, nightDelivery, watchdog, manualUnban] =
+      manualRuntime, manualAuthority, nightDelivery, watchdog, manualUnban,
+      voiceSource, voiceGuard, voiceIngress] =
       require("node:fs").readFileSync(0).toString("utf8").split("\0");
     const readNamedSet = (source, name) =>
       new RegExp("const\\s+" + name + "\\b[^=;]*=\\s*new Set\\(\\s*\\[([^\\]]*)\\]\\s*\\)", "u")
@@ -449,7 +453,13 @@ maxim_topology_require_bot_publisher_reliability() {
     const recoverableMembers = readNamedSet(watchdog, "RECOVERABLE_MEMBER_ACTION_TYPES");
     const hasUnbanAttempt = (set) =>
       set !== null && /(?:\u0027TRY_UNBAN_MEMBER\u0027|\u0022TRY_UNBAN_MEMBER\u0022)/u.test(set);
-    const valid = member.includes("pg_advisory_xact_lock") &&
+    const valid = voiceSource.includes("persistVoiceSource(") &&
+      voiceSource.includes("input.kind === \u0027invalidate\u0027") &&
+      voiceSource.includes("VOICE_SOURCE_LIFETIME_MS = 5 * 60_000") &&
+      voiceIngress.includes("await persistVoiceSource(tx, voiceSourceInput, webhookEventId)") &&
+      voiceGuard.includes("source.invalidatedAt") &&
+      voiceGuard.includes("voiceSourcePolicySha256") &&
+      member.includes("pg_advisory_xact_lock") &&
       member.includes("Retained member action requires settlement") &&
       hasUnbanAttempt(irreversible) && hasUnbanAttempt(crashFenced) &&
       member.includes("AND \u0022action_type\u0022 IN (\u0027BAN_MEMBER\u0027, \u0027KICK_MEMBER\u0027, \u0027TRY_UNBAN_MEMBER\u0027)") &&

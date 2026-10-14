@@ -33,7 +33,10 @@ function fixture() {
     timestamp: Date.now(),
     body: { mid: 'message-1', text: '12345678901' },
   };
-  const prisma = { chatSettings: { findUnique: jest.fn(async () => settings) } };
+  const prisma = {
+    chatSettings: { findUnique: jest.fn(async () => settings) },
+    moderationVoiceSource: { findUnique: jest.fn<Promise<unknown>, [unknown]>(async () => null) },
+  };
   const max = {
     getChatMemberAccess: jest.fn(async () => ({
       userId: 'user-1',
@@ -53,6 +56,107 @@ function fixture() {
   );
   return { service, max, settings, message, immunity, prisma, bots };
 }
+
+describe('native voice authority without MAX message GET', () => {
+  function voiceFixture() {
+    const s = fixture();
+    s.settings.voiceMessagesEnabled = false;
+    const sourceMessageAt = new Date();
+    const deadlineAtMs = sourceMessageAt.getTime() + 5 * 60_000;
+    const source = {
+      userId: 'user-1',
+      receiptId: 'receipt',
+      sourceAt: sourceMessageAt,
+      deadlineAt: new Date(deadlineAtMs),
+      invalidatedAt: null as Date | null,
+    };
+    s.prisma.moderationVoiceSource.findUnique.mockResolvedValue(source);
+    s.max.getExactMessageRow.mockRejectedValue(new Error('MAX voice GET unavailable'));
+    const request = {
+      ...input,
+      sourceMessageAt,
+      reasons: [
+        {
+          reasonKey: 'voice',
+          ruleCode: 'VOICE_BLOCKED_DELETE',
+          metadata: {
+            voiceSourceEvidenceVersion: 1,
+            voiceSourceAtMs: sourceMessageAt.getTime(),
+            voiceSourceDeadlineAtMs: deadlineAtMs,
+            voiceSourcePolicySha256: fingerprintModerationSettings(
+              s.settings,
+              'VOICE_BLOCKED_DELETE',
+            ),
+          },
+        },
+      ],
+    };
+    return { ...s, source, request, deadlineAtMs };
+  }
+  it('authorizes exactly voice, including on retry, under its immutable deadline', async () => {
+    const s = voiceFixture();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(
+        s.service.authorize({ ...s.request, reasons: [...s.request.reasons, ...input.reasons] }),
+      ).resolves.toEqual({
+        reasonKeys: ['voice'],
+        deadlineAtMs: s.deadlineAtMs,
+        reasonDeadlines: [{ reasonKey: 'voice', deadlineAtMs: s.deadlineAtMs }],
+      });
+    }
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    expect(s.max.getChatMemberAccess).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    'missing',
+    'invalidated',
+    'expired',
+    'wrong-author',
+    'wrong-time',
+    'wrong-policy',
+    'enabled',
+    'admin',
+    'immunity',
+    'late-edit',
+    'late-policy',
+  ])('denies %s source without substituting an empty GET for deletion proof', async (kind) => {
+    const s = voiceFixture();
+    if (kind === 'missing') s.prisma.moderationVoiceSource.findUnique.mockResolvedValue(null);
+    if (kind === 'invalidated') s.source.invalidatedAt = new Date();
+    if (kind === 'wrong-author') s.source.userId = 'other';
+    if (kind === 'wrong-time') s.request.sourceMessageAt = new Date(0);
+    if (kind === 'wrong-policy') s.request.reasons[0]!.metadata.voiceSourcePolicySha256 = 'invalid';
+    if (kind === 'expired') {
+      s.source.sourceAt = new Date(Date.now() - 300001);
+      s.source.deadlineAt = new Date(Date.now() - 1);
+    }
+    if (kind === 'enabled') s.settings.voiceMessagesEnabled = true;
+    if (kind === 'admin')
+      s.max.getChatMemberAccess.mockResolvedValue({
+        userId: 'user-1',
+        isAdmin: true,
+        isOwner: false,
+      });
+    if (kind === 'immunity') s.immunity.consumeForMessage.mockResolvedValue('granted');
+    if (kind === 'late-edit' || kind === 'late-policy')
+      s.immunity.consumeForMessage.mockImplementation(async () => {
+        if (kind === 'late-edit') s.source.invalidatedAt = new Date();
+        else s.settings.voiceMessagesEnabled = true;
+        return 'not_granted';
+      });
+    await expect(s.service.authorize(s.request)).rejects.toMatchObject({
+      code: 'message_limits_delete_no_longer_authorized',
+    });
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+  it('does not convert missing author rights into permission', async () => {
+    const s = voiceFixture();
+    const failure = new Error('members unavailable');
+    s.max.getChatMemberAccess.mockRejectedValue(failure);
+    await expect(s.service.authorize(s.request)).rejects.toBe(failure);
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+});
 
 describe('current message limit deletion authorization', () => {
   it('normalizes full settings and a semantic DTO and ignores unrelated UI changes', () => {

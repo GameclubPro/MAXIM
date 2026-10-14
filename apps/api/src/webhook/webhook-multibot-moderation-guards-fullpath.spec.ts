@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { MaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { Queue, type ConnectionOptions } from 'bullmq';
 import { MaxApiInternalRateLimitError, type MaxActionJob } from '../max/max-client.service';
 import { Prisma } from '../prisma/prisma-client';
@@ -194,6 +195,9 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         voiceMessagesEnabled: false,
       });
       const messageId = `voice-${randomUUID()}`;
+      const lookup = jest
+        .spyOn(s.max, 'getExactMessageRow')
+        .mockRejectedValue(new MaxExactMessageLookupMissingIdError());
       const at = Date.now();
       const ids = await Promise.all(
         s.bots.map((bot) =>
@@ -211,6 +215,7 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       await waitForUserDelete(s, chatId!, messageId);
       expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
       expect(s.effects.filter((effect) => effect.method !== 'delete')).toEqual([]);
+      expect(lookup).not.toHaveBeenCalled();
       const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
         where: { chatId_messageId: { chatId: chatId!, messageId } },
         include: { reasons: true },
@@ -241,48 +246,61 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
-  it.each(['allowed', 'administrator', 'policy_changed_before_delete'] as const)(
-    'preserves a voice message when %s denies deletion',
-    async (variant) => {
-      const s = await fixture(2);
-      const [chatId] = await s.seedCatalog(1, {
-        maxMessageLengthEnabled: false,
-        voiceMessagesEnabled: variant === 'allowed',
-      });
-      if (variant === 'administrator') s.allowAdminUser('fixture-user');
-      let changed = false;
-      const ensure = s.intents.ensureAndAttempt.bind(s.intents);
-      if (variant === 'policy_changed_before_delete') {
-        jest.spyOn(s.intents, 'ensureAndAttempt').mockImplementation(async (input, options) => {
-          if (input.ruleCode === 'VOICE_BLOCKED_DELETE') {
-            changed = true;
+  it.each([
+    'allowed',
+    'administrator',
+    'policy_changed_before_delete',
+    'edited_before_delete',
+  ] as const)('preserves a voice message when %s denies deletion', async (variant) => {
+    const s = await fixture(2);
+    const [chatId] = await s.seedCatalog(1, {
+      maxMessageLengthEnabled: false,
+      voiceMessagesEnabled: variant === 'allowed',
+    });
+    if (variant === 'administrator') s.allowAdminUser('fixture-user');
+    let changed = false;
+    const ensure = s.intents.ensureAndAttempt.bind(s.intents);
+    if (variant === 'policy_changed_before_delete' || variant === 'edited_before_delete') {
+      jest.spyOn(s.intents, 'ensureAndAttempt').mockImplementation(async (input, options) => {
+        if (input.ruleCode === 'VOICE_BLOCKED_DELETE' && !changed) {
+          changed = true;
+          if (variant === 'policy_changed_before_delete') {
             await s.prisma.chatSettings.update({
               where: { chatId: chatId! },
               data: { voiceMessagesEnabled: true },
             });
+          } else {
+            await s.ingest({
+              chatId: chatId!,
+              messageId: input.messageId,
+              text: 'Corrected',
+              type: 'message_edited',
+            });
           }
-          return ensure(input, options);
-        });
-      }
-      const messageId = `preserved-voice-${randomUUID()}`;
-      await s.ingest({
-        chatId: chatId!,
-        messageId,
-        text: '',
-        attachments: [{ type: 'audio', payload: { url: 'https://media.invalid/fixture.opus' } }],
+        }
+        return ensure(input, options);
       });
-      await s.drain();
-      expect(changed).toBe(variant === 'policy_changed_before_delete');
-      expect(s.messages.has(messageId)).toBe(true);
-      expect(s.effects).toEqual([]);
-      expect(
-        await s.prisma.moderationEvent.count({
-          where: { chatId, messageId, action: 'DELETE_MESSAGE' },
-        }),
-      ).toBe(0);
-      expect(s.failures).toEqual([]);
-    },
-  );
+    }
+    const messageId = `preserved-voice-${randomUUID()}`;
+    await s.ingest({
+      chatId: chatId!,
+      messageId,
+      text: '',
+      attachments: [{ type: 'audio', payload: { url: 'https://media.invalid/fixture.opus' } }],
+    });
+    await s.drain();
+    expect(changed).toBe(
+      variant === 'policy_changed_before_delete' || variant === 'edited_before_delete',
+    );
+    expect(s.messages.has(messageId)).toBe(true);
+    expect(s.effects).toEqual([]);
+    expect(
+      await s.prisma.moderationEvent.count({
+        where: { chatId, messageId, action: 'DELETE_MESSAGE' },
+      }),
+    ).toBe(0);
+    expect(s.failures).toEqual([]);
+  });
 
   it('records a qualified DELETE whose deadline elapses before persistence as expired and permits the next same-chat event', async () => {
     const s = await fixture(2);

@@ -4558,14 +4558,17 @@ describe('WebhookOutboxService', () => {
     jest.useRealTimers();
   });
 
-  it('skips completed webhook retention by default between maintenance ticks', async () => {
+  it('only purges one voice source page between maintenance ticks when webhook retention is disabled', async () => {
     const { service, prisma } = createService();
     const logger = jest.spyOn((service as any).logger, 'log');
 
     await (service as unknown as RetentionInternals).cleanupRetention();
 
-    expect(prisma.$executeRaw).not.toHaveBeenCalled();
-    expect(logger).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(extractSql(prisma.$executeRaw.mock.calls[0]![0])).toContain(
+      'DELETE FROM "moderation_voice_sources"',
+    );
+    expect(logger).toHaveBeenCalled();
   });
 
   it('keeps hourly maintenance enabled when completed webhook retention is disabled', async () => {
@@ -4575,7 +4578,7 @@ describe('WebhookOutboxService', () => {
     await (service as unknown as RetentionInternals).cleanupRetention();
 
     const queries = prisma.$executeRaw.mock.calls.map(([query]) => extractSql(query));
-    expect(queries).toHaveLength(4);
+    expect(queries).toHaveLength(5);
     expect(queries.join(' ')).not.toContain('DELETE FROM "webhook_events"');
     expect(queries.join(' ')).not.toContain(`'PROCESSED'::"WebhookStatus"`);
     expect(queries.join(' ')).not.toContain(`'DUPLICATE'::"WebhookStatus"`);
@@ -4603,7 +4606,7 @@ describe('WebhookOutboxService', () => {
         values: (query as SqlQuery).values ?? [],
       }),
     );
-    expect(queries).toHaveLength(9);
+    expect(queries).toHaveLength(10);
     const plannerSettings = queries.filter((query) => query.sql.startsWith('SET LOCAL'));
     expect(plannerSettings.map((query) => query.sql)).toEqual([
       'SET LOCAL enable_incremental_sort = off',
@@ -4687,7 +4690,7 @@ describe('WebhookOutboxService', () => {
     resolveFirstBatch(0);
     await cleanup;
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(4);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(5);
   });
 
   it('repeats full retention batches and stops after a partial batch', async () => {
@@ -4736,7 +4739,8 @@ describe('WebhookOutboxService', () => {
     });
     expect(completedWebhookCalls).toHaveLength(1);
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
-    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(extractSql(prisma.$executeRaw.mock.calls[0][0])).toContain('"moderation_voice_sources"');
   });
 
   it('reports the failed retention phase and resets the cleaning guard', async () => {
@@ -4769,7 +4773,7 @@ describe('WebhookOutboxService', () => {
       retryQueries.filter((sql) => sql.includes(`'NO_REPLAY_HELD'::"WebhookStatus"`)),
     ).toHaveLength(1);
     expect(retryQueries.some((sql) => sql.includes(`'PROCESSED'::"WebhookStatus"`))).toBe(false);
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(4);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(5);
     expect(internals.cleaning).toBe(false);
     expect(internals.retentionMaintenanceDue).toBe(false);
 
@@ -4790,7 +4794,8 @@ describe('WebhookOutboxService', () => {
     expect(nextQueries.some((sql) => sql.includes(`'NO_REPLAY_HELD'::"WebhookStatus"`))).toBe(
       false,
     );
-    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(extractSql(prisma.$executeRaw.mock.calls[0][0])).toContain('"moderation_voice_sources"');
     expect(internals.cleaning).toBe(false);
   });
 

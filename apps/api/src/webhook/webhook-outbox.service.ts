@@ -1,5 +1,6 @@
 import { WebhookDependencyQuarantineService } from './webhook-dependency-quarantine.service';
 import { writeWebhookEnqueueState } from './webhook-receipt-write';
+import { purgeExpiredVoiceSources } from '../moderation/voice-webhook-source';
 import {
   buildBoundedEnqueueWorkUnitsSql,
   type OutboxScanState,
@@ -3565,9 +3566,6 @@ export class WebhookOutboxService
     if (this.cleaning) {
       return;
     }
-    if (!this.webhookCompletedRetentionEnabled && !this.retentionMaintenanceDue) {
-      return;
-    }
     this.cleaning = true;
     let runMaintenance = false;
     try {
@@ -3651,6 +3649,13 @@ export class WebhookOutboxService
           },
         );
       }
+      // FLAG: Reuse the existing 30-second timer with one indexed page. Hourly-only
+      // cleanup would accumulate voice/edit evidence faster than a bounded page drains it.
+      phases.push({
+        name: 'voiceSources',
+        maxBatches: 1,
+        deleteBatch: () => purgeExpiredVoiceSources(this.prisma),
+      });
       const cleanupSummary: Record<string, RetentionCleanupPhaseResult> = {};
       for (const phase of phases) {
         cleanupSummary[phase.name] = await this.runRetentionCleanupPhase(phase);

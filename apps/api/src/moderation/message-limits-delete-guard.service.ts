@@ -1,4 +1,5 @@
 import { fingerprintModerationSettings } from './moderation-settings-fingerprint';
+import { VOICE_SOURCE_LIFETIME_MS } from './voice-webhook-source';
 export { fingerprintModerationSettings } from './moderation-settings-fingerprint';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { Injectable } from '@nestjs/common';
@@ -74,6 +75,7 @@ export class MessageLimitsDeleteGuardService {
     chatId: string;
     messageId: string;
     subjectUserId: string | null;
+    sourceMessageAt?: Date | null;
     botId: string;
     reasons: readonly Reason[];
   }): Promise<
@@ -105,6 +107,16 @@ export class MessageLimitsDeleteGuardService {
     if (!access || access.isAdmin === true || access.isOwner === true) this.reject();
     if (access.userId !== userId || access.isAdmin !== false || access.isOwner !== false)
       throw new Error('Message limits author access unavailable');
+    const voiceReasons = owned.filter(
+      (reason) =>
+        reason.ruleCode === 'VOICE_BLOCKED_DELETE' &&
+        this.metadata(reason.metadata).voiceSourceEvidenceVersion === 1,
+    );
+    if (voiceReasons.length) {
+      // FLAG: Authenticated native voice evidence has its own short-lived authority.
+      // It grants only this reason; it never supplies current content to another rule.
+      return this.authorizeVoiceSource(params, userId, voiceReasons, settings);
+    }
     // FLAG: Delayed generic reasons authorize only the exact current message through this
     // attempt's selected bot. A stored length, excerpt or receiver token is not proof.
     const row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
@@ -175,6 +187,66 @@ export class MessageLimitsDeleteGuardService {
     if (!settings || settings.chat.entityType !== 'CHAT' || settings.chat.admins.length)
       this.reject();
     return settings;
+  }
+
+  private async authorizeVoiceSource(
+    params: { chatId: string; messageId: string; sourceMessageAt?: Date | null },
+    userId: string,
+    reasons: Reason[],
+    settings: Settings,
+  ) {
+    const check = async (current: Settings) => {
+      if (current.voiceMessagesEnabled) this.reject();
+      const source = await this.prisma.moderationVoiceSource.findUnique({
+        where: { chatId_messageId: { chatId: params.chatId, messageId: params.messageId } },
+      });
+      const at = source?.sourceAt?.getTime();
+      const deadlineAtMs = source?.deadlineAt?.getTime();
+      if (
+        !source ||
+        source.invalidatedAt ||
+        source.userId !== userId ||
+        !source.receiptId ||
+        !at ||
+        !deadlineAtMs ||
+        at !== params.sourceMessageAt?.getTime() ||
+        deadlineAtMs !== at + VOICE_SOURCE_LIFETIME_MS ||
+        at > Date.now() + 1_000 ||
+        Date.now() >= deadlineAtMs
+      )
+        this.reject();
+      const reasonKeys = reasons
+        .filter((reason) => {
+          const proof = this.metadata(reason.metadata);
+          return (
+            proof.voiceSourceAtMs === at &&
+            proof.voiceSourceDeadlineAtMs === deadlineAtMs &&
+            proof.voiceSourcePolicySha256 ===
+              fingerprintModerationSettings(current, reason.ruleCode)
+          );
+        })
+        .map((reason) => reason.reasonKey);
+      if (!reasonKeys.length) this.reject();
+      return {
+        reasonKeys,
+        deadlineAtMs,
+        reasonDeadlines: reasonKeys.map((reasonKey) => ({ reasonKey, deadlineAtMs })),
+      };
+    };
+    await check(settings);
+    if (
+      (await this.immunity.consumeForMessage({
+        chatId: params.chatId,
+        userId,
+        messageId: params.messageId,
+        scope: 'message-limits-delete:v1',
+        nightModeTimezone: settings.nightModeTimezone,
+      })) === 'granted'
+    )
+      this.reject();
+    // FLAG: Re-read edits/removals and policy after awaited immunity work. The intent
+    // executor also fences this same absolute reason deadline with the database clock.
+    return check(await this.loadSettings(params.chatId, userId));
   }
 
   private metadata(value: unknown): Record<string, unknown> {

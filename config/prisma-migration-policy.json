@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261013180000_add_automatic_mute_cleanup",
-  "baselineNamesSha256": "aef644ae8c1f514527e54fa366afbda7eab6cd059bb098af10933550b94dfe4c",
-  "baselineContentsSha256": "11a1304191479b7e4345b40c22a862f74a4f7f817743345698f5092d5d23a673",
+  "baselineThrough": "20261014030000_add_moderation_voice_sources",
+  "baselineNamesSha256": "e86208e41123daa0368616cb48945db8c651e408d0367ffb9bee84f885a109ae",
+  "baselineContentsSha256": "7d3f57a64ba8071a3370c74006c7c9d971f3cbdc6dbe0c015cd2986a8eab50a3",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -206,6 +206,9 @@
     },
     "20261013180000_add_automatic_mute_cleanup": {
       "reason": "Both indexes are created only on the empty additive automatic_mute_cleanups table in the same transaction; no retained relation is indexed."
+    },
+    "20261014030000_add_moderation_voice_sources": {
+      "reason": "The only index belongs to the new empty moderation_voice_sources table. No retained webhook table is scanned, altered or backfilled."
     }
   }
 }

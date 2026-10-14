@@ -7,6 +7,14 @@ import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
 const protectedSources = [
+  ['apps/api/src/moderation/voice-webhook-source.ts', "input.kind === 'invalidate'"],
+  ['apps/api/src/moderation/voice-webhook-source.ts', 'VOICE_SOURCE_LIFETIME_MS = 5 * 60_000'],
+  ['apps/api/src/moderation/message-limits-delete-guard.service.ts', 'source.invalidatedAt'],
+  ['apps/api/src/moderation/message-limits-delete-guard.service.ts', 'voiceSourcePolicySha256'],
+  [
+    'apps/api/src/webhook/webhook.service.ts',
+    'await persistVoiceSource(tx, voiceSourceInput, webhookEventId)',
+  ],
   ['apps/api/src/max/max-action-ledger.service.ts', 'pg_advisory_xact_lock'],
   [
     'apps/api/src/max/max-action-ledger.service.ts',

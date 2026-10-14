@@ -892,6 +892,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       where: { webhookEventId: { in: receiptIds } },
     });
     await prisma.webhookEvent.deleteMany({ where: { id: { in: receiptIds } } });
+    await prisma.moderationVoiceSource.deleteMany({ where: { chatId: { in: chatIds } } });
     for (let offset = 0; offset < chatIds.length; offset += 1000)
       await prisma.chat.deleteMany({ where: { id: { in: chatIds.slice(offset, offset + 1000) } } });
     await prisma.maxActionLedgerEntry.deleteMany({ where: { chatId: { in: chatIds } } });

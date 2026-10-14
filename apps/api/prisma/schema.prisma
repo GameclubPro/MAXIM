@@ -2491,6 +2491,23 @@ model ModerationRuleFollowup {
   @@map("moderation_rule_followups")
 }
 
+// FLAG: Authenticated voice creation evidence and edit/removal tombstones. These rows
+// authorize no effect alone; final current policy, access, immunity and intent fences apply.
+model ModerationVoiceSource {
+  chatId        String    @map("chat_id")
+  messageId     String    @map("message_id")
+  userId        String?   @map("user_id")
+  sourceAt      DateTime? @map("source_at")
+  deadlineAt    DateTime? @map("deadline_at")
+  receiptId     String?   @map("receipt_id")
+  invalidatedAt DateTime? @map("invalidated_at")
+  expiresAt     DateTime  @map("expires_at")
+
+  @@id([chatId, messageId])
+  @@index([expiresAt, chatId, messageId], map: "moderation_voice_sources_expiry_idx")
+  @@map("moderation_voice_sources")
+}
+
 model WebhookEvent {
   id                         String        @id @default(cuid())
   dedupKey                   String        @unique @map("dedup_key")

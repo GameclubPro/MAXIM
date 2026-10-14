@@ -1,5 +1,6 @@
 import { needsAutomaticMuteCleanup, persistAutomaticMuteCleanup } from './automatic-mute-cleanup';
 import { verifyFreshHeldCommandAccess } from '../webhook/webhook-legacy-fresh-command';
+import { bindVoiceSourceEvidence } from './voice-webhook-source';
 import {
   describeWebhookExecutionFailure,
   logWebhookExecutionFailure,
@@ -2783,6 +2784,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : null;
       let durableRuleFollowupId: string | null = null;
       if (violationDeleteIntent) {
+        violationDeleteIntent = bindVoiceSourceEvidence(
+          violationDeleteIntent,
+          update,
+          settings,
+          webhookEventId,
+        );
         violationDeleteIntent = bindCommercialTextDeleteIntent(violationDeleteIntent, {
           text,
           settings,
