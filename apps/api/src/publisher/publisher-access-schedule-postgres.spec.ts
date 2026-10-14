@@ -427,6 +427,8 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
       {
         getCurrentChatMemberAccess: async () => ({
           ...adminAccess,
+          explicitPrivilegeEvidence: false,
+          explicitNonPrivilegeEvidence: true,
           isAdmin: false,
           permissions: [],
         }),
@@ -446,6 +448,40 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
         where: { publisherBotId: botId },
       }),
     ).toMatchObject({ resolution: 'denied', committedAt: result.committedAt });
+  });
+
+  it('preserves the complete stored proof when MAX omits role evidence', async () => {
+    const previous = await expiringProof();
+    const executor = new PublisherBotAccessExecutor(
+      db as never,
+      {
+        getCurrentChatMemberAccess: async () => ({
+          isAdmin: false,
+          isOwner: false,
+          explicitPrivilegeEvidence: false,
+          explicitNonPrivilegeEvidence: false,
+          permissions: [],
+          permissionsKnown: false,
+        }),
+      } as never,
+      botId,
+      evidence(),
+    );
+    await expect(
+      executor.execute({
+        chatId,
+        previous,
+        probeStartedAt: new Date(),
+        reason: 'manual_recheck',
+        materializeForwarded: false,
+      }),
+    ).rejects.toThrow('MAX Publisher bot role evidence is incomplete');
+    expect(await db.publisherEntityBinding.findUniqueOrThrow({ where: { chatId } })).toEqual(
+      previous,
+    );
+    expect(
+      await db.publisherAccessRefreshObligation.count({ where: { publisherBotId: botId } }),
+    ).toBe(0);
   });
 
   it('reports truncated evidence explicitly under bounded PostgreSQL memory', async () => {

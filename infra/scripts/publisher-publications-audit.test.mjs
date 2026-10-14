@@ -42,9 +42,10 @@ test('publication audit classifies exact-bot access without exposing content or 
 
   await db.exec(`INSERT INTO managed_entity_access_edges VALUES
     ('private-chat', 'private-actor', 'private-bot', 'GRANTED', 'ADMIN', 'CHANNEL', now() - interval '8 days', NULL, NULL, 'private-error');`);
-  assert.equal((await report()).target_reasons[0].reason, 'actor_edge_expired');
+  assert.equal((await report()).schema_version, 2);
+  assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
   await db.exec(`UPDATE managed_entity_access_edges SET expires_at = now() + interval '1 day';`);
-  assert.equal((await report()).target_reasons[0].reason, 'actor_authority_stale');
+  assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
   await db.exec(
     `UPDATE managed_entity_access_edges SET checked_at = now() - interval '14 minutes';`,
   );
@@ -72,7 +73,11 @@ test('publication audit classifies exact-bot access without exposing content or 
   await db.exec(
     `UPDATE managed_entity_access_edges SET checked_at = now() - interval '16 minutes';`,
   );
-  assert.equal((await report()).target_reasons[0].reason, 'actor_authority_stale');
+  assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
+  await db.exec(`UPDATE managed_entity_access_edges SET user_role = 'OWNER',
+    checked_at = now() - interval '90 days', expires_at = now() - interval '89 days';`);
+  assert.equal((await report()).target_reasons[0].reason, 'metadata_ready');
+  assert.equal((await report()).target_reasons[0].edge_unexpired, false);
   await db.exec(`UPDATE managed_entity_access_edges SET state = 'DENIED', checked_at = now();`);
   assert.equal((await report()).target_reasons[0].reason, 'actor_denied');
   await db.exec(`UPDATE managed_entity_access_edges SET state = 'GRANTED', user_role = 'MEMBER';`);

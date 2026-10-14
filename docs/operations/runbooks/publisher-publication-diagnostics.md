@@ -29,12 +29,17 @@ or truncated samples are not a complete inventory. The report explicitly declare
 permission data and the activation handshake are outside this diagnostic. Positive bot
 proofs do not expire; old/null expiry alone is not a blocker. `bot_access_unconfirmed`
 means a missing/future confirmation timestamp, and `route_quarantined` is separate.
-Granted actor metadata older than 15 minutes is classified as `actor_authority_stale`.
+Report schema v2 treats confirmed ADMIN/OWNER grants as durable, matching runtime
+authorization. Older v1 reports can contain `actor_authority_stale` and
+`actor_edge_expired`; these historical age labels are not current authorization failures.
+The retained `edge_unexpired` field describes a stored timestamp, not effective authority.
 `missed_window` identifies a missed scheduled window requiring an author decision; it is separate from `AMBIGUOUS` delivery results.
 
 Interpret all blockers together with lifecycle and schedule status. A disabled policy or
-fresh denied actor must never be silently enabled or granted access. Missing bot evidence or stale human authority may nominate an exact Publisher-owned
-verification, never authorize a send. Explicit bot denial requires administrator
+fresh denied actor must never be silently enabled or granted access. Missing bot or actor
+evidence may nominate an exact Publisher-owned verification, never authorize a send.
+Historical age labels must not trigger a refresh or reset of a confirmed human grant.
+Explicit bot denial requires administrator
 reconnection; passive verification cannot bypass activation. A remote
 message ID or an attempted/AMBIGUOUS delivery must retain its receipt and dispatch fence.
 No report outcome authorizes bulk retry or recreating a failed publication as a new send.
