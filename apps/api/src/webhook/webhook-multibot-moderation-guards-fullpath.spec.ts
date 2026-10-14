@@ -1,3 +1,4 @@
+import { persistVoiceSource } from '../moderation/voice-webhook-source';
 import { randomUUID } from 'node:crypto';
 import { MaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { Queue, type ConnectionOptions } from 'bullmq';
@@ -242,6 +243,190 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       expect(
         (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
       ).toBe('PROCESSED');
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it.each(
+    (['mute', 'night', 'manual'] as const).flatMap((restriction) =>
+      ['audio', 'voice', 'audio_message', 'ptt', 'image', 'video', 'file', 'sticker', 'text']
+        .map((type) => ({ restriction, type, mode: 'canary' }))
+        .concat(['off', 'shadow', 'on'].map((mode) => ({ restriction, type: 'audio', mode }))),
+    ),
+  )(
+    'deletes allowed $type under $restriction with rollout $mode and exact source authority',
+    async ({ restriction, type, mode }) => {
+      const s = await fixture(2);
+      Object.assign(s.intents, { mode });
+      const minute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+      const [chatId] = await s.seedCatalog(1, {
+        maxMessageLengthEnabled: false,
+        voiceMessagesEnabled: true,
+        nightModeEnabled: restriction === 'night',
+        nightModeTimezone: 'UTC',
+        nightModeStartTimeMinutes: (minute + 1440 - 60) % 1440,
+        nightModeEndTimeMinutes: (minute + 60) % 1440,
+        nightModeForceCloseEnabled: restriction === 'manual',
+        nightModeForceCloseForever: restriction === 'manual',
+      });
+      if (restriction === 'mute') {
+        await s.prisma.moderationEvent.create({
+          data: {
+            chatId: chatId!,
+            userId: 'fixture-user',
+            eventType: 'MEMBER_ACTION',
+            ruleCode: 'MANUAL_MUTE',
+            action: 'MUTE',
+            operator: 'ADMIN',
+            score: 1,
+            createdAt: new Date(Date.now() - 1_000),
+            metadata: { mutePermanent: true },
+          },
+        });
+      }
+      const nativeVoice = ['audio', 'voice', 'audio_message', 'ptt'].includes(type);
+      const lookup = jest.spyOn(s.max, 'getExactMessageRow');
+      if (nativeVoice) lookup.mockRejectedValue(new MaxExactMessageLookupMissingIdError());
+      const messageId = `restricted-voice-${randomUUID()}`;
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: type === 'text' ? 'Ordinary text' : '',
+            attachments: type === 'text' ? [] : [{ type, payload: { token: 'local-fixture' } }],
+          }),
+        ),
+      );
+      await s.drain();
+      await waitForUserDelete(s, chatId!, messageId);
+      if (nativeVoice) expect(lookup).not.toHaveBeenCalled();
+      else expect(lookup).toHaveBeenCalled();
+      const ruleCode =
+        restriction === 'mute'
+          ? 'MUTE_ACTIVE_DELETE'
+          : restriction === 'night'
+            ? 'NIGHT_MODE_DELETE'
+            : 'MANUAL_GROUP_CLOSE_DELETE';
+      expect(
+        await s.prisma.moderationEvent.findMany({
+          where: { chatId, messageId, action: 'DELETE_MESSAGE' },
+          select: { ruleCode: true },
+        }),
+      ).toEqual([{ ruleCode }]);
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(s.effects.filter((e) => e.method === 'delete')).toHaveLength(1);
+      expect(s.effects.filter((e) => e.method !== 'delete')).toEqual([]);
+      lookup.mockRestore();
+      const nextMessageId = `after-restriction-${randomUUID()}`;
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: nextMessageId,
+        text: 'Next',
+      });
+      await s.drain();
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+      ).toBe('PROCESSED');
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it.each(
+    (['mute', 'night', 'manual'] as const).flatMap((restriction) =>
+      (['source_revoked', 'restriction_removed'] as const).map((change) => ({
+        restriction,
+        change,
+      })),
+    ),
+  )(
+    'preserves voice after $change under $restriction before dispatch',
+    async ({ restriction, change }) => {
+      const s = await fixture(2);
+      const minute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+      const [chatId] = await s.seedCatalog(1, {
+        maxMessageLengthEnabled: false,
+        voiceMessagesEnabled: true,
+        nightModeEnabled: restriction === 'night',
+        nightModeTimezone: 'UTC',
+        nightModeStartTimeMinutes: (minute + 1380) % 1440,
+        nightModeEndTimeMinutes: (minute + 60) % 1440,
+        nightModeForceCloseEnabled: restriction === 'manual',
+        nightModeForceCloseForever: restriction === 'manual',
+      });
+      if (restriction === 'mute')
+        await s.prisma.moderationEvent.create({
+          data: {
+            chatId: chatId!,
+            userId: 'fixture-user',
+            eventType: 'MEMBER_ACTION',
+            ruleCode: 'MANUAL_MUTE',
+            action: 'MUTE',
+            operator: 'ADMIN',
+            score: 1,
+            createdAt: new Date(Date.now() - 1_000),
+            metadata: { mutePermanent: true },
+          },
+        });
+      jest
+        .spyOn(s.max, 'getExactMessageRow')
+        .mockRejectedValue(new MaxExactMessageLookupMissingIdError());
+      const ensure = s.intents.ensureAndAttempt.bind(s.intents);
+      let changed = false;
+      jest.spyOn(s.intents, 'ensureAndAttempt').mockImplementation(async (input, options) => {
+        if (!changed) {
+          changed = true;
+          if (change === 'source_revoked') {
+            await persistVoiceSource(
+              s.prisma,
+              { kind: 'invalidate', chatId: chatId!, messageId: input.messageId },
+              'edit',
+            );
+          } else if (restriction === 'mute') {
+            await s.prisma.moderationEvent.create({
+              data: {
+                chatId: chatId!,
+                userId: 'fixture-user',
+                eventType: 'MEMBER_ACTION',
+                ruleCode: 'MANUAL_UNMUTE',
+                action: 'NONE',
+                operator: 'ADMIN',
+                score: 1,
+              },
+            });
+          } else {
+            await s.prisma.chatSettings.update({
+              where: { chatId: chatId! },
+              data: {
+                nightModeEnabled: false,
+                nightModeForceCloseEnabled: false,
+              },
+            });
+          }
+        }
+        return ensure(input, options);
+      });
+      const messageId = `revoked-state-voice-${randomUUID()}`;
+      await s.ingest({ chatId: chatId!, messageId, text: '', attachments: [{ type: 'audio' }] });
+      await s.drain();
+      expect(changed).toBe(true);
+      expect(s.effects).toEqual([]);
+      expect(s.messages.has(messageId)).toBe(true);
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+        include: { reasons: true },
+      });
+      expect(intent.status).toBe('FAILED_TERMINAL');
+      expect(intent.remoteDeleteSucceededAt).toBeNull();
+      expect(
+        intent.reasons.every(
+          (reason) =>
+            (reason.metadata as Record<string, unknown>)?.moderationDeleteVerified !== true,
+        ),
+      ).toBe(true);
       expect(s.failures).toEqual([]);
     },
   );

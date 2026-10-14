@@ -1,3 +1,4 @@
+import { bindStateVoiceSource } from './state-voice-delete-source';
 import { ConfigService } from '@nestjs/config';
 import { ClosedChatDeleteGuardService } from './closed-chat-delete-guard.service';
 
@@ -61,6 +62,90 @@ describe('closed-chat final delete authority', () => {
     jest.setSystemTime(now);
   });
   afterEach(() => jest.useRealTimers());
+
+  function voiceFixture() {
+    const h = fixture();
+    const stored = {
+      userId: 'u1',
+      sourceAt,
+      deadlineAt: new Date(sourceAt.getTime() + 300_000),
+      receiptId: 'authenticated-receipt',
+      invalidatedAt: null as Date | null,
+    };
+    const read = jest.fn(async () => stored as typeof stored | null);
+    Object.assign(h.prisma, { moderationVoiceSource: { findUnique: read } });
+    const bound = bindStateVoiceSource(
+      {
+        ...input,
+        ruleCode: 'NIGHT_MODE_DELETE',
+        reasonKey: 'night',
+        event: { metadata: nightReason.metadata },
+      },
+      {
+        kind: 'created',
+        chatId: input.chatId,
+        messageId: input.messageId,
+        userId: input.subjectUserId,
+        sourceAtMs: sourceAt.getTime(),
+        deadlineAtMs: stored.deadlineAt.getTime(),
+      },
+    );
+    h.max.getExactMessageRow.mockRejectedValue(new Error('Voice unavailable through GET'));
+    return {
+      ...h,
+      stored,
+      read,
+      voiceInput: { ...input, reasons: [{ ...nightReason, metadata: bound.event!.metadata }] },
+    };
+  }
+  it('deletes voice using authenticated source and the current night session', async () => {
+    const h = voiceFixture();
+    await expect(h.guard.authorize(h.voiceInput)).resolves.toMatchObject({ reasonKeys: ['night'] });
+    expect(h.read).toHaveBeenCalledTimes(2);
+    expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+  it.each([
+    'missing',
+    'edited',
+    'author',
+    'time',
+    'receipt',
+    'deadline',
+    'admin',
+    'immunity',
+    'opened',
+  ])('refuses native voice after %s', async (change) => {
+    const h = voiceFixture();
+    if (change === 'missing') h.read.mockResolvedValue(null);
+    if (change === 'edited') h.stored.invalidatedAt = new Date();
+    if (change === 'author') h.stored.userId = 'other';
+    if (change === 'time') h.stored.sourceAt = new Date(0);
+    if (change === 'receipt') h.stored.receiptId = '';
+    if (change === 'deadline') h.stored.deadlineAt = new Date(now + 500_000);
+    if (change === 'admin')
+      h.max.getChatMemberAccess.mockResolvedValue({ userId: 'u1', isAdmin: true, isOwner: false });
+    if (change === 'immunity') h.immunity.consumeForMessage.mockResolvedValue('granted');
+    if (change === 'opened') h.settings.nightModeEnabled = false;
+    await expect(h.guard.authorize(h.voiceInput)).rejects.toMatchObject({
+      code: 'closed_chat_delete_no_longer_authorized',
+    });
+    expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+  it.each(['edit', 'open', 'reclose'])(
+    'rechecks voice and closure after awaited immunity: %s',
+    async (change) => {
+      const h = voiceFixture();
+      h.immunity.consumeForMessage.mockImplementation(async () => {
+        if (change === 'edit') h.stored.invalidatedAt = new Date();
+        if (change === 'open') h.settings.nightModeEnabled = false;
+        if (change === 'reclose') h.settings.chat.chatControlOrderAt = new Date(now);
+        return 'not_granted';
+      });
+      await expect(h.guard.authorize(h.voiceInput)).rejects.toMatchObject({
+        code: 'closed_chat_delete_no_longer_authorized',
+      });
+    },
+  );
 
   it('reads the exact author/message through the replacement executor', async () => {
     const h = fixture();
