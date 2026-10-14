@@ -148,6 +148,9 @@ test('keeps an admitted delete distinct from dispatch and remote success', async
   assert.equal(report.rows[0].delete_intent.remote_succeeded_at, null);
   assert.deepEqual(report.rows[0].delete_intent.reason_sample, {
     voice_blocked: true,
+    mute_active: false,
+    night_mode: false,
+    manual_close: false,
     truncated: false,
   });
   assert.equal(report.remote_effect_proven, false);
@@ -178,6 +181,26 @@ test('classifies only the persisted exact-source guard failure and never exposes
       'private-secret',
       'message_limits_no_longer_authorized',
     ],
+    ...[
+      'max_action_executor_proof_rejected',
+      'unverified_message_not_found',
+      'delete_candidates_exhausted',
+      'no_delete_capable_bot',
+      'predelete_presence_unknown',
+      'moderation_state_delete_no_longer_authorized',
+      'closed_chat_delete_no_longer_authorized',
+      'snapshot_missing',
+      'not_admin_or_owner',
+      'entity_type_unknown',
+      'missing_chat_delete_permission',
+      'missing_channel_delete_permission',
+      'chat_not_found',
+      'no_active_membership',
+      'snapshot_stale',
+      'access_state_unconfirmed',
+      'access_denied',
+      'bot_not_actionable',
+    ].map((code) => [code, 'private-secret', code]),
     [null, null, 'none'],
     [null, 'private-secret', 'other'],
   ]) {
@@ -192,6 +215,31 @@ test('classifies only the persisted exact-source guard failure and never exposes
     assert.equal(report.remote_effect_proven, false);
     assert.doesNotMatch(JSON.stringify(report), /private-|MAX direct|last_error/u);
   }
+});
+
+test('reports independent restriction reasons without exposing metadata', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`INSERT INTO webhook_events (id,status,created_at,normalized_payload)
+    VALUES ('source','PROCESSED','2026-10-13 19:33:20','{"message":{"chatId":"-123","messageId":"private-voice"}}');
+    INSERT INTO moderation_delete_intents (chat_id,message_id,status)
+    VALUES ('-123','private-voice','RETRYABLE');
+    INSERT INTO moderation_delete_intent_reasons VALUES
+      ('intent','private-mute','MUTE_ACTIVE_DELETE'),
+      ('intent','private-night','NIGHT_MODE_DELETE'),
+      ('intent','private-manual','MANUAL_GROUP_CLOSE_DELETE');`);
+  const report = (await db.query(buildChatMessageWindowAuditSql('-123', minute))).rows[0]
+    .json_build_object;
+  assert.equal(report.schema_version, 3);
+  assert.deepEqual(report.rows[0].delete_intent.reason_sample, {
+    voice_blocked: false,
+    mute_active: true,
+    night_mode: true,
+    manual_close: true,
+    truncated: false,
+  });
+  assert.doesNotMatch(JSON.stringify(report), /private-|metadata/u);
 });
 
 test('reports omitted receipts and bounds attachment projection even with malformed payloads', async (t) => {

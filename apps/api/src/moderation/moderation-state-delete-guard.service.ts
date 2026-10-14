@@ -1,3 +1,4 @@
+import { isStateVoiceReason, readStateVoiceReasonKeys } from './state-voice-delete-source';
 import { AUTOMATIC_MUTE_HISTORY_MS } from './automatic-mute-cleanup';
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -59,6 +60,20 @@ export class ModerationStateDeleteGuardService {
   > {
     let reasons = params.reasons.filter((r) => MODERATION_STATE_DELETE_RULES.has(r.ruleCode));
     if (!reasons.length) return 'not_applicable';
+    // FLAG: A failed remote read must not keep expired current-message authority retrying.
+    // Historical automatic cleanup retains its separately verified source and deadline.
+    if (params.sourceMessageAt) {
+      const sourceAt = params.sourceMessageAt.getTime();
+      if (!Number.isSafeInteger(sourceAt) || sourceAt <= 0 || sourceAt > Date.now()) this.reject();
+      if (Date.now() >= sourceAt + 5 * 60_000) {
+        reasons = reasons.filter(
+          (reason) =>
+            reason.ruleCode === 'MUTE_ACTIVE_DELETE' &&
+            typeof this.metadata(reason.metadata).automaticMuteCleanupId === 'string',
+        );
+        if (!reasons.length) this.reject();
+      }
+    }
     const userId = params.subjectUserId;
     if (!userId || this.bots.isKnownBotUserId(userId)) this.reject();
     if (
@@ -104,9 +119,17 @@ export class ModerationStateDeleteGuardService {
     if (!access || access.isAdmin === true || access.isOwner === true) this.reject();
     if (access.userId !== userId || access.isAdmin !== false || access.isOwner !== false)
       throw new Error('State deletion author access unavailable');
-    const row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
-    if (!row && !params.allowAbsentWithOwnedReceipt) return 'absent';
-    if (!row) {
+    const voiceReasons = reasons.filter(isStateVoiceReason);
+    if (voiceReasons.length) {
+      const keys = await readStateVoiceReasonKeys(this.prisma, params, voiceReasons);
+      reasons = voiceReasons.filter((reason) => keys.includes(reason.reasonKey));
+      if (!reasons.length) this.reject();
+    }
+    const row = voiceReasons.length
+      ? null
+      : await this.max.getExactMessageRow(params.chatId, params.messageId, options);
+    if (!row && !voiceReasons.length && !params.allowAbsentWithOwnedReceipt) return 'absent';
+    if (!row && !voiceReasons.length) {
       const current = await load();
       if (
         !current.removeBotsFromGroupEnabled ||
@@ -169,19 +192,23 @@ export class ModerationStateDeleteGuardService {
         reasonDeadlines: [{ reasonKey, deadlineAtMs }],
       };
     }
-    const message = this.parser.parse({
-      type: 'message_created',
-      updateId: 'moderation-state-delete-guard',
-      message: row,
-    }).message;
-    if (
-      !message ||
-      message.chatId !== params.chatId ||
-      message.messageId !== params.messageId ||
-      message.senderId !== userId ||
-      message.entityType === 'channel'
-    )
-      this.reject();
+    let liveSourceAtMs = params.sourceMessageAt?.getTime() ?? NaN;
+    if (row) {
+      const message = this.parser.parse({
+        type: 'message_created',
+        updateId: 'moderation-state-delete-guard',
+        message: row,
+      }).message;
+      if (
+        !message ||
+        message.chatId !== params.chatId ||
+        message.messageId !== params.messageId ||
+        message.senderId !== userId ||
+        message.entityType === 'channel'
+      )
+        this.reject();
+      liveSourceAtMs = Date.parse(message.createdAt);
+    }
     // FLAG: A held sanction source cannot consume immunity on unrelated historical targets.
     for (const reason of [...reasons]) {
       const id = this.metadata(reason.metadata).automaticMuteCleanupId;
@@ -215,7 +242,7 @@ export class ModerationStateDeleteGuardService {
     )
       this.reject();
     const current = await load();
-    const sourceAtMs = params.sourceMessageAt?.getTime() ?? Date.parse(message.createdAt);
+    const sourceAtMs = params.sourceMessageAt?.getTime() ?? liveSourceAtMs;
     const sourceDeadlineAtMs = sourceAtMs + 5 * 60_000;
     if (!Number.isSafeInteger(sourceAtMs) || sourceAtMs <= 0 || sourceAtMs > Date.now())
       this.reject();
@@ -253,7 +280,7 @@ export class ModerationStateDeleteGuardService {
               chatId: params.chatId,
               userId,
               sourceAtMs,
-              liveSourceAtMs: Date.parse(message.createdAt),
+              liveSourceAtMs: liveSourceAtMs,
             });
             if (historyDeadline === null) continue;
             deadlineAtMs = historyDeadline;
@@ -329,10 +356,10 @@ export class ModerationStateDeleteGuardService {
     await params.beforeFinalAuthority?.();
     if (fingerprintModerationSettings(await load()) !== fingerprintModerationSettings(current))
       this.reject();
-    // FLAG: A release during awaited remote checks revokes historical cleanup too.
+    // FLAG: A release during awaited work revokes both new-message deletion and history cleanup.
     for (const reason of reasons) {
       if (
-        this.metadata(reason.metadata).automaticMuteCleanupId === undefined ||
+        reason.ruleCode !== 'MUTE_ACTIVE_DELETE' ||
         !reasonDeadlines.some((r) => r.reasonKey === reason.reasonKey)
       )
         continue;
@@ -347,20 +374,21 @@ export class ModerationStateDeleteGuardService {
           ],
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        select: { id: true, createdAt: true },
+        select: { id: true, action: true, metadata: true, createdAt: true },
       });
       if (
         !latest ||
         latest.id !== metadata.muteEventId ||
-        (await this.automaticCleanupDeadline({
-          historyId: metadata.automaticMuteCleanupId,
-          eventId: latest.id,
-          issuedAt: latest.createdAt,
-          chatId: params.chatId,
-          userId,
-          sourceAtMs,
-          liveSourceAtMs: Date.parse(message.createdAt),
-        })) === null ||
+        (metadata.automaticMuteCleanupId !== undefined &&
+          (await this.automaticCleanupDeadline({
+            historyId: metadata.automaticMuteCleanupId,
+            eventId: latest.id,
+            issuedAt: latest.createdAt,
+            chatId: params.chatId,
+            userId,
+            sourceAtMs,
+            liveSourceAtMs: liveSourceAtMs,
+          })) === null) ||
         (await this.fence.isSanctionEventInvalidated({
           chatId: params.chatId,
           userId,
@@ -369,6 +397,26 @@ export class ModerationStateDeleteGuardService {
         }))
       )
         this.reject();
+      const expiry = resolveModerationSanctionExpiry(
+        latest.action,
+        latest.metadata,
+        latest.createdAt,
+        current.muteDurationHours,
+      );
+      if (
+        !(latest.action === 'MUTE' && expiry.permanent) &&
+        !(expiry.expiresAt && expiry.expiresAt.getTime() > Date.now())
+      )
+        this.reject();
+      const deadline = reasonDeadlines.find((r) => r.reasonKey === reason.reasonKey)!;
+      if (expiry.expiresAt)
+        deadline.deadlineAtMs = Math.min(deadline.deadlineAtMs, expiry.expiresAt.getTime());
+    }
+    if (voiceReasons.length) {
+      const keys = await readStateVoiceReasonKeys(this.prisma, params, reasons);
+      for (let index = reasonDeadlines.length - 1; index >= 0; index--) {
+        if (!keys.includes(reasonDeadlines[index]!.reasonKey)) reasonDeadlines.splice(index, 1);
+      }
     }
     const currentReasons = reasonDeadlines.filter((r) => Date.now() < r.deadlineAtMs);
     if (!currentReasons.length) this.reject();

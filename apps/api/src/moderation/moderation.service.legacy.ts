@@ -1,6 +1,10 @@
 import { needsAutomaticMuteCleanup, persistAutomaticMuteCleanup } from './automatic-mute-cleanup';
 import { verifyFreshHeldCommandAccess } from '../webhook/webhook-legacy-fresh-command';
-import { bindVoiceSourceEvidence } from './voice-webhook-source';
+import { bindVoiceSourceEvidence, captureVoiceSourceInput } from './voice-webhook-source';
+import {
+  buildActiveMuteDeleteIntent,
+  type ActiveMuteMessageInput,
+} from './active-mute-delete-intent';
 import {
   describeWebhookExecutionFailure,
   logWebhookExecutionFailure,
@@ -2047,6 +2051,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       this.markWebhookHotPathStage(hotPathProfile, 'active-mute');
       const activeMute = await this.getActiveMute(chatId, senderId, settings.muteDurationHours);
+      const voiceSource =
+        webhookEventId && (activeMute || destructiveAccessGateActive)
+          ? captureVoiceSourceInput(update)
+          : null;
       if (activeMute) {
         if (!(await ensureDestructiveModerationAllowed('active-mute'))) {
           return;
@@ -2081,6 +2089,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
           createdAt,
           mute: activeMute,
+          voiceSource,
         });
         return;
       }
@@ -2096,6 +2105,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           text,
           createdAt,
+          voiceSource,
           nightModeForceCloseForever: settings.nightModeForceCloseForever,
           nightModeForceCloseUntil: settings.nightModeForceCloseUntil,
         });
@@ -2113,6 +2123,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           text,
           createdAt,
+          voiceSource,
           nightModeStartTimeMinutes: settings.nightModeStartTimeMinutes,
           nightModeEndTimeMinutes: settings.nightModeEndTimeMinutes,
           nightModeTimezone: settings.nightModeTimezone,
@@ -7328,39 +7339,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return 'Попробуйте ещё раз через несколько секунд.';
   }
 
-  private async handleActiveMuteMessage(params: {
-    chatId: string;
-    userId: string;
-    messageId: string;
-    text: string;
-    createdAt: string;
-    mute: ActiveMute;
-  }) {
-    const { chatId, userId, messageId, text, createdAt, mute } = params;
-    const deleteIntent: EnsureModerationDeleteIntentInput = {
-      chatId,
-      messageId,
-      reasonKey: 'MUTE_ACTIVE_DELETE',
-      ruleCode: 'MUTE_ACTIVE_DELETE',
-      subjectUserId: userId,
-      sourceMessageAt: createdAt,
-      entityType: 'CHAT',
-      messageAuthorKind: 'user',
-      event: {
-        userId,
-        eventType: 'MESSAGE',
-        maskedExcerpt: maskText(text),
-        score: 1,
-        metadata: {
-          reason: 'Message removed during active mute window',
-          muteEventId: mute.eventId,
-          muteIssuedAt: mute.issuedAt.toISOString(),
-          mutePermanent: mute.permanent,
-          ...(mute.expiresAt ? { muteExpiresAt: mute.expiresAt.toISOString() } : {}),
-          ...(mute.durationHours !== null ? { muteDurationHours: mute.durationHours } : {}),
-        },
-      },
-    };
+  private async handleActiveMuteMessage(params: ActiveMuteMessageInput) {
+    const { chatId, userId, messageId, text, mute } = params;
+    const deleteIntent = buildActiveMuteDeleteIntent(params);
     await this.ensureModerationDeleteIntent(deleteIntent);
 
     const claimed = await this.claimMessageScopedModerationAction({

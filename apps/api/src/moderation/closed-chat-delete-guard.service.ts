@@ -1,3 +1,4 @@
+import { isStateVoiceReason, readStateVoiceReasonKeys } from './state-voice-delete-source';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -53,7 +54,7 @@ export class ClosedChatDeleteGuardService {
         reasonDeadlines: { reasonKey: string; deadlineAtMs: number }[];
       }
   > {
-    const owned = params.reasons.filter((reason) =>
+    let owned = params.reasons.filter((reason) =>
       CLOSED_CHAT_DELETE_RULE_CODES.has(reason.ruleCode),
     );
     if (!owned.length) return 'not_applicable';
@@ -75,22 +76,29 @@ export class ClosedChatDeleteGuardService {
     if (!access || access.isAdmin === true || access.isOwner === true) this.reject();
     if (access.userId !== userId || access.isAdmin !== false || access.isOwner !== false)
       throw new Error('Closed chat author access unavailable');
-    const row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
-    if (!row) return 'absent';
-    const message = this.parser.parse({
-      type: 'message_created',
-      updateId: 'closed-chat-delete-guard',
-      message: row,
-    }).message;
-    if (
-      !message ||
-      message.chatId !== params.chatId ||
-      message.messageId !== params.messageId ||
-      message.senderId !== userId ||
-      message.entityType === 'channel' ||
-      Date.parse(message.createdAt) !== sourceAt
-    )
-      this.reject();
+    const voiceReasons = owned.filter(isStateVoiceReason);
+    if (voiceReasons.length) {
+      const keys = await readStateVoiceReasonKeys(this.prisma, params, voiceReasons);
+      owned = voiceReasons.filter((reason) => keys.includes(reason.reasonKey));
+      if (!owned.length) this.reject();
+    } else {
+      const row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
+      if (!row) return 'absent';
+      const message = this.parser.parse({
+        type: 'message_created',
+        updateId: 'closed-chat-delete-guard',
+        message: row,
+      }).message;
+      if (
+        !message ||
+        message.chatId !== params.chatId ||
+        message.messageId !== params.messageId ||
+        message.senderId !== userId ||
+        message.entityType === 'channel' ||
+        Date.parse(message.createdAt) !== sourceAt
+      )
+        this.reject();
+    }
     if (
       (await this.immunity.consumeForMessage({
         chatId: params.chatId,
@@ -102,6 +110,10 @@ export class ClosedChatDeleteGuardService {
     )
       this.reject();
     const finalSettings = await this.loadSettings(params.chatId, userId);
+    if (voiceReasons.length) {
+      const keys = await readStateVoiceReasonKeys(this.prisma, params, owned);
+      owned = owned.filter((reason) => keys.includes(reason.reasonKey));
+    }
     const validReasons = owned.filter((reason) => this.matches(reason, finalSettings, sourceAt));
     const reasonDeadlines = validReasons
       .map((reason) => {

@@ -1,3 +1,4 @@
+import { bindStateVoiceSource } from './state-voice-delete-source';
 import { ConfigService } from '@nestjs/config';
 import { ModerationStateDeleteGuardService } from './moderation-state-delete-guard.service';
 
@@ -68,6 +69,159 @@ function fixture({ ruleCode = 'MUTE_ACTIVE_DELETE' }: { ruleCode?: string } = {}
 }
 
 describe('current moderation state delete authorization', () => {
+  it.each([
+    'MUTE_ACTIVE_DELETE',
+    'GLOBAL_SPAMMER_MESSAGE_DELETE',
+    'LOCAL_ADMIN_BLOCK_MESSAGE_DELETE',
+    'BOT_ACCOUNT_MESSAGE_DELETE',
+    'INVITATION_ACCESS_DELETE',
+  ])(
+    'rejects expired %s before unavailable remote reads or immunity consumption',
+    async (ruleCode) => {
+      const s = fixture({ ruleCode });
+      s.max.getChatMemberAccess.mockRejectedValue(new Error('MAX unavailable'));
+      s.max.getExactMessageRow.mockRejectedValue(new Error('Source unavailable'));
+      await expect(
+        s.service.authorize({
+          ...s.input,
+          sourceMessageAt: new Date(Date.now() - 300_001),
+        }),
+      ).rejects.toMatchObject({ code: 'moderation_state_delete_no_longer_authorized' });
+      expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  function voiceFixture() {
+    const s = fixture();
+    const source = {
+      kind: 'created' as const,
+      chatId: s.input.chatId,
+      messageId: s.input.messageId,
+      userId: s.input.subjectUserId,
+      sourceAtMs: s.at.getTime(),
+      deadlineAtMs: s.at.getTime() + 300_000,
+    };
+    const stored = {
+      ...source,
+      sourceAt: s.at,
+      deadlineAt: new Date(source.deadlineAtMs),
+      receiptId: 'authenticated-receipt',
+      invalidatedAt: null as Date | null,
+    };
+    const read = jest.fn(async () => stored as typeof stored | null);
+    Object.assign(s.prisma, { moderationVoiceSource: { findUnique: read } });
+    const bound = bindStateVoiceSource(
+      {
+        ...s.input,
+        reasonKey: 'state',
+        ruleCode: 'MUTE_ACTIVE_DELETE',
+        sourceMessageAt: s.at,
+        event: { metadata: s.input.reasons[0]!.metadata },
+      },
+      source,
+    );
+    const input = {
+      ...s.input,
+      sourceMessageAt: s.at,
+      reasons: [{ ...s.input.reasons[0]!, metadata: bound.event!.metadata }],
+    };
+    s.max.getExactMessageRow.mockRejectedValue(new Error('Voice unavailable through GET'));
+    return { ...s, input, stored, read };
+  }
+  it('uses exact authenticated voice identity while retaining the mute expiry and current rights', async () => {
+    const s = voiceFixture();
+    await expect(s.service.authorize(s.input)).resolves.toMatchObject({
+      reasonKeys: ['state'],
+      deadlineAtMs: Date.parse(s.event.metadata.muteExpiresAt),
+    });
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    expect(s.max.getChatMemberAccess).toHaveBeenCalled();
+    expect(s.read).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    'missing',
+    'edited',
+    'author',
+    'time',
+    'receipt',
+    'extended',
+    'expired',
+    'history',
+    'rule',
+    'admin',
+    'immunity',
+    'released',
+  ])('refuses voice source with %s evidence', async (variant) => {
+    const s = voiceFixture();
+    if (variant === 'missing') s.read.mockResolvedValue(null);
+    if (variant === 'edited') s.stored.invalidatedAt = new Date();
+    if (variant === 'author') s.stored.userId = 'other';
+    if (variant === 'time') s.stored.sourceAt = new Date(s.at.getTime() - 1);
+    if (variant === 'receipt') s.stored.receiptId = '';
+    if (variant === 'extended') s.stored.deadlineAt = new Date(s.at.getTime() + 400_000);
+    if (variant === 'expired') s.stored.deadlineAt = new Date(0);
+    if (variant === 'history')
+      Object.assign(s.input.reasons[0]!.metadata as object, { automaticMuteCleanupId: 'mute-1' });
+    if (variant === 'rule')
+      Object.assign(s.input.reasons[0]!.metadata as object, {
+        stateVoiceSourceRuleCode: 'NIGHT_MODE_DELETE',
+      });
+    if (variant === 'admin')
+      s.max.getChatMemberAccess.mockResolvedValue({
+        userId: 'user-1',
+        isAdmin: true,
+        isOwner: false,
+      });
+    if (variant === 'immunity') s.immunity.consumeForMessage.mockResolvedValue('granted');
+    if (variant === 'released') s.event.id = 'manual-release';
+    await expect(s.service.authorize(s.input)).rejects.toMatchObject({
+      code: 'moderation_state_delete_no_longer_authorized',
+    });
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+  });
+  it.each(['edit', 'release', 'release-fence'])(
+    'rechecks voice authority after final awaited work: %s',
+    async (change) => {
+      const s = voiceFixture();
+      await expect(
+        s.service.authorize({
+          ...s.input,
+          beforeFinalAuthority: async () => {
+            if (change === 'edit') s.stored.invalidatedAt = new Date();
+            if (change === 'release') s.event.id = 'manual-release';
+            if (change === 'release-fence')
+              s.fence.isSanctionEventInvalidated.mockResolvedValue(true);
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'moderation_state_delete_no_longer_authorized' });
+    },
+  );
+  it('does not lend voice identity to an unrelated bot-account reason', async () => {
+    const s = voiceFixture();
+    await expect(
+      s.service.authorize({
+        ...s.input,
+        reasons: [
+          ...s.input.reasons,
+          { ruleCode: 'BOT_ACCOUNT_MESSAGE_DELETE', reasonKey: 'bot', metadata: {} },
+        ],
+      }),
+    ).resolves.toMatchObject({ reasonKeys: ['state'] });
+  });
+  it('rechecks ordinary mute release after the final asynchronous callback', async () => {
+    const s = fixture();
+    await expect(
+      s.service.authorize({
+        ...s.input,
+        beforeFinalAuthority: async () => {
+          s.event.id = 'manual-release';
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'moderation_state_delete_no_longer_authorized' });
+  });
+
   it('verifies the exact durable mute identity and current fence', async () => {
     const s = fixture();
     await expect(s.service.authorize(s.input)).resolves.toMatchObject({ reasonKeys: ['state'] });

@@ -1,3 +1,5 @@
+import { bindStateVoiceSource } from './state-voice-delete-source';
+import type { VoiceSourceInput } from './voice-webhook-source';
 import { EventType, Operator, SanctionAction, type Prisma } from '../prisma/prisma-client';
 import { maskText } from './text-mask.util';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
@@ -14,6 +16,7 @@ export type NightClosedChatMessage = {
   messageId: string;
   text: string;
   createdAt: string;
+  voiceSource?: VoiceSourceInput | null;
   nightModeStartTimeMinutes: number;
   nightModeEndTimeMinutes: number;
   nightModeTimezone: string;
@@ -24,6 +27,7 @@ export type ManuallyClosedChatMessage = {
   messageId: string;
   text: string;
   createdAt: string;
+  voiceSource?: VoiceSourceInput | null;
   nightModeForceCloseForever: boolean;
   nightModeForceCloseUntil: string;
 };
@@ -63,28 +67,31 @@ export class ClosedChatMessageModerationService {
     const startMinutes = normalizeDayMinutes(nightModeStartTimeMinutes, 23 * 60);
     const endMinutes = normalizeDayMinutes(nightModeEndTimeMinutes, 8 * 60);
     const timezone = normalizeNightModeTimezone(nightModeTimezone);
-    const deleteIntent: EnsureModerationDeleteIntentInput = {
-      chatId,
-      messageId,
-      reasonKey: 'NIGHT_MODE_DELETE',
-      ruleCode: 'NIGHT_MODE_DELETE',
-      subjectUserId: userId,
-      sourceMessageAt: createdAt,
-      entityType: 'CHAT',
-      messageAuthorKind: 'user',
-      event: {
-        userId,
-        eventType: 'MESSAGE',
-        maskedExcerpt: maskText(text),
-        score: 0.6,
-        metadata: {
-          reason: 'Message removed while chat is closed for the night',
-          nightModeTimezone: timezone,
-          nightModeStartTime: formatMinutesAsTime(startMinutes),
-          nightModeEndTime: formatMinutesAsTime(endMinutes),
+    const deleteIntent = bindStateVoiceSource(
+      {
+        chatId,
+        messageId,
+        reasonKey: 'NIGHT_MODE_DELETE',
+        ruleCode: 'NIGHT_MODE_DELETE',
+        subjectUserId: userId,
+        sourceMessageAt: createdAt,
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        event: {
+          userId,
+          eventType: 'MESSAGE',
+          maskedExcerpt: maskText(text),
+          score: 0.6,
+          metadata: {
+            reason: 'Message removed while chat is closed for the night',
+            nightModeTimezone: timezone,
+            nightModeStartTime: formatMinutesAsTime(startMinutes),
+            nightModeEndTime: formatMinutesAsTime(endMinutes),
+          },
         },
       },
-    };
+      params.voiceSource,
+    );
     await this.dependencies.ensureIntent(deleteIntent);
     const claimed = await this.dependencies.claimAction({
       chatId,
@@ -134,27 +141,30 @@ export class ClosedChatMessageModerationService {
 
   async handleNightModeForceCloseMessage(params: ManuallyClosedChatMessage) {
     const { chatId, userId, messageId, text, createdAt } = params;
-    const deleteIntent: EnsureModerationDeleteIntentInput = {
-      chatId,
-      messageId,
-      reasonKey: 'MANUAL_GROUP_CLOSE_DELETE',
-      ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
-      subjectUserId: userId,
-      sourceMessageAt: createdAt,
-      entityType: 'CHAT',
-      messageAuthorKind: 'user',
-      event: {
-        userId,
-        eventType: 'MESSAGE',
-        maskedExcerpt: maskText(text),
-        score: 0.6,
-        metadata: {
-          reason: 'Message removed while group is manually closed',
-          closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
-          closeUntil: params.nightModeForceCloseForever ? null : params.nightModeForceCloseUntil,
+    const deleteIntent = bindStateVoiceSource(
+      {
+        chatId,
+        messageId,
+        reasonKey: 'MANUAL_GROUP_CLOSE_DELETE',
+        ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+        subjectUserId: userId,
+        sourceMessageAt: createdAt,
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        event: {
+          userId,
+          eventType: 'MESSAGE',
+          maskedExcerpt: maskText(text),
+          score: 0.6,
+          metadata: {
+            reason: 'Message removed while group is manually closed',
+            closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
+            closeUntil: params.nightModeForceCloseForever ? null : params.nightModeForceCloseUntil,
+          },
         },
       },
-    };
+      params.voiceSource,
+    );
     await this.dependencies.ensureIntent(deleteIntent);
     const claimed = await this.dependencies.claimAction({
       chatId,
