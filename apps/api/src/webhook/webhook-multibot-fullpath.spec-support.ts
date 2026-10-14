@@ -30,6 +30,7 @@ import { ModerationService } from '../moderation/moderation.service';
 import { RuleEngineService } from '../moderation/rule-engine.service';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import { SanctionService } from '../moderation/sanction.service';
+import { LinkHistoryDeleteGuardService } from '../moderation/link-history-delete-guard.service';
 import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
 import { MessageLimitsDeleteGuardService } from '../moderation/message-limits-delete-guard.service';
 import { ParticipantModerationImmunityService } from '../moderation/participant-moderation-immunity.service';
@@ -469,7 +470,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     links,
     deleteQueue as never,
     config,
-    {} as never,
+    new LinkHistoryDeleteGuardService(prisma as never, max, links, config),
     {} as never,
     {} as never,
     {} as never,
