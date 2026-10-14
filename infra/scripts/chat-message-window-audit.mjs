@@ -119,6 +119,15 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
         WHEN intent.last_error_code = 'delete_pre_dispatch_guard_rejected'
           THEN 'predispatch_other'
         WHEN intent.last_error_code = 'route_lookup_failed' THEN 'route_lookup_failed'
+        WHEN intent.last_error_code IN (
+          'max_action_executor_proof_rejected', 'unverified_message_not_found',
+          'delete_candidates_exhausted', 'no_delete_capable_bot', 'predelete_presence_unknown',
+          'moderation_state_delete_no_longer_authorized', 'closed_chat_delete_no_longer_authorized',
+          'snapshot_missing', 'not_admin_or_owner', 'entity_type_unknown',
+          'missing_chat_delete_permission', 'missing_channel_delete_permission',
+          'chat_not_found', 'no_active_membership', 'snapshot_stale',
+          'access_state_unconfirmed', 'access_denied', 'bot_not_actionable')
+          THEN intent.last_error_code
         WHEN intent.last_error_code = 'message_limits_delete_no_longer_authorized'
           THEN 'message_limits_no_longer_authorized'
         WHEN intent.last_error_code IS NULL AND intent.last_error IS NULL THEN 'none'
@@ -129,6 +138,9 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
       'last_attempt_at', intent.last_attempt_at, 'next_attempt_at', intent.next_attempt_at,
       'reason_sample', (SELECT json_build_object(
         'voice_blocked', coalesce(bool_or(rule_code = 'VOICE_BLOCKED_DELETE'), false),
+        'mute_active', coalesce(bool_or(rule_code = 'MUTE_ACTIVE_DELETE'), false),
+        'night_mode', coalesce(bool_or(rule_code = 'NIGHT_MODE_DELETE'), false),
+        'manual_close', coalesce(bool_or(rule_code = 'MANUAL_GROUP_CLOSE_DELETE'), false),
         'truncated', count(*) > 64)
         FROM (SELECT rule_code FROM moderation_delete_intent_reasons
           WHERE intent_id = intent.id ORDER BY reason_key LIMIT 65) bounded_reasons))
@@ -138,7 +150,7 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
   FROM details
 )
 SELECT json_build_object(
-  'schema_version', 2, 'audit', 'chat_message_window', 'observed_at', statement_timestamp(),
+  'schema_version', 3, 'audit', 'chat_message_window', 'observed_at', statement_timestamp(),
   'from_at', (SELECT from_at FROM bounds), 'until_at', (SELECT until_at FROM bounds),
   'window_closed', (SELECT until_at <= statement_timestamp() AT TIME ZONE 'UTC' FROM bounds),
   'per_status_cap', 512, 'sampled_receipts', (SELECT count(*) FROM samples),

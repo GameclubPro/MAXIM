@@ -60,6 +60,20 @@ export class ModerationStateDeleteGuardService {
   > {
     let reasons = params.reasons.filter((r) => MODERATION_STATE_DELETE_RULES.has(r.ruleCode));
     if (!reasons.length) return 'not_applicable';
+    // FLAG: A failed remote read must not keep expired current-message authority retrying.
+    // Historical automatic cleanup retains its separately verified source and deadline.
+    if (params.sourceMessageAt) {
+      const sourceAt = params.sourceMessageAt.getTime();
+      if (!Number.isSafeInteger(sourceAt) || sourceAt <= 0 || sourceAt > Date.now()) this.reject();
+      if (Date.now() >= sourceAt + 5 * 60_000) {
+        reasons = reasons.filter(
+          (reason) =>
+            reason.ruleCode === 'MUTE_ACTIVE_DELETE' &&
+            typeof this.metadata(reason.metadata).automaticMuteCleanupId === 'string',
+        );
+        if (!reasons.length) this.reject();
+      }
+    }
     const userId = params.subjectUserId;
     if (!userId || this.bots.isKnownBotUserId(userId)) this.reject();
     if (

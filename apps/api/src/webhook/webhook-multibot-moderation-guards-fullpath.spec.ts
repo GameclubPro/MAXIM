@@ -1490,6 +1490,69 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     );
   });
 
+  it('terminates an expired legacy mute deletion despite unavailable GET and a future retry deadline', async () => {
+    const s = await fixture(2);
+    const [chatId] = await s.seedCatalog(1, { maxMessageLengthEnabled: false });
+    const sourceMessageAt = new Date(Date.now() - 360_000);
+    const retryUntilAt = new Date(Date.now() + 86_400_000);
+    const mute = await s.prisma.moderationEvent.create({
+      data: {
+        chatId: chatId!,
+        userId: 'fixture-user',
+        eventType: 'MEMBER_ACTION',
+        ruleCode: 'MANUAL_MUTE',
+        action: 'MUTE',
+        operator: 'ADMIN',
+        score: 1,
+        createdAt: new Date(sourceMessageAt.getTime() - 1_000),
+        metadata: { mutePermanent: true },
+      },
+    });
+    const lookup = jest
+      .spyOn(s.max, 'getExactMessageRow')
+      .mockRejectedValue(new MaxExactMessageLookupMissingIdError());
+    const messageId = `expired-legacy-mute-${randomUUID()}`;
+    const result = await s.intents.ensureAndAttempt({
+      chatId: chatId!,
+      messageId,
+      subjectUserId: 'fixture-user',
+      sourceMessageAt,
+      originBotId: s.bots[0]!.id,
+      routingPolicy: 'origin_first',
+      entityType: 'CHAT',
+      messageAuthorKind: 'user',
+      retryUntilAt,
+      reasonKey: 'MUTE_ACTIVE_DELETE',
+      ruleCode: 'MUTE_ACTIVE_DELETE',
+      event: { userId: 'fixture-user', eventType: 'MESSAGE', metadata: { muteEventId: mute.id } },
+    });
+    expect(result.kind).toBe('terminal');
+    expect(lookup).not.toHaveBeenCalled();
+    expect(s.effects).toEqual([]);
+    const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { chatId_messageId: { chatId: chatId!, messageId } },
+    });
+    expect(intent).toMatchObject({
+      status: 'FAILED_TERMINAL',
+      sourceMessageAt,
+      retryUntilAt,
+      deleteDispatchStartedAt: null,
+      remoteDeleteSucceededAt: null,
+    });
+    await s.intents.attemptIntent(intent.id);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(s.effects).toEqual([]);
+    lookup.mockRestore();
+    const nextMessageId = `fresh-after-expired-mute-${randomUUID()}`;
+    const nextId = await s.ingest({ chatId: chatId!, messageId: nextMessageId, text: 'Next' });
+    await s.drain();
+    await waitForUserDelete(s, chatId!, nextMessageId);
+    expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status).toBe(
+      'PROCESSED',
+    );
+    expect(s.failures).toEqual([]);
+  });
+
   it('persists exact reason ownership: a rejected stopword cannot inherit a valid length DELETE', async () => {
     const s = await fixture();
     const [chatId] = await s.seedCatalog(1);

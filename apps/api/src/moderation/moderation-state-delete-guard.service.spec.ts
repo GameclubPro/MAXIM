@@ -69,6 +69,30 @@ function fixture({ ruleCode = 'MUTE_ACTIVE_DELETE' }: { ruleCode?: string } = {}
 }
 
 describe('current moderation state delete authorization', () => {
+  it.each([
+    'MUTE_ACTIVE_DELETE',
+    'GLOBAL_SPAMMER_MESSAGE_DELETE',
+    'LOCAL_ADMIN_BLOCK_MESSAGE_DELETE',
+    'BOT_ACCOUNT_MESSAGE_DELETE',
+    'INVITATION_ACCESS_DELETE',
+  ])(
+    'rejects expired %s before unavailable remote reads or immunity consumption',
+    async (ruleCode) => {
+      const s = fixture({ ruleCode });
+      s.max.getChatMemberAccess.mockRejectedValue(new Error('MAX unavailable'));
+      s.max.getExactMessageRow.mockRejectedValue(new Error('Source unavailable'));
+      await expect(
+        s.service.authorize({
+          ...s.input,
+          sourceMessageAt: new Date(Date.now() - 300_001),
+        }),
+      ).rejects.toMatchObject({ code: 'moderation_state_delete_no_longer_authorized' });
+      expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
   function voiceFixture() {
     const s = fixture();
     const source = {
