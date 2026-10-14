@@ -165,12 +165,6 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
       WHEN e.state::text <> 'GRANTED' THEN 'actor_denied'
       WHEN e.user_role::text NOT IN ('OWNER', 'ADMIN') THEN 'actor_not_admin'
       WHEN e.entity_type IS DISTINCT FROM t.entity_type THEN 'actor_edge_type_mismatch'
-      WHEN (
-        e.expires_at > statement_timestamp()
-        OR (e.expires_at IS NULL AND e.checked_at > statement_timestamp() - interval '7 days')
-      ) IS NOT TRUE THEN 'actor_edge_expired'
-      WHEN (e.checked_at > statement_timestamp() - interval '15 minutes') IS NOT TRUE
-        THEN 'actor_authority_stale'
       WHEN chat.entity_type IS DISTINCT FROM t.entity_type THEN 'chat_type_mismatch'
       WHEN b.bot_access_state::text NOT IN ('CONFIRMED_ADMIN', 'CONFIRMED_OWNER')
         THEN 'bot_not_admin'
@@ -227,7 +221,7 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
   GROUP BY 1, 2, 3, 4, 5
 )
 SELECT json_build_object(
-  'schema_version', 1, 'audit', 'publisher_publications',
+  'schema_version', 2, 'audit', 'publisher_publications',
   'readiness_scope', 'metadata_only', 'capabilities_and_activation_checked', false,
   'occurrence_sample_cap_per_status', 32, 'target_sample_cap_per_occurrence', 8,
   'delivery_sample_cap_per_occurrence', 8,
