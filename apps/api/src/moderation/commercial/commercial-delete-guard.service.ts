@@ -162,6 +162,7 @@ export class CommercialDeleteGuardService {
         trafficClass: 'critical',
         actionHealthLane: 'critical',
         sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+        ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
         timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5000,
       });
       // FLAG: Follow-up sanctions and notices require a current, exact regular-member proof.

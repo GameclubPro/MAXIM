@@ -21,6 +21,7 @@ import {
   type EnabledNavigationTargetOptions,
 } from './navigation/enabled-navigation-targets';
 import { adaptMaxMessageNavigationView } from './navigation/max-navigation-view.adapter';
+import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from './moderation.service.support';
 
 export type LinkHistoryDeleteGuardResult = 'absent' | 'allowed' | 'not_applicable';
 
@@ -203,6 +204,7 @@ export class LinkHistoryDeleteGuardService {
         sourceTag: usesLiveSemantics
           ? MAX_API_SOURCE_TAGS.MODERATION_DELETE
           : LINK_HISTORY_RECOVERY_SOURCE_TAG,
+        ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
         botId: params.botId,
         bypassCache: true,
       },
@@ -229,6 +231,7 @@ export class LinkHistoryDeleteGuardService {
       sourceTag: usesLiveSemantics
         ? MAX_API_SOURCE_TAGS.MODERATION_DELETE
         : LINK_HISTORY_RECOVERY_SOURCE_TAG,
+      ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
       botId: params.botId,
       bypassCache: true,
     });

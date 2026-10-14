@@ -64,6 +64,11 @@ import { ConfigService } from '@nestjs/config';
 import { ModerationStateDeleteGuardService } from '../moderation/moderation-state-delete-guard.service';
 import { RequiredSubscriptionExecutionGuardService } from '../moderation/required-subscription-execution-guard.service';
 import { fingerprintModerationSettings } from '../moderation/message-limits-delete-guard.service';
+import { LinkHistoryDeleteGuardService } from '../moderation/link-history-delete-guard.service';
+import {
+  LINK_BLOCKED_DELETE_RULE_CODE,
+  LINK_HISTORY_RECOVERY_RULE_CODE,
+} from '../moderation/link-history-recovery.util';
 
 const TINY_JPEG_BASE64 =
   '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
@@ -11928,7 +11933,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     },
   );
 
-  describe.each(['state', 'subscription'] as const)(
+  describe.each(['state', 'subscription', 'live-links', 'history-links'] as const)(
     '%s authority read health isolation',
     (kind) => {
       it.each(
@@ -11948,12 +11953,43 @@ describe('MaxClientService inline keyboard guardrails', () => {
           const httpService = { request: jest.fn().mockReturnValue(throwError(() => error)) };
           const client = createService(httpService);
           const health = (client as any).actionHealthService;
+          const at = Date.now();
           const settings = {
             requiredSubscriptionEnabled: true,
             requiredSubscriptionChannelIds: ['target'],
+            linkPolicy: 'BLOCKLIST_ONLY',
+            linkPolicyRevision: 1,
+            linkPolicyEffectiveAt: new Date(at - 60_000),
             chat: { entityType: 'CHAT', admins: [] },
           };
-          const prisma = { chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) } };
+          const prisma = {
+            chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
+            $transaction: (operations: Promise<unknown>[]) => Promise.all(operations),
+            domainAllowlist: {
+              findMany: jest.fn().mockResolvedValue([]),
+              aggregate: jest.fn().mockResolvedValue({ _max: { removeAfterAt: null } }),
+            },
+            moderationDeleteIntentReason: {
+              findMany: jest.fn().mockResolvedValue([
+                kind === 'history-links'
+                  ? {
+                      ruleCode: LINK_HISTORY_RECOVERY_RULE_CODE,
+                      metadata: {
+                        contentFingerprint: 'a'.repeat(64),
+                        policyRevision: 1,
+                        policyEffectiveAt: settings.linkPolicyEffectiveAt.toISOString(),
+                      },
+                    }
+                  : {
+                      ruleCode: LINK_BLOCKED_DELETE_RULE_CODE,
+                      metadata: {
+                        linkPolicyRevision: 1,
+                        linkPolicyEffectiveAt: settings.linkPolicyEffectiveAt.toISOString(),
+                      },
+                    },
+              ]),
+            },
+          };
           const bots = { isKnownBotUserId: () => false };
           const immunity = { consumeForMessage: jest.fn() };
           const guard =
@@ -11967,14 +12003,21 @@ describe('MaxClientService inline keyboard guardrails', () => {
                   {} as never,
                   new ConfigService(),
                 )
-              : new RequiredSubscriptionExecutionGuardService(
-                  prisma as never,
-                  client,
-                  bots as never,
-                  {} as never,
-                  immunity as never,
-                  new ConfigService(),
-                );
+              : kind === 'subscription'
+                ? new RequiredSubscriptionExecutionGuardService(
+                    prisma as never,
+                    client,
+                    bots as never,
+                    {} as never,
+                    immunity as never,
+                    new ConfigService(),
+                  )
+                : new LinkHistoryDeleteGuardService(
+                    prisma as never,
+                    client,
+                    bots as never,
+                    new ConfigService({ MODERATION_LINK_HISTORY_DELETE_ENABLED: true }),
+                  );
           if (boundary === 'source') {
             jest.spyOn(client, 'getChatMemberAccess').mockResolvedValue({
               userId: 'user-1',
@@ -11982,32 +12025,36 @@ describe('MaxClientService inline keyboard guardrails', () => {
               isOwner: false,
             } as never);
           }
-          const at = Date.now();
           try {
-            await expect(
-              guard.authorize({
-                chatId: '-123',
-                messageId: 'mid-guard-read',
-                subjectUserId: 'user-1',
-                botId: '777000_bot',
-                reasons: [
-                  {
-                    ruleCode:
-                      kind === 'state' ? 'MUTE_ACTIVE_DELETE' : 'REQUIRED_SUBSCRIPTION_DELETE',
-                    reasonKey: 'reason',
-                    metadata: {
-                      requiredSubscriptionGuardVersion: 1,
-                      requiredSubscriptionSourceAtMs: at,
-                      requiredSubscriptionDeadlineAtMs: at + 300_000,
-                      requiredSubscriptionPolicySha256: fingerprintModerationSettings(
-                        settings,
-                        'REQUIRED_SUBSCRIPTION',
-                      ),
-                    },
-                  },
-                ],
-              }),
-            ).rejects.toBe(error);
+            const input = {
+              chatId: '-123',
+              messageId: 'mid-guard-read',
+              subjectUserId: 'user-1',
+              botId: '777000_bot',
+            };
+            const operation =
+              guard instanceof LinkHistoryDeleteGuardService
+                ? guard.assertIntentStillActionable({ ...input, intentId: 'intent-guard-read' })
+                : guard.authorize({
+                    ...input,
+                    reasons: [
+                      {
+                        ruleCode:
+                          kind === 'state' ? 'MUTE_ACTIVE_DELETE' : 'REQUIRED_SUBSCRIPTION_DELETE',
+                        reasonKey: 'reason',
+                        metadata: {
+                          requiredSubscriptionGuardVersion: 1,
+                          requiredSubscriptionSourceAtMs: at,
+                          requiredSubscriptionDeadlineAtMs: at + 300_000,
+                          requiredSubscriptionPolicySha256: fingerprintModerationSettings(
+                            settings,
+                            'REQUIRED_SUBSCRIPTION',
+                          ),
+                        },
+                      },
+                    ],
+                  });
+            await expect(operation).rejects.toBe(error);
             expect(immunity.consumeForMessage).not.toHaveBeenCalled();
             expect(httpService.request).toHaveBeenCalled();
             expect(
