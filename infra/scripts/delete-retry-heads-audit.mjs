@@ -80,7 +80,7 @@ export function buildDeleteRetryHeadsAuditSql(explain = false) {
           'not_admin_or_owner', 'entity_type_unknown', 'missing_chat_delete_permission',
           'missing_channel_delete_permission', 'chat_not_found', 'no_active_membership',
           'snapshot_stale', 'access_state_unconfirmed', 'access_denied', 'bot_not_actionable',
-          'moderation_delete_reasons_rejected', 'live_reason_invalid', 'live_policy_inactive',
+          'moderation_delete_reasons_no_longer_authorized', 'live_reason_invalid', 'live_policy_inactive',
           'live_policy_revision_changed', 'live_author_access_unknown', 'live_admin_immune',
           'live_message_identity_changed', 'live_violation_no_longer_present')
           THEN row.last_error_code

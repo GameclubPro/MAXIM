@@ -40,7 +40,8 @@ test('separates recent link failures and confirmed effects without exposing raw 
       ('private-link','RETRYABLE','2026-10-13','2026-10-14','delete_pre_dispatch_guard_rejected',
        'MAX direct message lookup returned a response without the requested id',NULL),
       ('private-denied','WAITING_CAPABILITY','2026-10-14','2026-10-14','access_denied','private-error',NULL),
-      ('private-terminal','FAILED_TERMINAL','2026-10-14','2026-10-14','private-code','private-error',NULL),
+      ('private-terminal','FAILED_TERMINAL','2026-10-14','2026-10-14','moderation_delete_reasons_no_longer_authorized','private-error',NULL),
+      ('private-unknown','FAILED_TERMINAL','2026-10-14','2026-10-14','private-code','private-error',NULL),
       ('private-succeeded','SUCCEEDED','2026-10-14','2026-10-14',NULL,NULL,'2026-10-14');
     INSERT INTO moderation_delete_intent_reasons VALUES
       ('private-link','r','LINK_BLOCKED_DELETE'),('private-denied','r','MUTE_ACTIVE_DELETE'),
@@ -67,6 +68,13 @@ test('separates recent link failures and confirmed effects without exposing raw 
     recent.some((row) => row.status === 'FAILED_TERMINAL' && row.last_failure_family === 'other'),
   );
   assert.ok(recent.some((row) => row.status === 'SUCCEEDED' && row.remote_success_marker));
+  assert.ok(
+    recent.some(
+      (row) =>
+        row.status === 'FAILED_TERMINAL' &&
+        row.last_failure_family === 'moderation_delete_reasons_no_longer_authorized',
+    ),
+  );
   assert.doesNotMatch(JSON.stringify(r), /private-|lookup returned|last_error/u);
 });
 test(
