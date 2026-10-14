@@ -143,12 +143,23 @@ native('legacy disposition production ingestion activation regressions', () => {
     await ingress?.onModuleDestroy();
     jest.restoreAllMocks();
     expect(deniedMax).not.toHaveBeenCalled();
-    // FLAG: Bound foreign-key checks for the 5,000-row fixture and retain owned
-    // identities after a failed cleanup so the next hook can finish their removal.
-    while (receipts.length > 0) {
-      const ids = receipts.slice(0, 200);
+    // FLAG: Remove all owned referencing rows before their disposition proofs.
+    // The proof FK has no reverse index; interleaved deletion repeatedly scans
+    // the large live fixture. Keep identities until proof cleanup succeeds.
+    const cleanupStartedAt = performance.now();
+    const cleanupReceiptCount = receipts.length;
+    for (let offset = 0; offset < receipts.length; offset += 200) {
+      const ids = receipts.slice(offset, offset + 200);
       await prisma.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: ids } } });
       await prisma.webhookEvent.deleteMany({ where: { id: { in: ids } } });
+    }
+    if (cleanupReceiptCount >= 1000) {
+      // FLAG: Only this disposable store is vacuumed, after the query-plan assertions.
+      // Reclaim the removed fixture's dead pages before repeated FK checks.
+      await prisma.$executeRaw`VACUUM (ANALYZE) webhook_events`;
+    }
+    while (receipts.length > 0) {
+      const ids = receipts.slice(0, 200);
       await prisma.webhookLegacyReceiptDisposition.deleteMany({
         where: { receiptId: { in: ids } },
       });
@@ -164,6 +175,12 @@ native('legacy disposition production ingestion activation regressions', () => {
       certificates.shift();
     }
     await prisma.chat.deleteMany({ where: { id: { in: chats.splice(0) } } });
+    if (cleanupReceiptCount >= 1000) {
+      console.info('LEGACY_FIXTURE_CLEANUP_NATIVE_COST', {
+        receipts: cleanupReceiptCount,
+        elapsedMs: Math.round(performance.now() - cleanupStartedAt),
+      });
+    }
   });
 
   afterAll(async () => {
