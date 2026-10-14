@@ -37,36 +37,71 @@ export function buildDeleteRetryHeadsAuditSql(explain = false) {
   const branches = ['PENDING', 'RETRYABLE', 'WAITING_CAPABILITY', 'AMBIGUOUS', 'IN_PROGRESS'].map(
     (
       status,
-    ) => `(SELECT id, status, next_attempt_at, 'oldest_retry' AS sample_kind FROM moderation_delete_intents
+    ) => `(SELECT id, status, next_attempt_at, updated_at, 'oldest_retry' AS sample_kind FROM moderation_delete_intents
       WHERE status = '${status}'::"ModerationDeleteIntentStatus"
       ORDER BY next_attempt_at LIMIT 33)`,
   );
+  // FLAG: Recent observations use the status/update index independently of old retry heads.
+  // Successful rows retain remote evidence; neither a status nor a saved failure proves
+  // current access or authorizes replay. Every additional branch keeps the same sentinel cap.
+  const recent = [
+    'AMBIGUOUS',
+    'RETRYABLE',
+    'WAITING_CAPABILITY',
+    'FAILED_TERMINAL',
+    'SUCCEEDED',
+  ].map(
+    (
+      status,
+    ) => `(SELECT id, status, next_attempt_at, updated_at, 'recent_update' AS sample_kind FROM moderation_delete_intents
+      WHERE status = '${status}'::"ModerationDeleteIntentStatus" ORDER BY updated_at DESC LIMIT 33)`,
+  );
   return `${explain ? 'EXPLAIN (FORMAT JSON) ' : ''}WITH heads AS MATERIALIZED (
-    ${branches.join('\nUNION ALL\n')}
-    UNION ALL (SELECT id, status, next_attempt_at, 'recent_update' AS sample_kind FROM moderation_delete_intents
-      WHERE status = 'AMBIGUOUS'::"ModerationDeleteIntentStatus" ORDER BY updated_at DESC LIMIT 33)
+    ${[...branches, ...recent].join('\nUNION ALL\n')}
   ), samples AS MATERIALIZED (
-    SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY sample_kind, status ORDER BY next_attempt_at, id) AS ordinal
+    SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY sample_kind, status ORDER BY
+      CASE WHEN sample_kind = 'oldest_retry' THEN next_attempt_at END,
+      CASE WHEN sample_kind = 'recent_update' THEN updated_at END DESC, id) AS ordinal
       FROM heads) ranked WHERE ordinal <= 32
   ), observations AS (
     SELECT md5(samples.id) AS intent_hash, samples.status, samples.sample_kind, samples.next_attempt_at,
-      row.updated_at, row.attempt_count, row.last_attempt_at, row.retry_until_at,
+      row.updated_at, row.source_message_at, row.attempt_count, row.last_attempt_at, row.retry_until_at,
       row.delete_dispatch_started_at IS NOT NULL AS dispatch_started,
       row.remote_delete_succeeded_at IS NOT NULL AS remote_success_marker,
       row.lease_expires_at, row.last_status_code,
+      CASE
+        WHEN row.last_error_code = 'delete_pre_dispatch_guard_rejected'
+          AND row.last_error = 'MAX direct message lookup returned a response without the requested id'
+          THEN 'predispatch_exact_source_missing_id'
+        WHEN row.last_error_code IN (
+          'delete_pre_dispatch_guard_rejected', 'max_action_executor_proof_rejected',
+          'route_lookup_failed', 'unverified_message_not_found', 'delete_candidates_exhausted',
+          'no_delete_capable_bot', 'predelete_presence_unknown', 'snapshot_missing',
+          'not_admin_or_owner', 'entity_type_unknown', 'missing_chat_delete_permission',
+          'missing_channel_delete_permission', 'chat_not_found', 'no_active_membership',
+          'snapshot_stale', 'access_state_unconfirmed', 'access_denied', 'bot_not_actionable',
+          'moderation_delete_reasons_rejected', 'live_reason_invalid', 'live_policy_inactive',
+          'live_policy_revision_changed', 'live_author_access_unknown', 'live_admin_immune',
+          'live_message_identity_changed', 'live_violation_no_longer_present')
+          THEN row.last_error_code
+        WHEN row.last_error_code IS NULL AND row.last_error IS NULL THEN 'none'
+        ELSE 'other' END AS last_failure_family,
       (SELECT json_build_object('truncated', count(*) > 64,
         'codes', coalesce(json_agg(CASE WHEN reason.rule_code IN (
           'VOICE_BLOCKED_DELETE', 'BOT_MESSAGE_AUTO_DELETE', 'COMMERCIAL_OCR_DELETE',
+          'LINK_BLOCKED_DELETE', 'LINK_HISTORY_RECOVERY', 'MUTE_ACTIVE_DELETE',
+          'NIGHT_MODE_DELETE', 'MANUAL_GROUP_CLOSE_DELETE',
           'DUPLICATE_DELETE', 'REQUIRED_SUBSCRIPTION_DELETE', 'CHANNEL_AUTO_POST_FORWARD_REPLACEMENT_CLEANUP',
           'MESSAGE_TOO_LONG_DELETE', 'STICKER_RATE_LIMIT_DELETE', 'PHOTO_BLOCKED_DELETE',
           'VIDEO_BLOCKED_DELETE', 'FILE_BLOCKED_DELETE', 'MUTE_DELETE') THEN reason.rule_code ELSE 'other' END), '[]'::json))
        FROM (SELECT rule_code FROM moderation_delete_intent_reasons WHERE intent_id = samples.id
           ORDER BY reason_key LIMIT 65) reason) AS reasons
-    FROM samples CROSS JOIN LATERAL (SELECT updated_at, attempt_count, last_attempt_at, retry_until_at,
-      delete_dispatch_started_at, remote_delete_succeeded_at, lease_expires_at, last_status_code
+    FROM samples CROSS JOIN LATERAL (SELECT updated_at, source_message_at, attempt_count, last_attempt_at, retry_until_at,
+      delete_dispatch_started_at, remote_delete_succeeded_at, lease_expires_at, last_status_code, last_error_code, last_error
       FROM moderation_delete_intents WHERE id = samples.id OFFSET 0) row
-  ) SELECT json_build_object('schema_version',1,'audit','delete_retry_heads',
+  ) SELECT json_build_object('schema_version',2,'audit','delete_retry_heads',
     'observed_at',statement_timestamp(),'policy_checked',false,'remote_effect_proven',false,
+    'failure_classification_authority','saved_metadata_only',
     'per_group_cap',32,'sample_truncated',EXISTS (SELECT 1 FROM heads GROUP BY sample_kind, status HAVING count(*) > 32),
     'rows',coalesce((SELECT json_agg(observations ORDER BY status,next_attempt_at,intent_hash) FROM observations),'[]'::json));\n`;
 }
