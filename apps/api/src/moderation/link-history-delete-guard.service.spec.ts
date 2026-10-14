@@ -214,12 +214,55 @@ describe('LinkHistoryDeleteGuardService', () => {
     await expect(harness.service.assertIntentStillActionable(baseInput)).resolves.toBe('allowed');
   });
 
-  it('fails closed when MAX no longer confirms the current author access', async () => {
-    const harness = buildHarness({ remoteAccess: null });
+  it.each(['live', 'history'] as const)(
+    'checks a fresh complete admin roster for an omitted %s author',
+    async (reasonKind) => {
+      const h = buildHarness({ remoteAccess: null, reasonKind });
+      await expect(h.service.assertIntentStillActionable(baseInput)).resolves.toBe('allowed');
+      expect(h.maxClient.getChatAdminAccesses).toHaveBeenCalledWith(
+        'chat-1',
+        expect.objectContaining({ botId: 'delete-bot', bypassCache: true }),
+      );
+      expect(h.maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
+    },
+  );
 
-    await expect(harness.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
-      code: 'history_author_access_unknown',
+  it('protects every returned administrator even if its flags are omitted', async () => {
+    const h = buildHarness({ remoteAccess: null });
+    h.maxClient.getChatAdminAccesses.mockResolvedValue([{ userId: 'user-1' }]);
+    await expect(h.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code: 'history_admin_immune',
     });
+    expect(h.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+  });
+
+  it.each([403, 404, 429, 503, 'incomplete', 'malformed'])(
+    'does not authorize through a failed admin roster (%s)',
+    async (status) => {
+      const h = buildHarness({ remoteAccess: null });
+      const error = Object.assign(new Error(String(status)), { response: { status } });
+      h.maxClient.getChatAdminAccesses.mockRejectedValue(error);
+      await expect(h.service.assertIntentStillActionable(baseInput)).rejects.toBe(error);
+      expect(h.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still requires the exact source author after roster fallback', async () => {
+    const h = buildHarness({
+      remoteAccess: null,
+      exactRow: buildMessage({ senderId: 'another-user' }),
+    });
+    await expect(h.service.assertIntentStillActionable(baseInput)).rejects.toMatchObject({
+      code: 'history_message_identity_changed',
+    });
+  });
+
+  it('does not fall back after a member transport failure', async () => {
+    const h = buildHarness();
+    const error = Object.assign(new Error('member unavailable'), { response: { status: 404 } });
+    h.maxClient.getChatMemberAccess.mockRejectedValue(error);
+    await expect(h.service.assertIntentStillActionable(baseInput)).rejects.toBe(error);
+    expect(h.maxClient.getChatAdminAccesses).not.toHaveBeenCalled();
   });
 
   it('invalidates an intent created before a scheduled allowlist expiry took effect', async () => {
@@ -293,6 +336,7 @@ function buildHarness(
     adaptMaxMessageNavigationView(defaultExactRow),
   );
   const historyReason = {
+    reasonKey: 'history-reason',
     ruleCode: LINK_HISTORY_RECOVERY_RULE_CODE,
     metadata: {
       contentFingerprint: fingerprint,
@@ -301,6 +345,7 @@ function buildHarness(
     },
   };
   const liveReason = {
+    reasonKey: 'live-reason',
     ruleCode: LINK_BLOCKED_DELETE_RULE_CODE,
     metadata: options.invalidLiveMetadata
       ? { reason: 'legacy reason without a policy fence' }
@@ -341,6 +386,9 @@ function buildHarness(
     },
   };
   const maxClient = {
+    getChatAdminAccesses: jest
+      .fn<Promise<Array<{ userId: string }>>, []>()
+      .mockResolvedValue([{ userId: 'different-admin' }]),
     getExactMessageRow: jest.fn().mockResolvedValue(exactRow),
     getChatMemberAccess: jest.fn().mockResolvedValue(
       options.remoteAccess === undefined

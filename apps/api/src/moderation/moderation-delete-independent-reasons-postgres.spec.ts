@@ -1,3 +1,7 @@
+import {
+  LinkHistoryDeleteGuardService,
+  LinkHistoryDeleteGuardRejectedError,
+} from './link-history-delete-guard.service';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
@@ -166,6 +170,127 @@ type Authorization = {
       expect(actual.leaseExpiresAt).toBeNull();
       expect(actual.remoteDeleteSucceededAt).toBeNull();
       expect(enqueueWakeup).toHaveBeenCalledTimes(addIndependent ? 1 : 0);
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    'unchanged',
+    'metadata',
+    'score',
+    'new-link',
+    'independent',
+    'ambiguous',
+    'remote-success',
+  ] as const)(
+    'settles a rejected link without self-retry while preserving %s evidence',
+    async (change) => {
+      const s = await fixture();
+      await prisma.moderationDeleteIntentReason.deleteMany({ where: { intentId: s.intent.id } });
+      const reason = await prisma.moderationDeleteIntentReason.create({
+        data: {
+          id: randomUUID(),
+          intentId: s.intent.id,
+          reasonKey: 'link-1',
+          ruleCode: 'LINK_BLOCKED_DELETE',
+          metadata: { linkPolicyRevision: 1, linkPolicyEffectiveAt: new Date().toISOString() },
+        },
+      });
+      const guard = new LinkHistoryDeleteGuardService(
+        prisma as never,
+        s.max as never,
+        { isKnownBotUserId: () => false } as never,
+        new ConfigService(),
+      );
+      let rejection: unknown;
+      try {
+        await guard.assertIntentStillActionable({
+          intentId: s.intent.id,
+          chatId: s.chatId,
+          messageId: s.intent.messageId,
+          subjectUserId: 'user',
+          botId: 'healthy-executor',
+        });
+      } catch (error) {
+        rejection = error;
+      }
+      expect(rejection).toBeInstanceOf(LinkHistoryDeleteGuardRejectedError);
+      expect(rejection).toMatchObject({
+        code: 'live_policy_inactive',
+        reasonFingerprint: expect.any(String),
+      });
+      const token = randomUUID();
+      await prisma.moderationDeleteIntent.update({
+        where: { id: s.intent.id },
+        data: {
+          status: 'IN_PROGRESS',
+          leaseToken: token,
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+          attemptCount: 4000,
+          ...(change === 'ambiguous'
+            ? { deleteDispatchStartedAt: new Date(), deleteDispatchStartedBotId: 'old-executor' }
+            : {}),
+          ...(change === 'remote-success'
+            ? { remoteDeleteSucceededAt: new Date(), remoteDeleteSucceededBotId: 'old-executor' }
+            : {}),
+        },
+      });
+      const service = s.service as unknown as {
+        loadRequiredIntent(id: string): Promise<unknown>;
+        finishTerminalPreDispatchGuardRejection(
+          intent: unknown,
+          token: string,
+          details: unknown,
+          error: unknown,
+        ): Promise<unknown>;
+      };
+      const enqueueWakeup = jest.fn().mockResolvedValue(undefined);
+      Object.assign(service, { enqueueWakeup, mode: 'on', canaryChatIds: new Set() });
+      const original = await service.loadRequiredIntent(s.intent.id);
+      if (change === 'score')
+        await prisma.moderationDeleteIntentReason.update({
+          where: { id: reason.id },
+          data: { score: 5 },
+        });
+      if (change === 'metadata')
+        await prisma.moderationDeleteIntentReason.update({
+          where: { id: reason.id },
+          data: { metadata: { linkPolicyRevision: 2 } },
+        });
+      if (change === 'new-link' || change === 'independent')
+        await prisma.moderationDeleteIntentReason.create({
+          data: {
+            id: randomUUID(),
+            intentId: s.intent.id,
+            reasonKey: 'new-reason',
+            ruleCode: change === 'new-link' ? 'LINK_BLOCKED_DELETE' : 'MESSAGE_TOO_LONG_DELETE',
+          },
+        });
+      await service.finishTerminalPreDispatchGuardRejection(
+        original,
+        token,
+        {
+          statusCode: null,
+          errorCode: 'live_policy_inactive',
+          message: 'Policy inactive',
+        },
+        rejection,
+      );
+      const actual = await prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: s.intent.id },
+      });
+      const expected = ['ambiguous', 'remote-success'].includes(change)
+        ? 'AMBIGUOUS'
+        : change === 'unchanged'
+          ? 'FAILED_TERMINAL'
+          : 'RETRYABLE';
+      expect(actual.status).toBe(expected);
+      expect(actual.leaseToken).toBeNull();
+      expect(actual.retryUntilAt).toEqual(s.intent.retryUntilAt);
+      expect(actual.attemptCount).toBe(4000);
+      expect(enqueueWakeup).toHaveBeenCalledTimes(expected === 'FAILED_TERMINAL' ? 0 : 1);
+      expect(Boolean(actual.deleteDispatchStartedAt)).toBe(change === 'ambiguous');
+      expect(Boolean(actual.remoteDeleteSucceededAt)).toBe(change === 'remote-success');
       expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
     },
   );

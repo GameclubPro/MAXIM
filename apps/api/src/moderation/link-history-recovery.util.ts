@@ -13,6 +13,27 @@ export const LINK_HISTORY_RECOVERY_RULE_CODE = 'LINK_HISTORY_RECOVERY';
 export const LINK_BLOCKED_DELETE_RULE_CODE = 'LINK_BLOCKED_DELETE';
 export const LINK_HISTORY_RECOVERY_SOURCE_TAG = 'link_history_recovery';
 
+// FLAG: Include the complete durable reason set, so a rejection cannot self-retry
+// on unchanged reasons but never consumes a concurrently added independent reason.
+export function fingerprintLinkDeleteReasons(
+  reasons: readonly { ruleCode: string; reasonKey: string; score?: unknown; metadata: unknown }[],
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify(
+        reasons
+          .map(({ ruleCode, reasonKey, score, metadata }) => ({
+            ruleCode,
+            reasonKey,
+            score,
+            metadata,
+          }))
+          .sort((a, b) => a.reasonKey.localeCompare(b.reasonKey)),
+      ),
+    )
+    .digest('hex');
+}
+
 export type LinkHistoryListedMessageMetadata = {
   messageId: string;
   senderId: string | null;

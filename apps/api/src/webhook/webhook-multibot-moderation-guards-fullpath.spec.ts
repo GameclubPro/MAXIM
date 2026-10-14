@@ -35,6 +35,133 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     return h;
   }
 
+  it.each(['off', 'shadow', 'on'] as const)(
+    'deletes links from an omitted member once and progresses mirrored receipts (%s)',
+    async (mode) => {
+      h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 4, mode });
+      const s = h;
+      const [chatId] = await s.seedCatalog(1, {
+        maxMessageLengthEnabled: false,
+        antiSpamEnabled: false,
+        linkPolicy: 'BLOCKLIST_ONLY',
+        linkPolicyRevision: 1,
+        linkPolicyEffectiveAt: new Date(Date.now() - 60_000),
+      });
+      const member = s.max.getChatMemberAccess.bind(s.max);
+      jest
+        .spyOn(s.max, 'getChatMemberAccess')
+        .mockImplementation((chat, user, options) =>
+          user === 'fixture-user' ? Promise.resolve(null) : member(chat, user, options),
+        );
+      const roster = jest.spyOn(s.max, 'getChatAdminAccesses');
+      const messageId = `link-missing-member-${randomUUID()}`;
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: 'https://blocked.example/path',
+          }),
+        ),
+      );
+      await s.drain();
+      await waitForUserDelete(s, chatId!, messageId);
+      expect(roster).toHaveBeenCalledWith(chatId, expect.objectContaining({ bypassCache: true }));
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === messageId),
+      ).toHaveLength(1);
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+        include: { reasons: true },
+      });
+      expect(intent.status).toBe('SUCCEEDED');
+      expect(intent.reasons).toEqual(
+        expect.arrayContaining([expect.objectContaining({ ruleCode: 'LINK_BLOCKED_DELETE' })]),
+      );
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      const next = await s.ingest({
+        chatId: chatId!,
+        messageId: `after-link-${randomUUID()}`,
+        text: 'ordinary text',
+      });
+      await s.drain();
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: next } })).toMatchObject({
+        status: 'PROCESSED',
+      });
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === messageId),
+      ).toHaveLength(1);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it('backs off an unavailable author roster without dispatch or repeated immediate retries', async () => {
+    const s = await fixture(2);
+    const effectiveAt = new Date(Date.now() - 60_000);
+    const [chatId] = await s.seedCatalog(1, {
+      maxMessageLengthEnabled: false,
+      antiSpamEnabled: false,
+      linkPolicy: 'BLOCKLIST_ONLY',
+      linkPolicyRevision: 1,
+      linkPolicyEffectiveAt: effectiveAt,
+    });
+    const messageId = `link-roster-unavailable-${randomUUID()}`;
+    const at = source(s, chatId!, messageId, 'https://blocked.example/path');
+    const ensured = await s.intents.ensureIntent(
+      {
+        chatId: chatId!,
+        messageId,
+        subjectUserId: 'fixture-user',
+        sourceMessageAt: at,
+        originBotId: s.bots[0]!.id,
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        reasonKey: 'link',
+        ruleCode: 'LINK_BLOCKED_DELETE',
+        event: {
+          userId: 'fixture-user',
+          eventType: 'MESSAGE',
+          metadata: { linkPolicyRevision: 1, linkPolicyEffectiveAt: effectiveAt.toISOString() },
+        },
+      },
+      { enqueue: false },
+    );
+    if (!ensured.intentId) throw new Error('Expected an executable link intent');
+    await s.prisma.moderationDeleteIntent.update({
+      where: { id: ensured.intentId },
+      data: { attemptCount: 4000 },
+    });
+    const member = s.max.getChatMemberAccess.bind(s.max);
+    jest
+      .spyOn(s.max, 'getChatMemberAccess')
+      .mockImplementation((chat, user, options) =>
+        user === 'fixture-user' ? Promise.resolve(null) : member(chat, user, options),
+      );
+    const roster = jest
+      .spyOn(s.max, 'getChatAdminAccesses')
+      .mockRejectedValue(
+        Object.assign(new Error('Roster unavailable'), { response: { status: 503 } }),
+      );
+    const before = Date.now();
+    expect(
+      await s.intents.attemptIntent(ensured.intentId, { deferGuardFailure: true }),
+    ).toMatchObject({ status: 'RETRYABLE', confirmed: false });
+    const actual = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { id: ensured.intentId },
+    });
+    expect(actual.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + 240_000);
+    expect(actual.attemptCount).toBe(4001);
+    expect(actual.deleteDispatchStartedAt).toBeNull();
+    expect(actual.remoteDeleteSucceededAt).toBeNull();
+    expect(s.effects).toEqual([]);
+    await s.intents.attemptIntent(ensured.intentId, { deferGuardFailure: true });
+    expect(roster).toHaveBeenCalledTimes(1);
+    expect(s.messages.has(messageId)).toBe(true);
+  });
+
   it('deletes sticker cooldown violations and later muted stickers across mirrored receipts', async () => {
     h = await createMultibotHarness({
       databaseUrl,

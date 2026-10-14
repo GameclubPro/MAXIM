@@ -12,6 +12,7 @@ import {
   createMessageContentFingerprint,
   deriveLinkPolicySemanticEffectiveAt,
   filterActionableNavigationTargets,
+  fingerprintLinkDeleteReasons,
   isLinkHistoryPolicyViolation,
   parseLinkHistoryListedMessage,
 } from './link-history-recovery.util';
@@ -40,6 +41,7 @@ export class LinkHistoryDeleteGuardRejectedError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    readonly reasonFingerprint?: string,
   ) {
     super(message);
     this.name = 'LinkHistoryDeleteGuardRejectedError';
@@ -71,26 +73,28 @@ export class LinkHistoryDeleteGuardService {
     subjectUserId: string | null;
     botId: string;
   }): Promise<LinkHistoryDeleteGuardResult> {
-    const reasonRows = await this.prisma.moderationDeleteIntentReason.findMany({
-      where: {
-        intentId: params.intentId,
-        ruleCode: { in: [LINK_BLOCKED_DELETE_RULE_CODE, LINK_HISTORY_RECOVERY_RULE_CODE] },
-      },
-      select: { ruleCode: true, metadata: true },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
+      where: { intentId: params.intentId },
+      select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
+      orderBy: { reasonKey: 'asc' },
+      take: 65,
     });
+    if (allReasons.length > 64) throw new Error('Link guard reason set exceeds safety limit');
+    const reasonRows = allReasons.filter((reason) =>
+      [LINK_BLOCKED_DELETE_RULE_CODE, LINK_HISTORY_RECOVERY_RULE_CODE].includes(reason.ruleCode),
+    );
     if (reasonRows.length === 0) {
       return 'not_applicable';
     }
+    const reasonFingerprint = fingerprintLinkDeleteReasons(allReasons);
+    const reject = (code: string, message: string) =>
+      new LinkHistoryDeleteGuardRejectedError(code, message, reasonFingerprint);
     const liveReasonRows = reasonRows.filter(
       (row) => row.ruleCode === LINK_BLOCKED_DELETE_RULE_CODE,
     );
     const usesLiveSemantics = liveReasonRows.length > 0;
     if (!usesLiveSemantics && !this.deleteEnabled) {
-      throw new LinkHistoryDeleteGuardRejectedError(
-        'history_delete_disabled',
-        'Link history recovery deletion is disabled',
-      );
+      throw reject('history_delete_disabled', 'Link history recovery deletion is disabled');
     }
 
     const recoveryReasons = reasonRows
@@ -101,20 +105,20 @@ export class LinkHistoryDeleteGuardService {
       .map((row) => this.parseLiveReasonMetadata(row.metadata))
       .filter((reason): reason is LiveReasonMetadata => reason !== null);
     if (usesLiveSemantics ? liveReasons.length === 0 : recoveryReasons.length === 0) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics ? 'live_reason_invalid' : 'history_reason_invalid',
         'Link deletion intent has no valid policy fence',
       );
     }
 
     if (!params.subjectUserId) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics ? 'live_message_identity_changed' : 'history_message_identity_changed',
         'Link deletion intent no longer identifies the message author',
       );
     }
     if (this.maxBotLinkService.isKnownBotUserId(params.subjectUserId)) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics ? 'live_runtime_bot_immune' : 'history_runtime_bot_immune',
         'Runtime bot messages are immune from link deletion',
       );
@@ -165,7 +169,7 @@ export class LinkHistoryDeleteGuardService {
       settings.linkPolicy === 'ALERT_ONLY' ||
       (usesLiveSemantics ? !settings.linkPolicyEffectiveAt : !policyEffectiveAt)
     ) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics ? 'live_policy_inactive' : 'history_policy_inactive',
         'Strict link policy is no longer active',
       );
@@ -184,14 +188,14 @@ export class LinkHistoryDeleteGuardService {
     if (
       usesLiveSemantics ? matchingLiveReasons.length === 0 : matchingRecoveryReasons.length === 0
     ) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics ? 'live_policy_revision_changed' : 'history_policy_revision_changed',
         'Link policy changed after the deletion candidate was recorded',
       );
     }
 
     if (settings.chat.admins.some((admin) => admin.userId === params.subjectUserId)) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics ? 'live_admin_immune' : 'history_admin_immune',
         'Current chat administrators are immune from link deletion',
       );
@@ -209,18 +213,30 @@ export class LinkHistoryDeleteGuardService {
         bypassCache: true,
       },
     );
+    let authorInAdminRoster = false;
     if (!remoteAccess) {
-      throw new LinkHistoryDeleteGuardRejectedError(
-        usesLiveSemantics ? 'live_author_access_unknown' : 'history_author_access_unknown',
-        'MAX did not confirm the current access level of the message author',
-      );
+      // FLAG: An omitted member is not proof of ordinary access. Only a fresh, complete,
+      // validated admin roster can exclude admin immunity, including departed authors.
+      // Transport/pagination failures propagate; exact source and policy checks still follow.
+      const admins = await this.maxClient.getChatAdminAccesses(params.chatId, {
+        trafficClass: 'critical',
+        sourceTag: usesLiveSemantics
+          ? MAX_API_SOURCE_TAGS.MODERATION_DELETE
+          : LINK_HISTORY_RECOVERY_SOURCE_TAG,
+        ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
+        botId: params.botId,
+        bypassCache: true,
+      });
+      authorInAdminRoster = admins.some((admin) => String(admin.userId) === params.subjectUserId);
     }
     if (
-      (remoteAccess.userId && String(remoteAccess.userId) !== params.subjectUserId) ||
-      remoteAccess.isAdmin ||
-      remoteAccess.isOwner
+      authorInAdminRoster ||
+      (remoteAccess &&
+        ((remoteAccess.userId && String(remoteAccess.userId) !== params.subjectUserId) ||
+          remoteAccess.isAdmin ||
+          remoteAccess.isOwner))
     ) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics ? 'live_admin_immune' : 'history_admin_immune',
         'MAX reports a different author identity or current administrator access',
       );
@@ -246,7 +262,7 @@ export class LinkHistoryDeleteGuardService {
       !metadata.senderId ||
       metadata.senderId !== params.subjectUserId
     ) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics ? 'live_message_identity_changed' : 'history_message_identity_changed',
         'Exact message identity or author no longer matches the link deletion intent',
       );
@@ -256,7 +272,7 @@ export class LinkHistoryDeleteGuardService {
       policyEffectiveAt &&
       metadata.timestampMs < policyEffectiveAt.getTime()
     ) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         'history_policy_revision_changed',
         'Message predates the current link policy baseline',
       );
@@ -268,7 +284,7 @@ export class LinkHistoryDeleteGuardService {
       !usesLiveSemantics &&
       !matchingRecoveryReasons.some((reason) => reason.contentFingerprint === fingerprint)
     ) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         'history_content_changed',
         'Message content changed after the recovery candidate was recorded',
       );
@@ -284,7 +300,7 @@ export class LinkHistoryDeleteGuardService {
         targets,
       )
     ) {
-      throw new LinkHistoryDeleteGuardRejectedError(
+      throw reject(
         usesLiveSemantics
           ? 'live_violation_no_longer_present'
           : 'history_violation_no_longer_present',

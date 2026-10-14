@@ -200,6 +200,7 @@ import {
 import {
   LINK_BLOCKED_DELETE_RULE_CODE,
   LINK_HISTORY_RECOVERY_RULE_CODE,
+  fingerprintLinkDeleteReasons,
 } from './link-history-recovery.util';
 import {
   isPhotoDuplicateMatchKindAllowed,
@@ -4455,6 +4456,8 @@ export class ModerationDeleteIntentService {
 
   private isTerminalDeleteGuardRejection(error: unknown): boolean {
     if (error instanceof WebhookLegacyHoldRejectedError) return true;
+    if (error instanceof LinkHistoryDeleteGuardRejectedError)
+      return !['live_author_access_unknown', 'history_author_access_unknown'].includes(error.code);
     if (error instanceof MessageRetentionGuardError) return error.disposition === 'skip';
     if (
       error instanceof ProfanityDeleteGuardRejectedError ||
@@ -4467,8 +4470,7 @@ export class ModerationDeleteIntentService {
       error instanceof ClosedChatDeleteGuardRejectedError ||
       error instanceof ModerationStateDeleteRejectedError ||
       error instanceof RequiredSubscriptionExecutionRejectedError ||
-      error instanceof ModerationDeleteReasonsRejectedError ||
-      error instanceof LinkHistoryDeleteGuardRejectedError
+      error instanceof ModerationDeleteReasonsRejectedError
     ) {
       return true;
     }
@@ -6331,16 +6333,20 @@ export class ModerationDeleteIntentService {
               })
             : null;
         const guardedReasonSetChanged =
-          guardError instanceof ModerationDeleteReasonsRejectedError
-            ? guardError.reasonFingerprint !==
-              fingerprintGuardedDeleteReasons(
-                await tx.moderationDeleteIntentReason.findMany({
-                  where: { intentId: intent.id },
-                  select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
-                  orderBy: { reasonKey: 'asc' },
-                  take: 65,
-                }),
-              )
+          guardError instanceof ModerationDeleteReasonsRejectedError ||
+          guardError instanceof LinkHistoryDeleteGuardRejectedError
+            ? typeof guardError.reasonFingerprint === 'string' &&
+              guardError.reasonFingerprint !==
+                (guardError instanceof LinkHistoryDeleteGuardRejectedError
+                  ? fingerprintLinkDeleteReasons
+                  : fingerprintGuardedDeleteReasons)(
+                  await tx.moderationDeleteIntentReason.findMany({
+                    where: { intentId: intent.id },
+                    select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
+                    orderBy: { reasonKey: 'asc' },
+                    take: 65,
+                  }),
+                )
             : null;
         const independentReasonExecutable =
           // FLAG: A sole retention reason is not independent moderation authority.
