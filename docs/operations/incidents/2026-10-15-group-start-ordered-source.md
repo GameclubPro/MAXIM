@@ -62,12 +62,36 @@ At `20:42:07.001Z`, the named bot logged an in-chat handshake with outcome
 `already_connected`. The complete `20:42Z–20:43Z` audit found 19 processed
 receipts without truncation, including a separate successful DELETE with one
 attempt. The handshake log is not SEND proof: its send helper catches failures.
-The administrator's visible-response confirmation or an exact SEND receipt is
-still required. Expired commands from `20:09Z` stay expired.
+The owner subsequently confirmed that the bot works again. This human report and
+the fresh processing evidence establish recovery of the reported interaction;
+they are not a reconstructed SEND ledger receipt. Expired commands from `20:09Z`
+stay expired.
 
 The maintenance pause remains in monitoring evidence. Recovery of this one
 source does not establish recovery of the other inventoried chats or begin
 the final 30-minute acceptance window.
+
+## Fleet impact
+
+The complete follow-up online inventory with cutoff `20:54:00Z` retained 115 rows
+across 112 chats, now with 87 unfinished started owners and 28 released markers.
+The repaired source accounts for the one-owner change. The latest remaining
+started owner was created at `18:09:59.431Z`: none of this inventory's unfinished
+started owners was created after the `18:33:21Z` release. This is evidence for
+accumulated earlier blockers in the inspected scope, not a guarantee against new
+or unrelated failures.
+
+A complete quarantine audit of `20:52Z–20:53Z` found three fresh receipts waiting
+on two older sources, created at `2026-10-15T16:46:27.506Z` and
+`2026-10-14T20:27:35.694Z`. These are ongoing effects outside the restored source;
+the identifier-free report does not count all currently affected chats. The wider
+112-chat inventory also includes released markers and must not be described as
+112 confirmed nonworking chats.
+
+The remaining owners need a complete current inventory and the bounded session
+preview with individual source proofs, exclusions and measured maintenance
+feasibility. Preserve the existing successful one-source authorization as its
+own scope; a fleet session requires a separately reviewed concrete decision.
 
 ## Follow-up constraints
 
