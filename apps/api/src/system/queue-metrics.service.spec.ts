@@ -200,6 +200,76 @@ describe('QueueMetricsService', () => {
     }
   });
 
+  it.each([0, 120])(
+    'keeps raw queued waiting age and independent received lag %s',
+    async (receivedAgeSec) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-09-02T12:00:00.000Z'));
+      try {
+        const queued = {
+          id: 'queued-waiting',
+          createdAt: new Date(Date.now() - 290_000),
+          nextEnqueueAt: new Date(Date.now() + 5_000),
+          executionDeadlineAt: new Date(Date.now() + 10_000),
+        };
+        const queryRaw = jest
+          .fn()
+          .mockResolvedValueOnce(
+            receivedAgeSec
+              ? [{ id: 'independent', createdAt: new Date(Date.now() - receivedAgeSec * 1000) }]
+              : [],
+          )
+          .mockResolvedValueOnce([queued])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([{ ...queued, readinessWaiting: true }]);
+        const service = Object.create(QueueMetricsService.prototype) as QueueMetricsService;
+        Object.assign(service, { prisma: { $queryRaw: queryRaw } });
+        expect(await service.getLagSnapshot()).toMatchObject({
+          effectiveLagSec: 290,
+          oldestQueuedLagSec: 290,
+          operationalLagSec: receivedAgeSec,
+          readinessWaitingCount: 1,
+        });
+        expect(queryRaw).toHaveBeenCalledTimes(4);
+        expect(queryRaw.mock.calls[3]![0].text).toContain('WHERE "status" = \'QUEUED\'');
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('combines both bounded readiness samples and retains either raw sentinel', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-02T12:00:00.000Z'));
+    try {
+      const waiting = {
+        id: 'waiting',
+        createdAt: new Date(Date.now() - 290_000),
+        nextEnqueueAt: new Date(Date.now() + 5_000),
+        executionDeadlineAt: new Date(Date.now() + 10_000),
+        readinessWaiting: true,
+      };
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([waiting])
+        .mockResolvedValueOnce([waiting])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([waiting])
+        .mockResolvedValueOnce(
+          Array.from({ length: 65 }, (_, i) => ({ ...waiting, id: `queued-${i}` })),
+        );
+      const service = Object.create(QueueMetricsService.prototype) as QueueMetricsService;
+      Object.assign(service, { prisma: { $queryRaw: queryRaw } });
+      expect(await service.getLagSnapshot()).toMatchObject({
+        effectiveLagSec: 290,
+        operationalLagSec: 290,
+        readinessWaitingCount: 65,
+        readinessHeadLimitReached: true,
+      });
+      expect(queryRaw).toHaveBeenCalledTimes(5);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('reports missing or unreadable message duplicate counters as unavailable', async () => {
     const service = Object.create(QueueMetricsService.prototype) as QueueMetricsService;
     (service as any).auxiliaryQueuesByName = {};

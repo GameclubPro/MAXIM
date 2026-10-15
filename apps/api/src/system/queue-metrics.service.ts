@@ -691,15 +691,25 @@ export class QueueMetricsService {
       // bounded status index read reports a lower bound, never a misleading total.
       this.prisma.$queryRaw<Array<{ createdAt: Date }>>(buildQuarantinedWebhookSampleQuery()),
     ]);
-    let now = new Date();
-    let operationalReceivedLag: ReturnType<typeof resolveWebhookOperationalLag> | null = null;
-    if (received?.nextEnqueueAt && received.executionDeadlineAt) {
-      const heads = await this.prisma.$queryRaw<WebhookOperationalLagHead[]>(
-        buildWebhookOperationalLagQuery(),
-      );
-      now = new Date();
-      operationalReceivedLag = resolveWebhookOperationalLag(heads, now);
-    }
+    // FLAG: Preparation and execution can both persist an unstarted readiness wait.
+    // Inspect each status independently; an unrelated/raw head must retain its pressure.
+    const [receivedHeads, queuedHeads] = await Promise.all(
+      ([WebhookStatus.RECEIVED, WebhookStatus.QUEUED] as const).map((status, index) => {
+        const oldest = index === 0 ? received : queued;
+        return oldest?.nextEnqueueAt && oldest.executionDeadlineAt
+          ? this.prisma.$queryRaw<WebhookOperationalLagHead[]>(
+              buildWebhookOperationalLagQuery(status),
+            )
+          : null;
+      }),
+    );
+    const now = new Date();
+    const operationalReceivedLag = receivedHeads
+      ? resolveWebhookOperationalLag(receivedHeads, now)
+      : null;
+    const operationalQueuedLag = queuedHeads
+      ? resolveWebhookOperationalLag(queuedHeads, now)
+      : null;
     const oldestReceivedLagSec = received
       ? Math.max(0, (now.getTime() - received.createdAt.getTime()) / 1_000)
       : 0;
@@ -716,7 +726,7 @@ export class QueueMetricsService {
       oldestReceivedLagSec,
       effectiveLagSec: Math.max(oldestQueuedLagSec, oldestReceivedLagSec),
       operationalLagSec: Math.max(
-        oldestQueuedLagSec,
+        operationalQueuedLag?.lagSec ?? oldestQueuedLagSec,
         operationalReceivedLag?.lagSec ?? oldestReceivedLagSec,
       ),
       quarantinedCountLowerBound: quarantined.length,
@@ -725,8 +735,12 @@ export class QueueMetricsService {
         quarantined[0]?.createdAt instanceof Date
           ? Math.max(0, (now.getTime() - quarantined[0].createdAt.getTime()) / 1_000)
           : 0,
-      readinessWaitingCount: operationalReceivedLag?.readinessWaitingCount ?? 0,
-      readinessHeadLimitReached: operationalReceivedLag?.readinessHeadLimitReached ?? false,
+      readinessWaitingCount:
+        (operationalReceivedLag?.readinessWaitingCount ?? 0) +
+        (operationalQueuedLag?.readinessWaitingCount ?? 0),
+      readinessHeadLimitReached:
+        (operationalReceivedLag?.readinessHeadLimitReached ?? false) ||
+        (operationalQueuedLag?.readinessHeadLimitReached ?? false),
       generatedAt: now.toISOString(),
     };
   }

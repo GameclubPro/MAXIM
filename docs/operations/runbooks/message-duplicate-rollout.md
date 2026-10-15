@@ -31,6 +31,19 @@ The separate perceptual/photo-only filter is retired, its authority is permanent
 queue consumer only abandons old ordering entries. Never infer equality from media IDs or
 bypass content verification. Legacy storage fields remain for rollback-safe schema compatibility.
 
+## Native photo admission near a deadline
+
+The photo sandbox requires at least 1,000 ms remaining at admission: 500 ms for
+startup/work and the existing independent 500 ms physical teardown reserve. A
+request below that floor returns the existing `decode_deadline_exceeded` outcome
+before spawning a child. Its existing bounded media deferral/expiry path keeps the
+original job deadline and saved proof checkpoints; admission never renews authority.
+This floor is not a promise that every image finishes in 500 ms. A native task that
+actually times out or is abandoned still triggers mandatory sandbox recycling.
+The 30-second ceiling, single-worker isolation, byte/pixel budgets and exact raster
+hash are unchanged. Verify the boundary and next-request usability with
+`native-photo-sandbox.spec.ts`, alongside hash, decode-budget and media worker tests.
+
 ## Fixed Publication Windows
 
 `dup:window:v1:<chat-hash>:v2:` stores a fixed window per verified fingerprint, anchored to an accepted original's

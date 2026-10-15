@@ -145,6 +145,29 @@ before editing it; copying these notes does not install a fix or prove the deplo
    snapshot encoding (`BULLMQ_JOB_JSON_UTF8_BASE64_V1`); PostgreSQL JSONB cannot represent every
    JavaScript string. A missing Docker object is failed inventory proof, not evidence of ownership.
 
+## Operational lag and executor waits
+
+Raw receipt age stays visible for both RECEIVED and QUEUED. An exact enforced
+`EXECUTION_WAITING` checkpoint may measure lateness from the earlier of its saved
+next-enqueue time and original deadline only while the canonical owner is unstarted,
+uncompleted and has neither lease field. PENDING is valid only before RECEIVED
+preparation; READY also requires a saved preparation timestamp. The receipt, semantic
+key, authority version and deadline must match. No health read changes execution authority.
+
+The queued next-enqueue timestamp comes from the outbox's positive delayed-job
+reconciliation; it schedules a repair check, not the actual BullMQ retry. Without that
+saved schedule the raw age remains. An advancing repair check cannot hide an overdue
+original deadline. Unknown proof, unrelated work and ordered successors keep raw
+pressure; a timeout, unavailable bot or quarantine is not successful moderation.
+
+Each status is queried only when its oldest receipt has retry/deadline metadata, with
+65 indexed heads and an undiscounted sentinel per status (at most 130 total). Keep both
+native retained-history plans, malformed/leased/started/expired negative cases, raw
+metrics and the real canonical → BullMQ delay → outbox reconciliation regression in
+`webhook-operational-lag-postgres.spec.ts`, `queue-metrics.service.spec.ts` and
+`webhook-membership-readiness-fullpath.spec.ts`. Also run executor deadline/access
+restoration and governor/health regressions before changing this classification.
+
 ## Minimum regression coverage by change
 
 Dependency quarantine changes additionally require native
