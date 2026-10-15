@@ -68,6 +68,7 @@ async function main() {
       mode: 'on',
       quotaProfile: 'production',
       productionEnqueueCapacity: enqueue === 'production',
+      productionOutboxSelection: enqueue === 'production',
       recoverDueDeletes: true,
     });
     let failureSnapshot: ((error: unknown) => Promise<unknown>) | undefined;
@@ -149,7 +150,9 @@ async function main() {
         const pump = (async () => {
           try {
             while (producing) {
-              await harness.pumpOnce();
+              // Keep whole-fixture accounting out of every admission tick. The bounded
+              // sampling below and final drain still inspect pending work and effects.
+              await harness.pumpWork();
               await wait(10);
             }
             await harness.drain(60_000);
@@ -418,6 +421,10 @@ async function saveReports() {
     },
     transport: 'local simulated MAX with production quota defaults; no external requests',
     fixtureTopology: {
+      outboxSelection:
+        enqueue === 'production' ? 'production enqueueBatch' : 'fixture receipt list',
+      systemMode: 'controlled normal; production governor not exercised',
+      productionOutboxPollFloorMs: enqueue === 'production' ? 200 : null,
       physicalWebhookQueues: 1,
       physicalDeleteQueues: 1,
       webhookWorkerConcurrency: 4,

@@ -66,6 +66,7 @@ export type MultibotHarnessOptions = {
   mode?: 'off' | 'shadow' | 'on';
   quotaProfile?: 'production' | 'fixture';
   productionEnqueueCapacity?: boolean;
+  productionOutboxSelection?: boolean;
   recoverDueDeletes?: boolean;
   recoverAutomaticMuteHistory?: boolean;
 };
@@ -93,6 +94,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   const preparationPoolMax = readPrismaPoolConfig().max ?? 10;
   if (options.productionEnqueueCapacity && preparationPoolMax !== 24) {
     throw new Error('Production enqueue fixture requires PRISMA_PG_POOL_MAX=24');
+  }
+  if (options.productionOutboxSelection && !options.productionEnqueueCapacity) {
+    throw new Error('Production outbox selection requires the production enqueue fixture budget');
   }
   const sqlPoolMax = options.productionEnqueueCapacity ? 24 : 12;
   const enqueueConcurrency = options.productionEnqueueCapacity ? 32 : 8;
@@ -613,7 +617,11 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     queue as never,
     queue as never,
     queue as never,
-    {} as never,
+    {
+      // FLAG: Controlled normal-mode fixture, not evidence of production governor capacity.
+      getEffectiveSnapshot: async () => ({ mode: 'normal', source: 'auto', condition: 'normal' }),
+      peekCachedSnapshot: () => ({ mode: 'normal', source: 'auto', condition: 'normal' }),
+    } as never,
     legacyHolds,
   );
   Object.assign(outbox, {
@@ -756,7 +764,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     return result.webhookEventId!;
   }
 
-  async function pumpOnce() {
+  async function pumpWork() {
     if (failures.length) throw failures[0];
     // FLAG: The production SQL sweeper owns future retries even when BullMQ is empty.
     // Keep its cadence and fixture opt-in so deliberate pending/unknown cases stay inspectable.
@@ -766,6 +774,14 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     }
     await ruleFollowups.sweep();
     if (options.recoverAutomaticMuteHistory) await automaticMuteCleanup.sweep();
+    if (options.productionOutboxSelection) {
+      const startedAt = Date.now();
+      await (outbox as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, 200 - (Date.now() - startedAt))),
+      );
+      return;
+    }
     const candidates = await prisma.webhookEvent.findMany({
       where: {
         id: { in: receiptIds },
@@ -787,6 +803,10 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
         candidates.map((event) => ({ ...event, priority: 5 })),
         enqueueConcurrency,
       );
+  }
+
+  async function pumpOnce() {
+    await pumpWork();
     const pending = await prisma.webhookEvent.count({
       where: { id: { in: receiptIds }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
     });
@@ -886,6 +906,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   }
 
   async function dispose() {
+    await outbox.onModuleDestroy();
     await Promise.all([worker.close(), deleteWorker.close()]);
     await Promise.all([workerRedis.quit(), deleteWorkerRedis.quit()]);
     await queue.obliterate({ force: true });
@@ -894,7 +915,6 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     await ingress.onModuleDestroy();
     await readiness.onModuleDestroy();
     moderation.onModuleDestroy();
-    outbox.onModuleDestroy();
     links.onModuleDestroy();
     for (const role of peerRouteRoles) role.onModuleDestroy();
     await Promise.all([
@@ -961,6 +981,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     messages,
     seedCatalog,
     ingest,
+    pumpWork,
     pumpOnce,
     drain,
     waitForConfirmedDelete,
