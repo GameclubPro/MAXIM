@@ -29,6 +29,10 @@ import type { ModerationNoticeImmediateOptions } from './moderation-sanction-not
 import { MessageDuplicateGuardRejectedError } from './message-duplicate/message-duplicate-guard.contract';
 import type { RequiredSubscriptionNoticePlan } from './required-subscription-notice-plan';
 import {
+  recordModerationGuardFailure,
+  type ModerationGuardFailureBoundary,
+} from './moderation-guard-failure-diagnostic';
+import {
   buildRequiredSubscriptionNoticeAuthority,
   readRequiredSubscriptionNoticeAuthority,
   RequiredSubscriptionNoticeRejectedError,
@@ -439,11 +443,22 @@ export function createRequiredSubscriptionAssertion(
 
 export function createRequiredSubscriptionSanctionCallbacks(lease: Guard, source: Guard) {
   const assertCurrent = sequenceModerationGuards(lease, source);
+  const observe =
+    (boundary: ModerationGuardFailureBoundary): Guard =>
+    async (beforeFinalAuthority) => {
+      try {
+        await assertCurrent(beforeFinalAuthority);
+      } catch (error) {
+        recordModerationGuardFailure(error, boundary);
+        throw error;
+      }
+    };
+  const authorize = observe('required_subscription_sanction_authorize');
   return {
-    noticeBeforeSend: assertCurrent,
-    beforeSanctionMutation: assertCurrent,
+    noticeBeforeSend: observe('required_subscription_sanction_notice'),
+    beforeSanctionMutation: observe('required_subscription_sanction_mutation'),
     authorizeSanction: async () => {
-      await assertCurrent();
+      await authorize();
       return true;
     },
   };

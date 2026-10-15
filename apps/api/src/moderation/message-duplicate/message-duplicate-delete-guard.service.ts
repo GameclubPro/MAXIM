@@ -44,6 +44,10 @@ import {
 } from './message-duplicate-guard.contract';
 import type { ModerationDeletePreDispatchPhase } from '../moderation-delete-intent.types';
 import {
+  recordModerationGuardFailure,
+  type ModerationGuardProofFailure,
+} from '../moderation-guard-failure-diagnostic';
+import {
   recordDuplicateLookupFailure,
   type DuplicateLookupPhase,
 } from './message-duplicate-lookup-diagnostic';
@@ -321,6 +325,10 @@ export class MessageDuplicateDeleteGuardService {
       throw new Error('Message duplicate author access unavailable');
     let raw: Record<string, unknown> | null;
     let currentReadFailure: unknown = null;
+    const sanctionBoundary =
+      params.sanctionPhase === 'initial_unattempted'
+        ? 'duplicate_sanction_initial'
+        : 'duplicate_sanction_final';
     try {
       raw = await this.lookupMessage(
         'current',
@@ -332,6 +340,7 @@ export class MessageDuplicateDeleteGuardService {
         lookupPhase,
       );
     } catch (error) {
+      if (lookupPhase === 'sanction') recordModerationGuardFailure(error, sanctionBoundary);
       // FLAG: A bare or generic not.found GET 404 is still unavailable evidence. Only this sanction's
       // independently proven successful DELETE may replace that current-source read;
       // healthy returned content, original reads, notices and initial deletes stay strict.
@@ -339,7 +348,8 @@ export class MessageDuplicateDeleteGuardService {
       currentReadFailure = error;
       raw = null;
     }
-    const rejectUnavailableCurrentSource = (): never => {
+    const rejectUnavailableCurrentSource = (proofFailure: ModerationGuardProofFailure): never => {
+      recordModerationGuardFailure(currentReadFailure, sanctionBoundary, proofFailure);
       // FLAG: Only the initial sanction authorization may decline unavailable evidence
       // before any sanction state or remote mutation. This grants no absence, DELETE
       // receipt, retry or claim reset; final member/notice rechecks retain the failure.
@@ -403,7 +413,8 @@ export class MessageDuplicateDeleteGuardService {
         JSON.stringify(recorded.original) !==
           JSON.stringify(messageDuplicateOriginalSchema.parse(binding.original))
       ) {
-        if (currentReadFailure !== null) rejectUnavailableCurrentSource();
+        if (currentReadFailure !== null)
+          rejectUnavailableCurrentSource('own_delete_binding_unproven');
         throw new MessageDuplicateGuardRejectedError('message_duplicate_unproven_absence');
       }
       if (currentReadFailure !== null) {
@@ -428,7 +439,7 @@ export class MessageDuplicateDeleteGuardService {
           receipt.remoteDeleteSucceededAt.getTime() > Date.now() ||
           JSON.stringify(recorded) !== JSON.stringify(canonicalBinding)
         )
-          rejectUnavailableCurrentSource();
+          rejectUnavailableCurrentSource('own_delete_sanction_receipt_unproven');
       }
     } else {
       const message = this.parser.parse({

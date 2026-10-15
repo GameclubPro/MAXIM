@@ -1,7 +1,53 @@
 import { describeWebhookExecutionFailure } from './webhook-execution-diagnostic';
 import { recordDuplicateLookupFailure } from './message-duplicate/message-duplicate-lookup-diagnostic';
+import { recordModerationGuardFailure } from './moderation-guard-failure-diagnostic';
 
 describe('webhook execution diagnostics', () => {
+  it('retains the first guard boundary and only its closed proof classification', () => {
+    const error = Object.freeze({ response: { status: 404 }, private: 'secret' });
+    recordModerationGuardFailure(error, 'duplicate_sanction_final');
+    recordModerationGuardFailure(error, 'duplicate_sanction_final', 'own_delete_binding_unproven');
+    recordModerationGuardFailure(error, 'required_subscription_sanction_mutation');
+    recordModerationGuardFailure(
+      error,
+      'duplicate_sanction_final',
+      'own_delete_sanction_receipt_unproven',
+    );
+    const result = describeWebhookExecutionFailure(error);
+    expect(result).toMatchObject({
+      guardBoundary: 'duplicate_sanction_final',
+      guardProofFailure: 'own_delete_binding_unproven',
+    });
+    expect(JSON.stringify(result)).not.toContain('secret');
+    expect(
+      describeWebhookExecutionFailure({ guardBoundary: 'duplicate_sanction_final' }),
+    ).not.toHaveProperty('guardBoundary');
+    for (const value of [null, undefined, 0, 'secret']) {
+      expect(() => recordModerationGuardFailure(value, 'duplicate_sanction_initial')).not.toThrow();
+    }
+  });
+
+  it.each([
+    ['MAX_API_INTERNAL_RATE_LIMIT', 'max_internal_rate_limit'],
+    ['MAX_API_CIRCUIT_OPEN', 'max_circuit_open'],
+  ])('classifies the fixed local %s code without its message', (code, failureReason) => {
+    const result = describeWebhookExecutionFailure({
+      code,
+      message: 'private-reason',
+      retryAfterMs: 1234,
+    });
+    expect(result).toMatchObject({ failureReason, httpStatus: null });
+    expect(JSON.stringify(result)).not.toMatch(/private-reason|1234/u);
+    expect(describeWebhookExecutionFailure({ code: code + ':private' }).failureReason).toBe(
+      'unknown',
+    );
+  });
+
+  it('labels generic not.found separately from message-specific absence', () => {
+    expect(
+      describeWebhookExecutionFailure({ response: { status: 404, data: { code: 'not.found' } } }),
+    ).toMatchObject({ httpStatus: 404, maxFailureCode: 'generic_not_found' });
+  });
   it.each([
     ['Message duplicate history deadline exceeded', 'duplicate_history_reply_deadline'],
     ['Message duplicate window deadline exceeded', 'duplicate_history_admission_deadline'],
