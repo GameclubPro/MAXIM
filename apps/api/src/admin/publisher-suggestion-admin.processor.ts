@@ -48,6 +48,9 @@ export class PublisherSuggestionAdminProcessor extends WorkerHost {
   }
 
   async process(job: Job<PublisherSuggestionAdminJob>, token?: string): Promise<void | boolean> {
+    // FLAG: Recovered jobs retain their old options across retries. Bound only BullMQ's
+    // diagnostic stack history; SQL delivery receipts, job data and retry authority stay intact.
+    job.opts = { ...job.opts, stackTraceLimit: 16 };
     if (!roleRunsPublisher(getAppRole()) || process.env.APP_SERVICE_NAME !== 'api-publisher') {
       throw new Error('Publisher suggestion admin job received by a non-publisher API role');
     }
