@@ -93,6 +93,35 @@ describe('MaxExecutionOwnerReadinessService', () => {
   });
   afterEach(() => jest.useRealTimers());
 
+  it('keeps the assigned moderator when a caller prefers a healthy peer', async () => {
+    const f = fixture(6);
+    f.state.fixedModeratorBotId = 'bot-00';
+    const proof = await f.service.ensureReady({
+      chatId: '-100',
+      preferredBotId: 'bot-05',
+      purpose: 'send_message',
+    });
+    expect(proof?.botId).toBe('bot-00');
+    expect(f.max.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+  });
+
+  it('does not promote a healthy peer when the assigned moderator loses access', async () => {
+    const f = fixture(6);
+    f.state.fixedModeratorBotId = 'bot-00';
+    Object.assign(
+      f.state.candidates[0]!,
+      buildBotAccessSnapshotPersistence(
+        { isAdmin: false, isOwner: false, permissionsKnown: true },
+        { source: 'denied', now: NOW },
+      ),
+    );
+    expect(await f.service.ensureReady({ chatId: '-100' })).toBeNull();
+    expect(f.max.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+    expect(f.state.fixedModeratorBotId).toBe('bot-00');
+  });
+
   it.each([1, 4, 9, 12])('keeps one healthy shared owner with %i assigned bots', async (count) => {
     const f = fixture(count);
     const proof = await f.service.ensureReady({

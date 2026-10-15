@@ -92,8 +92,18 @@ export function useEntityPresentation(options: {
           for (const id of ids) if (!items.some((item) => item.id === id)) delete merged[id];
           for (const item of items) {
             const old = merged[item.id];
-            if (old?.observedAt && (!item.observedAt || item.observedAt < old.observedAt)) continue;
-            merged[item.id] = item;
+            const metadata =
+              old?.observedAt && (!item.observedAt || item.observedAt < old.observedAt)
+                ? old
+                : item;
+            const moderator =
+              (old?.moderatorRevision ?? -1) > (item.moderatorRevision ?? -1) ? old : item;
+            merged[item.id] = {
+              ...metadata,
+              moderator: moderator.moderator,
+              moderatorRevision: moderator.moderatorRevision,
+              canChooseModerator: moderator.canChooseModerator,
+            };
           }
           return { scope: stateScope, items: merged };
         });

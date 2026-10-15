@@ -602,6 +602,7 @@ type MaxActionExecutionOptions = {
 };
 
 type MaxApiRequestOptions = {
+  boundObject?: import('./max-bound-message').MaxBoundObjectReference;
   explicitActivation?: ManagedEntityExplicitActivation;
   trafficClass?: MaxApiTrafficClass;
   actionHealthLane?: ActionHealthLane;
@@ -3037,6 +3038,12 @@ export class MaxClientService implements OnModuleDestroy {
           }
           const deleteMessageId = action.messageId;
           const sendAutoDeleteMarker = this.readSendAutoDeleteMarker(action, bot.id);
+          if (sendAutoDeleteMarker) {
+            mutationOptions.boundObject = {
+              kind: 'send',
+              id: sendAutoDeleteMarker.sourceSendJobId,
+            };
+          }
           if (
             sendAutoDeleteMarker &&
             (await this.readSendAutoDeleteExactPresence(
@@ -7108,6 +7115,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private normalizeReadRequestOptions(options: MaxApiRequestOptions | MaxApiTrafficClass): {
+    boundObject?: import('./max-bound-message').MaxBoundObjectReference;
     trafficClass?: MaxApiTrafficClass;
     actionHealthLane?: ActionHealthLane;
     sourceTag?: string;
@@ -7120,6 +7128,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return {
+      ...(options.boundObject ? { boundObject: options.boundObject } : {}),
       trafficClass: options.trafficClass,
       actionHealthLane: options.actionHealthLane,
       sourceTag: this.normalizeMetricSourceTag(options.sourceTag) ?? undefined,
@@ -7226,6 +7235,10 @@ export class MaxClientService implements OnModuleDestroy {
     botId: string,
     purpose: MaxExecutionPurpose,
     requestOptions: MaxApiRequestOptions = {},
+    existingMessage?: {
+      messageId: string;
+      object?: import('./max-bound-message').MaxBoundObjectReference;
+    },
   ): Promise<MaxExecutionRouteProof | null> {
     const link = this.maxBotLinkService;
     if (
@@ -7236,8 +7249,19 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     if (!link || typeof link.getFreshChatBotExecutionProof !== 'function') return null;
     const maxAgeMs = purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000;
-    let proof = await link.getFreshChatBotExecutionProof({ chatId, botId, purpose, maxAgeMs });
+    let proof = await link.getFreshChatBotExecutionProof({
+      chatId,
+      botId,
+      purpose,
+      maxAgeMs,
+      ...(existingMessage ? { existingMessage } : {}),
+    });
     if (!proof) {
+      const state = await link.loadChatExecutionOwnerState?.(chatId);
+      if (state?.fixedModeratorBotId && state.fixedModeratorBotId !== botId)
+        throw Object.assign(new Error('MAX action does not belong to the assigned moderator'), {
+          code: 'max_action_executor_proof_rejected',
+        });
       // FLAG: Missing known action rights wait for administrator activation; a final
       // mutation preflight must not repeatedly re-probe a denied optional capability.
       if (await link.isChatBotExecutionActivationRequired?.(chatId, botId, purpose))
@@ -7274,7 +7298,13 @@ export class MaxClientService implements OnModuleDestroy {
         checkedAt,
         source: 'action_executor_preflight',
       });
-      proof = await link.getFreshChatBotExecutionProof({ chatId, botId, purpose, maxAgeMs });
+      proof = await link.getFreshChatBotExecutionProof({
+        chatId,
+        botId,
+        purpose,
+        maxAgeMs,
+        ...(existingMessage ? { existingMessage } : {}),
+      });
     }
     if (!proof) {
       throw Object.assign(new Error('MAX action executor has no current capability proof'), {
@@ -8749,6 +8779,16 @@ export class MaxClientService implements OnModuleDestroy {
     const bot = this.getCurrentBot();
     const scope = this.mutationExecutionScope.getStore();
     if (scope && method === scope.method && path === scope.path) {
+      const messageId = this.readTrimmedString(this.asRecord(config.params)?.message_id);
+      const existingMessage =
+        messageId && (scope.purpose === 'edit_message' || scope.purpose === 'delete_message')
+          ? {
+              messageId,
+              ...(scope.requestOptions.boundObject
+                ? { object: scope.requestOptions.boundObject }
+                : {}),
+            }
+          : undefined;
       // FLAG: Reserve the unchanged quota once at this exact HTTP mutation, after remote
       // preparation. Recheck the SQL route epoch after waits, then grant the feature permit last.
       await this.runPreDispatchMutationGuard(async () => {
@@ -8757,6 +8797,7 @@ export class MaxClientService implements OnModuleDestroy {
           bot.id,
           scope.purpose,
           scope.requestOptions,
+          existingMessage,
         );
         try {
           await this.reserveRateLimitSlot(
@@ -8779,6 +8820,7 @@ export class MaxClientService implements OnModuleDestroy {
               ...proof,
               purpose: scope.purpose,
               maxAgeMs: scope.purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000,
+              ...(existingMessage ? { existingMessage } : {}),
             }))
           ) {
             throw Object.assign(new Error(`MAX action executor proof changed during ${stage}`), {

@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
+import { hasPersistedBoundMessage, type MaxBoundObjectReference } from './max-bound-message';
 import {
   ChatBotAccessState,
   ChatCatalogKind,
@@ -323,6 +324,7 @@ export type MaxChatRouteSnapshot = {
   title?: string;
   entityType: ChatEntityType | null;
   primaryBotId: string | null;
+  fixedModeratorBotId?: string | null;
   botId?: string | null;
   routingState: ChatRoutingState;
   routingVersion: number;
@@ -344,6 +346,7 @@ type ResolvedChatRouteState = {
   storedPrimaryBotId: string | null;
   storedBotId: string | null;
   primaryBotId: string | null;
+  fixedModeratorBotId: string | null;
   routingVersion: number;
   allMemberships: ResolvedChatRouteMembership[];
   memberships: ResolvedChatRouteMembership[];
@@ -1961,6 +1964,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
         routingState: true,
         entityType: true,
         primaryBotId: true,
+        fixedModeratorBotId: true,
         botId: true,
         botMemberships: {
           select: {
@@ -1985,6 +1989,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     );
     const activeExecutableMemberships = activeKnownMemberships.filter(
       (membership) =>
+        (!chat?.fixedModeratorBotId || membership.botId === chat.fixedModeratorBotId) &&
         Boolean(this.resolveExecutableBotId(membership.botId)) &&
         this.isMembershipRouteAccessEligible(membership),
     );
@@ -2029,7 +2034,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       )?.botId ??
       accessEligibleActiveExecutableMemberships[0]?.botId ??
       null;
-    const primaryBotId =
+    const legacyPrimaryBotId =
       executablePrimaryBotId ??
       resolvePreferredPrimaryBotId(storedAccessEligibleBotId, activeKnownMemberships, {
         requireFreshSnapshotForPromotion: true,
@@ -2040,6 +2045,10 @@ export class MaxBotLinkService implements OnModuleDestroy {
       )?.botId ??
       accessEligibleActiveKnownMemberships[0]?.botId ??
       null;
+    const primaryBotId = chat?.fixedModeratorBotId
+      ? (activeExecutableMemberships.find((row) => row.botId === chat.fixedModeratorBotId)?.botId ??
+        null)
+      : legacyPrimaryBotId;
     const activeMembership =
       activeBotId && chat?.botMemberships
         ? (chat.botMemberships.find((membership) => membership.botId === activeBotId) ?? null)
@@ -2107,6 +2116,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     chatId: string;
     expectedEntityType?: ChatEntityType | null;
     requireFreshSnapshot?: boolean;
+    existingMessage?: { messageId: string; botId: string };
   }): Promise<MaxDeleteMessageBotRoute> {
     const chatId = params.chatId.trim();
     if (!chatId) {
@@ -2133,6 +2143,32 @@ export class MaxBotLinkService implements OnModuleDestroy {
     const actionableBotIds = new Set(
       state.activeActionableMemberships.map((membership) => membership.botId),
     );
+    // FLAG: Old bot-authored cleanup keeps its exact persisted executor. This does
+    // not widen user-message deletion or permit an alternate bot to take over new work.
+    const existing = params.existingMessage;
+    if (
+      state.fixedModeratorBotId &&
+      existing &&
+      existing.botId !== state.fixedModeratorBotId &&
+      this.resolveExecutableBotId(existing.botId) &&
+      executionRouteProof(
+        {
+          chatId,
+          entityType: state.entityType,
+          primaryBotId: state.primaryBotId,
+          routingVersion: state.routingVersion,
+          candidates: state.allMemberships,
+        },
+        existing.botId,
+        'delete_message',
+      ) &&
+      (await hasPersistedBoundMessage(this.prisma, {
+        chatId,
+        ...existing,
+        purpose: 'delete_message',
+      }))
+    )
+      actionableBotIds.add(existing.botId);
     // FLAG: Keep exact negative epochs in diagnostics so an unattempted DELETE can
     // move to a healthy peer. Dormant evidence never becomes an executable route.
     const candidateCapabilities = state.allMemberships
@@ -2639,6 +2675,14 @@ export class MaxBotLinkService implements OnModuleDestroy {
         if (!state) {
           return null;
         }
+        // FLAG: Automatic repair and legacy primary APIs cannot replace a fixed choice.
+        // Only the dedicated, versioned administrator assignment transaction may do so.
+        if (
+          state.fixedModeratorBotId &&
+          params.explicitPrimaryBotId &&
+          params.explicitPrimaryBotId !== state.fixedModeratorBotId
+        )
+          return null;
         if (
           params.expectedRoutingVersion !== undefined &&
           state.routingVersion !== params.expectedRoutingVersion
@@ -3222,6 +3266,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       chatId: state.chatId,
       entityType: state.entityType,
       primaryBotId: state.storedPrimaryBotId ?? state.storedBotId,
+      fixedModeratorBotId: state.fixedModeratorBotId,
       routingVersion: state.routingVersion,
       candidates: state.allMemberships.filter(
         (membership) =>
@@ -3252,6 +3297,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       primaryBotId: state.primaryBotId,
       routingVersion: state.routingVersion,
       candidates: state.activeActionableMemberships,
+      fixedModeratorBotId: state.fixedModeratorBotId,
     };
     const peer = [
       state.primaryBotId,
@@ -3294,9 +3340,30 @@ export class MaxBotLinkService implements OnModuleDestroy {
     botId: string;
     purpose?: MaxExecutionPurpose;
     maxAgeMs?: number;
+    existingMessage?: { messageId: string; object?: MaxBoundObjectReference };
   }): Promise<MaxExecutionRouteProof | null> {
     const state = await this.loadChatExecutionOwnerState(params.chatId);
-    return state ? executionRouteProof(state, params.botId, params.purpose, params.maxAgeMs) : null;
+    if (!state) return null;
+    if (
+      state.fixedModeratorBotId &&
+      state.fixedModeratorBotId !== params.botId &&
+      params.existingMessage &&
+      (params.purpose === 'edit_message' || params.purpose === 'delete_message') &&
+      (await hasPersistedBoundMessage(this.prisma, {
+        chatId: params.chatId,
+        botId: params.botId,
+        purpose: params.purpose,
+        ...params.existingMessage,
+      }))
+    ) {
+      return executionRouteProof(
+        { ...state, fixedModeratorBotId: null },
+        params.botId,
+        params.purpose,
+        params.maxAgeMs,
+      );
+    }
+    return executionRouteProof(state, params.botId, params.purpose, params.maxAgeMs);
   }
 
   async verifyChatExecutionProof(params: {
@@ -3306,6 +3373,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
     accessEpoch: MaxExecutionAccessEpoch;
     purpose?: MaxExecutionPurpose;
     maxAgeMs?: number;
+    existingMessage?: { messageId: string; object?: MaxBoundObjectReference };
   }): Promise<boolean> {
     const proof = await this.getFreshChatBotExecutionProof(params);
     return Boolean(
@@ -3370,6 +3438,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
         routingState: true,
         routingVersion: true,
         primaryBotId: true,
+        fixedModeratorBotId: true,
         botId: true,
         botMemberships: {
           select: {
@@ -3434,6 +3503,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       const bot = this.botRegistry.getBotById(membership.botId);
       return Boolean(
         bot &&
+        (!chat.fixedModeratorBotId || membership.botId === chat.fixedModeratorBotId) &&
         canExecuteActionsForBotState(bot.state) &&
         this.isMembershipRouteAccessEligible(membership),
       );
@@ -3479,6 +3549,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
       storedPrimaryBotId,
       storedBotId,
       primaryBotId,
+      fixedModeratorBotId: chat.fixedModeratorBotId ?? null,
       routingVersion: chat.routingVersion,
       allMemberships,
       memberships,

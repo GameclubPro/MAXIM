@@ -473,6 +473,7 @@ model Chat {
   id             String           @id
   botId          String?          @map("bot_id")
   primaryBotId   String?          @map("primary_bot_id")
+  fixedModeratorBotId String?      @map("fixed_moderator_bot_id")
   title          String
   entityType     ChatEntityType   @default(CHAT) @map("entity_type")
   catalogKind    ChatCatalogKind  @default(UNKNOWN) @map("catalog_kind")
@@ -497,6 +498,7 @@ model Chat {
   moderationDeleteIntents           ModerationDeleteIntent[]
   linkHistoryScanState              ModerationLinkHistoryScanState?
   auditLogs                         AuditLog[]
+  moderatorAssignments              ManagedModeratorAssignment[]
   channelAutoPostAttachMarkers      ChannelAutoPostAttachMarker[]
   chatAutoCommentAttachMarkers      ChatAutoCommentAttachMarker[]
   channelAudienceSnapshots          ChannelAudienceSnapshot[]
@@ -536,6 +538,22 @@ model Chat {
   @@index([catalogKind, entityType], map: "chats_catalog_kind_entity_type_idx")
   @@index([entityType, updatedAt(sort: Desc), id], map: "chats_entity_type_updated_id_idx")
   @@map("chats")
+}
+
+model ManagedModeratorAssignment {
+  id                     String   @id
+  chatId                 String   @map("chat_id")
+  actorUserId            String   @map("actor_user_id")
+  botId                  String   @map("bot_id")
+  previousBotId          String?  @map("previous_bot_id")
+  expectedRoutingVersion Int      @map("expected_routing_version")
+  routingVersion         Int      @map("routing_version")
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt], map: "managed_moderator_assignments_chat_created_idx")
+  @@map("managed_moderator_assignments")
 }
 
 model ChatBotMembership {

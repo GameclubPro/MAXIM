@@ -1359,11 +1359,14 @@ export class ManagedPollService {
           poll.publicationMessageId,
           text,
           options,
-          this.buildMaxOptions(
-            botId,
-            MANAGED_POLL_EDIT_TIMEOUT_MS,
-            action === 'background-repair' ? 'background' : 'interactive',
-          ),
+          {
+            ...this.buildMaxOptions(
+              botId,
+              MANAGED_POLL_EDIT_TIMEOUT_MS,
+              action === 'background-repair' ? 'background' : 'interactive',
+            ),
+            boundObject: { kind: 'poll', id: poll.id },
+          },
         );
         editAttemptStartedAt = null;
         if (engagement.state === 'resolved' && engagement.shouldRecord) {

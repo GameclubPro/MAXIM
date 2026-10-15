@@ -1,5 +1,8 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { publicModerator } from '../max/max-public-moderator';
+import { isFixedModeratorSelectionEnabled } from '../max/fixed-moderator.config';
 import { createHash } from 'node:crypto';
 import type { Queue } from 'bullmq';
 import {
@@ -36,6 +39,7 @@ export class ManagedEntityPresentationService {
     private readonly cache: ChatContextCacheService,
     @InjectQueue(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE)
     private readonly queue: Queue<AdminManagedEntitiesRefreshJob>,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   private jobId(entityType: string, id: string): string {
@@ -62,6 +66,8 @@ export class ManagedEntityPresentationService {
           select: {
             title: true,
             primaryBotId: true,
+            fixedModeratorBotId: true,
+            routingVersion: true,
             updatedAt: true,
             botMemberships: {
               where: { status: 'ACTIVE', botId: { in: botIds } },
@@ -137,6 +143,15 @@ export class ManagedEntityPresentationService {
         avatarState,
         observedAt: observedAt?.toISOString() ?? null,
         pending,
+        moderator: (() => {
+          const bot = this.registry.getBotById(
+            edge.chat.fixedModeratorBotId ?? edge.chat.primaryBotId ?? '',
+          );
+          return bot?.id ? publicModerator(bot) : null;
+        })(),
+        moderatorRevision: edge.chat.routingVersion,
+        canChooseModerator:
+          memberships.size > 1 && isFixedModeratorSelectionEnabled(this.config, id),
       });
     }
     return { items, retryAfterMs: 2000 };

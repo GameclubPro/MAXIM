@@ -1,0 +1,210 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .chat-grid .chat-card--moderator.glass-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
+    grid-template-rows: 44px 44px;
+    row-gap: 0;
+    min-height: 96px;
+    padding-block: 4px;
+  }
+  body[data-miniapp-profile='moderation'] .chat-card--moderator .chat-card__primary-link {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 44px;
+    padding-block: 0;
+  }
+  body[data-miniapp-profile='moderation'] .chat-card--moderator .chat-card__action--favorite {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  body[data-miniapp-profile='moderation'] .chat-card--moderator .chat-card__action--statistics {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  body[data-miniapp-profile='moderation']
+    .chat-grid
+    .chat-card--moderator
+    .chat-card__title-wrap
+    h3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  body[data-miniapp-profile='moderation'] .chat-card__moderator {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    padding-left: 46px;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.chat-card__moderator-control, .chat-card__moderator-label) {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    max-width: 100%;
+    min-height: 44px;
+    padding: 0 10px 0 0;
+    border: 0;
+    border-radius: 14px;
+    background: transparent;
+    color: var(--major-muted);
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] .chat-card__moderator-control {
+    color: var(--major-ink);
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .chat-card__moderator-control:hover {
+    background: var(--major-accent-soft);
+  }
+  body[data-miniapp-profile='moderation'] .chat-card__moderator-control > span:nth-child(2) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  body[data-miniapp-profile='moderation'] .chat-card__moderator-chevron {
+    color: var(--major-accent);
+    font-size: 18px;
+  }
+  body[data-miniapp-profile='moderation'] .moderator-portrait {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    overflow: hidden;
+    border-radius: 50%;
+    background: var(--major-accent-soft);
+    color: var(--major-accent);
+    box-shadow: 0 0 0 1px var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .moderator-portrait img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__panel {
+    display: flex;
+    flex-direction: column;
+    max-width: 480px;
+    overflow: hidden;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__panel .favorite-picker__header {
+    flex-shrink: 0;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__current {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__current small {
+    display: block;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__options {
+    display: grid;
+    gap: 8px;
+    margin-block: 12px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__option {
+    position: relative;
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr) 24px;
+    align-items: center;
+    gap: 12px;
+    min-height: 76px;
+    padding: 12px;
+    border: 1px solid var(--major-border);
+    border-radius: 20px;
+    background: var(--major-subtle);
+    cursor: pointer;
+    transition:
+      border-color 120ms,
+      background 120ms;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__option.is-selected {
+    border-color: var(--major-accent);
+    background: var(--major-accent-soft);
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__option input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__option:has(input:focus-visible) {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 3px;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__option .moderator-portrait {
+    width: 48px;
+    height: 48px;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__option strong {
+    display: block;
+    font-size: 15px;
+    color: var(--major-ink);
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__option small {
+    display: block;
+    margin-top: 3px;
+    color: var(--major-muted);
+    line-height: 1.4;
+    font-size: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__option.is-unavailable {
+    cursor: default;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__check {
+    font-size: 20px;
+    color: var(--major-accent);
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__submit {
+    width: 100%;
+    flex-shrink: 0;
+    min-height: 48px;
+    border-radius: 16px;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__open {
+    display: block;
+    flex-shrink: 0;
+    min-height: 44px;
+    margin: 6px auto 0;
+    padding: 8px 12px;
+    border: 0;
+    background: transparent;
+    color: var(--major-accent);
+    font: inherit;
+    font-size: 13px;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__error {
+    color: var(--danger);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  body[data-miniapp-profile='moderation'] .home-moderator__status {
+    display: grid;
+    gap: 12px;
+    padding-block: 24px;
+    color: var(--major-muted);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    body[data-miniapp-profile='moderation'] .home-moderator__option {
+      transition: none;
+    }
+  }
+}

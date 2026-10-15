@@ -20,6 +20,7 @@ type MutableChat = {
   title: string;
   botId: string | null;
   primaryBotId: string | null;
+  fixedModeratorBotId?: string | null;
   entityType?: ChatEntityType;
   catalogKind?: ChatCatalogKind;
   routingState?: ChatRoutingState;
@@ -288,6 +289,18 @@ function createServiceFixture() {
 
   let transactionTail = Promise.resolve();
   const prisma = {
+    chatRules: {
+      findUnique: jest.fn<
+        Promise<{ publishedMessageId: string; publishedBotId: string } | null>,
+        [unknown]
+      >(async () => null),
+    },
+    managedGiveaway: { findFirst: jest.fn(async () => null) },
+    channelSettings: { findUnique: jest.fn(async () => null) },
+    chatReportCase: { findFirst: jest.fn(async () => null) },
+    channelAutoPostAttachMarker: { findUnique: jest.fn(async () => null) },
+    chatAutoCommentAttachMarker: { findUnique: jest.fn(async () => null) },
+    moderationDeleteIntent: { findUnique: jest.fn(async () => null) },
     chatMembershipActivityEvent: {
       findFirst: jest.fn(async (): Promise<{ id: string } | null> => null),
     },
@@ -313,6 +326,7 @@ function createServiceFixture() {
           routingState: chat.routingState ?? ChatRoutingState.READY,
           routingVersion: chat.routingVersion ?? 0,
           primaryBotId: chat.primaryBotId,
+          fixedModeratorBotId: chat.fixedModeratorBotId,
           botId: chat.botId,
           botMemberships: memberships
             .filter((membership) => membership.chatId === where.id)
@@ -6497,5 +6511,61 @@ describe('MaxBotLinkService', () => {
     launchBot.state = 'disabled';
     expect(fixture.service.buildInitDataBotUrlSync(launchBot.id)).toBeNull();
     expect(fixture.service.buildInitDataBotUrlSync('unknown-bot')).toBeNull();
+  });
+  it('keeps an old bot route for its saved rules without allowing new or unrelated effects', async () => {
+    const fixture = createServiceFixture();
+    const chatId = 'fixed-old-rules';
+    const [oldBot, currentBot] = fixture.bots;
+    fixture.chats.set(chatId, {
+      id: chatId,
+      title: chatId,
+      entityType: ChatEntityType.CHAT,
+      botId: currentBot!.id,
+      primaryBotId: currentBot!.id,
+      fixedModeratorBotId: currentBot!.id,
+      routingState: ChatRoutingState.READY,
+      routingVersion: 7,
+    });
+    for (const [index, bot] of [oldBot!, currentBot!].entries())
+      fixture.memberships.push(
+        createActiveMembership(chatId, bot.id, index, {
+          ...freshMemberCapability(['read_all_messages', 'write', 'add_remove_members']),
+          botAccessSource: 'confirmed',
+        }),
+      );
+    fixture.prisma.chatRules.findUnique.mockResolvedValue({
+      publishedMessageId: 'rules-message',
+      publishedBotId: oldBot!.id,
+    });
+    await expect(fixture.service.resolveDeleteMessageBotRoute({ chatId })).resolves.toMatchObject({
+      candidateBotIds: [currentBot!.id],
+    });
+    await expect(
+      fixture.service.resolveDeleteMessageBotRoute({
+        chatId,
+        existingMessage: { messageId: 'rules-message', botId: oldBot!.id },
+      }),
+    ).resolves.toMatchObject({ candidateBotIds: [currentBot!.id, oldBot!.id] });
+    const request = { chatId, botId: oldBot!.id, purpose: 'edit_message' as const };
+    await expect(fixture.service.getFreshChatBotExecutionProof(request)).resolves.toBeNull();
+    await expect(
+      fixture.service.getFreshChatBotExecutionProof({
+        ...request,
+        existingMessage: { messageId: 'rules-message' },
+      }),
+    ).resolves.toMatchObject({ botId: oldBot!.id, routingVersion: 7 });
+    await expect(
+      fixture.service.resolveDeleteMessageBotRoute({
+        chatId,
+        existingMessage: { messageId: 'user-message', botId: oldBot!.id },
+      }),
+    ).resolves.toMatchObject({ candidateBotIds: [currentBot!.id] });
+    fixture.memberships[0]!.botAccessState = ChatBotAccessState.DENIED;
+    await expect(
+      fixture.service.resolveDeleteMessageBotRoute({
+        chatId,
+        existingMessage: { messageId: 'rules-message', botId: oldBot!.id },
+      }),
+    ).resolves.toMatchObject({ candidateBotIds: [currentBot!.id] });
   });
 });

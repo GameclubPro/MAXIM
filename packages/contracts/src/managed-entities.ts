@@ -3,6 +3,57 @@ import { botSpeechPersonaSchema } from './bot-speech.js';
 import { managedEntityTypeSchema } from './managed-entity-type.js';
 export { managedEntityTypeSchema, type ManagedEntityType } from './managed-entity-type.js';
 
+export const publicModeratorSchema = z
+  .object({
+    key: z.string().regex(/^[a-f0-9]{24}$/u),
+    name: z.string().min(1).max(64),
+    portrait: z.enum(['maximov', 'maximova', 'rex', 'neutral']),
+    url: z
+      .string()
+      .regex(/^https:\/\/max\.ru\/[A-Za-z0-9_]+$/u)
+      .nullable(),
+  })
+  .strict();
+export type PublicModerator = z.infer<typeof publicModeratorSchema>;
+
+export const managedModeratorChoicesSchema = z
+  .object({
+    revision: z.number().int().min(0),
+    current: publicModeratorSchema.nullable(),
+    selectionEnabled: z.boolean(),
+    candidates: z
+      .array(
+        publicModeratorSchema.extend({
+          selectable: z.boolean(),
+          reason: z.enum(['needs_activation', 'needs_permissions', 'unavailable']).nullable(),
+        }),
+      )
+      .max(32),
+  })
+  .strict();
+export type ManagedModeratorChoices = z.infer<typeof managedModeratorChoicesSchema>;
+
+export const assignManagedModeratorRequestSchema = z
+  .object({
+    operationId: z.string().uuid(),
+    moderatorKey: publicModeratorSchema.shape.key,
+    expectedRevision: z.number().int().min(0).max(2_147_483_646),
+  })
+  .strict();
+export type AssignManagedModeratorRequest = z.infer<typeof assignManagedModeratorRequestSchema>;
+
+export const managedModeratorAssignmentResultSchema = z
+  .object({
+    operationId: z.string().uuid(),
+    status: z.literal('applied'),
+    revision: z.number().int().min(0),
+    moderator: publicModeratorSchema,
+  })
+  .strict();
+export type ManagedModeratorAssignmentResult = z.infer<
+  typeof managedModeratorAssignmentResultSchema
+>;
+
 export const managedEntityBotRoleSchema = z.enum(['primary', 'standby']);
 export const managedEntityBotMembershipStatusSchema = z.enum(['active', 'removed']);
 export const managedEntityBotLifecycleStateSchema = z.enum([
@@ -142,6 +193,9 @@ export type PromoteManagedEntityStandbyRequest = z.infer<
 >;
 
 export const chatSummarySchema = z.object({
+  moderator: publicModeratorSchema.nullable().optional(),
+  moderatorRevision: z.number().int().min(0).optional(),
+  canChooseModerator: z.boolean().optional(),
   id: z.string(),
   title: z.string(),
   createdAt: z.string().datetime(),
@@ -171,6 +225,9 @@ export type ManagedEntityPresentationRequest = z.infer<
 >;
 
 export const managedEntityPresentationSchema = z.object({
+  moderator: publicModeratorSchema.nullable().optional(),
+  moderatorRevision: z.number().int().min(0).optional(),
+  canChooseModerator: z.boolean().optional(),
   id: z.string(),
   entityType: managedEntityTypeSchema,
   title: z.string().nullable(),

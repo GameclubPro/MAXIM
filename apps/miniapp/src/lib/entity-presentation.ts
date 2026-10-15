@@ -11,13 +11,23 @@ export function mergeEntityPresentation<T extends ChatSummary>(
     presentation.entityType !== entity.entityType
   )
     return entity;
+  const moderator =
+    presentation.moderatorRevision !== undefined &&
+    presentation.moderatorRevision >= (entity.moderatorRevision ?? 0)
+      ? {
+          moderator: presentation.moderator,
+          moderatorRevision: presentation.moderatorRevision,
+          canChooseModerator: presentation.canChooseModerator,
+        }
+      : {};
   if (
     entity.metadataObservedAt &&
     (!presentation.observedAt || presentation.observedAt < entity.metadataObservedAt)
   )
-    return entity;
+    return { ...entity, ...moderator };
   return {
     ...entity,
+    ...moderator,
     avatarState: presentation.avatarState,
     metadataObservedAt: presentation.observedAt,
     ...(presentation.title && !isUnusableChatTitle(entity.id, presentation.title)

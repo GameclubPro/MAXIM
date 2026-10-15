@@ -2711,6 +2711,9 @@ export class ModerationDeleteIntentService {
             );
             route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
               chatId: intent.chatId,
+              existingMessage: intent.originBotId
+                ? { messageId: intent.messageId, botId: intent.originBotId }
+                : undefined,
               expectedEntityType: intent.entityType,
               requireFreshSnapshot: true,
             });
@@ -2983,6 +2986,9 @@ export class ModerationDeleteIntentService {
               const refreshed = await this.refreshCandidateAccess(intent, botId, heartbeat);
               route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
                 chatId: intent.chatId,
+                existingMessage: intent.originBotId
+                  ? { messageId: intent.messageId, botId: intent.originBotId }
+                  : undefined,
                 expectedEntityType: intent.entityType,
                 requireFreshSnapshot: true,
               });
@@ -3178,6 +3184,9 @@ export class ModerationDeleteIntentService {
           );
           route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
             chatId: intent.chatId,
+            existingMessage: intent.originBotId
+              ? { messageId: intent.messageId, botId: intent.originBotId }
+              : undefined,
             expectedEntityType: intent.entityType,
             requireFreshSnapshot: true,
           });
@@ -7483,6 +7492,9 @@ export class ModerationDeleteIntentService {
   ): Promise<MaxDeleteMessageBotRoute> {
     let route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
       chatId: intent.chatId,
+      existingMessage: intent.originBotId
+        ? { messageId: intent.messageId, botId: intent.originBotId }
+        : undefined,
       expectedEntityType: intent.entityType,
       requireFreshSnapshot: true,
     });
@@ -7503,6 +7515,9 @@ export class ModerationDeleteIntentService {
       await this.refreshCandidateAccess(intent, originRecoveryBotId, heartbeat, canRead);
       route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
         chatId: intent.chatId,
+        existingMessage: intent.originBotId
+          ? { messageId: intent.messageId, botId: intent.originBotId }
+          : undefined,
         expectedEntityType: intent.entityType,
         requireFreshSnapshot: true,
       });
@@ -7547,6 +7562,9 @@ export class ModerationDeleteIntentService {
     if (probeCandidates.length > 0) {
       route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
         chatId: intent.chatId,
+        existingMessage: intent.originBotId
+          ? { messageId: intent.messageId, botId: intent.originBotId }
+          : undefined,
         expectedEntityType: intent.entityType,
         requireFreshSnapshot: true,
       });
@@ -7630,6 +7648,9 @@ export class ModerationDeleteIntentService {
     }
     const route = await this.maxBotLinkService.resolveDeleteMessageBotRoute({
       chatId: intent.chatId,
+      existingMessage: intent.originBotId
+        ? { messageId: intent.messageId, botId: intent.originBotId }
+        : undefined,
       expectedEntityType: intent.entityType,
       requireFreshSnapshot: true,
     });

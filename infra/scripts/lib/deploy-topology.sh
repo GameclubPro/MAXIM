@@ -366,6 +366,12 @@ maxim_topology_require_legacy_dispositions() {
   node "$(dirname "${BASH_SOURCE[0]}")/../assert-legacy-disposition-source.mjs" "$commit_sha"
 }
 
+maxim_topology_require_fixed_moderator() {
+  local commit_sha="$1"
+  # FLAG: Never restore peer takeover after an administrator fixed a moderator.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-fixed-moderator-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_managed_entity_activation() {
   local commit_sha="$1"
   # FLAG: Known denials, pending activation, capability ceilings and receipt-only

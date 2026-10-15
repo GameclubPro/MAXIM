@@ -104,7 +104,11 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
             owner,
             ...state.candidates.map((candidate) => candidate.botId).sort(),
           ].filter((id): id is string =>
-            Boolean(id && state!.candidates.some((candidate) => candidate.botId === id)),
+            Boolean(
+              id &&
+              (!state!.fixedModeratorBotId || id === state!.fixedModeratorBotId) &&
+              state!.candidates.some((candidate) => candidate.botId === id),
+            ),
           ),
         ),
       ];
@@ -117,6 +121,7 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
           throw new WebhookPreparationDeferredError('Execution owner probe lease lost', 1_000);
         state = await this.maxBotLink.loadChatExecutionOwnerState(params.chatId);
         if (!state) return null;
+        if (state.fixedModeratorBotId && state.fixedModeratorBotId !== botId) continue;
         const membership = state.candidates.find((candidate) => candidate.botId === botId);
         if (!membership) continue;
         if (isMajorManagedEntityActivationRequired(membership, state.entityType)) {
