@@ -50,6 +50,7 @@ const ALERT_DEFINITIONS = Object.freeze({
   stabilizing_mode: { severity: 'warning', threshold: false, windowSec: 0 },
   queue_lag_warning: { severity: 'warning', threshold: 10, windowSec: 0 },
   queue_lag_critical: { severity: 'critical', threshold: 30, windowSec: 0 },
+  quarantined_receipts: { severity: 'warning', threshold: 0, windowSec: 0 },
   queue_fence: { severity: 'critical', threshold: 'unpaused/unowned', windowSec: 0 },
   api_fleet_topology: {
     severity: 'critical',
@@ -231,6 +232,13 @@ function normalizeSnapshot(raw) {
       operationalLagSec: numberOrNull(readiness.operationalLagSec, 0, 365 * 24 * 60 * 60),
       readinessWaitingCount: integerOrNull(readiness.readinessWaitingCount, 0, 10_000),
       readinessHeadLimitReached: booleanOrNull(readiness.readinessHeadLimitReached),
+      quarantinedCountLowerBound: integerOrNull(readiness.quarantinedCountLowerBound, 0, 65),
+      quarantineSampleLimitReached: booleanOrNull(readiness.quarantineSampleLimitReached),
+      oldestQuarantinedAgeSec: numberOrNull(
+        readiness.oldestQuarantinedAgeSec,
+        0,
+        365 * 24 * 60 * 60,
+      ),
       mode: safeToken(readiness.mode, ['normal', 'degrade']),
       condition: safeToken(readiness.condition, [
         'healthy',
@@ -352,6 +360,17 @@ function evaluateAlerts(history, current) {
     current.readiness.queueOk !== null &&
     softWarningStateKnown;
   const staleQueueMetrics = current.readiness.softWarningCode === 'stale-ready-fallback';
+  // FLAG: Quarantine is retained evidence, separate from executable queue pressure.
+  // Missing/stale/contradictory observations never prove that quarantine is empty.
+  const quarantineKnown =
+    queueMetricsKnown &&
+    !staleQueueMetrics &&
+    current.readiness.quarantinedCountLowerBound !== null &&
+    current.readiness.oldestQuarantinedAgeSec !== null &&
+    current.readiness.quarantineSampleLimitReached ===
+      (current.readiness.quarantinedCountLowerBound === 65) &&
+    (current.readiness.quarantinedCountLowerBound > 0 ||
+      current.readiness.oldestQuarantinedAgeSec === 0);
   const fenceHealthy =
     current.queueFence.available === true &&
     current.queueFence.queueCount === EXPECTED_WEBHOOK_QUEUE_COUNT &&
@@ -497,6 +516,11 @@ function evaluateAlerts(history, current) {
       current.queueFence.available === null ? null : fenceHealthy,
       (value) => value === false,
       ALERT_DEFINITIONS.queue_fence,
+    ),
+    quarantined_receipts: immediateOutcome(
+      quarantineKnown ? current.readiness.quarantinedCountLowerBound : null,
+      (value) => value > 0,
+      ALERT_DEFINITIONS.quarantined_receipts,
     ),
     api_fleet_topology: immediateOutcome(
       fleet.available === null ? null : fleetTopologyHealthy,
