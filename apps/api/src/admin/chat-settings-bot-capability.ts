@@ -383,3 +383,36 @@ export function resolveChatSettingsBotCapabilityRequirements(params: {
   }
   return requirements;
 }
+
+/** Current duties, including inherited defaults, when choosing a different moderator. */
+export function currentChatSettingsBotCapabilityRequirements(
+  settings: ChatSettings,
+): ChatSettingsBotCapabilityRequirement[] {
+  const write = new Set<string>();
+  const member = new Set<string>();
+  for (const key of WRITE_ENABLE_KEYS) if (settings[key]) write.add(key);
+  for (const key of WRITE_DISABLE_KEYS) if (!settings[key]) write.add(key);
+  if (linkModerationActive(settings)) write.add('linkPolicy');
+  for (const key of ['messageLimitsBlockedWords', 'messageLimitsBlockedDomains'] as const)
+    if (settings[key].length > 0) write.add(key);
+  for (const [key, active] of WRITE_SUBFEATURES)
+    if (active(settings) && settings[key]) write.add(key);
+  for (const key of MEMBER_MANAGEMENT_ENABLE_KEYS) if (settings[key]) member.add(key);
+  for (const [key, active] of MEMBER_MANAGEMENT_SUBFEATURES)
+    if (active(settings) && settings[key]) member.add(key);
+  if (settings.stopWordsPolicy?.enabled) {
+    write.add('stopWordsPolicy');
+    if (
+      settings.stopWordsPolicy.sanctions.muteEnabled ||
+      settings.stopWordsPolicy.sanctions.banEnabled
+    )
+      member.add('stopWordsPolicy');
+  }
+  for (const key of member) write.add(key);
+  return [
+    ...(write.size ? [{ permission: 'write' as const, featureKeys: [...write] }] : []),
+    ...(member.size
+      ? [{ permission: 'add_remove_members' as const, featureKeys: [...member] }]
+      : []),
+  ];
+}

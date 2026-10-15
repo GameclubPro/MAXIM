@@ -37,6 +37,9 @@ import { SystemModule } from '../system/system.module';
 import { AdminManagedEntitiesRefreshProcessor } from './admin-managed-entities-refresh.processor';
 import { ManagedEntityPresentationController } from './managed-entity-presentation.controller';
 import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
+import { ManagedModeratorController } from './managed-moderator.controller';
+import { ManagedModeratorService } from './managed-moderator.service';
+import { MaxFixedModeratorAssignmentService } from '../max/max-fixed-moderator-assignment.service';
 import { ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE } from './admin-managed-entities-refresh.queue';
 import { AdminManualFanoutProcessor } from './admin-manual-fanout.processor';
 import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
@@ -182,6 +185,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     MarketplaceProfileController,
     AdminManagedEntitiesController,
     ManagedEntityPresentationController,
+    ManagedModeratorController,
     AdminSettingsController,
     AdminStopWordsController,
     PublisherVkParsingController,
@@ -248,6 +252,8 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
     ManagedEntityPresentationService,
+    ManagedModeratorService,
+    MaxFixedModeratorAssignmentService,
     ManagedEntityAccessRefreshService,
     PublisherSelectedAccessService,
     ManagedEntitiesDiscoveryService,

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
 
@@ -62,4 +62,24 @@ test('requires native quarantine isolation and delayed Redis reply coverage befo
   const api = jobBody('api', 'postgres-races');
   assert.match(api, /MAXIM_TEST_REDIS_URL:/u);
   assert.match(api, /npm test --workspace @maxim\/api -- 'message-duplicate\|/u);
+});
+
+test('native race lane lists existing literal test paths without shell operators', () => {
+  const pkg = JSON.parse(readFileSync(resolve(root, 'apps/api/package.json'), 'utf8'));
+  const command = pkg.scripts['test:postgres-races:unlocked'];
+  const sections = command.split('--runTestsByPath ');
+  assert.equal(sections.length, 2, 'Expected one explicit native test list');
+  const paths = sections[1].trim().split(/\s+/u);
+  assert.equal(new Set(paths).size, paths.length, 'Native test list contains duplicates');
+  for (const path of paths) {
+    assert.match(path, /^src\/[a-z0-9./-]+\.spec\.ts$/u, `Invalid native test path: ${path}`);
+    assert.ok(statSync(resolve(root, 'apps/api', path)).isFile(), `Missing native test: ${path}`);
+  }
+  for (const path of [
+    'src/max/max-fixed-moderator-assignment-postgres.spec.ts',
+    'src/max/max-fixed-moderator-preservation-postgres.spec.ts',
+    'src/webhook/webhook-multibot-fixed-fullpath.spec.ts',
+  ]) {
+    assert.ok(paths.includes(path), `Missing fixed moderator regression: ${path}`);
+  }
 });

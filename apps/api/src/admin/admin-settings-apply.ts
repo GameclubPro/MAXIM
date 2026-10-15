@@ -1,3 +1,7 @@
+import {
+  assertFixedModeratorCapabilitiesForSettings,
+  chatSettingsCapabilityPurposes,
+} from '../max/fixed-moderator-capabilities';
 import { TRAFFIC_PROTECTION_SETTINGS_KEYS } from '../moderation/traffic-protection';
 import {
   applySectionTargetPreviewRequestSchema,
@@ -322,6 +326,10 @@ export async function applySettingsToAllChats(params: {
         key === 'requiredSubscriptionChannelIds',
     );
   const capabilityPreflightConfirmedChatIds = new Set<string>();
+  const requiredPurposesByChatId = new Map<
+    string,
+    ReturnType<typeof chatSettingsCapabilityPurposes>
+  >();
   let writeBaselineByChatId = new Map<string, Date>();
   if (capabilityRelevantUpdate || requiresReportPolicyValidation) {
     const currentRows = await params.prisma.chatSettings.findMany({
@@ -373,6 +381,7 @@ export async function applySettingsToAllChats(params: {
             });
           }
         }
+        requiredPurposesByChatId.set(chatId, chatSettingsCapabilityPurposes(requirements));
         if (requirements.length > 0) {
           try {
             await params.assertBotCapabilities(chatId, requirements);
@@ -527,7 +536,7 @@ export async function applySettingsToAllChats(params: {
                 params.reportsAvailable?.(chatId) ?? false,
               );
             }
-            await tx.chat.upsert({
+            const lockedChat = await tx.chat.upsert({
               where: { id: chatId },
               create: {
                 id: chatId,
@@ -538,6 +547,11 @@ export async function applySettingsToAllChats(params: {
               },
               update: { catalogKind: ChatCatalogKind.MANAGED },
             });
+            await assertFixedModeratorCapabilitiesForSettings(
+              tx,
+              lockedChat,
+              requiredPurposesByChatId.get(chatId) ?? [],
+            );
             const baselineUpdatedAt = writeBaselineByChatId.get(chatId);
             if (baselineUpdatedAt) {
               const changed = await tx.chatSettings.updateMany({

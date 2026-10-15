@@ -16,6 +16,8 @@ import {
   isMajorManagedEntityActivationRequired,
 } from './managed-entity-activation.util';
 
+export const FIXED_MODERATOR_READER_VERSION = 1;
+
 export type MaxExecutionPurpose =
   | 'moderation'
   | 'delete_message'
@@ -37,6 +39,7 @@ export type MaxExecutionOwnerState = {
   chatId: string;
   entityType: ChatEntityType | null;
   primaryBotId: string | null;
+  fixedModeratorBotId?: string | null;
   routingVersion: number;
   candidates: MaxExecutionMembershipProof[];
 };
@@ -138,6 +141,9 @@ export function executionRouteProof(
   purpose: MaxExecutionPurpose = 'moderation',
   maxAgeMs = MAX_EXECUTION_ACCESS_MAX_AGE_MS,
 ): MaxExecutionRouteProof | null {
+  // FLAG: A fixed assignment survives temporary loss of access. Missing rights never
+  // authorize another bot to take over new work; legacy entities retain their policy.
+  if (state.fixedModeratorBotId && state.fixedModeratorBotId !== botId) return null;
   const membership = state.candidates.find((candidate) => candidate.botId === botId);
   if (
     !membership ||

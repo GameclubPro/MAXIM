@@ -19,6 +19,10 @@ const chatsPageNativeCss = readFileSync(
   new URL('../src/pages/chats-page-native.css', import.meta.url),
   'utf8',
 );
+const homeModeratorCss = readFileSync(
+  new URL('../src/pages/home-moderator.css', import.meta.url),
+  'utf8',
+);
 const shellSource = readFileSync(new URL('../src/components/shell.tsx', import.meta.url), 'utf8');
 const sheetsSource = readFileSync(
   new URL('../src/pages/home-entity-sheets.tsx', import.meta.url),
@@ -284,7 +288,10 @@ test('home connection flow is always available and opens the signed launch bot d
   assert.match(sheetsSource, /coordinator\.run\([\s\S]*?openMaxBotLinkAndClose/u);
   assert.doesNotMatch(chatsPageSource, /createBotDialogHandoffCoordinator|openMaxBotLinkAndClose/u);
   assert.match(chatsPageSource, /if \(showEmptyState\) \{[\s\S]*?preloadHomeEntitySheets\(\)/u);
-  assert.match(chatsPageSource, /if \(connectSheetOpen\) \{[\s\S]*?closeHomeEntitySheet\(\)/u);
+  assert.match(
+    chatsPageSource,
+    /if \(connectSheetOpen \|\| moderatorTarget\) \{[\s\S]*?closeHomeEntitySheet\(\)/u,
+  );
   assert.match(sheetsSource, /sheetKey="connect"[\s\S]*?title="Подключить чат или канал"/u);
   assert.match(sheetsSource, /Добавьте бота в администраторы/u);
   assert.match(sheetsSource, /Включите доступ ко всем сообщениям/u);
@@ -308,8 +315,12 @@ test('home list keeps grouped rows at wide breakpoints', () => {
     chatsPageNativeCss,
     /\.chats-home \.chat-grid \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/u,
   );
-  assert.match(chatsPageSource, /const CHAT_LIST_ROW_HEIGHT = 72;/u);
-  assert.match(chatsPageSource, /const CHAT_LIST_VIRTUAL_ROW_PITCH = 80;/u);
+  assert.match(chatsPageSource, /const CHAT_LIST_ROW_HEIGHT = 96;/u);
+  assert.match(
+    chatsPageSource,
+    /const CHAT_LIST_VIRTUAL_ROW_PITCH = CHAT_LIST_ROW_HEIGHT \+ 8;/u,
+  );
+  assert.match(homeModeratorCss, /\.chat-card--moderator\.glass-card \{[^}]*min-height: 96px;/u);
   assert.match(
     chatsPageSource,
     /top: index \* CHAT_LIST_VIRTUAL_ROW_PITCH,[\s\S]*?height: CHAT_LIST_ROW_HEIGHT/u,

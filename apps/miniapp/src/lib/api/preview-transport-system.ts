@@ -1,4 +1,8 @@
 import {
+  handleModeratorPreviewRequest,
+  previewModeratorPresentation,
+} from './preview-transport-moderator';
+import {
   managedEntityPresentationRequestSchema,
   managedEntitiesListResponseSchema,
   managedEntityBotExecutionPlanSchema,
@@ -1348,6 +1352,8 @@ export const handleSystemPreviewRequest: PreviewRequestHandler = ({
       ? cloneJson(buildPreviewManagedEntitiesResponse(state.channels, state.clock))
       : cloneJson(state.channels);
   }
+  const moderatorResponse = handleModeratorPreviewRequest({ state, method, segments, init, url });
+  if (moderatorResponse !== PREVIEW_NOT_HANDLED) return moderatorResponse;
   if (url.pathname === '/managed-entities/presentation' && method === 'POST') {
     const request = managedEntityPresentationRequestSchema.parse(parseJsonBody(init));
     return {
@@ -1361,6 +1367,7 @@ export const handleSystemPreviewRequest: PreviewRequestHandler = ({
           avatarState: item.avatarUrl ? 'present' : 'absent',
           observedAt: new Date().toISOString(),
           pending: false,
+          ...previewModeratorPresentation(state, request.entityType, item.id),
         })),
       retryAfterMs: 2000,
     };

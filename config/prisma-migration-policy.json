@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261015010000_add_managed_entity_metadata_observation",
-  "baselineNamesSha256": "e72b35b066cbe7c068ec571242bfd24660d1eda9e91583c0effc10b9280c93c1",
-  "baselineContentsSha256": "de14ad1e80bb58176303edf93fdef1f36a0582b5140e8661e07c63d6e0592a73",
+  "baselineThrough": "20261015020000_add_fixed_moderator_assignment",
+  "baselineNamesSha256": "ecec5fc4e31d52cf62e0e7bbf6325948fe57d9b2c448ab93083b6fb841757e60",
+  "baselineContentsSha256": "ce533e2960411fa2c38a7bd3fb3c9fc70f9d34678f2dd66f4a8c14aa9c2e7802",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -209,6 +209,9 @@
     },
     "20261014030000_add_moderation_voice_sources": {
       "reason": "The only index belongs to the new empty moderation_voice_sources table. No retained webhook table is scanned, altered or backfilled."
+    },
+    "20261015020000_add_fixed_moderator_assignment": {
+      "reason": "The index covers only the new empty moderator assignment journal. The existing chats table receives one nullable column with no backfill or table rewrite; no existing history is indexed."
     }
   }
 }

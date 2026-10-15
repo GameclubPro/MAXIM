@@ -196,6 +196,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   const messages = new Map<string, Record<string, unknown>>();
   const channelIds = new Set<string>();
   const deniedBots = new Set<string>();
+  const rateLimitedDeleteBots = new Set<string>();
   const ownMemberProbeOverrides = new Map<string, 'unavailable' | 'permissions_unknown'>();
   const botPermissions = new Map(
     bots.map((bot) => [bot.id, ['read_all_messages', 'write', 'add_remove_members']]),
@@ -234,6 +235,16 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
               : {}),
           };
           requests.push(call);
+          if (rateLimitedDeleteBots.has(bot.id) && method === 'delete' && path === '/messages') {
+            throw Object.assign(new Error('Simulated MAX token rate limit'), {
+              config: request,
+              response: {
+                status: 429,
+                data: { code: 'too.many.requests' },
+                headers: { 'retry-after': '1' },
+              },
+            });
+          }
           if (
             deniedBots.has(bot.id) &&
             (path === '/messages' || (method !== 'get' && path.endsWith('/members')))
@@ -963,6 +974,10 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     },
     allowBot: (botId: string) => {
       deniedBots.delete(botId);
+    },
+    setDeleteRateLimit: (botId: string, enabled: boolean) => {
+      if (enabled) rateLimitedDeleteBots.add(botId);
+      else rateLimitedDeleteBots.delete(botId);
     },
     setOwnMemberProbe: (botId: string, result: 'unavailable' | 'permissions_unknown' | null) => {
       if (result === null) ownMemberProbeOverrides.delete(botId);

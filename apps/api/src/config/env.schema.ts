@@ -390,6 +390,8 @@ const envSchema = z.object({
   MAX_API_CIRCUIT_OPEN_SEC: z.coerce.number().int().positive().default(20),
   MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC: z.coerce.number().int().positive().default(60),
   MAX_ROUTED_MUTATIONS_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('shadow'),
+  MAX_FIXED_MODERATOR_SELECTION_ENABLED: envBoolean(false),
+  MAX_FIXED_MODERATOR_SELECTION_ENTITY_IDS: z.string().default(''),
   MAX_ROUTED_MUTATIONS_CANARY_PERCENT: z.coerce.number().min(0).max(100).default(1),
   MAX_ROUTED_MUTATIONS_CANARY_ENTITY_IDS: z.string().default(''),
   MAX_CROSS_BOT_EDIT_DELETE_ENABLED: envBoolean(false),

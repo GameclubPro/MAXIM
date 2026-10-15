@@ -379,6 +379,7 @@ function createService(
   Object.assign(transactionClient, {
     chat: prisma.chat,
     chatSettings: prisma.chatSettings,
+    channelSettings: prisma.channelSettings,
     chatRules: prisma.chatRules,
     auditLog: prisma.auditLog,
     $queryRaw: prisma.$queryRaw,
@@ -1813,29 +1814,19 @@ describe('AdminSettingsService chat rules', () => {
         create: expect.objectContaining({
           botId: 'bot-1',
           primaryBotId: 'bot-1',
-          channelSettings: {
-            create: expect.objectContaining({
-              commentsEnabled: true,
-              postSuggestionsEnabled: true,
-            }),
-          },
         }),
-        update: expect.objectContaining({
-          channelSettings: {
-            upsert: {
-              update: expect.objectContaining({
-                commentsEnabled: true,
-                postSuggestionsEnabled: true,
-              }),
-              create: expect.objectContaining({
-                commentsEnabled: true,
-                postSuggestionsEnabled: true,
-              }),
-            },
-          },
-        }),
+        update: expect.objectContaining({ entityType: 'CHANNEL' }),
       }),
     );
+    expect(prisma.channelSettings.upsert).toHaveBeenCalledWith({
+      where: { chatId: 'channel-1' },
+      create: expect.objectContaining({
+        chatId: 'channel-1',
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+      }),
+      update: expect.objectContaining({ commentsEnabled: true, postSuggestionsEnabled: true }),
+    });
     expect(channelSettingsUpsert?.update).not.toHaveProperty('botId');
     expect(channelSettingsUpsert?.update).not.toHaveProperty('primaryBotId');
     expect(prisma.auditLog.create).toHaveBeenCalledWith({

@@ -1,4 +1,8 @@
 import {
+  assertFixedModeratorCapabilitiesForSettings,
+  chatSettingsCapabilityPurposes,
+} from '../max/fixed-moderator-capabilities';
+import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
   ADMIN_MUTE_COMMAND_NAME_DEFAULT,
@@ -1123,7 +1127,7 @@ export async function saveChatSettings(params: {
   let savedRevision: string | undefined;
   try {
     await params.prisma.$transaction(async (tx) => {
-      await tx.chat.upsert({
+      const lockedChat = await tx.chat.upsert({
         where: { id: params.chatId },
         create: {
           id: params.chatId,
@@ -1134,6 +1138,11 @@ export async function saveChatSettings(params: {
         },
         update: { catalogKind: ChatCatalogKind.MANAGED },
       });
+      await assertFixedModeratorCapabilitiesForSettings(
+        tx,
+        lockedChat,
+        chatSettingsCapabilityPurposes(capabilityRequirements),
+      );
       if (
         [
           // FLAG: Restoring an earlier schedule must not revive deletes prepared

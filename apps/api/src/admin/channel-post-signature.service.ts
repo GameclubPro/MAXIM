@@ -1,4 +1,8 @@
 import {
+  assertFixedModeratorCapabilitiesForSettings,
+  lockModeratorSettingsChat,
+} from '../max/fixed-moderator-capabilities';
+import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH,
   channelPostSignatureSettingsSchema,
@@ -101,7 +105,7 @@ export class ChannelPostSignatureService {
     return this.prisma.$transaction(async (tx) => {
       // FLAG: Serialize partial updates even before a channel_settings row exists.
       // MAX preflight stays outside the transaction so network waits never hold this lock.
-      await tx.$queryRaw`SELECT id FROM chats WHERE id = ${chatId} FOR UPDATE`;
+      const lockedChat = await lockModeratorSettingsChat(tx, chatId);
       const lockedCurrent = await this.getSettings(chatId, tx);
       const next = validateNext(lockedCurrent);
       if (
@@ -115,6 +119,11 @@ export class ChannelPostSignatureService {
       if (next.enabled && !next.url && !channelLinkVerified) {
         throw new ConflictException('Настройки подписи изменились. Повторите сохранение.');
       }
+      await assertFixedModeratorCapabilitiesForSettings(
+        tx,
+        lockedChat,
+        next.enabled ? ['edit_message'] : [],
+      );
       await tx.channelSettings.upsert({
         where: { chatId },
         create: {

@@ -116,6 +116,9 @@ Commands:
   publisher-dispatch-status   Read privacy-safe Publik dispatch rollout status
   vk-parsing-retire-legacy-queue [--apply [--reviewed-digest <sha256>]]
                               Preview or remove the retired vk-parsing-publish queue
+  fixed-moderator-preservation explain <chat-id>
+  fixed-moderator-preservation preview [limit [after]]
+  fixed-moderator-preservation apply <private-0600-plan.json> <reviewed-sha256>
   moderation-default-retire-legacy-queue [--apply]
                               Preview or remove the retired unsharded webhook queue
   install-publisher-secrets [token-file]
@@ -946,6 +949,41 @@ vk_parsing_retire_legacy_queue() {
   remote_exec "$(shell_quote_args "${remote_args[@]}")"
 }
 
+fixed_moderator_preservation() {
+  local action="${1:-}" target_sha plan_file digest
+  shift || return 2
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  case "$action" in
+    explain)
+      if [[ $# -ne 1 || ! "$1" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then return 2; fi
+      node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" >&2
+      remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-fixed-moderator-preservation.sh explain "$1")" </dev/null
+      ;;
+    preview)
+      if [[ $# -gt 2 || ! "${1:-25}" =~ ^([1-9]|[1-9][0-9]|100)$ ||
+          ( $# -eq 2 && ! "$2" =~ ^[A-Za-z0-9_-]{1,128}$ ) ]]; then
+        echo 'Usage: fixed-moderator-preservation preview [limit [after]]' >&2
+        return 2
+      fi
+      node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" >&2
+      remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-fixed-moderator-preservation.sh preview "$@")" </dev/null
+      ;;
+    apply)
+      if [[ $# -ne 2 || ! "$2" =~ ^[a-f0-9]{64}$ ]]; then
+        echo 'Usage: fixed-moderator-preservation apply <private-0600-plan.json> <reviewed-sha256>' >&2
+        return 2
+      fi
+      plan_file="$1"
+      digest="$2"
+      node "$ROOT_DIR/infra/scripts/fixed-moderator-preservation-plan.mjs" "$plan_file" "$target_sha" "$digest" >/dev/null
+      node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" >&2
+      node "$ROOT_DIR/infra/scripts/fixed-moderator-preservation-plan.mjs" "$plan_file" "$target_sha" "$digest" |
+        remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-fixed-moderator-preservation.sh apply "$digest")"
+      ;;
+    *) echo 'Expected fixed-moderator-preservation preview or apply' >&2; return 2 ;;
+  esac
+}
+
 moderation_default_retire_legacy_queue() {
   local apply="${1:-}"
   if [[ -n "$apply" && "$apply" != "--apply" ]] || [[ $# -gt 1 ]]; then
@@ -1319,7 +1357,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_managed_entity_activation \
+    maxim_topology_require_fixed_moderator \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1334,15 +1372,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback must restore tooling with the explicit bot activation floor;
-  # older tooling cannot preserve dormant receipts, denied rights and permanent holds.
+  # FLAG: API rollback must restore tooling with the fixed-moderator reader floor;
+  # older tooling cannot preserve assignments, dormant receipts and permanent holds.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_managed_entity_activation
+    capability_marker=maxim_topology_require_fixed_moderator
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_managed_entity_activation
+        capability_marker=maxim_topology_require_fixed_moderator
         break
       fi
     done
@@ -1622,6 +1660,9 @@ case "$command" in
     ;;
   vk-parsing-retire-legacy-queue)
     vk_parsing_retire_legacy_queue "$@"
+    ;;
+  fixed-moderator-preservation)
+    fixed_moderator_preservation "$@"
     ;;
   moderation-default-retire-legacy-queue)
     moderation_default_retire_legacy_queue "$@"
