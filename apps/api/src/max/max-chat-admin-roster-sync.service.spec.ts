@@ -432,6 +432,40 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
+  it('hands off each exact handshake bot without removing or waiting for an older chat job', async () => {
+    const { service, queue } = createService();
+    queue.getJob.mockImplementation(() => new Promise(() => {}));
+    for (const botId of ['bot-1', 'bot-2']) {
+      await expect(
+        service.scheduleChatAdminRosterSync({
+          chatId: '-100122',
+          botIds: [botId],
+          source: 'handshake_start',
+        }),
+      ).resolves.toBe(true);
+    }
+    expect(queue.getJob).not.toHaveBeenCalled();
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    const jobs = queue.add.mock.calls as unknown as Array<
+      [string, { botIds: string[] }, { deduplication: { id: string; keepLastIfActive: boolean } }]
+    >;
+    expect(jobs.map(([, data]) => data.botIds)).toEqual([['bot-1'], ['bot-2']]);
+    expect(jobs[0]![2].deduplication.keepLastIfActive).toBe(true);
+    expect(jobs[0]![2].deduplication.id).not.toBe(jobs[1]![2].deduplication.id);
+  });
+
+  it('does not infer a successful handshake handoff from a queue error message', async () => {
+    const { service, queue } = createService();
+    queue.add.mockRejectedValueOnce(new Error('job exists but persistence is unknown'));
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100122',
+        botIds: ['bot-1'],
+        source: 'handshake_start',
+      }),
+    ).resolves.toBe(false);
+  });
+
   it('drops webhook membership churn prewarms when the roster queue is full', async () => {
     const { service, queue } = createService();
     queue.getJobCounts = jest.fn().mockResolvedValue({

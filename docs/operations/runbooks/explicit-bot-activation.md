@@ -6,6 +6,16 @@ A known loss of rights, confirmed ordinary membership, removal, or a new pending
 
 An administrator can activate the receiving bot by sending `Старт` in the group or forwarding a message from the destination into that bot's private dialog. Activation requires a fresh authenticated webhook receipt, matching destination and bot, independent explicit human admin/owner evidence, and the exact bot's required capabilities. Group Start can silently activate each receiving bot while shared command authority allows at most one successful public confirmation. Forward activation cannot select another bot. Callback navigation does not activate a bot.
 
+After the exact bot and actor grant commits, group Start durably schedules the full
+administrator roster refresh before confirming the connection. It does not wait for
+that full remote refresh. The existing roster queue deduplicates handshake work by
+chat and receiving bot, retaining one fresh follow-up when a previous probe is active.
+A failed enqueue remains a retryable handshake failure; it cannot publish an early
+confirmation. Queue retries retain their existing limits, access epochs and activation
+guards. This handoff alone does not make Start independent of ordinary webhook ordering.
+Run `handshake-roster-handoff.redis-integration.spec.ts` with native Redis alongside
+the handshake and roster service regressions when changing this boundary.
+
 Moderators require their baseline read/delete capabilities; optional member, edit and send rights cannot grow through a passive refresh after known loss. Publisher uses its separate publication permission policy. Bot rights denial in one scope does not revoke another bot's independently verified rights.
 
 Night-mode scheduling and its close-notice audit use the same activation and send-capability

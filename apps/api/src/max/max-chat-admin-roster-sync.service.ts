@@ -1,4 +1,5 @@
 import { probeManagedEntityActor } from './managed-entity-actor-probe';
+import { handOffHandshakeRoster } from './handshake-roster-handoff';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
@@ -147,6 +148,13 @@ export class MaxChatAdminRosterSyncService {
     let followUp = false;
 
     try {
+      if (desiredJobData.source === 'handshake_start') {
+        return await handOffHandshakeRoster(this.queue, desiredJobData, {
+          attempts: this.resolveJobAttempts(desiredJobData),
+          priority: this.resolveJobPriority(desiredJobData),
+          backoff: this.resolveJobBackoff(desiredJobData),
+        });
+      }
       const existing = await this.queue.getJob(jobId);
       if (existing) {
         const state = await existing.getState();
@@ -207,7 +215,11 @@ export class MaxChatAdminRosterSyncService {
       return true;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.toLowerCase().includes('job') && message.toLowerCase().includes('exists')) {
+      if (
+        desiredJobData.source !== 'handshake_start' &&
+        message.toLowerCase().includes('job') &&
+        message.toLowerCase().includes('exists')
+      ) {
         return true;
       }
 

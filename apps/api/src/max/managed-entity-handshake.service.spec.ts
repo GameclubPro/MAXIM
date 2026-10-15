@@ -698,8 +698,8 @@ describe('ManagedEntityHandshakeService', () => {
       entityType: 'chat',
       source: 'handshake_start',
     };
-    expect(fixture.rosterSync.processJob).toHaveBeenCalledWith(rosterJob);
-    expect(fixture.rosterSync.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
+    expect(fixture.rosterSync.processJob).not.toHaveBeenCalled();
+    expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith(rosterJob);
     expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
       '-100',
       'm-start-1',
@@ -1383,9 +1383,9 @@ describe('ManagedEntityHandshakeService', () => {
     );
   });
 
-  it('queues a roster sync fallback when direct database refresh fails', async () => {
+  it('confirms Start without waiting for a full administrator roster refresh', async () => {
     const fixture = createFixture();
-    fixture.rosterSync.processJob.mockRejectedValueOnce(new Error('MAX timeout'));
+    fixture.rosterSync.processJob.mockImplementation(() => new Promise(() => {}));
 
     await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
 
@@ -1396,13 +1396,29 @@ describe('ManagedEntityHandshakeService', () => {
       entityType: 'chat',
       source: 'handshake_start',
     };
-    expect(fixture.rosterSync.processJob).toHaveBeenCalledWith(rosterJob);
+    expect(fixture.rosterSync.processJob).not.toHaveBeenCalled();
     expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith(rosterJob);
     expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
       '-100',
       'm-start-1',
       expect.objectContaining({ immediate: true, botId: 'bot-1' }),
     );
+  });
+
+  it('retries the same Start after a failed durable roster handoff without confirming early', async () => {
+    const fixture = createFixture();
+    fixture.rosterSync.scheduleChatAdminRosterSync.mockResolvedValueOnce(false);
+    const update = createUpdate();
+
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('failed');
+    expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+
+    fixture.prisma.managedEntityAccessEdge.findUnique.mockResolvedValueOnce({ state: 'GRANTED' });
+    await expect(fixture.service.handleWebhookUpdate(update)).resolves.toBe('already_connected');
+    expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledTimes(2);
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(fixture.maxClient.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('rate limits duplicate bot access denials but allows a new Старт message to retry', async () => {
