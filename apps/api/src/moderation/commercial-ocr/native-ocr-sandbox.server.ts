@@ -95,6 +95,10 @@ type NativeOcrSandboxLifecycleEvent = Readonly<{
   operation: 'idle' | 'preprocess' | 'recognize';
   queueDepth: number;
   pendingBytes: number;
+  requestedTimeoutMs: number | 'unavailable';
+  executionBudgetMs: number | 'unavailable';
+  queueWaitMs: number | 'unavailable';
+  operationElapsedMs: number | 'unavailable';
 }>;
 
 export type NativeOcrSandboxServer = Readonly<{
@@ -180,6 +184,12 @@ export async function startNativeOcrSandboxServer(
   let active = false;
   let activeSocket: Socket | null = null;
   let activeRequestKind: 'preprocess' | 'recognize' | null = null;
+  let activeTiming: {
+    requestedTimeoutMs: number;
+    executionBudgetMs: number;
+    queueWaitMs: number;
+    startedAtNs: bigint;
+  } | null = null;
   let activeRequest: Promise<void> | null = null;
   let activeNativeProcess: ChildProcessWithoutNullStreams | null = null;
   let shuttingDown = false;
@@ -356,6 +366,17 @@ export async function startNativeOcrSandboxServer(
       operation: activeRequestKind ?? 'idle',
       queueDepth: pending.length,
       pendingBytes,
+      // FLAG: Only finite timing scalars (or unavailable without active work) leave
+      // this boundary; images, text, identities and absolute deadlines remain private.
+      requestedTimeoutMs: activeTiming?.requestedTimeoutMs ?? 'unavailable',
+      executionBudgetMs: activeTiming?.executionBudgetMs ?? 'unavailable',
+      queueWaitMs: activeTiming?.queueWaitMs ?? 'unavailable',
+      operationElapsedMs: activeTiming
+        ? Math.max(
+            0,
+            Math.round(Number(process.hrtime.bigint() - activeTiming.startedAtNs) / 1_000_000),
+          )
+        : 'unavailable',
     };
     shuttingDown = true;
     process.exitCode = 1;
@@ -524,7 +545,15 @@ export async function startNativeOcrSandboxServer(
       drain();
       return;
     }
-    queueWaitMs.record(Number(process.hrtime.bigint() - request.receivedAtNs) / 1_000_000);
+    const startedAtNs = process.hrtime.bigint();
+    const waitedMs = Number(startedAtNs - request.receivedAtNs) / 1_000_000;
+    queueWaitMs.record(waitedMs);
+    activeTiming = {
+      requestedTimeoutMs: request.timeoutMs,
+      executionBudgetMs,
+      queueWaitMs: Math.max(0, Math.round(waitedMs)),
+      startedAtNs,
+    };
     activeExecutionDeadlineNs =
       request.deadlineNs - BigInt(NATIVE_OCR_SANDBOX_IPC_GRACE_MS) * 1_000_000n;
     request.timeoutMs = executionBudgetMs;
@@ -536,6 +565,7 @@ export async function startNativeOcrSandboxServer(
         : 'recognize';
     const operation = processRequest(request).finally(() => {
       active = false;
+      activeTiming = null;
       activeExecutionDeadlineNs = null;
       if (activeSocket === request.socket) {
         activeSocket = null;

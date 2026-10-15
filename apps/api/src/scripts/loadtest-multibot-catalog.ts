@@ -1,9 +1,20 @@
+import {
+  collectFixtureBatches,
+  countFixtureBatches,
+} from '../webhook/multibot-harness-batches.spec-support';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { cpus, totalmem } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { randomUUID } from 'node:crypto';
-import { createMultibotHarness } from '../webhook/webhook-multibot-fullpath.spec-support';
+import {
+  createMultibotHarness,
+  type MultibotHarness,
+} from '../webhook/webhook-multibot-fullpath.spec-support';
+import {
+  createSplitMultibotHarness,
+  type SplitRoleReport,
+} from '../webhook/webhook-multibot-split.spec-support';
 import { ModerationDeleteIntentStatus } from '../prisma/prisma-client';
 
 type Profile = 'uniform' | 'hot' | 'cold' | 'media';
@@ -13,14 +24,24 @@ const args = Object.fromEntries(
     const match = /^--([a-z]+)=(.+)$/u.exec(arg);
     if (!match)
       throw new Error(
-        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --enqueue=fixture|production --profiles=uniform,hot,cold,media --output=path',
+        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --enqueue=fixture|production --topology=single|split --profiles=uniform,hot,cold,media --output=path',
       );
     return [match[1]!, match[2]!];
   }),
 );
 for (const key of Object.keys(args))
   if (
-    !['chats', 'bots', 'messages', 'rate', 'routing', 'enqueue', 'profiles', 'output'].includes(key)
+    ![
+      'chats',
+      'bots',
+      'messages',
+      'rate',
+      'routing',
+      'enqueue',
+      'topology',
+      'profiles',
+      'output',
+    ].includes(key)
   )
     throw new Error(`Unknown option ${key}`);
 function positive(value: string, name: string): number {
@@ -40,6 +61,12 @@ if (routing !== 'legacy' && routing !== 'fixed') throw new Error('Unsupported ro
 const enqueue = args.enqueue ?? 'fixture';
 if (enqueue !== 'fixture' && enqueue !== 'production')
   throw new Error('Unsupported enqueue profile');
+const topology = args.topology ?? 'single';
+if (topology !== 'single' && topology !== 'split') throw new Error('Unsupported fixture topology');
+if (topology === 'split' && (enqueue !== 'production' || messageCount > 10_000 || bots > 12))
+  throw new Error(
+    'Split fixture requires production selection and at most 10,000 messages / 12 bots',
+  );
 const profiles = (args.profiles ?? 'uniform,hot,cold,media').split(',') as Profile[];
 if (profiles.some((profile) => !profilesAllowed.has(profile)))
   throw new Error('Unsupported profile');
@@ -61,7 +88,10 @@ const pendingActionStatuses = [
 
 async function main() {
   for (const catalog of catalogs) {
-    const harness = await createMultibotHarness({
+    const harness: MultibotHarness & {
+      roleReports?: SplitRoleReport[];
+      snapshotEffects?: () => Promise<boolean>;
+    } = await (topology === 'split' ? createSplitMultibotHarness : createMultibotHarness)({
       databaseUrl: databaseUrl!,
       redisUrl: redisUrl!,
       bots,
@@ -111,9 +141,12 @@ async function main() {
           where: { chatId: { in: chats } },
         });
         const receiptIds: string[] = [];
+        const unsettledReceiptIds = new Set<string>();
+        const touchedChatIds = new Set<string>();
         const messageIds: string[] = [];
         const expectedExecutors = new Map<string, string>();
         const ingressLatencyMs: number[] = [];
+        const producerLatenessMs: number[] = [];
         let producing = true;
         let peakPendingReceipts = 0;
         let peakOldestReceiptAgeMs = 0;
@@ -122,31 +155,39 @@ async function main() {
         let pumpError: unknown;
         const startedAt = performance.now();
         let productionFinishedAt = startedAt;
-        failureSnapshot = async (error) => ({
-          status: 'failed',
-          catalog,
-          bots,
-          routing,
-          profile,
-          enqueueCapacity: harness.capacity,
-          failureCode:
-            error instanceof Error && error.name === 'MaxApiInternalRateLimitError'
-              ? 'internal_quota'
-              : 'benchmark_failed',
-          logicalMessagesSubmitted: messageIds.length,
-          receipts: receiptIds.length,
-          requestedLogicalRatePerSec: rate,
-          elapsedMs: Math.round(performance.now() - startedAt),
-          pendingReceipts: await harness.prisma.webhookEvent.count({
-            where: { id: { in: receiptIds }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
-          }),
-          pendingActions: await harness.prisma.moderationDeleteIntent.count({
-            where: { messageId: { in: messageIds }, status: { in: pendingActionStatuses } },
-          }),
-          remoteDeletes: harness.effects
-            .slice(beforeEffects)
-            .filter((effect) => effect.method === 'delete').length,
-        });
+        failureSnapshot = async (error) => {
+          const effectsComplete = harness.snapshotEffects
+            ? await harness.snapshotEffects().catch(() => false)
+            : true;
+          return {
+            status: 'failed',
+            catalog,
+            bots,
+            routing,
+            profile,
+            enqueueCapacity: harness.capacity,
+            failureCode:
+              error instanceof Error && error.name === 'MaxApiInternalRateLimitError'
+                ? 'internal_quota'
+                : 'benchmark_failed',
+            logicalMessagesSubmitted: messageIds.length,
+            receipts: receiptIds.length,
+            requestedLogicalRatePerSec: rate,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            pendingReceipts: await countFixtureBatches(receiptIds, (ids) =>
+              harness.prisma.webhookEvent.count({
+                where: { id: { in: ids }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
+              }),
+            ),
+            pendingActions: await harness.prisma.moderationDeleteIntent.count({
+              where: { messageId: { in: messageIds }, status: { in: pendingActionStatuses } },
+            }),
+            effectsComplete,
+            remoteDeletesObserved: harness.effects
+              .slice(beforeEffects)
+              .filter((effect) => effect.method === 'delete').length,
+          };
+        };
         const pump = (async () => {
           try {
             while (producing) {
@@ -188,9 +229,11 @@ async function main() {
             }
             const messageId = `${caseId}-${index}`;
             messageIds.push(messageId);
+            touchedChatIds.add(chatId);
             expectedExecutors.set(messageId, assignedBots.get(chatId)!);
             const at = Date.now();
             const enteredAt = performance.now();
+            producerLatenessMs.push(Math.max(0, enteredAt - (startedAt + (index * 1000) / rate)));
             const mirrors = await Promise.all(
               harness.bots.map((bot) =>
                 harness.ingest({
@@ -216,21 +259,18 @@ async function main() {
               ),
             );
             receiptIds.push(...mirrors);
+            for (const id of mirrors) unsettledReceiptIds.add(id);
             ingressLatencyMs.push(performance.now() - enteredAt);
             if (index % 10 === 0) {
-              const pendingWhere = {
-                id: { in: receiptIds },
-                status: {
-                  in: ['RECEIVED', 'QUEUED', 'FAILED'] as Array<'RECEIVED' | 'QUEUED' | 'FAILED'>,
-                },
-              };
-              const [pending, oldest, pendingActions, oldestAction] = await Promise.all([
-                harness.prisma.webhookEvent.count({ where: pendingWhere }),
-                harness.prisma.webhookEvent.findFirst({
-                  where: pendingWhere,
-                  orderBy: { createdAt: 'asc' },
-                  select: { createdAt: true },
-                }),
+              // Observe only receipts not yet seen terminal; final checks still read every ID.
+              const trackedIds = [...unsettledReceiptIds];
+              const [receiptRows, pendingActions, oldestAction] = await Promise.all([
+                collectFixtureBatches(trackedIds, (ids) =>
+                  harness.prisma.webhookEvent.findMany({
+                    where: { id: { in: ids } },
+                    select: { id: true, status: true, createdAt: true },
+                  }),
+                ),
                 harness.prisma.moderationDeleteIntent.count({
                   where: { messageId: { in: messageIds }, status: { in: pendingActionStatuses } },
                 }),
@@ -240,6 +280,16 @@ async function main() {
                   select: { createdAt: true },
                 }),
               ]);
+              if (receiptRows.length !== trackedIds.length)
+                throw new Error('Fixture receipt observation is incomplete');
+              let pending = 0;
+              let oldest: { createdAt: Date } | null = null;
+              for (const row of receiptRows) {
+                if (['RECEIVED', 'QUEUED', 'FAILED'].includes(row.status)) {
+                  pending += 1;
+                  if (!oldest || row.createdAt < oldest.createdAt) oldest = row;
+                } else unsettledReceiptIds.delete(row.id);
+              }
               peakPendingReceipts = Math.max(peakPendingReceipts, pending);
               peakOldestReceiptAgeMs = Math.max(
                 peakOldestReceiptAgeMs,
@@ -261,9 +311,11 @@ async function main() {
         if (pumpError) throw pumpError;
         const finishedAt = performance.now();
         const elapsedMs = finishedAt - startedAt;
-        const owned = await harness.prisma.webhookExecutionClaim.count({
-          where: { kind: 'EXECUTION', webhookEventId: { in: receiptIds }, status: 'COMPLETED' },
-        });
+        const owned = await countFixtureBatches(receiptIds, (ids) =>
+          harness.prisma.webhookExecutionClaim.count({
+            where: { kind: 'EXECUTION', webhookEventId: { in: ids }, status: 'COMPLETED' },
+          }),
+        );
         const violations =
           (await harness.prisma.violation.count({ where: { chatId: { in: chats } } })) -
           beforeViolations;
@@ -273,9 +325,11 @@ async function main() {
         const deletes = harness.effects
           .slice(beforeEffects)
           .filter((effect) => effect.method === 'delete' && effect.path === '/messages');
-        const finalPendingReceipts = await harness.prisma.webhookEvent.count({
-          where: { id: { in: receiptIds }, status: { notIn: ['PROCESSED', 'DUPLICATE'] } },
-        });
+        const finalPendingReceipts = await countFixtureBatches(receiptIds, (ids) =>
+          harness.prisma.webhookEvent.count({
+            where: { id: { in: ids }, status: { notIn: ['PROCESSED', 'DUPLICATE'] } },
+          }),
+        );
         const wrongExecutorEffects = deletes.filter(
           (effect) => !effect.messageId || expectedExecutors.get(effect.messageId) !== effect.botId,
         ).length;
@@ -284,7 +338,7 @@ async function main() {
         });
         const violationClaims = await harness.prisma.moderationViolationMessageClaim.findMany({
           where: {
-            chatId: { in: chats },
+            chatId: { in: [...touchedChatIds] },
             messageId: { in: messageIds },
             ruleCode: 'MESSAGE_TOO_LONG',
           },
@@ -295,10 +349,12 @@ async function main() {
         const finalPendingActions = await harness.prisma.moderationDeleteIntent.count({
           where: { messageId: { in: messageIds }, status: { in: pendingActionStatuses } },
         });
-        const completions = await harness.prisma.webhookEvent.findMany({
-          where: { id: { in: receiptIds }, status: 'PROCESSED' },
-          select: { createdAt: true, processedAt: true },
-        });
+        const completions = await collectFixtureBatches(receiptIds, (ids) =>
+          harness.prisma.webhookEvent.findMany({
+            where: { id: { in: ids }, status: 'PROCESSED' },
+            select: { createdAt: true, processedAt: true },
+          }),
+        );
         const completionLatencyMs = completions
           .map((event) =>
             Math.max(0, (event.processedAt?.getTime() ?? Date.now()) - event.createdAt.getTime()),
@@ -332,6 +388,7 @@ async function main() {
           );
         }
         ingressLatencyMs.sort((a, b) => a - b);
+        producerLatenessMs.sort((a, b) => a - b);
         const report = {
           status: 'passed',
           catalog,
@@ -355,6 +412,12 @@ async function main() {
           },
           requestedLogicalRatePerSec: rate,
           requestedReceiptRatePerSec: rate * bots,
+          actualReceiptIngressRatePerSec: Number(
+            ((receiptIds.length * 1000) / (productionFinishedAt - startedAt)).toFixed(2),
+          ),
+          producerLatenessP95Ms: Math.round(
+            producerLatenessMs[Math.floor(producerLatenessMs.length * 0.95)] ?? 0,
+          ),
           elapsedMs: Math.round(elapsedMs),
           submissionElapsedMs: Math.round(productionFinishedAt - startedAt),
           drainMs: Math.round(finishedAt - productionFinishedAt),
@@ -381,6 +444,13 @@ async function main() {
           successfulIntents,
           uniqueViolationMessageClaims: violationClaimIds.size,
           remoteDeletes: deletes.length,
+          ...(harness.roleReports
+            ? {
+                processRoles: harness.roleReports.map(
+                  ({ effects: _effects, requests: _requests, ...role }) => role,
+                ),
+              }
+            : {}),
           mediaScope:
             profile === 'media'
               ? 'attachment ingress and text/length rules; native IMAGE/OCR capacity excluded'
@@ -421,18 +491,29 @@ async function saveReports() {
     },
     transport: 'local simulated MAX with production quota defaults; no external requests',
     fixtureTopology: {
+      processes: topology === 'split' ? 10 : 1,
       outboxSelection:
         enqueue === 'production' ? 'production enqueueBatch' : 'fixture receipt list',
       systemMode: 'controlled normal; production governor not exercised',
       productionOutboxPollFloorMs: enqueue === 'production' ? 200 : null,
-      physicalWebhookQueues: 1,
+      physicalWebhookQueues: topology === 'split' ? 23 : 1,
       physicalDeleteQueues: 1,
-      webhookWorkerConcurrency: 4,
-      deleteWorkerConcurrency: 4,
+      webhookWorkerConcurrency:
+        topology === 'split'
+          ? 'static runtime groups: 16 default slots, 4 join, 4 critical, 2 background, 1 legacy'
+          : 4,
+      deleteWorkerConcurrency: topology === 'split' ? 2 : 4,
       deleteDueSweepIntervalMs: 1000,
       defaultShardNames: 16,
+      dynamicLeaseWorkers: false,
+      nativeMedia: false,
     },
-    quotaServiceLanes: { criticalRps: 13, interactiveRps: 10, backgroundRps: 7 },
+    quotaServiceLanes:
+      topology === 'split'
+        ? { criticalRps: 12, interactiveRps: 10, backgroundRps: '4; action/background roles 3' }
+        : { criticalRps: 13, interactiveRps: 10, backgroundRps: 7 },
+    workload:
+      'all messages violate the length rule; every logical message requires one confirmed delete; not a measured production function mix',
     scope:
       'finite synthetic local profiles, not a production capacity certificate or 24-hour sustained-load acceptance',
     reports,

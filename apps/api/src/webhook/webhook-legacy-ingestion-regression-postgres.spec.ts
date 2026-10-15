@@ -6,11 +6,17 @@ import { randomUUID } from 'node:crypto';
 import type { MaxUpdate } from '@maxim/contracts';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { HealthService } from '../health/health.service';
-import { createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
+import {
+  createPrismaClient,
+  Prisma,
+  WebhookStatus,
+  type PrismaClient,
+} from '../prisma/prisma-client';
 import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
 import { ActionHealthService } from '../system/action-health.service';
 import { SystemModeService } from '../system/system-mode.service';
 import { QueueMetricsService } from '../system/queue-metrics.service';
+import { buildOldestPendingWebhookQuery } from '../system/webhook-oldest-pending';
 import {
   buildLegacyRecoveryPreviewDigest,
   createLegacyColdCertificate,
@@ -137,6 +143,11 @@ native('legacy disposition production ingestion activation regressions', () => {
   });
 
   afterEach(async () => {
+    // FLAG: Jest can start the next test after a timed-out hook. Capture this test's
+    // identities before any await so late cleanup cannot delete the next fixture.
+    const cleanupReceipts = receipts.splice(0);
+    const cleanupCertificates = certificates.splice(0);
+    const cleanupChats = chats.splice(0);
     await health?.onModuleDestroy();
     await realMode?.onModuleDestroy();
     await actionHealth?.onModuleDestroy();
@@ -145,11 +156,11 @@ native('legacy disposition production ingestion activation regressions', () => {
     expect(deniedMax).not.toHaveBeenCalled();
     // FLAG: Remove all owned referencing rows before their disposition proofs.
     // The proof FK has no reverse index; interleaved deletion repeatedly scans
-    // the large live fixture. Keep identities until proof cleanup succeeds.
+    // the large live fixture. Production proofs remain retained, not bulk-deleted.
     const cleanupStartedAt = performance.now();
-    const cleanupReceiptCount = receipts.length;
-    for (let offset = 0; offset < receipts.length; offset += 200) {
-      const ids = receipts.slice(offset, offset + 200);
+    const cleanupReceiptCount = cleanupReceipts.length;
+    for (let offset = 0; offset < cleanupReceipts.length; offset += 200) {
+      const ids = cleanupReceipts.slice(offset, offset + 200);
       await prisma.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: ids } } });
       await prisma.webhookEvent.deleteMany({ where: { id: { in: ids } } });
     }
@@ -158,23 +169,33 @@ native('legacy disposition production ingestion activation regressions', () => {
       // Reclaim the removed fixture's dead pages before repeated FK checks.
       await prisma.$executeRaw`VACUUM (ANALYZE) webhook_events`;
     }
-    while (receipts.length > 0) {
-      const ids = receipts.slice(0, 200);
-      await prisma.webhookLegacyReceiptDisposition.deleteMany({
-        where: { receiptId: { in: ids } },
-      });
-      receipts.splice(0, ids.length);
+    const cleanupIndex = `fixture_legacy_cleanup_${randomUUID().replaceAll('-', '')}`;
+    // FLAG: This index exists only during cleanup in the guarded disposable store,
+    // after all production-plan assertions; remove it before the next test.
+    if (cleanupReceiptCount >= 1000) {
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX "${cleanupIndex}" ON webhook_events (legacy_disposition_receipt_id, legacy_disposition_id)`,
+      );
     }
-    while (certificates.length > 0) {
-      const certificateId = certificates[0]!;
+    try {
+      for (let offset = 0; offset < cleanupReceipts.length; offset += 200) {
+        const ids = cleanupReceipts.slice(offset, offset + 200);
+        await prisma.webhookLegacyReceiptDisposition.deleteMany({
+          where: { receiptId: { in: ids } },
+        });
+      }
+    } finally {
+      if (cleanupReceiptCount >= 1000)
+        await prisma.$executeRawUnsafe(`DROP INDEX "${cleanupIndex}"`);
+    }
+    for (const certificateId of cleanupCertificates) {
       await prisma.webhookLegacyMaterializationCursor.deleteMany({ where: { certificateId } });
       await prisma.webhookLegacySealedAuthority.deleteMany({ where: { certificateId } });
       await prisma.webhookLegacyChildHold.deleteMany({ where: { certificateId } });
       await prisma.webhookLegacyRecovery.deleteMany({ where: { certificateId } });
       await prisma.webhookLegacyQuiescenceCertificate.deleteMany({ where: { id: certificateId } });
-      certificates.shift();
     }
-    await prisma.chat.deleteMany({ where: { id: { in: chats.splice(0) } } });
+    await prisma.chat.deleteMany({ where: { id: { in: cleanupChats } } });
     if (cleanupReceiptCount >= 1000) {
       console.info('LEGACY_FIXTURE_CLEANUP_NATIVE_COST', {
         receipts: cleanupReceiptCount,
@@ -1117,31 +1138,57 @@ native('legacy disposition production ingestion activation regressions', () => {
     await prisma.$executeRaw`VACUUM (ANALYZE) webhook_events`;
     type Plan = {
       'Node Type': string;
+      'Relation Name'?: string;
       'Index Name'?: string;
       'Actual Rows'?: number;
       'Actual Loops'?: number;
       'Rows Removed by Filter'?: number;
+      'Rows Removed by Index Recheck'?: number;
+      'Lossy Heap Blocks'?: number;
       Plans?: Plan[];
     };
-    const plans = await prisma.$queryRaw<Array<{ 'QUERY PLAN': Array<{ Plan: Plan }> }>>`
-      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT id, created_at FROM webhook_events
-      WHERE status = 'RECEIVED'::"WebhookStatus"
-      ORDER BY created_at LIMIT 1`;
+    // FLAG: Exercise the actual indexed head plus exact metadata lookup. A simplified
+    // ORDER BY created_at query can choose a different plan and omits the stable ID tie-break.
+    const query = buildOldestPendingWebhookQuery(WebhookStatus.RECEIVED);
+    const plans = await prisma.$queryRaw<Array<{ 'QUERY PLAN': Array<{ Plan: Plan }> }>>(Prisma.sql`
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
     const nodes: Plan[] = [];
     const walk = (node: Plan) => {
       nodes.push(node);
       for (const child of node.Plans ?? []) walk(child);
     };
     walk(plans[0]!['QUERY PLAN'][0]!.Plan);
-    const indexed = nodes.find((node) =>
-      ['webhook_events_status_created_at_id_idx', 'webhook_events_status_created_at_idx'].includes(
-        node['Index Name'] ?? '',
-      ),
+    const scans = nodes.filter((node) => node['Relation Name'] === 'webhook_events');
+    // FLAG: PostgreSQL may place the exact PK lookup in a Bitmap Index Scan child.
+    // Keep the ordered head, both index identities and all row/work bounds mandatory.
+    expect(scans).toHaveLength(2);
+    expect(scans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          'Node Type': 'Index Only Scan',
+          'Index Name': 'webhook_events_status_created_at_id_idx',
+        }),
+      ]),
     );
-    expect(indexed).toBeDefined();
-    expect(indexed!['Actual Rows']).toBe(1);
-    expect(indexed!['Rows Removed by Filter'] ?? 0).toBe(0);
-    expect(indexed!['Actual Loops']).toBe(1);
+    const indexScans = nodes.filter((node) => node['Index Name']);
+    expect(indexScans.map((node) => node['Index Name']).sort()).toEqual([
+      'webhook_events_pkey',
+      'webhook_events_status_created_at_id_idx',
+    ]);
+    for (const scan of new Set([...scans, ...indexScans])) {
+      expect(scan).toEqual(
+        expect.objectContaining({
+          'Node Type': expect.stringMatching(
+            /^(Index Only Scan|Index Scan|Bitmap Heap Scan|Bitmap Index Scan)$/,
+          ),
+        }),
+      );
+      expect(scan['Actual Rows']).toBe(1);
+      expect(scan['Rows Removed by Filter'] ?? 0).toBe(0);
+      expect(scan['Rows Removed by Index Recheck'] ?? 0).toBe(0);
+      expect(scan['Lossy Heap Blocks'] ?? 0).toBe(0);
+      expect(scan['Actual Loops']).toBe(1);
+    }
     expect((await metrics.getLagSnapshot({ maxAgeMs: 0 })).oldestReceivedEventId).toBe(
       independent.id,
     );

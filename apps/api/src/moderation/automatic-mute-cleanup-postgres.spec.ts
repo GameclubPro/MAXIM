@@ -139,6 +139,26 @@ describeStores('native automatic mute history cleanup', () => {
     expect(h.effects.filter((e) => e.method === 'delete')).toEqual(deletes);
   });
 
+  it('does not report drained while a prioritized deletion is still waiting', async () => {
+    const [chat] = await h.seedCatalog(1, { maxMessageLengthEnabled: false });
+    const at = Date.now() - 100;
+    const messageId = await seedMessage(chat!, at - 1_000);
+    await h.deleteQueue.pause();
+    try {
+      await mute(chat!, at);
+      await scan();
+      const queued = await h.deleteQueue.getJobCounts('active', 'waiting', 'prioritized');
+      expect(queued).toMatchObject({ active: 0, waiting: 0, prioritized: 1 });
+      expect(await h.pumpOnce()).toBeGreaterThan(0);
+      expect(h.messages.has(messageId)).toBe(true);
+    } finally {
+      await h.deleteQueue.resume();
+    }
+    await h.drain();
+    expect(h.messages.has(messageId)).toBe(false);
+    expect(h.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+  });
+
   it('does not enroll historical events, manual mutes or failed sanction decisions', async () => {
     const [chat] = await h.seedCatalog(1);
     for (const kind of ['historical', 'manual', 'failed'] as const) {

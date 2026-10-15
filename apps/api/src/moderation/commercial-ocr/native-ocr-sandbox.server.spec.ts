@@ -372,8 +372,14 @@ describe('native OCR sandbox server containment', () => {
     const directory = await mkdtemp(join(tmpdir(), 'maxim-ocr-stalled-diagnostic-'));
     const environment = sandboxEnvironment(join(directory, 'ocr.sock'));
     const fatalExit = jest.fn();
-    const recordLifecycleEvent = jest.fn(() => new Promise<void>(() => {}));
-    const runNativeTesseract = jest.fn(async () => ({ ok: false, reason: 'timeout' }) as const);
+    const recordLifecycleEvent = jest.fn<
+      ReturnType<NativeOcrSandboxServerDependencies['recordLifecycleEvent']>,
+      Parameters<NativeOcrSandboxServerDependencies['recordLifecycleEvent']>
+    >(() => new Promise<void>(() => {}));
+    const runNativeTesseract = jest.fn<
+      ReturnType<NativeOcrSandboxServerDependencies['runNativeTesseract']>,
+      Parameters<NativeOcrSandboxServerDependencies['runNativeTesseract']>
+    >(async () => ({ ok: false, reason: 'timeout' }));
     const previousExitCode = process.exitCode;
     const server = await startNativeOcrSandboxServer(environment, {
       ...successfulServerDependencies(),
@@ -396,7 +402,18 @@ describe('native OCR sandbox server containment', () => {
         operation: 'recognize',
         queueDepth: 0,
         pendingBytes: 0,
+        requestedTimeoutMs: 1_000,
+        executionBudgetMs: expect.any(Number),
+        queueWaitMs: expect.any(Number),
+        operationElapsedMs: expect.any(Number),
       });
+      const diagnostic = recordLifecycleEvent.mock.calls[0]![0];
+      expect(diagnostic.executionBudgetMs).toBeGreaterThan(0);
+      expect(diagnostic.executionBudgetMs).toBeLessThanOrEqual(1_000);
+      expect(diagnostic.executionBudgetMs).toBe(runNativeTesseract.mock.calls[0]![0].timeoutMs);
+      expect(diagnostic.queueWaitMs).toBeGreaterThanOrEqual(0);
+      expect(diagnostic.operationElapsedMs).toBeGreaterThanOrEqual(0);
+      expect(JSON.stringify(diagnostic)).not.toContain('private-prepared-image');
       expect(runNativeTesseract).toHaveBeenCalledTimes(1);
       expect(fatalExit).toHaveBeenCalledTimes(1);
       expect(process.exitCode).toBe(1);
@@ -487,65 +504,100 @@ describe('native OCR sandbox server containment', () => {
     }
   });
 
-  it('deducts actual queue wait before starting native and reports probes separately', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'maxim-ocr-queued-budget-'));
-    const environment = sandboxEnvironment(join(directory, 'ocr.sock'));
-    let markStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
-    let finishFirst!: (result: ReturnType<typeof emptyRecognition>) => void;
-    const firstResult = new Promise<ReturnType<typeof emptyRecognition>>((resolve) => {
-      finishFirst = resolve;
-    });
-    let calls = 0;
-    const runNative = jest.fn(
-      async (_options: Parameters<NativeOcrSandboxServerDependencies['runNativeTesseract']>[0]) => {
-        if (++calls === 1) {
-          markStarted();
-          return firstResult;
-        }
-        return emptyRecognition();
-      },
-    );
-    const server = await startNativeOcrSandboxServer(environment, {
-      ...successfulServerDependencies(),
-      runNativeTesseract: runNative,
-    });
-    const firstClient = new NativeOcrSandboxClient(testClientConfig(environment));
-    const waitingClient = new NativeOcrSandboxClient(testClientConfig(environment));
-    try {
-      const first = firstClient.recognize(Buffer.from('prepared'), 6, 3_000);
-      await started;
-      const waiting = waitingClient.recognize(Buffer.from('prepared'), 6, 1_000);
-      const during = await waitForQueuedRuntime(server.socketPath);
-      expect(during.remainingBudgetMs).toBeGreaterThan(0);
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      const afterWait = await probeRuntime(server.socketPath);
-      expect(afterWait?.activeOperation).toBe('recognize');
-      expect(afterWait?.remainingBudgetMs).toBeLessThan(during.remainingBudgetMs! - 100);
-      finishFirst(emptyRecognition());
-      await expect(first).resolves.toMatchObject({ ok: true });
-      await expect(waiting).resolves.toMatchObject({ ok: true });
-      expect(runNative.mock.calls[1]![0].timeoutMs).toBeLessThan(900);
-      expect(runNative.mock.calls[1]![0].timeoutMs).toBeGreaterThan(1);
-      const after = await probeRuntime(server.socketPath);
-      expect(after).toMatchObject({
-        activeOperation: 'idle',
-        remainingBudgetMs: null,
-        queueDepth: 0,
-        counters: { started: 2, completed: 2, failed: 0 },
+  it.each([false, true])(
+    'deducts queue wait and preserves recycle timing (native timeout: %s)',
+    async (nativeTimeout) => {
+      const directory = await mkdtemp(join(tmpdir(), 'maxim-ocr-queued-budget-'));
+      const environment = sandboxEnvironment(join(directory, 'ocr.sock'));
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
       });
-      expect(after?.counters.probes).toBeGreaterThanOrEqual(2);
-      expect(after?.queueWaitMs.maximum).toBeGreaterThanOrEqual(100);
-    } finally {
-      finishFirst(emptyRecognition());
-      firstClient.close();
-      waitingClient.close();
-      await server.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
+      let finishFirst!: (result: ReturnType<typeof emptyRecognition>) => void;
+      const firstResult = new Promise<ReturnType<typeof emptyRecognition>>((resolve) => {
+        finishFirst = resolve;
+      });
+      let calls = 0;
+      const fatalExit = jest.fn();
+      const previousExitCode = process.exitCode;
+      const recordLifecycleEvent = jest.fn<
+        ReturnType<NativeOcrSandboxServerDependencies['recordLifecycleEvent']>,
+        Parameters<NativeOcrSandboxServerDependencies['recordLifecycleEvent']>
+      >();
+      const runNative = jest.fn(
+        async (
+          _options: Parameters<NativeOcrSandboxServerDependencies['runNativeTesseract']>[0],
+        ) => {
+          if (++calls === 1) {
+            markStarted();
+            return firstResult;
+          }
+          return nativeTimeout
+            ? { ok: false as const, reason: 'timeout' as const }
+            : emptyRecognition();
+        },
+      );
+      const server = await startNativeOcrSandboxServer(environment, {
+        ...successfulServerDependencies(),
+        runNativeTesseract: runNative,
+        fatalExit,
+        recordLifecycleEvent,
+      });
+      const firstClient = new NativeOcrSandboxClient(testClientConfig(environment));
+      const waitingClient = new NativeOcrSandboxClient(testClientConfig(environment));
+      try {
+        const first = firstClient.recognize(Buffer.from('prepared'), 6, 3_000);
+        await started;
+        const waiting = waitingClient
+          .recognize(Buffer.from('prepared'), 6, 1_000)
+          .catch(() => undefined);
+        const during = await waitForQueuedRuntime(server.socketPath);
+        expect(during.remainingBudgetMs).toBeGreaterThan(0);
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        const afterWait = await probeRuntime(server.socketPath);
+        expect(afterWait?.activeOperation).toBe('recognize');
+        expect(afterWait?.remainingBudgetMs).toBeLessThan(during.remainingBudgetMs! - 100);
+        finishFirst(emptyRecognition());
+        await expect(first).resolves.toMatchObject({ ok: true });
+        const waitingResult = await waiting;
+        if (!nativeTimeout) expect(waitingResult).toMatchObject({ ok: true });
+        expect(runNative.mock.calls[1]![0].timeoutMs).toBeLessThan(900);
+        expect(runNative.mock.calls[1]![0].timeoutMs).toBeGreaterThan(1);
+        if (nativeTimeout) {
+          await waitFor(() => fatalExit.mock.calls.length > 0);
+          expect(recordLifecycleEvent).toHaveBeenCalledTimes(1);
+          const diagnostic = recordLifecycleEvent.mock.calls[0]![0];
+          expect(diagnostic).toMatchObject({
+            reason: 'native_timeout',
+            operation: 'recognize',
+            requestedTimeoutMs: 1_000,
+            executionBudgetMs: runNative.mock.calls[1]![0].timeoutMs,
+          });
+          expect(diagnostic.queueWaitMs).toBeGreaterThanOrEqual(100);
+          expect(diagnostic.operationElapsedMs).toBeGreaterThanOrEqual(0);
+          expect(fatalExit).toHaveBeenCalledTimes(1);
+          return;
+        }
+        expect(recordLifecycleEvent).not.toHaveBeenCalled();
+        const after = await probeRuntime(server.socketPath);
+        expect(after).toMatchObject({
+          activeOperation: 'idle',
+          remainingBudgetMs: null,
+          queueDepth: 0,
+          counters: { started: 2, completed: 2, failed: 0 },
+        });
+        expect(after?.counters.probes).toBeGreaterThanOrEqual(2);
+        expect(after?.queueWaitMs.maximum).toBeGreaterThanOrEqual(100);
+      } finally {
+        process.exitCode = previousExitCode;
+        finishFirst(emptyRecognition());
+        firstClient.close();
+        waitingClient.close();
+        await server.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 function emptyRecognition() {

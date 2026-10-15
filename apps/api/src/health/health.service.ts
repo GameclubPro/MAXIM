@@ -843,7 +843,9 @@ export class HealthService implements OnModuleDestroy {
     try {
       await this.withTimeout(
         this.queueMetricsService.getLagSnapshot({ maxAgeMs: 0 }),
-        this.readinessOptionalDiagnosticsTimeoutMs,
+        // FLAG: Lag is a required readiness dependency. A short optional budget can
+        // repeatedly return stale evidence after each cache-expired watchdog retry.
+        this.readinessDependencyTimeoutMs,
         'queue metrics stale refresh',
       );
     } catch {

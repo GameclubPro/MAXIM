@@ -13,12 +13,24 @@ const root = resolve(import.meta.dirname, '../../..');
 const runner = resolve(root, 'scripts/agent/with-test-stores.mjs');
 
 test('store runner rejects a missing child command and unknown setup options', () => {
-  for (const args of [[], ['--'], ['npm', 'test'], ['--remote', '--', 'npm', 'test']]) {
+  for (const args of [
+    [],
+    ['--'],
+    ['npm', 'test'],
+    ['--remote', '--', 'npm', 'test'],
+    ['--profile=production', '--', 'node'],
+    ['--profile=split-load', '--profile=split-load', '--', 'node'],
+  ]) {
     assert.throws(() => parseArgs(args), /Usage/u);
   }
   assert.deepEqual(parseArgs(['--migrate', '--', 'npm', 'test', '--', 'fixture']), {
     migrate: true,
     command: ['npm', 'test', '--', 'fixture'],
+  });
+  assert.deepEqual(parseArgs(['--migrate', '--profile=split-load', '--', 'node', 'fixture']), {
+    migrate: true,
+    profile: 'split-load',
+    command: ['node', 'fixture'],
   });
 });
 
@@ -45,6 +57,8 @@ const Redis = require('ioredis');
   try {
     await pg.connect();
     assert.equal((await pg.query('SHOW TimeZone')).rows[0].TimeZone, 'UTC');
+    assert.equal((await pg.query('SHOW max_connections')).rows[0].max_connections,
+      process.env.MAXIM_STORE_TEST_HOLD === '1' ? '100' : '40');
     assert.equal((await pg.query('SELECT count(*) FROM pg_tables WHERE schemaname=\'public\'')).rows[0].count, '0');
     assert.equal(await redis.dbsize(), 0);
     await pg.query('CREATE TABLE fixture(value integer)');
@@ -83,21 +97,32 @@ for (const hold of [false, true]) {
     async () => {
       const directory = await mkdtemp(join(tmpdir(), 'maxim-store-runner-test-'));
       const resultPath = join(directory, 'result.json');
-      const child = spawn(process.execPath, [runner, '--', process.execPath, '-e', childSource], {
-        cwd: root,
-        env: {
-          ...process.env,
-          DATABASE_URL: 'postgresql://invalid.invalid/never',
-          REDIS_URL: 'redis://invalid.invalid',
-          CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: 'postgresql://invalid.invalid/never',
-          MAXIM_TEST_POSTGRES_URL: 'postgresql://invalid.invalid/never',
-          MAXIM_TEST_REDIS_URL: 'redis://invalid.invalid',
-          MAXIM_STORE_TEST_RESULT: resultPath,
-          MAXIM_STORE_TEST_HOLD: hold ? '1' : '0',
-          TZ: 'Europe/Moscow',
+      const child = spawn(
+        process.execPath,
+        [
+          runner,
+          ...(hold ? ['--profile=split-load'] : []),
+          '--',
+          process.execPath,
+          '-e',
+          childSource,
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            DATABASE_URL: 'postgresql://invalid.invalid/never',
+            REDIS_URL: 'redis://invalid.invalid',
+            CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: 'postgresql://invalid.invalid/never',
+            MAXIM_TEST_POSTGRES_URL: 'postgresql://invalid.invalid/never',
+            MAXIM_TEST_REDIS_URL: 'redis://invalid.invalid',
+            MAXIM_STORE_TEST_RESULT: resultPath,
+            MAXIM_STORE_TEST_HOLD: hold ? '1' : '0',
+            TZ: 'Europe/Moscow',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
         },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      );
       let output = '';
       child.stdout.on('data', (chunk) => {
         output += chunk;
