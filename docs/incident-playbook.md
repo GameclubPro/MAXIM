@@ -72,6 +72,10 @@ full-path suite. Never remove uncertainty/order fences or clear Redis to repair 
    The queue report also reads only the oldest row per status for its attempt count, remaining
    retry delay, and fixed preparation category. `canonical_pending` or `membership_cache_pending`
    with a growing age calls for preparation-path diagnosis, not extra moderation consumers.
+   `oldest_preparation_reason` adds an exact source-defined classification of the last deferred
+   preparation error without another table lookup. Namespace recovery, source-proof waits,
+   membership invalidation and owner probes remain distinct. Unknown text, prefixes and suffixes
+   stay `unknown`; no reason is permission to settle, expire, bypass a fence or replay an event.
    `oldest_ordering_fence=timeout_quarantined` means the oldest message is waiting behind an
    unresolved earlier execution in that same chat. The probe uses the exact ordered-head index;
    never remove the fence or replay the old event merely because its heartbeat deadline elapsed.

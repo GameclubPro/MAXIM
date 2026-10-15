@@ -591,6 +591,7 @@ SELECT json_build_object(
         ELSE greatest(0, ceil(extract(epoch FROM oldest.next_enqueue_at - clock_timestamp()))::bigint)
       END,
       'oldest_preparation_state', oldest.preparation_state,
+      'oldest_preparation_reason', oldest.preparation_reason,
       'oldest_ordering_fence', predecessor.fence,
       'oldest_ordering_predecessor', CASE WHEN predecessor.fence IS NULL THEN NULL ELSE
         json_build_object(
@@ -666,7 +667,43 @@ LEFT JOIN LATERAL (
       WHEN error_message LIKE 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:%' THEN 'timeout_quarantined'
       WHEN error_message LIKE 'Webhook preparation failed:%' THEN 'preparation_failed'
       ELSE 'other'
-    END AS preparation_state
+    END AS preparation_state,
+    -- FLAG: Exact source-defined reasons only; arbitrary error text and suffixes stay private.
+    -- This describes the last deferral, never authority to settle, expire or replay the receipt.
+    CASE error_message
+      WHEN 'Webhook preparation deferred: Legacy scope installation is not sealed' THEN 'legacy_scope_unsealed'
+      WHEN 'Webhook preparation deferred: Publisher receipt semantic namespace requires reviewed recovery' THEN 'publisher_namespace_recovery'
+      WHEN 'Webhook preparation deferred: Publisher receipt semantic backfill changed' THEN 'publisher_namespace_changed'
+      WHEN 'Webhook preparation deferred: Semantic execution authority storage unavailable' THEN 'claim_storage_unavailable'
+      WHEN 'Webhook preparation deferred: Legacy semantic execution requires exact proof recovery' THEN 'legacy_execution_recovery'
+      WHEN 'Webhook preparation deferred: Semantic execution authority changed' THEN 'claim_authority_changed'
+      WHEN 'Webhook preparation deferred: Ownerless semantic execution proof incomplete' THEN 'ownerless_claim_incomplete'
+      WHEN 'Webhook preparation deferred: Expired executor waiting proof changed' THEN 'expired_wait_changed'
+      WHEN 'Webhook preparation deferred: Canonical receipt identity missing' THEN 'canonical_receipt_missing'
+      WHEN 'Webhook preparation deferred: Canonical owner semantic proof unavailable' THEN 'canonical_source_unavailable'
+      WHEN 'Webhook preparation deferred: Canonical owner retains timeout replay fence' THEN 'canonical_timeout_fence'
+      WHEN 'Webhook preparation deferred: Terminal canonical owner requires proof recovery' THEN 'terminal_owner_recovery'
+      WHEN 'Webhook preparation deferred: Canonical preparation lease pending' THEN 'canonical_lease_pending'
+      WHEN 'Webhook preparation deferred: Canonical owner changed during preparation' THEN 'canonical_owner_changed'
+      WHEN 'Webhook preparation deferred: Canonical owner disappeared' THEN 'canonical_owner_missing'
+      WHEN 'Webhook preparation deferred: Canonical mirror proof pending' THEN 'canonical_mirror_pending'
+      WHEN 'Webhook preparation deferred: Completed owning semantic authority proof incomplete' THEN 'completed_owner_incomplete'
+      WHEN 'Webhook preparation deferred: Completed owning claim changed' THEN 'completed_claim_changed'
+      WHEN 'Webhook preparation deferred: Completed owning receipt changed' THEN 'completed_receipt_changed'
+      WHEN 'Webhook preparation deferred: Suggestion membership wake pending' THEN 'suggestion_membership_wake'
+      WHEN 'Webhook preparation deferred: Membership cache invalidation pending' THEN 'membership_cache_invalidation'
+      WHEN 'Webhook preparation deferred: Fresh command source proof changed' THEN 'fresh_command_source_changed'
+      WHEN 'Webhook preparation deferred: Managed entity handshake preparation pending' THEN 'managed_handshake_pending'
+      WHEN 'Webhook preparation deferred: Current execution owner probe pending' THEN 'current_owner_probe'
+      WHEN 'Webhook preparation deferred: Incoming execution owner probe pending' THEN 'incoming_owner_probe'
+      WHEN 'Webhook preparation deferred: Webhook read model persistence pending' THEN 'read_model_persistence'
+      WHEN 'Webhook preparation deferred: Execution owner recheck pending' THEN 'owner_recheck_handoff'
+      WHEN 'Webhook preparation deferred: Chat admin roster handoff pending' THEN 'admin_roster_handoff'
+      WHEN 'Webhook preparation deferred: Webhook preparation capacity unavailable' THEN 'preparation_capacity'
+      WHEN 'Webhook preparation deferred: canonical webhook preparation is still pending' THEN 'canonical_preparation_pending'
+      WHEN 'Webhook preparation deferred: Canonical order proxy owner changed' THEN 'canonical_proxy_changed'
+      ELSE 'unknown'
+    END AS preparation_reason
   FROM webhook_events
   WHERE webhook_events.status = summary.status
   ORDER BY webhook_events.created_at ASC, webhook_events.id ASC

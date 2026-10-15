@@ -2142,9 +2142,11 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
   const received = report.rows.find((row) => row.status === 'RECEIVED');
   assert.equal(received.count_lower_bound, 2);
   assert.equal(received.oldest_preparation_state, 'canonical_pending');
+  assert.equal(received.oldest_preparation_reason, 'canonical_preparation_pending');
   assert.equal(received.oldest_enqueue_attempts, 0);
   assert.ok(received.oldest_retry_in_seconds > 0 && received.oldest_retry_in_seconds <= 60);
   assert.equal(report.rows.find((row) => row.status === 'QUEUED').oldest_preparation_state, null);
+  assert.equal(report.rows.find((row) => row.status === 'QUEUED').oldest_preparation_reason, null);
   assert.doesNotMatch(JSON.stringify(report), /private-secret-error|Webhook preparation deferred/u);
   for (const [message, expected] of [
     ['Webhook preparation capacity unavailable', 'preparation_capacity'],
@@ -2161,6 +2163,50 @@ test('queue oldest-state diagnostics remain bounded and never emit raw errors', 
       expected,
     );
     assert.doesNotMatch(JSON.stringify(classifiedReport), /private-|capacity unavailable/u);
+  }
+  for (const [error, reason] of [
+    [
+      'Webhook preparation deferred: Legacy scope installation is not sealed',
+      'legacy_scope_unsealed',
+    ],
+    [
+      'Webhook preparation deferred: Publisher receipt semantic namespace requires reviewed recovery',
+      'publisher_namespace_recovery',
+    ],
+    [
+      'Webhook preparation deferred: Canonical owner semantic proof unavailable',
+      'canonical_source_unavailable',
+    ],
+    [
+      'Webhook preparation deferred: Suggestion membership wake pending',
+      'suggestion_membership_wake',
+    ],
+    ['Webhook preparation deferred: Current execution owner probe pending', 'current_owner_probe'],
+    [
+      'Webhook preparation deferred: Membership cache invalidation pending',
+      'membership_cache_invalidation',
+    ],
+    [
+      'Webhook preparation deferred: Legacy scope installation is not sealed: private-value',
+      'unknown',
+    ],
+    [
+      'Private prefix: Webhook preparation deferred: Current execution owner probe pending',
+      'unknown',
+    ],
+    ['Webhook preparation failed: Canonical owner semantic proof unavailable', 'unknown'],
+    ['Webhook preparation deferred: private-unknown-reason', 'unknown'],
+  ]) {
+    await database.query('UPDATE webhook_events SET error_message = $1', [error]);
+    const classified = JSON.parse(Object.values((await database.query(statement)).rows[0])[0]);
+    assert.equal(
+      classified.rows.find((row) => row.status === 'RECEIVED').oldest_preparation_reason,
+      reason,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(classified),
+      /private-|Private|Webhook preparation|proof unavailable/u,
+    );
   }
   await database.query(`UPDATE webhook_events SET normalized_payload = $1`, [
     JSON.stringify({
