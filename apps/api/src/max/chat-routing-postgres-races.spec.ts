@@ -156,6 +156,141 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
     await pool.end();
   });
 
+  it('records an exact active-bot heartbeat without changing routing or access authority', async () => {
+    const chatId = `heartbeat-${randomUUID()}`;
+    createdChatIds.push(chatId);
+    const prisma = createPrismaClient(databaseUrl, { max: 1 });
+    const service = createBotLinkService(prisma, [
+      'heartbeat-main',
+      'heartbeat-peer',
+      'heartbeat-removed',
+    ]);
+    const before = new Date('2020-01-01T00:00:00Z');
+    const observedAt = new Date();
+    try {
+      await prisma.chat.create({
+        data: {
+          id: chatId,
+          title: 'Heartbeat fixture',
+          primaryBotId: 'heartbeat-main',
+          fixedModeratorBotId: 'heartbeat-main',
+        },
+      });
+      await prisma.chatBotMembership.createMany({
+        data: ['heartbeat-main', 'heartbeat-peer', 'heartbeat-removed'].map((botId) => ({
+          chatId,
+          botId,
+          role: botId === 'heartbeat-main' ? 'PRIMARY' : 'STANDBY',
+          status: botId === 'heartbeat-removed' ? 'REMOVED' : 'ACTIVE',
+          botAccessState: 'DENIED',
+          botAccessSource: 'explicit_denial',
+          botAccessCheckedAt: before,
+          lifecycleEventAt: before,
+          permissionsSnapshot: { permissions: [] },
+          lastSeenAt: before,
+          lastWebhookAt: before,
+          updatedAt: before,
+        })),
+      });
+      const chatBefore = await prisma.chat.findUniqueOrThrow({ where: { id: chatId } });
+      const rowsBefore = await prisma.chatBotMembership.findMany({
+        where: { chatId },
+        orderBy: { botId: 'asc' },
+      });
+      await service.observeStoredChatBotWebhook({ chatId, botId: 'heartbeat-peer', observedAt });
+      await service.observeStoredChatBotWebhook({ chatId, botId: 'heartbeat-removed', observedAt });
+      await service.observeStoredChatBotWebhook({
+        chatId: `${chatId}-absent`,
+        botId: 'heartbeat-peer',
+        observedAt,
+      });
+      const rowsAfter = await prisma.chatBotMembership.findMany({
+        where: { chatId },
+        orderBy: { botId: 'asc' },
+      });
+      for (const [index, row] of rowsAfter.entries()) {
+        const previous = rowsBefore[index]!;
+        expect(row).toEqual(
+          row.botId === 'heartbeat-peer'
+            ? {
+                ...previous,
+                lastSeenAt: observedAt,
+                lastWebhookAt: observedAt,
+                updatedAt: expect.any(Date),
+              }
+            : previous,
+        );
+        if (row.botId === 'heartbeat-peer')
+          expect(row.updatedAt.getTime()).toBeGreaterThan(before.getTime());
+      }
+      expect(await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toEqual(chatBefore);
+    } finally {
+      service.onModuleDestroy();
+      await prisma.$disconnect();
+    }
+  });
+
+  it('rechecks ACTIVE after a concurrent removal and does not cache a refused heartbeat', async () => {
+    const chatId = `heartbeat-removal-${randomUUID()}`;
+    createdChatIds.push(chatId);
+    const botId = 'heartbeat-main';
+    const applicationName = `heartbeat-race-${randomUUID()}`;
+    const prisma = createPrismaClient(databaseUrl, {
+      max: 1,
+      application_name: applicationName,
+      statement_timeout: 10_000,
+    });
+    const service = createBotLinkService(prisma, [botId]);
+    const removal = await pool.connect();
+    const before = new Date('2020-01-01T00:00:00Z');
+    const observedAt = new Date();
+    let pending: Promise<void> | undefined;
+    try {
+      await prisma.chat.create({ data: { id: chatId, title: 'Heartbeat race' } });
+      await prisma.chatBotMembership.create({
+        data: {
+          chatId,
+          botId,
+          role: 'PRIMARY',
+          status: 'ACTIVE',
+          lastSeenAt: before,
+          lastWebhookAt: before,
+        },
+      });
+      await removal.query('BEGIN');
+      await removal.query(
+        "UPDATE chat_bot_memberships SET status = 'REMOVED' WHERE chat_id = $1 AND bot_id = $2",
+        [chatId, botId],
+      );
+      pending = service.observeStoredChatBotWebhook({ chatId, botId, observedAt });
+      await waitForBlockedApplicationBackend(pool, applicationName);
+      await removal.query('COMMIT');
+      await pending;
+      expect(
+        await prisma.chatBotMembership.findUniqueOrThrow({
+          where: { chatId_botId: { chatId, botId } },
+        }),
+      ).toMatchObject({ status: 'REMOVED', lastSeenAt: before, lastWebhookAt: before });
+      // FLAG: Fixture-only explicit reactivation proves a zero-row touch was not cached.
+      await prisma.chatBotMembership.update({
+        where: { chatId_botId: { chatId, botId } },
+        data: { status: 'ACTIVE' },
+      });
+      await service.observeStoredChatBotWebhook({ chatId, botId, observedAt });
+      expect(
+        await prisma.chatBotMembership.findUniqueOrThrow({
+          where: { chatId_botId: { chatId, botId } },
+        }),
+      ).toMatchObject({ lastSeenAt: observedAt, lastWebhookAt: observedAt });
+    } finally {
+      await rollbackQuietly(removal);
+      await pending?.catch(() => undefined);
+      removal.release();
+      service.onModuleDestroy();
+      await prisma.$disconnect();
+    }
+  });
+
   it.each(
     [ChatEntityType.CHAT, ChatEntityType.CHANNEL].flatMap((entityType) =>
       [false, true].map((prefetched) => ({ entityType, prefetched })),

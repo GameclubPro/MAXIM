@@ -82,14 +82,19 @@ describePostgres.each([WebhookStatus.RECEIVED, WebhookStatus.QUEUED])(
       await pool?.end();
     });
 
-    async function seed(suffix: string, ageSec = 290, waiting = true): Promise<string> {
+    async function seed(
+      suffix: string,
+      ageSec = 290,
+      waiting = true,
+      eventType = 'user_added',
+    ): Promise<string> {
       const id = prefix + 'live-' + suffix;
       const semanticKey = `join:${id}`;
       await pool.query(
         `
       INSERT INTO webhook_events (id, dedup_key, semantic_key, status, raw_payload, normalized_payload,
         created_at, execution_deadline_at, next_enqueue_at)
-      VALUES ($1, $1, $2, $6::"WebhookStatus", '{}', '{"type":"user_added"}', $3, $4, $5)`,
+      VALUES ($1, $1, $2, $6::"WebhookStatus", '{}', $7::jsonb, $3, $4, $5)`,
         [
           id,
           semanticKey,
@@ -97,6 +102,7 @@ describePostgres.each([WebhookStatus.RECEIVED, WebhookStatus.QUEUED])(
           deadline,
           waiting ? new Date(now.getTime() + 5_000) : null,
           status,
+          JSON.stringify({ type: eventType }),
         ],
       );
       if (waiting)
@@ -144,6 +150,40 @@ describePostgres.each([WebhookStatus.RECEIVED, WebhookStatus.QUEUED])(
       await seed('stuck', 120, false);
       expect((await sample()).lagSec).toBe(120);
     });
+
+    it.each(['message_callback', 'chat_title_changed'])(
+      'keeps exact %s waits separate from independent lag and preserves the five-minute deadline',
+      async (eventType) => {
+        const id = await seed('finite-event-wait', 290, true, eventType);
+        const independent = await seed('independent', 1, false);
+        const snapshot = await sample();
+        expect(snapshot.heads[0].createdAt).toEqual(new Date(now.getTime() - 290_000));
+        expect(snapshot).toMatchObject({ lagSec: 1, readinessWaitingCount: 1 });
+        await pool.query('DELETE FROM webhook_events WHERE id = $1', [independent]);
+        expect(await sample(new Date(deadline.getTime() + 11_000))).toMatchObject({
+          lagSec: 16,
+          readinessWaitingCount: 1,
+        });
+        await pool.query('UPDATE webhook_events SET next_enqueue_at = $2 WHERE id = $1', [
+          id,
+          new Date(now.getTime() + 60_000),
+        ]);
+        expect(await sample(new Date(deadline.getTime() + 11_000))).toMatchObject({
+          lagSec: 11,
+          readinessWaitingCount: 1,
+        });
+        await pool.query(
+          `WITH renewed AS (
+          UPDATE webhook_events SET execution_deadline_at = execution_deadline_at + INTERVAL '1 minute'
+          WHERE id = $1 RETURNING id, execution_deadline_at
+        ) UPDATE webhook_execution_claims AS claim SET command_result = jsonb_set(
+          command_result, '{deadlineAt}', to_jsonb(to_char(renewed.execution_deadline_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+        ) FROM renewed WHERE claim.id = renewed.id`,
+          [id],
+        );
+        expect(await sample()).toMatchObject({ lagSec: 290, readinessWaitingCount: 0 });
+      },
+    );
 
     it('recognizes a prepared READY checkpoint in either pending receipt status', async () => {
       const id = await seed('prepared-wait');
@@ -273,10 +313,19 @@ describePostgres.each([WebhookStatus.RECEIVED, WebhookStatus.QUEUED])(
       });
     });
 
-    it('keeps the uninspected sentinel at raw age and proves bounded native index work', async () => {
+    it('keeps the uninspected sentinel at raw age and bounds reads through a dense timestamp tie', async () => {
       for (let i = 0; i < WEBHOOK_READINESS_LAG_HEAD_LIMIT + 2; i += 1) {
         await seed(String(i).padStart(3, '0'));
       }
+      // FLAG: A tiny pending set can favor the old timestamp-only index plus a sort.
+      // A dense tie must still read only the 65 covered heads, not sort the whole backlog.
+      await pool.query(
+        `INSERT INTO webhook_events
+          (id, dedup_key, status, raw_payload, normalized_payload, created_at)
+        SELECT $1 || n, $1 || n, $2::"WebhookStatus", '{}', '{}', $3::timestamp
+        FROM generate_series(1, 4096) n`,
+        [prefix + 'live-overflow-', status, new Date(now.getTime() - 290_000)],
+      );
       await pool.query('ANALYZE webhook_events');
       await pool.query('ANALYZE webhook_execution_claims');
       const snapshot = await sample();
@@ -293,6 +342,9 @@ describePostgres.each([WebhookStatus.RECEIVED, WebhookStatus.QUEUED])(
       const receiptScan = receiptScans.find(
         (node) => node['Index Name'] === 'webhook_events_status_created_at_id_idx',
       );
+      if (!receiptScan) {
+        throw new Error(`Missing bounded receipt head index: ${JSON.stringify(result)}`);
+      }
       expect(receiptScan).toBeDefined();
       expect(Number(receiptScan?.['Actual Rows'])).toBeLessThanOrEqual(65);
       expect(Number(receiptScan?.['Rows Removed by Filter'] ?? 0)).toBe(0);

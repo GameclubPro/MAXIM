@@ -612,6 +612,25 @@ function createServiceFixture() {
         },
       ),
     },
+    $executeRaw: jest.fn(
+      async (strings: TemplateStringsArray, ...values: unknown[]): Promise<number> => {
+        if (!strings.join('').includes('UPDATE chat_bot_memberships'))
+          throw new Error('Unexpected fixture SQL mutation');
+        const [lastSeenAt, lastWebhookAt, , chatId, botId] = values as [
+          Date,
+          Date,
+          Date,
+          string,
+          string,
+        ];
+        // Reuse the fixture's mutation/failure model; native races exercise the real SQL.
+        const result = await prisma.chatBotMembership.updateMany({
+          where: { chatId, botId, status: ChatBotMembershipStatus.ACTIVE },
+          data: { lastSeenAt, lastWebhookAt },
+        });
+        return result.count;
+      },
+    ),
     $queryRaw: jest.fn(async (query: unknown) => {
       const sql = query as {
         strings?: readonly string[];

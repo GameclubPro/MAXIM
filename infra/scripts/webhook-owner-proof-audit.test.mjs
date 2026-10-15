@@ -127,6 +127,17 @@ test('receipt semantic families remain private diagnostics without execution aut
       assert.equal(report.predecessor.receipt_semantic_family, family);
       assert.equal(report.classification, 'claim_missing');
     }
+    for (const [eventType, reported] of [
+      ['chat_title_changed', 'chat_title_changed'],
+      ['message_callback', 'message_callback'],
+      [secret, 'other'],
+    ]) {
+      await db.query(
+        "UPDATE webhook_events SET normalized_payload=$1 WHERE id='private-received'",
+        [JSON.stringify({ ...JSON.parse(payload), type: eventType })],
+      );
+      assert.equal((await audit(db, true)).predecessor.event_type, reported);
+    }
   } finally {
     await db.close();
   }

@@ -1639,18 +1639,13 @@ export class MaxBotLinkService implements OnModuleDestroy {
     nowMs: number,
   ): Promise<void> {
     // FLAG: Coalescing only reduces heartbeat writes; it must never reactivate membership.
-    const touched = await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId: observedBotId,
-        status: ChatBotMembershipStatus.ACTIVE,
-      },
-      data: {
-        lastSeenAt: observedAt,
-        lastWebhookAt: observedAt,
-      },
-    });
-    if (touched.count === 0 || this.nightModeReconciliationRetryStopped) {
+    const touched = await this.prisma.$executeRaw`
+      UPDATE chat_bot_memberships
+      SET last_seen_at = ${observedAt}, last_webhook_at = ${observedAt},
+        updated_at = ${new Date()}
+      WHERE chat_id = ${chatId} AND bot_id = ${observedBotId} AND status = 'ACTIVE'
+    `;
+    if (touched === 0 || this.nightModeReconciliationRetryStopped) {
       return;
     }
     this.observedWebhookTouchCache.delete(cacheKey);
