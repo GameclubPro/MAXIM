@@ -130,6 +130,11 @@ try {
     publishedAt: '2026-10-03T01:00:00.000Z',
     operation: 'created',
   });
+  // FLAG: Response headers alone do not prove React has committed the mutation result.
+  await page.waitForFunction(() => {
+    const state = JSON.parse(document.querySelector('[data-testid="state"]')?.textContent ?? '{}');
+    return state.busy === false;
+  });
   assert.equal(requests.length, 1);
   assert.equal((await read()).draft.publishedMessageId, 'new-post');
   assert.equal((await read()).draft.publishedUrl, null);

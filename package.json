@@ -53,7 +53,7 @@
     "test:api:commercial-benchmark:ci": "npm run test:commercial-benchmark:ci --workspace @maxim/api",
     "test:contracts": "npm run test --workspace @maxim/contracts",
     "test:miniapp": "npm run test --workspace @maxim/miniapp",
-    "test:agent-tools": "node --test scripts/*.test.mjs scripts/agent/test/*.test.mjs scripts/ci/*.test.mjs infra/scripts/*.test.mjs",
+    "test:agent-tools": "node --test --test-concurrency=2 scripts/*.test.mjs scripts/agent/test/*.test.mjs scripts/ci/*.test.mjs infra/scripts/*.test.mjs",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "prepare": "husky",

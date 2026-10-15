@@ -14,7 +14,7 @@ const minute = '2026-10-15T01:37:00Z';
 const fixture = `SET TIME ZONE 'UTC';
 CREATE TABLE webhook_events (id text PRIMARY KEY, status text, created_at timestamp,
   processed_at timestamp, error_message text, next_enqueue_at timestamp,
-  timeout_quarantine_expires_at timestamp);
+  timeout_quarantine_expires_at timestamp, semantic_key text);
 CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status,created_at,id);
 CREATE TABLE webhook_dependency_quarantines (receipt_id text, blocker_id text, anchor_id text,
   state text, deadline_at timestamp, created_at timestamp, next_check_at timestamp, resolved_at timestamp,
@@ -51,6 +51,8 @@ test('quarantine preserves exact old blockers, reports missing journals, and nev
   assert.equal(result.sampled_receipts, 1);
   assert.equal(result.replay_authorized, false);
   assert.equal(result.remote_effects_proven, false);
+  assert.equal(result.schema_version, 2);
+  assert.equal(result.rows[0].blockers[0].saved_semantic_relation, 'unknown');
   assert.equal(result.rows[0].blockers[0].blocker_error_family, 'legacy_execution_unverified');
   assert.equal(result.rows[0].blockers[0].anchor_is_blocker, true);
   assert.doesNotMatch(JSON.stringify(result), /private|LEGACY_EXECUTION/u);
@@ -67,6 +69,33 @@ test('quarantine preserves exact old blockers, reports missing journals, and nev
     .json_build_object;
   assert.equal(result.window_closed, false);
   assert.equal(result.sampled_receipts, 0);
+});
+
+test('saved semantic keys distinguish copies from ordering dependencies without exposing source identity', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture + seed);
+  const inspect = async () => {
+    const report = (await db.query(buildQuarantineAuditSql(minute))).rows[0].json_build_object;
+    assert.equal(report.replay_authorized, false);
+    assert.equal(report.remote_effects_proven, false);
+    assert.doesNotMatch(JSON.stringify(report), /private|message:message_created/u);
+    return report.rows[0].blockers[0].saved_semantic_relation;
+  };
+  await db.exec(
+    "UPDATE webhook_events SET semantic_key='message:message_created:private-chat:private-message'",
+  );
+  assert.equal(await inspect(), 'same_key');
+  await db.exec(
+    "UPDATE webhook_events SET semantic_key='message:message_created:private-chat:private-new-message' WHERE id='private-receipt'",
+  );
+  assert.equal(await inspect(), 'different_keys');
+  for (const value of [null, '', 'x'.repeat(513)]) {
+    await db.query("UPDATE webhook_events SET semantic_key=$1 WHERE id='private-receipt'", [value]);
+    assert.equal(await inspect(), 'unknown');
+  }
+  await db.exec("DELETE FROM webhook_events WHERE id='private-blocker'");
+  assert.equal(await inspect(), 'missing_blocker');
 });
 
 test('both quarantine receipt and per-receipt journal caps report truncation', async (t) => {
@@ -159,6 +188,7 @@ test(
       scans.map((node) => node['Index Name']).sort(),
       [
         'webhook_dependency_quarantines_pkey',
+        'webhook_events_pkey',
         'webhook_events_pkey',
         'webhook_events_status_created_at_id_idx',
       ].sort(),

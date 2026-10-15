@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import {
@@ -30,11 +30,7 @@ export async function writeCommercialOcrNativeBuildManifest(
     resolveCommercialOcrNativeEngineConfig(),
   );
   const manifest = createCommercialOcrNativeBuildManifest(artifacts);
-  await writeFile(resolve(outputPath), serializeCommercialOcrNativeBuildManifest(manifest), {
-    encoding: 'utf8',
-    mode: 0o444,
-    flag: 'wx',
-  });
+  await writeReadOnlyArtifact(outputPath, serializeCommercialOcrNativeBuildManifest(manifest));
   if (probeOutputPath !== undefined) {
     if (!probeOutputPath || probeOutputPath.length > 4_096 || probeOutputPath.includes('\0')) {
       throw new Error(USAGE);
@@ -48,15 +44,22 @@ export async function writeCommercialOcrNativeBuildManifest(
       manifest: identity.manifest,
     });
     if (!identity.complete) throw new Error('Native OCR build probe identity is incomplete');
-    await writeFile(
-      resolve(probeOutputPath),
+    await writeReadOnlyArtifact(
+      probeOutputPath,
       serializeNativeOcrSandboxProbeExpectation(completeIdentity.fingerprintSha256),
-      {
-        encoding: 'utf8',
-        mode: 0o444,
-        flag: 'wx',
-      },
     );
+  }
+}
+
+async function writeReadOnlyArtifact(path: string, content: string): Promise<void> {
+  const file = await open(resolve(path), 'wx', 0o444);
+  try {
+    await file.writeFile(content, 'utf8');
+    // FLAG: The unprivileged probe requires exactly 0444 even under a restrictive
+    // build umask. Set it on the newly created descriptor, never a reopened path.
+    await file.chmod(0o444);
+  } finally {
+    await file.close();
   }
 }
 

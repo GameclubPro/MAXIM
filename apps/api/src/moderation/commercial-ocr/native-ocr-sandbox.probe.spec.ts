@@ -48,6 +48,7 @@ describe('Native OCR sandbox lightweight exact readiness', () => {
     await writeFile(expectationPath, serializeNativeOcrSandboxProbeExpectation(fingerprint), {
       mode: 0o444,
     });
+    await chmod(expectationPath, 0o444);
     const realStat = fs.fstatSync;
     // Test fixtures cannot chown to root; keep all real stat attributes except the image owner.
     ownerSpy = jest.spyOn(fs, 'fstatSync').mockImplementation((descriptor) => {

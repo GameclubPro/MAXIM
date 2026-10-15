@@ -13,13 +13,15 @@ const args = Object.fromEntries(
     const match = /^--([a-z]+)=(.+)$/u.exec(arg);
     if (!match)
       throw new Error(
-        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --profiles=uniform,hot,cold,media --output=path',
+        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --enqueue=fixture|production --profiles=uniform,hot,cold,media --output=path',
       );
     return [match[1]!, match[2]!];
   }),
 );
 for (const key of Object.keys(args))
-  if (!['chats', 'bots', 'messages', 'rate', 'routing', 'profiles', 'output'].includes(key))
+  if (
+    !['chats', 'bots', 'messages', 'rate', 'routing', 'enqueue', 'profiles', 'output'].includes(key)
+  )
     throw new Error(`Unknown option ${key}`);
 function positive(value: string, name: string): number {
   const result = Number(value);
@@ -35,6 +37,9 @@ const messageCount = positive(args.messages ?? '120', 'messages');
 const rate = positive(args.rate ?? '2', 'rate');
 const routing = args.routing ?? 'legacy';
 if (routing !== 'legacy' && routing !== 'fixed') throw new Error('Unsupported routing mode');
+const enqueue = args.enqueue ?? 'fixture';
+if (enqueue !== 'fixture' && enqueue !== 'production')
+  throw new Error('Unsupported enqueue profile');
 const profiles = (args.profiles ?? 'uniform,hot,cold,media').split(',') as Profile[];
 if (profiles.some((profile) => !profilesAllowed.has(profile)))
   throw new Error('Unsupported profile');
@@ -62,6 +67,7 @@ async function main() {
       bots,
       mode: 'on',
       quotaProfile: 'production',
+      productionEnqueueCapacity: enqueue === 'production',
       recoverDueDeletes: true,
     });
     let failureSnapshot: ((error: unknown) => Promise<unknown>) | undefined;
@@ -121,6 +127,7 @@ async function main() {
           bots,
           routing,
           profile,
+          enqueueCapacity: harness.capacity,
           failureCode:
             error instanceof Error && error.name === 'MaxApiInternalRateLimitError'
               ? 'internal_quota'
@@ -328,6 +335,7 @@ async function main() {
           bots,
           routing,
           profile,
+          enqueueCapacity: harness.capacity,
           logicalMessages: messageCount,
           receipts: receiptIds.length,
           executorDistribution:

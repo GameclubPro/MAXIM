@@ -1891,7 +1891,12 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
               if (!moderatorTarget) return;
               setModeratorAssignment({ ...moderatorTarget, scope: favoriteStorageScope, result });
               closeHomeEntitySheet();
-              pushToast({ title: `${result.moderator.name} выбран`, tone: 'success' });
+              pushToast({
+                title: 'Бот выбран',
+                description: result.moderator.name,
+                tone: 'success',
+                replaceKey: `moderator:${favoriteStorageScope}:${moderatorTarget.entityType}:${moderatorTarget.entity.id}`,
+              });
             }}
             filterPickerOpen={favoriteFilterPickerOpen}
             filterValue={favoriteFilter}

@@ -44,6 +44,7 @@
 - Run `node scripts/agent/preflight.mjs` for early read-only generator, contract-export, and HTTP-input checks; it also runs before `agent:verify` and in CI. It is not a replacement for impact checks or exact-SHA CI. See `docs/development-reliability-plan.md` for the release checklist.
 - Public API validation scripts now serialize generated-contract and Prisma work. Do not bypass them with `*:unlocked` or `*:source` commands unless a repo script intentionally owns the lock.
 - Use Node 24 LTS. Root `.nvmrc` pins `24`; Docker dependency layers must remain lockfile-based with `npm ci`.
+- Source and infrastructure Node test suites cap file concurrency at two because fixtures spawn nested native/CLI processes. Preserve that cap in `test:agent-tools` and `check-infra.sh`; runner CPU count alone does not bound their process/thread demand.
 - Check local readiness with `node scripts/agent/doctor.mjs --browser`. For disposable native PostgreSQL 16/Redis 7, use `node scripts/agent/with-test-stores.mjs --migrate -- <public validation command>`; it owns isolated stores, UTC and cleanup. See `docs/development/agent-local-environment.md`. Report store-dependent skips; a green mock-only run is not real-store coverage.
 - Local start:
   - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis`

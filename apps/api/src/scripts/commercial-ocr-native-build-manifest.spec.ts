@@ -58,6 +58,19 @@ describe('image-owned native OCR probe build artifact', () => {
     expect(statSync(manifestPath).mode & 0o777).toBe(0o444);
   });
 
+  it('creates readable immutable artifacts under a private build umask', async () => {
+    const manifestPath = join(directory, 'manifest.json');
+    const probePath = join(directory, 'probe.json');
+    const previousMask = process.umask(0o077);
+    try {
+      await writeCommercialOcrNativeBuildManifest(manifestPath, probePath);
+    } finally {
+      process.umask(previousMask);
+    }
+    expect(statSync(probePath).mode & 0o777).toBe(0o444);
+    expect(statSync(manifestPath).mode & 0o777).toBe(0o444);
+  });
+
   it('does not overwrite an existing trusted expectation', async () => {
     const manifestPath = join(directory, 'manifest.json');
     const probePath = join(directory, 'probe.json');

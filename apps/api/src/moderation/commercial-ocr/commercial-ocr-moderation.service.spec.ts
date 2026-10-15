@@ -1378,6 +1378,7 @@ describe('CommercialOcrModerationService', () => {
       expect(harness.governor.decide).toHaveBeenCalledWith({
         component: 'commercial-image-ocr',
         sourceTag: 'commercial_image_ocr',
+        allowRecoveryWindowRun: true,
         ignoredPressureDomains: ['max_api_traffic'],
       });
     },

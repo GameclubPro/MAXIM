@@ -1,11 +1,11 @@
 import { NestFactory } from '@nestjs/core';
 import { createHash, randomUUID } from 'node:crypto';
 import { readSync } from 'node:fs';
-import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { FixedModeratorPreservationService } from '../max/fixed-moderator-preservation.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { FixedModeratorPreservationModule } from './fixed-moderator-preservation.module';
+import { parseModeratorPreservationArgs } from './preserve-fixed-moderators.args';
 
 const SHA = z.string().regex(/^[a-f0-9]{40}$/u);
 const DIGEST = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -73,16 +73,7 @@ async function main() {
     : null;
   watchdog?.unref();
 
-  const { values } = parseArgs({
-    options: {
-      apply: { type: 'boolean', default: false },
-      'explain-chat': { type: 'string' },
-      'source-sha': { type: 'string' },
-      'reviewed-digest': { type: 'string' },
-      after: { type: 'string' },
-      limit: { type: 'string', default: '25' },
-    },
-  });
+  const values = parseModeratorPreservationArgs(process.argv.slice(2));
   const explainChat = values['explain-chat'] ? ID.parse(values['explain-chat']) : null;
   if (explainChat && values.apply) throw new Error('Explain cannot apply assignments');
   const sourceSha = SHA.parse(values['source-sha']);

@@ -66,7 +66,8 @@ export function buildQuarantineAuditSql(minute, explain = false) {
   validateQuarantineMinute(minute);
   // FLAG: Cap the covered status/time walk before any journal or blocker reads.
   // Each receipt probes at most five journal keys, reports four, then reads only
-  // those blockers by primary key. Evidence is observational, never replay authority.
+  // those blockers by primary key. Compare saved keys only after the receipt cap;
+  // never project keys or read bodies. This is not source/effect or replay authority.
   const query = `WITH bounds AS MATERIALIZED (
     SELECT '${minute}'::timestamp AS from_at, '${minute}'::timestamp + interval '1 minute' AS until_at,
       statement_timestamp() AT TIME ZONE 'UTC' AS observed_at
@@ -78,9 +79,15 @@ export function buildQuarantineAuditSql(minute, explain = false) {
     ) head WHERE bounds.until_at <= bounds.observed_at
   ), receipts AS MATERIALIZED (
     SELECT * FROM candidates ORDER BY created_at, id LIMIT 64
+  ), receipt_metadata AS MATERIALIZED (
+    SELECT receipt.id, receipt.created_at, metadata.id IS NOT NULL AS found,
+      metadata.semantic_key
+    FROM receipts receipt LEFT JOIN LATERAL (
+      SELECT id, semantic_key FROM webhook_events WHERE id = receipt.id OFFSET 0
+    ) metadata ON true
   ), summaries AS MATERIALIZED (
     SELECT receipt.created_at, journal.captured, journal.items
-    FROM receipts receipt CROSS JOIN LATERAL (
+    FROM receipt_metadata receipt CROSS JOIN LATERAL (
       WITH journal_heads AS MATERIALIZED (
         SELECT blocker_id, anchor_id, state, deadline_at, created_at, next_check_at, resolved_at
         FROM webhook_dependency_quarantines WHERE receipt_id = receipt.id
@@ -95,6 +102,14 @@ export function buildQuarantineAuditSql(minute, explain = false) {
           'next_check_at', entry.next_check_at, 'resolved_at', entry.resolved_at,
           'anchor_is_blocker', entry.anchor_id = entry.blocker_id,
           'blocker_found', blocker.id IS NOT NULL, 'blocker_status', blocker.status,
+          'saved_semantic_relation', CASE
+            WHEN NOT receipt.found THEN 'missing_receipt'
+            WHEN blocker.id IS NULL THEN 'missing_blocker'
+            WHEN receipt.semantic_key IS NULL OR length(receipt.semantic_key) NOT BETWEEN 1 AND 512
+              OR blocker.semantic_key IS NULL OR length(blocker.semantic_key) NOT BETWEEN 1 AND 512
+              THEN 'unknown'
+            WHEN receipt.semantic_key = blocker.semantic_key THEN 'same_key'
+            ELSE 'different_keys' END,
           'blocker_created_at', blocker.created_at, 'blocker_processed_at', blocker.processed_at,
           'blocker_retry_scheduled', blocker.next_enqueue_at IS NOT NULL,
           'blocker_timeout_boundary', blocker.timeout_quarantine_expires_at,
@@ -115,12 +130,13 @@ export function buildQuarantineAuditSql(minute, explain = false) {
             ELSE 'other' END
         ) ORDER BY entry.blocker_id), '[]'::json) AS items
       FROM journal_sample entry LEFT JOIN LATERAL (
-        SELECT id, status, created_at, processed_at, error_message, next_enqueue_at, timeout_quarantine_expires_at
+        SELECT id, status, created_at, processed_at, error_message, next_enqueue_at,
+          timeout_quarantine_expires_at, semantic_key
         FROM webhook_events WHERE id = entry.blocker_id OFFSET 0
       ) blocker ON true
     ) journal
   ) SELECT json_build_object(
-    'schema_version', 1, 'audit', 'webhook_quarantine', 'basis', 'currently_quarantined_receipt_created_at',
+    'schema_version', 2, 'audit', 'webhook_quarantine', 'basis', 'currently_quarantined_receipt_created_at',
     'from', bounds.from_at, 'until', bounds.until_at, 'observed_at', bounds.observed_at,
     'window_closed', bounds.until_at <= bounds.observed_at,
     'sample_complete', (SELECT count(*) <= 64 FROM candidates) AND NOT EXISTS (SELECT 1 FROM summaries WHERE captured > 4),
