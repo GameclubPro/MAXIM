@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { ChatEntityType } from '../prisma/prisma-client';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
@@ -20,6 +20,30 @@ import {
 const PROBE_LEASE_MS = 30_000;
 const NEGATIVE_PROBE_RECHECK_MS = 15_000;
 const PROBE_SOURCE = 'moderation_executor_readiness';
+const WAIT_LOG_INTERVAL_MS = 30_000;
+const DEFERRED_REASONS = new Map([
+  ['Execution owner probe already active', 'probe_busy'],
+  ['Execution owner probe lease lost', 'probe_lease_lost'],
+  ['Execution access probe superseded', 'access_probe_superseded'],
+  ['Execution denial probe superseded', 'denial_probe_superseded'],
+  ['Current execution owner probe pending', 'owner_probe_pending'],
+  ['Current execution owner permissions unknown', 'owner_permissions_unknown'],
+  ['Execution route changed during selection', 'route_changed'],
+  ['Selected execution proof superseded', 'selected_proof_superseded'],
+  ['Peer execution access probe pending', 'peer_probe_pending'],
+] as const);
+type WaitReason =
+  | (typeof DEFERRED_REASONS extends Map<string, infer Reason> ? Reason : never)
+  | 'chat_state_missing'
+  | 'no_eligible_executor'
+  | 'other_deferred';
+type CandidateWaitCounts = {
+  candidateCount: number;
+  activationRequiredCount: number;
+  capabilityDeniedCount: number;
+  proofMissingCount: number;
+  snapshotChangedCount: number;
+};
 export type MaxExecutionOwnerReadinessInput = {
   chatId: string;
   preferredBotId?: string | null;
@@ -29,6 +53,8 @@ export type MaxExecutionOwnerReadinessInput = {
 
 @Injectable()
 export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
+  private readonly logger = new Logger(MaxExecutionOwnerReadinessService.name);
+  private readonly waitLogs = new Map<string, { at: number; count: number }>();
   private readonly inFlight = new Map<string, Promise<MaxExecutionRouteProof | null>>();
   private stopping = false;
 
@@ -41,6 +67,7 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     this.stopping = true;
     await Promise.allSettled([...this.inFlight.values()]);
+    this.waitLogs.clear();
   }
 
   async ensureReady(
@@ -60,8 +87,14 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
     if (pending) return pending;
     const task = this.ensureReadyAdmitted({ ...params, chatId, purpose })
       .catch((error: unknown) => {
-        if (error instanceof WebhookPreparationDeferredError)
+        if (error instanceof WebhookPreparationDeferredError) {
+          this.recordWait(
+            DEFERRED_REASONS.get(error.message as Parameters<typeof DEFERRED_REASONS.get>[0]) ??
+              'other_deferred',
+            purpose,
+          );
           throw new WebhookExecutionOwnerUnavailableError(error.message, error.retryAfterMs, error);
+        }
         throw error;
       })
       .finally(() => this.inFlight.delete(key));
@@ -73,7 +106,10 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
     params: MaxExecutionOwnerReadinessInput & { purpose: MaxExecutionPurpose },
   ): Promise<MaxExecutionRouteProof | null> {
     let state = await this.maxBotLink.loadChatExecutionOwnerState(params.chatId);
-    if (!state) return null;
+    if (!state) {
+      this.recordWait('chat_state_missing', params.purpose);
+      return null;
+    }
     const originalOwner = state.primaryBotId;
     const requestedRoute =
       params.purpose === 'moderation'
@@ -89,7 +125,10 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
       throw new WebhookPreparationDeferredError('Execution owner probe already active', 1_000);
     try {
       state = await this.maxBotLink.loadChatExecutionOwnerState(params.chatId);
-      if (!state) return null;
+      if (!state) {
+        this.recordWait('chat_state_missing', params.purpose);
+        return null;
+      }
       const owner = state.primaryBotId;
       const routeTarget =
         params.purpose === 'moderation' ? owner : params.preferredBotId?.trim() || owner;
@@ -112,6 +151,13 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
           ),
         ),
       ];
+      const waitCounts: CandidateWaitCounts = {
+        candidateCount: candidateIds.length,
+        activationRequiredCount: 0,
+        capabilityDeniedCount: 0,
+        proofMissingCount: 0,
+        snapshotChangedCount: 0,
+      };
       let previousOwner:
         | { botId: string; accessEpoch: MaxExecutionAccessEpoch; purpose: MaxExecutionPurpose }
         | undefined;
@@ -120,11 +166,21 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
         if (!(await this.locks.renewLock(lockKey, token, PROBE_LEASE_MS)))
           throw new WebhookPreparationDeferredError('Execution owner probe lease lost', 1_000);
         state = await this.maxBotLink.loadChatExecutionOwnerState(params.chatId);
-        if (!state) return null;
-        if (state.fixedModeratorBotId && state.fixedModeratorBotId !== botId) continue;
+        if (!state) {
+          this.recordWait('chat_state_missing', params.purpose);
+          return null;
+        }
+        if (state.fixedModeratorBotId && state.fixedModeratorBotId !== botId) {
+          waitCounts.snapshotChangedCount += 1;
+          continue;
+        }
         const membership = state.candidates.find((candidate) => candidate.botId === botId);
-        if (!membership) continue;
+        if (!membership) {
+          waitCounts.snapshotChangedCount += 1;
+          continue;
+        }
         if (isMajorManagedEntityActivationRequired(membership, state.entityType)) {
+          waitCounts.activationRequiredCount += 1;
           // FLAG: A dormant owner is never re-probed, but its exact negative epoch still
           // fences peer promotion against a concurrent explicit administrator activation.
           if (botId === owner && membership.botAccessCheckedAt && membership.botAccessSource)
@@ -147,8 +203,10 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
             !snapshot.activationCapabilityCeiling.includes(params.purpose)) ||
             (snapshot?.permissionsKnown === true &&
               !hasExecutionCapability(membership, state.entityType, params.purpose)))
-        )
+        ) {
+          waitCounts.capabilityDeniedCount += 1;
           continue;
+        }
         const proofMissing = !executionRouteProof(state, botId, params.purpose);
         const permissionsUnknown =
           normalizeMembershipAccessSnapshot(membership.permissionsSnapshot)?.permissionsKnown !==
@@ -238,7 +296,10 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
             }
           }
           state = await this.maxBotLink.loadChatExecutionOwnerState(params.chatId);
-          if (!state) return null;
+          if (!state) {
+            this.recordWait('chat_state_missing', params.purpose);
+            return null;
+          }
         }
         const latestMembership = state.candidates.find((candidate) => candidate.botId === botId);
         if (botId === owner && latestMembership && hasFreshExecutionAccess(latestMembership)) {
@@ -271,7 +332,10 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
           }
         }
         const proof = executionRouteProof(state, botId, params.purpose);
-        if (!proof) continue;
+        if (!proof) {
+          waitCounts.proofMissingCount += 1;
+          continue;
+        }
         // Mutation routes can use a capable peer without changing the shared read owner.
         if (params.purpose !== 'moderation') return proof;
         // A concurrent committed probe may already have promoted a healthy peer. Keep it stable.
@@ -308,9 +372,57 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
           1_000,
           transientError,
         );
+      this.recordWait('no_eligible_executor', params.purpose, waitCounts);
       return null;
     } finally {
       await this.locks.releaseLock(lockKey, token);
+    }
+  }
+
+  private recordWait(
+    reason: WaitReason,
+    purpose: MaxExecutionPurpose,
+    counts?: CandidateWaitCounts,
+  ): void {
+    // FLAG: Diagnostics never supply authority or alter retries. Keys are a finite reason/purpose
+    // set; emit only enum labels and counters, never chat/bot identities, errors or permission data.
+    const safePurpose = [
+      'moderation',
+      'delete_message',
+      'edit_message',
+      'moderate_member',
+      'send_message',
+    ].includes(purpose)
+      ? purpose
+      : 'unknown';
+    const key = `${reason}:${safePurpose}`;
+    const now = Date.now();
+    const previous = this.waitLogs.get(key);
+    if (previous && now >= previous.at && now - previous.at < WAIT_LOG_INTERVAL_MS) {
+      previous.count += 1;
+      return;
+    }
+    this.waitLogs.set(key, { at: now, count: 0 });
+    try {
+      this.logger.warn(
+        {
+          reason,
+          purpose: safePurpose,
+          coalescedObservations: (previous?.count ?? 0) + 1,
+          ...(counts
+            ? {
+                candidateCount: counts.candidateCount,
+                activationRequiredCount: counts.activationRequiredCount,
+                capabilityDeniedCount: counts.capabilityDeniedCount,
+                proofMissingCount: counts.proofMissingCount,
+                snapshotChangedCount: counts.snapshotChangedCount,
+              }
+            : {}),
+        },
+        'Moderation executor readiness is waiting',
+      );
+    } catch {
+      /* Diagnostic sinks cannot change execution behavior. */
     }
   }
 

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
@@ -91,7 +92,78 @@ describe('MaxExecutionOwnerReadinessService', () => {
     jest.useFakeTimers();
     jest.setSystemTime(NOW);
   });
-  afterEach(() => jest.useRealTimers());
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('reports bounded activation waits without probing dormant bots or retaining private identities', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const f = fixture(1);
+    Object.assign(
+      f.state.candidates[0]!,
+      buildBotAccessSnapshotPersistence(
+        { isAdmin: false, isOwner: false, permissionsKnown: true },
+        { source: 'denied', now: NOW },
+      ),
+    );
+    for (let index = 0; index < 20; index += 1) {
+      expect(await f.service.ensureReady({ chatId: '-100' })).toBeNull();
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      {
+        reason: 'no_eligible_executor',
+        purpose: 'moderation',
+        coalescedObservations: 1,
+        candidateCount: 1,
+        activationRequiredCount: 1,
+        capabilityDeniedCount: 0,
+        proofMissingCount: 0,
+        snapshotChangedCount: 0,
+      },
+      'Moderation executor readiness is waiting',
+    );
+    jest.advanceTimersByTime(30_000);
+    expect(await f.service.ensureReady({ chatId: '-100' })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls[1]?.[0]).toMatchObject({ coalescedObservations: 20 });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/-100|bot-00|permissionsSnapshot|denied/);
+    expect(f.max.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+  });
+
+  it('retains the original unavailable error and lease release when a diagnostic sink fails', async () => {
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {
+      throw new Error('log sink failed');
+    });
+    const f = fixture(1);
+    const upstream = new Error('private upstream detail');
+    f.max.getCurrentChatMemberAccess.mockRejectedValue(upstream);
+    await expect(f.service.ensureReady({ chatId: '-100', force: true })).rejects.toMatchObject({
+      name: 'WebhookExecutionOwnerUnavailableError',
+      message: 'Current execution owner probe pending',
+      retryAfterMs: 1000,
+      cause: expect.objectContaining({ cause: upstream }),
+    });
+    expect(f.locks.releaseLock).toHaveBeenCalledTimes(1);
+    expect(f.links.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes probe contention and missing local state with finite diagnostics only', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const f = fixture(1);
+    f.locks.acquireLock.mockResolvedValue(null as never);
+    await expect(f.service.ensureReady({ chatId: '-100', force: true })).rejects.toBeInstanceOf(
+      WebhookExecutionOwnerUnavailableError,
+    );
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ reason: 'probe_busy' });
+    f.links.loadChatExecutionOwnerState.mockResolvedValue(null as never);
+    expect(await f.service.ensureReady({ chatId: '-100' })).toBeNull();
+    expect(warn.mock.calls[1]?.[0]).toMatchObject({ reason: 'chat_state_missing' });
+    expect(f.max.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
 
   it('keeps the assigned moderator when a caller prefers a healthy peer', async () => {
     const f = fixture(6);
