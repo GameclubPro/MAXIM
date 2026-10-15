@@ -23,6 +23,10 @@
 - `ocr-native-sandbox` is an auxiliary of the shared API image, not a separate API role. It has
   no network, API identity, runtime env file, or secrets and is reachable only from
   `api-media-analysis` through the project-scoped `ocr_native_ipc` Unix-socket volume.
+- Both Compose topologies explicitly enable `BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED`
+  for `api-media-analysis`. Verify its effective container value after OCR admission changes;
+  queue-only slow progress must still stop on host pressure. Keep its existing governor
+  intervals, thresholds and single native consumer when enabling this guard.
 - `photo-native-sandbox` is a second shared-image auxiliary with its own 1 CPU/1 GiB/64 PID
   budget. It has no network, API identity, runtime env file, or secrets; only
   `api-moderation-background` mounts its `photo_native_ipc` socket volume, read-only. Deploy and

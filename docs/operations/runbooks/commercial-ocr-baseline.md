@@ -88,8 +88,11 @@ pass per governor retry interval; downloads and cache hits do not consume the sl
 Fresh `pause` decisions are checked before preprocessing and native dispatch.
 Automatic queue-only degradation uses this bounded slow path after the governor's
 host-pressure check, so one unrelated old webhook cannot indefinitely stop every
-image analysis. Manual, MAX-only, mixed and unknown degradation still pause; hard
-CPU/IO pressure also refuses the slow path. The original job deadline, single
+image analysis. Both Compose topologies explicitly enable
+`BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED` for `api-media-analysis`; verify the
+effective container flag after rollout. Keep its existing governor intervals and
+thresholds when enabling this guard. Manual, MAX-only, mixed and unknown degradation
+still pause; hard CPU/IO pressure also refuses the slow path. The original job deadline, single
 consumer, native resource limits and final delete guards remain unchanged. A
 completed primary pass stays in the exact content/version/profile cache when
 confirmation is deferred; resumption still needs a complete confirmed result.

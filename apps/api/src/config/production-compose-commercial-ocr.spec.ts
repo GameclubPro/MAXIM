@@ -31,6 +31,12 @@ describe('production Compose commercial OCR isolation', () => {
       );
     });
 
+    it('checks host pressure before admitting OCR behind an unrelated queue backlog', () => {
+      expect(mediaAnalysis).toMatch(
+        /^\s+BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED:\s+'true'\s*$/mu,
+      );
+    });
+
     it('keeps the native OCR process single-threaded and resource isolated', () => {
       for (const [key, value] of Object.entries({
         PHOTO_DUPLICATE_MAX_BYTES: 16_777_216,
