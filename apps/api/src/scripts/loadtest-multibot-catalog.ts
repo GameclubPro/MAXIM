@@ -1,3 +1,4 @@
+import { isCatalogViolation, parseCatalogViolationPercent } from './multibot-catalog-workload';
 import { evaluateCatalogLatency, parseCatalogLatencyTargets } from './multibot-catalog-latency';
 import {
   collectFixtureBatches,
@@ -25,7 +26,7 @@ const args = Object.fromEntries(
     const match = /^--([a-z]+)=(.+)$/u.exec(arg);
     if (!match)
       throw new Error(
-        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --enqueue=fixture|production --topology=single|split --profiles=uniform,hot,cold,media --latency=2000,10000 --output=path',
+        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --enqueue=fixture|production --topology=single|split --profiles=uniform,hot,cold,media --violations=100 --latency=2000,10000 --output=path',
       );
     return [match[1]!, match[2]!];
   }),
@@ -42,6 +43,7 @@ for (const key of Object.keys(args))
       'topology',
       'profiles',
       'latency',
+      'violations',
       'output',
     ].includes(key)
   )
@@ -73,6 +75,7 @@ const profiles = (args.profiles ?? 'uniform,hot,cold,media').split(',') as Profi
 if (profiles.some((profile) => !profilesAllowed.has(profile)))
   throw new Error('Unsupported profile');
 const latencyTargets = parseCatalogLatencyTargets(args.latency);
+const violationPercent = parseCatalogViolationPercent(args.violations);
 const databaseUrl = process.env.MAXIM_TEST_POSTGRES_URL;
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL;
 if (!databaseUrl || !redisUrl)
@@ -143,6 +146,8 @@ async function main() {
         const beforeViolations = await harness.prisma.violation.count({
           where: { chatId: { in: chats } },
         });
+        const expectedDeleteIds = new Set<string>();
+        const executorMessageCounts = new Map<string, number>();
         const receiptIds: string[] = [];
         const unsettledReceiptIds = new Set<string>();
         const touchedChatIds = new Set<string>();
@@ -174,6 +179,8 @@ async function main() {
                 ? 'internal_quota'
                 : 'benchmark_failed',
             logicalMessagesSubmitted: messageIds.length,
+            expectedDeletesSubmitted: expectedDeleteIds.size,
+            expectedKeptSubmitted: messageIds.length - expectedDeleteIds.size,
             receipts: receiptIds.length,
             requestedLogicalRatePerSec: rate,
             elapsedMs: Math.round(performance.now() - startedAt),
@@ -232,8 +239,15 @@ async function main() {
             }
             const messageId = `${caseId}-${index}`;
             messageIds.push(messageId);
+            const executorId = assignedBots.get(chatId)!;
+            const executorIndex = executorMessageCounts.get(executorId) ?? 0;
+            executorMessageCounts.set(executorId, executorIndex + 1);
+            // FLAG: A global every-Nth pattern can select only some round-robin bots.
+            // Apply the assumed fraction within each executor's own traffic instead.
+            const violation = isCatalogViolation(executorIndex, violationPercent);
+            if (violation) expectedDeleteIds.add(messageId);
             touchedChatIds.add(chatId);
-            expectedExecutors.set(messageId, assignedBots.get(chatId)!);
+            expectedExecutors.set(messageId, executorId);
             const at = Date.now();
             const enteredAt = performance.now();
             producerLatenessMs.push(Math.max(0, enteredAt - (startedAt + (index * 1000) / rate)));
@@ -244,7 +258,7 @@ async function main() {
                   messageId,
                   botId: bot.id,
                   at,
-                  text: `Local catalog length violation ${caseId} ${index}`,
+                  text: violation ? `Local catalog length violation ${caseId} ${index}` : 'Hello',
                   ...(profile === 'media'
                     ? {
                         attachments: [
@@ -325,9 +339,13 @@ async function main() {
         const intents = await harness.prisma.moderationDeleteIntent.count({
           where: { messageId: { in: messageIds } },
         });
-        const deletes = harness.effects
-          .slice(beforeEffects)
-          .filter((effect) => effect.method === 'delete' && effect.path === '/messages');
+        const observedEffects = harness.effects.slice(beforeEffects);
+        const unexpectedMutations = observedEffects.filter(
+          (effect) => effect.method !== 'delete' || effect.path !== '/messages',
+        ).length;
+        const deletes = observedEffects.filter(
+          (effect) => effect.method === 'delete' && effect.path === '/messages',
+        );
         const finalPendingReceipts = await countFixtureBatches(receiptIds, (ids) =>
           harness.prisma.webhookEvent.count({
             where: { id: { in: ids }, status: { notIn: ['PROCESSED', 'DUPLICATE'] } },
@@ -336,6 +354,10 @@ async function main() {
         const wrongExecutorEffects = deletes.filter(
           (effect) => !effect.messageId || expectedExecutors.get(effect.messageId) !== effect.botId,
         ).length;
+        const unexpectedDeletions = deletes.filter(
+          (effect) => !effect.messageId || !expectedDeleteIds.has(effect.messageId),
+        ).length;
+        const expectedDeletes = expectedDeleteIds.size;
         const successfulIntents = await harness.prisma.moderationDeleteIntent.count({
           where: { messageId: { in: messageIds }, status: ModerationDeleteIntentStatus.SUCCEEDED },
         });
@@ -374,18 +396,20 @@ async function main() {
           finalPendingReceipts ||
           finalPendingActions ||
           wrongExecutorEffects ||
-          successfulIntents !== messageCount ||
-          violationClaims.length !== messageCount ||
-          violationClaimIds.size !== messageCount ||
-          messageIds.some((id) => !violationClaimIds.has(id)) ||
+          unexpectedDeletions ||
+          unexpectedMutations ||
+          successfulIntents !== expectedDeletes ||
+          violationClaims.length !== expectedDeletes ||
+          violationClaimIds.size !== expectedDeletes ||
+          [...expectedDeleteIds].some((id) => !violationClaimIds.has(id)) ||
           owned !== messageCount ||
-          violations !== messageCount ||
-          intents !== messageCount ||
-          deletes.length !== messageCount ||
-          new Set(deletes.map((effect) => effect.messageId)).size !== messageCount
+          violations !== expectedDeletes ||
+          intents !== expectedDeletes ||
+          deletes.length !== expectedDeletes ||
+          new Set(deletes.map((effect) => effect.messageId)).size !== expectedDeletes
         ) {
           throw new Error(
-            `Logical authority/effect mismatch: messages=${messageCount}, claims=${owned}, violations=${violations}, violationClaims=${violationClaims.length}, uniqueViolationClaims=${violationClaimIds.size}, intents=${intents}, successfulIntents=${successfulIntents}, deletes=${deletes.length}, wrongExecutorEffects=${wrongExecutorEffects}, pendingReceipts=${finalPendingReceipts}, pendingActions=${finalPendingActions}`,
+            `Logical authority/effect mismatch: messages=${messageCount}, expectedDeletes=${expectedDeletes}, unexpectedDeletions=${unexpectedDeletions}, unexpectedMutations=${unexpectedMutations}, claims=${owned}, violations=${violations}, violationClaims=${violationClaims.length}, uniqueViolationClaims=${violationClaimIds.size}, intents=${intents}, successfulIntents=${successfulIntents}, deletes=${deletes.length}, wrongExecutorEffects=${wrongExecutorEffects}, pendingReceipts=${finalPendingReceipts}, pendingActions=${finalPendingActions}`,
           );
         }
         ingressLatencyMs.sort((a, b) => a - b);
@@ -398,6 +422,14 @@ async function main() {
         const report = {
           status: latencyAcceptance.status === 'failed' ? 'failed' : 'passed',
           correctnessStatus: 'passed',
+          syntheticWorkload: {
+            violationPercent,
+            expectedDeletes,
+            expectedKept: messageCount - expectedDeletes,
+            measuredProductionMix: false,
+          },
+          unexpectedDeletions,
+          unexpectedMutations,
           latencyAcceptance,
           catalog,
           bots,
@@ -521,8 +553,14 @@ async function saveReports() {
       topology === 'split'
         ? { criticalRps: 12, interactiveRps: 10, backgroundRps: '4; action/background roles 3' }
         : { criticalRps: 13, interactiveRps: 10, backgroundRps: 7 },
-    workload:
-      'all messages violate the length rule; every logical message requires one confirmed delete; not a measured production function mix',
+    workload: {
+      kind: 'synthetic_length_rule',
+      violationPercent,
+      distribution: 'evenly spaced per expected executor; other messages must remain intact',
+      measuredProductionMix: false,
+      limitations:
+        'all bots mirror every message; native media and other product decisions excluded',
+    },
     scope:
       'finite synthetic local profiles, not a production capacity certificate or 24-hour sustained-load acceptance',
     reports,

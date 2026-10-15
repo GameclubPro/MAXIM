@@ -583,6 +583,7 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-media-analysis
       APP_ROLE: moderation
+      BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED: 'true'
       PRISMA_PG_POOL_MAX: 2
       PRISMA_PG_POOL_IDLE_TIMEOUT_MS: 10000
       PRISMA_PG_POOL_CONNECTION_TIMEOUT_MS: 5000

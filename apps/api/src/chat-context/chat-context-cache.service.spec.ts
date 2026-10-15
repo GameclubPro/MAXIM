@@ -1,5 +1,17 @@
 jest.mock('ioredis', () => {
   const store = new Map<string, string>();
+  const seed = store.set.bind(store);
+  // Fixture writes represent complete cache publications, including their revision proof.
+  store.set = (key: string, value: string) => {
+    if (key.startsWith('chat:context:v4:')) {
+      const chatId = key.slice('chat:context:v4:'.length);
+      seed(
+        `chat:context:v4-revision:${chatId}`,
+        store.get(`chat:context-revision:v1:${chatId}`) ?? '0',
+      );
+    }
+    return seed(key, value);
+  };
   const sets = new Map<string, Set<string>>();
   const subscribers = new Set<(channel: string, payload: string) => void>();
 
@@ -91,6 +103,8 @@ jest.mock('ioredis', () => {
                 opaqueMutationsAreNoop = false;
               }
             }
+            const contextRevisionCurrent =
+              store.get(keys[15] ?? '') === (store.get(keys[3] ?? '') ?? '0');
             const recentMode = args[43];
             if (
               exactEpochAndState &&
@@ -99,6 +113,11 @@ jest.mock('ioredis', () => {
               !sets.get(keys[10] ?? '')?.has(args[5] ?? '') &&
               !sets.get(keys[11] ?? '')?.has(args[5] ?? '')
             ) {
+              store.delete(keys[14] ?? '');
+              if (!contextRevisionCurrent) {
+                store.delete(keys[2] ?? '');
+                store.delete(keys[15] ?? '');
+              }
               publish(args[6] ?? '', args[7] ?? '');
               return 2;
             }
@@ -114,6 +133,13 @@ jest.mock('ioredis', () => {
             store.set(keys[0] ?? '', args[2] ?? '');
             store.set(keys[1] ?? '', args[3] ?? '');
             store.set(keys[3] ?? '', String(Number(store.get(keys[3] ?? '') ?? '0') + 1));
+            if (contextRevisionCurrent && store.has(keys[2] ?? '')) {
+              store.set(keys[15] ?? '', store.get(keys[3] ?? '')!);
+            } else {
+              store.delete(keys[2] ?? '');
+              store.delete(keys[15] ?? '');
+            }
+            store.delete(keys[14] ?? '');
             const recentEntityType = args[45];
             if (recentMode === 'grant') {
               const setKey = recentEntityType === 'chat' ? keys[10] : keys[11];
@@ -188,27 +214,34 @@ jest.mock('ioredis', () => {
             if ((store.get(keys[0] ?? '') ?? '0') !== args[0]) {
               return 0;
             }
+            if (keys.slice(4).some((key) => !store.has(key))) return 0;
             store.set(keys[1] ?? '', args[1] ?? '');
+            store.set(keys[3] ?? '', args[0] ?? '');
+            store.delete(keys[2] ?? '');
             return 1;
           }
           if (script.includes('revision ~= ARGV[2]')) {
             if (
               store.get(keys[0] ?? '') !== args[0] ||
-              (store.get(keys[1] ?? '') ?? '0') !== args[1]
+              (store.get(keys[1] ?? '') ?? '0') !== args[1] ||
+              store.get(keys[3] ?? '') !== args[1]
             ) {
               return 0;
             }
             store.set(keys[0] ?? '', args[2] ?? '');
             store.set(keys[1] ?? '', String(Number(store.get(keys[1] ?? '') ?? '0') + 1));
+            store.set(keys[3] ?? '', store.get(keys[1] ?? '')!);
+            store.delete(keys[2] ?? '');
             publish(args[3] ?? '', args[4] ?? '');
             return 1;
           }
           if (
             script.includes("redis.call('INCR', KEYS[1])") &&
-            script.includes("redis.call('DEL', KEYS[2])")
+            script.includes("redis.call('DEL', KEYS[2], KEYS[3])")
           ) {
             store.set(keys[0] ?? '', String(Number(store.get(keys[0] ?? '') ?? '0') + 1));
             store.delete(keys[1] ?? '');
+            store.delete(keys[2] ?? '');
             publish(args[0] ?? '', args[1] ?? '');
             return 1;
           }
@@ -668,8 +701,9 @@ describe('ChatContextCacheService', () => {
     maxBotLinkService.getContextOrDefaultBotId.mockReturnValue('777000_bot');
   });
 
-  it('uses a cache payload version that includes profanity sensitivity', () => {
-    expect(ChatContextCacheService.cacheKey('chat-1')).toBe('chat:context:v3:chat-1');
+  it('isolates media references from legacy full-context cache readers', () => {
+    expect(ChatContextCacheService.cacheKey('chat-1')).toBe('chat:context:v4:chat-1');
+    expect(ChatContextCacheService.legacyCacheKey('chat-1')).toBe('chat:context:v3:chat-1');
   });
 
   it('disables Redis ready check on the pub/sub subscriber connection', () => {
@@ -885,7 +919,7 @@ describe('ChatContextCacheService', () => {
       rulesPublishedUrl: null,
       rulesPublishedMessageId: null,
     });
-    expect(redisInstance.get).toHaveBeenCalledTimes(2);
+    expect(redisInstance.get).toHaveBeenCalledTimes(1);
     expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
   });
@@ -904,9 +938,9 @@ describe('ChatContextCacheService', () => {
       maxBotLinkService as never,
     );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
-      get: jest.Mock;
+      mget: jest.Mock;
     };
-    redisInstance.get.mockResolvedValue(
+    redisInstance.mget.mockResolvedValue([
       JSON.stringify({
         chatId,
         title: 'Chat title',
@@ -916,7 +950,9 @@ describe('ChatContextCacheService', () => {
         rulesPublishedUrl: null,
         rulesPublishedMessageId: null,
       }),
-    );
+      '0',
+      null,
+    ]);
 
     await expect(service.getChatContext(chatId, 'Chat title')).resolves.toEqual({
       chatId,
@@ -937,7 +973,7 @@ describe('ChatContextCacheService', () => {
       rulesPublishedMessageId: null,
     });
 
-    expect(redisInstance.get).toHaveBeenCalledTimes(1);
+    expect(redisInstance.mget).toHaveBeenCalledTimes(1);
   });
 
   it('invalidates only the local chat context without issuing a Redis mutation', async () => {
@@ -949,10 +985,10 @@ describe('ChatContextCacheService', () => {
       maxBotLinkService as never,
     );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
-      get: jest.Mock;
+      mget: jest.Mock;
       eval: jest.Mock;
     };
-    redisInstance.get.mockResolvedValue(
+    redisInstance.mget.mockResolvedValue([
       JSON.stringify({
         chatId,
         title: 'Local invalidation',
@@ -962,14 +998,16 @@ describe('ChatContextCacheService', () => {
         rulesPublishedUrl: null,
         rulesPublishedMessageId: null,
       }),
-    );
+      '0',
+      null,
+    ]);
 
     await service.getChatContext(chatId, 'Local invalidation');
     await service.getChatContext(chatId, 'Local invalidation');
     service.invalidateLocal(chatId);
     await service.getChatContext(chatId, 'Local invalidation');
 
-    expect(redisInstance.get).toHaveBeenCalledTimes(2);
+    expect(redisInstance.mget).toHaveBeenCalledTimes(2);
     expect(redisInstance.eval).not.toHaveBeenCalled();
   });
 
@@ -1009,7 +1047,7 @@ describe('ChatContextCacheService', () => {
     expect(first.settings.nightModeTimezone).toBe('Europe/Moscow');
     expect(await service.getChatContext(chatId)).toBe(first);
     expect(await service.getChatContext(chatId)).toBe(first);
-    expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(1);
+    expect(getRedisMutationMock(service).mget).toHaveBeenCalledTimes(1);
     expect(service.getLocalCacheSnapshot()).toMatchObject({
       maxBytes: 128 * 1024 * 1024,
       maxEntryBytes: 128 * 1024 * 1024,
@@ -1067,7 +1105,7 @@ describe('ChatContextCacheService', () => {
     expect(first.settings.nightModeTimezone).toBe('Europe/Moscow');
     expect(await service.getChatContext(chatId)).toBe(first);
     expect(await service.getChatContext(chatId)).toBe(first);
-    expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(1);
+    expect(getRedisMutationMock(service).mget).toHaveBeenCalledTimes(1);
     const snapshot = service.getLocalCacheSnapshot();
     expect(snapshot).toMatchObject({
       maxBytes: 128 * 1024 * 1024,
@@ -1119,7 +1157,7 @@ describe('ChatContextCacheService', () => {
         },
       },
     });
-    expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(3);
+    expect(getRedisMutationMock(service).mget).toHaveBeenCalledTimes(3);
     expect(service.getLocalCacheSnapshot()).toMatchObject({ entries: 1, capacityEvictions: 2 });
   });
 
@@ -1154,7 +1192,7 @@ describe('ChatContextCacheService', () => {
     } finally {
       stringify.mockRestore();
     }
-    expect(getRedisMutationMock(service).get).toHaveBeenCalledTimes(2);
+    expect(getRedisMutationMock(service).mget).toHaveBeenCalledTimes(2);
     expect(service.getLocalCacheSnapshot()).toMatchObject({ entries: 0, estimatedBytes: 0 });
     expect(service.getLocalCacheSnapshot().oversizedSkips).toBeGreaterThan(0);
   });
@@ -1289,7 +1327,7 @@ describe('ChatContextCacheService', () => {
       maxBotLinkService as never,
     );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
-      get: jest.Mock;
+      mget: jest.Mock;
       eval: jest.Mock;
       del: jest.Mock;
     };
@@ -1341,9 +1379,11 @@ describe('ChatContextCacheService', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(redisInstance.eval).toHaveBeenCalledWith(
       expect.stringContaining('revision ~= ARGV[2]'),
-      2,
+      4,
       ChatContextCacheService.cacheKey(chatId),
       ChatContextCacheService.chatContextRevisionKey(chatId),
+      ChatContextCacheService.legacyCacheKey(chatId),
+      ChatContextCacheService.cachedContextRevisionKey(chatId),
       expect.stringContaining('"title":"Chat 1"'),
       '0',
       expect.stringContaining('"title":"Fresh title"'),
@@ -1354,7 +1394,7 @@ describe('ChatContextCacheService', () => {
       expect.stringContaining('"title":"Fresh title"'),
     );
     expect(redisInstance.del).not.toHaveBeenCalled();
-    expect(redisInstance.get).toHaveBeenCalledTimes(2);
+    expect(redisInstance.mget).toHaveBeenCalledTimes(3);
   });
 
   it('stores admin access decisions in redis with ttl', async () => {
@@ -1488,9 +1528,11 @@ describe('ChatContextCacheService', () => {
     expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     expect(redisInstance.eval).toHaveBeenCalledWith(
       expect.stringContaining('revision ~= ARGV[2]'),
-      2,
+      4,
       ChatContextCacheService.cacheKey(chatId),
       ChatContextCacheService.chatContextRevisionKey(chatId),
+      ChatContextCacheService.legacyCacheKey(chatId),
+      ChatContextCacheService.cachedContextRevisionKey(chatId),
       expect.stringContaining('"user-1"'),
       expect.any(String),
       expect.stringContaining('"user-2"'),
@@ -2887,10 +2929,10 @@ describe('ChatContextCacheService', () => {
       rulesPublishedUrl: null,
       rulesPublishedMessageId: null,
     };
-    const reply = deferred<string>();
+    const reply = deferred<Array<string | null>>();
     const started = deferred<void>();
     const redis = getRedisMutationMock(service);
-    redis.get.mockImplementationOnce(() => {
+    redis.mget.mockImplementationOnce(() => {
       started.resolve();
       return reply.promise;
     });
@@ -2900,7 +2942,7 @@ describe('ChatContextCacheService', () => {
     const store = (Redis as unknown as { __store: Map<string, string> }).__store;
     store.set(ChatContextCacheService.cacheKey(chatId), JSON.stringify(context));
     await service.getChatContext(chatId);
-    reply.resolve(JSON.stringify({ ...context, adminUserIds: ['user-1'] }));
+    reply.resolve([JSON.stringify({ ...context, adminUserIds: ['user-1'] }), '0', null]);
 
     const cachedContext = JSON.parse(JSON.stringify(context));
     await expect(pending).resolves.toEqual(cachedContext);

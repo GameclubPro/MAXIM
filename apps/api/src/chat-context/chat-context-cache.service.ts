@@ -16,6 +16,7 @@ import {
   ChatContextLocalCache,
   type ChatContextLocalCacheSnapshot,
 } from './chat-context-local-cache';
+import { ChatContextMediaCache, CHAT_CONTEXT_MEDIA_TTL_SEC } from './chat-context-media-cache';
 
 export type ChatAdminAccessState = 'granted' | 'user_denied' | 'bot_denied';
 
@@ -27,9 +28,10 @@ export async function invalidateSharedChatContext(
   if (!normalizedChatId) return;
   await redis.eval(
     INVALIDATE_CHAT_CONTEXT_SCRIPT,
-    2,
+    3,
     ChatContextCacheService.chatContextRevisionKey(normalizedChatId),
     ChatContextCacheService.cacheKey(normalizedChatId),
+    ChatContextCacheService.legacyCacheKey(normalizedChatId),
     CHAT_CONTEXT_INVALIDATION_CHANNEL,
     JSON.stringify({ chatId: normalizedChatId }),
   );
@@ -248,12 +250,17 @@ for index, key in ipairs(opaque_keys) do
   end
 end
 
+-- FLAG: Rollback writers know only v3 but still advance the shared revision.
+local context_revision_current = redis.call('GET', KEYS[16]) ==
+  (redis.call('GET', KEYS[4]) or '0')
 local recent_mode = ARGV[44]
 if exact_epoch_and_state and
    opaque_mutations_are_noop and
    recent_mode == 'deny' and
    redis.call('SISMEMBER', KEYS[11], ARGV[6]) == 0 and
    redis.call('SISMEMBER', KEYS[12], ARGV[6]) == 0 then
+  redis.call('DEL', KEYS[15])
+  if not context_revision_current then redis.call('DEL', KEYS[3], KEYS[16]) end
   redis.call('PUBLISH', ARGV[7], ARGV[8])
   return 2
 end
@@ -275,7 +282,13 @@ end
 
 redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[47])
 redis.call('SET', KEYS[2], ARGV[4], 'EX', ARGV[5])
-redis.call('INCR', KEYS[4])
+local next_context_revision = redis.call('INCR', KEYS[4])
+if context_revision_current and redis.call('EXISTS', KEYS[3]) == 1 then
+  redis.call('SET', KEYS[16], tostring(next_context_revision), 'EX', ARGV[49])
+else
+  redis.call('DEL', KEYS[3], KEYS[16])
+end
+redis.call('DEL', KEYS[15])
 
 local recent_entity_type = ARGV[46]
 if recent_mode == 'grant' then
@@ -302,25 +315,38 @@ local revision = redis.call('GET', KEYS[1]) or '0'
 if revision ~= ARGV[1] then
   return 0
 end
+-- FLAG: A context cannot publish a dangling media reference. The original revision CAS
+-- still owns authority; blobs carry only the immutable bytes of that settings snapshot.
+for index = 5, #KEYS do
+  if redis.call('EXISTS', KEYS[index]) == 0 then return 0 end
+end
+for index = 5, #KEYS do
+  redis.call('EXPIRE', KEYS[index], ARGV[4])
+end
 redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+redis.call('SET', KEYS[4], revision, 'EX', ARGV[3])
+redis.call('DEL', KEYS[3])
 return 1
 `;
 
 const PATCH_CHAT_CONTEXT_CAS_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 local revision = redis.call('GET', KEYS[2]) or '0'
-if current == false or current ~= ARGV[1] or revision ~= ARGV[2] then
+if current == false or current ~= ARGV[1] or revision ~= ARGV[2] or
+   redis.call('GET', KEYS[4]) ~= revision then
   return 0
 end
 redis.call('SET', KEYS[1], ARGV[3], 'KEEPTTL')
-redis.call('INCR', KEYS[2])
+local next_revision = redis.call('INCR', KEYS[2])
+redis.call('SET', KEYS[4], tostring(next_revision), 'KEEPTTL')
+redis.call('DEL', KEYS[3])
 redis.call('PUBLISH', ARGV[4], ARGV[5])
 return 1
 `;
 
 const INVALIDATE_CHAT_CONTEXT_SCRIPT = `
 redis.call('INCR', KEYS[1])
-redis.call('DEL', KEYS[2])
+redis.call('DEL', KEYS[2], KEYS[3])
 redis.call('PUBLISH', ARGV[1], ARGV[2])
 return 1
 `;
@@ -354,6 +380,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private readonly managedEntityHeaderTtlSec: number;
   private readonly managedEntityBotProfileTtlSec: number;
   private readonly localChatContextCache: ChatContextLocalCache;
+  private readonly mediaCache: ChatContextMediaCache;
   private localChatContextSweepTimer: NodeJS.Timeout | null = null;
   private readonly chatContextInFlightLoads = new Map<string, Promise<ChatContext>>();
   private readonly chatContextReadGenerations = new Map<string, ChatContextReadGeneration>();
@@ -365,6 +392,9 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly storageRuntimeMetrics?: StorageRuntimeMetricsService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.mediaCache = new ChatContextMediaCache(this.redis, (key) =>
+      this.readRedisStringWithin(key, ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS),
+    );
     this.subscriber = this.redis.duplicate({ enableReadyCheck: false });
     const localChatContextTtlMs = this.readPositiveInt(
       (configService as { get?: (key: string) => unknown }).get?.(
@@ -435,11 +465,20 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       this.localChatContextSweepTimer = null;
     }
     this.localChatContextCache.clear();
+    this.mediaCache.clear();
     await this.subscriber.quit();
     await this.redis.quit();
   }
 
   static cacheKey(chatId: string): string {
+    return `chat:context:v4:${chatId}`;
+  }
+
+  static cachedContextRevisionKey(chatId: string): string {
+    return `chat:context:v4-revision:${chatId}`;
+  }
+
+  static legacyCacheKey(chatId: string): string {
     return `chat:context:v3:${chatId}`;
   }
 
@@ -833,7 +872,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         result = Number(
           await this.redis.eval(
             APPLY_ADMIN_ACCESS_EPOCH_MUTATION_SCRIPT,
-            14,
+            16,
             epochKey,
             ChatContextCacheService.adminAccessKey(chatId, userId),
             contextKey,
@@ -848,6 +887,8 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
             ChatContextCacheService.managedEntitiesRecentBootstrapChatUsersKey(chatId, 'channel'),
             ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(chatId, 'chat'),
             ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(chatId, 'channel'),
+            ChatContextCacheService.legacyCacheKey(chatId),
+            ChatContextCacheService.cachedContextRevisionKey(chatId),
             String(eventAtMs),
             String(priority),
             `${eventAtMs}:${priority}`,
@@ -862,6 +903,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
             recentEntityType,
             String(ChatContextCacheService.ACCESS_EPOCH_TTL_SEC),
             options.acceptNewerGrantedEpoch === true ? '1' : '0',
+            String(ChatContextCacheService.CHAT_CONTEXT_TTL_SEC),
           ),
         );
       } catch (error: unknown) {
@@ -2400,12 +2442,12 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       if (!this.isChatContextReadGenerationCurrent(chatId, generation)) {
         return value;
       }
-      const serialized = JSON.stringify(value);
-      if (!(await this.writeChatContextAtRevision(chatId, serialized, expectedRevision))) {
+      const encoded = await this.mediaCache.encode(value);
+      if (!(await this.writeChatContextAtRevision(chatId, encoded, expectedRevision))) {
         continue;
       }
       if (this.isChatContextReadGenerationCurrent(chatId, generation)) {
-        this.writeLocalChatContext(chatId, value, Buffer.byteLength(serialized));
+        this.writeLocalChatContext(chatId, value, encoded.fullBytesEstimate);
       }
       return value;
     }
@@ -2419,24 +2461,32 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     generation: ChatContextReadGeneration,
   ): Promise<ChatContext> {
     const key = ChatContextCacheService.cacheKey(chatId);
-    const cached = await this.readRedisStringWithin(
-      key,
+    // FLAG: Atomically bind the cached body to the shared revision, including mutations made
+    // by an older rollback image. A missing version proof must reload the complete SQL source.
+    const snapshot = await this.readRedisStringsWithin(
+      [
+        key,
+        ChatContextCacheService.cachedContextRevisionKey(chatId),
+        ChatContextCacheService.chatContextRevisionKey(chatId),
+      ],
       ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
     );
+    const cached =
+      snapshot && snapshot[1] !== null && snapshot[1] === (snapshot[2] ?? '0') ? snapshot[0] : null;
     if (cached && this.isChatContextReadGenerationCurrent(chatId, generation)) {
       try {
-        const parsed = JSON.parse(cached) as ChatContext;
+        const decoded = await this.mediaCache.decode(cached);
         return this.reconcileCachedChatTitle(
           chatId,
-          parsed,
+          decoded.value,
           normalizedTitle,
           generation,
-          Buffer.byteLength(cached),
+          decoded.fullBytesEstimate,
         );
       } catch (error: unknown) {
         this.logger.warn(
           { chatId, err: error instanceof Error ? error.message : String(error) },
-          'Failed to parse chat context cache',
+          'Failed to read complete chat context cache',
         );
       }
     }
@@ -2870,17 +2920,21 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
   private async writeChatContextAtRevision(
     chatId: string,
-    serialized: string,
+    encoded: Awaited<ReturnType<ChatContextMediaCache['encode']>>,
     expectedRevision: string,
   ): Promise<boolean> {
     const committed = await this.redis.eval(
       WRITE_CHAT_CONTEXT_AT_REVISION_SCRIPT,
-      2,
+      4 + encoded.blobKeys.length,
       ChatContextCacheService.chatContextRevisionKey(chatId),
       ChatContextCacheService.cacheKey(chatId),
+      ChatContextCacheService.legacyCacheKey(chatId),
+      ChatContextCacheService.cachedContextRevisionKey(chatId),
+      ...encoded.blobKeys,
       expectedRevision,
-      serialized,
+      encoded.serialized,
       String(ChatContextCacheService.CHAT_CONTEXT_TTL_SEC),
+      String(CHAT_CONTEXT_MEDIA_TTL_SEC),
     );
     return Number(committed) === 1;
   }
@@ -2895,11 +2949,12 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       attempt < ChatContextCacheService.ACCESS_EPOCH_CAS_MAX_ATTEMPTS;
       attempt += 1
     ) {
-      const [raw, revisionRaw] = await this.redis.mget(
+      const [raw, revisionRaw, cachedRevision] = await this.redis.mget(
         cacheKey,
         ChatContextCacheService.chatContextRevisionKey(chatId),
+        ChatContextCacheService.cachedContextRevisionKey(chatId),
       );
-      if (!raw) {
+      if (!raw || cachedRevision !== (revisionRaw ?? '0')) {
         return;
       }
       const expectedRevision = revisionRaw ?? '0';
@@ -2915,9 +2970,11 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       }
       const committed = await this.redis.eval(
         PATCH_CHAT_CONTEXT_CAS_SCRIPT,
-        2,
+        4,
         cacheKey,
         ChatContextCacheService.chatContextRevisionKey(chatId),
+        ChatContextCacheService.legacyCacheKey(chatId),
+        ChatContextCacheService.cachedContextRevisionKey(chatId),
         raw,
         expectedRevision,
         JSON.stringify(next),

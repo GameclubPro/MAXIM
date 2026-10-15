@@ -134,3 +134,34 @@ effects, missed deadlines, unexpected failed/ambiguous work, OOM events or susta
 latency regression. Reduced connections or copies are structural improvements;
 particular GiB or tariff savings require measurements. Historical storage changes
 remain gated by backup/restore capacity, not silently performed during this rollout.
+
+## Large configured media in chat context
+
+The v4 context cache keeps settings images of 64 KiB through 16 MiB in immutable
+`chat:context:media:v1:<sha256>` blobs with a 60-second TTL, renewed atomically with publication. The context body retains
+its 60-second TTL and contains bounded digest/byte references. Smaller and exceptional
+larger legacy values remain inline. SQL and the complete public `ChatContext` shape
+are unchanged; no message text or image bytes enter diagnostics.
+
+The revision-CAS write verifies every referenced blob exists before publishing the
+body and renews its TTL. Readers validate digest/size and reconstruct fresh media
+objects. Missing, corrupt or malformed references trigger a complete SQL reload;
+there is no text-only fallback. Each blob GET has the existing 150 ms read budget;
+a timed-out cache read uses the same complete SQL fallback. A separate 16 MiB estimated/32-entry/60-second local
+string cache reduces repeated transfers without increasing the existing decoded
+context cache budget. This budget is not a total process RSS guarantee.
+
+A v4 body has a separate expiring saved-revision key. An atomic MGET checks it against
+the same distributed revision used by old v3 writers. Access changes discard stale
+bodies, while patches require both the body and its revision proof. New mutations
+also invalidate v3. Thus rollback reads SQL when needed, and re-upgrade cannot reuse
+a v4 body made stale by an older writer. Never write the compact envelope into v3 or
+clear Redis for deployment. Deploy all shared API roles with the normal strict smokes.
+
+Validate full-media retention, missing/corrupt blobs, expiry between encode and CAS,
+access revocation during hydration, and old-writer invalidation before reads/access
+mutations/patches using disposable Redis. Also run managed-access and webhook
+membership full-path regressions. Compare bounded context byte sizes, Redis Lua
+latency, timeouts, process memory and complete readiness/queue windows after rollout.
+A smaller body alone does not prove fleet latency recovery; include a representative
+RDB cycle and retain unknown-effect/quarantine evidence.

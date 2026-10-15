@@ -41,3 +41,19 @@ Combine this evidence with the ingress peak collector, closed latency cohorts an
 function/action outcomes. Features enabled in each chat, benign/violating fractions, native media
 costs and remote outcomes require their own evidence. Keep synthetic assumptions explicit when
 those measurements are unavailable; do not call an assumed mix a verified production workload.
+
+The local catalog fixture accepts `--violations=0..100` (integer, default 100). The default
+retains the all-delete overload case. Lower values distribute length-rule violations within each
+expected executor's own stream of benign short messages, retaining the same ingress, semantic ownership, all-bot mirrors,
+quota limits and role topology. Per-executor rounding can make the realized fraction slightly lower
+than requested; the report retains exact expected counts. This avoids a global every-Nth pattern
+loading only a subset of round-robin bots. The report requires exactly the chosen deletions, zero effects
+on benign messages, no unrelated mutations, and complete receipt/action settlement; latency
+acceptance still includes every logical message. A zero-delete case is not executor-effect proof.
+
+Compare a finite range of explicit assumptions before selecting a load model. For example, use
+`--violations=0`, `--violations=25`, and `--violations=100` with otherwise identical arguments.
+These are synthetic sensitivity cases: traffic shape counts do not establish the violating
+fraction, and media transport fixtures do not exercise native OCR/IMAGE capacity. Preserve the
+all-delete failure and report each case separately; a lighter workload passing does not make
+that overload case green or certify production capacity.

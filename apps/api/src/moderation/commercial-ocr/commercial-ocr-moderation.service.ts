@@ -1530,9 +1530,10 @@ export class CommercialOcrModerationService {
       const decision = await this.governor.decide({
         component: GOVERNOR_COMPONENT,
         sourceTag: GOVERNOR_SOURCE_TAG,
-        // FLAG: Local image work may resume during recovery only after the governor
-        // rechecks queue/host pressure. Active degradation and manual pauses still win.
+        // FLAG: An unrelated webhook backlog may admit one cache-miss pass per slow slot.
+        // The governor still checks host pressure; manual and MAX/mixed pauses retain authority.
         allowRecoveryWindowRun: true,
+        allowQueueBacklogSlowPath: true,
         ignoredPressureDomains: ['max_api_traffic'],
       });
       const retryAfterMs =

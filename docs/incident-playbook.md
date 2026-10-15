@@ -147,6 +147,15 @@ full-path suite. Never remove uncertainty/order fences or clear Redis to repair 
    not an inference from an error string. External HTTP 429 still has its separate origin; a local
    cooldown refusal is not another external request. Logs remain coalesced samples, not full counts.
    The diagnostic never grants retry authority or changes configured quotas and deadlines.
+   `Moderation executor readiness is waiting` records only finite reason/purpose labels and
+   candidate-pass counters. It distinguishes missing local state, probe contention/supersession,
+   unknown owner permissions and unavailable eligible candidates. `activationRequiredCount`
+   and `capabilityDeniedCount` describe that sampled candidate pass, not permission to activate a
+   bot. Records coalesce per reason/purpose/process for 30 seconds; `coalescedObservations` counts
+   calls since the previous record, with no chat/bot identifiers or raw error data. These logs are
+   not a complete receipt census and cannot attribute an exact queued head without independent
+   evidence. A recovery may leave suppressed observations without a final record. No reason
+   permits reassignment, deadline renewal, replay or weakening readiness.
 4. Prefer the fixed catalog and health snapshots. Do not run raw `psql`, broad `webhook_events` or
    ledger aggregates during live pressure. A new diagnostic shape is code to review and test, not
    an inline incident command.

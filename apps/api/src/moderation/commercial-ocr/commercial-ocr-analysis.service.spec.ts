@@ -719,6 +719,46 @@ describe('CommercialOcrAnalysisService', () => {
     expect(ocrDenied.cache.write).not.toHaveBeenCalled();
   });
 
+  it('resumes a deferred confirmation from the cached primary pass within the original deadline', async () => {
+    const fixture = harness();
+    const saved = new Map<string, CommercialOcrCacheValue>();
+    fixture.cache.read.mockImplementation(async (identity) => {
+      const value = saved.get(JSON.stringify(identity));
+      return value ? { kind: 'hit', value } : { kind: 'miss' };
+    });
+    (fixture.cache.write as jest.Mock).mockImplementation(async (identity, value) => {
+      saved.set(JSON.stringify(identity), value);
+      return true;
+    });
+    let slots = 1;
+    const authorizeStage = jest.fn(async (stage: string) =>
+      stage !== 'ocr' || slots-- > 0
+        ? { allowed: true, retryAfterMs: 0 }
+        : { allowed: false, retryAfterMs: 20_000 },
+    );
+    const deadlineAtMs = Date.now() + 60_000;
+    await expect(analyze(fixture.service, { authorizeStage, deadlineAtMs })).resolves.toEqual({
+      kind: 'defer',
+      reason: 'governor_pressure',
+      delayMs: 20_000,
+    });
+    expect(fixture.ocr.recognize).toHaveBeenCalledTimes(1);
+    expect(saved.size).toBe(1);
+
+    slots = 1;
+    await expect(analyze(fixture.service, { authorizeStage, deadlineAtMs })).resolves.toMatchObject(
+      {
+        kind: 'complete',
+        decision: { action: 'DELETE' },
+      },
+    );
+    expect(fixture.ocr.recognize.mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining({ passLabel: 'primary', deadlineAtMs }),
+      expect.objectContaining({ passLabel: 'confirmation', deadlineAtMs }),
+    ]);
+    expect(saved.size).toBe(2);
+  });
+
   it('checks a fresh pause between preprocessing and native dispatch', async () => {
     const { service, preprocessor, ocr } = harness();
     const authorizeStage = jest.fn(async (stage: string) =>
