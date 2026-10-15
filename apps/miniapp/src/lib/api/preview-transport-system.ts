@@ -1,4 +1,5 @@
 import {
+  managedEntityPresentationRequestSchema,
   managedEntitiesListResponseSchema,
   managedEntityBotExecutionPlanSchema,
   managedEntityFavoriteLabelsResponseSchema,
@@ -1346,6 +1347,23 @@ export const handleSystemPreviewRequest: PreviewRequestHandler = ({
     return url.searchParams.get('includeRefreshState') === '1'
       ? cloneJson(buildPreviewManagedEntitiesResponse(state.channels, state.clock))
       : cloneJson(state.channels);
+  }
+  if (url.pathname === '/managed-entities/presentation' && method === 'POST') {
+    const request = managedEntityPresentationRequestSchema.parse(parseJsonBody(init));
+    return {
+      items: (request.entityType === 'chat' ? state.chats : state.channels)
+        .filter((item) => request.entityIds.includes(item.id))
+        .map((item) => ({
+          id: item.id,
+          entityType: request.entityType,
+          title: item.title,
+          avatarUrl: item.avatarUrl ?? null,
+          avatarState: item.avatarUrl ? 'present' : 'absent',
+          observedAt: new Date().toISOString(),
+          pending: false,
+        })),
+      retryAfterMs: 2000,
+    };
   }
   if (url.pathname === '/managed-entities/favorite-labels' && method === 'GET') {
     return managedEntityFavoriteLabelsResponseSchema.parse({

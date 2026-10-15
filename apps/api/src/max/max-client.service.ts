@@ -1,3 +1,4 @@
+import { readMaxChatAvatar } from './max-chat-avatar';
 import { readMaxRetryAfterMs } from './max-retry-after';
 import {
   markMaxMessageSendAttempted,
@@ -180,6 +181,7 @@ export type MaxBotChat = {
 };
 
 export type MaxChatSnapshot = {
+  avatarState?: 'unknown' | 'present' | 'absent';
   chatId: string;
   title: string | null;
   description?: string | null;
@@ -3276,7 +3278,7 @@ export class MaxClientService implements OnModuleDestroy {
         data.last_event_time ?? data.lastEventTime ?? data.updated_at ?? data.updatedAt,
       ),
       entityType: this.parseChatEntityType(data),
-      avatarUrl: this.parseChatAvatarUrl(data),
+      ...readMaxChatAvatar(data),
     };
 
     if (!options.bypassCache) {
@@ -3341,7 +3343,7 @@ export class MaxClientService implements OnModuleDestroy {
         data.last_event_time ?? data.lastEventTime ?? data.updated_at ?? data.updatedAt,
       ),
       entityType: this.parseChatEntityType(data),
-      avatarUrl: this.parseChatAvatarUrl(data),
+      ...readMaxChatAvatar(data),
     };
 
     if (!options.bypassCache && normalizedChatId) {

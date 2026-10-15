@@ -28,6 +28,8 @@ export function createManagedEntityHeader(params: {
   link?: string | null;
   participantsCount?: number | null;
   avatarUrl?: string | null;
+  avatarState?: ManagedEntityHeader['avatarState'];
+  metadataObservedAt?: string | null;
   primaryBotId?: string | null;
   assignedBots?: ManagedEntityHeader['assignedBots'];
   sharedMode?: ManagedEntityHeader['sharedMode'];
@@ -40,6 +42,9 @@ export function createManagedEntityHeader(params: {
     link: params.link ?? null,
     participantsCount: params.participantsCount ?? null,
     ...(readTrimmedString(params.avatarUrl) ? { avatarUrl: params.avatarUrl } : {}),
+    ...(params.avatarState ? { avatarState: params.avatarState } : {}),
+    ...(params.avatarState === 'absent' ? { avatarUrl: null } : {}),
+    ...(params.metadataObservedAt ? { metadataObservedAt: params.metadataObservedAt } : {}),
     primaryBotId: readTrimmedString(params.primaryBotId) ?? null,
     assignedBots,
     sharedMode: params.sharedMode ?? (assignedBots.length > 1 ? 'shared-standby' : 'owned'),

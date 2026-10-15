@@ -48,7 +48,10 @@ describe('AdminManagedEntitiesRefreshProcessor', () => {
     const discovery = {
       processManagedEntitiesRefreshJob: jest.fn(),
     };
-    const processor = new AdminManagedEntitiesRefreshProcessor(discovery as never);
+    const processor = new AdminManagedEntitiesRefreshProcessor(
+      discovery as never,
+      { process: jest.fn() } as never,
+    );
     const job = createJob({
       createdAt: new Date(now.getTime() - ADMIN_MANAGED_ENTITIES_REFRESH_JOB_TTL_MS).toISOString(),
     });
@@ -63,7 +66,10 @@ describe('AdminManagedEntitiesRefreshProcessor', () => {
     const discovery = {
       processManagedEntitiesRefreshJob: jest.fn(),
     };
-    const processor = new AdminManagedEntitiesRefreshProcessor(discovery as never);
+    const processor = new AdminManagedEntitiesRefreshProcessor(
+      discovery as never,
+      { process: jest.fn() } as never,
+    );
     const job = createJob(
       { createdAt: undefined },
       now.getTime() - ADMIN_MANAGED_ENTITIES_REFRESH_JOB_TTL_MS - 1,
@@ -78,7 +84,10 @@ describe('AdminManagedEntitiesRefreshProcessor', () => {
     const discovery = {
       processManagedEntitiesRefreshJob: jest.fn().mockResolvedValue({ continueAfterMs: 20_000 }),
     };
-    const processor = new AdminManagedEntitiesRefreshProcessor(discovery as never);
+    const processor = new AdminManagedEntitiesRefreshProcessor(
+      discovery as never,
+      { process: jest.fn() } as never,
+    );
     const job = createJob();
     const jitterMs = resolveAdminManagedEntitiesRefreshJitterMs(String(job.id), 'defer');
 

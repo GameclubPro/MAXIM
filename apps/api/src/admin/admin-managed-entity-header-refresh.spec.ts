@@ -75,6 +75,45 @@ describe('managed entity header refresh', () => {
     expect(max.getChatSnapshot).not.toHaveBeenCalled();
   });
 
+  it('publishes explicit photo removal with a new version, but refuses an older observation', async () => {
+    const old = {
+      ...summary(),
+      avatarUrl: snapshot.avatarUrl,
+      avatarState: 'present' as const,
+      metadataObservedAt: '2026-10-15T01:00:00.000Z',
+    };
+    const cache = {
+      setManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(true),
+      setManagedEntitiesPublishedDiff: jest.fn(),
+    };
+    const cleared = await publishManagedEntityHeaderChanges({
+      cache,
+      userId: 'admin',
+      entityType: 'chat',
+      snapshot: published([old]),
+      visibleItems: [
+        {
+          ...old,
+          avatarUrl: null,
+          avatarState: 'absent',
+          metadataObservedAt: '2026-10-15T02:00:00.000Z',
+        },
+      ],
+      writeDiff: false,
+    });
+    expect(cleared?.items[0].avatarUrl).toBeNull();
+    expect(cleared?.version).not.toBe('before');
+    const stale = await publishManagedEntityHeaderChanges({
+      cache,
+      userId: 'admin',
+      entityType: 'chat',
+      snapshot: cleared!,
+      visibleItems: [old],
+      writeDiff: false,
+    });
+    expect(stale).toBe(cleared);
+  });
+
   it('does not let eight chats without an icon starve the ninth chat', async () => {
     const admitted = new Set<string>();
     const cache = {

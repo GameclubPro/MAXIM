@@ -23,6 +23,7 @@ export type AdminManagedEntitiesRefreshJob = QueueJobEnvelope<
     entityType: 'chat' | 'channel' | 'all';
     bypassRemoteCache: boolean;
     resetRefreshCursor: boolean;
+    presentationEntityId?: string;
   },
   {
     retryPolicyName?: Extract<QueueRetryPolicyName, 'managed-entities-refresh'>;

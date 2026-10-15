@@ -35,6 +35,8 @@ import { MessageDuplicateStateModule } from '../moderation/message-duplicate/mes
 import { getAppRole, roleRunsAction, roleRunsPublisher } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { AdminManagedEntitiesRefreshProcessor } from './admin-managed-entities-refresh.processor';
+import { ManagedEntityPresentationController } from './managed-entity-presentation.controller';
+import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
 import { ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE } from './admin-managed-entities-refresh.queue';
 import { AdminManualFanoutProcessor } from './admin-manual-fanout.processor';
 import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
@@ -179,6 +181,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     MarketplaceIntegrationController,
     MarketplaceProfileController,
     AdminManagedEntitiesController,
+    ManagedEntityPresentationController,
     AdminSettingsController,
     AdminStopWordsController,
     PublisherVkParsingController,
@@ -244,6 +247,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     },
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
+    ManagedEntityPresentationService,
     ManagedEntityAccessRefreshService,
     PublisherSelectedAccessService,
     ManagedEntitiesDiscoveryService,

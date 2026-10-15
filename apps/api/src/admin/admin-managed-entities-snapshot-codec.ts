@@ -42,6 +42,8 @@ export function serializeManagedEntitySummaryForSnapshot(
     entityType: item.entityType,
     link: item.link ?? null,
     avatarUrl: readTrimmedString(item.avatarUrl) ?? null,
+    ...(item.avatarState ? { avatarState: item.avatarState } : {}),
+    ...(item.metadataObservedAt ? { metadataObservedAt: item.metadataObservedAt } : {}),
     channelOverview: item.channelOverview
       ? {
           enabledScenariosCount: item.channelOverview.enabledScenariosCount,

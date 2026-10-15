@@ -1582,6 +1582,32 @@ describe('ChatContextCacheService', () => {
     await expect(pendingHeader).resolves.toBeNull();
   });
 
+  it('bounds a stalled header batch once for the entire list and rejects foreign cached identities', async () => {
+    jest.useFakeTimers();
+    const config = { getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379') };
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redis = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as { mget: jest.Mock };
+    const entities = Array.from({ length: 1000 }, (_, index) => ({
+      id: `header-${index}`,
+      entityType: 'chat' as const,
+    }));
+    redis.mget.mockImplementationOnce(() => new Promise(() => undefined));
+    const pending = service.getManagedEntityHeaders(entities);
+    await jest.advanceTimersByTimeAsync(150);
+    expect(await pending).toEqual(Array(1000).fill(null));
+    expect(redis.mget).toHaveBeenCalledTimes(1);
+    redis.mget.mockResolvedValueOnce([
+      JSON.stringify({ id: 'foreign', entityType: 'chat' }),
+      JSON.stringify({ id: 'header-1', entityType: 'channel' }),
+      '{broken',
+    ]);
+    expect(await service.getManagedEntityHeaders(entities.slice(0, 3))).toEqual([null, null, null]);
+  });
+
   it('stores and reads managed entity bot avatar snapshots', async () => {
     const config = {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),

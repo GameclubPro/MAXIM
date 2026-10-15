@@ -1,3 +1,4 @@
+import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
 import { assertPublisherSuggestionDeliveryReady } from './publisher-suggestion-setup-block';
 import {
   advanceChatMutationOrder,
@@ -10,10 +11,7 @@ import * as channelDialogValues from './admin-channel-dialog-values';
 import { assertManualGroupCommandSuccessNoticeAuthority } from './admin-manual-group-command-notice-authority';
 import { mergeManagedBotChatCatalogRows } from './admin-managed-bot-catalog-values';
 import { createManagedEntityHeader } from './admin-managed-entity-header';
-import {
-  hydrateManagedEntityHeaders,
-  publishManagedEntityHeaderChanges,
-} from './admin-managed-entity-header-refresh';
+import { publishManagedEntityHeaderChanges } from './admin-managed-entity-header-refresh';
 import {
   resolveManualMuteResultFromLedger,
   isAmbiguousAttemptedMaxMemberMutation,
@@ -1315,6 +1313,7 @@ export class AdminService implements OnModuleDestroy {
     @Optional() readonly suggestionSubscriptions?: SuggestionSubscriptionService,
     @Optional()
     private readonly publisherCommentNotifications?: PublisherCommentNotificationService,
+    @Optional() private readonly entityPresentation?: ManagedEntityPresentationService,
   ) {
     this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(
       this.maxBotRegistry,
@@ -22190,17 +22189,12 @@ export class AdminService implements OnModuleDestroy {
 
     const headersByChatId = new Map<string, ManagedEntityHeader>();
 
-    await Promise.all(
-      chats.map(async (chat) => {
-        const cachedHeader = await this.chatContextCache.getManagedEntityHeader?.(
-          chat.id,
-          chat.entityType,
+    const headers = this.chatContextCache.getManagedEntityHeaders
+      ? await this.chatContextCache.getManagedEntityHeaders(chats)
+      : await mapWithConcurrencyLimit(chats, 8, (chat) =>
+          this.chatContextCache.getManagedEntityHeader?.(chat.id, chat.entityType),
         );
-        if (cachedHeader) {
-          headersByChatId.set(chat.id, cachedHeader);
-        }
-      }),
-    );
+    for (const header of headers) if (header) headersByChatId.set(header.id, header);
 
     if (headersByChatId.size === 0) {
       return chats;
@@ -22219,13 +22213,20 @@ export class AdminService implements OnModuleDestroy {
           chat.title,
         ) ?? chat.title;
       const link = this.readTrimmedString(header.link) ?? chat.link ?? null;
+      if (
+        chat.metadataObservedAt &&
+        (!header.metadataObservedAt || header.metadataObservedAt < chat.metadataObservedAt)
+      )
+        return chat;
       const avatarUrl = this.readTrimmedString(header.avatarUrl);
 
       return {
         ...chat,
         title,
         link,
-        ...(avatarUrl ? { avatarUrl } : {}),
+        ...(avatarUrl ? { avatarUrl } : header.avatarState === 'absent' ? { avatarUrl: null } : {}),
+        ...(header.avatarState ? { avatarState: header.avatarState } : {}),
+        ...(header.metadataObservedAt ? { metadataObservedAt: header.metadataObservedAt } : {}),
       };
     });
   }
@@ -22329,74 +22330,28 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    const chatsSnapshot = chats.map((chat) => ({ ...chat }));
-    const remoteChatsSnapshot =
-      Array.isArray(options.remoteChats) && options.remoteChats.length > 0
-        ? options.remoteChats.map((chat) => ({ ...chat }))
-        : undefined;
-
-    let pending: Promise<void> | null = null;
-    const startHydration = (): Promise<void> =>
-      this.runManagedEntityHeaderHydration(
-        userId,
-        entityType,
-        key,
-        chatsSnapshot,
-        remoteChatsSnapshot,
-      )
-        .catch((error: unknown) => {
-          this.logger.warn(
-            {
-              entityType,
-              userId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Managed entity header hydration failed',
-          );
-        })
-        .finally(() => {
-          if (pending !== null && this.managedEntityHeaderHydrationRuns.get(key) === pending) {
-            this.managedEntityHeaderHydrationRuns.delete(key);
-          }
-        });
-
-    pending =
-      options.deferStart === true
-        ? new Promise<void>((resolve) => {
-            setImmediate(() => {
-              void startHydration().then(resolve);
-            });
-          })
-        : startHydration();
-
+    // FLAG: Old clients warm only a bounded first screen. Visible-card demand owns
+    // later rows; both paths use the same durable queue and per-entity deduplication.
+    const pending = (async () => {
+      if (options.remoteChats?.length)
+        await this.primeManagedEntityHeaders(chats, options.remoteChats);
+      for (const type of ['chat', 'channel'] as const) {
+        const entityIds = chats
+          .filter((chat) => chat.entityType === type)
+          .slice(0, 8)
+          .map((chat) => chat.id);
+        if (entityIds.length)
+          await this.entityPresentation?.readForUser(userId, { entityType: type, entityIds });
+      }
+    })()
+      .catch((error: unknown) => {
+        this.logger.warn(
+          { entityType, err: error instanceof Error ? error.message : String(error) },
+          'Managed entity presentation admission failed',
+        );
+      })
+      .finally(() => this.managedEntityHeaderHydrationRuns.delete(key));
     this.managedEntityHeaderHydrationRuns.set(key, pending);
-  }
-
-  private async runManagedEntityHeaderHydration(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-    refreshKey: string,
-    chats: ChatSummary[],
-    remoteChats?: readonly MaxBotChat[],
-  ): Promise<void> {
-    if (await this.isManagedEntitiesRefreshBackoffActive(userId, entityType, refreshKey)) return;
-    if (remoteChats?.length) await this.primeManagedEntityHeaders(chats, remoteChats);
-    const failure = await hydrateManagedEntityHeaders({
-      chats,
-      cache: this.chatContextCache,
-      maxClient: this.maxClient,
-      persist: (chat, snapshot) => this.persistManagedEntityHeaderSnapshot(chat, snapshot),
-    });
-    if (!failure) return;
-    const backoffMs = await this.activateManagedEntitiesRefreshBackoff(
-      userId,
-      entityType,
-      refreshKey,
-    );
-    this.logger.warn(
-      { entityType, userId, backoffMs },
-      'Paused managed entity header hydration after MAX API throttling',
-    );
   }
 
   private toHeaderChatSummary(header: ManagedEntityHeader): ChatSummary {

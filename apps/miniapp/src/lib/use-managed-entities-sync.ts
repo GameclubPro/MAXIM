@@ -360,7 +360,7 @@ function mergeManagedEntityPresentation(
   let changed = false;
 
   const merged = next.map((item) => {
-    if (item.avatarUrl) {
+    if (item.avatarUrl || item.avatarState === 'absent') {
       return item;
     }
 
@@ -425,7 +425,7 @@ function mergeManagedEntityPresentationItem(
   previousById: ReadonlyMap<string, ChatSummary>,
   next: ChatSummary,
 ): ChatSummary {
-  if (next.avatarUrl) {
+  if (next.avatarUrl || next.avatarState === 'absent') {
     return next;
   }
 

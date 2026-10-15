@@ -2864,6 +2864,8 @@ model ManagedBotChatCatalog {
   title         String?
   link          String?
   avatarUrl     String?        @map("avatar_url")
+  avatarState   String?        @map("avatar_state")
+  metadataObservedAt DateTime? @map("metadata_observed_at")
   lastEventTime String?        @map("last_event_time")
   status        String         @default("ACTIVE")
   source        String         @default("max_chats")
