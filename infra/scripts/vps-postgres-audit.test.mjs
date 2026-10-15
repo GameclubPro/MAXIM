@@ -10,11 +10,11 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import test from 'node:test';
-import { PGlite } from '@electric-sql/pglite';
+import test, { afterEach, beforeEach } from 'node:test';
 import { buildRulesCleanupAuditSql } from './rules-cleanup-audit.mjs';
 import { buildPublisherCommentsAuditSql } from './publisher-comments-audit.mjs';
 import {
@@ -29,6 +29,34 @@ const connect = resolve(root, 'infra/scripts/vps-connect.sh');
 const monitor = readFileSync(resolve(root, 'infra/scripts/vps-monitor-readonly.sh'), 'utf8');
 const schema = readFileSync(resolve(root, 'apps/api/prisma/schema.prisma'), 'utf8');
 const nativePostgresUrl = process.env.MAXIM_TEST_POSTGRES_URL?.trim();
+
+let activeTestName = 'module_setup';
+let activeTestStartedAt = Date.now();
+beforeEach((context) => {
+  activeTestName = context.name;
+  activeTestStartedAt = Date.now();
+});
+afterEach(() => {
+  activeTestName = 'between_tests_or_shutdown';
+  activeTestStartedAt = Date.now();
+});
+// FLAG: A stuck fixture must fail with its current test and resource kinds before the
+// job deadline discards that evidence. This timer is local to the isolated test file;
+// it never changes a production audit timeout or makes a failed test successful.
+setTimeout(() => {
+  writeSync(
+    2,
+    `${JSON.stringify({
+      failure: 'audit_fixture_file_deadline',
+      test: activeTestName,
+      testElapsedMs: Date.now() - activeTestStartedAt,
+      activeResources: process.getActiveResourcesInfo(),
+    })}\n`,
+  );
+  process.exit(1);
+}, 120_000).unref();
+
+const { PGlite } = await import('@electric-sql/pglite');
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-postgres-audit-'));
@@ -194,6 +222,8 @@ function runAudit(data, args, extraEnv = {}) {
     cwd: root,
     encoding: 'utf8',
     env: { ...baseEnv(data), ...extraEnv },
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
   });
 }
 
@@ -202,6 +232,8 @@ function runConnect(data, args, extraEnv = {}) {
     cwd: root,
     encoding: 'utf8',
     env: { ...baseEnv(data), ...extraEnv },
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
   });
 }
 
