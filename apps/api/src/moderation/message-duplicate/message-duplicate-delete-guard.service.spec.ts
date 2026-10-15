@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { readModerationGuardFailure } from '../moderation-guard-failure-diagnostic';
 import {
   MessageDuplicateInitialSourceUnavailableError,
   MessageDuplicateQualificationSourceUnavailableError,
@@ -1075,6 +1076,13 @@ describe('message duplicate final delete guard', () => {
       expect(s.history.remove).not.toHaveBeenCalled();
       expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
       expect(receipt).toEqual(before);
+      expect(readModerationGuardFailure(error)).toEqual({
+        guardBoundary: 'duplicate_sanction_initial',
+        guardProofFailure:
+          kind === 'unfinished'
+            ? 'own_delete_sanction_receipt_unproven'
+            : 'own_delete_binding_unproven',
+      });
       await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
     },
   );
@@ -1159,6 +1167,10 @@ describe('message duplicate final delete guard', () => {
     await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
     expect(s.originalLookup).not.toHaveBeenCalled();
     expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(readModerationGuardFailure(error)).toMatchObject({
+      guardBoundary: 'duplicate_sanction_final',
+      guardProofFailure: expect.stringMatching(/^own_delete_(binding|sanction_receipt)_unproven$/u),
+    });
   });
 
   it.each([
