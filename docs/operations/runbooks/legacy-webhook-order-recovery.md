@@ -18,6 +18,18 @@ source proof and fresh actor/bot authorization before execution and final notice
 send. Unknown historical commands remain blocked. A held author's `Старт` source
 message is not automatically deleted.
 
+A fresh direct `user_added` observation for an already protected global member can receive the
+existing `POST_SEAL_MEMBER` receipt proof without executing join features. An optional `is_channel`
+discriminator must be a real boolean and agree with the exact reparsed normalized source; strings,
+unknown fields and altered entity types stay fenced. Its original numeric
+MAX timestamp must fall after the seal and at most one second ahead of receipt time; exact raw
+and normalized identities, a supported direct shape and the stored semantic key must agree.
+Only an unqueued RECEIVED row with zero attempts and no claims qualifies. The exact old
+`Legacy scope installation is not sealed` preparation deferral may remain in the immutable
+snapshot; other errors, prior effects, unknown shapes and other event types stay fenced. This
+does not install new holds, settle an old execution, update membership, send a welcome or count
+as successful moderation. Existing permanent protections and administrator-command checks remain.
+
 ## Install compatible tooling
 
 All 14 API roles and both native auxiliaries must first run the same reviewed
