@@ -1143,6 +1143,8 @@ native('legacy disposition production ingestion activation regressions', () => {
       'Actual Rows'?: number;
       'Actual Loops'?: number;
       'Rows Removed by Filter'?: number;
+      'Rows Removed by Index Recheck'?: number;
+      'Lossy Heap Blocks'?: number;
       Plans?: Plan[];
     };
     // FLAG: Exercise the actual indexed head plus exact metadata lookup. A simplified
@@ -1157,13 +1159,34 @@ native('legacy disposition production ingestion activation regressions', () => {
     };
     walk(plans[0]!['QUERY PLAN'][0]!.Plan);
     const scans = nodes.filter((node) => node['Relation Name'] === 'webhook_events');
-    expect(scans.map((node) => node['Index Name']).sort()).toEqual([
+    // FLAG: PostgreSQL may place the exact PK lookup in a Bitmap Index Scan child.
+    // Keep the ordered head, both index identities and all row/work bounds mandatory.
+    expect(scans).toHaveLength(2);
+    expect(scans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          'Node Type': 'Index Only Scan',
+          'Index Name': 'webhook_events_status_created_at_id_idx',
+        }),
+      ]),
+    );
+    const indexScans = nodes.filter((node) => node['Index Name']);
+    expect(indexScans.map((node) => node['Index Name']).sort()).toEqual([
       'webhook_events_pkey',
       'webhook_events_status_created_at_id_idx',
     ]);
-    for (const scan of scans) {
+    for (const scan of new Set([...scans, ...indexScans])) {
+      expect(scan).toEqual(
+        expect.objectContaining({
+          'Node Type': expect.stringMatching(
+            /^(Index Only Scan|Index Scan|Bitmap Heap Scan|Bitmap Index Scan)$/,
+          ),
+        }),
+      );
       expect(scan['Actual Rows']).toBe(1);
       expect(scan['Rows Removed by Filter'] ?? 0).toBe(0);
+      expect(scan['Rows Removed by Index Recheck'] ?? 0).toBe(0);
+      expect(scan['Lossy Heap Blocks'] ?? 0).toBe(0);
       expect(scan['Actual Loops']).toBe(1);
     }
     expect((await metrics.getLagSnapshot({ maxAgeMs: 0 })).oldestReceivedEventId).toBe(
