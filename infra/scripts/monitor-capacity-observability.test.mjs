@@ -579,6 +579,9 @@ test('readiness and queue probes retain only allowlisted aggregate fields', () =
     softWarning: false,
     softWarningCode: 'none',
     queueLagSec: 31,
+    operationalLagSec: null,
+    readinessWaitingCount: null,
+    readinessHeadLimitReached: null,
     mode: 'degrade',
     condition: 'queue_backlog',
     burstActive: true,
@@ -603,6 +606,70 @@ test('readiness and queue probes retain only allowlisted aggregate fields', () =
     { available: true, queueCount: 24, pausedCount: 0, activeCount: 3, ownerPresent: false },
   );
   assert.doesNotMatch(JSON.stringify(readiness), /secret|private/u);
+});
+
+test('preserves raw age and operational lag independently without weakening raw alerts', () => {
+  const readiness = normalizeReadyProbe(
+    {
+      httpStatus: 200,
+      body: {
+        ok: true,
+        checks: {
+          database: true,
+          redis: true,
+          queueLag: {
+            ok: true,
+            rawOk: false,
+            effectiveLagSec: 294,
+            operationalLagSec: 0.45,
+            readinessWaitingCount: 1,
+            readinessHeadLimitReached: false,
+            oldestQueuedEventId: 'private-event',
+          },
+        },
+      },
+    },
+    true,
+  );
+  const archived = normalizeSnapshot(sample('2026-09-02T12:00:00.000Z', { readiness }));
+  assert.equal(archived.readiness.queueLagSec, 294);
+  assert.equal(archived.readiness.operationalLagSec, 0.45);
+  assert.equal(archived.readiness.readinessWaitingCount, 1);
+  assert.equal(archived.readiness.readinessHeadLimitReached, false);
+  assert.equal(evaluateAlerts([], archived).alerts.queue_lag_critical.outcome, 'firing');
+  assert.doesNotMatch(JSON.stringify(archived), /private-event|oldestQueuedEventId/u);
+
+  for (const value of [undefined, null, '0', -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const invalid = normalizeReadyProbe(
+      {
+        httpStatus: 200,
+        body: {
+          ok: true,
+          checks: { queueLag: { effectiveLagSec: 294, operationalLagSec: value } },
+        },
+      },
+      true,
+    );
+    assert.equal(invalid.operationalLagSec, null);
+    assert.equal(invalid.readinessWaitingCount, null);
+    assert.equal(invalid.readinessHeadLimitReached, null);
+  }
+  const legacy = normalizeSnapshot(sample('2026-09-02T12:00:00.000Z'));
+  assert.equal(legacy.readiness.operationalLagSec, null);
+  assert.equal(legacy.readiness.readinessWaitingCount, null);
+  assert.equal(legacy.readiness.readinessHeadLimitReached, null);
+  const invalidArchive = normalizeSnapshot(
+    sample('2026-09-02T12:00:00.000Z', {
+      readiness: {
+        operationalLagSec: '0',
+        readinessWaitingCount: 1.5,
+        readinessHeadLimitReached: 'false',
+      },
+    }),
+  );
+  assert.equal(invalidArchive.readiness.operationalLagSec, null);
+  assert.equal(invalidArchive.readiness.readinessWaitingCount, null);
+  assert.equal(invalidArchive.readiness.readinessHeadLimitReached, null);
 });
 
 test('action health snapshots require internally consistent bounded arithmetic', () => {

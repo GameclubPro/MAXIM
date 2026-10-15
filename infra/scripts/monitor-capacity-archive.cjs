@@ -228,6 +228,9 @@ function normalizeSnapshot(raw) {
         'unknown',
       ]),
       queueLagSec: numberOrNull(readiness.queueLagSec, 0, 365 * 24 * 60 * 60),
+      operationalLagSec: numberOrNull(readiness.operationalLagSec, 0, 365 * 24 * 60 * 60),
+      readinessWaitingCount: integerOrNull(readiness.readinessWaitingCount, 0, 10_000),
+      readinessHeadLimitReached: booleanOrNull(readiness.readinessHeadLimitReached),
       mode: safeToken(readiness.mode, ['normal', 'degrade']),
       condition: safeToken(readiness.condition, [
         'healthy',
