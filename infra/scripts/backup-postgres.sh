@@ -105,9 +105,7 @@ if ! flock -n "$BACKUP_LOCK_FD"; then
 fi
 
 probe_runtime_ready() {
-  local readiness_json curl_status=0
-  readiness_json="$(curl --fail-with-body -sS --max-time "$READINESS_TIMEOUT_SEC" "$READINESS_URL")" || curl_status=$?
-  node "$ROOT_DIR/infra/scripts/check-postgres-backup-readiness.mjs" "$curl_status" <<<"$readiness_json"
+  node "$ROOT_DIR/infra/scripts/probe-postgres-backup-readiness.mjs" "$READINESS_URL" "$READINESS_TIMEOUT_SEC"
 }
 
 if ! probe_runtime_ready; then
