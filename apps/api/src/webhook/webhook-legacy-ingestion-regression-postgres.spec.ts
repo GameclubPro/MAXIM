@@ -1096,7 +1096,7 @@ native('legacy disposition production ingestion activation regressions', () => {
     },
   );
 
-  it('uses one indexed actionable row despite 5,000 positive held receipts', async () => {
+  it('reads one indexed head despite 5,000 held receipts and a pending backlog', async () => {
     const source = await owner();
     const certificateId = await seal(source.candidate);
     const template = await store(update(source.chatId, source.userId));
@@ -1133,6 +1133,24 @@ native('legacy disposition production ingestion activation regressions', () => {
       WHERE proof.receipt_id = event.id AND proof.authority_id = ${certificateId}
         AND event.legacy_disposition_id IS NULL`;
     const independent = await store(update(source.chatId, randomUUID()));
+    // FLAG: A lone RECEIVED row makes any status index equally bounded. Include a
+    // later pending population so this test proves ordered admission under backlog
+    // without forcing planner settings or weakening the exact one-row/index bounds.
+    const laterPending = Array.from({ length: 1000 }, (_, index) => {
+      const id = randomUUID();
+      receipts.push(id);
+      return {
+        ...independent,
+        id,
+        dedupKey: id,
+        createdAt: new Date(independent.createdAt.getTime() + index + 1),
+      };
+    });
+    for (let offset = 0; offset < laterPending.length; offset += 500) {
+      await prisma.webhookEvent.createMany({
+        data: JSON.parse(JSON.stringify(laterPending.slice(offset, offset + 500))),
+      });
+    }
     // FLAG: Shared native suites leave dead index entries. Normalize this disposable fixture
     // so the live held-history work bound does not depend on autovacuum timing.
     await prisma.$executeRaw`VACUUM (ANALYZE) webhook_events`;

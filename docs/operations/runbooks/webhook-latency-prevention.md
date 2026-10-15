@@ -93,6 +93,15 @@ before editing it; copying these notes does not install a fix or prove the deplo
    and attempted/ambiguous edits do not qualify. Historical started handlers never inherit
    this new handoff retroactively. Run channel-button, marker-store and native moderation
    guards full-path suites, including following-channel progress and access-loss/hold refusal.
+   A concrete local quota refusal in the initial channel bot-access GET may nominate only
+   that exact chat/candidate for a direct webhook edit handoff. Persist the live pure-edit
+   marker and release its exact lease before completing the handler. This nomination grants
+   no bot rights or successful edit; recovery rechecks current policy, source holds and access.
+   Keep forwards, quick buttons, polling callers, forged/HTTP/conflicting-method failures,
+   attempted effects, existing foreign leases and failed commits fenced. The existing bounded
+   channel recovery cadence remains unchanged; this handoff prevents the next post from being
+   blocked but does not prove that button recovery meets a latency target. Run the route-scope,
+   channel-button, marker, recovery and native moderation-guards full-path regressions.
    A source-author member GET with explicit GET provenance and HTTP 429 may use only the
    existing initial no-effect, durable SEND or committed DELETE handoff boundaries above.
    A concrete local `MaxApiInternalRateLimitError` from that author GET or exact source GET

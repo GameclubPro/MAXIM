@@ -423,7 +423,10 @@ import {
   type ChannelAutoPostMessageText,
   type ChannelAutoPostScanState,
 } from './channel-auto-post-runtime';
-import { ChannelAutoPostMutationGuard } from './channel-auto-post-mutation-guard';
+import {
+  ChannelAutoPostMutationGuard,
+  resolveInitialChannelMutationRoute,
+} from './channel-auto-post-mutation-guard';
 import { loadManagedChannelAutoPostContext } from './channel-auto-post-context';
 import { ChannelAutoPostLegacyRecovery } from './channel-auto-post-legacy-recovery';
 import {
@@ -15366,10 +15369,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Channel post signature service is unavailable.');
     }
 
-    const autoAttachRoute = await this.resolveAutoAttachMutationBotId({
-      chatId,
-      action: replaceForward ? 'delete_message' : 'edit_message',
-    });
+    const { routeReadFailure, ...autoAttachRoute } = await resolveInitialChannelMutationRoute(
+      () =>
+        this.resolveAutoAttachMutationBotId({
+          chatId,
+          action: replaceForward ? 'delete_message' : 'edit_message',
+        }),
+      params,
+    );
     if (!autoAttachRoute.botId || !autoAttachRoute.requiredAuthorVerified) {
       return 'skipped';
     }
@@ -15391,6 +15398,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         buttonVisibility.includeCommentsButton || buttonVisibility.includeSuggestButton,
       replaySafeEdit: linkType !== 'forward' && !quickButtons,
     });
+    if (routeReadFailure && claim.status !== 'claimed') throw routeReadFailure;
     if (claim.status === 'done') {
       return 'skipped';
     }
@@ -15399,6 +15407,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
     if (claim.status !== 'claimed') {
       return 'skipped';
+    }
+
+    if (routeReadFailure) {
+      if (
+        await this.replacementAttachMarkerStore.deferChannelRouteBeforeDispatch(
+          { ...params, lockToken: claim.lockToken, botId: autoAttachBotId },
+          routeReadFailure,
+        )
+      )
+        return 'in_progress';
+      throw routeReadFailure;
     }
 
     const threadId = params.existingDialogThreadId?.trim() || randomUUID();
