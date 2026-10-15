@@ -565,6 +565,12 @@ export class AdminManagedEntitiesRuntime {
         continue;
       }
 
+      // FLAG: Historical catalog bindings are visible without a configured MAX token.
+      // They may reuse saved photos, but must never fall back to another bot's /me.
+      if (!this.maxBotRegistry?.getBotById?.(normalizedBotId)) {
+        continue;
+      }
+
       missingBotIds.push(normalizedBotId);
     }
 

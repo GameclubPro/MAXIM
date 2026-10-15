@@ -71,6 +71,7 @@ esac
       MAXIM_RESTORE_SMOKE_MIN_FREE_BYTES: '1024',
       MAXIM_RESTORE_SMOKE_REQUIRE_DEDICATED_FILESYSTEM: '0',
       MAXIM_BACKUP_POSTGRES_IMAGE: 'sha256:fixture',
+      MAXIM_BACKUP_COMPOSE_FILE: join(dir, 'group-backup', 'docker-compose.yml'),
       TEST_DOCKER_LOG: log,
       TEST_SCHEMA_VALID: valid ? '1' : '0',
     });
@@ -86,7 +87,10 @@ esac
     const operations = readFileSync(log, 'utf8');
     assert.match(operations, /--network none --cpus 2 --memory 4g --pids-limit 128/u);
     assert.match(operations, /rm -f maxim-postgres-restore-smoke-/u);
-    assert.doesNotMatch(operations, /compose.*(?:up|down)|rm -f (?:postgres|infra-postgres)/u);
+    assert.doesNotMatch(
+      operations,
+      /^compose[^\n]*\s(?:up|down)(?:\s|$)|^rm -f (?:postgres|infra-postgres)/mu,
+    );
     assert.equal(spawnSync('flock', ['-n', lock.file, 'true']).status, 0);
   });
 }

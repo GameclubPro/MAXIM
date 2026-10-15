@@ -20,6 +20,7 @@ const CHECKS = [
   'system_mode',
   'queue_lag_warning',
   'queue_lag_critical',
+  'quarantined_receipts',
   'queue_fence',
   'api_fleet_topology',
 ];
@@ -191,6 +192,19 @@ function summarizeWindow(samples, bounds) {
     readinessHeadLimitReachedSamples: samples.filter(
       (sample) => sample.readiness.readinessHeadLimitReached === true,
     ).length,
+    quarantine: {
+      basis: 'retained_receipts_not_currently_blocked_chats',
+      maxCountLowerBound: percentiles(
+        samples.map((sample) => sample.readiness.quarantinedCountLowerBound),
+      ).max,
+      maxOldestAgeSec: percentiles(
+        samples.map((sample) => sample.readiness.oldestQuarantinedAgeSec),
+      ).max,
+      sampleLimitReachedSamples: samples.filter(
+        (sample) => sample.readiness.quarantineSampleLimitReached === true,
+      ).length,
+      knownSamples: samples.length - checks.quarantined_receipts.unknown,
+    },
     checks,
     loadPerCpu: percentiles(
       samples.map((sample) =>
