@@ -28,7 +28,7 @@ usage() {
 Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
   ./infra/scripts/vps-postgres-audit.sh queue [--explain]
-  ./infra/scripts/vps-postgres-audit.sh webhook-cohort [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-cohort [--short] [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-order-candidates
   ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-semantic-mirrors [--explain]
@@ -93,6 +93,7 @@ RULES_CLEANUP_EXPLAIN=''
 DUPLICATE_EXPLAIN=''
 DUPLICATE_STATUS=''
 MESSAGE_WINDOW_FROM=''
+WEBHOOK_COHORT_ARGS=()
 case "$AUDIT_MODE" in
   chat-message-window)
     if [[ $# -lt 3 || $# -gt 4 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
@@ -121,7 +122,11 @@ case "$AUDIT_MODE" in
     fi
     DUPLICATE_EXPLAIN="${1:-}"
     ;;
-  delete-retry-heads|webhook-cohort|queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
+  webhook-cohort)
+    WEBHOOK_COHORT_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/webhook-cohort-audit.mjs" "${WEBHOOK_COHORT_ARGS[@]}" >/dev/null || exit 2
+    ;;
+  delete-retry-heads|queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -2331,11 +2336,7 @@ emit_sql() {
       emit_legacy_semantic_mirrors_audit
       ;;
     webhook-cohort)
-      local cohort_args=()
-      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
-        cohort_args+=("$RULES_CLEANUP_EXPLAIN")
-      fi
-      node "$ROOT_DIR/infra/scripts/webhook-cohort-audit.mjs" "${cohort_args[@]}"
+      node "$ROOT_DIR/infra/scripts/webhook-cohort-audit.mjs" "${WEBHOOK_COHORT_ARGS[@]}"
       ;;
     chat-message-window)
       local message_window_args=("$RULES_CLEANUP_CHAT_ID" "$MESSAGE_WINDOW_FROM")

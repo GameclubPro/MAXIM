@@ -77,7 +77,7 @@ Commands:
   postgres-audit moderation-outcomes [--explain]
   postgres-audit delete-retry-heads [--explain]
   postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]
-  postgres-audit webhook-cohort [--explain]
+  postgres-audit webhook-cohort [--short] [--explain]
   postgres-audit duplicate [--status <STATUS>] [--explain]
   postgres-audit poll-publication <poll-id> [--explain]
   postgres-audit webhook-quarantine <UTC-minute> [--explain]
@@ -532,7 +532,13 @@ postgres_audit() {
     return
   fi
 
-  if [[ "$mode" == 'delete-retry-heads' || "$mode" == 'webhook-cohort' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
+  if [[ "$mode" == 'webhook-cohort' ]]; then
+    node "$ROOT_DIR/infra/scripts/webhook-cohort-audit.mjs" "${@:2}" >/dev/null || return 2
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
+
+  if [[ "$mode" == 'delete-retry-heads' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
         "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'webhook-queued-proof' || "$mode" == 'legacy-order-window' ||
         "$mode" == 'moderation-outcomes' || "$mode" == 'legacy-semantic-mirrors' ]]; then
