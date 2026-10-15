@@ -80,6 +80,14 @@ reports at most four, then reads their metadata by primary key. Both caps affect
 rows. The report is opt-in and excluded from `all`; wrappers accept no SQL,
 file, repair flag or arbitrary range. Keep existing audit role/time budgets.
 
+Schema v2 additionally reads each capped receipt's saved semantic key by primary key
+and compares it with its blocker's key. `same_key` and `different_keys` distinguish
+the stored relationship; absent, empty or overlong keys remain `unknown`. Keys and
+message bodies are never returned, and no payload scan or new grant is required.
+This comparison does not revalidate normalized source identity or prove external
+effects. A different saved key identifies an ordering dependency to investigate;
+it does not authorize removing the predecessor's fence.
+
 This is a snapshot of receipts still in QUARANTINED, not a historical census of
 everything quarantined in that minute. Missing journal/blocker evidence stays
 explicit. Exact legacy/start markers, coarse timeout categories and saved clocks
