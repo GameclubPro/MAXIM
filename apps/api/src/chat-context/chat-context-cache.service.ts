@@ -1072,6 +1072,40 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async getManagedEntityHeaders(
+    entities: readonly { id: string; entityType: ManagedEntityType }[],
+  ): Promise<Array<ManagedEntityHeader | null>> {
+    const result: Array<ManagedEntityHeader | null> = [];
+    const deadline =
+      Date.now() + ChatContextCacheService.MANAGED_ENTITY_HEADER_REDIS_READ_TIMEOUT_MS;
+    // Bounded commands avoid both one Redis round trip per row and a giant MGET.
+    for (let offset = 0; offset < entities.length; offset += 64) {
+      if (Date.now() >= deadline) return result.concat(entities.slice(offset).map(() => null));
+      const batch = entities.slice(offset, offset + 64);
+      const values = await this.readRedisStringsWithin(
+        batch.map((item) =>
+          ChatContextCacheService.managedEntityHeaderKey(item.id, item.entityType),
+        ),
+        Math.max(1, deadline - Date.now()),
+      );
+      if (values === null) return result.concat(entities.slice(offset).map(() => null));
+      result.push(
+        ...batch.map((entity, index) => {
+          try {
+            const raw = values?.[index];
+            const header = raw ? (JSON.parse(raw) as ManagedEntityHeader) : null;
+            return header?.id === entity.id && header.entityType === entity.entityType
+              ? header
+              : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+    }
+    return result;
+  }
+
   async setManagedEntityHeader(header: ManagedEntityHeader): Promise<void> {
     await this.redis.set(
       ChatContextCacheService.managedEntityHeaderKey(header.id, header.entityType),

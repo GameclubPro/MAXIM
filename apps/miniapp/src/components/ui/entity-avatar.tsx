@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { cn } from '../../lib/cn';
 
 type EntityAvatarProps = {
   title: string;
+  entityId?: string;
+  retryKey?: string | number;
   entityType: 'chat' | 'channel';
   className?: string;
   avatarUrl?: string | null;
@@ -50,26 +52,42 @@ function getEntityAvatarPalette(title: string, entityType: EntityAvatarProps['en
 
 export function EntityAvatar({
   title,
+  entityId,
+  retryKey,
   entityType,
   className,
   avatarUrl = null,
 }: EntityAvatarProps) {
   const [imageBroken, setImageBroken] = useState(false);
+  const automaticRetries = useRef(0);
   useEffect(() => {
+    automaticRetries.current = 0;
     setImageBroken(false);
-  }, [avatarUrl]);
-  const initials = useMemo(() => getEntityInitials(title), [title]);
-  const palette = useMemo(() => getEntityAvatarPalette(title, entityType), [entityType, title]);
+  }, [avatarUrl, retryKey]);
+  useEffect(() => {
+    if (!imageBroken || !avatarUrl) return;
+    let retried = false;
+    const retry = () => {
+      if (retried || document.visibilityState !== 'visible') return;
+      retried = true;
+      automaticRetries.current += 1;
+      setImageBroken(false);
+    };
+    const timer = automaticRetries.current < 1 ? window.setTimeout(retry, 1500) : undefined;
+    window.addEventListener('online', retry, { once: true });
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('online', retry);
+    };
+  }, [avatarUrl, imageBroken]);
+  const initials = getEntityInitials(title);
+  const palette = getEntityAvatarPalette(entityId ?? title, entityType);
   const showImage = Boolean(avatarUrl) && !imageBroken;
-  const style = useMemo(
-    () =>
-      ({
-        '--entity-avatar-start': palette[0],
-        '--entity-avatar-end': palette[1],
-        '--entity-avatar-shadow': palette[2],
-      }) as CSSProperties,
-    [palette],
-  );
+  const style = {
+    '--entity-avatar-start': palette[0],
+    '--entity-avatar-end': palette[1],
+    '--entity-avatar-shadow': palette[2],
+  } as CSSProperties;
 
   return (
     <span

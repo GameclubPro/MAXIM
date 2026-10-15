@@ -17050,7 +17050,7 @@ describe('AdminService.listChats', () => {
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledTimes(1);
   });
 
-  it('backs off background header hydration after MAX API throttling', async () => {
+  it('returns cached navigation without an in-process MAX header walk', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -17104,55 +17104,34 @@ describe('AdminService.listChats', () => {
 
     await flushAsyncTasks();
 
-    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
-      trafficClass: 'background',
-      actionHealthLane: 'background',
-      sourceTag: 'managed_refresh',
-      bypassCache: true,
-      timeoutMs: 2500,
-      ignoreFailureMetricStatuses: [403, 404],
-    });
-    expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(
-      'admin-1',
-      'channel',
-      60,
-    );
-    expect(chatContextCache.activateManagedRefreshSourceBackoff).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(chatContextCache.activateManagedEntitiesRefreshBackoff).not.toHaveBeenCalled();
   });
 
-  it('skips background header hydration while shared managed_refresh source backoff is active', async () => {
-    const prisma = createPrismaMock();
-    const maxClient = {
-      getChatSnapshot: jest.fn(),
-    };
-    const chatContextCache = createChatContextCacheMock({
-      getManagedEntityHeader: jest.fn().mockResolvedValue(null),
-      getManagedRefreshSourceBackoffRemainingMs: jest.fn().mockResolvedValue(30_000),
-    });
-
+  it('admits at most eight first-screen metadata tasks for older clients', async () => {
     const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-
-    await (service as any).runManagedEntityHeaderHydration(
+    const readForUser = jest.fn().mockResolvedValue({ items: [] });
+    (service as any).entityPresentation = { readForUser };
+    (service as any).scheduleManagedEntityHeaderHydration(
       'admin-1',
       'channel',
-      'admin-1:channel',
-      [
+      Array.from({ length: 1000 }, (_, index) =>
         createChatSummaryFixture({
-          id: 'channel-1',
-          title: 'Кэш канала',
-          createdAt: '2026-03-02T10:00:00.000Z',
+          id: `channel-${index}`,
+          title: 'Канал',
+          createdAt: new Date(0).toISOString(),
           entityType: 'channel',
         }),
-      ],
+      ),
     );
-
-    expect(chatContextCache.getManagedRefreshSourceBackoffRemainingMs).toHaveBeenCalled();
-    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    await flushAsyncTasks();
+    expect(readForUser).toHaveBeenCalledTimes(1);
+    expect(readForUser.mock.calls[0][1].entityIds).toHaveLength(8);
   });
 
   it('hydrates assigned bot avatars for managed entity headers and caches fresh misses', async () => {

@@ -1,3 +1,4 @@
+import { setChatTitleScope } from '../chat-title-scope';
 import type { Me } from '@maxim/contracts';
 import type { MiniappCapability, MiniappProfile } from '@maxim/contracts/publisher';
 import type { ApiTransport } from './transport';
@@ -101,6 +102,7 @@ export async function getMe(
     signal: options.signal,
   });
   const me = parseMe(response);
+  setChatTitleScope(me.userId, me.profile);
   if (me.botDialogUrl) {
     botDialogUrlCache.set(api, me.botDialogUrl);
   }

@@ -148,6 +148,8 @@ export const chatSummarySchema = z.object({
   entityType: managedEntityTypeSchema.default('chat'),
   link: z.string().trim().max(2048).nullable().optional().default(null),
   avatarUrl: z.string().trim().url().nullable().optional(),
+  avatarState: z.enum(['unknown', 'present', 'absent']).optional(),
+  metadataObservedAt: z.string().datetime().nullable().optional(),
   channelOverview: channelOverviewSchema.nullable().optional().default(null),
   primaryBotId: z.string().nullable().optional().default(null),
   assignedBots: z.array(managedEntityAssignedBotSchema).optional().default([]),
@@ -157,6 +159,34 @@ export const chatSummarySchema = z.object({
   favoriteTypes: z.array(managedEntityFavoriteTypeSchema).optional(),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
+
+export const managedEntityPresentationRequestSchema = z
+  .object({
+    entityType: managedEntityTypeSchema,
+    entityIds: z.array(z.string().trim().min(1).max(128)).min(1).max(32),
+  })
+  .strict();
+export type ManagedEntityPresentationRequest = z.infer<
+  typeof managedEntityPresentationRequestSchema
+>;
+
+export const managedEntityPresentationSchema = z.object({
+  id: z.string(),
+  entityType: managedEntityTypeSchema,
+  title: z.string().nullable(),
+  avatarUrl: z.string().url().nullable(),
+  avatarState: z.enum(['unknown', 'present', 'absent']),
+  observedAt: z.string().datetime().nullable(),
+  pending: z.boolean(),
+});
+export type ManagedEntityPresentation = z.infer<typeof managedEntityPresentationSchema>;
+export const managedEntityPresentationResponseSchema = z.object({
+  items: z.array(managedEntityPresentationSchema),
+  retryAfterMs: z.number().int().min(1000).max(30000),
+});
+export type ManagedEntityPresentationResponse = z.infer<
+  typeof managedEntityPresentationResponseSchema
+>;
 
 export const managedEntitiesRefreshStateSchema = z.object({
   complete: z.boolean(),
@@ -324,6 +354,8 @@ export const managedEntityHeaderSchema = z.object({
   link: z.string().trim().max(2048).nullable(),
   participantsCount: z.number().int().min(0).nullable(),
   avatarUrl: z.string().trim().url().nullable().optional(),
+  avatarState: z.enum(['unknown', 'present', 'absent']).optional(),
+  metadataObservedAt: z.string().datetime().nullable().optional(),
   primaryBotId: z.string().nullable().optional().default(null),
   assignedBots: z.array(managedEntityAssignedBotSchema).optional().default([]),
   sharedMode: managedEntitySharedModeSchema.optional().default('owned'),

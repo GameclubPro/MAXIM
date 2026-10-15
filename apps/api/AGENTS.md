@@ -234,3 +234,8 @@
 - Entity and source automation settings both apply: baseline, mode, daily/min-interval limits, quiet hours, priority, and `publishScheduledAt` are rechecked by the worker.
 - Governor `pause` defers VK autopublish; `slow` must not starve a single job. Increment publish attempts only at a real MAX attempt.
 - Diagnose with `npm run vk-parsing:diagnose --workspace @maxim/api -- --json --limit 20`; set `REDIS_URL` for BullMQ counts and use `--window-hours` for the error window.
+
+## Home presentation
+
+- `POST /v1/managed-entities/presentation` reads at most 32 already-granted moderation entities. It never checks or repairs remote permissions. `refresh-presentation` jobs share the managed-entities queue and deduplicate by entity, independently of discovery completion. Metadata workers must not change membership, activation, access edges or catalog connection status. `ManagedBotChatCatalog.status = PRESENTATION` is inert metadata only; discovery/authorization must keep requiring ACTIVE.
+- Only explicit MAX `icon: null` without contradictory icon fields proves photo absence. Missing/malformed icon data preserves the last photo. Keep avatar state/observation through header, snapshot hash/diff and client merges; a null without absence evidence cannot erase a photo.

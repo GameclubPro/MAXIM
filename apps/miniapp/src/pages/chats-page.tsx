@@ -1,3 +1,6 @@
+import { mergeEntityPresentation } from '../lib/entity-presentation';
+import type { ManagedEntityPresentation } from '@maxim/contracts';
+import { displayChatTitle } from '../lib/chat-titles';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Suspense,
@@ -158,6 +161,7 @@ function preloadHomeEntitySheets() {
   return homeEntitySheetsPromise;
 }
 const LazyHomeEntitySheets = lazy(preloadHomeEntitySheets);
+const LazyEntityPresentationLoader = lazy(() => import('../lib/entity-presentation-loader'));
 
 async function recoverHomeEntityFavoritesRuntime(
   cause: unknown,
@@ -662,6 +666,13 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
   const renderedEntities = shouldVirtualizeEntities
     ? filteredEntities.slice(virtualStartIndex, virtualEndIndex)
     : filteredEntities;
+  const presentationScope = `${favoriteStorageScope}:${activeTab}`;
+  const [presentationState, setPresentationState] = useState<{
+    scope: string;
+    items: Record<string, ManagedEntityPresentation>;
+  }>({ scope: presentationScope, items: {} });
+  const entityPresentations =
+    presentationState.scope === presentationScope ? presentationState.items : {};
   const settledRefreshMarker = useMemo(
     () =>
       buildManagedEntitiesSettledMarker({
@@ -1570,7 +1581,9 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
       ? `Загружаем ${tabLabel.toLowerCase()}.`
       : `${tabLabel}: ${filteredEntities.length} из ${activeEntities?.length ?? 0}.`;
 
-  function renderEntityCard(entity: ManagedHomeEntity, index: number) {
+  function renderEntityCard(original: ManagedHomeEntity, index: number) {
+    const entity = mergeEntityPresentation(original, entityPresentations[original.id]);
+    const title = displayChatTitle(entity.id, entity.title, activeTab);
     const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
     const favoriteTypes = getHomeEntityFavoriteTypes(homeEntityFavorites, activeTab, entity.id);
     const staggerIndex = limitedStagger === null ? index : index < limitedStagger ? index : null;
@@ -1631,7 +1644,7 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
           <button
             type="button"
             className="chat-card__primary-link chat-card__category-editor"
-            aria-label={`Выбрать категорию: ${entity.title}. Сейчас: ${categoryLabel}`}
+            aria-label={`Выбрать категорию: ${title}. Сейчас: ${categoryLabel}`}
             aria-haspopup="dialog"
             aria-controls="home-sheet-favorite"
             aria-expanded={pickerOpen}
@@ -1647,13 +1660,15 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
             }}
           >
             <EntityAvatar
-              title={entity.title}
+              entityId={entity.id}
+              retryKey={`${entityPresentations[entity.id]?.observedAt ?? ''}:${refreshRequestByTab[activeTab].nonce}`}
+              title={title}
               entityType={activeTab}
               avatarUrl={entity.avatarUrl ?? null}
               className="chat-card__avatar"
             />
             <span className="chat-card__title-wrap">
-              <h3>{entity.title}</h3>
+              <h3>{title}</h3>
               <span className={cn('chat-card__category-value', primaryFavoriteType && 'is-active')}>
                 <CategoryIcon aria-hidden focusable="false" />
                 <span>{categoryLabel}</span>
@@ -1684,18 +1699,20 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
                 prefetchEntitySettings(activeTab, entity.id);
               }
             }}
-            aria-label={`Открыть настройки: ${entity.title}${
+            aria-label={`Открыть настройки: ${title}${
               primaryFavoriteType ? `. Категория: ${categoryLabel}` : ''
             }`}
           >
             <EntityAvatar
-              title={entity.title}
+              entityId={entity.id}
+              retryKey={`${entityPresentations[entity.id]?.observedAt ?? ''}:${refreshRequestByTab[activeTab].nonce}`}
+              title={title}
               entityType={activeTab}
               avatarUrl={entity.avatarUrl ?? null}
               className="chat-card__avatar"
             />
             <span className="chat-card__title-wrap">
-              <h3>{entity.title}</h3>
+              <h3>{title}</h3>
             </span>
             <span className="chat-card__chevron" aria-hidden>
               <BackChevronIcon />
@@ -1714,8 +1731,8 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
               )}
               aria-label={
                 primaryFavoriteType
-                  ? `Изменить категорию избранного: ${entity.title}. Сейчас: ${categoryLabel}`
-                  : `Добавить в избранное: ${entity.title}`
+                  ? `Изменить категорию избранного: ${title}. Сейчас: ${categoryLabel}`
+                  : `Добавить в избранное: ${title}`
               }
               title={primaryFavoriteType ? `Избранное: ${categoryLabel}` : 'Добавить в избранное'}
               aria-haspopup="dialog"
@@ -1750,7 +1767,7 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
               to={statisticsRoute}
               className="chat-card__action chat-card__action--statistics"
               state={routeState}
-              aria-label={`Открыть статистику: ${entity.title}`}
+              aria-label={`Открыть статистику: ${title}`}
               title="Статистика"
               data-action="statistics"
               onClick={(event) => {
@@ -1810,6 +1827,17 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
           : 'signal'
       }
     >
+      <Suspense fallback={null}>
+        <LazyEntityPresentationLoader
+          api={api}
+          root={homeRootRef}
+          entityType={activeTab}
+          entities={renderedEntities}
+          scope={favoriteStorageScope}
+          reloadNonce={refreshRequestByTab[activeTab].nonce}
+          onChange={setPresentationState}
+        />
+      </Suspense>
       {homeOverlayOpen ? (
         <Suspense fallback={null}>
           <LazyHomeEntitySheets

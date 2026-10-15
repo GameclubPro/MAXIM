@@ -8,12 +8,16 @@ import {
   type AdminManagedEntitiesRefreshJob,
 } from './admin-managed-entities-refresh.queue';
 import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
+import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
 
 @Processor(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE, {
   concurrency: 1,
 })
 export class AdminManagedEntitiesRefreshProcessor extends WorkerHost {
-  constructor(private readonly managedEntitiesDiscoveryService: ManagedEntitiesDiscoveryService) {
+  constructor(
+    private readonly managedEntitiesDiscoveryService: ManagedEntitiesDiscoveryService,
+    private readonly presentation: ManagedEntityPresentationService,
+  ) {
     super();
   }
 
@@ -29,6 +33,11 @@ export class AdminManagedEntitiesRefreshProcessor extends WorkerHost {
       Number.isFinite(queuedAtMs) &&
       Date.now() - queuedAtMs >= ADMIN_MANAGED_ENTITIES_REFRESH_JOB_TTL_MS
     ) {
+      return;
+    }
+
+    if (job.data.presentationEntityId) {
+      await this.presentation.process(job.data);
       return;
     }
 

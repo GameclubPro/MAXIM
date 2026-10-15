@@ -1,14 +1,43 @@
 import type { ChatSummary } from '@maxim/contracts';
+import { getInitData, readUserIdFromInitData } from './init-data';
+import { readLocalMirrorItem, saveMirroredItem, removeLocalMirrorItem } from './native-storage';
+import { getChatTitleScope } from './chat-title-scope';
+export { setChatTitleScope } from './chat-title-scope';
 
-const CHAT_TITLES_KEY = 'maxim:chat-titles';
+const LEGACY_CHAT_TITLES_KEY = 'maxim:chat-titles';
+let memo: { key: string; raw: string; titles: Record<string, string> } | null = null;
 
-function normalizeChatTitleValue(value: string): string {
-  return value.trim();
+function chatTitlesKey(): string | null {
+  const confirmedScope = getChatTitleScope();
+  const initData = getInitData();
+  const userId =
+    readUserIdFromInitData(initData) ?? new URLSearchParams(initData).get('user_id')?.trim();
+  if (!userId) return null;
+  if (confirmedScope && confirmedScope.userId !== userId) return null;
+  const profile =
+    confirmedScope?.profile ??
+    (typeof document === 'undefined'
+      ? 'moderation'
+      : (document.body?.dataset.miniappProfile ?? 'moderation'));
+  return `maxim:chat-titles:v3:${encodeURIComponent(userId)}:${profile}`;
+}
+
+export function displayChatTitle(
+  chatId: string,
+  title: string,
+  entityType: 'chat' | 'channel',
+): string {
+  const resolved = resolveChatTitle(chatId, title);
+  return isUnusableChatTitle(chatId, resolved)
+    ? entityType === 'channel'
+      ? 'Канал'
+      : 'Группа'
+    : resolved;
 }
 
 export function isUnusableChatTitle(chatId: string, title: string): boolean {
   const normalizedId = chatId.trim();
-  const normalizedTitle = normalizeChatTitleValue(title);
+  const normalizedTitle = title.trim();
   if (!normalizedId || !normalizedTitle) {
     return true;
   }
@@ -20,88 +49,59 @@ export function isUnusableChatTitle(chatId: string, title: string): boolean {
   );
 }
 
-function readChatTitlesMap(): Record<string, string> {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
+function readChatTitlesMap(): Readonly<Record<string, string>> {
   try {
-    const raw = window.localStorage.getItem(CHAT_TITLES_KEY);
-    if (!raw) {
-      return {};
-    }
-
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object') {
-      return {};
-    }
-
-    return Object.entries(parsed).reduce<Record<string, string>>((acc, [chatId, title]) => {
-      if (typeof chatId === 'string' && typeof title === 'string' && chatId && title.trim()) {
-        acc[chatId] = title;
-      }
-      return acc;
-    }, {});
+    const key = chatTitlesKey();
+    if (!key) return {};
+    removeLocalMirrorItem(LEGACY_CHAT_TITLES_KEY);
+    const raw = readLocalMirrorItem(key);
+    if (!raw) return {};
+    if (memo?.key === key && memo.raw === raw) return memo.titles;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const titles = Object.fromEntries(
+      Object.entries(parsed)
+        .slice(-2000)
+        .filter(([id, title]) => id && typeof title === 'string' && title.trim()),
+    ) as Record<string, string>;
+    memo = { key, raw, titles };
+    return titles;
   } catch {
     return {};
   }
 }
 
 function saveChatTitlesMap(value: Record<string, string>): void {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  try {
-    window.localStorage.setItem(CHAT_TITLES_KEY, JSON.stringify(value));
-  } catch {
-    // Ignore localStorage failures in restrictive WebView environments.
-  }
+  const key = chatTitlesKey();
+  if (!key) return;
+  const raw = JSON.stringify(Object.fromEntries(Object.entries(value).slice(-2000)));
+  if (readLocalMirrorItem(key) !== raw) saveMirroredItem(key, raw);
 }
 
 export function readChatTitle(chatId: string): string {
-  if (!chatId) {
-    return '';
-  }
-
-  const map = readChatTitlesMap();
-  return map[chatId] ?? '';
+  return readChatTitlesMap()[chatId] ?? '';
 }
 
 export function resolveChatTitle(chatId: string, title: string): string {
-  const normalizedTitle = normalizeChatTitleValue(title);
+  const normalizedTitle = title.trim();
   if (!isUnusableChatTitle(chatId, normalizedTitle)) {
     return normalizedTitle;
   }
 
-  const storedTitle = normalizeChatTitleValue(readChatTitle(chatId));
+  const storedTitle = readChatTitle(chatId).trim();
   return isUnusableChatTitle(chatId, storedTitle) ? normalizedTitle : storedTitle;
 }
 
 export function saveChatTitle(chatId: string, title: string): void {
-  const normalizedId = chatId.trim();
-  const normalizedTitle = normalizeChatTitleValue(title);
-  if (isUnusableChatTitle(normalizedId, normalizedTitle)) {
-    return;
-  }
-
-  const map = readChatTitlesMap();
-  map[normalizedId] = normalizedTitle;
-  saveChatTitlesMap(map);
+  saveChatTitles([{ id: chatId, title }]);
 }
 
-export function saveChatTitles(chats: ChatSummary[]): void {
-  if (chats.length === 0) {
-    return;
-  }
-
-  const map = readChatTitlesMap();
+export function saveChatTitles(chats: readonly Pick<ChatSummary, 'id' | 'title'>[]): void {
+  if (chats.length === 0) return;
+  const map = { ...readChatTitlesMap() };
   for (const chat of chats) {
-    if (isUnusableChatTitle(chat.id, chat.title)) {
-      continue;
-    }
-    map[chat.id] = normalizeChatTitleValue(chat.title);
+    const id = chat.id.trim();
+    if (!isUnusableChatTitle(id, chat.title)) map[id] = chat.title.trim();
   }
-
   saveChatTitlesMap(map);
 }

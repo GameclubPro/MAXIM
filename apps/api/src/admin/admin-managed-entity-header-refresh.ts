@@ -130,15 +130,29 @@ export async function publishManagedEntityHeaderChanges(params: {
   const items = params.snapshot.items.map((item) => {
     const updated = visible.get(item.id);
     if (!updated || updated.entityType !== item.entityType) return item;
-    const avatarUrl = updated.avatarUrl ?? item.avatarUrl;
-    if (updated.title === item.title && updated.link === item.link && avatarUrl === item.avatarUrl)
+    if (
+      item.metadataObservedAt &&
+      (!updated.metadataObservedAt || updated.metadataObservedAt < item.metadataObservedAt)
+    )
+      return item;
+    const avatarUrl =
+      updated.avatarState === 'absent' ? null : (updated.avatarUrl ?? item.avatarUrl);
+    if (
+      updated.title === item.title &&
+      updated.link === item.link &&
+      avatarUrl === item.avatarUrl &&
+      updated.avatarState === item.avatarState &&
+      updated.metadataObservedAt === item.metadataObservedAt
+    )
       return item;
     changed = true;
     return {
       ...item,
       title: updated.title,
       link: updated.link,
-      ...(avatarUrl ? { avatarUrl } : {}),
+      ...(avatarUrl ? { avatarUrl } : updated.avatarState === 'absent' ? { avatarUrl: null } : {}),
+      ...(updated.avatarState ? { avatarState: updated.avatarState } : {}),
+      ...(updated.metadataObservedAt ? { metadataObservedAt: updated.metadataObservedAt } : {}),
     };
   });
   if (!changed) return params.snapshot;

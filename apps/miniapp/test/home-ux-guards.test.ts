@@ -42,7 +42,7 @@ test('entity cards expose settings, favorite, statistics and category edit targe
   assert.doesNotMatch(chatsPageSource, /chat-card__category-marker/u);
   assert.match(
     chatsPageSource,
-    /aria-label=\{`Открыть настройки: \$\{entity\.title\}\$\{[\s\S]*?primaryFavoriteType \? `\. Категория: \$\{categoryLabel\}` : ''[\s\S]*?\}`\}/u,
+    /aria-label=\{`Открыть настройки: \$\{title\}\$\{[\s\S]*?primaryFavoriteType \? `\. Категория: \$\{categoryLabel\}` : ''[\s\S]*?\}`\}/u,
   );
   assert.match(chatsPageSource, /<BackChevronIcon \/>/u);
   assert.match(chatsPageSource, /to=\{settingsRoute\}/u);
@@ -60,7 +60,7 @@ test('entity cards expose settings, favorite, statistics and category edit targe
   assert.match(chatsPageSource, /aria-haspopup="dialog"/u);
   assert.match(
     chatsPageSource,
-    /`Добавить в избранное: \$\{entity\.title\}`[\s\S]*?aria-controls="home-sheet-favorite"/u,
+    /`Добавить в избранное: \$\{title\}`[\s\S]*?aria-controls="home-sheet-favorite"/u,
   );
   assert.match(chatsPageSource, /className="chat-card__favorite-star"/u);
   assert.match(

@@ -2,7 +2,7 @@ import { AppIcon } from './ui/app-icon';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router';
 import { cn } from '../lib/cn';
-import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
+import { saveChatTitle } from '../lib/chat-titles';
 import {
   bindMaxBackButton,
   closeMaxMiniApp,
@@ -27,11 +27,6 @@ import { openPublikBot, PUBLIK_BOT_URL } from '../lib/publik-bot';
 import '../styles/moderation-workspace.css';
 import '../styles/publisher-workspace.css';
 
-type ScreenInfo = {
-  title: string;
-  subtitle?: string;
-};
-
 type BottomNavIconName = 'chats' | 'channels' | 'publications' | 'settings' | 'events';
 
 const BOTTOM_NAV_ICONS = {
@@ -44,80 +39,6 @@ const BOTTOM_NAV_ICONS = {
 
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
   return <AppIcon icon={BOTTOM_NAV_ICONS[name]} className="bottom-nav__icon-svg" />;
-}
-
-function resolveScreenInfo(
-  pathname: string,
-  chatLabel: string,
-  profile: MiniappProfile,
-): ScreenInfo {
-  if (pathname.startsWith('/legal/')) {
-    return {
-      title: 'Правовые документы',
-      subtitle: 'Условия использования и обработка данных ботов.',
-    };
-  }
-
-  if (pathname.includes('/giveaways/')) {
-    return {
-      title: 'Розыгрыш',
-      subtitle: chatLabel || 'Участие и итоги в одном экране.',
-    };
-  }
-
-  if (pathname === '/publications' || pathname === '/autoposts') {
-    return {
-      title: profile === 'publisher' ? 'Посты' : 'Расписания',
-    };
-  }
-
-  if (
-    pathname.includes('/dialog/') &&
-    (pathname.includes('/channel/') || pathname.includes('/chat/'))
-  ) {
-    const isSuggest = pathname.includes('/dialog/suggest');
-    const entityLabel = pathname.includes('/channel/') ? 'Канал' : 'Чат';
-    return {
-      title: isSuggest ? 'Идея для поста' : 'Комментарии в приложении',
-      subtitle: chatLabel
-        ? `${entityLabel}: ${chatLabel}`
-        : isSuggest
-          ? 'Отправка идеи поста админу.'
-          : 'Комментарии к публикации в приложении.',
-    };
-  }
-
-  if (pathname.includes('/channel/') && pathname.includes('/settings')) {
-    return {
-      title: 'Настройки',
-      subtitle: chatLabel ? `Канал: ${chatLabel}` : 'Выберите канал для настройки.',
-    };
-  }
-
-  if (pathname.includes('/channel/') && pathname.includes('/stats')) {
-    return {
-      title: 'Статистика',
-      subtitle: chatLabel ? `Канал: ${chatLabel}` : 'Выберите канал, чтобы посмотреть сводку.',
-    };
-  }
-
-  if (pathname.includes('/settings')) {
-    return {
-      title: 'Настройки модерации',
-      subtitle: chatLabel ? `Чат: ${chatLabel}` : 'Выберите чат, чтобы изменить правила.',
-    };
-  }
-
-  if (pathname.includes('/events')) {
-    return {
-      title: 'Статистика',
-      subtitle: chatLabel ? `Чат: ${chatLabel}` : 'Выберите чат, чтобы посмотреть статистику.',
-    };
-  }
-
-  return {
-    title: 'Панель',
-  };
 }
 
 export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) {
@@ -161,7 +82,6 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     /^\/publisher\/chat\/[^/]+\/auto-replies\/?$/u.test(location.pathname);
   const isManagedEntityRoute = isManagedEntityWorkspacePath(location.pathname);
   const isManagedEntityWorkspaceRoute = isManagedEntityRoute || isPublisherAutoRepliesRoute;
-  const routeEntityId = chatId || (isPublisherAutoRepliesRoute ? entityId : '');
 
   useEffect(() => {
     if (!chatId || !isManagedEntityRoute) {
@@ -210,23 +130,11 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     : isManagedEntityWorkspaceRoute
       ? routeEntityType
       : lastEntityType;
-  const resolvedChatId = routeEntityId;
   const homeRoute = profile === 'publisher' ? '/' : buildManagedEntitiesRoute(resolvedEntityType);
   const managedEntityBackRoute = isPublisherAutoRepliesRoute
     ? `/publisher/chat/${encodeURIComponent(entityId)}`
     : homeRoute;
 
-  const resolvedChatTitle = useMemo(() => {
-    if (!resolvedChatId) {
-      return '';
-    }
-
-    if (routeEntityId && routeChatTitle) {
-      return routeChatTitle;
-    }
-
-    return readChatTitle(resolvedChatId);
-  }, [resolvedChatId, routeChatTitle, routeEntityId]);
   const isGiveawayRoute = location.pathname.includes('/giveaways/');
   const isLegalRoute = location.pathname.startsWith('/legal/');
   const isDialogRoute =
@@ -254,11 +162,6 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     !isPublisherAutoRepliesRoute &&
     !isGiveawayRoute &&
     !isLegalRoute;
-
-  const screen = useMemo(
-    () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId, profile),
-    [location.pathname, profile, resolvedChatId, resolvedChatTitle],
-  );
 
   useEffect(() => {
     const shouldShowNativeBack = !isProfileHomeRoute || hasNativeBackHandlers;
@@ -345,8 +248,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
             <span className="shell-chip">{profile === 'publisher' ? 'Кабинет' : 'Панель'}</span>
           </div>
           <div className="shell-topbar__content">
-            <h2>{screen.title}</h2>
-            {screen.subtitle ? <p>{screen.subtitle}</p> : null}
+            <h2>Панель</h2>
           </div>
         </header>
       ) : null}
