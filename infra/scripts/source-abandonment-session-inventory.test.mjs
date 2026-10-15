@@ -372,7 +372,7 @@ test('DENY group splits to individuals without losing the supported subset', asy
           sourceCoverageComplete: false,
           issues: [
             { code: 'source_content_unproved', descriptor: 'sql:selected-source' },
-            { code: 'source_candidate_unproved', descriptor: 'sql:selected-source' },
+            { code: 'source_candidate_unproved', descriptor: 'sql:webhook_events' },
             { code: 'selected_owner_proof_incomplete', descriptor: 'sql:selected-source' },
           ],
         }
@@ -392,6 +392,146 @@ test('DENY group splits to individuals without losing the supported subset', asy
     ),
   );
   assert.equal(h.peak(), 1);
+});
+
+function chatTypeDenial(value) {
+  return {
+    ...value,
+    decision: 'DENY',
+    sourceCoverageComplete: false,
+    issues: [
+      { code: 'selected_owner_proof_incomplete', descriptor: 'sql:selected-source' },
+      { code: 'source_chat_type', descriptor: 'sql:selected-source' },
+      { code: 'source_content_unproved', descriptor: 'sql:selected-source' },
+      { code: 'source_candidate_unproved', descriptor: 'sql:webhook_events' },
+    ],
+  };
+}
+
+for (const ownerCount of [1, 3, 87])
+  test(`unsupported chat type stays excluded while all ${ownerCount} owners are accounted for`, async (t) => {
+    const rows = Array.from({ length: ownerCount }, (_, index) => row(index + 1));
+    const rejectedOwner = rows[Math.floor(ownerCount / 2)].claim.ownerId;
+    const h = planner(
+      writeWalk(t, [...rows, unresolvedRow(ownerCount + 1)]).read(),
+      (value, input) =>
+        input.selection.ownerWebhookEventIds.includes(rejectedOwner)
+          ? chatTypeDenial(value)
+          : value,
+    );
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.feasible, ownerCount > 1);
+    assert.equal(result.reason, ownerCount > 1 ? null : 'no_supported_children');
+    assert.equal(result.nominatedOwners, ownerCount);
+    assert.deepEqual(result.excludedCounts, { rejected: 1, unresolved: 1 });
+    assert.deepEqual(
+      result.children.flatMap((child) => child.authorities.map((entry) => entry.ownerId)).sort(),
+      rows
+        .map((entry) => entry.claim.ownerId)
+        .filter((id) => id !== rejectedOwner)
+        .sort(),
+    );
+    assert.ok(
+      h.calls.some(
+        (input) =>
+          input.selection.ownerWebhookEventIds.length === 1 &&
+          input.selection.ownerWebhookEventIds[0] === rejectedOwner,
+      ),
+    );
+    assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+    for (const child of result.children) {
+      const proof = h.proofs.find((value) => proofDigest(value) === child.admissionDigest);
+      assert.equal(proof.decision, 'READY_FOR_COLD_REVIEW');
+      assert.equal(proof.sourceCoverageComplete, true);
+      assert.equal(proof.selectionSha256, canonical(child.selection));
+    }
+    for (const key of ['pages', 'rows', 'probes', 'bytes'])
+      assert.equal(
+        result.admissionCost[key],
+        h.proofs.reduce((sum, value) => sum + value.cost[key], 0),
+      );
+    assert.equal(h.peak(), 1);
+  });
+
+for (const [name, change] of [
+  [
+    'global SQL error',
+    (value) => value.issues.push({ code: 'sql_budget_exceeded', descriptor: 'sql:inventory' }),
+  ],
+  [
+    'Redis error',
+    (value) =>
+      value.issues.push({
+        code: 'ACTION_PAGE_UNPROVED',
+        descriptor: 'redis:max-actions-background',
+      }),
+  ],
+  [
+    'unknown source code',
+    (value) => {
+      value.issues[1].code = 'source_unknown';
+    },
+  ],
+  [
+    'source-family descriptor',
+    (value) => {
+      value.issues[1].descriptor = 'sql:source-family';
+    },
+  ],
+  [
+    'global descriptor',
+    (value) => {
+      value.issues[2].descriptor = 'sql:inventory';
+    },
+  ],
+  [
+    'unknown candidate descriptor',
+    (value) => {
+      value.issues[3].descriptor = 'sql:unknown_table';
+    },
+  ],
+  [
+    'extra issue property',
+    (value) => {
+      value.issues[1].extra = true;
+    },
+  ],
+  [
+    'null issue',
+    (value) => {
+      value.issues[1] = null;
+    },
+  ],
+  [
+    'missing content summary',
+    (value) => {
+      value.issues.splice(2, 1);
+    },
+  ],
+])
+  test(`chat-type split refuses ${name} without dropping owners`, async (t) => {
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+      const denied = chatTypeDenial(value);
+      change(denied);
+      return denied;
+    });
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.reason, 'global_admission_refused');
+    assert.equal(result.admissionCalls, 1);
+    assert.deepEqual(result.children, []);
+    assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+    assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+  });
+
+test('chat-type bisection keeps the original admission budget and cannot return a partial plan', async (t) => {
+  const h = planner(writeWalk(t, [row(1), row(2), row(3)]).read(), chatTypeDenial);
+  h.options.maximumAdmissionCalls = 1;
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  assert.equal(result.reason, 'admission_budget');
+  assert.equal(result.admissionCalls, 1);
+  assert.deepEqual(result.children, []);
+  assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+  assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
 });
 
 function sqlPageDenial(value, descriptor = 'sql:channel_auto_post_attach_markers') {

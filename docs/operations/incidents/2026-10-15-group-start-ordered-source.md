@@ -93,6 +93,36 @@ preview with individual source proofs, exclusions and measured maintenance
 feasibility. Preserve the existing successful one-source authorization as its
 own scope; a fleet session requires a separately reviewed concrete decision.
 
+## Refused fleet preview and controller correction
+
+Release `b2062a302fd0fedb134ed744c5e171ffa9a532e8` completed strict smokes under
+manifest `release-20261015T210018Z-b2062a302fd0`. Its new complete online inventory
+with cutoff `21:04:00Z`, observed at `21:05:35.059Z`, still nominated 87 owners,
+with 28 released markers among 115 rows across 112 chats.
+
+The read-only session preview refused its first seven-owner selection after
+25,155 ms: `global_admission_refused`, `applied=false`, `runtimeStopped=false`.
+The proof charged 264 pages, 209 rows, 5,463 probes and 311,536 bytes. Its issues
+were `selected_owner_proof_incomplete`, `source_chat_type`,
+`source_content_unproved` on `sql:selected-source` and
+`source_candidate_unproved` on `sql:webhook_events`. No feasible fleet plan or
+new stopping/installing authority resulted.
+
+The exact `source_chat_type` producer checks the original normalized entity type
+and raw recipient type in the strict content validator. It is a selected-source
+refusal, but the controller's semantic bisection list omitted it, stopping the
+entire preview. The correction permits this exact code and producer scope to
+split the selection into fresh complete admissions. An unsupported singleton
+remains rejected and untouched. Finite descriptor matching also prevents global
+or malformed issues from masquerading as a source-specific refusal.
+
+Planner regressions cover one, three and 87 nominated owners, full accounting,
+retained failed proofs/costs, fresh successful child proofs, mixed SQL/Redis
+failures, forged scopes and exhausted budgets. This changes only the host
+planner; source validators, stopped inventories and installation guards remain
+unchanged. A new exact-CI controller and a new complete production preview are
+still required. The refused private plan must not be reused or overwritten.
+
 ## Follow-up constraints
 
 Fresh administrator commands need a separately proven command-only path if
