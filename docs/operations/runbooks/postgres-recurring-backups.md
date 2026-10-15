@@ -11,6 +11,16 @@ numeric queue age/threshold scalars. HTTP failures remain failures even if their
 claims readiness. The diagnostic excludes event identities and free-form health detail;
 retain the service journal because later healthy snapshots cannot reconstruct the abort.
 
+The producer and isolated restore probe can observe one refresh after the exact
+`stale-ready-fallback` warning, provided all other strict checks and numeric lag
+bounds pass. The second request waits beyond the ordinary two-second readiness
+cache and shares the original HTTP deadline. It must pass the unchanged strict
+checks and carry a newer, non-future queue sample no older than five seconds.
+Persistent fallback, missing evidence, real dependency/lag/HTTP failures and an
+exhausted deadline still fail. Both the initial failed sample and any confirmed
+refresh are logged without event identities or response bodies. The two-failure
+watchdog and storage reserve are unchanged; never count a fallback as healthy.
+
 Install `infra/env/postgres-backup.env.example` as `/etc/maxim-postgres-backup.env`
 (root, 0600). Use `/mnt/maxim-cold/backups/maxim` and
 `/mnt/maxim-cold/restore-smoke/maxim`, and set the backing path to
