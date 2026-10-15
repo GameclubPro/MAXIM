@@ -29,6 +29,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
   ./infra/scripts/vps-postgres-audit.sh queue [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-cohort [--short] [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-workload [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-order-candidates
   ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-semantic-mirrors [--explain]
@@ -126,7 +127,7 @@ case "$AUDIT_MODE" in
     WEBHOOK_COHORT_ARGS=("${@:2}")
     node "$ROOT_DIR/infra/scripts/webhook-cohort-audit.mjs" "${WEBHOOK_COHORT_ARGS[@]}" >/dev/null || exit 2
     ;;
-  delete-retry-heads|queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
+  webhook-workload|delete-retry-heads|queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -2335,6 +2336,9 @@ emit_sql() {
     legacy-semantic-mirrors)
       emit_legacy_semantic_mirrors_audit
       ;;
+    webhook-workload)
+      node "$ROOT_DIR/infra/scripts/webhook-workload-audit.mjs" ${RULES_CLEANUP_EXPLAIN:+"$RULES_CLEANUP_EXPLAIN"}
+      ;;
     webhook-cohort)
       node "$ROOT_DIR/infra/scripts/webhook-cohort-audit.mjs" "${WEBHOOK_COHORT_ARGS[@]}"
       ;;
@@ -2462,7 +2466,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -2572,7 +2576,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -2601,6 +2605,8 @@ elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "chat-message-window" ]]; then
   echo "Bounded chat message window audit failed closed." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "moderation-outcomes" ]]; then
   echo "Bounded moderation outcomes audit failed closed." >&2
+elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-workload" ]]; then
+  echo "Bounded webhook workload audit failed closed; private SQL details withheld." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-cohort" ]]; then
   echo "Bounded webhook cohort audit failed closed." >&2
 fi

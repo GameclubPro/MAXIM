@@ -4083,3 +4083,34 @@ test(
     }
   },
 );
+
+test('webhook workload stays opt-in, bounded and private across connector and SQL failures', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['webhook-workload']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(sql, /webhook_cohort_index_ready/u);
+  assert.match(sql, /ORDER BY created_at, id LIMIT 513/u);
+  assert.match(sql, /FROM candidates ORDER BY created_at, id LIMIT 512/u);
+  assert.match(sql, /closed_webhook_workload/u);
+  assert.equal(runAudit(data, ['webhook-workload', '--explain']).status, 0);
+  assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /EXPLAIN ANALYZE/u);
+  assert.equal(runConnect(data, ['postgres-audit', 'webhook-workload', '--explain']).status, 0);
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /webhook-workload/u);
+  const failed = runAudit(data, ['webhook-workload'], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /Bounded webhook workload audit failed closed/u);
+  assert.doesNotMatch(`${failed.stdout}${failed.stderr}`, /fixture-event|ERROR near/u);
+  for (const extra of ['--apply', 'SELECT 1', '/tmp/query.sql', '--short', '--explain=analyze']) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['webhook-workload', extra]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'webhook-workload', extra]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /closed_webhook_workload/u);
+});
