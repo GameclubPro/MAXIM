@@ -70,6 +70,7 @@
 - Local submit: stage the intended paths, then run `./infra/scripts/local-commit-push.sh "<message>" main`. The helper is staged-only by default, runs `agent:verify --staged`, commits, and pushes the exact resulting `HEAD`; `--all` is an explicit broad-staging opt-in.
 - `--all` excludes every `AGENTS.md` unless `--include-agents` is present, and already-staged agent notes are rejected without that flag.
 - Local deploy: `./infra/scripts/vps-connect.sh deploy main [services|--plan|--auto|--full]`.
+- Keep a checkout unchanged while a long-running local shell wrapper uses it. Bash can resume reading a changed script at its old byte offset after a child returns. Run deploys from a separate clean release checkout while monitoring continues from its unchanged checkout; preserve any monitoring handover gap in the acceptance evidence.
 - For VPS-to-GitHub SSH transport, `MAXIM_DEPLOY_GIT_SSH_PORT=443` selects `ssh.github.com` without losing the remote deploy identity. The default leaves transport unchanged; an override requires a GitHub SSH origin and a trusted host key. It neither changes persistent SSH config nor retries a deployment.
 - Exact-runtime manifest recovery: `./infra/scripts/vps-connect.sh finalize-release-recovery main`. Use
   it only after an interrupted transition already left all 14 API roles and both active static
