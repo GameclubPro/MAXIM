@@ -17176,6 +17176,9 @@ describe('AdminService.listChats', () => {
         ),
     });
     const maxBotRegistry = {
+      getBotById: jest.fn((botId) =>
+        ['id613002203036_bot', 'id613002203036_4_bot'].includes(botId) ? { id: botId } : null,
+      ),
       getAllBots: jest.fn().mockReturnValue([
         {
           id: 'id613002203036_bot',

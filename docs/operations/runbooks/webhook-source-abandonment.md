@@ -215,6 +215,15 @@ malformed refusals stop the whole plan. A singleton
 resource refusal cannot exclude its owner as unsupported content. Semantic
 content refusals retain their separate bisection path, and no candidate is dropped
 to meet a ceiling.
+An exact `source_chat_type` refusal from `sql:selected-source`, accompanied by
+the selected-source content summary, may use that semantic bisection path. It
+means the retained original envelope failed the strict chat-type validator;
+it does not supply a missing type or admit that source. A fresh singleton denial
+accounts for it as rejected and leaves it untouched. Every supported selection
+still needs its own complete stock proof. Semantic issue codes must match their
+finite producer descriptors; unknown, malformed, global or mixed infrastructure
+issues refuse the whole plan. All failed proofs, costs, calls and original
+deadlines remain in force.
 An online action page can disappear while workers consume the live queue. Only a
 sole exact `ACTION_PAGE_UNPROVED` issue on one of the four known action queues
 permits a fresh full admission of the identical selection, with at most three

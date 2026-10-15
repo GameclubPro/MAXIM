@@ -313,6 +313,17 @@ function normalizeReadyProbe(probe, includeQueue) {
       typeof queueLag.readinessHeadLimitReached === 'boolean'
         ? queueLag.readinessHeadLimitReached
         : null,
+    quarantinedCountLowerBound:
+      Number.isSafeInteger(queueLag.quarantinedCountLowerBound) &&
+      queueLag.quarantinedCountLowerBound >= 0 &&
+      queueLag.quarantinedCountLowerBound <= 65
+        ? queueLag.quarantinedCountLowerBound
+        : null,
+    quarantineSampleLimitReached:
+      typeof queueLag.quarantineSampleLimitReached === 'boolean'
+        ? queueLag.quarantineSampleLimitReached
+        : null,
+    oldestQuarantinedAgeSec: finiteNonNegative(queueLag.oldestQuarantinedAgeSec),
     mode:
       systemMode.mode === 'normal' || systemMode.mode === 'degrade' ? systemMode.mode : 'unknown',
     condition:

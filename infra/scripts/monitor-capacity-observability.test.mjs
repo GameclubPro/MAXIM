@@ -256,6 +256,9 @@ function sample(observedAt, overrides = {}) {
       softWarning: false,
       softWarningCode: 'none',
       queueLagSec: 0.5,
+      quarantinedCountLowerBound: 0,
+      quarantineSampleLimitReached: false,
+      oldestQuarantinedAgeSec: 0,
       mode: 'normal',
       condition: 'healthy',
       burstActive: false,
@@ -582,6 +585,9 @@ test('readiness and queue probes retain only allowlisted aggregate fields', () =
     operationalLagSec: null,
     readinessWaitingCount: null,
     readinessHeadLimitReached: null,
+    quarantinedCountLowerBound: null,
+    quarantineSampleLimitReached: null,
+    oldestQuarantinedAgeSec: null,
     mode: 'degrade',
     condition: 'queue_backlog',
     burstActive: true,
@@ -670,6 +676,79 @@ test('preserves raw age and operational lag independently without weakening raw 
   assert.equal(invalidArchive.readiness.operationalLagSec, null);
   assert.equal(invalidArchive.readiness.readinessWaitingCount, null);
   assert.equal(invalidArchive.readiness.readinessHeadLimitReached, null);
+});
+
+test('retains bounded quarantine evidence and warns even when active lag is zero', () => {
+  for (const count of [0, 2, 65]) {
+    const raw = normalizeReadyProbe(
+      {
+        httpStatus: 200,
+        body: {
+          ok: true,
+          checks: {
+            database: true,
+            redis: true,
+            queueLag: {
+              ok: true,
+              rawOk: true,
+              softWarning: false,
+              softWarningCode: null,
+              effectiveLagSec: 0,
+              operationalLagSec: 0,
+              quarantinedCountLowerBound: count,
+              quarantineSampleLimitReached: count === 65,
+              oldestQuarantinedAgeSec: count ? 90 : 0,
+              oldestQuarantinedChatId: 'private-quarantined-chat',
+            },
+          },
+        },
+      },
+      true,
+    );
+    const current = normalizeSnapshot(sample('2026-09-02T12:00:00.000Z', { readiness: raw }));
+    assert.equal(current.readiness.quarantinedCountLowerBound, count);
+    assert.equal(current.readiness.quarantineSampleLimitReached, count === 65);
+    assert.equal(current.readiness.oldestQuarantinedAgeSec, count ? 90 : 0);
+    const { alerts } = evaluateAlerts([], current);
+    assert.equal(alerts.readiness.outcome, 'clear');
+    assert.equal(alerts.queue_lag_critical.outcome, 'clear');
+    assert.equal(alerts.quarantined_receipts.outcome, count ? 'firing' : 'clear');
+    assert.equal(alerts.quarantined_receipts.severity, 'warning');
+    assert.equal(alerts.quarantined_receipts.value, count);
+    assert.doesNotMatch(JSON.stringify(current), /private-quarantined-chat|ChatId/u);
+  }
+});
+
+test('missing, malformed, inconsistent and stale quarantine samples cannot report empty', () => {
+  for (const fields of [
+    { quarantinedCountLowerBound: undefined },
+    { quarantinedCountLowerBound: '0' },
+    { quarantinedCountLowerBound: -1 },
+    { quarantinedCountLowerBound: 1.5 },
+    { quarantinedCountLowerBound: 66 },
+    { quarantinedCountLowerBound: 65, quarantineSampleLimitReached: false },
+    { quarantineSampleLimitReached: true },
+    { quarantineSampleLimitReached: undefined },
+    { oldestQuarantinedAgeSec: undefined },
+    { oldestQuarantinedAgeSec: 1 },
+    { oldestQuarantinedAgeSec: Number.NaN },
+    { oldestQuarantinedAgeSec: -1 },
+    { available: false },
+    { softWarning: true, softWarningCode: 'stale-ready-fallback' },
+  ]) {
+    const current = normalizeSnapshot(sample('2026-09-02T12:00:00.000Z', { readiness: fields }));
+    assert.equal(evaluateAlerts([], current).alerts.quarantined_receipts.outcome, 'unknown');
+  }
+  for (const value of [undefined, null, '0', -1, 1.5, 66, Number.NaN, Infinity]) {
+    const raw = normalizeReadyProbe(
+      {
+        httpStatus: 200,
+        body: { ok: true, checks: { queueLag: { quarantinedCountLowerBound: value } } },
+      },
+      true,
+    );
+    assert.equal(raw.quarantinedCountLowerBound, null);
+  }
 });
 
 test('action health snapshots require internally consistent bounded arithmetic', () => {
