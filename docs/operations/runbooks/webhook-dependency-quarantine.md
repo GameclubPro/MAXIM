@@ -62,6 +62,31 @@ an unresolved quarantine. They must not be represented as successful moderation.
 `postgres-audit webhook-cohort` includes QUARANTINED as its eighth status. The closed cohort
 report does not prove remote effects or resolve historical quarantine.
 
+To distinguish a newly received dependent copy from a newly failed owner, use
+`postgres-audit webhook-quarantine` with the exact UTC minute of receipt creation.
+Synchronize exact-green-CI tooling, preview `postgres-audit-provision`, then apply
+the reviewed eight journal metadata-column grants. Inspect the plain plan first:
+
+```bash
+: "${QUARANTINE_AUDIT_MINUTE:?Set an exact closed UTC minute, ending in :00Z}"
+./infra/scripts/vps-connect.sh postgres-audit webhook-quarantine "$QUARANTINE_AUDIT_MINUTE" --explain
+./infra/scripts/vps-connect.sh postgres-audit webhook-quarantine "$QUARANTINE_AUDIT_MINUTE"
+```
+
+The covered status/time walk captures 65 receipt keys, reports at most 64 and
+marks truncation. Each exact receipt-key journal probe captures five blockers and
+reports at most four, then reads their metadata by primary key. Both caps affect
+`sample_complete`. A future/unclosed window reports `window_closed=false` and no
+rows. The report is opt-in and excluded from `all`; wrappers accept no SQL,
+file, repair flag or arbitrary range. Keep existing audit role/time budgets.
+
+This is a snapshot of receipts still in QUARANTINED, not a historical census of
+everything quarantined in that minute. Missing journal/blocker evidence stays
+explicit. Exact legacy/start markers, coarse timeout categories and saved clocks
+describe the recorded blocker, not current external effects. No report result
+permits release, cancellation, claim edits or replay. Outputs omit identities,
+message content and raw errors. Retain the original window and runtime SHA.
+
 Prepare a green exact-SHA compatibility image with writes disabled and retain it on the
 host before activation. A healthy installation can deploy this reader release first, then
 activate in a subsequent release. For an already degraded installation, use one ordinary

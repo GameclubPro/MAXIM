@@ -80,6 +80,7 @@ Commands:
   postgres-audit webhook-cohort [--explain]
   postgres-audit duplicate [--status <STATUS>] [--explain]
   postgres-audit poll-publication <poll-id> [--explain]
+  postgres-audit webhook-quarantine <UTC-minute> [--explain]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
   postgres-audit publisher-publications [--explain]
@@ -536,6 +537,13 @@ postgres_audit() {
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2
     fi
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
+
+  if [[ "$mode" == 'webhook-quarantine' ]]; then
+    if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "$3" != '--explain' ) ]]; then return 2; fi
+    node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "$2" --explain >/dev/null || return 2
     remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
     return
   fi
