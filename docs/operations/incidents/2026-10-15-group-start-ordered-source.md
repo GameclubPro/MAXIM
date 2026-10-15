@@ -123,6 +123,17 @@ planner; source validators, stopped inventories and installation guards remain
 unchanged. A new exact-CI controller and a new complete production preview are
 still required. The refused private plan must not be reused or overwritten.
 
+Exact-head CI for `37f040151e4dc00eb7e56793be6534c013b625f9` failed one native
+legacy-cleanup boundary case while 1,561 other PostgreSQL tests passed. Its
+synthetic certificate used separate `clock_timestamp()` calls for quiescence
+and seal, although the case assumed equality and the runtime hold reader uses
+quiescence. Those calls can straddle a stored millisecond; the failed run did not
+retain the two timestamps, so the specific timing is not directly observed.
+The fixture now uses one statement timestamp and explicitly checks equality,
+retaining both the equal-time refusal and later-source acceptance. All 26 tests
+in the affected native suite passed. Runtime cutoff semantics are unchanged;
+the corrected head still requires successful exact-SHA CI before controller use.
+
 ## Follow-up constraints
 
 Fresh administrator commands need a separately proven command-only path if

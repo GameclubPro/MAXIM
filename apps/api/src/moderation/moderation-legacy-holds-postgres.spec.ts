@@ -74,11 +74,13 @@ describeStores('native permanent legacy effect holds', () => {
   ) {
     const id = `legacy-consumer-fixture-${randomUUID()}`;
     certificates.push(id);
+    // FLAG: This fixture uses one instant for quiescence and seal. The hold reader
+    // compares quiesced_at; two clock_timestamp calls can straddle a millisecond.
     await s.prisma.$executeRaw(Prisma.sql`
       INSERT INTO webhook_legacy_quiescence_certificates
         (id, source_sha, image_id, attestation, attestation_digest, preview_sha256, quiesced_at, sealed_at)
       VALUES (${id}, ${'f'.repeat(40)}, ${`sha256:${'e'.repeat(64)}`}, '{}'::jsonb,
-        ${'a'.repeat(64)}, ${'b'.repeat(64)}, clock_timestamp() AT TIME ZONE 'UTC', clock_timestamp() AT TIME ZONE 'UTC')
+        ${'a'.repeat(64)}, ${'b'.repeat(64)}, statement_timestamp() AT TIME ZONE 'UTC', statement_timestamp() AT TIME ZONE 'UTC')
     `);
     await s.prisma.$executeRaw(Prisma.sql`
       INSERT INTO webhook_legacy_recoveries
@@ -198,10 +200,14 @@ describeStores('native permanent legacy effect holds', () => {
       // FLAG: Bind the fixture to the persisted millisecond seal. Truncating a newer
       // SQL microsecond clock to a JS Date must not turn post-seal proof into equality.
       // Equality remains a separate negative case and never authorizes cleanup.
-      const [{ at, sealedAt }] = await s.prisma.$queryRaw<Array<{ at: Date; sealedAt: Date }>>`
+      const [{ at, sealedAt, quiescedAt }] = await s.prisma.$queryRaw<
+        Array<{ at: Date; sealedAt: Date; quiescedAt: Date }>
+      >`
         SELECT GREATEST(date_trunc('milliseconds', clock_timestamp() AT TIME ZONE 'UTC'),
-          sealed_at + interval '1 millisecond') AS at, sealed_at AS "sealedAt"
+          sealed_at + interval '1 millisecond') AS at, sealed_at AS "sealedAt",
+          quiesced_at AS "quiescedAt"
         FROM webhook_legacy_quiescence_certificates WHERE id = ${certificateId}`;
+      expect(quiescedAt.getTime()).toBe(sealedAt.getTime());
       expect(at.getTime()).toBeGreaterThan(sealedAt.getTime());
       const sourceAt = kind === 'old-proof' ? before : kind === 'at-seal-proof' ? sealedAt : at;
       const messageId = `bot-cleanup-${randomUUID()}`;
