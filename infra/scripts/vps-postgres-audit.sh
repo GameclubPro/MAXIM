@@ -36,6 +36,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh moderation-outcomes [--explain]
   ./infra/scripts/vps-postgres-audit.sh chat-message-window <chat-id> <UTC-minute> [--explain]
   ./infra/scripts/vps-postgres-audit.sh duplicate [--status <STATUS>] [--explain]
+  ./infra/scripts/vps-postgres-audit.sh poll-publication <poll-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
@@ -125,6 +126,12 @@ case "$AUDIT_MODE" in
       exit 2
     fi
     RULES_CLEANUP_EXPLAIN="${2:-}"
+    ;;
+  poll-publication)
+    if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^[A-Za-z0-9_-]{1,128}$ ||
+          ( $# -eq 3 && "$3" != '--explain' ) ]]; then usage; exit 2; fi
+    POLL_PUBLICATION_ID="$2"
+    RULES_CLEANUP_EXPLAIN="${3:-}"
     ;;
   rules-cleanup|publisher-comments)
     if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
@@ -451,7 +458,7 @@ SELECT CASE
               'publisher_entity_bindings',
               'publisher_entity_settings',
               'managed_entity_publication_policies',
-              'chat_rules',
+              'chat_rules', 'managed_polls', 'chat_bot_memberships',
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
               'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
@@ -2283,6 +2290,9 @@ emit_sql() {
   fi
   node "$ROOT_DIR/infra/scripts/commercial-quality-audit.mjs" "${commercial_privilege_args[@]}"
   node "$ROOT_DIR/infra/scripts/webhook-owner-proof-audit.mjs" --privileges
+  local poll_privilege_args=(--privileges)
+  if [[ "$AUDIT_MODE" == 'poll-publication' ]]; then poll_privilege_args+=(--require-all); fi
+  node "$ROOT_DIR/infra/scripts/poll-publication-audit.mjs" "${poll_privilege_args[@]}"
   case "$AUDIT_MODE" in
     webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof)
       local owner_proof_args=()
@@ -2360,6 +2370,11 @@ emit_sql() {
         multibot_args+=("$RULES_CLEANUP_EXPLAIN")
       fi
       node "$ROOT_DIR/infra/scripts/multibot-prepare-diagnostics.mjs" "${multibot_args[@]}"
+      ;;
+    poll-publication)
+      local poll_args=("$POLL_PUBLICATION_ID")
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then poll_args+=("$RULES_CLEANUP_EXPLAIN"); fi
+      node "$ROOT_DIR/infra/scripts/poll-publication-audit.mjs" "${poll_args[@]}"
       ;;
     rules-cleanup)
       local args=("$RULES_CLEANUP_CHAT_ID")
