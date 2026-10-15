@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readChannelRouteReadWait } from './channel-auto-post-mutation-guard';
 
 import type { PrismaService } from '../prisma/prisma.service';
 import type { Prisma } from '../prisma/prisma-client';
@@ -15,6 +16,16 @@ import {
   CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION,
   CHAT_DIALOG_AUTO_ATTACH_ACTION,
 } from './moderation.service.support';
+
+type ChannelEditHandoffInput = {
+  chatId: string;
+  messageId: string;
+  lockToken: string;
+  botId: string;
+  linkType: string | null;
+  source: 'webhook' | 'poll';
+  quickButtons?: unknown;
+};
 
 export type ReplacementAttachMarkerStatus = 'IN_PROGRESS' | 'SUCCEEDED' | 'SKIPPED';
 
@@ -907,15 +918,7 @@ export class ReplacementAttachMarkerStore {
   }
 
   async deferChannelEditBeforeDispatch(
-    params: {
-      chatId: string;
-      messageId: string;
-      lockToken: string;
-      botId: string;
-      linkType: string | null;
-      source: 'webhook' | 'poll';
-      quickButtons?: unknown;
-    },
+    params: ChannelEditHandoffInput,
     error: unknown,
     editAttempts: number,
   ): Promise<boolean> {
@@ -932,6 +935,31 @@ export class ReplacementAttachMarkerStore {
       isAmbiguousMaxMutationError(error)
     )
       return false;
+    return this.persistChannelEditHandoff(params, 'max_action_executor_proof_rejected');
+  }
+
+  async deferChannelRouteBeforeDispatch(
+    params: ChannelEditHandoffInput,
+    error: unknown,
+  ): Promise<boolean> {
+    const proof = readChannelRouteReadWait(error, params.chatId);
+    // FLAG: Only a genuine initial route GET refusal can use the exact candidate's edit marker.
+    // No publication/send evidence or unsupported decoration is admitted by this path.
+    if (
+      !proof ||
+      proof.botId !== params.botId ||
+      params.source !== 'webhook' ||
+      params.linkType === 'forward' ||
+      params.quickButtons
+    )
+      return false;
+    return this.persistChannelEditHandoff(params, 'max_api_internal_rate_limit');
+  }
+
+  private async persistChannelEditHandoff(
+    params: ChannelEditHandoffInput,
+    reason: 'max_action_executor_proof_rejected' | 'max_api_internal_rate_limit',
+  ): Promise<boolean> {
     // FLAG: Completing a webhook needs a committed handoff of its exact live edit lease.
     // Retain IN_PROGRESS for the existing guarded recovery; never certify delivery here.
     const delegate = this.getDelegate('channel_auto_post');
@@ -957,7 +985,7 @@ export class ReplacementAttachMarkerStore {
       data: {
         lockToken: null,
         lockedAt: null,
-        lastError: 'Channel edit deferred before dispatch: max_action_executor_proof_rejected',
+        lastError: `Channel edit deferred before dispatch: ${reason}`,
         lastStatusCode: null,
       },
     });

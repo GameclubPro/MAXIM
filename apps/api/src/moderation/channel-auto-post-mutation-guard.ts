@@ -1,4 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
+import { extractHttpStatusCode } from '../common/http-error.util';
+import { isAmbiguousMaxMutationError } from '../max/max-send-ambiguity.util';
+import { wasMaxMessageSendAttempted } from '../max/max-mutation-outcome.util';
+import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
 
 import {
   hasConfirmedDeleteMessageAccess,
@@ -8,7 +12,11 @@ import {
   normalizePermissionName,
   type MembershipAccessSnapshot,
 } from '../max/max-bot-access-policy.util';
-import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxApiInternalRateLimitError,
+  type MaxClientService,
+} from '../max/max-client.service';
 import { ChatEntityType } from '../prisma/prisma-client';
 import { resolveChannelAutoPostMutationBotRoute } from './channel-auto-post-runtime';
 
@@ -34,10 +42,60 @@ type ChannelAutoPostMutationGuardDependencies = {
     chatId: string;
     action: ChannelAutoPostMutationAction;
   }) => Promise<readonly (string | null)[]>;
-  resolveExecutableBotIdentity: (
-    botId: string,
-  ) => { id?: unknown; contactId?: unknown } | null;
+  resolveExecutableBotIdentity: (botId: string) => { id?: unknown; contactId?: unknown } | null;
 };
+
+type ChannelRouteReadWait = Readonly<{ chatId: string; botId: string }>;
+const routeReadWaits = new WeakMap<object, ChannelRouteReadWait>();
+
+export function readChannelRouteReadWait(
+  error: unknown,
+  chatId: string,
+): ChannelRouteReadWait | null {
+  if (!isInitialChannelReadQuotaRefusal(error)) return null;
+  const proof = routeReadWaits.get(error);
+  return proof?.chatId === chatId ? proof : null;
+}
+
+function isInitialChannelReadQuotaRefusal(error: unknown): error is MaxApiInternalRateLimitError {
+  const evidence = error as { response?: unknown; config?: { method?: unknown } } | null;
+  return (
+    error instanceof MaxApiInternalRateLimitError &&
+    error.preDispatch === true &&
+    extractHttpStatusCode(error) === null &&
+    evidence?.response == null &&
+    (evidence?.config?.method === undefined || evidence.config.method === 'get') &&
+    !wasMaxMessageSendAttempted(error) &&
+    !wasMaxMemberMutationAttempted(error) &&
+    !isAmbiguousMaxMutationError(error)
+  );
+}
+
+export async function resolveInitialChannelMutationRoute(
+  resolve: () => Promise<{ botId: string | null; requiredAuthorVerified: boolean }>,
+  params: {
+    chatId: string;
+    source: 'webhook' | 'poll';
+    linkType: string | null;
+    quickButtons?: unknown;
+  },
+) {
+  try {
+    return { ...(await resolve()), routeReadFailure: null as unknown };
+  } catch (error) {
+    const wait = readChannelRouteReadWait(error, params.chatId);
+    // FLAG: Direct webhook edits may persist a refused read, never infer bot rights.
+    // Forwards, quick buttons and unmarked/attempted failures keep their original fences.
+    if (
+      !wait ||
+      params.source !== 'webhook' ||
+      params.linkType === 'forward' ||
+      params.quickButtons
+    )
+      throw error;
+    return { botId: wait.botId, requiredAuthorVerified: true, routeReadFailure: error };
+  }
+}
 
 export class ChannelAutoPostMutationGuard {
   constructor(private readonly dependencies: ChannelAutoPostMutationGuardDependencies) {}
@@ -74,6 +132,17 @@ export class ChannelAutoPostMutationGuard {
           return candidateRoute;
         }
       } catch (error: unknown) {
+        // FLAG: Only this exact candidate's initial GET may nominate a durable edit wait.
+        // It grants no access or mutation authority; final recovery must recheck both.
+        if (
+          params.action === 'edit_message' &&
+          isInitialChannelReadQuotaRefusal(error) &&
+          !routeReadWaits.has(error)
+        )
+          routeReadWaits.set(
+            error,
+            Object.freeze({ chatId: params.chatId, botId: candidateRoute.botId }),
+          );
         firstAccessProbeError ??= error;
       }
     }
@@ -210,9 +279,7 @@ export class ChannelAutoPostMutationGuard {
   }
 }
 
-function hasConfirmedChannelWriteMessageAccess(
-  snapshot: MembershipAccessSnapshot | null,
-): boolean {
+function hasConfirmedChannelWriteMessageAccess(snapshot: MembershipAccessSnapshot | null): boolean {
   if (!snapshot) {
     return false;
   }

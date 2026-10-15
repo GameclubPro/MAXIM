@@ -1,4 +1,5 @@
 import { legacyReceiptSourceDigest } from './webhook-legacy-receipt-disposition';
+import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { ConfigService } from '@nestjs/config';
 import { Queue, type ConnectionOptions } from 'bullmq';
 import Redis from 'ioredis';
@@ -490,6 +491,180 @@ native('legacy disposition production ingestion activation regressions', () => {
     const source = await owner();
     await seal(source.candidate);
     expect(await holds.settleHeldReceipt(randomUUID(), source.value)).toBe(false);
+  });
+
+  it.each([
+    [false, undefined],
+    [true, undefined],
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ] as const)(
+    'preserves a sealed member hold without endlessly retrying direct user_added (alreadyDeferred=%s, isChannel=%s)',
+    async (alreadyDeferred, isChannel) => {
+      const source = await owner();
+      await seal(source.candidate);
+      const added = new WebhookParser().parse(
+        {
+          update_type: 'user_added',
+          update_id: randomUUID(),
+          timestamp: Date.now(),
+          chat_id: source.chatId,
+          ...(isChannel === undefined ? {} : { is_channel: isChannel }),
+          user: { user_id: source.userId, name: 'Local held member', is_bot: false },
+        },
+        { botId: 'major-1' },
+      );
+      // FLAG: Seed an older runtime's unprojected receipt; new ingress may already
+      // install the exact disposition before returning from storeReceipt.
+      const incoming = await prisma.webhookEvent.create({
+        data: {
+          botId: added.botId,
+          dedupKey: `${added.botId}:${added.updateId}`,
+          semanticKey: buildWebhookSemanticEventKey(added),
+          normalizedPayload: added as unknown as Prisma.InputJsonValue,
+          rawPayload: {},
+          ...(alreadyDeferred
+            ? {
+                errorMessage:
+                  'Webhook preparation deferred: Legacy scope installation is not sealed',
+                nextEnqueueAt: new Date(Date.now() - 1_000),
+              }
+            : {}),
+        },
+      });
+      receipts.push(incoming.id);
+      const before = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: incoming.id } });
+      await expect(ingress.preparePersistedWebhookEvent(incoming.id)).resolves.toMatchObject({
+        prepared: false,
+        canonical: false,
+        enforced: true,
+      });
+      const after = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: incoming.id } });
+      expect(after.status).toBe('NO_REPLAY_HELD');
+      const proof = await prisma.webhookLegacyReceiptDisposition.findUniqueOrThrow({
+        where: { id: after.legacyDispositionId! },
+      });
+      expect(proof).toMatchObject({ scopeKind: 'POST_SEAL_MEMBER', originalStatus: 'RECEIVED' });
+      expect(rawEvidence({ ...after, status: proof.originalStatus })).toEqual(rawEvidence(before));
+      expect(await holds.isUpdateHeld(added)).toBe(true);
+      expect(
+        await prisma.webhookExecutionClaim.count({ where: { webhookEventId: incoming.id } }),
+      ).toBe(0);
+      expect(
+        await prisma.webhookExecutionClaim.findUnique({ where: { id: source.candidate.claim.id } }),
+      ).toEqual(source.candidate.claim);
+      expect((await metrics.getLagSnapshot({ maxAgeMs: 0 })).oldestReceivedEventId).toBeNull();
+    },
+  );
+
+  it('projects a fresh held join at ingress and preserves unrelated participant admission', async () => {
+    const source = await owner();
+    await seal(source.candidate);
+    const added = new WebhookParser().parse(
+      {
+        update_type: 'user_added',
+        timestamp: Date.now(),
+        chat_id: source.chatId,
+        user: { user_id: source.userId, is_bot: false },
+      },
+      { botId: 'major-1' },
+    );
+    const held = await store(added);
+    expect(held.status).toBe('NO_REPLAY_HELD');
+    expect(held.normalizedPayload).toEqual(added);
+    expect(held.processedAt).toBeNull();
+    const independent = await store(update(source.chatId, `independent-${randomUUID()}`));
+    const admission = jest
+      .spyOn(ingress, 'preparePersistedWebhookEvent')
+      .mockImplementation(async () => {
+        throw new WebhookPreparationDeferredError('local_test_preparation_boundary', 1000);
+      });
+    await (outbox as unknown as { enqueueBatch(): Promise<void> }).enqueueBatch();
+    expect(admission.mock.calls.map(([id]) => id)).toEqual([independent.id]);
+    expect(await holds.isUpdateHeld(added)).toBe(true);
+    expect(await prisma.webhookExecutionClaim.count({ where: { webhookEventId: held.id } })).toBe(
+      0,
+    );
+  });
+
+  it.each([
+    'raw_target',
+    'unknown_shape',
+    'normalized_target',
+    'unknown_human',
+    'unknown_error',
+    'queued',
+    'attempted',
+    'claim',
+    'semantic_key',
+    'pre_seal_source',
+    'future_source',
+    'sampled_source',
+    'nested_user_field',
+    'string_timestamp',
+    'invalid_channel_flag',
+    'normalized_entity_type',
+  ])('keeps a held join fenced when %s is unproved', async (mutation) => {
+    const source = await owner();
+    await seal(source.candidate);
+    const raw = {
+      update_type: 'user_added',
+      update_id: randomUUID(),
+      timestamp: Date.now(),
+      chat_id: source.chatId,
+      user: { user_id: source.userId, is_bot: false },
+    };
+    const added = new WebhookParser().parse(raw, { botId: 'major-1' });
+    if (mutation === 'raw_target') raw.user.user_id = 'other-private-user';
+    if (mutation === 'unknown_shape') Object.assign(raw, { callback: { callback_id: 'private' } });
+    if (mutation === 'normalized_target') added.membership!.memberUserIds = ['other-private-user'];
+    if (mutation === 'unknown_human') delete (raw.user as { is_bot?: boolean }).is_bot;
+    if (mutation === 'pre_seal_source') raw.timestamp = cutoff.getTime() - 1_000;
+    if (mutation === 'future_source') raw.timestamp = Date.now() + 60_000;
+    if (mutation === 'nested_user_field') Object.assign(raw.user, { name: { user_id: 'other' } });
+    if (mutation === 'string_timestamp') Object.assign(raw, { timestamp: String(raw.timestamp) });
+    if (mutation === 'invalid_channel_flag') Object.assign(raw, { is_channel: 'true' });
+    if (mutation === 'normalized_entity_type') added.message!.entityType = 'channel';
+    added.raw = raw;
+    const incoming = await prisma.webhookEvent.create({
+      data: {
+        botId: added.botId,
+        dedupKey: `${added.botId}:${added.updateId}`,
+        semanticKey:
+          mutation === 'semantic_key'
+            ? `private-other-${randomUUID()}`
+            : buildWebhookSemanticEventKey(added),
+        normalizedPayload: added as unknown as Prisma.InputJsonValue,
+        rawPayload: mutation === 'sampled_source' ? { ...raw, chat_id: '-other-private-chat' } : {},
+        ...(mutation === 'unknown_error' ? { errorMessage: 'unknown prior attempt' } : {}),
+        ...(mutation === 'queued'
+          ? { status: 'QUEUED', queuedAt: new Date(), queueName: WEBHOOK_QUEUE_CRITICAL }
+          : {}),
+        ...(mutation === 'attempted' ? { enqueueAttempts: 1 } : {}),
+      },
+    });
+    receipts.push(incoming.id);
+    if (mutation === 'claim')
+      await prisma.webhookExecutionClaim.create({
+        data: {
+          kind: 'EXECUTION',
+          semanticKey: incoming.semanticKey!,
+          webhookEventId: incoming.id,
+          enforced: true,
+          status: 'PENDING',
+        },
+      });
+    const before = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: incoming.id } });
+    expect(await holds.materializeReceipt(incoming.id)).toBe('BLOCKED_UNKNOWN');
+    expect(await prisma.webhookEvent.findUniqueOrThrow({ where: { id: incoming.id } })).toEqual(
+      before,
+    );
+    expect(
+      await prisma.webhookLegacyReceiptDisposition.count({ where: { receiptId: incoming.id } }),
+    ).toBe(0);
+    expect(await holds.isUpdateHeld(added)).toBe(true);
   });
 
   it('admits an unrelated participant through the real ordered sequence after held ingress', async () => {
@@ -1096,7 +1271,7 @@ native('legacy disposition production ingestion activation regressions', () => {
     },
   );
 
-  it('uses one indexed actionable row despite 5,000 positive held receipts', async () => {
+  it('reads one indexed head despite 5,000 held receipts and a pending backlog', async () => {
     const source = await owner();
     const certificateId = await seal(source.candidate);
     const template = await store(update(source.chatId, source.userId));
@@ -1133,6 +1308,24 @@ native('legacy disposition production ingestion activation regressions', () => {
       WHERE proof.receipt_id = event.id AND proof.authority_id = ${certificateId}
         AND event.legacy_disposition_id IS NULL`;
     const independent = await store(update(source.chatId, randomUUID()));
+    // FLAG: A lone RECEIVED row makes any status index equally bounded. Include a
+    // later pending population so this test proves ordered admission under backlog
+    // without forcing planner settings or weakening the exact one-row/index bounds.
+    const laterPending = Array.from({ length: 1000 }, (_, index) => {
+      const id = randomUUID();
+      receipts.push(id);
+      return {
+        ...independent,
+        id,
+        dedupKey: id,
+        createdAt: new Date(independent.createdAt.getTime() + index + 1),
+      };
+    });
+    for (let offset = 0; offset < laterPending.length; offset += 500) {
+      await prisma.webhookEvent.createMany({
+        data: JSON.parse(JSON.stringify(laterPending.slice(offset, offset + 500))),
+      });
+    }
     // FLAG: Shared native suites leave dead index entries. Normalize this disposable fixture
     // so the live held-history work bound does not depend on autovacuum timing.
     await prisma.$executeRaw`VACUUM (ANALYZE) webhook_events`;

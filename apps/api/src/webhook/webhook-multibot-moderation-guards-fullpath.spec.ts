@@ -1,8 +1,14 @@
 import { persistVoiceSource } from '../moderation/voice-webhook-source';
 import { randomUUID } from 'node:crypto';
+import { markMaxMessageSendAttempted } from '../max/max-mutation-outcome.util';
+import { markMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import { MaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { Queue, type ConnectionOptions } from 'bullmq';
-import { MaxApiInternalRateLimitError, type MaxActionJob } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxApiInternalRateLimitError,
+  type MaxActionJob,
+} from '../max/max-client.service';
 import { Prisma } from '../prisma/prisma-client';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
@@ -726,6 +732,189 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       expect(s.effects).toEqual([]);
     },
   );
+
+  it.each(['recover', 'access_lost', 'held'] as const)(
+    'persists an initial channel route quota wait without blocking the next post: %s',
+    async (recovery) => {
+      const s = await fixture(1);
+      s.setBotPermissions(s.bots[0]!.id, [
+        'read_all_messages',
+        'write',
+        'edit_message',
+        'delete_message',
+      ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      const read = s.max.getCurrentChatMemberAccess.bind(s.max);
+      let refusals = 0;
+      jest.spyOn(s.max, 'getCurrentChatMemberAccess').mockImplementation(async (id, options) => {
+        if (options?.sourceTag === MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST && refusals === 0) {
+          refusals += 1;
+          throw new MaxApiInternalRateLimitError('Fixture initial channel route quota', 250);
+        }
+        return read(id, options);
+      });
+      await s.pause();
+      const messageId = `route-wait-${randomUUID()}`;
+      const id = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        text: 'Channel post',
+        senderless: true,
+      });
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      await s.ingress.preparePersistedWebhookEvent(id);
+      await expect(s.moderation.processWebhookEvent(id)).resolves.toBeUndefined();
+      expect(refusals).toBe(1);
+      expect(s.effects).toEqual([]);
+      expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).status).toBe(
+        'PROCESSED',
+      );
+      const where = { chatId_messageId: { chatId: chatId!, messageId } };
+      expect(await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({ where })).toMatchObject(
+        {
+          status: 'IN_PROGRESS',
+          deliveryMode: 'edit_message',
+          lockedAt: null,
+          lockToken: null,
+          botId: s.bots[0]!.id,
+          replacementMessageId: null,
+          replacementSendStartedAt: null,
+        },
+      );
+      await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      const nextId = await s.ingest({
+        chatId: chatId!,
+        messageId: `route-next-${randomUUID()}`,
+        text: 'Next post',
+        senderless: true,
+      });
+      await s.ingress.preparePersistedWebhookEvent(nextId);
+      await s.moderation.processWebhookEvent(nextId);
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } })).status,
+      ).toBe('PROCESSED');
+      expect(handler).toHaveBeenCalledTimes(2);
+      const before = s.effects.filter((effect) => effect.method === 'put').length;
+      expect(before).toBe(1);
+      await s.prisma.channelAutoPostAttachMarker.update({
+        where,
+        data: { updatedAt: new Date(Date.now() - 360_000) },
+      });
+      if (recovery === 'access_lost') s.denyBot(s.bots[0]!.id);
+      else if (recovery === 'held')
+        jest.spyOn((s.moderation as any).legacyHolds, 'isMessageHeld').mockResolvedValue(true);
+      await (s.moderation as any).channelAutoPostLegacyRecovery.runIfDue();
+      expect(s.effects.filter((effect) => effect.method === 'put')).toHaveLength(
+        before + (recovery === 'recover' ? 1 : 0),
+      );
+      expect(s.effects.filter((effect) => effect.method !== 'put')).toEqual([]);
+      expect((await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({ where })).status).toBe(
+        recovery === 'recover' ? 'SUCCEEDED' : 'IN_PROGRESS',
+      );
+      expect(handler).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    'forged',
+    'http',
+    'method',
+    'send_attempted',
+    'member_attempted',
+    'lost_lease',
+    'replacement_evidence',
+    'commit_failed',
+    'existing_lease',
+    'late_attempt',
+  ] as const)('refuses an unsafe initial channel route handoff: %s', async (failure) => {
+    const s = await fixture(1);
+    s.setBotPermissions(s.bots[0]!.id, [
+      'read_all_messages',
+      'write',
+      'edit_message',
+      'delete_message',
+    ]);
+    const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+    await s.pause();
+    const messageId = `unsafe-route-${randomUUID()}`;
+    const where = { chatId_messageId: { chatId: chatId!, messageId } };
+    const id = await s.ingest({
+      chatId: chatId!,
+      messageId,
+      text: 'Channel post',
+      senderless: true,
+    });
+    const read = s.max.getCurrentChatMemberAccess.bind(s.max);
+    const local = new MaxApiInternalRateLimitError('Fixture route refusal', 250);
+    let failureError: unknown = local;
+    if (failure === 'forged')
+      failureError = Object.assign(new Error('Fixture route refusal'), {
+        code: local.code,
+        preDispatch: true,
+        name: local.name,
+      });
+    if (failure === 'http')
+      Object.assign(local, { response: { status: 429 }, config: { method: 'get' } });
+    if (failure === 'method') Object.assign(local, { config: { method: 'post' } });
+    if (failure === 'send_attempted') markMaxMessageSendAttempted(local);
+    if (failure === 'member_attempted') markMaxMemberMutationAttempted(local);
+    jest.spyOn(s.max, 'getCurrentChatMemberAccess').mockImplementation(async (chat, options) => {
+      if (options?.sourceTag === MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST) throw failureError;
+      return read(chat, options);
+    });
+    const store = (s.moderation as any).replacementAttachMarkerStore;
+    const handoff = store.deferChannelRouteBeforeDispatch.bind(store);
+    jest
+      .spyOn(store, 'deferChannelRouteBeforeDispatch')
+      .mockImplementation(async (params: unknown, error: unknown) => {
+        if (failure === 'commit_failed') throw new Error('Fixture durable handoff unavailable');
+        if (failure === 'late_attempt') markMaxMessageSendAttempted(local);
+        if (failure === 'lost_lease' || failure === 'replacement_evidence') {
+          await s.prisma.channelAutoPostAttachMarker.update({
+            where,
+            data:
+              failure === 'lost_lease'
+                ? { lockToken: 'other-worker' }
+                : { replacementSendStartedAt: new Date() },
+          });
+        }
+        return handoff(params, error);
+      });
+    if (failure === 'existing_lease') {
+      await s.prisma.channelAutoPostAttachMarker.create({
+        data: {
+          chatId: chatId!,
+          messageId,
+          source: 'webhook',
+          botId: s.bots[0]!.id,
+          status: 'IN_PROGRESS',
+          deliveryMode: 'edit_message',
+          lockToken: 'existing-owner',
+          lockedAt: new Date(),
+        },
+      });
+    }
+    await s.ingress.preparePersistedWebhookEvent(id);
+    await expect(s.moderation.processWebhookEvent(id)).rejects.toThrow();
+    const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+      where: { kind: 'EXECUTION', webhookEventId: id },
+    });
+    expect(claim.businessStartedAt).not.toBeNull();
+    expect(claim.completedAt).toBeNull();
+    expect(claim.commandResult).toBeNull();
+    expect(s.effects).toEqual([]);
+    const marker = await s.prisma.channelAutoPostAttachMarker.findUnique({ where });
+    if (['forged', 'http', 'method', 'send_attempted', 'member_attempted'].includes(failure))
+      expect(marker).toBeNull();
+    else {
+      expect(marker?.status).toBe('IN_PROGRESS');
+      if (failure === 'existing_lease') expect(marker?.lockToken).toBe('existing-owner');
+      if (failure === 'lost_lease') expect(marker?.lockToken).toBe('other-worker');
+      if (failure === 'replacement_evidence')
+        expect(marker?.replacementSendStartedAt).not.toBeNull();
+    }
+  });
 
   it.each(['recover', 'access_lost', 'held'] as const)(
     'commits a rejected channel edit handoff and advances the same channel, recovery=%s',

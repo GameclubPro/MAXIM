@@ -1,4 +1,5 @@
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
+import { isPristinePostSealHeldJoin } from './webhook-legacy-held-membership';
 import type { MaxUpdate } from '@maxim/contracts';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
@@ -275,6 +276,13 @@ export async function materializeLegacyReceiptDisposition(
     )
       return refuse('source_command');
     scopeKind = 'PRE_SEAL_SOURCE';
+  } else if (
+    claims.length === 0 &&
+    isPristinePostSealHeldJoin(event, authority.sealedAt, recovery.userId)
+  ) {
+    // FLAG: A positively identified new join remains suppressed by the existing member hold.
+    // Preserve the original envelope/error in its proof; never execute or replay the join.
+    scopeKind = 'POST_SEAL_MEMBER';
   } else {
     // FLAG: Original persisted MAX provenance binds member/message identity. Source
     // timestamps never grant authority and may be future-dated. Permanent automatic
