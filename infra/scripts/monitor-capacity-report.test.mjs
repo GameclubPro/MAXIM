@@ -130,6 +130,36 @@ test('reports exact nearest-rank percentiles and does not count unknown lag as z
   assert.equal(report.percentiles([null]).p95, null);
 });
 
+test('reports distinct operational coverage without reconstructing older missing evidence', (t) => {
+  const rows = series(from, 294);
+  for (const row of rows.slice(1)) {
+    row.readiness.operationalLagSec = 0.45;
+    row.readiness.readinessWaitingCount = 1;
+    row.readiness.readinessHeadLimitReached = false;
+  }
+  rows[1].readiness.readinessHeadLimitReached = true;
+  const { directory } = fixture(t, rows);
+  const result = report.buildReport({ directory, from, to }).current;
+  assert.equal(result.lagSec.p95, 294);
+  assert.equal(result.operationalLagSec.p95, 0.45);
+  assert.equal(result.operationalLagSec.samples, 19);
+  assert.equal(result.operationalLagCoverage, 'partial');
+  assert.equal(result.maxReadinessWaitingCount, 1);
+  assert.equal(result.readinessHeadLimitReachedSamples, 1);
+  assert.equal(result.status, 'degraded');
+  assert.equal(result.checks.queue_lag_critical.failing, 20);
+  assert.equal(result.last.operationalLagSec, 0.45);
+
+  const old = fixture(t);
+  const legacy = report.buildReport({ directory: old.directory, from, to }).current;
+  assert.equal(legacy.operationalLagSec.samples, 0);
+  assert.equal(legacy.operationalLagSec.p95, null);
+  assert.equal(legacy.operationalLagCoverage, 'unavailable');
+  assert.equal(legacy.maxReadinessWaitingCount, null);
+  assert.equal(legacy.readinessHeadLimitReachedSamples, 0);
+  assert.equal(legacy.last.operationalLagSec, null);
+});
+
 test('distinguishes missing archive coverage from healthy runtime', (t) => {
   const { directory } = fixture(t, []);
   const result = report.buildReport({ directory, from, to });

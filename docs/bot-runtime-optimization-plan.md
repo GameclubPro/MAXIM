@@ -136,3 +136,11 @@ The JSON basis is `sampled_oldest_queue_lag`, not request latency. A negative ch
 descriptive comparison, not proof of causation under different production traffic. No additional
 background monitoring process or external observability service is installed.
 Window `status` describes all observations in the selected interval; `last` is the final snapshot.
+
+New samples also retain `operationalLagSec`, the bounded count of positively identified execution
+waits and whether the readiness head limit was reached. Reports show raw `lagSec` and operational
+percentiles separately, with explicit `operationalLagCoverage`. Older records remain readable;
+missing operational values are unavailable, never reconstructed as zero or copied from raw age.
+The existing raw-age alerts, status and comparison retain their original meaning. A low
+operational lag does not prove successful moderation of waiting or quarantined events; inspect
+readiness failures, closed cohorts and action outcomes independently.
