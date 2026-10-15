@@ -24,6 +24,8 @@ local Docker-socket access under the production pg_hba rules, with:
   - 21 additional delete-intent/verified-reason metadata columns for bounded owner proof;
     identities, lease tokens and reason metadata are check-only and never report output
   - two delete failure columns, classified in SQL; raw error text is never reported
+  - nineteen exact poll/original-bot metadata columns; no question, images, voters or permissions
+  - eight quarantine-journal metadata columns; no identities or raw errors in report output
   - ten rules-publication metadata columns; no rules text, media, links, or settings
   - seventeen Publisher binding/comment metadata columns
   - forty-three publication/access metadata columns; IDs are join-only and never report output
@@ -124,7 +126,7 @@ BEGIN
         'publisher_entity_bindings',
         'publisher_entity_settings',
         'managed_entity_publication_policies',
-        'chat_rules',
+        'chat_rules', 'managed_polls', 'chat_bot_memberships', 'webhook_dependency_quarantines',
         'chat_settings',
         'moderation_delete_intents',
         'moderation_delete_intent_reasons',
@@ -204,6 +206,38 @@ GRANT SELECT (
   publish_send_started_at, pending_cleanup_message_id, pending_cleanup_bot_id,
   pending_cleanup_intent_id, pending_cleanup_kind, updated_at
 ) ON TABLE public.chat_rules TO maxim_audit;
+-- FLAG: Partial legacy catalogs receive neither poll metadata group.
+DO $poll_metadata_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES ('managed_polls', ARRAY['id','chat_id','status','publication_message_id','publication_bot_id',
+        'render_revision','rendered_revision','render_format_version','last_render_error',
+        'published_at','closed_at','updated_at']),
+      ('chat_bot_memberships', ARRAY['chat_id','bot_id','status','bot_access_state',
+        'bot_access_checked_at','bot_access_source','lifecycle_event_at'])) required(table_name, columns)
+    CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public.' || required.table_name)
+      AND attribute.attname = expected.column_name AND attribute.attnum > 0 AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+GRANT SELECT (id, chat_id, status, publication_message_id, publication_bot_id,
+  render_revision, rendered_revision, render_format_version, last_render_error,
+  published_at, closed_at, updated_at) ON TABLE public.managed_polls TO maxim_audit;
+GRANT SELECT (chat_id, bot_id, status, bot_access_state, bot_access_checked_at,
+  bot_access_source, lifecycle_event_at) ON TABLE public.chat_bot_memberships TO maxim_audit;
+  END IF;
+END
+$poll_metadata_grants$;
+DO $quarantine_metadata_grants$
+BEGIN
+  IF 8 = (SELECT count(*) FROM pg_attribute WHERE
+      attrelid = to_regclass('public.webhook_dependency_quarantines') AND attnum > 0 AND NOT attisdropped
+      AND attname IN ('receipt_id','blocker_id','anchor_id','state','deadline_at','created_at','next_check_at','resolved_at')) THEN
+    GRANT SELECT (receipt_id, blocker_id, anchor_id, state, deadline_at, created_at, next_check_at, resolved_at)
+      ON TABLE public.webhook_dependency_quarantines TO maxim_audit;
+  END IF;
+END
+$quarantine_metadata_grants$;
 GRANT SELECT (
   intent_id,
   reason_key,
@@ -328,6 +362,42 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'maxim_audit has unexpected role memberships after provisioning';
   END IF;
+
+  -- FLAG: Quarantine evidence is diagnostic only. Retain exact metadata grants.
+  IF coalesce(has_table_privilege('maxim_audit', to_regclass('public.webhook_dependency_quarantines'), 'SELECT'), false)
+    OR (SELECT count(*) FROM information_schema.role_column_grants
+      WHERE grantee = 'maxim_audit' AND table_schema = 'public'
+        AND table_name = 'webhook_dependency_quarantines' AND privilege_type = 'SELECT') NOT IN (0, 8)
+    OR EXISTS (SELECT 1 FROM pg_attribute attribute
+      WHERE attribute.attrelid = to_regclass('public.webhook_dependency_quarantines')
+        AND attribute.attnum > 0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+        AND attribute.attname NOT IN ('receipt_id','blocker_id','anchor_id','state','deadline_at','created_at','next_check_at','resolved_at'))
+  THEN RAISE EXCEPTION 'maxim_audit quarantine metadata privileges are not exact'; END IF;
+
+  -- FLAG: The original-bot poll report sees only nineteen exact metadata columns.
+  IF EXISTS (
+    SELECT 1 FROM (VALUES
+      ('managed_polls', ARRAY['id','chat_id','status','publication_message_id','publication_bot_id',
+        'render_revision','rendered_revision','render_format_version','last_render_error',
+        'published_at','closed_at','updated_at']),
+      ('chat_bot_memberships', ARRAY['chat_id','bot_id','status','bot_access_state',
+        'bot_access_checked_at','bot_access_source','lifecycle_event_at'])
+    ) allowed(table_name, columns)
+    WHERE has_table_privilege('maxim_audit', to_regclass('public.' || allowed.table_name), 'SELECT')
+      OR (
+        SELECT count(*) FROM information_schema.role_column_grants grants
+        WHERE grants.grantee = 'maxim_audit' AND grants.table_schema = 'public'
+          AND grants.table_name = allowed.table_name AND grants.privilege_type = 'SELECT'
+      ) NOT IN (0, cardinality(allowed.columns))
+      OR EXISTS (
+        SELECT 1 FROM pg_attribute attribute
+        WHERE attribute.attrelid = to_regclass('public.' || allowed.table_name)
+          AND attribute.attnum > 0 AND NOT attribute.attisdropped
+          AND has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+          AND NOT (attribute.attname = ANY(allowed.columns))
+      )
+  ) THEN RAISE EXCEPTION 'maxim_audit poll metadata privileges are not exact'; END IF;
 
   IF has_table_privilege('maxim_audit', 'public.chat_rules', 'SELECT')
     OR 10 <> (
@@ -637,7 +707,7 @@ BEGIN
               'publisher_entity_bindings',
               'publisher_entity_settings',
               'managed_entity_publication_policies',
-              'chat_rules',
+              'chat_rules', 'managed_polls', 'chat_bot_memberships', 'webhook_dependency_quarantines',
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
               'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',

@@ -600,6 +600,76 @@ test('rules cleanup audit accepts only an exact chat ID and never operator SQL',
   );
 });
 
+test('poll publication audit admits only an exact poll ID through both wrappers', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const result = runAudit(data, ['poll-publication', 'poll-123', '--explain']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\) SELECT/u);
+  assert.match(sql, /poll\.id = 'poll-123'/u);
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.doesNotMatch(sql, /EXPLAIN ANALYZE|poll\.question|poll\.images/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /maxim_audit/u);
+  assert.equal(
+    runConnect(data, ['postgres-audit', 'poll-publication', 'poll-123', '--explain']).status,
+    0,
+  );
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /vps-postgres-audit\.sh\\ poll-publication/u);
+  for (const value of ['', 'poll\n', "poll' OR true --", '/tmp/query.sql', 'a'.repeat(129)]) {
+    assert.notEqual(runAudit(data, ['poll-publication', value]).status, 0);
+    assert.notEqual(runConnect(data, ['postgres-audit', 'poll-publication', value]).status, 0);
+  }
+  for (const option of ['--apply', 'SELECT 1', '--explain extra']) {
+    assert.notEqual(runAudit(data, ['poll-publication', 'poll-123', option]).status, 0);
+    assert.notEqual(
+      runConnect(data, ['postgres-audit', 'poll-publication', 'poll-123', option]).status,
+      0,
+    );
+  }
+  assert.notEqual(
+    runConnect(data, ['postgres-audit', 'poll-publication', 'poll-123', '--explain', 'extra'])
+      .status,
+    0,
+  );
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'poll_publication'/u);
+});
+
+test('quarantine evidence uses only a fixed minute and preserves the guarded audit session', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const minute = '2026-10-15T01:37:00Z';
+  const result = runAudit(data, ['webhook-quarantine', minute, '--explain']);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\) WITH bounds/u);
+  assert.match(sql, /BEGIN READ ONLY/u);
+  assert.match(sql, /LIMIT 65/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /maxim_audit/u);
+  assert.equal(
+    runConnect(data, ['postgres-audit', 'webhook-quarantine', minute, '--explain']).status,
+    0,
+  );
+  for (const bad of [
+    '',
+    "2026-10-15'; SELECT 1",
+    '2026-02-30T01:37:00Z',
+    '2026-10-15T01:37:01Z',
+    '/tmp/query.sql',
+  ]) {
+    assert.notEqual(runAudit(data, ['webhook-quarantine', bad]).status, 0);
+    assert.notEqual(runConnect(data, ['postgres-audit', 'webhook-quarantine', bad]).status, 0);
+  }
+  assert.notEqual(runAudit(data, ['webhook-quarantine', minute, '--apply']).status, 0);
+  assert.notEqual(
+    runConnect(data, ['postgres-audit', 'webhook-quarantine', minute, '--explain', 'extra']).status,
+    0,
+  );
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'webhook_quarantine'/u);
+});
+
 test('storage audit is opt-in, uses the bounded audit role, and rejects operator SQL', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
