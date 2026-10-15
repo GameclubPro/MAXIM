@@ -74,11 +74,24 @@ test('CI migration Compose uses its effective private overlay, isolated non-infr
   try {
     const project = `multibot_ci_${'b'.repeat(32)}`;
     const args = writeOnlineClientCiCompose(directory, project, image, 'fixture-owner');
+    const startedAt = performance.now();
     const result = spawnSync('docker', ['compose', ...args, 'config', '--format', 'json'], {
       encoding: 'utf8',
       timeout: 10_000,
     });
-    assert.equal(result.status, 0, result.stderr);
+    // FLAG: Never turn a timed-out/aborted Compose parser into configuration evidence.
+    // Keep stdout private: the effective fixture includes its database password.
+    const diagnostic = JSON.stringify({
+      stage: 'compose_config',
+      code: result.error?.code ?? null,
+      signal: result.signal,
+      status: result.status,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      stderr: result.stderr,
+    });
+    assert.equal(result.error, undefined, diagnostic);
+    assert.equal(result.signal, null, diagnostic);
+    assert.equal(result.status, 0, diagnostic);
     const config = JSON.parse(result.stdout);
     const identity = verifyMultibotOnlineClientConfiguration(config, args, sha);
     assert.equal(identity.project, project);
