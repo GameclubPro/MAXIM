@@ -54,8 +54,19 @@ import { WebhookService } from './webhook.service';
 import { WebhookOutboxService } from './webhook-outbox.service';
 import { WebhookParser } from './webhook.parser';
 import { WebhookRoutingService } from './webhook-routing.service';
-import { ALL_WEBHOOK_QUEUE_NAMES, DEFAULT_WEBHOOK_QUEUE_NAMES } from './webhook-queues';
-import { getDefaultWebhookWorkerGroupQueues } from '../runtime/moderation-runtime';
+import {
+  ALL_WEBHOOK_QUEUE_NAMES,
+  DEFAULT_WEBHOOK_QUEUE_NAMES,
+  LEGACY_WEBHOOK_QUEUE,
+  WEBHOOK_QUEUE_BACKGROUND,
+  WEBHOOK_QUEUE_CRITICAL,
+} from './webhook-queues';
+import {
+  getDefaultWebhookShardConcurrencies,
+  getDefaultWebhookWorkerGroupQueues,
+  getJoinWebhookShardConcurrencies,
+} from '../runtime/moderation-runtime';
+import { resolveRuntimeServiceProfile } from '../runtime/runtime-topology';
 import { WebhookLegacyHoldService } from './webhook-legacy-hold.service';
 import { GroupCommandAuthorityService } from '../common/group-command-authority.service';
 
@@ -69,7 +80,21 @@ export type MultibotHarnessOptions = {
   productionOutboxSelection?: boolean;
   recoverDueDeletes?: boolean;
   recoverAutomaticMuteHistory?: boolean;
+  split?: { runId: string; role: MultibotHarnessRole };
 };
+export const MULTIBOT_HARNESS_POOLS = {
+  'api-ingress': 6,
+  'api-enqueue': 24,
+  'api-moderation': 3,
+  'api-moderation-critical': 4,
+  'api-moderation-join': 4,
+  'api-moderation-realtime-b': 3,
+  'api-moderation-realtime-c': 3,
+  'api-moderation-realtime-d': 3,
+  'api-moderation-background': 2,
+  'api-action': 4,
+} as const;
+export type MultibotHarnessRole = keyof typeof MULTIBOT_HARNESS_POOLS;
 export type SimulatedMaxEffect = {
   method: string;
   path: string;
@@ -91,22 +116,41 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   ) {
     throw new Error('Multibot harness requires disposable local PostgreSQL race_test and Redis');
   }
+  const split = options.split;
+  if (
+    split &&
+    (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(split.runId) ||
+      !Object.hasOwn(MULTIBOT_HARNESS_POOLS, split.role))
+  )
+    throw new Error('Invalid local split fixture identity');
+  const ownsFixture = !split || split.role === 'api-ingress';
   const preparationPoolMax = readPrismaPoolConfig().max ?? 10;
-  if (options.productionEnqueueCapacity && preparationPoolMax !== 24) {
+  if (
+    options.productionEnqueueCapacity &&
+    (!split || split.role === 'api-enqueue') &&
+    preparationPoolMax !== 24
+  ) {
     throw new Error('Production enqueue fixture requires PRISMA_PG_POOL_MAX=24');
   }
   if (options.productionOutboxSelection && !options.productionEnqueueCapacity) {
     throw new Error('Production outbox selection requires the production enqueue fixture budget');
   }
-  const sqlPoolMax = options.productionEnqueueCapacity ? 24 : 12;
+  const sqlPoolMax = split
+    ? MULTIBOT_HARNESS_POOLS[split.role]
+    : options.productionEnqueueCapacity
+      ? 24
+      : 12;
   const enqueueConcurrency = options.productionEnqueueCapacity ? 32 : 8;
   const prisma = createPrismaClient(options.databaseUrl, {
     max: sqlPoolMax,
     statement_timeout: 15_000,
   });
   await prisma.$connect();
-  const [native] = await prisma.$queryRaw<Array<{ version: string; timezone: string }>>`
-    SELECT version(), current_setting('TimeZone') AS timezone
+  const [native] = await prisma.$queryRaw<
+    Array<{ version: string; timezone: string; connections: string }>
+  >`
+    SELECT version(), current_setting('TimeZone') AS timezone,
+      current_setting('max_connections') AS connections
   `;
   if (
     !native?.version.startsWith('PostgreSQL ') ||
@@ -117,23 +161,30 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     await prisma.$disconnect();
     throw new Error('Multibot harness requires native PostgreSQL and process/server UTC');
   }
+  if (split && Number(native.connections) < 64) {
+    await prisma.$disconnect();
+    throw new Error(
+      'Split fixture requires with-test-stores.mjs --profile=split-load (at least 64 local PostgreSQL connections)',
+    );
+  }
   const redis = new Redis(options.redisUrl, { maxRetriesPerRequest: null });
   const previousControl = await redis.get(MESSAGE_DUPLICATE_CONTROL_KEY);
   const previousRevision = await redis.get(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`);
   const now = Date.now();
-  await redis.set(
-    MESSAGE_DUPLICATE_CONTROL_KEY,
-    JSON.stringify({
-      version: 2,
-      revision: 1,
-      mode: 'delete_only',
-      scope: 'all_enabled_chats',
-      chatIds: [],
-      effectiveAt: new Date(now - 1_000).toISOString(),
-      expiresAt: new Date(now + 3_600_000).toISOString(),
-    }),
-  );
-  await redis.set(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`, '1');
+  if (ownsFixture)
+    await redis.set(
+      MESSAGE_DUPLICATE_CONTROL_KEY,
+      JSON.stringify({
+        version: 2,
+        revision: 1,
+        mode: 'delete_only',
+        scope: 'all_enabled_chats',
+        chatIds: [],
+        effectiveAt: new Date(now - 1_000).toISOString(),
+        expiresAt: new Date(now + 3_600_000).toISOString(),
+      }),
+    );
+  if (ownsFixture) await redis.set(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`, '1');
   const config = new ConfigService({
     REDIS_URL: options.redisUrl,
     MAX_API_BASE_URL: 'https://max-harness.invalid',
@@ -144,22 +195,39 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     MAX_ROUTED_MUTATIONS_MODE: 'on',
     MAX_CROSS_BOT_EDIT_DELETE_ENABLED: true,
     MESSAGE_DUPLICATE_ENABLED: true,
-    APP_SERVICE_NAME: 'api-moderation',
+    APP_SERVICE_NAME: split?.role ?? 'api-moderation',
     MODERATION_BACKGROUND_TASKS_ENABLED: false,
     CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS: 0,
     MAX_API_GLOBAL_RPS: 30,
+    ...(split
+      ? {
+          MAX_API_GLOBAL_RPS_CRITICAL: 12,
+          MAX_API_GLOBAL_RPS_INTERACTIVE: 10,
+          MAX_API_GLOBAL_RPS_BACKGROUND:
+            split.role === 'api-action' || split.role === 'api-moderation-background' ? 3 : 4,
+        }
+      : {}),
     MAX_API_CHAT_RPS: options.quotaProfile === 'production' ? 5 : 30,
     MAX_API_MANAGED_REFRESH_RPS: options.quotaProfile === 'production' ? 2 : 30,
     MODERATION_DELETE_INTENT_LEASE_MS: 60_000,
     ENQUEUE_MAX_ATTEMPTS: 120,
   });
-  const prefix = `multibot-fixture-${randomUUID()}`;
-  const queue = new Queue(`${prefix}-webhook`, {
+  const prefix = `multibot-fixture-${split?.runId ?? randomUUID()}`;
+  const queue = new Queue(`${prefix}-${split ? LEGACY_WEBHOOK_QUEUE : 'webhook'}`, {
     connection: redis as unknown as ConnectionOptions,
   });
   const deleteQueue = new Queue(`${prefix}-delete`, {
     connection: redis as unknown as ConnectionOptions,
   });
+  const queuesByName = Object.fromEntries(
+    ALL_WEBHOOK_QUEUE_NAMES.map((name) => [
+      name,
+      split && name !== LEGACY_WEBHOOK_QUEUE
+        ? new Queue(`${prefix}-${name}`, { connection: redis as unknown as ConnectionOptions })
+        : queue,
+    ]),
+  );
+  const allQueues = [...new Set([queue, deleteQueue, ...Object.values(queuesByName)])];
   const bots = Array.from({ length: options.bots }, (_, index) => ({
     id: `fixture-bot-${index + 1}`,
     token: `fixture-token-${prefix}-${index + 1}`,
@@ -208,6 +276,21 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   const effects: SimulatedMaxEffect[] = [];
   const requests: SimulatedMaxEffect[] = [];
   const messages = new Map<string, Record<string, unknown>>();
+  // FLAG: Only the disposable split fixture shares simulated MAX state through Redis.
+  // Every role keeps the same synthetic tokens, so real quota admission is shared too.
+  const messageStoreKey = `${prefix}:simulated-messages`;
+  const readMessage = async (id: string): Promise<Record<string, unknown> | undefined> => {
+    if (!split) return messages.get(id);
+    const saved = await redis.hget(messageStoreKey, id);
+    return saved ? (JSON.parse(saved) as Record<string, unknown>) : undefined;
+  };
+  const saveMessage = async (id: string, value: Record<string, unknown>) => {
+    if (!split) messages.set(id, value);
+    else {
+      await redis.hset(messageStoreKey, id, JSON.stringify(value));
+      await redis.expire(messageStoreKey, 3600);
+    }
+  };
   const channelIds = new Set<string>();
   const deniedBots = new Set<string>();
   const rateLimitedDeleteBots = new Set<string>();
@@ -304,15 +387,17 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
                 ),
               marker: null,
             };
-          else if (method === 'get' && path === '/messages')
-            data = { messages: messages.has(messageId) ? [messages.get(messageId)] : [] };
-          else if (method === 'get' && path.startsWith('/messages/')) {
+          else if (method === 'get' && path === '/messages') {
+            const message = await readMessage(messageId);
+            data = { messages: message ? [message] : [] };
+          } else if (method === 'get' && path.startsWith('/messages/')) {
             const exactMessageId = decodeURIComponent(path.slice('/messages/'.length));
-            if (!messages.has(exactMessageId))
+            const message = await readMessage(exactMessageId);
+            if (!message)
               throw Object.assign(new Error('Simulated exact message absence'), {
                 response: { status: 404, data: { code: 'message.not.found' } },
               });
-            data = messages.get(exactMessageId);
+            data = message;
           } else if (method === 'get' && path.startsWith('/chats/'))
             data = {
               chat_id: path.split('/')[2],
@@ -329,7 +414,8 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
                 request: {},
               });
             }
-            messages.delete(messageId);
+            if (split) await redis.hdel(messageStoreKey, messageId);
+            else messages.delete(messageId);
             data = { success: true };
           } else if (method === 'put' && path === '/messages') {
             effects.push(call);
@@ -340,9 +426,9 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
                 request: {},
               });
             }
-            const existing = messages.get(messageId);
+            const existing = await readMessage(messageId);
             if (!existing) throw new Error('Fixture edit requires an existing message');
-            messages.set(messageId, {
+            await saveMessage(messageId, {
               ...existing,
               body: { ...(existing.body as object), ...request.data },
             });
@@ -576,6 +662,49 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     prisma as never,
     {
       getWebhookDefaultShardSnapshot: async () => {
+        if (split) {
+          const entries = await Promise.all(
+            DEFAULT_WEBHOOK_QUEUE_NAMES.map(async (name) => {
+              const counts = await queuesByName[name]!.getJobCounts(
+                'waiting',
+                'active',
+                'delayed',
+                'failed',
+                'completed',
+                'prioritized',
+                'paused',
+              );
+              return [name, counts] as const;
+            }),
+          );
+          const shards = Object.fromEntries(entries);
+          return {
+            generatedAt: new Date().toISOString(),
+            webhookDefaultShards: shards,
+            webhookDefaultWorkerGroups: Object.fromEntries(
+              Object.entries(getDefaultWebhookWorkerGroupQueues()).map(([name, queues]) => [
+                name,
+                {
+                  queues,
+                  counters: Object.fromEntries(
+                    [
+                      'waiting',
+                      'active',
+                      'delayed',
+                      'failed',
+                      'completed',
+                      'prioritized',
+                      'paused',
+                    ].map((key) => [
+                      key,
+                      queues.reduce((sum, queueName) => sum + (shards[queueName]?.[key] ?? 0), 0),
+                    ]),
+                  ),
+                },
+              ]),
+            ),
+          };
+        }
         const counts = await queue.getJobCounts(
           'waiting',
           'active',
@@ -611,12 +740,14 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   const outbox = new WebhookOutboxService(
     prisma as never,
     config,
-    { get: () => queue } as never,
+    {
+      get: (token: string) => (split ? queuesByName[token.replace(/^BullQueue_/u, '')] : queue),
+    } as never,
     routing,
     ingress,
-    queue as never,
-    queue as never,
-    queue as never,
+    queuesByName[LEGACY_WEBHOOK_QUEUE] as never,
+    queuesByName[WEBHOOK_QUEUE_CRITICAL] as never,
+    queuesByName[WEBHOOK_QUEUE_BACKGROUND] as never,
     {
       // FLAG: Controlled normal-mode fixture, not evidence of production governor capacity.
       getEffectiveSnapshot: async () => ({ mode: 'normal', source: 'auto', condition: 'normal' }),
@@ -625,38 +756,67 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     legacyHolds,
   );
   Object.assign(outbox, {
-    queuesByName: Object.fromEntries(ALL_WEBHOOK_QUEUE_NAMES.map((name) => [name, queue])),
+    queuesByName,
   });
   const failures: Error[] = [];
   const processedIds: string[] = [];
-  const workerRedis = redis.duplicate({ maxRetriesPerRequest: null });
-  const deleteWorkerRedis = redis.duplicate({ maxRetriesPerRequest: null });
-  const worker = new Worker(
-    queue.name,
-    async (job) => {
-      await moderation.processWebhookEvent(job.data.webhookEventId);
-      processedIds.push(job.data.webhookEventId);
-    },
-    { connection: workerRedis as unknown as ConnectionOptions, concurrency: 4 },
-  );
-  worker.on('failed', (_job, error) => failures.push(error));
-  const deleteWorker = new Worker(
-    deleteQueue.name,
-    async (job) => {
-      await intents.attemptIntent(job.data.intentId);
-    },
-    { connection: deleteWorkerRedis as unknown as ConnectionOptions, concurrency: 4 },
-  );
-  deleteWorker.on('failed', (_job, error) => failures.push(error));
+  const defaultConcurrency = getDefaultWebhookShardConcurrencies({});
+  const joinConcurrency = getJoinWebhookShardConcurrencies({ MODERATION_CONCURRENCY_JOIN: 4 });
+  const workerQueues = split
+    ? resolveRuntimeServiceProfile({ APP_SERVICE_NAME: split.role }).service.moderationQueues
+    : [LEGACY_WEBHOOK_QUEUE];
+  const workerConnections: Redis[] = [];
+  const workers: Worker[] = [];
+  const webhookWorkers: Worker[] = [];
+  const processedQueues = new Map<string, number>();
+  for (const name of workerQueues) {
+    const connection = redis.duplicate({ maxRetriesPerRequest: null });
+    workerConnections.push(connection);
+    const concurrency = !split
+      ? 4
+      : name === LEGACY_WEBHOOK_QUEUE
+        ? 1
+        : name === WEBHOOK_QUEUE_CRITICAL
+          ? 4
+          : name === WEBHOOK_QUEUE_BACKGROUND
+            ? 2
+            : (DEFAULT_WEBHOOK_QUEUE_NAMES as readonly string[]).includes(name)
+              ? defaultConcurrency[name as keyof typeof defaultConcurrency]
+              : joinConcurrency[name as keyof typeof joinConcurrency];
+    const worker = new Worker(
+      queuesByName[name]!.name,
+      async (job) => {
+        await moderation.processWebhookEvent(job.data.webhookEventId);
+        processedIds.push(job.data.webhookEventId);
+        processedQueues.set(name, (processedQueues.get(name) ?? 0) + 1);
+      },
+      { connection: connection as unknown as ConnectionOptions, concurrency },
+    );
+    worker.on('failed', (_job, error) => failures.push(error));
+    workers.push(worker);
+    webhookWorkers.push(worker);
+  }
+  if (!split || split.role === 'api-action') {
+    const connection = redis.duplicate({ maxRetriesPerRequest: null });
+    workerConnections.push(connection);
+    const worker = new Worker(
+      deleteQueue.name,
+      async (job) => {
+        await intents.attemptIntent(job.data.intentId);
+      },
+      { connection: connection as unknown as ConnectionOptions, concurrency: split ? 2 : 4 },
+    );
+    worker.on('failed', (_job, error) => failures.push(error));
+    workers.push(worker);
+  }
   await Promise.all([
-    queue.waitUntilReady(),
-    deleteQueue.waitUntilReady(),
-    worker.waitUntilReady(),
-    deleteWorker.waitUntilReady(),
+    ...allQueues.map((q) => q.waitUntilReady()),
+    ...workers.map((w) => w.waitUntilReady()),
   ]);
   const chatIds: string[] = [];
   const receiptIds: string[] = [];
   const touchedMessagesByChatId = new Map<string, Set<string>>();
+  const messageWrites = new Map<string, Promise<void>>();
   let nextDeleteSweepAtMs = 0;
 
   async function seedCatalog(
@@ -752,7 +912,15 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
         },
       },
     };
-    messages.set(input.messageId, raw.message);
+    if (split) {
+      if (input.type && input.type !== 'message_created')
+        throw new Error('Split load fixture currently accepts message_created only');
+      // One synthetic remote publication precedes all mirrored receipts. A late
+      // mirror must not recreate a message already deleted by another process.
+      if (!messageWrites.has(input.messageId))
+        messageWrites.set(input.messageId, saveMessage(input.messageId, raw.message));
+      await messageWrites.get(input.messageId);
+    } else messages.set(input.messageId, raw.message);
     const touchedMessages = touchedMessagesByChatId.get(input.chatId) ?? new Set<string>();
     touchedMessages.add(input.messageId);
     touchedMessagesByChatId.set(input.chatId, touchedMessages);
@@ -766,14 +934,22 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
 
   async function pumpWork() {
     if (failures.length) throw failures[0];
+    if (split && split.role !== 'api-enqueue' && split.role !== 'api-action') return;
     // FLAG: The production SQL sweeper owns future retries even when BullMQ is empty.
     // Keep its cadence and fixture opt-in so deliberate pending/unknown cases stay inspectable.
-    if (options.recoverDueDeletes && Date.now() >= nextDeleteSweepAtMs) {
+    if (
+      (!split || split.role === 'api-action') &&
+      options.recoverDueDeletes &&
+      Date.now() >= nextDeleteSweepAtMs
+    ) {
       nextDeleteSweepAtMs = Date.now() + 1_000;
       await intents.sweepDueIntents();
     }
-    await ruleFollowups.sweep();
-    if (options.recoverAutomaticMuteHistory) await automaticMuteCleanup.sweep();
+    if (!split || split.role === 'api-action') {
+      await ruleFollowups.sweep();
+      if (options.recoverAutomaticMuteHistory) await automaticMuteCleanup.sweep();
+    }
+    if (split?.role === 'api-action') return;
     if (options.productionOutboxSelection) {
       const startedAt = Date.now();
       await (outbox as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
@@ -811,6 +987,15 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       where: { id: { in: receiptIds }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
     });
     const queued = await deleteQueue.getJobCounts('waiting', 'active', 'delayed');
+    const pendingWebhookJobs = split
+      ? (
+          await Promise.all(
+            Object.values(queuesByName).map((q) =>
+              q.getJobCounts('waiting', 'active', 'delayed', 'prioritized'),
+            ),
+          )
+        ).reduce((sum, counts) => sum + Object.values(counts).reduce((a, b) => a + b, 0), 0)
+      : 0;
     const unfinishedDeletes =
       options.recoverDueDeletes && touchedMessagesByChatId.size
         ? await prisma.moderationDeleteIntent.count({
@@ -835,6 +1020,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       : 0;
     return (
       pendingCleanup +
+      pendingWebhookJobs +
       pendingFollowups +
       pending +
       (queued.waiting ?? 0) +
@@ -907,11 +1093,13 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
 
   async function dispose() {
     await outbox.onModuleDestroy();
-    await Promise.all([worker.close(), deleteWorker.close()]);
-    await Promise.all([workerRedis.quit(), deleteWorkerRedis.quit()]);
-    await queue.obliterate({ force: true });
-    await deleteQueue.obliterate({ force: true });
-    await Promise.all([queue.close(), deleteQueue.close()]);
+    await Promise.all(workers.map((worker) => worker.close()));
+    await Promise.all(workerConnections.map((connection) => connection.quit()));
+    if (ownsFixture) {
+      for (const ownedQueue of allQueues) await ownedQueue.obliterate({ force: true });
+      if (split) await redis.del(messageStoreKey);
+    }
+    await Promise.all(allQueues.map((ownedQueue) => ownedQueue.close()));
     await ingress.onModuleDestroy();
     await readiness.onModuleDestroy();
     moderation.onModuleDestroy();
@@ -926,18 +1114,22 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       membership.onModuleDestroy(),
       globalPolicy.onModuleDestroy(),
     ]);
-    if (previousControl === null) await redis.del(MESSAGE_DUPLICATE_CONTROL_KEY);
-    else await redis.set(MESSAGE_DUPLICATE_CONTROL_KEY, previousControl);
-    if (previousRevision === null) await redis.del(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`);
-    else await redis.set(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`, previousRevision);
-    await prisma.webhookExecutionClaim.deleteMany({
-      where: { webhookEventId: { in: receiptIds } },
-    });
-    await prisma.webhookEvent.deleteMany({ where: { id: { in: receiptIds } } });
-    await prisma.moderationVoiceSource.deleteMany({ where: { chatId: { in: chatIds } } });
-    for (let offset = 0; offset < chatIds.length; offset += 1000)
-      await prisma.chat.deleteMany({ where: { id: { in: chatIds.slice(offset, offset + 1000) } } });
-    await prisma.maxActionLedgerEntry.deleteMany({ where: { chatId: { in: chatIds } } });
+    if (ownsFixture) {
+      if (previousControl === null) await redis.del(MESSAGE_DUPLICATE_CONTROL_KEY);
+      else await redis.set(MESSAGE_DUPLICATE_CONTROL_KEY, previousControl);
+      if (previousRevision === null) await redis.del(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`);
+      else await redis.set(`${MESSAGE_DUPLICATE_CONTROL_KEY}:revision`, previousRevision);
+      await prisma.webhookExecutionClaim.deleteMany({
+        where: { webhookEventId: { in: receiptIds } },
+      });
+      await prisma.webhookEvent.deleteMany({ where: { id: { in: receiptIds } } });
+      await prisma.moderationVoiceSource.deleteMany({ where: { chatId: { in: chatIds } } });
+      for (let offset = 0; offset < chatIds.length; offset += 1000)
+        await prisma.chat.deleteMany({
+          where: { id: { in: chatIds.slice(offset, offset + 1000) } },
+        });
+      await prisma.maxActionLedgerEntry.deleteMany({ where: { chatId: { in: chatIds } } });
+    }
     await prisma.$disconnect();
     await redis.quit();
   }
@@ -976,6 +1168,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     effects,
     requests,
     processedIds,
+    processedQueues,
     capacity: { sqlPoolMax, preparationPoolMax, enqueueConcurrency },
     failures,
     messages,
@@ -987,8 +1180,8 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     waitForConfirmedDelete,
     demote,
     dispose,
-    pause: () => worker.pause(),
-    resume: () => worker.resume(),
+    pause: () => Promise.all(webhookWorkers.map((worker) => worker.pause())),
+    resume: () => Promise.all(webhookWorkers.map((worker) => worker.resume())),
     ambiguousNextSend: () => {
       ambiguousNextSend = true;
     },

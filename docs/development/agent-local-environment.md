@@ -72,6 +72,17 @@ with persistence disabled and its owned process verified through a private Unix 
 repository env files. `--migrate` uses the public Prisma deployment script against that empty local
 database. It never imports production data or starts application workers.
 
+The local catalog runner also supports `--topology=split --enqueue=production`. Use
+`with-test-stores.mjs --profile=split-load --migrate -- ...` for this profile: its ten
+separate Node processes retain their per-role SQL pools (56 connections total), so
+the disposable PostgreSQL allows 100 connections instead of the ordinary 40. The
+runner refuses an undersized store before starting its workers. It uses the 23 static
+webhook queues and a shared simulated MAX state; native photo/OCR, dynamic leases,
+production governors and the other four API roles are excluded. Its default workload
+requires a DELETE for every message and is not the measured production function mix.
+Reports include actual receipt arrival rate, producer lateness and process/queue
+coverage. A successful synthetic run does not certify production or media capacity.
+
 The command's exit status is preserved. On normal completion, command failure, SIGINT or SIGTERM,
 the runner stops only its own process groups and removes its temporary stores. SIGKILL/host loss
 cannot run cleanup; inspect exact process identity before manual recovery, never kill a stale PID

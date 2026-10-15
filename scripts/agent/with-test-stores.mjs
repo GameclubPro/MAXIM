@@ -16,14 +16,16 @@ export function parseArgs(args) {
   if (
     separator < 0 ||
     !args[separator + 1] ||
-    args.slice(0, separator).some((x) => x !== '--migrate')
+    args.slice(0, separator).some((x) => !['--migrate', '--profile=split-load'].includes(x)) ||
+    new Set(args.slice(0, separator)).size !== separator
   ) {
     throw new Error(
-      'Usage: node scripts/agent/with-test-stores.mjs [--migrate] -- <command> [args...]',
+      'Usage: node scripts/agent/with-test-stores.mjs [--migrate] [--profile=split-load] -- <command> [args...]',
     );
   }
   return {
     migrate: args.slice(0, separator).includes('--migrate'),
+    ...(args.slice(0, separator).includes('--profile=split-load') ? { profile: 'split-load' } : {}),
     command: args.slice(separator + 1),
   };
 }
@@ -40,6 +42,8 @@ async function freePort() {
 }
 
 export async function withTestStores(options) {
+  if (options.profile !== undefined && options.profile !== 'split-load')
+    throw new Error('Unknown disposable store profile');
   if (process.platform === 'win32' || process.getuid?.() === 0) {
     throw new Error(
       'Use a non-root Linux/macOS shell (WSL on Windows) with PostgreSQL 16 and Redis 7 on PATH.',
@@ -138,7 +142,9 @@ export async function withTestStores(options) {
       '-c',
       'timezone=UTC',
       '-c',
-      'max_connections=40',
+      // The isolated split fixture uses the real per-role pool caps (56 total).
+      // Ordinary tests retain their smaller budget; this never changes a live DB.
+      `max_connections=${options.profile === 'split-load' ? 100 : 40}`,
       '-c',
       'shared_buffers=64MB',
     ]);
