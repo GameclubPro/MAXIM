@@ -1,6 +1,7 @@
 import type { Logger } from '@nestjs/common';
 import { describeWebhookPreparationFailure } from '../webhook/webhook-preparation-diagnostic';
 import { readDuplicateLookupFailure } from './message-duplicate/message-duplicate-lookup-diagnostic';
+import { readModerationGuardFailure } from './moderation-guard-failure-diagnostic';
 
 export type WebhookExecutionFailureStage =
   | 'preparation'
@@ -62,6 +63,8 @@ const HOT_PATH_STAGES = new Set([
 ]);
 
 const LOCAL_FAILURES = new Map([
+  ['MAX_API_INTERNAL_RATE_LIMIT', 'max_internal_rate_limit'],
+  ['MAX_API_CIRCUIT_OPEN', 'max_circuit_open'],
   ['max_action_executor_proof_rejected', 'executor_proof_rejected'],
   ['Message limit state deadline exceeded', 'message_limit_state_deadline'],
   ['Media cooldown state deadline exceeded', 'media_cooldown_state_deadline'],
@@ -81,6 +84,7 @@ const LOCAL_FAILURES = new Map([
   ['Required subscription execution guard unavailable', 'subscription_guard_unavailable'],
 ]);
 const MAX_FAILURE_CODES = new Map([
+  ['not.found', 'generic_not_found'],
   ['message.not.found', 'message_not_found'],
   ['message_not_found', 'message_not_found'],
   ['message.not_found', 'message_not_found'],
@@ -178,6 +182,7 @@ export function describeWebhookExecutionFailure(error: unknown, hotPathStage?: u
   return {
     ...basic,
     ...readDuplicateLookupFailure(error),
+    ...readModerationGuardFailure(error),
     locations,
     requestOperation,
     requestTarget,

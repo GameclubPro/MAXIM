@@ -15,6 +15,7 @@ import {
   runRuleFollowUpWhileAuthorized,
 } from './moderation-execution-guard-callbacks';
 import { ModerationRuleSanctionRejectedError } from './moderation-rule-sanction-authority';
+import { readModerationGuardFailure } from './moderation-guard-failure-diagnostic';
 
 function fixture() {
   const assertAllowed = jest.fn(
@@ -309,6 +310,45 @@ describe('moderation execution guard callbacks', () => {
     await expect(callbacks.beforeSanctionMutation()).rejects.toBe(leaseError);
     expect(source).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['authorizeSanction', 'required_subscription_sanction_authorize'],
+    ['beforeSanctionMutation', 'required_subscription_sanction_mutation'],
+    ['noticeBeforeSend', 'required_subscription_sanction_notice'],
+  ] as const)('retains the exact frozen source failure at %s', async (callback, boundary) => {
+    const error = Object.freeze({ response: { status: 429 }, private: 'private-source' });
+    const lease = jest.fn(async () => undefined);
+    const source = jest.fn(async () => {
+      throw error;
+    });
+    const callbacks = createRequiredSubscriptionSanctionCallbacks(lease, source);
+    await expect(callbacks[callback]()).rejects.toBe(error);
+    expect(lease).toHaveBeenCalledTimes(1);
+    expect(source).toHaveBeenCalledTimes(1);
+    expect(readModerationGuardFailure(error)).toEqual({ guardBoundary: boundary });
+    expect(Object.keys(error)).toEqual(['response', 'private']);
+  });
+
+  it.each(['beforeSanctionMutation', 'noticeBeforeSend'] as const)(
+    'forwards the final route check through %s in the original guard order',
+    async (callback) => {
+      const calls: string[] = [];
+      const route = async () => {
+        calls.push('route');
+      };
+      const callbacks = createRequiredSubscriptionSanctionCallbacks(
+        async () => {
+          calls.push('lease');
+        },
+        async (beforeFinalAuthority) => {
+          calls.push('source');
+          await beforeFinalAuthority?.();
+        },
+      );
+      await callbacks[callback](route);
+      expect(calls).toEqual(['lease', 'source', 'route']);
+    },
+  );
 
   it('binds subscription deletion and author evidence to the same immutable source window', () => {
     const createdAt = '2026-10-05T10:00:00.000Z';
