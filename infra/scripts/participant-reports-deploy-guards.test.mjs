@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
-test('both rollback paths require guarded participant report execution', () => {
+test('both rollback paths require guarded participant report execution', (t) => {
+  const diagnosticsDir = mkdtempSync(resolve(tmpdir(), 'maxim-report-guard-'));
+  t.after(() => rmSync(diagnosticsDir, { recursive: true, force: true }));
   for (const file of ['vps-release-rollback.sh', 'vps-runtime-rollback.sh']) {
     assert.match(
       readFileSync(resolve(root, 'infra/scripts', file), 'utf8'),
@@ -28,12 +31,26 @@ test('both rollback paths require guarded participant report execution', () => {
     'archive-drops-cases',
     ...['Votes', 'Candidates', 'Deleted', 'Absent', 'Failed'].map((field) => `archive-no-${field}`),
   ]) {
+    const diagnosticsPath = resolve(diagnosticsDir, `${variant}.stderr`);
+    const statusPath = resolve(diagnosticsDir, `${variant}.status`);
+    writeFileSync(diagnosticsPath, '', { mode: 0o600 });
+    writeFileSync(statusPath, '', { mode: 0o600 });
     const result = spawnSync(
       'bash',
       [
         '-c',
         `
       source "$MAXIM_TEST_ROOT/infra/scripts/lib/deploy-topology.sh"
+      node() {
+        local status
+        if "$MAXIM_TEST_NODE" "$@" 2>>"$MAXIM_TEST_NODE_STDERR"; then
+          status=0
+        else
+          status=$?
+        fi
+        printf '%s\\n' "$status" >>"$MAXIM_TEST_NODE_STATUS"
+        return "$status"
+      }
       git() {
         if [[ "$MAXIM_TEST_MISSING" == 1 || "$1" != show ]]; then return 1; fi
         local source_path="\${2#*:}"
@@ -76,6 +93,9 @@ test('both rollback paths require guarded participant report execution', () => {
           // fleet. Bound their unused background pools; all guard verdicts remain real.
           NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --v8-pool-size=1`.trim(),
           UV_THREADPOOL_SIZE: '1',
+          MAXIM_TEST_NODE: process.execPath,
+          MAXIM_TEST_NODE_STDERR: diagnosticsPath,
+          MAXIM_TEST_NODE_STATUS: statusPath,
           MAXIM_TEST_ROOT: root,
           MAXIM_TEST_VARIANT: variant,
           MAXIM_TEST_MISSING: variant === 'missing' ? '1' : '0',
@@ -85,9 +105,18 @@ test('both rollback paths require guarded participant report execution', () => {
         encoding: 'utf8',
       },
     );
+    const diagnostics = `${variant}\n${result.stderr}\n${readFileSync(diagnosticsPath, 'utf8')}`;
+    // FLAG: A crashed parser is never evidence that an incompatible target was rejected.
+    const parserStatuses = readFileSync(statusPath, 'utf8').trim().split('\n').filter(Boolean);
+    assert.ok(
+      parserStatuses.every((status) => status === '0' || status === '1'),
+      diagnostics,
+    );
+    assert.equal(result.error, undefined, diagnostics);
+    assert.equal(result.signal, null, diagnostics);
     if (variant !== 'current') {
-      assert.notEqual(result.status, 0, variant);
-      if (variant.startsWith('archive-')) assert.match(result.stderr, /archive/u, variant);
-    } else assert.equal(result.status, 0, result.stderr);
+      assert.notEqual(result.status, 0, diagnostics);
+      if (variant.startsWith('archive-')) assert.match(result.stderr, /archive/u, diagnostics);
+    } else assert.equal(result.status, 0, diagnostics);
   }
 });
