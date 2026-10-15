@@ -49,7 +49,7 @@ import {
 } from '../moderation/message-duplicate/message-duplicate.queue';
 import { WebhookCanonicalExecutionService } from '../moderation/webhook-canonical-execution.service';
 import { ActionHealthService } from '../system/action-health.service';
-import { createPrismaClient, Prisma } from '../prisma/prisma-client';
+import { createPrismaClient, Prisma, readPrismaPoolConfig } from '../prisma/prisma-client';
 import { WebhookService } from './webhook.service';
 import { WebhookOutboxService } from './webhook-outbox.service';
 import { WebhookParser } from './webhook.parser';
@@ -65,6 +65,7 @@ export type MultibotHarnessOptions = {
   bots: number;
   mode?: 'off' | 'shadow' | 'on';
   quotaProfile?: 'production' | 'fixture';
+  productionEnqueueCapacity?: boolean;
   recoverDueDeletes?: boolean;
   recoverAutomaticMuteHistory?: boolean;
 };
@@ -89,7 +90,16 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   ) {
     throw new Error('Multibot harness requires disposable local PostgreSQL race_test and Redis');
   }
-  const prisma = createPrismaClient(options.databaseUrl, { max: 12, statement_timeout: 15_000 });
+  const preparationPoolMax = readPrismaPoolConfig().max ?? 10;
+  if (options.productionEnqueueCapacity && preparationPoolMax !== 24) {
+    throw new Error('Production enqueue fixture requires PRISMA_PG_POOL_MAX=24');
+  }
+  const sqlPoolMax = options.productionEnqueueCapacity ? 24 : 12;
+  const enqueueConcurrency = options.productionEnqueueCapacity ? 32 : 8;
+  const prisma = createPrismaClient(options.databaseUrl, {
+    max: sqlPoolMax,
+    statement_timeout: 15_000,
+  });
   await prisma.$connect();
   const [native] = await prisma.$queryRaw<Array<{ version: string; timezone: string }>>`
     SELECT version(), current_setting('TimeZone') AS timezone
@@ -775,7 +785,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
         }
       ).enqueueCandidates(
         candidates.map((event) => ({ ...event, priority: 5 })),
-        8,
+        enqueueConcurrency,
       );
     const pending = await prisma.webhookEvent.count({
       where: { id: { in: receiptIds }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
@@ -946,6 +956,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     effects,
     requests,
     processedIds,
+    capacity: { sqlPoolMax, preparationPoolMax, enqueueConcurrency },
     failures,
     messages,
     seedCatalog,

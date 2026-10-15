@@ -1530,6 +1530,9 @@ export class CommercialOcrModerationService {
       const decision = await this.governor.decide({
         component: GOVERNOR_COMPONENT,
         sourceTag: GOVERNOR_SOURCE_TAG,
+        // FLAG: Local image work may resume during recovery only after the governor
+        // rechecks queue/host pressure. Active degradation and manual pauses still win.
+        allowRecoveryWindowRun: true,
         ignoredPressureDomains: ['max_api_traffic'],
       });
       const retryAfterMs =

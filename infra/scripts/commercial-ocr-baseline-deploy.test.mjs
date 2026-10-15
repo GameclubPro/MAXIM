@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
@@ -23,11 +24,51 @@ const apiRoles = [
 ];
 
 function probe(script, env = {}) {
-  return spawnSync('bash', ['-c', `source infra/scripts/lib/deploy-topology.sh\n${script}`], {
-    cwd: root,
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-  });
+  const directory = mkdtempSync(resolve(tmpdir(), 'maxim-ocr-guard-'));
+  const diagnosticPath = resolve(directory, 'node.stderr');
+  const statusPath = resolve(directory, 'node.status');
+  writeFileSync(diagnosticPath, '', { mode: 0o600 });
+  writeFileSync(statusPath, '', { mode: 0o600 });
+  try {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+node() {
+  local status
+  if "$OCR_TEST_NODE" "$@" 2>>"$OCR_TEST_NODE_STDERR"; then status=0; else status=$?; fi
+  printf '%s\\n' "$status" >>"$OCR_TEST_NODE_STATUS"
+  return "$status"
+}
+source infra/scripts/lib/deploy-topology.sh
+${script}`,
+      ],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          ...env,
+          OCR_TEST_NODE: process.execPath,
+          OCR_TEST_NODE_STDERR: diagnosticPath,
+          OCR_TEST_NODE_STATUS: statusPath,
+        },
+      },
+    );
+    const stderr = `${result.stderr}\n${readFileSync(diagnosticPath, 'utf8')}`;
+    // FLAG: A native parser crash cannot satisfy an expected rollback refusal.
+    const statuses = readFileSync(statusPath, 'utf8').trim().split('\n').filter(Boolean);
+    assert.ok(
+      statuses.every((status) => status === '0' || status === '1'),
+      stderr,
+    );
+    assert.equal(result.error, undefined, stderr);
+    assert.equal(result.signal, null, stderr);
+    return { ...result, stderr };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 const sourceFixture = `

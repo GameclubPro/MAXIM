@@ -139,6 +139,68 @@ function createDecisionSnapshotForTest() {
 
 describe('BackgroundRuntimeGovernorService', () => {
   it.each([
+    { label: 'healthy recovery', expected: 'run' },
+    {
+      label: 'manual pause',
+      mode: { source: 'manual', condition: 'manual', manualMode: 'degrade', reason: 'maintenance' },
+      expected: 'pause',
+    },
+    {
+      label: 'active MAX degradation',
+      mode: { condition: 'max_api', reason: 'MAX degraded' },
+      expected: 'pause',
+    },
+    {
+      label: 'mixed degradation',
+      mode: { condition: 'mixed', reason: 'mixed pressure' },
+      expected: 'pause',
+    },
+    { label: 'fresh queue pressure', queues: { operationalLagSec: 3 }, expected: 'pause' },
+    { label: 'CPU pause', pressure: { loadRatio1m: 1.3 }, expected: 'pause' },
+    { label: 'IO pause', pressure: { ioWaitRatio: 0.4 }, expected: 'pause' },
+    { label: 'CPU slow', pressure: { loadRatio1m: 0.9 }, expected: 'slow' },
+    {
+      label: 'worker skew',
+      skew: { groupName: 'api-moderation', pressure: 7, totalPressure: 8, share: 0.875 },
+      expected: 'slow',
+    },
+  ])(
+    'allows OCR recovery without bypassing $label',
+    async ({ mode, queues, pressure, skew, expected }) => {
+      const base = createDecisionSnapshotForTest();
+      const snapshot = {
+        ...base,
+        mode: {
+          ...base.mode,
+          mode: 'degrade',
+          condition: 'stabilizing',
+          reason: 'recovery window in progress',
+          ...mode,
+        },
+        queues: { ...base.queues, operationalLagSec: 0, ...queues },
+        systemPressure: { ...base.systemPressure, ...pressure },
+        workerSkew: { ...base.workerSkew, ...skew },
+        backgroundShare: 0.8,
+      };
+      const service = new BackgroundRuntimeGovernorService(
+        {} as never,
+        { getEffectiveSnapshot: jest.fn().mockResolvedValue(snapshot.mode) } as never,
+        {} as never,
+        createConfigMock(),
+      );
+      jest.spyOn(service as any, 'getPressureSnapshot').mockResolvedValue(snapshot);
+      await expect(
+        service.decide({
+          component: 'commercial-image-ocr',
+          sourceTag: 'commercial_image_ocr',
+          allowRecoveryWindowRun: true,
+          ignoredPressureDomains: ['max_api_traffic'],
+        }),
+      ).resolves.toMatchObject({ action: expected });
+    },
+  );
+
+  it.each([
     { operationalLagSec: 0, action: 'run' },
     { operationalLagSec: 32, action: 'pause' },
   ])(

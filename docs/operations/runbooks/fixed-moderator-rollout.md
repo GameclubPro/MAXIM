@@ -123,6 +123,19 @@ These finite profiles verify effect invariants; passing them does not establish 
 targets, three times measured production peak, production topology capacity, or daily
 acceptance. Assess offered load against per-chat, per-bot and method quotas separately.
 
+The default fixture has a 12-connection shared SQL pool, while preparation reads the process
+pool configuration (ten by default, admitting five preparations). To compare with the current
+production enqueue budget, use `PRISMA_PG_POOL_MAX=24` together with `--enqueue=production`.
+This explicit profile sets the fixture SQL pool to 24 and candidate concurrency to 32, yielding
+the production twelve preparation slots. The report records all three actual budgets. It still
+has one process, one webhook queue and four webhook workers; it is not the production topology.
+Keep the original result when comparing profiles, and do not raise production limits to match a
+benchmark. For example:
+
+```bash
+PRISMA_PG_POOL_MAX=24 node scripts/agent/with-test-stores.mjs --migrate -- npm run loadtest:multibot-catalog --workspace @maxim/api -- --chats=30000 --bots=6 --messages=1080 --rate=18 --routing=fixed --enqueue=production --profiles=uniform,cold,media --output=/tmp/fixed-moderator-production-enqueue-load.json
+```
+
 `postgres-audit webhook-cohort` schema v4 reports p95 and p99 for the same bounded
 closed window. Only valid PROCESSED clocks enter completion latency; cancelled,
 duplicate, held and quarantined receipts remain separate. A truncated or empty cohort

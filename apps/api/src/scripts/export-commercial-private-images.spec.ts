@@ -629,6 +629,7 @@ describe('bounded private commercial source-image export', () => {
     await expect(assertPrivateImageOutputSafe(join(repo, 'out'), repo)).rejects.toThrow();
     const shared = join(folder, 'shared');
     await mkdir(shared, { mode: 0o755 });
+    await chmod(shared, 0o755);
     await expect(assertPrivateImageOutputSafe(join(shared, 'out'), repo)).rejects.toThrow();
     const link = join(folder, 'alias');
     await symlink(folder, link);
