@@ -1,3 +1,7 @@
+import {
+  collectFixtureBatches,
+  countFixtureBatches,
+} from '../webhook/multibot-harness-batches.spec-support';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { cpus, totalmem } from 'node:os';
@@ -137,6 +141,8 @@ async function main() {
           where: { chatId: { in: chats } },
         });
         const receiptIds: string[] = [];
+        const unsettledReceiptIds = new Set<string>();
+        const touchedChatIds = new Set<string>();
         const messageIds: string[] = [];
         const expectedExecutors = new Map<string, string>();
         const ingressLatencyMs: number[] = [];
@@ -168,9 +174,11 @@ async function main() {
             receipts: receiptIds.length,
             requestedLogicalRatePerSec: rate,
             elapsedMs: Math.round(performance.now() - startedAt),
-            pendingReceipts: await harness.prisma.webhookEvent.count({
-              where: { id: { in: receiptIds }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
-            }),
+            pendingReceipts: await countFixtureBatches(receiptIds, (ids) =>
+              harness.prisma.webhookEvent.count({
+                where: { id: { in: ids }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
+              }),
+            ),
             pendingActions: await harness.prisma.moderationDeleteIntent.count({
               where: { messageId: { in: messageIds }, status: { in: pendingActionStatuses } },
             }),
@@ -221,6 +229,7 @@ async function main() {
             }
             const messageId = `${caseId}-${index}`;
             messageIds.push(messageId);
+            touchedChatIds.add(chatId);
             expectedExecutors.set(messageId, assignedBots.get(chatId)!);
             const at = Date.now();
             const enteredAt = performance.now();
@@ -250,21 +259,18 @@ async function main() {
               ),
             );
             receiptIds.push(...mirrors);
+            for (const id of mirrors) unsettledReceiptIds.add(id);
             ingressLatencyMs.push(performance.now() - enteredAt);
             if (index % 10 === 0) {
-              const pendingWhere = {
-                id: { in: receiptIds },
-                status: {
-                  in: ['RECEIVED', 'QUEUED', 'FAILED'] as Array<'RECEIVED' | 'QUEUED' | 'FAILED'>,
-                },
-              };
-              const [pending, oldest, pendingActions, oldestAction] = await Promise.all([
-                harness.prisma.webhookEvent.count({ where: pendingWhere }),
-                harness.prisma.webhookEvent.findFirst({
-                  where: pendingWhere,
-                  orderBy: { createdAt: 'asc' },
-                  select: { createdAt: true },
-                }),
+              // Observe only receipts not yet seen terminal; final checks still read every ID.
+              const trackedIds = [...unsettledReceiptIds];
+              const [receiptRows, pendingActions, oldestAction] = await Promise.all([
+                collectFixtureBatches(trackedIds, (ids) =>
+                  harness.prisma.webhookEvent.findMany({
+                    where: { id: { in: ids } },
+                    select: { id: true, status: true, createdAt: true },
+                  }),
+                ),
                 harness.prisma.moderationDeleteIntent.count({
                   where: { messageId: { in: messageIds }, status: { in: pendingActionStatuses } },
                 }),
@@ -274,6 +280,16 @@ async function main() {
                   select: { createdAt: true },
                 }),
               ]);
+              if (receiptRows.length !== trackedIds.length)
+                throw new Error('Fixture receipt observation is incomplete');
+              let pending = 0;
+              let oldest: { createdAt: Date } | null = null;
+              for (const row of receiptRows) {
+                if (['RECEIVED', 'QUEUED', 'FAILED'].includes(row.status)) {
+                  pending += 1;
+                  if (!oldest || row.createdAt < oldest.createdAt) oldest = row;
+                } else unsettledReceiptIds.delete(row.id);
+              }
               peakPendingReceipts = Math.max(peakPendingReceipts, pending);
               peakOldestReceiptAgeMs = Math.max(
                 peakOldestReceiptAgeMs,
@@ -295,9 +311,11 @@ async function main() {
         if (pumpError) throw pumpError;
         const finishedAt = performance.now();
         const elapsedMs = finishedAt - startedAt;
-        const owned = await harness.prisma.webhookExecutionClaim.count({
-          where: { kind: 'EXECUTION', webhookEventId: { in: receiptIds }, status: 'COMPLETED' },
-        });
+        const owned = await countFixtureBatches(receiptIds, (ids) =>
+          harness.prisma.webhookExecutionClaim.count({
+            where: { kind: 'EXECUTION', webhookEventId: { in: ids }, status: 'COMPLETED' },
+          }),
+        );
         const violations =
           (await harness.prisma.violation.count({ where: { chatId: { in: chats } } })) -
           beforeViolations;
@@ -307,9 +325,11 @@ async function main() {
         const deletes = harness.effects
           .slice(beforeEffects)
           .filter((effect) => effect.method === 'delete' && effect.path === '/messages');
-        const finalPendingReceipts = await harness.prisma.webhookEvent.count({
-          where: { id: { in: receiptIds }, status: { notIn: ['PROCESSED', 'DUPLICATE'] } },
-        });
+        const finalPendingReceipts = await countFixtureBatches(receiptIds, (ids) =>
+          harness.prisma.webhookEvent.count({
+            where: { id: { in: ids }, status: { notIn: ['PROCESSED', 'DUPLICATE'] } },
+          }),
+        );
         const wrongExecutorEffects = deletes.filter(
           (effect) => !effect.messageId || expectedExecutors.get(effect.messageId) !== effect.botId,
         ).length;
@@ -318,7 +338,7 @@ async function main() {
         });
         const violationClaims = await harness.prisma.moderationViolationMessageClaim.findMany({
           where: {
-            chatId: { in: chats },
+            chatId: { in: [...touchedChatIds] },
             messageId: { in: messageIds },
             ruleCode: 'MESSAGE_TOO_LONG',
           },
@@ -329,10 +349,12 @@ async function main() {
         const finalPendingActions = await harness.prisma.moderationDeleteIntent.count({
           where: { messageId: { in: messageIds }, status: { in: pendingActionStatuses } },
         });
-        const completions = await harness.prisma.webhookEvent.findMany({
-          where: { id: { in: receiptIds }, status: 'PROCESSED' },
-          select: { createdAt: true, processedAt: true },
-        });
+        const completions = await collectFixtureBatches(receiptIds, (ids) =>
+          harness.prisma.webhookEvent.findMany({
+            where: { id: { in: ids }, status: 'PROCESSED' },
+            select: { createdAt: true, processedAt: true },
+          }),
+        );
         const completionLatencyMs = completions
           .map((event) =>
             Math.max(0, (event.processedAt?.getTime() ?? Date.now()) - event.createdAt.getTime()),

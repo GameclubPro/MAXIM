@@ -137,6 +137,12 @@ full-path suite. Never remove uncertainty/order fences or clear Redis to repair 
 
 3. Determine whether lag is ingress/enqueue, a moderation shard, action dispatch, Redis, Postgres, or
    MAX API pressure before changing concurrency.
+   Internal limiter warnings include the finite `limitScope`: `bot`, `role_class`, `chat`,
+   `message_target`, `retention_fleet`, `retention_chat`, `managed_refresh` or `external_cooldown`.
+   `unknown` means attribution is unavailable. This is the dimension returned by atomic admission,
+   not an inference from an error string. External HTTP 429 still has its separate origin; a local
+   cooldown refusal is not another external request. Logs remain coalesced samples, not full counts.
+   The diagnostic never grants retry authority or changes configured quotas and deadlines.
 4. Prefer the fixed catalog and health snapshots. Do not run raw `psql`, broad `webhook_events` or
    ledger aggregates during live pressure. A new diagnostic shape is code to review and test, not
    an inline incident command.

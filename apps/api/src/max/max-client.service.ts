@@ -367,6 +367,17 @@ export function isMaxApiCircuitOpenError(error: unknown): error is MaxApiCircuit
   );
 }
 
+type MaxApiRateLimitScope =
+  | 'bot'
+  | 'role_class'
+  | 'chat'
+  | 'message_target'
+  | 'retention_fleet'
+  | 'retention_chat'
+  | 'managed_refresh'
+  | 'external_cooldown'
+  | 'unknown';
+
 export class MaxApiInternalRateLimitError extends Error {
   readonly code = 'MAX_API_INTERNAL_RATE_LIMIT';
   readonly preDispatch = true;
@@ -374,6 +385,8 @@ export class MaxApiInternalRateLimitError extends Error {
   constructor(
     message: string,
     readonly retryAfterMs: number,
+    // FLAG: Diagnostic attribution only; never grants retry or mutation authority.
+    readonly limitScope: MaxApiRateLimitScope = 'unknown',
   ) {
     super(message);
     this.name = 'MaxApiInternalRateLimitError';
@@ -7205,6 +7218,7 @@ export class MaxClientService implements OnModuleDestroy {
       {
         statusCode: this.extractStatusCode(error),
         errorCode: this.extractActionFailureErrorCode(error),
+        limitScope: error instanceof MaxApiInternalRateLimitError ? error.limitScope : null,
         trafficClass: params.trafficClass,
         lane: params.lane,
         sourceTag: params.sourceTag,
@@ -8005,8 +8019,13 @@ export class MaxClientService implements OnModuleDestroy {
           sourceTag,
           reason: reservation.reason,
           retryAfterMs: reservation.retryAfterMs,
+          limitScope: reservation.limitScope,
         });
-        throw new MaxApiInternalRateLimitError(reservation.reason, reservation.retryAfterMs);
+        throw new MaxApiInternalRateLimitError(
+          reservation.reason,
+          reservation.retryAfterMs,
+          reservation.limitScope,
+        );
       }
 
       await this.sleep(
@@ -8038,6 +8057,7 @@ export class MaxClientService implements OnModuleDestroy {
         ok: false;
         retryAfterMs: number;
         reason: string;
+        limitScope: MaxApiRateLimitScope;
       }
   > {
     const messageMutationScope = messageMutation
@@ -8045,16 +8065,24 @@ export class MaxClientService implements OnModuleDestroy {
         ? `target:${encodeURIComponent(messageMutation.entityId)}`
         : `unknown-target:bot:${encodeURIComponent(botId)}`
       : null;
-    const dimensions = [
+    const dimensions: Array<{
+      key: string;
+      limit: number;
+      reason: string;
+      limitScope: MaxApiRateLimitScope;
+      burstToleranceSlots?: number;
+    }> = [
       {
         key: `maxapi:gcra:v1:bot:${botId}:all`,
         limit: this.globalRpsLimit,
         reason: `MAX API per-bot rate limit exceeded for bot ${botId}`,
+        limitScope: 'bot',
       },
       {
         key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:bot:${botId}:class:${trafficClass}`,
         limit: this.resolveTrafficClassEffectiveRpsLimit(trafficClass),
         reason: `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`,
+        limitScope: 'role_class',
       },
       ...(chatId
         ? [
@@ -8062,6 +8090,7 @@ export class MaxClientService implements OnModuleDestroy {
               key: `maxapi:gcra:v1:chat:${botId}:${chatId}`,
               limit: this.chatRpsLimit,
               reason: `MAX API per-chat rate limit exceeded for bot ${botId} chat ${chatId}`,
+              limitScope: 'chat' as const,
             },
           ]
         : []),
@@ -8071,6 +8100,7 @@ export class MaxClientService implements OnModuleDestroy {
               key: `maxapi:gcra:v1:message-mutation:operation:${messageMutation.operation}:scope:${messageMutationScope}`,
               limit: MAX_MESSAGE_MUTATION_RPS,
               burstToleranceSlots: 0,
+              limitScope: 'message_target' as const,
               reason: messageMutation.entityId
                 ? `MAX API ${messageMutation.operation} message rate limit exceeded for target ${messageMutation.entityId}`
                 : `MAX API ${messageMutation.operation} message rate limit exceeded for unknown target on bot ${botId}`,
@@ -8084,6 +8114,7 @@ export class MaxClientService implements OnModuleDestroy {
         key: 'maxapi:gcra:v1:source:message-retention:all',
         limit: slow === '1' ? 1 : 2,
         reason: 'MAX message retention fleet budget exceeded',
+        limitScope: 'retention_fleet',
         burstToleranceSlots: 0,
       });
       if (messageMutation?.operation === 'delete')
@@ -8091,6 +8122,7 @@ export class MaxClientService implements OnModuleDestroy {
           key: `maxapi:gcra:v1:source:message-retention:chat:${messageMutationScope}`,
           limit: 1,
           reason: 'MAX message retention chat budget exceeded',
+          limitScope: 'retention_chat',
           burstToleranceSlots: 0,
         });
     }
@@ -8100,6 +8132,7 @@ export class MaxClientService implements OnModuleDestroy {
           key: `maxapi:gcra:v1:service:${this.rateLimitServiceScope}:source:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}`,
           limit: this.managedRefreshRpsLimit,
           reason: `MAX API managed_refresh source limit exceeded for bot ${botId}`,
+          limitScope: 'managed_refresh',
         });
       }
     }
@@ -8137,6 +8170,10 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       ok: false,
       retryAfterMs: normalizedRetryAfterMs,
+      limitScope:
+        rejectedKeyIndex === 0
+          ? 'external_cooldown'
+          : (dimensions[Math.trunc(rejectedKeyIndex) - 1]?.limitScope ?? 'unknown'),
       reason:
         (rejectedKeyIndex === 0
           ? `MAX API external cooldown for bot ${botId}`
@@ -8154,6 +8191,7 @@ export class MaxClientService implements OnModuleDestroy {
     reason: string;
     statusCode?: number | null;
     retryAfterMs?: number | null;
+    limitScope?: MaxApiRateLimitScope;
   }): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1_000);
     const metricKeys = [
@@ -8196,6 +8234,7 @@ export class MaxClientService implements OnModuleDestroy {
           origin: params.origin,
           statusCode: params.statusCode ?? null,
           retryAfterMs: params.retryAfterMs ?? null,
+          limitScope: params.limitScope ?? null,
         },
         params.origin === 'external_429'
           ? 'MAX API returned external HTTP 429'

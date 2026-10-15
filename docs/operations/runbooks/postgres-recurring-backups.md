@@ -21,6 +21,15 @@ exhausted deadline still fail. Both the initial failed sample and any confirmed
 refresh are logged without event identities or response bodies. The two-failure
 watchdog and storage reserve are unchanged; never count a fallback as healthy.
 
+The API treats the bounded queue-lag refresh as a required dependency, including
+when a recent stale sample exists. It uses the same dependency budget as a cold
+queue read (1,500 ms by default), within the unchanged 2,500 ms readiness build
+deadline; optional dashboard diagnostics retain their separate short budget.
+A refresh that completes after 250 ms must not repeatedly lose to that optional
+budget on each cache-expired watchdog retry. An unchanged, failed or timed-out
+refresh still carries the stale warning, and fresh excessive lag still fails the
+strict backup checks. Do not increase cache ages or watchdog thresholds to compensate.
+
 Install `infra/env/postgres-backup.env.example` as `/etc/maxim-postgres-backup.env`
 (root, 0600). Use `/mnt/maxim-cold/backups/maxim` and
 `/mnt/maxim-cold/restore-smoke/maxim`, and set the backing path to

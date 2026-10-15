@@ -10027,6 +10027,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       {
         statusCode: 503,
         errorCode: 'service.unavailable',
+        limitScope: null,
         trafficClass: 'critical',
         lane: 'interactive',
         sourceTag: 'required_subscription_membership',
@@ -14181,6 +14182,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ok: false,
       retryAfterMs: 1_000,
       reason: 'MAX API per-bot rate limit exceeded for bot bot-a',
+      limitScope: 'bot',
     });
 
     await firstService.onModuleDestroy();
@@ -14295,6 +14297,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ok: false,
       retryAfterMs: 500,
       reason: 'MAX API send message rate limit exceeded for target chat-a',
+      limitScope: 'message_target',
     });
 
     jest.advanceTimersByTime(500);
@@ -14305,6 +14308,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ok: false,
       retryAfterMs: 500,
       reason: 'MAX API send message rate limit exceeded for target chat-a',
+      limitScope: 'message_target',
     });
 
     await expect(reserve(secondService, 'edit', 'bot-a', 'chat-a')).resolves.toEqual({
@@ -14320,6 +14324,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ok: false,
       retryAfterMs: 500,
       reason: 'MAX API send message rate limit exceeded for target chat-a',
+      limitScope: 'message_target',
     });
     await expect(reserve(firstService, 'answer', 'bot-a', 'chat-answer')).resolves.toEqual({
       ok: true,
@@ -14328,6 +14333,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ok: false,
       retryAfterMs: 500,
       reason: 'MAX API answer message rate limit exceeded for target chat-answer',
+      limitScope: 'message_target',
     });
 
     await firstService.onModuleDestroy();
@@ -14521,6 +14527,52 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await thirdService.onModuleDestroy();
   });
 
+  it.each([
+    [0, 'external_cooldown', undefined, false],
+    [1, 'bot', undefined, false],
+    [2, 'role_class', undefined, false],
+    [3, 'chat', undefined, false],
+    [4, 'message_target', undefined, true],
+    [5, 'retention_fleet', MAX_API_SOURCE_TAGS.MESSAGE_RETENTION, true],
+    [6, 'retention_chat', MAX_API_SOURCE_TAGS.MESSAGE_RETENTION, true],
+    [4, 'managed_refresh', MAX_API_SOURCE_TAGS.MANAGED_REFRESH, false],
+    [99, 'unknown', undefined, false],
+  ])(
+    'reports refused quota scope %s/%s without dispatching or changing retry delay',
+    async (index, limitScope, sourceTag, mutation) => {
+      const request = jest.fn();
+      const service = createService({ request });
+      const internal = service as any;
+      const warn = jest.spyOn(internal.logger, 'warn');
+      internal.limiterRedis.eval.mockResolvedValueOnce([0, index, 12_345]);
+      try {
+        await expect(
+          internal.reserveRateLimitSlot(
+            '777000_bot',
+            'chat-private',
+            'background',
+            sourceTag,
+            0,
+            mutation ? { operation: 'delete', entityId: 'chat-private' } : undefined,
+          ),
+        ).rejects.toMatchObject({
+          code: 'MAX_API_INTERNAL_RATE_LIMIT',
+          preDispatch: true,
+          retryAfterMs: 12_345,
+          limitScope,
+        });
+        expect(request).not.toHaveBeenCalled();
+        expect(internal.limiterRedis.eval).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ limitScope, retryAfterMs: 12_345 }),
+          'MAX API internal limiter rejected request before dispatch',
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
   it('records internal limiter rejection separately from an external MAX 429', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-11T10:15:00.000Z'));
     const internalService = createService(
@@ -14541,6 +14593,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       code: 'MAX_API_INTERNAL_RATE_LIMIT',
       preDispatch: true,
       retryAfterMs: 250,
+      limitScope: 'bot',
     });
     const nowSec = Math.floor(Date.now() / 1_000);
     await expect(
@@ -14550,7 +14603,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect.objectContaining({ category: 'max_api_internal_limiter', statusCode: null }),
     );
     expect(internalWarn).toHaveBeenCalledWith(
-      expect.objectContaining({ origin: 'internal_limiter' }),
+      expect.objectContaining({ origin: 'internal_limiter', limitScope: 'bot' }),
       'MAX API internal limiter rejected request before dispatch',
     );
     await (internalService as any).recordRateLimitOutcome({

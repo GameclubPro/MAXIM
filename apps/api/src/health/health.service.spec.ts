@@ -1539,7 +1539,123 @@ describe('HealthService', () => {
     }
   });
 
-  it('serves a recent stale queue snapshot immediately and refreshes metrics in the background', async () => {
+  it.each([0, 35])(
+    'awaits the mandatory lag refresh beyond the optional budget and reports fresh lag %s',
+    async (freshLagSec) => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-10-15T10:09:50.000Z'));
+      let service: HealthService | undefined;
+      try {
+        let cached = {
+          ...healthyQueueSnapshot(),
+          generatedAt: new Date(Date.now() - 3_000).toISOString(),
+        };
+        const queueMetricsService = {
+          getLagSnapshot: jest.fn().mockImplementation(
+            () =>
+              new Promise((resolve) => {
+                setTimeout(() => {
+                  cached = {
+                    ...cached,
+                    effectiveLagSec: freshLagSec,
+                    oldestReceivedLagSec: freshLagSec,
+                    generatedAt: new Date().toISOString(),
+                  };
+                  resolve(cached);
+                }, 400);
+              }),
+          ),
+          peekCachedLagSnapshot: jest.fn((maxAgeMs: number) =>
+            Date.now() - Date.parse(cached.generatedAt) <= maxAgeMs ? cached : null,
+          ),
+        };
+        service = new HealthService(
+          { $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]) } as never,
+          queueMetricsService as never,
+          {
+            getEffectiveSnapshot: jest.fn().mockResolvedValue(healthySystemModeSnapshot()),
+          } as never,
+          createConfigMock({
+            READINESS_BUILD_TIMEOUT_MS: 2_500,
+            READINESS_DEPENDENCY_TIMEOUT_MS: 1_500,
+            READINESS_OPTIONAL_DIAGNOSTICS_TIMEOUT_MS: 250,
+          }) as never,
+        );
+
+        // FLAG: A watchdog retry occurs after the ready cache expires; each refresh must
+        // observe the required queue signal without blessing the previous healthy sample.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          let settled = false;
+          const pending = service.ready().then((snapshot) => {
+            settled = true;
+            return snapshot;
+          });
+          const concurrent = service.ready();
+          await jest.advanceTimersByTimeAsync(251);
+          expect(settled).toBe(false);
+          await jest.advanceTimersByTimeAsync(149);
+          const snapshot = await pending;
+          expect(await concurrent).toEqual(snapshot);
+          expect(snapshot.ok).toBe(freshLagSec === 0);
+          expect(snapshot.checks.queueLag).toMatchObject({
+            effectiveLagSec: freshLagSec,
+            sampleGeneratedAt: new Date().toISOString(),
+            softWarningCode: null,
+          });
+          expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(attempt + 1);
+          await jest.advanceTimersByTimeAsync(2_400);
+        }
+      } finally {
+        await service?.onModuleDestroy();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('keeps a warning when the required lag refresh exceeds its dependency budget', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-10-15T10:09:50.000Z'));
+    let service: HealthService | undefined;
+    try {
+      const stale = {
+        ...healthyQueueSnapshot(),
+        generatedAt: new Date(Date.now() - 3_000).toISOString(),
+      };
+      const queueMetricsService = {
+        getLagSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+        peekCachedLagSnapshot: jest.fn().mockReturnValue(stale),
+      };
+      service = new HealthService(
+        { $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]) } as never,
+        queueMetricsService as never,
+        { getEffectiveSnapshot: jest.fn().mockResolvedValue(healthySystemModeSnapshot()) } as never,
+        createConfigMock({
+          READINESS_BUILD_TIMEOUT_MS: 2_500,
+          READINESS_DEPENDENCY_TIMEOUT_MS: 1_500,
+          READINESS_OPTIONAL_DIAGNOSTICS_TIMEOUT_MS: 250,
+        }) as never,
+      );
+      let settled = false;
+      const pending = service.ready().then((snapshot) => {
+        settled = true;
+        return snapshot;
+      });
+      await jest.advanceTimersByTimeAsync(1_499);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect((await pending).checks.queueLag).toMatchObject({
+        softWarning: true,
+        softWarningCode: 'stale-ready-fallback',
+        sampleGeneratedAt: stale.generatedAt,
+      });
+      expect(queueMetricsService.getLagSnapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      await service?.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('retains a stale queue warning when refresh returns the unchanged sample', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-03-31T09:12:10.000Z'));
 
@@ -1699,7 +1815,7 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 
-  it('promotes a stale queue snapshot when the background refresh finishes within the diagnostics budget', async () => {
+  it('promotes a stale queue snapshot when the refresh finishes within the dependency budget', async () => {
     const prisma = {
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
     };

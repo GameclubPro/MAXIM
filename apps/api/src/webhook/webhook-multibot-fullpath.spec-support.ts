@@ -1,3 +1,4 @@
+import { countFixtureBatches } from './multibot-harness-batches.spec-support';
 import { AutomaticMuteCleanupService } from '../moderation/automatic-mute-cleanup.service';
 import type { MaxUpdate } from '@maxim/contracts';
 import type { ManagedEntityExplicitActivation } from '../max/managed-entity-activation.util';
@@ -983,10 +984,12 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
 
   async function pumpOnce() {
     await pumpWork();
-    const pending = await prisma.webhookEvent.count({
-      where: { id: { in: receiptIds }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
-    });
-    const queued = await deleteQueue.getJobCounts('waiting', 'active', 'delayed');
+    const pending = await countFixtureBatches(receiptIds, (ids) =>
+      prisma.webhookEvent.count({
+        where: { id: { in: ids }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
+      }),
+    );
+    const queued = await deleteQueue.getJobCounts('waiting', 'active', 'delayed', 'prioritized');
     const pendingWebhookJobs = split
       ? (
           await Promise.all(
@@ -1026,6 +1029,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       (queued.waiting ?? 0) +
       (queued.active ?? 0) +
       (queued.delayed ?? 0) +
+      (queued.prioritized ?? 0) +
       unfinishedDeletes
     );
   }
@@ -1058,7 +1062,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       });
       // FLAG: A late-notice fault must follow our actual verified DELETE and completion
       // of this fixture's isolated delete queue. Never drain the blocked webhook job here.
-      const queued = await deleteQueue.getJobCounts('waiting', 'active', 'delayed');
+      const queued = await deleteQueue.getJobCounts('waiting', 'active', 'delayed', 'prioritized');
       const verified = intent?.reasons.some(
         (reason) =>
           (reason.metadata as Record<string, unknown> | null)?.moderationDeleteVerified === true,
@@ -1068,7 +1072,11 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
         intent.remoteDeleteSucceededAt &&
         verified &&
         !messages.has(messageId) &&
-        (queued.waiting ?? 0) + (queued.active ?? 0) + (queued.delayed ?? 0) === 0
+        (queued.waiting ?? 0) +
+          (queued.active ?? 0) +
+          (queued.delayed ?? 0) +
+          (queued.prioritized ?? 0) ===
+          0
       ) {
         if (failures.length) throw failures[0];
         return intent;
