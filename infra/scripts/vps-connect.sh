@@ -79,6 +79,7 @@ Commands:
   postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]
   postgres-audit webhook-cohort [--explain]
   postgres-audit duplicate [--status <STATUS>] [--explain]
+  postgres-audit poll-publication <poll-id> [--explain]
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
   postgres-audit publisher-publications [--explain]
@@ -534,6 +535,16 @@ postgres_audit() {
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2
+    fi
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
+
+  if [[ "$mode" == 'poll-publication' ]]; then
+    if [[ $# -lt 2 || $# -gt 3 || ! "$2" =~ ^[A-Za-z0-9_-]{1,128}$ ||
+          ( $# -eq 3 && "$3" != '--explain' ) ]]; then
+      echo 'Usage: postgres-audit poll-publication <poll-id> [--explain]' >&2
+      return 2
     fi
     remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
     return

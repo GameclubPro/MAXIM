@@ -1,0 +1,45 @@
+# Managed poll publication diagnostics
+
+Use this report when an existing poll repeatedly fails to render or its message
+cannot be read. A bare MAX HTTP 403/404 does not prove revoked access or a deleted
+message. Preserve the original publication bot, message binding and uncertain
+effect evidence until a stronger result is available.
+
+Synchronize the reviewed tooling through the normal exact-green-CI deploy plan.
+Preview `postgres-audit-provision`, review its exact grants, then apply with
+`postgres-audit-provision --apply`. The report adds nineteen metadata columns:
+twelve on `managed_polls` and seven on `chat_bot_memberships`. It grants no
+question, image, voter, actor or permission payload access. General reports accept
+an absent legacy metadata group; this report requires both complete groups.
+
+Take one poll ID from a bounded incident log. Run the plain plan first, then the
+report sequentially under the existing audit lock:
+
+```bash
+: "${POLL_AUDIT_ID:?Set one reviewed poll ID}"
+./infra/scripts/vps-connect.sh postgres-audit poll-publication "$POLL_AUDIT_ID" --explain
+./infra/scripts/vps-connect.sh postgres-audit poll-publication "$POLL_AUDIT_ID"
+```
+
+The query reads one poll by primary key and joins only its exact original bot
+membership through `(chat_id, bot_id)`. Admission attests both unique indexes;
+the shared audit wrapper retains its server and wall-clock limits. Reject a live
+plan that scans retained membership history. This opt-in report is excluded from
+`all` and accepts no SQL, paths, repair flags or bulk IDs.
+
+Interpret the report narrowly:
+
+- `found=false` means the local poll row is absent; it says nothing about MAX.
+- Missing publication/bot metadata requires binding investigation. Never borrow
+  another moderator or automatically republish the poll.
+- Missing or denied original membership explains why local authorization may
+  refuse an effect. Confirm the exact activation/capability boundary separately;
+  this report deliberately does not read permission payloads.
+- Matching revisions describe persisted rendering state, not current remote
+  message presence. A positive membership is durable role evidence, not proof
+  that the original message can still be edited.
+- Error families are coarse classifications of retained errors. In particular,
+  `http_404_unknown_presence` cannot authorize deletion, cancellation or replay.
+
+Keep the UTC incident window, exact runtime SHA and report time with the evidence.
+Diagnostics never mutate poll status, membership, callbacks or publication ledgers.
