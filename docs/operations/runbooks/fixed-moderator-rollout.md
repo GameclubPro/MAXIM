@@ -100,3 +100,30 @@ cohorts, dependency/queue/error evidence, independent backup/readback/restore, i
 3× peak tests and observation through a real peak. Finish only after all gates and a
 fresh uninterrupted final 30-minute monitoring window after the last change. New errors,
 observation gaps or corrective changes restart that final window.
+
+## Isolated catalog load checks
+
+The existing native catalog driver supports `--routing=fixed`. It assigns disposable
+fixture chats across the configured bots, verifies each DELETE against that chat's
+assignment and rejects non-success receipt statuses, including quarantine and cancellation.
+Production preservation never uses this synthetic distribution.
+
+```bash
+node scripts/agent/with-test-stores.mjs --migrate -- npm run loadtest:multibot-catalog --workspace @maxim/api -- --chats=10000,12000,30000 --bots=6 --messages=120 --rate=6 --routing=fixed --profiles=uniform,hot,cold,media --output=/tmp/fixed-moderator-load.json
+```
+
+`--routing=legacy` retains the former single-primary fixture for comparison. Reports
+include actual throughput, p95/p99 receipt/action latency, executor coverage and drain.
+The hot profile uses four chats, so it exercises at most four assigned bots; other
+profiles spread messages across the available assignments. The fixture has one webhook
+queue and one delete queue, each with concurrency four. MAX is simulated with production
+quota defaults. The media profile tests attachment ingress and text rules, excluding
+native image/OCR work. Run on an otherwise idle test host for performance conclusions.
+These finite profiles verify effect invariants; passing them does not establish latency
+targets, three times measured production peak, production topology capacity, or daily
+acceptance. Assess offered load against per-chat, per-bot and method quotas separately.
+
+`postgres-audit webhook-cohort` schema v4 reports p95 and p99 for the same bounded
+closed window. Only valid PROCESSED clocks enter completion latency; cancelled,
+duplicate, held and quarantined receipts remain separate. A truncated or empty cohort
+cannot prove the latency target, and receipt completion does not prove a MAX effect.

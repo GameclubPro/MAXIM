@@ -113,13 +113,17 @@ export function buildWebhookCohortAuditSql(explain = false) {
     count(*) FILTER (WHERE queued_at < details.created_at OR queued_at > bounds.observed_at) AS invalid_queued_clocks,
     percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM processed_at - details.created_at) * 1000)
       FILTER (WHERE details.status = 'PROCESSED' AND processed_at >= details.created_at AND processed_at <= bounds.observed_at) AS processed_only_p95_ms,
+    percentile_cont(0.99) WITHIN GROUP (ORDER BY extract(epoch FROM processed_at - details.created_at) * 1000)
+      FILTER (WHERE details.status = 'PROCESSED' AND processed_at >= details.created_at AND processed_at <= bounds.observed_at) AS processed_only_p99_ms,
     percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM queued_at - details.created_at) * 1000)
-      FILTER (WHERE queued_at >= details.created_at AND queued_at <= bounds.observed_at) AS queued_sample_p95_ms
+      FILTER (WHERE queued_at >= details.created_at AND queued_at <= bounds.observed_at) AS queued_sample_p95_ms,
+    percentile_cont(0.99) WITHIN GROUP (ORDER BY extract(epoch FROM queued_at - details.created_at) * 1000)
+      FILTER (WHERE queued_at >= details.created_at AND queued_at <= bounds.observed_at) AS queued_sample_p99_ms
   FROM statuses CROSS JOIN bounds LEFT JOIN details ON details.status = statuses.status
   GROUP BY statuses.status
 )
 SELECT json_build_object(
-  'schema_version', 3, 'audit', 'closed_webhook_cohort', 'window_basis', 'receipt_created_at',
+  'schema_version', 4, 'audit', 'closed_webhook_cohort', 'window_basis', 'receipt_created_at',
   'from', bounds.from_at, 'until', bounds.until_at, 'observed_at', bounds.observed_at,
   'cap_per_status', 512, 'sample_complete', NOT EXISTS (SELECT 1 FROM grouped WHERE captured > 512),
   'nonempty', EXISTS (SELECT 1 FROM samples), 'remote_effects_proven', false,
@@ -140,7 +144,8 @@ SELECT json_build_object(
     'status', status, 'count_lower_bound', sampled, 'truncated', captured > 512,
     'oldest_pending_age_seconds', oldest_pending_age_seconds,
     'invalid_processed_clocks', invalid_processed_clocks, 'invalid_queued_clocks', invalid_queued_clocks,
-    'processed_only_p95_ms', processed_only_p95_ms, 'queued_sample_p95_ms', queued_sample_p95_ms
+    'processed_only_p95_ms', processed_only_p95_ms, 'processed_only_p99_ms', processed_only_p99_ms,
+    'queued_sample_p95_ms', queued_sample_p95_ms, 'queued_sample_p99_ms', queued_sample_p99_ms
   ) ORDER BY status) FROM grouped)
 ) FROM bounds;`;
   return `${explain ? 'EXPLAIN (FORMAT JSON) ' : ''}${query}\n`;

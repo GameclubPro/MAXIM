@@ -49,13 +49,35 @@ test('closed cohort includes all eight statuses and excludes invalid completion 
   assert.equal(byStatus.PROCESSED.count_lower_bound, 2);
   assert.equal(byStatus.PROCESSED.invalid_processed_clocks, 1);
   assert.equal(byStatus.PROCESSED.processed_only_p95_ms, 2000);
+  assert.equal(byStatus.PROCESSED.processed_only_p99_ms, 2000);
+  assert.equal(byStatus.PROCESSED.queued_sample_p99_ms, 1000);
   assert.equal(byStatus.RECEIVED.count_lower_bound, 1);
   assert.ok(byStatus.RECEIVED.oldest_pending_age_seconds >= 45);
   for (const status of ['DUPLICATE', 'CANCELLED', 'NO_REPLAY_HELD', 'FAILED', 'QUARANTINED']) {
     assert.equal(byStatus[status].count_lower_bound, 1);
     assert.equal(byStatus[status].processed_only_p95_ms, null);
+    assert.equal(byStatus[status].processed_only_p99_ms, null);
   }
   assert.doesNotMatch(JSON.stringify(report), /private-|secret|payload/u);
+});
+
+test('tail percentiles use only valid successful receipts and keep queue timing separate', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`INSERT INTO webhook_events(id,status,created_at,queued_at,processed_at) VALUES
+    ('fast','PROCESSED',now()-interval '45 seconds',now()-interval '44.9 seconds',now()-interval '44 seconds'),
+    ('slow','PROCESSED',now()-interval '45 seconds',now()-interval '44 seconds',now()-interval '36 seconds'),
+    ('invalid','PROCESSED',now()-interval '45 seconds',now()+interval '1 second',now()-interval '46 seconds'),
+    ('cancelled','CANCELLED',now()-interval '45 seconds',now()-interval '44 seconds',now());`);
+  const report = (await db.query(query)).rows[0].json_build_object;
+  const processed = report.rows.find((row) => row.status === 'PROCESSED');
+  assert.ok(Math.abs(processed.processed_only_p95_ms - 8600) < 0.001);
+  assert.ok(Math.abs(processed.processed_only_p99_ms - 8920) < 0.001);
+  assert.ok(Math.abs(processed.queued_sample_p99_ms - 991) < 0.001);
+  assert.equal(processed.invalid_processed_clocks, 1);
+  assert.equal(processed.invalid_queued_clocks, 1);
+  assert.equal(report.rows.find((row) => row.status === 'CANCELLED').processed_only_p99_ms, null);
 });
 
 test('failed cohorts expose bounded categories and timing separately without trusting embedded errors', async (t) => {
@@ -78,7 +100,7 @@ test('failed cohorts expose bounded categories and timing separately without tru
     ('private-not-failed','PROCESSED',now()-interval '45 seconds',
       'NO_EXECUTABLE_OWNER; deadline=2026-01-01T00:00:00.000Z',NULL,NULL,NULL);`);
   const report = (await db.query(query)).rows[0].json_build_object;
-  assert.equal(report.schema_version, 3);
+  assert.equal(report.schema_version, 4);
   assert.equal(report.failure_classification_authority, 'saved_metadata_only');
   const byFamily = Object.fromEntries(report.failure_families.map((r) => [r.family, r]));
   assert.equal(byFamily.no_executable_owner.count_lower_bound, 1);
@@ -178,6 +200,7 @@ test('empty and capped cohorts never claim complete processing', async (t) => {
   assert.equal(processed.count_lower_bound, 512);
   assert.equal(processed.invalid_processed_clocks, 512);
   assert.equal(processed.processed_only_p95_ms, null);
+  assert.equal(processed.processed_only_p99_ms, null);
   const readiness = buildWebhookCohortIndexSql().split('\\gset')[0];
   assert.equal((await db.query(readiness)).rows[0].webhook_cohort_index_ready, true);
   await db.exec('DROP INDEX webhook_events_status_created_at_id_idx');

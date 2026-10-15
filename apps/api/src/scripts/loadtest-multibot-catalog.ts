@@ -13,13 +13,13 @@ const args = Object.fromEntries(
     const match = /^--([a-z]+)=(.+)$/u.exec(arg);
     if (!match)
       throw new Error(
-        'Use --chats=10000,12000,30000 --bots=9 --messages=120 --rate=2 --profiles=uniform,hot,cold,media --output=path',
+        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --profiles=uniform,hot,cold,media --output=path',
       );
     return [match[1]!, match[2]!];
   }),
 );
 for (const key of Object.keys(args))
-  if (!['chats', 'bots', 'messages', 'rate', 'profiles', 'output'].includes(key))
+  if (!['chats', 'bots', 'messages', 'rate', 'routing', 'profiles', 'output'].includes(key))
     throw new Error(`Unknown option ${key}`);
 function positive(value: string, name: string): number {
   const result = Number(value);
@@ -33,6 +33,8 @@ const catalogs = (args.chats ?? '10000,12000,30000')
 const bots = positive(args.bots ?? '9', 'bots');
 const messageCount = positive(args.messages ?? '120', 'messages');
 const rate = positive(args.rate ?? '2', 'rate');
+const routing = args.routing ?? 'legacy';
+if (routing !== 'legacy' && routing !== 'fixed') throw new Error('Unsupported routing mode');
 const profiles = (args.profiles ?? 'uniform,hot,cold,media').split(',') as Profile[];
 if (profiles.some((profile) => !profilesAllowed.has(profile)))
   throw new Error('Unsupported profile');
@@ -66,6 +68,33 @@ async function main() {
     try {
       const seededAt = performance.now();
       const chats = await harness.seedCatalog(catalog);
+      const assignedBots = new Map<string, string>();
+      for (const [index, chatId] of chats.entries()) {
+        assignedBots.set(chatId, harness.bots[routing === 'fixed' ? index % bots : 0]!.id);
+      }
+      if (routing === 'fixed') {
+        // FLAG: Disposable fixture setup only; production preservation never redistributes chats.
+        for (const bot of harness.bots) {
+          const assigned = chats.filter((chatId) => assignedBots.get(chatId) === bot.id);
+          await harness.prisma.chat.updateMany({
+            where: { id: { in: assigned } },
+            data: {
+              fixedModeratorBotId: bot.id,
+              primaryBotId: bot.id,
+              botId: bot.id,
+              routingVersion: { increment: 1 },
+            },
+          });
+          await harness.prisma.chatBotMembership.updateMany({
+            where: { chatId: { in: assigned } },
+            data: { role: 'STANDBY' },
+          });
+          await harness.prisma.chatBotMembership.updateMany({
+            where: { chatId: { in: assigned }, botId: bot.id },
+            data: { role: 'PRIMARY' },
+          });
+        }
+      }
       const seedMs = performance.now() - seededAt;
       for (const profile of profiles) {
         const caseId = `load-${randomUUID()}`;
@@ -76,6 +105,7 @@ async function main() {
         });
         const receiptIds: string[] = [];
         const messageIds: string[] = [];
+        const expectedExecutors = new Map<string, string>();
         const ingressLatencyMs: number[] = [];
         let producing = true;
         let peakPendingReceipts = 0;
@@ -89,6 +119,7 @@ async function main() {
           status: 'failed',
           catalog,
           bots,
+          routing,
           profile,
           failureCode:
             error instanceof Error && error.name === 'MaxApiInternalRateLimitError'
@@ -122,11 +153,17 @@ async function main() {
         try {
           for (let index = 0; index < messageCount; index += 1) {
             if (pumpError) throw pumpError;
+            const spreadIndex = Math.floor((index * chats.length) / messageCount) % chats.length;
             const chatId =
               chats[
                 profile === 'hot'
                   ? index % Math.min(4, chats.length)
-                  : Math.floor((index * chats.length) / messageCount) % chats.length
+                  : routing === 'fixed'
+                    ? Math.min(
+                        chats.length - 1,
+                        spreadIndex - (spreadIndex % bots) + (index % bots),
+                      )
+                    : spreadIndex
               ]!;
             if (profile === 'cold') {
               harness.links.forgetChatBotBinding(chatId);
@@ -141,6 +178,7 @@ async function main() {
             }
             const messageId = `${caseId}-${index}`;
             messageIds.push(messageId);
+            expectedExecutors.set(messageId, assignedBots.get(chatId)!);
             const at = Date.now();
             const enteredAt = performance.now();
             const mirrors = await Promise.all(
@@ -226,8 +264,11 @@ async function main() {
           .slice(beforeEffects)
           .filter((effect) => effect.method === 'delete' && effect.path === '/messages');
         const finalPendingReceipts = await harness.prisma.webhookEvent.count({
-          where: { id: { in: receiptIds }, status: { in: ['RECEIVED', 'QUEUED', 'FAILED'] } },
+          where: { id: { in: receiptIds }, status: { notIn: ['PROCESSED', 'DUPLICATE'] } },
         });
+        const wrongExecutorEffects = deletes.filter(
+          (effect) => !effect.messageId || expectedExecutors.get(effect.messageId) !== effect.botId,
+        ).length;
         const successfulIntents = await harness.prisma.moderationDeleteIntent.count({
           where: { messageId: { in: messageIds }, status: ModerationDeleteIntentStatus.SUCCEEDED },
         });
@@ -265,6 +306,7 @@ async function main() {
         if (
           finalPendingReceipts ||
           finalPendingActions ||
+          wrongExecutorEffects ||
           successfulIntents !== messageCount ||
           violationClaims.length !== messageCount ||
           violationClaimIds.size !== messageCount ||
@@ -276,7 +318,7 @@ async function main() {
           new Set(deletes.map((effect) => effect.messageId)).size !== messageCount
         ) {
           throw new Error(
-            `Logical authority/effect mismatch: messages=${messageCount}, claims=${owned}, violations=${violations}, violationClaims=${violationClaims.length}, uniqueViolationClaims=${violationClaimIds.size}, intents=${intents}, successfulIntents=${successfulIntents}, deletes=${deletes.length}, pendingReceipts=${finalPendingReceipts}, pendingActions=${finalPendingActions}`,
+            `Logical authority/effect mismatch: messages=${messageCount}, claims=${owned}, violations=${violations}, violationClaims=${violationClaims.length}, uniqueViolationClaims=${violationClaimIds.size}, intents=${intents}, successfulIntents=${successfulIntents}, deletes=${deletes.length}, wrongExecutorEffects=${wrongExecutorEffects}, pendingReceipts=${finalPendingReceipts}, pendingActions=${finalPendingActions}`,
           );
         }
         ingressLatencyMs.sort((a, b) => a - b);
@@ -284,11 +326,16 @@ async function main() {
           status: 'passed',
           catalog,
           bots,
+          routing,
           profile,
           logicalMessages: messageCount,
           receipts: receiptIds.length,
           executorDistribution:
-            'all chats share one healthy primary; other configured bots are reserves',
+            routing === 'fixed'
+              ? 'round-robin fixed assignments across fixture bots; no automatic takeover'
+              : 'all chats share one healthy primary; other configured bots are reserves',
+          wrongExecutorEffects,
+          executorsExercised: new Set(deletes.map((effect) => effect.botId)).size,
           quotas: {
             perTokenRps: 30,
             perBotChatRps: 5,
@@ -306,7 +353,9 @@ async function main() {
             ingressLatencyMs[Math.floor(ingressLatencyMs.length * 0.95)] ?? 0,
           ),
           completionP95Ms: completionLatencyMs[Math.floor(completionLatencyMs.length * 0.95)] ?? 0,
+          completionP99Ms: completionLatencyMs[Math.floor(completionLatencyMs.length * 0.99)] ?? 0,
           actionP95Ms: actionLatencyMs[Math.floor(actionLatencyMs.length * 0.95)] ?? 0,
+          actionP99Ms: actionLatencyMs[Math.floor(actionLatencyMs.length * 0.99)] ?? 0,
           sampledPeakPendingReceipts: peakPendingReceipts,
           sampledPeakOldestReceiptAgeMs: peakOldestReceiptAgeMs,
           sampledPeakPendingActions: peakPendingActions,

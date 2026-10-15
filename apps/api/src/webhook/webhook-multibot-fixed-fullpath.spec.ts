@@ -88,6 +88,78 @@ integration('fixed moderator through native ingress, queues and guarded MAX tran
     ).toMatchObject([{ botId: s.bots[1]!.id }]);
   });
 
+  it('isolates a fixed token 429 and retains dispatch evidence until exact recovery', async () => {
+    const s = await fixture(2);
+    await s.pause();
+    await s.deleteQueue.pause();
+    const [limited, independent] = await s.seedCatalog(2);
+    await fix(s, limited!, s.bots[0]!.id);
+    await fix(s, independent!, s.bots[1]!.id);
+    s.setDeleteRateLimit(s.bots[0]!.id, true);
+    const limitedMessage = randomUUID();
+    const limitedReceipt = await s.ingest({
+      chatId: limited!,
+      messageId: limitedMessage,
+      botId: s.bots[1]!.id,
+      text: 'The assigned token is rate limited and must retain its original action',
+    });
+    await s.ingress.preparePersistedWebhookEvent(limitedReceipt);
+    await s.moderation.processWebhookEvent(limitedReceipt);
+    const pending = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { chatId_messageId: { chatId: limited!, messageId: limitedMessage } },
+    });
+    expect(pending).toMatchObject({
+      status: 'AMBIGUOUS',
+      lastErrorCode: 'too.many.requests',
+      deleteDispatchStartedAt: expect.any(Date),
+      deleteDispatchStartedBotId: s.bots[0]!.id,
+    });
+    expect(s.effects.filter((effect) => effect.messageId === limitedMessage)).toEqual([]);
+    expect(
+      s.requests
+        .filter((request) => request.method === 'delete' && request.messageId === limitedMessage)
+        .map((request) => request.botId),
+    ).toEqual([s.bots[0]!.id]);
+
+    const independentMessage = randomUUID();
+    const independentReceipt = await s.ingest({
+      chatId: independent!,
+      messageId: independentMessage,
+      botId: s.bots[0]!.id,
+      text: 'The other assigned token continues while the first token is cooling down',
+    });
+    await s.ingress.preparePersistedWebhookEvent(independentReceipt);
+    await s.moderation.processWebhookEvent(independentReceipt);
+    expect(s.effects.filter((effect) => effect.messageId === independentMessage)).toMatchObject([
+      { method: 'delete', botId: s.bots[1]!.id },
+    ]);
+    s.setDeleteRateLimit(s.bots[0]!.id, false);
+    // FLAG: Keep the real Retry-After boundary; reuse the original intent and deadline.
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await s.prisma.moderationDeleteIntent.update({
+      where: { id: pending.id },
+      data: { nextAttemptAt: new Date(Date.now() - 1) },
+    });
+    const beforeRecovery = s.requests.length;
+    expect(await s.intents.attemptIntent(pending.id)).toMatchObject({ kind: 'confirmed' });
+    expect(s.requests[beforeRecovery]).toMatchObject({
+      method: 'get',
+      path: '/messages',
+      messageId: limitedMessage,
+      botId: s.bots[0]!.id,
+    });
+    expect(s.effects.filter((effect) => effect.messageId === limitedMessage)).toMatchObject([
+      { method: 'delete', botId: s.bots[0]!.id },
+    ]);
+    expect(
+      await s.prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id: pending.id } }),
+    ).toMatchObject({ status: 'SUCCEEDED', retryUntilAt: pending.retryUntilAt });
+    expect(await s.prisma.chat.findUniqueOrThrow({ where: { id: limited! } })).toMatchObject({
+      fixedModeratorBotId: s.bots[0]!.id,
+    });
+    expect(s.failures).toEqual([]);
+  });
+
   it('keeps a revoked fixed bot assigned while another community progresses', async () => {
     const s = await fixture(2);
     await s.pause();
