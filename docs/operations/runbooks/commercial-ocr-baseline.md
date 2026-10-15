@@ -86,6 +86,13 @@ preprocessing outages. Recycle logs contain fixed reasons and aggregate values o
 There is one production OCR consumer. Under `slow`, it admits at most one cache-miss
 pass per governor retry interval; downloads and cache hits do not consume the slot.
 Fresh `pause` decisions are checked before preprocessing and native dispatch.
+Automatic queue-only degradation uses this bounded slow path after the governor's
+host-pressure check, so one unrelated old webhook cannot indefinitely stop every
+image analysis. Manual, MAX-only, mixed and unknown degradation still pause; hard
+CPU/IO pressure also refuses the slow path. The original job deadline, single
+consumer, native resource limits and final delete guards remain unchanged. A
+completed primary pass stays in the exact content/version/profile cache when
+confirmation is deferred; resumption still needs a complete confirmed result.
 `event_to_terminal` measures event age at terminal completion separately from
 per-attempt `end_to_end`. Completed BullMQ jobs alone do not prove complete analysis;
 use `analysis.terminal.complete`, `analysis.terminal.incomplete`, native failure

@@ -1,5 +1,7 @@
+import { performance } from 'node:perf_hooks';
 import type { MaxUpdate } from '@maxim/contracts';
 import { ConfigService } from '@nestjs/config';
+import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
 
 import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
 import { buildCommercialQualitySample } from '../commercial/commercial-quality-sampling';
@@ -1379,6 +1381,7 @@ describe('CommercialOcrModerationService', () => {
         component: 'commercial-image-ocr',
         sourceTag: 'commercial_image_ocr',
         allowRecoveryWindowRun: true,
+        allowQueueBacklogSlowPath: true,
         ignoredPressureDomains: ['max_api_traffic'],
       });
     },
@@ -1403,6 +1406,77 @@ describe('CommercialOcrModerationService', () => {
       reason: 'emergency',
     });
     await expect(authorize('download')).resolves.toEqual({ allowed: false, retryAfterMs: 60_000 });
+  });
+
+  it.each([
+    { label: 'automatic queue backlog', condition: 'queue_backlog', allowed: true },
+    { label: 'manual pause', condition: 'manual', allowed: false },
+    { label: 'MAX degradation', condition: 'max_api', allowed: false },
+    { label: 'mixed degradation', condition: 'mixed', allowed: false },
+    { label: 'unknown degradation', condition: 'unknown', allowed: false },
+    { label: 'host CPU pressure', condition: 'queue_backlog', loadRatio1m: 2, allowed: false },
+    { label: 'host IO pressure', condition: 'queue_backlog', ioWaitRatio: 0.5, allowed: false },
+  ])('uses real governor fences during $label', async (scenario) => {
+    const harness = buildHarness();
+    const snapshot = {
+      mode: {
+        mode: 'degrade',
+        source: scenario.condition === 'manual' ? 'manual' : 'auto',
+        condition: scenario.condition,
+        manualMode: scenario.condition === 'manual' ? 'degrade' : null,
+        reason: scenario.label,
+      },
+      queues: { effectiveLagSec: 3600, operationalLagSec: 3600 },
+      systemPressure: {
+        enabled: true,
+        loadRatio1m: scenario.loadRatio1m ?? 0.1,
+        ioWaitRatio: scenario.ioWaitRatio ?? 0,
+        thresholds: { loadSlow: 0.85, loadPause: 1.25, ioWaitSlow: 0.15, ioWaitPause: 0.35 },
+      },
+    };
+    const governor = new BackgroundRuntimeGovernorService(
+      {} as never,
+      { getEffectiveSnapshot: async () => snapshot.mode } as never,
+      {} as never,
+      new ConfigService(),
+    );
+    const pressure = jest.spyOn(governor as any, 'getPressureSnapshot').mockResolvedValue(snapshot);
+    harness.governor.decide.mockImplementation((request) => governor.decide(request));
+    const authorize = (stage: 'download' | 'ocr' | 'ocr_dispatch') =>
+      (harness.service as any).authorizeHeavyStage(stage);
+
+    await expect(authorize('download')).resolves.toMatchObject({ allowed: scenario.allowed });
+    await expect(authorize('ocr')).resolves.toMatchObject({ allowed: scenario.allowed });
+    if (!scenario.allowed) return;
+    expect(pressure).toHaveBeenCalled();
+    await expect(authorize('ocr_dispatch')).resolves.toMatchObject({ allowed: true });
+    // FLAG: The admitted native pass may finish; another cache miss cannot consume a second slot.
+    await expect(authorize('ocr')).resolves.toMatchObject({ allowed: false });
+    snapshot.mode.condition = 'manual';
+    snapshot.mode.source = 'manual';
+    snapshot.mode.manualMode = 'degrade';
+    await expect(authorize('ocr_dispatch')).resolves.toMatchObject({ allowed: false });
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('admits the next slow OCR slot only after the unchanged interval', async () => {
+    const clock = jest.spyOn(performance, 'now').mockReturnValue(1_000);
+    try {
+      const harness = buildHarness({
+        governorDecision: { action: 'slow', retryAfterMs: 20_000, reason: 'queue backlog' },
+      });
+      const authorize = () => (harness.service as any).authorizeHeavyStage('ocr');
+      await expect(authorize()).resolves.toMatchObject({ allowed: true });
+      clock.mockReturnValue(20_999);
+      await expect(authorize()).resolves.toEqual({ allowed: false, retryAfterMs: 1 });
+      clock.mockReturnValue(21_000);
+      await expect(authorize()).resolves.toMatchObject({ allowed: true });
+      await expect(authorize()).resolves.toMatchObject({ allowed: false });
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('fails heavy-stage authorization closed when the governor is unavailable', async () => {
