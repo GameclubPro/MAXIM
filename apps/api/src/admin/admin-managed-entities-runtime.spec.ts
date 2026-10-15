@@ -158,6 +158,7 @@ describe('AdminManagedEntitiesRuntime', () => {
         },
       } as never,
       maxBotRegistry: {
+        getBotById: jest.fn((botId) => (botId === 'bot-1' ? { id: botId } : null)),
         getAllBots: jest.fn().mockReturnValue([
           { id: 'bot-1', label: 'Primary' },
           { id: 'bot-external', label: 'External' },
