@@ -78,6 +78,7 @@ Commands:
   postgres-audit delete-retry-heads [--explain]
   postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]
   postgres-audit webhook-cohort [--short] [--explain]
+  postgres-audit webhook-workload [--explain]
   postgres-audit duplicate [--status <STATUS>] [--explain]
   postgres-audit poll-publication <poll-id> [--explain]
   postgres-audit webhook-quarantine <UTC-minute> [--explain]
@@ -538,7 +539,7 @@ postgres_audit() {
     return
   fi
 
-  if [[ "$mode" == 'delete-retry-heads' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
+  if [[ "$mode" == 'webhook-workload' || "$mode" == 'delete-retry-heads' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
         "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'webhook-queued-proof' || "$mode" == 'legacy-order-window' ||
         "$mode" == 'moderation-outcomes' || "$mode" == 'legacy-semantic-mirrors' ]]; then
