@@ -218,6 +218,12 @@ describeLocalRedis('ChatContextCacheService Redis integration', () => {
       if (!injected) {
         injected = true;
         await inspector.set(
+          ChatContextCacheService.cachedContextRevisionKey(chatId),
+          '0',
+          'EX',
+          60,
+        );
+        await inspector.set(
           contextKey,
           JSON.stringify({
             chatId,
