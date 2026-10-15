@@ -3,6 +3,7 @@ import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.s
 import { ManagedEntityAccessWriter } from '../max/managed-entity-access-writer.service';
 import { ManagedEntityHandshakeOutcomeService } from '../max/managed-entity-handshake-outcome.service';
 import { randomUUID } from 'node:crypto';
+import { Worker, type ConnectionOptions, type Queue, type Job } from 'bullmq';
 import type { MaxUpdate } from '@maxim/contracts';
 import {
   DORMANT_BOT_OBSERVATION_MARKER,
@@ -16,6 +17,14 @@ import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-executi
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from './webhook-semantic-authority';
 import { WebhookParser } from './webhook.parser';
 import { WebhookCanonicalExecutionService } from '../moderation/webhook-canonical-execution.service';
+import { JOIN_WEBHOOK_SHARD_PROCESSORS } from '../moderation/moderation.service';
+import type { ProcessWebhookJob } from './webhook-queues';
+import { WebhookStatus } from '../prisma/prisma-client';
+import {
+  buildWebhookOperationalLagQuery,
+  resolveWebhookOperationalLag,
+  type WebhookOperationalLagHead,
+} from '../system/webhook-operational-lag';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -25,6 +34,53 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const describeStores = databaseUrl && redisUrl ? describe : describe.skip;
 jest.setTimeout(60_000);
+
+async function executeQueuedReadinessWait(s: MultibotHarness, id: string) {
+  const queues = (s.outbox as unknown as { queuesByName: Record<string, Queue<ProcessWebhookJob>> })
+    .queuesByName;
+  const queue = Object.values(queues)[0]!;
+  const job = (await queue.getJob(id))!;
+  const Processor = JOIN_WEBHOOK_SHARD_PROCESSORS[0]! as unknown as new (service: unknown) => {
+    process(job: Job<ProcessWebhookJob>, token?: string): Promise<void>;
+  };
+  const processor = new Processor(s.moderation);
+  const connection = s.redis.duplicate();
+  const previousRole = process.env.APP_ROLE;
+  process.env.APP_ROLE = 'moderation';
+  const worker = new Worker<ProcessWebhookJob>(queue.name, processor.process.bind(processor), {
+    connection: connection as unknown as ConnectionOptions,
+    concurrency: 1,
+  });
+  const failed = jest.fn();
+  worker.on('failed', failed);
+  try {
+    await worker.waitUntilReady();
+    const until = Date.now() + 5_000;
+    while (Date.now() < until && (await job.getState()) !== 'delayed')
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(await job.getState()).toBe('delayed');
+    await worker.pause();
+    expect(failed).not.toHaveBeenCalled();
+    const event = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+    // FLAG: Exercise the actual delayed-job reconciliation writer. nextEnqueueAt
+    // schedules SQL repair, not the BullMQ retry; it must never renew source authority.
+    await (
+      s.outbox as unknown as {
+        handleExistingJob(event: unknown, job: Job<ProcessWebhookJob>): Promise<unknown>;
+      }
+    ).handleExistingJob(event, job);
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      status: 'QUEUED',
+      nextEnqueueAt: expect.any(Date),
+      executionDeadlineAt: event.executionDeadlineAt,
+    });
+  } finally {
+    await worker.close();
+    await connection.quit();
+    if (previousRole === undefined) delete process.env.APP_ROLE;
+    else process.env.APP_ROLE = previousRole;
+  }
+}
 
 async function explicitActivation(
   s: MultibotHarness,
@@ -145,6 +201,12 @@ describeStores('native lifecycle finite executor readiness', () => {
         });
       }
       await s.ingress.preparePersistedWebhookEvent(id);
+      if (eventType === 'user_added') {
+        await s.pumpOnce();
+        expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'QUEUED',
+        });
+      }
       const original = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
         where: { webhookEventId: id, kind: 'EXECUTION' },
         include: { webhookEvent: true },
@@ -159,9 +221,11 @@ describeStores('native lifecycle finite executor readiness', () => {
       });
       await s.demote(chatId!, botId);
       const handler = jest.spyOn(s.moderation, 'handleUpdate');
-      await expect(s.moderation.processWebhookEvent(id)).rejects.toMatchObject({
-        cause: expect.any(WebhookExecutionOwnerUnavailableError),
-      });
+      if (eventType === 'user_added') await executeQueuedReadinessWait(s, id);
+      else
+        await expect(s.moderation.processWebhookEvent(id)).rejects.toMatchObject({
+          cause: expect.any(WebhookExecutionOwnerUnavailableError),
+        });
       expect(handler).not.toHaveBeenCalled();
       expect(s.effects).toEqual([]);
       expect(
@@ -181,6 +245,18 @@ describeStores('native lifecycle finite executor readiness', () => {
           deadlineAt: deadline.toISOString(),
         },
       });
+
+      if (eventType === 'user_added') {
+        // FLAG: Read the real canonical failure and retry checkpoint through the health
+        // query. This read grants no execution authority and cannot change the deadline.
+        const heads = await s.prisma.$queryRaw<WebhookOperationalLagHead[]>(
+          buildWebhookOperationalLagQuery(WebhookStatus.QUEUED),
+        );
+        expect(heads.find((head) => head.id === id)?.readinessWaiting).toBe(true);
+        expect(resolveWebhookOperationalLag(heads, new Date())).toMatchObject({
+          readinessWaitingCount: 1,
+        });
+      }
 
       // Another chat keeps its separate, fresh administrator route while this event waits.
       await s.prisma.chat.update({

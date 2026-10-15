@@ -11,6 +11,8 @@ import {
   encodePhotoFrame,
   PHOTO_NATIVE_MAX_BYTES,
   PHOTO_NATIVE_MAX_PIXELS,
+  PHOTO_NATIVE_MIN_WORK_MS,
+  PHOTO_NATIVE_TEARDOWN_GRACE_MS,
   photoFrameLength,
   type NativePhotoRequest,
   type NativePhotoResult,
@@ -173,6 +175,58 @@ describe('native photo process lifecycle', () => {
 });
 
 describe('native photo sandbox admission', () => {
+  it.each([0, 499, 500, 800, 999])(
+    'rejects budget %s before launching a child and keeps the next request usable',
+    async (remainingMs) => {
+      const directory = await mkdtemp(join(tmpdir(), 'maxim-photo-ipc-'));
+      const runWorker = jest.fn(
+        async (_request: NativePhotoRequest): Promise<NativePhotoResult> => ({
+          kind: 'rejected',
+          reason: 'unsupported_image',
+        }),
+      );
+      const fatalExit = jest.fn();
+      const server = await startNativePhotoSandbox(
+        { PHOTO_NATIVE_SANDBOX_SOCKET_PATH: join(directory, 'photo.sock') },
+        {
+          networkInterfaces: () => ({}),
+          allowTestSocketPath: true,
+          runWorker,
+          fatalExit,
+        },
+      );
+      const instant = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(instant);
+      try {
+        const client = new NativePhotoSandboxClient(server.socketPath);
+        expect(
+          await client.fingerprint(Buffer.from('late'), {
+            ...request(),
+            deadlineAtMs: instant + remainingMs,
+          }),
+        ).toEqual({ kind: 'rejected', reason: 'decode_deadline_exceeded' });
+        expect(runWorker).not.toHaveBeenCalled();
+        const next = {
+          ...request(),
+          deadlineAtMs: instant + PHOTO_NATIVE_TEARDOWN_GRACE_MS + PHOTO_NATIVE_MIN_WORK_MS,
+        };
+        expect(await client.fingerprint(Buffer.from('fresh'), next)).toEqual({
+          kind: 'rejected',
+          reason: 'unsupported_image',
+        });
+        expect(runWorker).toHaveBeenCalledTimes(1);
+        expect(runWorker.mock.calls[0]![0]).toMatchObject({
+          deadlineAtMs: next.deadlineAtMs - PHOTO_NATIVE_TEARDOWN_GRACE_MS,
+        });
+        expect(fatalExit).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+        await server.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('holds the sole execution slot until physical teardown settles, independently of OCR', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'maxim-photo-ipc-'));
     const started = deferred();

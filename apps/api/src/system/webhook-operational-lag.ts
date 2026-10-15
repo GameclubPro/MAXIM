@@ -1,4 +1,4 @@
-import { Prisma } from '../prisma/prisma-client';
+import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import { MULTIBOT_EXECUTION_AUTHORITY_VERSION } from '../webhook/webhook-semantic-authority';
 import {
   WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX,
@@ -15,19 +15,32 @@ export type WebhookOperationalLagHead = {
   readinessWaiting: boolean;
 };
 
-export function buildWebhookOperationalLagQuery(): Prisma.Sql {
-  // FLAG: Materialize at most 65 indexed receipt heads before inspecting scalar proof fields.
+export function buildWebhookOperationalLagQuery(
+  status: typeof WebhookStatus.RECEIVED | typeof WebhookStatus.QUEUED = WebhookStatus.RECEIVED,
+): Prisma.Sql {
+  if (status !== WebhookStatus.RECEIVED && status !== WebhookStatus.QUEUED) {
+    throw new Error('Operational webhook lag requires a pending status');
+  }
+  const statusSql = status === WebhookStatus.QUEUED ? Prisma.sql`'QUEUED'` : Prisma.sql`'RECEIVED'`;
+  // FLAG: Materialize at most 65 indexed receipt heads per status before inspecting scalar proof fields.
   // The last head remains undiscounted, so unknown work beyond the proof budget fails closed.
   // Neither receipt bodies nor command journals leave PostgreSQL on this health path.
   return Prisma.sql`
-    WITH heads AS MATERIALIZED (
-      SELECT "id", "created_at", "next_enqueue_at", "execution_deadline_at", "semantic_key",
-             "timeout_quarantine_expires_at", "error_message", "legacy_disposition_id", "source_disposition_id",
-             "normalized_payload" ->> 'type' AS "event_type"
+    WITH selected AS MATERIALIZED (
+      SELECT "id", "created_at"
       FROM "webhook_events"
-      WHERE "status" = 'RECEIVED'
-      ORDER BY "created_at"
+      WHERE "status" = ${statusSql}
+      ORDER BY "created_at", "id"
       LIMIT ${WEBHOOK_READINESS_LAG_HEAD_LIMIT + 1}
+    ), heads AS MATERIALIZED (
+      SELECT selected."id", selected."created_at", metadata.*
+      FROM selected
+      CROSS JOIN LATERAL (
+        SELECT "next_enqueue_at", "execution_deadline_at", "semantic_key",
+               "timeout_quarantine_expires_at", "error_message", "legacy_disposition_id", "source_disposition_id",
+               "normalized_payload" ->> 'type' AS "event_type"
+        FROM "webhook_events" WHERE "id" = selected."id" OFFSET 0
+      ) metadata
     )
     SELECT heads."id", heads."created_at" AS "createdAt",
            heads."next_enqueue_at" AS "nextEnqueueAt",
@@ -39,7 +52,12 @@ export function buildWebhookOperationalLagQuery(): Prisma.Sql {
       FROM "webhook_execution_claims" AS claim
       WHERE claim."kind" = 'EXECUTION' AND claim."semantic_key" = heads."semantic_key"
         AND claim."webhook_event_id" = heads."id"
-        AND claim."status" = 'PENDING' AND claim."enforced"
+        AND claim."enforced"
+        AND (
+          (claim."status" = 'PENDING' AND ${statusSql} = 'RECEIVED')
+          OR (claim."status" = 'READY' AND claim."prepared_at" IS NOT NULL)
+        )
+        AND claim."lease_token" IS NULL AND claim."lease_expires_at" IS NULL
         AND claim."business_started_at" IS NULL AND claim."completed_at" IS NULL
         AND heads."next_enqueue_at" IS NOT NULL
         AND heads."event_type" IN ('user_added', 'message_created', 'message_edited')
@@ -60,7 +78,7 @@ export function buildWebhookOperationalLagQuery(): Prisma.Sql {
         )
       LIMIT 1
     ) AS proof ON true
-    ORDER BY heads."created_at"
+    ORDER BY heads."created_at", heads."id"
   `;
 }
 

@@ -100,13 +100,16 @@ test(
           ),
         ].join('\n'),
       );
+      // FLAG: Autovacuum/autoanalyze must not race manual ANALYZE under the fixture's
+      // 250 ms lock ceiling. Only these disposable tables opt out; retain every row,
+      // explicit statistics refresh and the production query/lock budgets unchanged.
       await db.query(`CREATE TABLE webhook_events (
       id text PRIMARY KEY, status "WebhookStatus" NOT NULL, created_at timestamp NOT NULL,
       semantic_key text, bot_id text, normalized_payload jsonb NOT NULL DEFAULT '{}',
       next_enqueue_at timestamp, timeout_quarantine_expires_at timestamp,
       legacy_disposition_id text, source_disposition_id text, error_message text,
       raw_payload jsonb NOT NULL DEFAULT '{}', private_secret text
-    );
+    ) WITH (autovacuum_enabled=false, toast.autovacuum_enabled=false);
     CREATE INDEX webhook_events_status_created_at_id_idx ON webhook_events(status,created_at,id);
     CREATE TABLE webhook_execution_claims (
       id text PRIMARY KEY, kind text NOT NULL, semantic_key text NOT NULL, webhook_event_id text,
@@ -114,7 +117,7 @@ test(
       status "WebhookExecutionClaimStatus" NOT NULL DEFAULT 'PENDING', prepared_at timestamp,
       business_started_at timestamp, completed_at timestamp, lease_token text,
       lease_expires_at timestamp, command_result jsonb, private_secret text
-    );
+    ) WITH (autovacuum_enabled=false, toast.autovacuum_enabled=false);
     CREATE UNIQUE INDEX webhook_execution_claims_kind_semantic_key ON webhook_execution_claims(kind,semantic_key);
     CREATE INDEX webhook_execution_claims_event_kind_idx ON webhook_execution_claims(webhook_event_id,kind);
     `);

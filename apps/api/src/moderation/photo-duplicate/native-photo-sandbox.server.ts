@@ -10,6 +10,7 @@ import {
   PHOTO_NATIVE_MAX_BYTES,
   PHOTO_NATIVE_MAX_PIXELS,
   PHOTO_NATIVE_MAX_EXECUTION_MS,
+  PHOTO_NATIVE_MIN_WORK_MS,
   PHOTO_NATIVE_PROTOCOL_VERSION,
   PHOTO_NATIVE_SOCKET_PATH,
   PHOTO_NATIVE_TEARDOWN_GRACE_MS,
@@ -149,8 +150,11 @@ export async function startNativePhotoSandbox(
         return;
       }
       const remaining = request.deadlineAtMs - Date.now();
+      // FLAG: Keep a useful startup/work slice in addition to physical teardown.
+      // A nearly elapsed job must defer before native admission; never renew its
+      // deadline or avoid recycling a child that actually times out after admission.
       if (
-        remaining <= PHOTO_NATIVE_TEARDOWN_GRACE_MS ||
+        remaining < PHOTO_NATIVE_TEARDOWN_GRACE_MS + PHOTO_NATIVE_MIN_WORK_MS ||
         remaining > PHOTO_NATIVE_MAX_EXECUTION_MS
       ) {
         socket.end(encodePhotoFrame({ kind: 'rejected', reason: 'decode_deadline_exceeded' }));
