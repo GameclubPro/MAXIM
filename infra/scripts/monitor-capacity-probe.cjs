@@ -302,6 +302,17 @@ function normalizeReadyProbe(probe, includeQueue) {
     softWarning,
     softWarningCode,
     queueLagSec: finiteNonNegative(queueLag.effectiveLagSec ?? systemMode.queueLagSec),
+    // FLAG: Raw age and proved execution waits are separate observations. Missing
+    // operational evidence must not become zero or inherit a different signal.
+    operationalLagSec: finiteNonNegative(queueLag.operationalLagSec),
+    readinessWaitingCount:
+      Number.isSafeInteger(queueLag.readinessWaitingCount) && queueLag.readinessWaitingCount >= 0
+        ? queueLag.readinessWaitingCount
+        : null,
+    readinessHeadLimitReached:
+      typeof queueLag.readinessHeadLimitReached === 'boolean'
+        ? queueLag.readinessHeadLimitReached
+        : null,
     mode:
       systemMode.mode === 'normal' || systemMode.mode === 'degrade' ? systemMode.mode : 'unknown',
     condition:

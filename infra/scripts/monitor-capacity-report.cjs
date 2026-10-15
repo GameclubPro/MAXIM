@@ -147,6 +147,9 @@ function summarizeWindow(samples, bounds) {
     }
   }
   const lagSec = percentiles(samples.map((sample) => sample.readiness.queueLagSec));
+  const operationalLagSec = percentiles(
+    samples.map((sample) => sample.readiness.operationalLagSec),
+  );
   const restartCounts = samples.map((sample) => sample.apiFleet.totalRestartCount);
   let restartCounterIncreases = 0;
   let restartCounterResets = 0;
@@ -175,6 +178,19 @@ function summarizeWindow(samples, bounds) {
     },
     status: failed ? 'degraded' : unknown ? 'unknown' : 'healthy',
     lagSec,
+    operationalLagSec,
+    operationalLagCoverage:
+      operationalLagSec.samples === 0
+        ? 'unavailable'
+        : operationalLagSec.samples === samples.length
+          ? 'complete'
+          : 'partial',
+    maxReadinessWaitingCount: percentiles(
+      samples.map((sample) => sample.readiness.readinessWaitingCount),
+    ).max,
+    readinessHeadLimitReachedSamples: samples.filter(
+      (sample) => sample.readiness.readinessHeadLimitReached === true,
+    ).length,
     checks,
     loadPerCpu: percentiles(
       samples.map((sample) =>
@@ -193,6 +209,7 @@ function summarizeWindow(samples, bounds) {
           mode: samples.at(-1).readiness.mode,
           condition: samples.at(-1).readiness.condition,
           queueLagSec: samples.at(-1).readiness.queueLagSec,
+          operationalLagSec: samples.at(-1).readiness.operationalLagSec,
         }
       : null,
   };
