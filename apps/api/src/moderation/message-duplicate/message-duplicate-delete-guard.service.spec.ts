@@ -1,5 +1,7 @@
 import { ConfigService } from '@nestjs/config';
+import { MaxApiInternalRateLimitError } from '../../max/max-client.service';
 import { readModerationGuardFailure } from '../moderation-guard-failure-diagnostic';
+import { readDuplicateLookupFailure } from './message-duplicate-lookup-diagnostic';
 import {
   MessageDuplicateInitialSourceUnavailableError,
   MessageDuplicateQualificationSourceUnavailableError,
@@ -231,6 +233,108 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each(['qualification', 'initial_delete', 'delete_recheck', 'sanction'] as const)(
+    'retains the original author lookup refusal at %s without changing its outcome',
+    async (phase) => {
+      const s = full();
+      const error = new MaxApiInternalRateLimitError('Private author read failure', 7);
+      s.max.getChatMemberAccess.mockRejectedValue(error);
+      const request = { ...s.params, binding: s.binding };
+      const action =
+        phase === 'qualification'
+          ? s.service.qualify(request)
+          : s.service.assertMessageStillActionable({
+              ...request,
+              ...(phase === 'sanction'
+                ? { sanctionIntentId: 'intent' }
+                : {
+                    deletePhase:
+                      phase === 'initial_delete'
+                        ? ('initial_unattempted' as const)
+                        : ('recheck' as const),
+                  }),
+            });
+      await expect(action).rejects.toBe(error);
+      expect(readDuplicateLookupFailure(error)).toEqual({
+        duplicateLookupPhase: phase,
+        duplicateLookupSource: 'author',
+      });
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+      expect(s.originalLookup).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(s.history.qualify).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['current', 'original'] as const)(
+    'hands off a concrete local limiter at initial %s source boundaries only',
+    async (stage) => {
+      const s = setup();
+      const error = new MaxApiInternalRateLimitError('Fixture local read quota', 7);
+      if (stage === 'current') s.max.getExactMessageRow.mockRejectedValue(error);
+      else s.originalLookup.mockRejectedValue(error);
+      const request = { ...s.params, binding: s.binding };
+      await expect(s.service.qualify(request)).rejects.toMatchObject({
+        name: 'MessageDuplicateQualificationSourceUnavailableError',
+        source: stage,
+        cause: error,
+      });
+      await expect(
+        s.service.assertMessageStillActionable({ ...request, deletePhase: 'initial_unattempted' }),
+      ).rejects.toMatchObject({
+        name: 'MessageDuplicateInitialSourceUnavailableError',
+        source: stage,
+        cause: error,
+      });
+      await expect(
+        s.service.assertMessageStillActionable({ ...request, deletePhase: 'recheck' }),
+      ).rejects.toBe(error);
+      await expect(s.service.assertMessageStillActionable(request)).rejects.toBe(error);
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+      expect(s.history.qualify).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      const sanction = full();
+      sanction.max.getExactMessageRow.mockRejectedValue(error);
+      await expect(
+        sanction.service.assertMessageStillActionable({
+          ...sanction.request,
+          deletePhase: 'initial_unattempted',
+        }),
+      ).rejects.toBe(error);
+    },
+  );
+
+  it.each([
+    Object.assign(new Error('Copied limiter'), {
+      name: 'MaxApiInternalRateLimitError',
+      code: 'max_api_internal_rate_limit',
+      preDispatch: true,
+    }),
+    Object.assign(new MaxApiInternalRateLimitError('Conflicting HTTP response', 7), {
+      response: { status: 429 },
+    }),
+    Object.assign(new MaxApiInternalRateLimitError('Response without status', 7), { response: {} }),
+    Object.assign(new MaxApiInternalRateLimitError('Conflicting method', 7), {
+      config: { method: 'post' },
+    }),
+    markMaxMessageSendAttempted(new MaxApiInternalRateLimitError('Send attempted', 7)),
+    markMaxMemberMutationAttempted(
+      new MaxApiInternalRateLimitError('Member mutation attempted', 7),
+    ),
+    new MaxApiInternalRateLimitError('ambiguous MAX mutation', 7),
+  ])('preserves misleading or attempted limiter evidence: %s', async (error) => {
+    const s = setup();
+    s.originalLookup.mockRejectedValue(error);
+    const request = { ...s.params, binding: s.binding };
+    await expect(s.service.qualify(request)).rejects.toBe(error);
+    await expect(
+      s.service.assertMessageStillActionable({ ...request, deletePhase: 'initial_unattempted' }),
+    ).rejects.toBe(error);
+    expect(s.history.qualify).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
   it.each(['current', 'original'] as const)(
     'distinguishes the explicit initial %s source deferral from final and sanction checks',
     async (stage) => {
@@ -1047,6 +1151,77 @@ describe('message duplicate final delete guard', () => {
     },
   );
 
+  it.each([
+    ['receipt', 'receipt_missing'],
+    ['confirmation', 'delete_unconfirmed'],
+    ['reason', 'reason_missing'],
+    ['verified', 'reason_unverified'],
+    ['late_reason', 'reason_after_delete'],
+    ['chat', 'chat_mismatch'],
+    ['message', 'message_mismatch'],
+    ['subject', 'subject_mismatch'],
+    ['binding', 'binding_invalid'],
+    ['content', 'content_mismatch'],
+    ['time', 'event_time_mismatch'],
+    ['control', 'control_revision_mismatch'],
+    ['settings', 'settings_mismatch'],
+    ['version', 'version_mismatch'],
+    ['scope', 'scope_mismatch'],
+    ['lifecycle', 'lifecycle_revision_mismatch'],
+    ['policy', 'policy_revision_mismatch'],
+    ['authorization', 'authorization_mismatch'],
+    ['sanction', 'sanction_mismatch'],
+    ['original', 'original_mismatch'],
+  ])(
+    'reports a fixed %s proof detail while retaining the exact failed sanction',
+    async (change, detail) => {
+      const s = full();
+      const error = Object.freeze({ response: { status: 404, data: {} }, private: 'secret' });
+      const receipt = ownDeleteReceipt(s);
+      const reason = receipt.reasons[0]!;
+      const recorded = reason.metadata.messageDuplicate;
+      if (change === 'confirmation') Object.assign(receipt, { remoteDeleteSucceededAt: null });
+      if (change === 'reason') receipt.reasons = [];
+      if (change === 'verified') reason.metadata.moderationDeleteVerified = false;
+      if (change === 'late_reason') reason.createdAt = new Date(Date.now() + 1000);
+      if (change === 'chat') receipt.chatId = 'another';
+      if (change === 'message') receipt.messageId = 'another';
+      if (change === 'subject') receipt.subjectUserId = 'another';
+      if (change === 'binding') Object.assign(reason.metadata, { messageDuplicate: {} });
+      if (change === 'content') recorded.contentDigest = '1'.repeat(64);
+      if (change === 'time') recorded.eventTimestampMs += 1;
+      if (change === 'control') recorded.controlRevision += 1;
+      if (change === 'settings') recorded.settingsDigest = '2'.repeat(64);
+      if (change === 'version') recorded.version = 2;
+      if (change === 'scope') {
+        recorded.enforcementScope = 'delete_only';
+        delete recorded.sanction;
+      }
+      if (change === 'lifecycle') recorded.lifecycleRevision = 'e'.repeat(64);
+      if (change === 'policy') recorded.policyRevision = recorded.policyRevision! + 1;
+      if (change === 'authorization') recorded.authorization!.deadlineAtMs -= 1;
+      if (change === 'sanction') recorded.sanction!.repeatCount += 1;
+      if (change === 'original') recorded.original!.sourceDigest = '3'.repeat(64);
+      const before = structuredClone(receipt);
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(
+        change === 'receipt' ? null : receipt,
+      );
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
+      expect(readModerationGuardFailure(error)).toEqual({
+        guardBoundary: 'duplicate_sanction_final',
+        guardProofFailure: 'own_delete_binding_unproven',
+        guardProofDetail: detail,
+      });
+      expect(JSON.stringify(readModerationGuardFailure(error))).not.toContain('secret');
+      expect(s.originalLookup).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
+      expect(receipt).toEqual(before);
+    },
+  );
+
   it.each(['missing', 'unfinished', 'unverified'] as const)(
     'declines only the initial sanction on unavailable current source and a %s receipt',
     async (kind) => {
@@ -1076,7 +1251,7 @@ describe('message duplicate final delete guard', () => {
       expect(s.history.remove).not.toHaveBeenCalled();
       expect(s.history.invalidateLifecycle).not.toHaveBeenCalled();
       expect(receipt).toEqual(before);
-      expect(readModerationGuardFailure(error)).toEqual({
+      expect(readModerationGuardFailure(error)).toMatchObject({
         guardBoundary: 'duplicate_sanction_initial',
         guardProofFailure:
           kind === 'unfinished'

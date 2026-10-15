@@ -302,7 +302,7 @@ SELECT json_build_object(
       WHEN starts_with(semantic_key, 'message:message_created:') OR
         starts_with(semantic_key, 'message:message_edited:') THEN 'moderation_message'
       ELSE 'other_or_missing' END,
-    'event_type', CASE WHEN normalized_payload->>'type' IN ('message_created','message_edited','user_added','user_removed','message_callback','bot_added','bot_removed','message_removed') THEN normalized_payload->>'type' ELSE 'other' END,
+    'event_type', CASE WHEN normalized_payload->>'type' IN ('message_created','message_edited','user_added','user_removed','message_callback','chat_title_changed','bot_added','bot_removed','message_removed') THEN normalized_payload->>'type' ELSE 'other' END,
     'next_retry_at', next_enqueue_at,
     'execution_deadline_at', execution_deadline_at, 'queued_at', queued_at,
     'enqueue_attempts', enqueue_attempts,

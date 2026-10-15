@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { MaxApiInternalRateLimitError } from '../../max/max-client.service';
 import type {
   ModerationDeleteIntent,
   ModerationViolationMessageClaim,
@@ -102,6 +103,7 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     source: 'current' | 'original',
     boundary: 'initial' | 'after-dispatch-marker',
     beforeUnavailable?: (intent: ModerationDeleteIntent) => Promise<void>,
+    failureKind: 'http404' | 'local_limit' = 'http404',
   ) {
     const { s, chatId, duplicateId, originalId } = f;
     let accepted:
@@ -140,6 +142,8 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
         if (boundary === 'initial' || started) {
           observedMarkers.push(started);
           await beforeUnavailable?.(intent);
+          if (failureKind === 'local_limit')
+            throw new MaxApiInternalRateLimitError('Native duplicate source unavailable', 7);
           throw Object.assign(new Error('Native duplicate source unavailable'), {
             response: { status: 404, data: {} },
           });
@@ -191,12 +195,16 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     return intent;
   }
 
-  it.each(['current', 'original'] as const)(
-    'completes the canonical handler after initial %s GET 404 and preserves durable retry',
-    async (source) => {
+  it.each(
+    (['current', 'original'] as const).flatMap((source) =>
+      (['http404', 'local_limit'] as const).map((failureKind) => ({ source, failureKind })),
+    ),
+  )(
+    'completes the canonical handler after initial $source refusal ($failureKind) and preserves durable retry',
+    async ({ source, failureKind }) => {
       const f = await fixture(4);
       const { s, chatId, duplicateId, text } = f;
-      const failure = injectSourceFailure(f, source, 'initial');
+      const failure = injectSourceFailure(f, source, 'initial', undefined, failureKind);
       const handler = jest.spyOn(s.moderation, 'handleUpdate');
       const send = jest.spyOn(s.max, 'sendMessage');
       const at = Date.now();
@@ -244,13 +252,18 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
         expect(delay).toBeLessThan(10_000);
         await new Promise((resolve) => setTimeout(resolve, delay));
         const phases: Array<ModerationDeletePreDispatchPhase | undefined> = [];
-        await expect(
-          s.intents.attemptIntent(intent.id, {
-            beforeDeleteMutation: async (phase) => {
-              phases.push(phase);
-            },
-          }),
-        ).rejects.toThrow('Native duplicate source unavailable');
+        const retry = s.intents.attemptIntent(intent.id, {
+          beforeDeleteMutation: async (phase) => {
+            phases.push(phase);
+          },
+        });
+        if (failureKind === 'local_limit')
+          await expect(retry).resolves.toMatchObject({
+            kind: 'pending',
+            status: 'RETRYABLE',
+            confirmed: false,
+          });
+        else await expect(retry).rejects.toThrow('Native duplicate source unavailable');
         expect(phases.length).toBeGreaterThan(0);
         expect(phases.every((phase) => phase === 'recheck')).toBe(true);
         const retried = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
@@ -280,6 +293,50 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
         expect(s.effects).toEqual([]);
         expect(send).not.toHaveBeenCalled();
       }
+    },
+  );
+
+  it.each(['current', 'original'] as const)(
+    'preserves same-chat progress after a local %s quota refusal during qualification',
+    async (source) => {
+      const { s, chatId, originalId, duplicateId, text } = await fixture(3);
+      const unavailableId = source === 'current' ? duplicateId : originalId;
+      const read = s.max.getExactMessageRow.bind(s.max);
+      jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
+        if (args[1] === unavailableId)
+          throw new MaxApiInternalRateLimitError('Native qualification quota', 7);
+        return read(...args);
+      });
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) => s.ingest({ chatId, messageId: duplicateId, text, at, botId: bot.id })),
+      );
+      const receipts = await waitForReceipts(s, ids);
+      expect(receipts.map((row) => row.status).sort()).toEqual([
+        'DUPLICATE',
+        'DUPLICATE',
+        'PROCESSED',
+      ]);
+      const claims = await s.prisma.moderationViolationMessageClaim.findMany({
+        where: { chatId, messageId: duplicateId, ruleCode: 'DUPLICATE_MESSAGE_ACTION' },
+      });
+      expect(claims).toHaveLength(1);
+      expect(claims[0]!.messageActionKey).toBeNull();
+      expect(
+        await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId: duplicateId } }),
+      ).toBe(0);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(1);
+      const next = await s.ingest({
+        chatId,
+        messageId: randomUUID(),
+        text: 'Independent fresh text keeps moving in this chat',
+      });
+      expect((await waitForReceipts(s, [next]))[0]!.status).toBe('PROCESSED');
+      expect(s.failures).toEqual([]);
+      expect(s.effects).toEqual([]);
     },
   );
 

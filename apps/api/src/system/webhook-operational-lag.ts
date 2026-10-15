@@ -60,10 +60,10 @@ export function buildWebhookOperationalLagQuery(
         AND claim."lease_token" IS NULL AND claim."lease_expires_at" IS NULL
         AND claim."business_started_at" IS NULL AND claim."completed_at" IS NULL
         AND heads."next_enqueue_at" IS NOT NULL
-        AND heads."event_type" IN ('user_added', 'message_created', 'message_edited')
+        AND heads."event_type" IN ('user_added', 'message_created', 'message_edited', 'message_callback', 'chat_title_changed')
         AND heads."execution_deadline_at" <= heads."created_at" +
-            CASE WHEN heads."event_type" = 'user_added' THEN INTERVAL '5 minutes'
-                 ELSE INTERVAL '10 minutes' END
+            CASE WHEN heads."event_type" IN ('message_created', 'message_edited') THEN INTERVAL '10 minutes'
+                 ELSE INTERVAL '5 minutes' END
         AND heads."timeout_quarantine_expires_at" IS NULL
         AND heads."legacy_disposition_id" IS NULL
         AND heads."source_disposition_id" IS NULL
