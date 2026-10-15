@@ -62,6 +62,20 @@ an unresolved quarantine. They must not be represented as successful moderation.
 `postgres-audit webhook-cohort` includes QUARANTINED as its eighth status. The closed cohort
 report does not prove remote effects or resolve historical quarantine.
 
+The capacity probe and private archive preserve the same three bounded fields without
+an additional database query. `quarantined_receipts` is a warning whenever a valid,
+fresh observation is nonzero, independently of active queue lag and readiness.
+`monitor-capacity-report.cjs` retains the maximum count lower bound, oldest receipt age,
+cap hits and known-sample coverage. A nonzero sample prevents a green report window;
+missing, malformed, contradictory or stale-fallback evidence remains unknown. Older
+archives have unknown quarantine coverage, not zero. This observer does not alter
+runtime readiness, governors, admission, or quarantine records.
+
+These counts include expired retained receipts. They do not count currently broken
+chats, establish new failures, or authorize cleanup. Investigate fresh impact with the
+closed cohort and exact-minute report below, and retain explicit reviewed exceptions
+separately from infrastructure health. Never delete evidence to silence the warning.
+
 To distinguish a newly received dependent copy from a newly failed owner, use
 `postgres-audit webhook-quarantine` with the exact UTC minute of receipt creation.
 Synchronize exact-green-CI tooling, preview `postgres-audit-provision`, then apply

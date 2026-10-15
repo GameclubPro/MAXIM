@@ -247,11 +247,15 @@ function saveProof(recordProof, value) {
   fact(result === bytesDigest(encode(value)), 'session_inventory_proof_write_unproved');
   return result;
 }
-const denialCodes = new Set([
-  'source_content_unproved',
-  'source_configured_command',
-  'source_candidate_unproved',
-  'selected_owner_proof_incomplete',
+// FLAG: Only selected-source semantic refusals may split an online selection.
+// A chat-type mismatch remains unsupported; it never gains recovery authority.
+// Bind each code to its actual producer scope, retaining global/mixed refusals.
+const denialDescriptors = new Map([
+  ['source_content_unproved', ['sql:selected-source']],
+  ['source_configured_command', ['sql:selected-source']],
+  ['source_chat_type', ['sql:selected-source']],
+  ['source_candidate_unproved', ['sql:webhook_events', 'sql:chat_settings']],
+  ['selected_owner_proof_incomplete', ['sql:selected-source']],
 ]);
 function splittable(value) {
   return (
@@ -261,9 +265,9 @@ function splittable(value) {
       (issue) =>
         issue &&
         typeof issue === 'object' &&
-        denialCodes.has(issue.code) &&
-        typeof issue.descriptor === 'string' &&
-        issue.descriptor.startsWith('sql:'),
+        !Array.isArray(issue) &&
+        Object.keys(issue).sort().join(',') === 'code,descriptor' &&
+        denialDescriptors.get(issue.code)?.includes(issue.descriptor),
     ) &&
     value.issues.some((issue) =>
       ['source_content_unproved', 'source_configured_command'].includes(issue.code),

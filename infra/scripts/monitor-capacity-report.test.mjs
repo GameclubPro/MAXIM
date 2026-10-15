@@ -41,6 +41,9 @@ function sample(observedAt, lag = 0.5) {
       softWarning: false,
       softWarningCode: 'none',
       queueLagSec: lag,
+      quarantinedCountLowerBound: 0,
+      quarantineSampleLimitReached: false,
+      oldestQuarantinedAgeSec: 0,
       mode: 'normal',
       condition: 'healthy',
       burstActive: false,
@@ -198,6 +201,43 @@ test('keeps readiness, stale data, queue fences, and fleet failures visible', (t
   ]) {
     assert.equal(result.current.checks[key].failing, 1);
   }
+});
+
+test('reports quarantine separately and refuses a green window with isolated receipts', (t) => {
+  const rows = series();
+  rows[0].readiness.quarantinedCountLowerBound = 2;
+  rows[0].readiness.oldestQuarantinedAgeSec = 90;
+  rows[1].readiness.quarantinedCountLowerBound = 65;
+  rows[1].readiness.quarantineSampleLimitReached = true;
+  rows[1].readiness.oldestQuarantinedAgeSec = 105;
+  const { directory } = fixture(t, rows);
+  const result = report.buildReport({ directory, from, to }).current;
+  assert.equal(result.status, 'degraded');
+  assert.deepEqual(result.checks.quarantined_receipts, { failing: 2, unknown: 0 });
+  assert.deepEqual(result.checks.readiness, { failing: 0, unknown: 0 });
+  assert.deepEqual(result.quarantine, {
+    basis: 'retained_receipts_not_currently_blocked_chats',
+    maxCountLowerBound: 65,
+    maxOldestAgeSec: 105,
+    sampleLimitReachedSamples: 1,
+    knownSamples: 20,
+  });
+});
+
+test('older archives retain unknown quarantine coverage instead of a synthetic zero', (t) => {
+  const rows = series();
+  for (const row of rows) {
+    delete row.readiness.quarantinedCountLowerBound;
+    delete row.readiness.quarantineSampleLimitReached;
+    delete row.readiness.oldestQuarantinedAgeSec;
+  }
+  const { directory } = fixture(t, rows);
+  const result = report.buildReport({ directory, from, to }).current;
+  assert.equal(result.status, 'unknown');
+  assert.equal(result.coverage.status, 'complete');
+  assert.deepEqual(result.checks.quarantined_receipts, { failing: 0, unknown: 20 });
+  assert.equal(result.quarantine.maxCountLowerBound, null);
+  assert.equal(result.quarantine.knownSamples, 0);
 });
 
 test('compares equal earlier windows while retaining known failures in the baseline', (t) => {
