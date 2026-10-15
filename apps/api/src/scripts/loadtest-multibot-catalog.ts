@@ -1,3 +1,4 @@
+import { evaluateCatalogLatency, parseCatalogLatencyTargets } from './multibot-catalog-latency';
 import {
   collectFixtureBatches,
   countFixtureBatches,
@@ -24,7 +25,7 @@ const args = Object.fromEntries(
     const match = /^--([a-z]+)=(.+)$/u.exec(arg);
     if (!match)
       throw new Error(
-        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --enqueue=fixture|production --topology=single|split --profiles=uniform,hot,cold,media --output=path',
+        'Use --chats=10000,12000,30000 --bots=6 --messages=120 --rate=2 --routing=legacy|fixed --enqueue=fixture|production --topology=single|split --profiles=uniform,hot,cold,media --latency=2000,10000 --output=path',
       );
     return [match[1]!, match[2]!];
   }),
@@ -40,6 +41,7 @@ for (const key of Object.keys(args))
       'enqueue',
       'topology',
       'profiles',
+      'latency',
       'output',
     ].includes(key)
   )
@@ -70,6 +72,7 @@ if (topology === 'split' && (enqueue !== 'production' || messageCount > 10_000 |
 const profiles = (args.profiles ?? 'uniform,hot,cold,media').split(',') as Profile[];
 if (profiles.some((profile) => !profilesAllowed.has(profile)))
   throw new Error('Unsupported profile');
+const latencyTargets = parseCatalogLatencyTargets(args.latency);
 const databaseUrl = process.env.MAXIM_TEST_POSTGRES_URL;
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL;
 if (!databaseUrl || !redisUrl)
@@ -356,9 +359,7 @@ async function main() {
           }),
         );
         const completionLatencyMs = completions
-          .map((event) =>
-            Math.max(0, (event.processedAt?.getTime() ?? Date.now()) - event.createdAt.getTime()),
-          )
+          .map((event) => (event.processedAt?.getTime() ?? NaN) - event.createdAt.getTime())
           .sort((a, b) => a - b);
         const completedActions = await harness.prisma.moderationDeleteIntent.findMany({
           where: { messageId: { in: messageIds }, status: ModerationDeleteIntentStatus.SUCCEEDED },
@@ -389,8 +390,15 @@ async function main() {
         }
         ingressLatencyMs.sort((a, b) => a - b);
         producerLatenessMs.sort((a, b) => a - b);
+        const latencyAcceptance = evaluateCatalogLatency(
+          completionLatencyMs,
+          messageCount,
+          latencyTargets,
+        );
         const report = {
-          status: 'passed',
+          status: latencyAcceptance.status === 'failed' ? 'failed' : 'passed',
+          correctnessStatus: 'passed',
+          latencyAcceptance,
           catalog,
           bots,
           routing,
@@ -426,8 +434,8 @@ async function main() {
           ingressP95Ms: Math.round(
             ingressLatencyMs[Math.floor(ingressLatencyMs.length * 0.95)] ?? 0,
           ),
-          completionP95Ms: completionLatencyMs[Math.floor(completionLatencyMs.length * 0.95)] ?? 0,
-          completionP99Ms: completionLatencyMs[Math.floor(completionLatencyMs.length * 0.99)] ?? 0,
+          completionP95Ms: latencyAcceptance.p95Ms,
+          completionP99Ms: latencyAcceptance.p99Ms,
           actionP95Ms: actionLatencyMs[Math.floor(actionLatencyMs.length * 0.95)] ?? 0,
           actionP99Ms: actionLatencyMs[Math.floor(actionLatencyMs.length * 0.99)] ?? 0,
           sampledPeakPendingReceipts: peakPendingReceipts,
@@ -459,6 +467,7 @@ async function main() {
         reports.push(report);
         process.stdout.write(`${JSON.stringify(report)}\n`);
         await saveReports();
+        if (latencyAcceptance.status === 'failed') process.exitCode = 1;
         failureSnapshot = undefined;
       }
     } catch (error) {

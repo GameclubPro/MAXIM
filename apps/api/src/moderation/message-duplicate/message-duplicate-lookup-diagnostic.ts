@@ -7,7 +7,7 @@ export type DuplicateLookupPhase =
   | 'unclassified_recheck';
 type Diagnostic = Readonly<{
   duplicateLookupPhase: DuplicateLookupPhase;
-  duplicateLookupSource: 'current' | 'original';
+  duplicateLookupSource: 'current' | 'original' | 'author';
 }>;
 const failures = new WeakMap<object, Diagnostic>();
 
@@ -16,7 +16,7 @@ const failures = new WeakMap<object, Diagnostic>();
 export function recordDuplicateLookupFailure(
   error: unknown,
   phase: DuplicateLookupPhase,
-  source: 'current' | 'original',
+  source: 'current' | 'original' | 'author',
 ): void {
   if (error && (typeof error === 'object' || typeof error === 'function') && !failures.has(error))
     failures.set(

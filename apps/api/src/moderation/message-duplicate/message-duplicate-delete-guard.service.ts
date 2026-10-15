@@ -2,7 +2,11 @@ import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { extractHttpStatusCode } from '../../common/http-error.util';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
-import { MAX_API_SOURCE_TAGS, MaxClientService } from '../../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxApiInternalRateLimitError,
+  MaxClientService,
+} from '../../max/max-client.service';
 import {
   isMaxMutationOutcomeAmbiguous,
   wasMaxMessageSendAttempted,
@@ -46,6 +50,7 @@ import type { ModerationDeletePreDispatchPhase } from '../moderation-delete-inte
 import {
   recordModerationGuardFailure,
   type ModerationGuardProofFailure,
+  type ModerationGuardProofDetail,
 } from '../moderation-guard-failure-diagnostic';
 import {
   recordDuplicateLookupFailure,
@@ -312,7 +317,14 @@ export class MessageDuplicateDeleteGuardService {
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
       ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
     };
-    const access = await this.max.getChatMemberAccess(params.chatId, binding.senderId, options);
+    let access: Awaited<ReturnType<MaxClientService['getChatMemberAccess']>>;
+    try {
+      access = await this.max.getChatMemberAccess(params.chatId, binding.senderId, options);
+    } catch (error) {
+      // FLAG: Author lookup provenance changes no refusal, retry or member authority.
+      recordDuplicateLookupFailure(error, lookupPhase, 'author');
+      throw error;
+    }
     // FLAG: Null is a valid uncached response without this member, not an unavailable MAX API.
     // Stop without sanctions; transport errors and malformed/mismatched responses still retry.
     if (!access)
@@ -348,8 +360,11 @@ export class MessageDuplicateDeleteGuardService {
       currentReadFailure = error;
       raw = null;
     }
-    const rejectUnavailableCurrentSource = (proofFailure: ModerationGuardProofFailure): never => {
-      recordModerationGuardFailure(currentReadFailure, sanctionBoundary, proofFailure);
+    const rejectUnavailableCurrentSource = (
+      proofFailure: ModerationGuardProofFailure,
+      proofDetail?: ModerationGuardProofDetail,
+    ): never => {
+      recordModerationGuardFailure(currentReadFailure, sanctionBoundary, proofFailure, proofDetail);
       // FLAG: Only the initial sanction authorization may decline unavailable evidence
       // before any sanction state or remote mutation. This grants no absence, DELETE
       // receipt, retry or claim reset; final member/notice rechecks retain the failure.
@@ -413,8 +428,40 @@ export class MessageDuplicateDeleteGuardService {
         JSON.stringify(recorded.original) !==
           JSON.stringify(messageDuplicateOriginalSchema.parse(binding.original))
       ) {
-        if (currentReadFailure !== null)
-          rejectUnavailableCurrentSource('own_delete_binding_unproven');
+        if (currentReadFailure !== null) {
+          // FLAG: Diagnose only the already rejected receipt, with fixed field labels.
+          // No evidence values, new reads, retry authority or changed guard outcome.
+          const detail = (): ModerationGuardProofDetail => {
+            if (!receipt) return 'receipt_missing';
+            if (!receipt.remoteDeleteSucceededAt) return 'delete_unconfirmed';
+            if (!receipt.reasons[0]) return 'reason_missing';
+            if (receipt.reasons[0].createdAt > receipt.remoteDeleteSucceededAt)
+              return 'reason_after_delete';
+            if (receipt.chatId !== params.chatId) return 'chat_mismatch';
+            if (receipt.messageId !== params.messageId) return 'message_mismatch';
+            if (receipt.subjectUserId !== binding.senderId) return 'subject_mismatch';
+            if (receiptMetadata?.moderationDeleteVerified !== true) return 'reason_unverified';
+            if (!recorded) return 'binding_invalid';
+            if (recorded.contentDigest !== binding.contentDigest) return 'content_mismatch';
+            if (recorded.eventTimestampMs !== binding.eventTimestampMs)
+              return 'event_time_mismatch';
+            if (recorded.controlRevision !== binding.controlRevision)
+              return 'control_revision_mismatch';
+            if (recorded.settingsDigest !== binding.settingsDigest) return 'settings_mismatch';
+            if (recorded.version !== binding.version) return 'version_mismatch';
+            if (recorded.enforcementScope !== binding.enforcementScope) return 'scope_mismatch';
+            if (recorded.lifecycleRevision !== binding.lifecycleRevision)
+              return 'lifecycle_revision_mismatch';
+            if (recorded.policyRevision !== binding.policyRevision)
+              return 'policy_revision_mismatch';
+            if (JSON.stringify(recorded.authorization) !== JSON.stringify(binding.authorization))
+              return 'authorization_mismatch';
+            if (JSON.stringify(recorded.sanction) !== JSON.stringify(binding.sanction))
+              return 'sanction_mismatch';
+            return 'original_mismatch';
+          };
+          rejectUnavailableCurrentSource('own_delete_binding_unproven', detail());
+        }
         throw new MessageDuplicateGuardRejectedError('message_duplicate_unproven_absence');
       }
       if (currentReadFailure !== null) {
@@ -566,7 +613,7 @@ export class MessageDuplicateDeleteGuardService {
             : 'guard.original_lookup_unavailable',
         );
         if (
-          extractHttpStatusCode(error) === 404 &&
+          (extractHttpStatusCode(error) === 404 || isPreDispatchDuplicateReadRateLimited(error)) &&
           !wasMaxMessageSendAttempted(error) &&
           !wasMaxMemberMutationAttempted(error) &&
           !isMaxMutationOutcomeAmbiguous(error)
@@ -705,6 +752,20 @@ export class MessageDuplicateDeleteGuardService {
     if (release) throw new MessageDuplicateGuardRejectedError('message_duplicate_manual_release');
     return settings;
   }
+}
+
+// FLAG: This predicate is used only at the exact source GET. Only a concrete local
+// refusal before transport can enter the existing unused-claim or persisted-retry handoff.
+// HTTP responses, conflicting methods and copied error fields are not that proof.
+function isPreDispatchDuplicateReadRateLimited(error: unknown): boolean {
+  const evidence = error as { response?: unknown; config?: { method?: unknown } } | null;
+  return (
+    error instanceof MaxApiInternalRateLimitError &&
+    error.preDispatch === true &&
+    extractHttpStatusCode(error) === null &&
+    evidence?.response == null &&
+    (evidence?.config?.method === undefined || evidence.config.method === 'get')
+  );
 }
 
 function isConfirmedMessageAbsence(error: unknown): boolean {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { MaxApiInternalRateLimitError } from '../max/max-client.service';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -19,11 +20,29 @@ jest.setTimeout(60_000);
 describeStores('native automatic mute history cleanup', () => {
   let h: MultibotHarness;
   beforeEach(async () => {
-    h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 2, mode: 'off' });
+    h = await createMultibotHarness({
+      databaseUrl,
+      redisUrl,
+      bots: 2,
+      mode: 'off',
+    });
   });
   afterEach(async () => {
     await h.dispose();
   });
+
+  async function enableDueDeleteRecovery() {
+    // FLAG: Positive completion tests include the production SQL retry sweeper.
+    // Negative/ambiguous fixtures keep their original observation-only drain.
+    await h.dispose();
+    h = await createMultibotHarness({
+      databaseUrl,
+      redisUrl,
+      bots: 2,
+      mode: 'off',
+      recoverDueDeletes: true,
+    });
+  }
 
   async function seedMessage(
     chatId: string,
@@ -105,6 +124,7 @@ describeStores('native automatic mute history cleanup', () => {
   }
 
   it('deletes text, voice and stickers only inside the same participant/chat 30-minute window, deduplicating mirrors and pages', async () => {
+    await enableDueDeleteRecovery();
     const [chat, other] = await h.seedCatalog(2, { maxMessageLengthEnabled: false });
     const at = Date.now() - 100;
     const inside = [];
@@ -127,6 +147,19 @@ describeStores('native automatic mute history cleanup', () => {
     const event = await mute(chat!, at);
     await scan();
     await h.drain();
+    if (inside.some((id) => h.messages.has(id))) {
+      console.error(
+        'NATIVE_MUTE_CLEANUP_RETAINED',
+        JSON.stringify({
+          messages: inside.map((id, index) => ({ index, retained: h.messages.has(id) })),
+          intents: await h.prisma.moderationDeleteIntent.findMany({
+            where: { chatId: chat!, messageId: { in: inside } },
+            select: { status: true, attemptCount: true, nextAttemptAt: true, lastErrorCode: true },
+          }),
+          queue: await h.deleteQueue.getJobCounts('active', 'waiting', 'delayed', 'prioritized'),
+        }),
+      );
+    }
     for (const id of inside) expect(h.messages.has(id)).toBe(false);
     for (const id of outside) expect(h.messages.has(id)).toBe(true);
     const deletes = h.effects.filter((e) => e.method === 'delete');
@@ -137,6 +170,51 @@ describeStores('native automatic mute history cleanup', () => {
     await scan();
     await h.drain();
     expect(h.effects.filter((e) => e.method === 'delete')).toEqual(deletes);
+  });
+
+  it('keeps a SQL-owned retry pending after the Redis job finishes and performs it once', async () => {
+    await enableDueDeleteRecovery();
+    const [chat] = await h.seedCatalog(1, { maxMessageLengthEnabled: false });
+    const at = Date.now() - 100;
+    const messageId = await seedMessage(chat!, at - 1_000);
+    jest
+      .spyOn(h.max, 'getChatMemberAccess')
+      .mockRejectedValueOnce(
+        new MaxApiInternalRateLimitError('Fixture automatic cleanup quota', 7),
+      );
+    await mute(chat!, at);
+    await scan();
+    const deadline = Date.now() + 5_000;
+    let deferred = false;
+    while (Date.now() < deadline) {
+      const intent = await h.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chat!, messageId } },
+      });
+      const queued = await h.deleteQueue.getJobCounts(
+        'active',
+        'waiting',
+        'delayed',
+        'prioritized',
+      );
+      if (intent.status === 'RETRYABLE' && Object.values(queued).every((count) => count === 0)) {
+        expect(intent.lastErrorCode).toBe('MAX_API_INTERNAL_RATE_LIMIT');
+        deferred = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(deferred).toBe(true);
+    expect(h.messages.has(messageId)).toBe(true);
+    expect(h.effects).toEqual([]);
+    expect(await h.pumpOnce()).toBeGreaterThan(0);
+    await h.drain();
+    expect(h.messages.has(messageId)).toBe(false);
+    expect(h.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+    expect(
+      await h.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chat!, messageId } },
+      }),
+    ).toMatchObject({ status: 'SUCCEEDED' });
   });
 
   it('does not report drained while a prioritized deletion is still waiting', async () => {

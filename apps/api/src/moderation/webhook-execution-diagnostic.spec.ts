@@ -6,7 +6,12 @@ describe('webhook execution diagnostics', () => {
   it('retains the first guard boundary and only its closed proof classification', () => {
     const error = Object.freeze({ response: { status: 404 }, private: 'secret' });
     recordModerationGuardFailure(error, 'duplicate_sanction_final');
-    recordModerationGuardFailure(error, 'duplicate_sanction_final', 'own_delete_binding_unproven');
+    recordModerationGuardFailure(
+      error,
+      'duplicate_sanction_final',
+      'own_delete_binding_unproven',
+      'reason_unverified',
+    );
     recordModerationGuardFailure(error, 'required_subscription_sanction_mutation');
     recordModerationGuardFailure(
       error,
@@ -17,10 +22,14 @@ describe('webhook execution diagnostics', () => {
     expect(result).toMatchObject({
       guardBoundary: 'duplicate_sanction_final',
       guardProofFailure: 'own_delete_binding_unproven',
+      guardProofDetail: 'reason_unverified',
     });
     expect(JSON.stringify(result)).not.toContain('secret');
     expect(
-      describeWebhookExecutionFailure({ guardBoundary: 'duplicate_sanction_final' }),
+      describeWebhookExecutionFailure({
+        guardBoundary: 'duplicate_sanction_final',
+        guardProofDetail: 'private-secret',
+      }),
     ).not.toHaveProperty('guardBoundary');
     for (const value of [null, undefined, 0, 'secret']) {
       expect(() => recordModerationGuardFailure(value, 'duplicate_sanction_initial')).not.toThrow();

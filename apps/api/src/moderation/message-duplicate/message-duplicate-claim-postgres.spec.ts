@@ -1,6 +1,7 @@
 import { registerDuplicateClaimCleanup } from './message-duplicate-claim-cleanup';
 import { createHash, randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
+import { MaxApiInternalRateLimitError } from '../../max/max-client.service';
 import Redis from 'ioredis';
 import { RedisCounterService } from '../redis-counter.service';
 import { MessageDuplicateDeleteGuardService } from './message-duplicate-delete-guard.service';
@@ -251,6 +252,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       messageId: string,
       source: 'current' | 'original',
       intentService = serviceFor(),
+      failureKind: 'http404' | 'local_limit' = 'http404',
     ) => {
       const own = canonicalClaim(messageId);
       const binding = bindingFor(own, Date.now() - 1000);
@@ -275,7 +277,10 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       binding.contentDigest = buildMessageDuplicateIdentity(content, binding.compareMode)!;
       binding.original!.sourceDigest = binding.sourceDigest;
       binding.original!.contentDigest = binding.contentDigest;
-      const sourceError = { response: { status: 404, data: {} } };
+      const sourceError =
+        failureKind === 'local_limit'
+          ? new MaxApiInternalRateLimitError('Native duplicate source quota', 7)
+          : { response: { status: 404, data: {} } };
       const max = {
         getChatMemberAccess: jest
           .fn()
@@ -295,14 +300,12 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         invalidateLifecycle: jest.fn(),
       };
       const policy = {
-        resolve: jest
-          .fn()
-          .mockResolvedValue({
-            mode: 'delete_only',
-            revision: 1,
-            effectiveAtMs: binding.eventTimestampMs - 10_000,
-            expiresAtMs: binding.authorization!.deadlineAtMs,
-          }),
+        resolve: jest.fn().mockResolvedValue({
+          mode: 'delete_only',
+          revision: 1,
+          effectiveAtMs: binding.eventTimestampMs - 10_000,
+          expiresAtMs: binding.authorization!.deadlineAtMs,
+        }),
       };
       const authorization = new MessageDuplicateAuthorizationService(prisma as never, {} as never);
       const immunity = { consumeForMessage: jest.fn().mockResolvedValue('not_granted') };
@@ -529,10 +532,19 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       ).toBe(false);
     });
 
-    it.each(['current', 'original'] as const)(
-      'settles an initial %s GET 404 only after durable unused-claim revocation',
-      async (source) => {
-        const s = await unavailableSourceCase(`unavailable-${source}`, source);
+    it.each(
+      (['current', 'original'] as const).flatMap((source) =>
+        (['http404', 'local_limit'] as const).map((failureKind) => ({ source, failureKind })),
+      ),
+    )(
+      'settles an initial $source refusal ($failureKind) only after durable unused-claim revocation',
+      async ({ source, failureKind }) => {
+        const s = await unavailableSourceCase(
+          `unavailable-${source}-${failureKind}`,
+          source,
+          serviceFor(),
+          failureKind,
+        );
         const outcome = await s.enqueue();
         expect(outcome).toEqual({ kind: 'rejected', reason: 'qualification_source_unavailable' });
         expect(duplicateEnforcementObservation(outcome)).toBe('SOURCE_UNAVAILABLE');
