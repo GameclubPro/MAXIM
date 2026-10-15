@@ -39,6 +39,8 @@ export async function hasPersistedBoundMessage(
         chatId: true,
         actionType: true,
         status: true,
+        ambiguous: true,
+        terminal: true,
         remoteMessageId: true,
         dispatchBotId: true,
       },
@@ -46,6 +48,8 @@ export async function hasPersistedBoundMessage(
     return (
       send?.actionType === 'SEND_MESSAGE' &&
       send.status === 'SUCCEEDED' &&
+      send.terminal === true &&
+      send.ambiguous === false &&
       send.chatId === chatId &&
       send.remoteMessageId === messageId &&
       send.dispatchBotId === botId

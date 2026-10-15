@@ -5,8 +5,13 @@ describe('channel settings normalization', () => {
   it('preserves subscription protection when a legacy settings client omits the new fields', async () => {
     const upsert = jest.fn();
     const audit = jest.fn();
+    const tx = {
+      chat: { upsert: jest.fn().mockResolvedValue({ id: '-1', fixedModeratorBotId: null }) },
+      channelSettings: { upsert },
+      auditLog: { create: audit },
+    };
     await saveChannelSettings({
-      prisma: { chat: { upsert }, auditLog: { create: audit } } as never,
+      prisma: { $transaction: async (run: (db: typeof tx) => unknown) => run(tx) } as never,
       chatContextCache: { invalidate: jest.fn() },
       chatId: '-1',
       actorUserId: 'admin',
@@ -16,13 +21,9 @@ describe('channel settings normalization', () => {
       refreshExecutionReadiness: jest.fn(),
     });
     const saved = upsert.mock.calls[0][0];
-    expect(saved.update.channelSettings.upsert.update).not.toHaveProperty(
-      'postSuggestionsRequireSubscription',
-    );
-    expect(saved.update.channelSettings.upsert.update).not.toHaveProperty(
-      'postSuggestionsDeleteOnUnsubscribe',
-    );
-    expect(saved.create.channelSettings.create).toMatchObject({
+    expect(saved.update).not.toHaveProperty('postSuggestionsRequireSubscription');
+    expect(saved.update).not.toHaveProperty('postSuggestionsDeleteOnUnsubscribe');
+    expect(saved.create).toMatchObject({
       postSuggestionsRequireSubscription: false,
       postSuggestionsDeleteOnUnsubscribe: false,
     });

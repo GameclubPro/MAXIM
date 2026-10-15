@@ -1,6 +1,7 @@
 import { useEffect, useState, type RefObject } from 'react';
 import type {
   ChatSummary,
+  ManagedModeratorAssignmentResult,
   ManagedEntityPresentation,
   ManagedEntityPresentationResponse,
 } from '@maxim/contracts';
@@ -10,6 +11,13 @@ import { saveChatTitles } from './chat-titles';
 export { mergeEntityPresentation } from './entity-presentation';
 const EMPTY_PRESENTATION: Record<string, ManagedEntityPresentation> = {};
 
+export type ConfirmedModeratorAssignment = {
+  scope: string;
+  entityType: 'chat' | 'channel';
+  entity: ChatSummary;
+  result: ManagedModeratorAssignmentResult;
+};
+
 export function useEntityPresentation(options: {
   api: ApiTransport;
   root: RefObject<HTMLElement | null>;
@@ -17,8 +25,9 @@ export function useEntityPresentation(options: {
   entities: readonly ChatSummary[];
   scope: string;
   reloadNonce: number;
+  assignment?: ConfirmedModeratorAssignment | null;
 }) {
-  const { api, root, entityType, scope, reloadNonce } = options;
+  const { api, root, entityType, scope, reloadNonce, assignment } = options;
   const renderedKey = JSON.stringify(options.entities.map((entity) => entity.id));
   const [visibleKey, setVisibleKey] = useState('[]');
   const stateScope = `${scope}:${entityType}`;
@@ -27,6 +36,36 @@ export function useEntityPresentation(options: {
     items: Record<string, ManagedEntityPresentation>;
   }>({ scope: stateScope, items: {} });
   const [resume, setResume] = useState(0);
+
+  useEffect(() => {
+    if (!assignment || assignment.scope !== scope || assignment.entityType !== entityType) return;
+    setState((previous) => {
+      const items = previous.scope === stateScope ? previous.items : {};
+      const entity = assignment.entity;
+      const old = items[entity.id];
+      if ((old?.moderatorRevision ?? -1) > assignment.result.revision) return previous;
+      return {
+        scope: stateScope,
+        items: {
+          ...items,
+          [entity.id]: {
+            ...(old ?? {
+              id: entity.id,
+              entityType,
+              title: entity.title,
+              avatarUrl: entity.avatarUrl ?? null,
+              avatarState: entity.avatarState ?? 'unknown',
+              observedAt: entity.metadataObservedAt ?? null,
+              pending: false,
+              canChooseModerator: entity.canChooseModerator,
+            }),
+            moderator: assignment.result.moderator,
+            moderatorRevision: assignment.result.revision,
+          },
+        },
+      };
+    });
+  }, [assignment, scope, entityType, stateScope]);
 
   useEffect(() => {
     const parent = root.current;
@@ -132,7 +171,7 @@ export function useEntityPresentation(options: {
       stop();
       document.removeEventListener('visibilitychange', visibility);
     };
-  }, [api, entityType, visibleKey, renderedKey, stateScope, reloadNonce, resume]);
+  }, [api, entityType, visibleKey, renderedKey, stateScope, reloadNonce, resume, assignment]);
 
   return state.scope === stateScope ? state.items : EMPTY_PRESENTATION;
 }

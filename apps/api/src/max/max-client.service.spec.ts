@@ -2986,6 +2986,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await expect(service.executeActionJob(job)).resolves.toBeUndefined();
 
     expect(presence).toHaveBeenCalledWith('chat-1', 'mid-auto-delete-verified-1', {
+      boundObject: { kind: 'send', id: 'send-job-1' },
       botId: '777000_bot',
       trafficClass: undefined,
       actionHealthLane: undefined,
@@ -3262,6 +3263,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       expect.objectContaining({ ignoreFailureMetricStatuses: expect.anything() }),
     );
     expect(presence).toHaveBeenCalledWith('chat-1', 'mid-auto-delete-delete-metric', {
+      boundObject: { kind: 'send', id: 'send-auto-delete-production-metrics' },
       botId: '777000_bot',
       trafficClass: 'interactive',
       actionHealthLane: 'background',

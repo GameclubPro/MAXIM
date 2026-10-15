@@ -94,6 +94,15 @@ try {
       return img && img.complete && img.naturalWidth > 0;
     });
     assert.ok(imageAttempts >= 2, 'the same failed image URL must be retried');
+    const cards = await page.locator('.chat-card').evaluateAll((rows) =>
+      rows.map((row) => {
+        const rect = row.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom };
+      }),
+    );
+    for (let index = 1; index < cards.length; index += 1)
+      assert.ok(cards[index].top >= cards[index - 1].bottom, 'virtual rows must not overlap');
+
     const requests = await page.evaluate(() => window.__presentationRequests);
     assert.ok(requests.every((ids) => ids.length > 0 && ids.length <= 32));
     assert.ok(new Set(requests.flat()).size < 120, 'hidden virtual rows must not be fetched');

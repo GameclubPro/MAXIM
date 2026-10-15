@@ -21190,16 +21190,18 @@ describe('AdminService.updateChannelSettings', () => {
     expect(result).toMatchObject({ commentsEnabled: true, postSuggestionsEnabled: true });
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: { id: 'channel-1' },
         update: expect.objectContaining({
           entityType: 'CHANNEL',
-          channelSettings: expect.objectContaining({
-            upsert: expect.objectContaining({
-              update: expect.objectContaining({
-                commentsEnabled: true,
-                postSuggestionsEnabled: true,
-              }),
-            }),
-          }),
+        }),
+      }),
+    );
+    expect(prisma.channelSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { chatId: 'channel-1' },
+        update: expect.objectContaining({
+          commentsEnabled: true,
+          postSuggestionsEnabled: true,
         }),
       }),
     );

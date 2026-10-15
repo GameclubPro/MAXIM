@@ -1,6 +1,7 @@
+import type { ConfirmedModeratorAssignment } from '../lib/use-entity-presentation';
 import { mergeEntityPresentation } from '../lib/entity-presentation';
 import type { ManagedEntityPresentation } from '@maxim/contracts';
-import { displayChatTitle } from '../lib/chat-titles';
+import { displayChatTitle, isUnusableChatTitle } from '../lib/chat-titles';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Suspense,
@@ -16,7 +17,6 @@ import {
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import type {
   ChatSummary,
-  ManagedModeratorAssignmentResult,
   ManagedEntitiesRefreshState,
   ManagedEntityFavoriteType,
 } from '@maxim/contracts';
@@ -131,7 +131,7 @@ const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
 const CHAT_LIST_ROW_HEIGHT = 96;
-const CHAT_LIST_VIRTUAL_ROW_PITCH = 80;
+const CHAT_LIST_VIRTUAL_ROW_PITCH = CHAT_LIST_ROW_HEIGHT + 8;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
 
@@ -360,11 +360,8 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
     entity: ManagedHomeEntity;
   } | null>(null);
   const [moderatorTarget, setModeratorTarget] = useState<typeof favoritePicker>(null);
-  const [moderatorUpdates, setModeratorUpdates] = useState<{
-    scope: string;
-    items: Record<string, ManagedModeratorAssignmentResult>;
-  }>({ scope: favoriteStorageScope, items: {} });
-  const [moderatorRefreshNonce, setModeratorRefreshNonce] = useState(0);
+  const [moderatorAssignment, setModeratorAssignment] =
+    useState<ConfirmedModeratorAssignment | null>(null);
   const [favoriteFilterPickerOpen, setFavoriteFilterPickerOpen] = useState(false);
   const [favoriteLabelsEditorOpen, setFavoriteLabelsEditorOpen] = useState(false);
   const [connectSheetOpen, setConnectSheetOpen] = useState(false);
@@ -1600,15 +1597,7 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
       : `${tabLabel}: ${filteredEntities.length} из ${activeEntities?.length ?? 0}.`;
 
   function renderEntityCard(original: ManagedHomeEntity, index: number) {
-    const presented = mergeEntityPresentation(original, entityPresentations[original.id]);
-    const update =
-      moderatorUpdates.scope === favoriteStorageScope
-        ? moderatorUpdates.items[`${activeTab}:${original.id}`]
-        : undefined;
-    const entity =
-      update && update.revision >= (presented.moderatorRevision ?? -1)
-        ? { ...presented, moderator: update.moderator, moderatorRevision: update.revision }
-        : presented;
+    const entity = mergeEntityPresentation(original, entityPresentations[original.id]);
     const title = displayChatTitle(entity.id, entity.title, activeTab);
     const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
     const favoriteTypes = getHomeEntityFavoriteTypes(homeEntityFavorites, activeTab, entity.id);
@@ -1754,7 +1743,10 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
                 <LazyHomeModeratorBadge
                   moderator={entity.moderator}
                   title={title}
-                  canChoose={entity.canChooseModerator === true}
+                  canChoose={
+                    entity.canChooseModerator === true &&
+                    !isUnusableChatTitle(entity.id, entity.title)
+                  }
                   expanded={
                     moderatorTarget?.entity.id === entity.id &&
                     moderatorTarget.entityType === activeTab
@@ -1883,7 +1875,8 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
           entityType={activeTab}
           entities={isLoading || queryError ? [] : renderedEntities}
           scope={favoriteStorageScope}
-          reloadNonce={refreshRequestByTab[activeTab].nonce + moderatorRefreshNonce}
+          reloadNonce={refreshRequestByTab[activeTab].nonce}
+          assignment={moderatorAssignment}
           onChange={setPresentationState}
         />
       </Suspense>
@@ -1896,15 +1889,7 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
             moderatorTarget={moderatorTarget}
             onModeratorSaved={(result) => {
               if (!moderatorTarget) return;
-              const key = `${moderatorTarget.entityType}:${moderatorTarget.entity.id}`;
-              setModeratorUpdates((previous) => ({
-                scope: favoriteStorageScope,
-                items: {
-                  ...(previous.scope === favoriteStorageScope ? previous.items : {}),
-                  [key]: result,
-                },
-              }));
-              setModeratorRefreshNonce((value) => value + 1);
+              setModeratorAssignment({ ...moderatorTarget, scope: favoriteStorageScope, result });
               closeHomeEntitySheet();
               pushToast({ title: `${result.moderator.name} выбран`, tone: 'success' });
             }}

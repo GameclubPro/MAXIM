@@ -49,9 +49,22 @@ try {
       window.__moderatorPosts = [];
       window.__loseModeratorReply = true;
       PREVIEW_REQUEST_HANDLERS.unshift(async (request) => {
-        if (request.method !== 'POST' || !request.url.pathname.endsWith('/moderator'))
-          return PREVIEW_NOT_HANDLED;
+        if (!request.url.pathname.endsWith('/moderator')) return PREVIEW_NOT_HANDLED;
+        if (request.method === 'GET' && window.__singleModeratorCandidate) {
+          const result = await handleModeratorPreviewRequest(request);
+          return {
+            ...result,
+            candidates: result.candidates
+              .filter((bot) => bot.key !== result.current.key && bot.selectable)
+              .slice(0, 1),
+          };
+        }
+        if (request.method !== 'POST') return PREVIEW_NOT_HANDLED;
         window.__moderatorPosts.push(JSON.parse(request.init.body));
+        if (window.__moderatorFailure)
+          throw Object.assign(new Error('Controlled API refusal'), {
+            status: window.__moderatorFailure,
+          });
         const result = await handleModeratorPreviewRequest(request);
         if (window.__loseModeratorReply) {
           window.__loseModeratorReply = false;
@@ -91,12 +104,50 @@ try {
     );
     await page.keyboard.press('Escape');
     await sheet.waitFor({ state: 'hidden' });
+    for (const [status, message] of [
+      [403, 'Проверьте свои права администратора'],
+      [429, 'Слишком много запросов'],
+      [409, 'Выбор или права бота изменились'],
+    ]) {
+      await page.evaluate((status) => {
+        window.__moderatorFailure = status;
+      }, status);
+      await trigger.click();
+      const available = sheet.locator('input[type="radio"]:enabled:not(:checked)').first();
+      await available.check();
+      const originalLabel = await trigger.innerText();
+      await sheet.getByRole('button', { name: 'Сменить бота', exact: true }).click();
+      await sheet.getByRole('alert').filter({ hasText: message }).waitFor();
+      assert.equal(await trigger.innerText(), originalLabel);
+      assert.equal(await sheet.locator('input[type="radio"]:enabled').count(), 0);
+      const request = await page.evaluate(() => window.__moderatorPosts.at(-1));
+      await page.evaluate(() => {
+        window.__moderatorFailure = 0;
+      });
+      await sheet.getByRole('button', { name: 'Проверить смену' }).click();
+      await sheet.waitFor({ state: 'hidden' });
+      assert.deepEqual(await page.evaluate(() => window.__moderatorPosts.at(-1)), request);
+    }
+    await page.evaluate(() => {
+      window.__singleModeratorCandidate = true;
+    });
+    await trigger.click();
+    await sheet.getByText('Сейчас выбран · пока недоступен', { exact: true }).waitFor();
+    assert.equal(await sheet.getByRole('radio').count(), 1);
+    assert.equal(await sheet.getByRole('radio').isDisabled(), false);
+    await sheet.getByRole('radio').check();
+    assert.equal(
+      await sheet.getByRole('button', { name: 'Сменить бота', exact: true }).isDisabled(),
+      false,
+    );
+    await page.keyboard.press('Escape');
+    await sheet.waitFor({ state: 'hidden' });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
     assert.equal(overflow, false);
     await page.screenshot({ path: `${output}/${platform}-${theme}-home.png`, fullPage: true });
     assert.deepEqual(errors, []);
     console.log(
-      `PASS ${platform} ${theme}: preview, rights, repeated tap, lost response, reopen recovery, native Back, focus`,
+      `PASS ${platform} ${theme}: preview, rights, repeated tap, lost response, reopen recovery, native Back, focus, 403/429/409 same-UUID recovery, unavailable current with one candidate`,
     );
     await context.close();
   }

@@ -46,6 +46,8 @@ function fixture() {
     max,
     cache,
     queue,
+    visible,
+    config: { get: (key: string) => (key === 'MAX_FIXED_MODERATOR_SELECTION_ENABLED' ? true : '') },
     service: new ManagedEntityPresentationService(
       db as never,
       registry as never,
@@ -80,6 +82,24 @@ describe('bounded home presentation', () => {
     expect(f.db.managedEntityAccessEdge.findMany.mock.calls[0][0].where).not.toHaveProperty(
       'expiresAt',
     );
+  });
+  it('allows replacing an unavailable current bot with the only remaining connected peer', async () => {
+    const f = fixture();
+    const service = new ManagedEntityPresentationService(
+      f.db as never,
+      {
+        getAllBots: () => [{ id: 'bot-1', state: 'active' }],
+        getBotById: () => ({ state: 'active' }),
+      } as never,
+      f.max as never,
+      f.cache as never,
+      f.queue as never,
+      f.config as never,
+    );
+    f.visible.chat.primaryBotId = 'missing-current';
+    expect((await service.read(user, request)).items[0].canChooseModerator).toBe(true);
+    f.visible.chat.primaryBotId = 'bot-1';
+    expect((await service.read(user, request)).items[0].canChooseModerator).toBe(false);
   });
   it('rejects oversized batches before SQL and does not reveal or enqueue unauthorized IDs', async () => {
     const f = fixture();

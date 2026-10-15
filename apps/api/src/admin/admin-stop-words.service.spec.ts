@@ -12,6 +12,7 @@ function harness() {
     updatedAt: new Date(),
   };
   const tx = {
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 'chat-1' }]),
     chatSettings: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
   };

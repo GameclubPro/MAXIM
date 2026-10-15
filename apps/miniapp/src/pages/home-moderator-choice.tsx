@@ -9,6 +9,8 @@ import { ModeratorPortrait } from '../components/ui/moderator-portrait';
 import { openMaxBotLink } from '../lib/max-bridge';
 import {
   moderatorOperationKey,
+  createModeratorOperationId,
+  ModeratorOperationStorageError,
   readModeratorOperation,
   saveModeratorOperation,
   clearModeratorOperation,
@@ -64,8 +66,10 @@ export default function HomeModeratorChoice({ api, scope, entityType, entityId, 
             const result = (await api.request(`${path}/operations/${request.operationId}`, {
               signal: abort.signal,
             })) as ManagedModeratorAssignmentResult;
+            if (abort.signal.aborted) return;
             await complete(request, result);
           } catch (error) {
+            if (abort.signal.aborted) return;
             if (statusOf(error) === 404 && value.revision > request.expectedRevision) {
               // FLAG: Read the advanced revision before exact operation absence. A delayed
               // request cannot commit its older CAS revision or escape this saved identity.
@@ -78,9 +82,10 @@ export default function HomeModeratorChoice({ api, scope, entityType, entityId, 
           }
         }
       } catch {
-        if (alive.current) setError('Не удалось загрузить ботов. Попробуйте ещё раз.');
+        if (!abort.signal.aborted && alive.current)
+          setError('Не удалось загрузить ботов. Попробуйте ещё раз.');
       } finally {
-        if (alive.current) setBusy(false);
+        if (!abort.signal.aborted && alive.current) setBusy(false);
       }
     })();
     return () => {
@@ -116,7 +121,7 @@ export default function HomeModeratorChoice({ api, scope, entityType, entityId, 
     try {
       if (!request) {
         request = {
-          operationId: crypto.randomUUID(),
+          operationId: createModeratorOperationId(),
           moderatorKey: selected,
           expectedRevision: choices.revision,
         };
@@ -142,11 +147,15 @@ export default function HomeModeratorChoice({ api, scope, entityType, entityId, 
     } catch (error) {
       if (alive.current)
         setError(
-          statusOf(error) === 403
-            ? 'Проверьте свои права администратора и права выбранного бота.'
-            : statusOf(error) === 409
-              ? 'Выбор или права бота изменились. Откройте список заново.'
-              : 'Ответ о смене не получен. Проверьте результат.',
+          error instanceof ModeratorOperationStorageError
+            ? 'Не удалось сохранить запрос на устройстве. Закройте и снова откройте приложение.'
+            : statusOf(error) === 403
+              ? 'Проверьте свои права администратора и права выбранного бота.'
+              : statusOf(error) === 409
+                ? 'Выбор или права бота изменились. Откройте список заново.'
+                : statusOf(error) === 429
+                  ? 'Слишком много запросов. Подождите немного и проверьте смену.'
+                  : 'Ответ о смене не получен. Проверьте результат.',
         );
     } finally {
       submitting.current = false;

@@ -163,6 +163,7 @@
 - Ownership is `Chat.primaryBotId` plus `ChatBotMembership`; `Chat.botId` is transitional compatibility.
 - Centralize primary-bot scoring in `src/max/max-bot-access-policy.util.ts`; routing and ownership repair share this policy.
 - Legacy entities may use any confirmed eligible active bot. With `Chat.fixedModeratorBotId`, new effects require that exact moderator; denial never promotes a peer. Only an exact persisted original message binding permits its previous bot to edit/delete that object, with current access and feature guards still required. Selection defaults off until compatible readers and the preservation rollout are verified.
+- Initial fixed assignment uses the passive `preserve-fixed-moderators` CLI through the guarded host wrapper. It may only preserve the proven current executor; split/uncertain/saturated evidence stays legacy. Chat-first settings locks and original-object binding checks are required after assignment. See `docs/operations/runbooks/fixed-moderator-rollout.md`.
 - Keep UI, diagnostics, and tests list-oriented; never assume exactly one standby bot.
 - Lifecycle policy lives in `src/max/max-bot-state.util.ts`: active bots execute/assist/promote, draining bots serve webhook/read/discovery only, and dormant/disabled bots are not route candidates.
 - `GET /v1/system/bots` is local-only fleet state from registry, caches, metrics, and bounded Prisma aggregates; do not add live MAX access refreshes.

@@ -1,3 +1,4 @@
+import { assertFixedModeratorCapabilitiesForSettings } from '../max/fixed-moderator-capabilities';
 import { channelSettingsSchema, type ChannelSettings } from '@maxim/contracts';
 import { BadRequestException, type Logger } from '@nestjs/common';
 import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
@@ -232,46 +233,40 @@ export async function saveChannelSettings(params: {
     if (!Object.prototype.hasOwnProperty.call(params.body, key)) delete settingsToUpdate[key];
   }
 
-  await params.prisma.chat.upsert({
-    where: { id: params.chatId },
-    create: {
-      id: params.chatId,
-      title: `Channel ${params.chatId}`,
-      entityType: ChatEntityType.CHANNEL,
-      catalogKind: ChatCatalogKind.MANAGED,
-      ...botAssignmentData,
-      channelSettings: {
-        create: {
-          ...settingsToSave,
-        },
+  await params.prisma.$transaction(async (tx) => {
+    const lockedChat = await tx.chat.upsert({
+      where: { id: params.chatId },
+      create: {
+        id: params.chatId,
+        title: `Channel ${params.chatId}`,
+        entityType: ChatEntityType.CHANNEL,
+        catalogKind: ChatCatalogKind.MANAGED,
+        ...botAssignmentData,
       },
-    },
-    update: {
-      entityType: ChatEntityType.CHANNEL,
-      catalogKind: ChatCatalogKind.MANAGED,
-      channelSettings: {
-        upsert: {
-          update: {
-            ...settingsToUpdate,
-          },
-          create: {
-            ...settingsToSave,
-          },
-        },
+      update: { entityType: ChatEntityType.CHANNEL, catalogKind: ChatCatalogKind.MANAGED },
+    });
+    const editingEnabled =
+      settingsToSave.commentsEnabled ||
+      settingsToSave.postSuggestionsEnabled ||
+      settingsToSave.quickButtonsEnabled;
+    await assertFixedModeratorCapabilitiesForSettings(
+      tx,
+      lockedChat,
+      editingEnabled ? ['send_message', 'edit_message'] : [],
+    );
+    await tx.channelSettings.upsert({
+      where: { chatId: params.chatId },
+      create: { chatId: params.chatId, ...settingsToSave },
+      update: settingsToUpdate,
+    });
+    await tx.auditLog.create({
+      data: {
+        chatId: params.chatId,
+        actorUserId: params.actorUserId,
+        action: 'UPDATE_CHANNEL_SETTINGS',
+        payload: { ...settingsToUpdate, source: params.source },
       },
-    },
-  });
-
-  await params.prisma.auditLog.create({
-    data: {
-      chatId: params.chatId,
-      actorUserId: params.actorUserId,
-      action: 'UPDATE_CHANNEL_SETTINGS',
-      payload: {
-        ...settingsToUpdate,
-        source: params.source,
-      },
-    },
+    });
   });
   await params.chatContextCache.invalidate(params.chatId);
   await params.refreshExecutionReadiness();

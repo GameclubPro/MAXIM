@@ -41,8 +41,28 @@ export const FIXED_MODERATOR_SOURCE_CHECKS = [
       'export async function hasPersistedBoundMessage(',
       "purpose !== 'delete_message'",
       'db.maxActionLedgerEntry.findUnique(',
+      'send.terminal === true',
+      'send.ambiguous === false',
       'db.managedPoll.findUnique(',
       "intent.routingPolicy === 'origin_only'",
+    ],
+  ],
+  ...[
+    'admin-chat-settings.ts',
+    'admin-channel-settings.ts',
+    'admin-settings-apply.ts',
+    'admin-stop-words.service.ts',
+    'channel-post-signature.service.ts',
+  ].map((file) => [
+    `apps/api/src/admin/${file}`,
+    ['await assertFixedModeratorCapabilitiesForSettings('],
+  ]),
+  [
+    'apps/api/src/max/fixed-moderator-capabilities.ts',
+    [
+      'export async function assertFixedModeratorCapabilitiesForSettings(',
+      'chat.fixedModeratorBotId',
+      'FOR UPDATE',
     ],
   ],
 ];

@@ -1,4 +1,8 @@
 import {
+  assertFixedModeratorCapabilitiesForSettings,
+  lockModeratorSettingsChat,
+} from '../max/fixed-moderator-capabilities';
+import {
   BadRequestException,
   ConflictException,
   Injectable,
@@ -73,6 +77,20 @@ export class AdminStopWordsService {
       ]);
     }
     await this.prisma.$transaction(async (tx) => {
+      const lockedChat = await lockModeratorSettingsChat(tx, chatId);
+      await assertFixedModeratorCapabilitiesForSettings(
+        tx,
+        lockedChat,
+        policy.enabled
+          ? [
+              'send_message',
+              ...(policy.sanctions.muteEnabled || policy.sanctions.banEnabled
+                ? ['moderate_member' as const]
+                : []),
+            ]
+          : [],
+      );
+
       const changed = await tx.chatSettings.updateMany({
         where: { chatId, stopWordsRevision: expectedRevision, updatedAt: current.updatedAt },
         data: { ...stopWordsPolicyStorage(policy), stopWordsRevision: { increment: 1 } },

@@ -66,6 +66,7 @@ export class ManagedEntityPresentationService {
           select: {
             title: true,
             primaryBotId: true,
+            botId: true,
             fixedModeratorBotId: true,
             routingVersion: true,
             updatedAt: true,
@@ -145,13 +146,17 @@ export class ManagedEntityPresentationService {
         pending,
         moderator: (() => {
           const bot = this.registry.getBotById(
-            edge.chat.fixedModeratorBotId ?? edge.chat.primaryBotId ?? '',
+            edge.chat.fixedModeratorBotId ?? edge.chat.primaryBotId ?? edge.chat.botId ?? '',
           );
           return bot?.id ? publicModerator(bot) : null;
         })(),
         moderatorRevision: edge.chat.routingVersion,
         canChooseModerator:
-          memberships.size > 1 && isFixedModeratorSelectionEnabled(this.config, id),
+          [...memberships].some(
+            (botId) =>
+              botId !==
+              (edge.chat.fixedModeratorBotId ?? edge.chat.primaryBotId ?? edge.chat.botId),
+          ) && isFixedModeratorSelectionEnabled(this.config, id),
       });
     }
     return { items, retryAfterMs: 2000 };

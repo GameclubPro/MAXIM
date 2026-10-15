@@ -1,3 +1,5 @@
+import { ConfigService } from '@nestjs/config';
+import { AdminStopWordsService } from '../admin/admin-stop-words.service';
 import { randomUUID } from 'node:crypto';
 import { createPrismaAdapter, PrismaClient } from '../prisma/prisma-client';
 import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
@@ -166,6 +168,49 @@ integration('fixed moderator assignment with PostgreSQL', () => {
     expect(
       (await db.chat.findUniqueOrThrow({ where: { id: chatId } })).fixedModeratorBotId,
     ).toBeNull();
+  });
+
+  it('rejects settings enabled after a preflight against a former moderator', async () => {
+    await db.chatSettings.create({ data: { chatId } });
+    const stopWords = new AdminStopWordsService(
+      db as never,
+      { assertChatAdminAccess: async () => undefined } as never,
+      {} as never,
+      {
+        assertChatSettingsBotCapabilities: async () => {
+          // The remote preflight began against the old moderator. Before its response
+          // is used, that capability is revoked and another moderator is assigned.
+          await db.chatBotMembership.updateMany({
+            where: { chatId },
+            data: buildBotAccessSnapshotPersistence(
+              {
+                isAdmin: true,
+                isOwner: false,
+                permissionsKnown: true,
+                permissions: ['read_all_messages', 'write'],
+              },
+              { source: 'seed', now: epoch },
+            ),
+          });
+          await service.assign(input('other-bot'));
+        },
+      } as never,
+      { invalidate: async () => undefined } as never,
+      new ConfigService(),
+    );
+    await expect(
+      stopWords.update(chatId, { userId: actor } as never, {
+        expectedRevision: 0,
+        policy: { enabled: true, sanctions: { banEnabled: true } },
+      }),
+    ).rejects.toThrow('Права выбранного бота изменились');
+    expect(await db.chatSettings.findUnique({ where: { chatId } })).toMatchObject({
+      stopWordsRevision: 0,
+    });
+    expect(await db.auditLog.count({ where: { chatId, action: 'UPDATE_STOP_WORDS' } })).toBe(0);
+    expect(await db.chat.findUnique({ where: { id: chatId } })).toMatchObject({
+      fixedModeratorBotId: 'other-bot',
+    });
   });
 
   it('allows cleanup only of the exact confirmed SEND result with its original executor', async () => {
