@@ -13,6 +13,11 @@ chat and receiving bot, retaining one fresh follow-up when a previous probe is a
 A failed enqueue remains a retryable handshake failure; it cannot publish an early
 confirmation. Queue retries retain their existing limits, access epochs and activation
 guards. This handoff alone does not make Start independent of ordinary webhook ordering.
+Connection refresh cannot rename an existing community with generated `Chat <id>` or
+`Channel <id>` metadata. SQL updates omit placeholder titles; snapshot CAS merges retain
+the current real name, and the roster resolves local stored metadata without a new MAX lookup.
+Run `managed-entity-title.redis-integration.spec.ts` for the retained-name and access-denial gates.
+
 Run `handshake-roster-handoff.redis-integration.spec.ts` with native Redis alongside
 the handshake and roster service regressions when changing this boundary.
 

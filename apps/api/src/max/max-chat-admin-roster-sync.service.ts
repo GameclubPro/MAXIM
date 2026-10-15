@@ -1,3 +1,4 @@
+import { observedManagedEntityTitle } from '../common/managed-entity-title';
 import { probeManagedEntityActor } from './managed-entity-actor-probe';
 import { handOffHandshakeRoster } from './handshake-roster-handoff';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -733,7 +734,10 @@ export class MaxChatAdminRosterSyncService {
     return {
       chatId: incoming.chatId,
       botIds: mergedBotIds,
-      title: incoming.title ?? this.readTrimmedString(persisted?.title) ?? null,
+      title:
+        observedManagedEntityTitle(incoming.chatId, incoming.title) ??
+        this.readTrimmedString(persisted?.title) ??
+        null,
       entityType: incoming.entityType ?? this.fromPrismaEntityType(persisted?.entityType),
       source: incoming.source ?? null,
       retryUntilMs: incoming.retryUntilMs ?? null,
@@ -2010,8 +2014,8 @@ export class MaxChatAdminRosterSyncService {
 
     const cachedHeader = await this.chatContextCache.getManagedEntityHeader(chatId, entityType);
     const title =
-      this.readTrimmedString(cachedHeader?.title) ??
-      this.readTrimmedString(titleHint) ??
+      observedManagedEntityTitle(chatId, cachedHeader?.title) ??
+      observedManagedEntityTitle(chatId, titleHint) ??
       this.readTrimmedString(persisted?.title) ??
       (entityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`);
 

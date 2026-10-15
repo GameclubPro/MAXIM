@@ -601,6 +601,30 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it.each(['chat', 'channel'] as const)(
+    'does not rename an existing %s from a Start without metadata',
+    async (entityType) => {
+      const fixture = createFixture();
+      await expect(
+        fixture.service.handleWebhookUpdate(
+          createUpdate({ message: { chatTitle: undefined, entityType } }),
+        ),
+      ).resolves.toBe('connected');
+      expect(fixture.maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith(
+        expect.objectContaining({ title: null }),
+      );
+      expect(fixture.maxBotLinkService.reconcileChatPrimaryByAccess).toHaveBeenCalledWith(
+        expect.objectContaining({ title: null }),
+      );
+      const catalog = fixture.prisma.managedBotChatCatalog.upsert.mock.calls[0]?.[0] as {
+        update: Record<string, unknown>;
+      };
+      expect(catalog.update).not.toHaveProperty('title');
+      const activity = fixture.prisma.managedEntityLocalActivity.upsert.mock.calls[0]?.[0];
+      expect(activity.update).not.toHaveProperty('chatTitle');
+    },
+  );
+
   it('connects a chat when Старт is sent by an admin and the bot is admin', async () => {
     const fixture = createFixture();
     fixture.chatContextCache.getManagedEntitiesPublishedSnapshot.mockResolvedValueOnce({
