@@ -19,13 +19,17 @@ SELECT 1 / 0;
 `;
 }
 
-export function buildWebhookCohortAuditSql(explain = false) {
+export function buildWebhookCohortAuditSql(explain = false, short = false) {
+  if (typeof explain !== 'boolean' || typeof short !== 'boolean')
+    throw new Error('Cohort options must be fixed boolean flags');
   // FLAG: A closed receipt-created window includes every status. Bound covered
   // index reads before primary-key metadata fetches; no bodies or identities leave SQL.
   // Cancellation and duplicates are never included in processed-only latency.
+  // A short window reduces saturation without raising row, query or time budgets.
+  const windowSeconds = short ? 5 : 30;
   const query = `WITH bounds AS MATERIALIZED (
   SELECT statement_timestamp() AT TIME ZONE 'UTC' AS observed_at,
-    (statement_timestamp() AT TIME ZONE 'UTC') - interval '60 seconds' AS from_at,
+    (statement_timestamp() AT TIME ZONE 'UTC') - interval '${30 + windowSeconds} seconds' AS from_at,
     (statement_timestamp() AT TIME ZONE 'UTC') - interval '30 seconds' AS until_at
 ), statuses(status) AS (VALUES
   ('RECEIVED'::"WebhookStatus"), ('QUEUED'::"WebhookStatus"),
@@ -125,6 +129,7 @@ export function buildWebhookCohortAuditSql(explain = false) {
 SELECT json_build_object(
   'schema_version', 4, 'audit', 'closed_webhook_cohort', 'window_basis', 'receipt_created_at',
   'from', bounds.from_at, 'until', bounds.until_at, 'observed_at', bounds.observed_at,
+  'window_seconds', ${windowSeconds},
   'cap_per_status', 512, 'sample_complete', NOT EXISTS (SELECT 1 FROM grouped WHERE captured > 512),
   'nonempty', EXISTS (SELECT 1 FROM samples), 'remote_effects_proven', false,
   'failure_classification_authority', 'saved_metadata_only',
@@ -153,9 +158,14 @@ SELECT json_build_object(
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const args = process.argv.slice(2);
-  if (args.length > 1 || (args.length === 1 && args[0] !== '--explain'))
-    throw new Error('Usage: webhook-cohort-audit.mjs [--explain]');
+  if (
+    args.length > 2 ||
+    new Set(args).size !== args.length ||
+    args.some((arg) => arg !== '--explain' && arg !== '--short')
+  )
+    throw new Error('Usage: webhook-cohort-audit.mjs [--short] [--explain]');
   process.stdout.write(
-    buildWebhookCohortIndexSql() + buildWebhookCohortAuditSql(args[0] === '--explain'),
+    buildWebhookCohortIndexSql() +
+      buildWebhookCohortAuditSql(args.includes('--explain'), args.includes('--short')),
   );
 }

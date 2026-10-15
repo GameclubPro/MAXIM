@@ -207,6 +207,41 @@ test('empty and capped cohorts never claim complete processing', async (t) => {
   assert.equal((await db.query(readiness)).rows[0].webhook_cohort_index_ready, false);
 });
 
+test('short cohort reports every status in its own closed window and retains saturation evidence', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`INSERT INTO webhook_events(id,status,created_at,processed_at)
+    SELECT 'outside-short-' || n, 'PROCESSED', now()-interval '45 seconds',
+      now()-interval '44 seconds' FROM generate_series(1,600) n;
+    INSERT INTO webhook_events(id,status,created_at,queued_at,processed_at)
+    SELECT 'inside-short-' || status, status, now()-interval '32 seconds',
+      now()-interval '31.5 seconds', now()-interval '31 seconds'
+    FROM unnest(enum_range(NULL::"WebhookStatus")) status;`);
+  const standard = (await db.query(query)).rows[0].json_build_object;
+  assert.equal(standard.sample_complete, false);
+  assert.equal(standard.window_seconds, 30);
+  const shortQuery = buildWebhookCohortAuditSql(false, true);
+  const short = (await db.query(shortQuery)).rows[0].json_build_object;
+  assert.equal(short.window_seconds, 5);
+  assert.equal(Date.parse(short.until) - Date.parse(short.from), 5000);
+  assert.equal(Date.parse(short.observed_at) - Date.parse(short.until), 30000);
+  assert.equal(short.sample_complete, true);
+  assert.equal(short.nonempty, true);
+  assert.equal(short.remote_effects_proven, false);
+  assert.equal(short.rows.length, 8);
+  assert.ok(short.rows.every((row) => row.count_lower_bound === 1 && !row.truncated));
+  assert.equal(short.rows.find((row) => row.status === 'PROCESSED').processed_only_p99_ms, 1000);
+  assert.doesNotMatch(JSON.stringify(short), /inside-short|outside-short/u);
+  await db.exec(`INSERT INTO webhook_events(id,status,created_at)
+    SELECT 'short-overflow-' || n, 'RECEIVED', now()-interval '32 seconds'
+    FROM generate_series(1,512) n;`);
+  const saturated = (await db.query(shortQuery)).rows[0].json_build_object;
+  assert.equal(saturated.sample_complete, false);
+  assert.equal(saturated.rows.find((row) => row.status === 'RECEIVED').truncated, true);
+  assert.equal(saturated.rows.find((row) => row.status === 'RECEIVED').count_lower_bound, 512);
+});
+
 test(
   'native cohort bounds index scans before metadata even with retained history and tied timestamps',
   { skip: !local },
@@ -228,43 +263,56 @@ test(
     INSERT INTO webhook_events(id,status,created_at,error_message)
     SELECT 'private-failed-' || n, 'FAILED', now()-interval '45 seconds', 'private-error'
       FROM generate_series(1,1200) n;
+    INSERT INTO webhook_events(id,status,created_at)
+    SELECT 'private-short-' || n, 'PROCESSED', now()-interval '32 seconds' FROM generate_series(1,1200) n;
+    INSERT INTO webhook_events(id,status,created_at,error_message)
+    SELECT 'private-short-failed-' || n, 'FAILED', now()-interval '32 seconds', 'private-error'
+      FROM generate_series(1,1200) n;
     ANALYZE webhook_events; SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off;
     SET LOCAL max_parallel_workers_per_gather=0;`);
-    // FLAG: EXPLAIN ANALYZE is local disposable-fixture evidence only.
-    const plan = (await db.query('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + query)).rows[0][
-      'QUERY PLAN'
-    ][0].Plan;
-    const scans = [];
-    const walk = (n) => {
-      if (n['Relation Name'] === 'webhook_events') scans.push(n);
-      for (const c of n.Plans ?? []) walk(c);
-    };
-    walk(plan);
-    assert.equal(scans.length, 2);
-    assert.ok(
-      scans.every((n) =>
-        ['webhook_events_status_created_at_id_idx', 'webhook_events_pkey'].includes(
-          n['Index Name'],
+    for (const cohortQuery of [query, buildWebhookCohortAuditSql(false, true)]) {
+      // FLAG: EXPLAIN ANALYZE is local disposable-fixture evidence only.
+      const plan = (await db.query('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + cohortQuery))
+        .rows[0]['QUERY PLAN'][0].Plan;
+      const scans = [];
+      const walk = (n) => {
+        if (n['Relation Name'] === 'webhook_events') scans.push(n);
+        for (const c of n.Plans ?? []) walk(c);
+      };
+      walk(plan);
+      assert.equal(scans.length, 2);
+      assert.ok(
+        scans.every((n) =>
+          ['webhook_events_status_created_at_id_idx', 'webhook_events_pkey'].includes(
+            n['Index Name'],
+          ),
         ),
-      ),
-    );
-    for (const s of scans) {
-      assert.equal(s['Rows Removed by Filter'] ?? 0, 0);
-      assert.ok(s['Actual Rows'] <= 513);
-      assert.ok(s['Actual Loops'] <= 1024);
+      );
+      for (const s of scans) {
+        assert.equal(s['Rows Removed by Filter'] ?? 0, 0);
+        assert.ok(s['Actual Rows'] <= 513);
+        assert.ok(s['Actual Loops'] <= 1024);
+      }
+      const report = (await db.query(cohortQuery)).rows[0].json_build_object;
+      assert.equal(report.sample_complete, false);
+      assert.equal(report.rows.find((r) => r.status === 'PROCESSED').count_lower_bound, 512);
+      assert.deepEqual(
+        report.failure_families.map((r) => [r.family, r.count_lower_bound]),
+        [['other', 512]],
+      );
     }
-    const report = (await db.query(query)).rows[0].json_build_object;
-    assert.equal(report.sample_complete, false);
-    assert.equal(report.rows.find((r) => r.status === 'PROCESSED').count_lower_bound, 512);
-    assert.deepEqual(
-      report.failure_families.map((r) => [r.family, r.count_lower_bound]),
-      [['other', 512]],
-    );
   },
 );
 
-test('cohort CLI accepts only fixed report or plain EXPLAIN', () => {
-  for (const args of [['SELECT 1'], ['--apply'], ['--explain', 'extra']]) {
+test('cohort CLI accepts only fixed windows and plain EXPLAIN', () => {
+  for (const args of [
+    ['SELECT 1'],
+    ['--apply'],
+    ['--explain', 'extra'],
+    ['--short', '--short'],
+    ['--explain', '--explain'],
+    ['--seconds=600'],
+  ]) {
     const r = spawnSync(
       process.execPath,
       [new URL('./webhook-cohort-audit.mjs', import.meta.url).pathname, ...args],
@@ -274,4 +322,17 @@ test('cohort CLI accepts only fixed report or plain EXPLAIN', () => {
     assert.equal(r.stdout, '');
   }
   assert.match(buildWebhookCohortAuditSql(true), /^EXPLAIN \(FORMAT JSON\)/u);
+  assert.throws(() => buildWebhookCohortAuditSql(false, '60'), /fixed boolean flags/u);
+  for (const args of [['--short'], ['--short', '--explain'], ['--explain', '--short']]) {
+    const result = spawnSync(
+      process.execPath,
+      [new URL('./webhook-cohort-audit.mjs', import.meta.url).pathname, ...args],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /interval '35 seconds'/u);
+    assert.match(result.stdout, /interval '30 seconds' AS until_at/u);
+    assert.match(result.stdout, /ORDER BY created_at, id LIMIT 513/u);
+    assert.equal(result.stdout.includes('EXPLAIN (FORMAT JSON)'), args.includes('--explain'));
+  }
 });

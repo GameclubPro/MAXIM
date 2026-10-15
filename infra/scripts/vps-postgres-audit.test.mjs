@@ -1277,6 +1277,18 @@ test('closed webhook cohorts retain the bounded read-only envelope and reject op
   assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /EXPLAIN ANALYZE/u);
   assert.equal(runConnect(data, ['postgres-audit', 'webhook-cohort', '--explain']).status, 0);
   assert.match(readFileSync(data.sshArgs, 'utf8'), /webhook-cohort/u);
+  for (const flags of [['--short'], ['--short', '--explain'], ['--explain', '--short']]) {
+    assert.equal(runAudit(data, ['webhook-cohort', ...flags]).status, 0);
+    const shortSql = readFileSync(data.sql, 'utf8');
+    assert.match(shortSql, /BEGIN READ ONLY/u);
+    assert.match(shortSql, /interval '35 seconds'/u);
+    assert.match(shortSql, /interval '30 seconds' AS until_at/u);
+    assert.match(shortSql, /ORDER BY created_at, id LIMIT 513/u);
+    assert.match(shortSql, /ordinal <= 512/u);
+    assert.equal(shortSql.includes('EXPLAIN (FORMAT JSON)'), flags.includes('--explain'));
+    assert.equal(runConnect(data, ['postgres-audit', 'webhook-cohort', ...flags]).status, 0);
+    assert.match(readFileSync(data.sshArgs, 'utf8'), /--short/u);
+  }
   const failed = runAudit(data, ['webhook-cohort'], { MOCK_AUDIT_FAIL: '1' });
   assert.equal(failed.status, 7);
   assert.match(failed.stderr, /Bounded webhook cohort audit failed closed/u);
@@ -1286,6 +1298,18 @@ test('closed webhook cohorts retain the bounded read-only envelope and reject op
     rmSync(data.sshArgs, { force: true });
     assert.equal(runAudit(data, ['webhook-cohort', extra]).status, 2);
     assert.equal(runConnect(data, ['postgres-audit', 'webhook-cohort', extra]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+  for (const flags of [
+    ['--short', '--short'],
+    ['--explain', '--explain'],
+    ['--short', '60'],
+  ]) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['webhook-cohort', ...flags]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'webhook-cohort', ...flags]).status, 2);
     assert.equal(existsSync(data.dockerArgs), false);
     assert.equal(existsSync(data.sshArgs), false);
   }
