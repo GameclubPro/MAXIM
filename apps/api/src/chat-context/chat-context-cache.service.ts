@@ -1,3 +1,4 @@
+import { preserveManagedEntityTitle } from '../common/managed-entity-title';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
@@ -1532,6 +1533,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       const nextSummary: ChatSummary = {
         ...summary,
         id: normalizedChatId,
+        title: preserveManagedEntityTitle(normalizedChatId, summary.title, previous?.title),
         link: summary.link === undefined ? (previous?.link ?? null) : summary.link,
       };
       if (summary.avatarUrl === undefined && previous?.avatarUrl !== undefined) {
@@ -1789,6 +1791,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     const nextSummary: ChatSummary = {
       ...summary,
       id: params.chatId,
+      title: preserveManagedEntityTitle(params.chatId, summary.title, previous?.title),
       link: summary.link === undefined ? (previous?.link ?? null) : summary.link,
     };
     if (summary.avatarUrl === undefined && previous?.avatarUrl !== undefined) {
@@ -1854,10 +1857,25 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         ).slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS);
         const globalEntry: ManagedEntitiesRecentBootstrapEntry = {
           ...params.summary,
+          title: preserveManagedEntityTitle(
+            params.chatId,
+            params.summary.title,
+            previousGlobal?.title,
+          ),
           bootstrapUserIds: mergedUserIds,
         };
         const userEntry = this.ensureRecentBootstrapEntryUser(
-          previousUser ? { ...previousUser, ...params.summary } : globalEntry,
+          previousUser
+            ? {
+                ...previousUser,
+                ...params.summary,
+                title: preserveManagedEntityTitle(
+                  params.chatId,
+                  params.summary.title,
+                  previousUser.title,
+                ),
+              }
+            : globalEntry,
           params.userId,
         );
         const nextGlobal = [
@@ -2184,6 +2202,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       ).slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS);
       const nextEntry: ManagedEntitiesRecentBootstrapEntry = {
         ...item,
+        title: preserveManagedEntityTitle(normalizedChatId, item.title, existing?.title),
         ...(mergedBootstrapUserIds.length > 0 ? { bootstrapUserIds: mergedBootstrapUserIds } : {}),
       };
       const next = [
@@ -2195,7 +2214,18 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         : [];
       const nextUserScoped = normalizedUserId
         ? [
-            this.ensureRecentBootstrapEntryUser(nextEntry, normalizedUserId),
+            this.ensureRecentBootstrapEntryUser(
+              {
+                ...nextEntry,
+                title: preserveManagedEntityTitle(
+                  normalizedChatId,
+                  item.title,
+                  currentUserScoped.find((entry) => entry.id.trim() === normalizedChatId)?.title ??
+                    nextEntry.title,
+                ),
+              },
+              normalizedUserId,
+            ),
             ...currentUserScoped.filter((entry) => entry.id.trim() !== normalizedChatId),
           ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_ITEMS)
         : [];

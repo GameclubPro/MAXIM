@@ -2297,6 +2297,27 @@ describe('MaxBotLinkService', () => {
     expect(fixture.service.resolveBotIdSync(null, chatId)).toBe(newBotId);
   });
 
+  it.each([undefined, 'Chat chat-kept-title', 'Channel chat-kept-title'])(
+    'preserves stored title on discovery and routing refresh with %s',
+    async (title) => {
+      const fixture = createServiceFixture();
+      const chatId = 'chat-kept-title';
+      const botId = fixture.bots[0]!.id;
+      fixture.chats.set(chatId, {
+        id: chatId,
+        title: 'Сохранённое имя',
+        botId,
+        primaryBotId: botId,
+      });
+      await fixture.service.bindDiscoveredChatBots({ chatId, botIds: [botId], title });
+      expect(fixture.chats.get(chatId)?.title).toBe('Сохранённое имя');
+      await fixture.service.reconcileChatPrimaryByAccess({ chatId, title });
+      expect(fixture.chats.get(chatId)?.title).toBe('Сохранённое имя');
+      await fixture.service.bindDiscoveredChatBots({ chatId, botIds: [botId], title: 'Новое имя' });
+      expect(fixture.chats.get(chatId)?.title).toBe('Новое имя');
+    },
+  );
+
   it('keeps a newly discovered chat closed until an administrator explicitly activates it', async () => {
     const fixture = createServiceFixture();
     const chatId = 'chat-discovery-needs-access';

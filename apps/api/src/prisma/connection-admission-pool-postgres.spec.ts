@@ -5,6 +5,8 @@ import { createPrismaAdapter, createPrismaClient } from './prisma-client';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describeStores = databaseUrl ? describe : describe.skip;
+// Cold transport setup is not the queue-wait behavior exercised by the short-timeout tests.
+const lifecyclePoolConfig = { max: 1, connectionTimeoutMillis: 5_000 };
 
 describeStores('PostgreSQL connection admission under an occupied pool', () => {
   let verifier: Pool;
@@ -135,8 +137,7 @@ describeStores('PostgreSQL connection admission under an occupied pool', () => {
   it('never retries a dispatched query even when its error matches the admission text', async () => {
     const pool = new ConnectionAdmissionPool({
       connectionString: databaseUrl,
-      max: 1,
-      connectionTimeoutMillis: 60,
+      ...lifecyclePoolConfig,
     });
     try {
       await expect(
@@ -175,7 +176,7 @@ describeStores('PostgreSQL connection admission under an occupied pool', () => {
   });
 
   it('does not replay a Prisma transaction after a dispatched SQL failure', async () => {
-    const prisma = createPrismaClient(databaseUrl, { max: 1, connectionTimeoutMillis: 80 });
+    const prisma = createPrismaClient(databaseUrl, lifecyclePoolConfig);
     let attempts = 0;
     try {
       await expect(
@@ -197,22 +198,30 @@ describeStores('PostgreSQL connection admission under an occupied pool', () => {
   });
 
   it('owns a new bounded pool after adapter disposal and Prisma reconnect', async () => {
-    const factory = createPrismaAdapter(databaseUrl, { max: 1, connectionTimeoutMillis: 80 });
+    const factory = createPrismaAdapter(databaseUrl, lifecyclePoolConfig);
     const first = await factory.connect();
     const firstPool = first.underlyingDriver() as Pool;
-    expect(firstPool).toBeInstanceOf(ConnectionAdmissionPool);
-    await firstPool.query('SELECT 1');
-    await first.dispose();
+    try {
+      expect(firstPool).toBeInstanceOf(ConnectionAdmissionPool);
+      expect(firstPool.options).toMatchObject(lifecyclePoolConfig);
+      await firstPool.query('SELECT 1');
+    } finally {
+      await first.dispose();
+    }
     expect(firstPool.ended).toBe(true);
     const second = await factory.connect();
     const secondPool = second.underlyingDriver() as Pool;
-    expect(secondPool).not.toBe(firstPool);
-    expect(secondPool).toBeInstanceOf(ConnectionAdmissionPool);
-    await secondPool.query('SELECT 1');
-    await second.dispose();
+    try {
+      expect(secondPool).not.toBe(firstPool);
+      expect(secondPool).toBeInstanceOf(ConnectionAdmissionPool);
+      expect(secondPool.options).toMatchObject(lifecyclePoolConfig);
+      await secondPool.query('SELECT 1');
+    } finally {
+      await second.dispose();
+    }
     expect(secondPool.ended).toBe(true);
 
-    const prisma = createPrismaClient(databaseUrl, { max: 1, connectionTimeoutMillis: 80 });
+    const prisma = createPrismaClient(databaseUrl, lifecyclePoolConfig);
     try {
       await prisma.$queryRaw`SELECT 1`;
       await prisma.$disconnect();
