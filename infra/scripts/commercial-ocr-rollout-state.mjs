@@ -803,7 +803,7 @@ async function main(argv) {
     return;
   }
   if (options.command === 'summarize-control') {
-    const raw = readFileSync(0, 'utf8');
+    const raw = readFileSync(0).toString('utf8');
     if (Buffer.byteLength(raw, 'utf8') > 1024 * 1024) {
       throw new Error('Runtime-control output exceeds the inspection limit.');
     }
@@ -834,7 +834,7 @@ async function main(argv) {
     return;
   }
   if (options.command === 'verify-runtime-identity') {
-    const raw = readFileSync(0, 'utf8');
+    const raw = readFileSync(0).toString('utf8');
     if (Buffer.byteLength(raw, 'utf8') > 32 * 1024) {
       throw new Error('Container rollout environment exceeds the inspection limit.');
     }
@@ -856,7 +856,7 @@ async function main(argv) {
       )
     : null;
   if (options.command === 'verify-runtime-env') {
-    const raw = readFileSync(0, 'utf8');
+    const raw = readFileSync(0).toString('utf8');
     if (Buffer.byteLength(raw, 'utf8') > 32 * 1024) {
       throw new Error('Container rollout environment exceeds the inspection limit.');
     }

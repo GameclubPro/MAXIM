@@ -304,7 +304,7 @@ verify_no_unreviewed_running_api_containers() {
   )" || fail "Could not classify the running API container inventory."
   if ! printf '%s' "$inventory" | node -e '
       const { readFileSync } = require("node:fs");
-      const value = JSON.parse(readFileSync(0, "utf8"));
+      const value = JSON.parse(readFileSync(0).toString("utf8"));
       process.exit(
         Array.isArray(value?.ownedUnreviewedIds) && value.ownedUnreviewedIds.length === 0 &&
         Array.isArray(value?.ambiguousIds) && value.ambiguousIds.length === 0 &&
@@ -363,7 +363,7 @@ validate_webhook_queue_status() {
 
   printf '%s' "$summary" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const valid =
       value?.queueCount === 24 &&
       value?.pausedCount === 0 &&

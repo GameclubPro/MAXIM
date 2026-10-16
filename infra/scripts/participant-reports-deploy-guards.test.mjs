@@ -43,7 +43,20 @@ test('both rollback paths require guarded participant report execution', (t) => 
       source "$MAXIM_TEST_ROOT/infra/scripts/lib/deploy-topology.sh"
       node() {
         local status
-        if "$MAXIM_TEST_NODE" "$@" 2>>"$MAXIM_TEST_NODE_STDERR"; then
+        # FLAG: Reproduce short pipe reads before a larger write. UTF-8 fast-path
+        # stdin reads can corrupt memory on Node 24; a crash must never pass a guard.
+        if "$MAXIM_TEST_NODE" --input-type=module -e '
+          import { readFileSync } from "node:fs";
+          import { setTimeout } from "node:timers/promises";
+          const input = readFileSync(0);
+          let offset = 0;
+          for (; offset < Math.min(96000, input.length); offset += 4000) {
+            const chunk = input.subarray(offset, Math.min(offset + 4000, input.length));
+            await new Promise((resolve) => process.stdout.write(chunk, resolve));
+            await setTimeout(5);
+          }
+          process.stdout.end(input.subarray(offset));
+        ' | "$MAXIM_TEST_NODE" "$@" 2>>"$MAXIM_TEST_NODE_STDERR"; then
           status=0
         else
           status=$?
@@ -105,9 +118,9 @@ test('both rollback paths require guarded participant report execution', (t) => 
         encoding: 'utf8',
       },
     );
-    const diagnostics = `${variant}\n${result.stderr}\n${readFileSync(diagnosticsPath, 'utf8')}`;
     // FLAG: A crashed parser is never evidence that an incompatible target was rejected.
     const parserStatuses = readFileSync(statusPath, 'utf8').trim().split('\n').filter(Boolean);
+    const diagnostics = `${variant}\nparser statuses: ${parserStatuses.join(', ')}\n${result.stderr}\n${readFileSync(diagnosticsPath, 'utf8')}`;
     assert.ok(
       parserStatuses.every((status) => status === '0' || status === '1'),
       diagnostics,

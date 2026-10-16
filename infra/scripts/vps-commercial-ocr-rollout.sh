@@ -447,7 +447,7 @@ container_env_summary() {
         "COMMERCIAL_OCR_VERSION",
       ]);
       const result = {};
-      for (const line of readFileSync(0, "utf8").split(/\r?\n/u)) {
+      for (const line of readFileSync(0).toString("utf8").split(/\r?\n/u)) {
         const separator = line.indexOf("=");
         if (separator < 1) continue;
         const key = line.slice(0, separator);
@@ -498,7 +498,7 @@ read_running_api_inventory() {
   fi
   inventory_summary="$(printf '%s' "$inventory_json" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const owned = value?.ownedUnreviewedIds;
     const ambiguous = value?.ambiguousIds;
     if (
@@ -714,7 +714,7 @@ read_control_summary() {
 summary_field() {
   printf '%s' "$CONTROL_SUMMARY" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const field = value[process.argv[1]];
     if (field === undefined) process.exit(3);
     process.stdout.write(field === null ? "null" : String(field));
@@ -772,7 +772,7 @@ queue_and_admission_drained() {
   )" || return 1
   printf '%s' "$result" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const states = process.argv.slice(1);
     const valid =
       Number.isSafeInteger(value.units) && value.units === 0 &&

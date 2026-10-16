@@ -339,7 +339,7 @@ test(
 import { spawnSync } from 'node:child_process';
 const namespace = ${JSON.stringify(namespace)};
 const role = ${JSON.stringify(role)};
-const sql = readFileSync(0, 'utf8')
+const sql = readFileSync(0).toString('utf8')
   .replaceAll('public.', namespace + '.')
   .replaceAll("'public'", "'" + namespace + "'")
   .replaceAll('maxim_audit', role);

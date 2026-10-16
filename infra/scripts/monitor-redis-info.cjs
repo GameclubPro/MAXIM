@@ -57,7 +57,7 @@ function summarizeRedisInfo(input) {
 }
 
 function main() {
-  const lines = summarizeRedisInfo(readFileSync(0, 'utf8'));
+  const lines = summarizeRedisInfo(readFileSync(0).toString('utf8'));
   process.stdout.write(`${lines.join('\n')}\n`);
 }
 

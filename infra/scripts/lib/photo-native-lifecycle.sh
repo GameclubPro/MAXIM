@@ -57,7 +57,7 @@ maxim_topology_require_photo_native_image_capability() {
 maxim_topology_photo_project() {
   local -n photo_compose_args="$1"
   docker compose "${photo_compose_args[@]}" config --format json 2>/dev/null |
-    node -e 'const c=JSON.parse(require("node:fs").readFileSync(0,"utf8")); if (!["infra","infra-scale"].includes(c.name)) process.exit(1); process.stdout.write(c.name);'
+    node -e 'const c=JSON.parse(require("node:fs").readFileSync(0).toString("utf8")); if (!["infra","infra-scale"].includes(c.name)) process.exit(1); process.stdout.write(c.name);'
 }
 
 maxim_topology_photo_container_ids() {
@@ -97,7 +97,7 @@ maxim_topology_verify_photo_native_sandbox_runtime() {
   [[ -n "$ids" && "$ids" != *$'\n'* ]] || return 1
   sandbox_id="$ids"
   inspection="$(docker inspect "$sandbox_id")" || return 1
-  node -e 'const a=JSON.parse(require("node:fs").readFileSync(0,"utf8")); if(a.length!==1) process.exit(1); process.stdout.write(JSON.stringify(a[0]));' <<<"$inspection" |
+  node -e 'const a=JSON.parse(require("node:fs").readFileSync(0).toString("utf8")); if(a.length!==1) process.exit(1); process.stdout.write(JSON.stringify(a[0]));' <<<"$inspection" |
     node "$MAXIM_PHOTO_NATIVE_BOUNDARY_HELPER" runtime "$project" "$image_id" || return 1
   volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/run/maxim-photo"}}{{.Name}}{{end}}{{end}}' "$sandbox_id")" || return 1
   [[ "$volume" == "${project}_photo_native_ipc" ]] || return 1
@@ -106,7 +106,7 @@ maxim_topology_verify_photo_native_sandbox_runtime() {
     consumer_id="$(maxim_topology_photo_container_ids "$compose_args_var" "$MAXIM_PHOTO_NATIVE_CONSUMER" running)" || return 1
     [[ -n "$consumer_id" && "$consumer_id" != *$'\n'* ]] || return 1
     docker inspect "$consumer_id" | node -e '
-      const a=JSON.parse(require("node:fs").readFileSync(0,"utf8")); const c=a[0];
+      const a=JSON.parse(require("node:fs").readFileSync(0).toString("utf8")); const c=a[0];
       const mounts=c?.Mounts?.filter(m=>m.Destination==="/run/maxim-photo")??[];
       const env=c?.Config?.Env??[]; const socket=env.filter(v=>v.startsWith("PHOTO_NATIVE_SANDBOX_SOCKET_PATH="));
       const valid=a.length===1&&c.State?.Running===true&&c.Image===process.argv[1]&&

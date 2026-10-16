@@ -191,7 +191,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     if (process.argv.length > 3 || (process.argv[2] && process.argv[2] !== '--resume-pending'))
       throw new Error('Invalid continuation arguments');
     await runBacklogCancellationHost(
-      parseBacklogCancellationRequest(readFileSync(0, 'utf8')),
+      parseBacklogCancellationRequest(readFileSync(0).toString('utf8')),
       process.argv[2] === '--resume-pending',
     );
   } catch (error) {

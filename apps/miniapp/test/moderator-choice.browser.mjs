@@ -88,7 +88,11 @@ try {
     assert.equal((await page.evaluate(() => window.__moderatorPosts)).length, 1);
     await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
     await sheet.waitFor({ state: 'hidden' });
-    assert.equal(await trigger.evaluate((el) => document.activeElement === el), true);
+    // FLAG: Closing the sheet and returning keyboard focus finish on different frames.
+    await page.waitForFunction(
+      (element) => document.activeElement === element,
+      await trigger.elementHandle(),
+    );
     await trigger.click();
     await sheet.waitFor({ state: 'hidden' });
     await page.waitForFunction(() =>

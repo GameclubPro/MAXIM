@@ -52,7 +52,7 @@ function summarizePublisherStatus(
 }
 
 function main() {
-  const input = readFileSync(0, 'utf8');
+  const input = readFileSync(0).toString('utf8');
   if (Buffer.byteLength(input, 'utf8') > 16 * 1024) {
     throw new Error('Publisher runtime status is oversized.');
   }

@@ -177,7 +177,7 @@ resolve_release_fence() {
   )" || fail "Current release manifest is missing, incomplete, or coexists with a journal."
   manifest_fields="$(printf '%s' "$manifest_json" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const component = value?.components?.["api-shared"];
     const fields = [value?.targetSha, component?.sourceSha, component?.imageRef, component?.imageId];
     if (!fields.every((field) => typeof field === "string" && !/[\r\n\t]/u.test(field))) {
@@ -253,7 +253,7 @@ validate_api_fleet() {
   local expected_running="$2"
   printf '%s' "$fleet" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const expected = 14;
     const expectedRunning = Number(process.argv[1]);
     const countFields = [
@@ -327,7 +327,7 @@ verify_webhook_producer_topology() {
   )" || fail "Could not attest the active webhook producer topology."
   printf '%s' "$proof" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const expectedCounts = {
       productionServiceCount: 14,
       productionEnqueueProducerCount: 1,
@@ -364,7 +364,7 @@ verify_queue_fence_released() {
   )" || fail "Could not inspect the webhook queue fence."
   printf '%s' "$summary" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const expectedPausedCount = Number(process.argv[1]);
     const countFields = ["queueCount", "pausedCount", "activeCount"];
     const countsValid = countFields.every(
@@ -422,7 +422,7 @@ prove_remote_apply_settled() {
     set +e
     paused_count="$(printf '%s' "$output" | node -e '
       const { readFileSync } = require("node:fs");
-      const value = JSON.parse(readFileSync(0, "utf8"));
+      const value = JSON.parse(readFileSync(0).toString("utf8"));
       const queue = value?.queue;
       const countFields = ["workerCount", "jobSchedulerCount", "totalJobs"];
       const countsValid = countFields.every(
@@ -537,7 +537,7 @@ create_private_snapshot() {
   LEGACY_QUEUE_PAUSED_COUNT="$(
     printf '%s' "$QUEUE_SUMMARY" | node -e '
       const { readFileSync } = require("node:fs");
-      const value = JSON.parse(readFileSync(0, "utf8"));
+      const value = JSON.parse(readFileSync(0).toString("utf8"));
       if (!value || !Object.hasOwn(value, "paused") ||
           (value.paused !== true && value.paused !== false)) process.exit(1);
       process.stdout.write(value.paused ? "1" : "0");
@@ -593,7 +593,7 @@ inspect_active_shards() {
   )" || fail "Could not inspect active default webhook shards."
   printf '%s' "$summary" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const countFields = ["queueCount", "pausedQueueCount", "totalJobs"];
     const countsValid = countFields.every(
       (field) => Object.hasOwn(value, field) && Number.isSafeInteger(value[field]) && value[field] >= 0,
@@ -637,7 +637,7 @@ apply_retirement() {
   fi
   printf '%s' "$output" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const valid =
       value?.version === 1 && value?.mode === "apply" &&
       (value?.result === "obliterated" || value?.result === "already_absent") &&
