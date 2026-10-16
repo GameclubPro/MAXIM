@@ -176,6 +176,45 @@ describe('visible message length', () => {
     expect(calculateEffectiveMessageLength(parsed(preview))).toBe(preview.length);
   });
 
+  it.each([
+    { type: 'media', payload: { media_type: 'image' } },
+    { type: 'media', payload: { mediaType: 'VIDEO' } },
+    { kind: 'photo' },
+    { entity_type: 'video' },
+    { entityType: 'audio' },
+    { type: 'media', mime_type: 'image/webp' },
+    { type: 'media', payload: { mimeType: 'audio/ogg' } },
+  ])('excludes the hidden preview for supported media aliases: %j', (attachment) => {
+    const preview = 'https://i.oneme.ru/i?r=preview';
+    const update = parsed('', {
+      link: {
+        type: 'forward',
+        message: {
+          text: `Привет ${preview}`,
+          attachments: [{ ...attachment, payload: { ...attachment.payload, url: preview } }],
+        },
+      },
+    });
+    expect(update.message?.text).toBe('Привет');
+    expect(calculateEffectiveMessageLength(update)).toBe(6);
+  });
+
+  it('does not hide a visible URL based only on a nested payload type', () => {
+    const url = 'https://i.oneme.ru/i?r=preview';
+    const text = `Привет ${url}`;
+    const update = parsed('', {
+      link: {
+        type: 'forward',
+        message: {
+          text,
+          attachments: [{ type: 'share', payload: { type: 'photo', url } }],
+        },
+      },
+    });
+    expect(update.message?.text).toBe(text);
+    expect(calculateEffectiveMessageLength(update)).toBe(text.length);
+  });
+
   it('uses Unicode counting when only normalized text is available', () => {
     const update = parsed('🔥');
     update.raw = {};

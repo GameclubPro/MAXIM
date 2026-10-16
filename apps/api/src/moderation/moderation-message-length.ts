@@ -14,6 +14,18 @@ const FORWARD_KEYS = [
 ] as const;
 const MAX_NODES = 128;
 const MAX_DEPTH = 8;
+const MEDIA_TYPES = new Set([
+  'image',
+  'photo',
+  'picture',
+  'video',
+  'voice',
+  'audio',
+  'audio_message',
+  'file',
+  'document',
+  'sticker',
+]);
 
 export function countMessageCharacters(text: string): number {
   let count = 0;
@@ -120,20 +132,16 @@ function readContent(raw: unknown, type?: string) {
           const item = record(attachment);
           const payload = record(item?.payload);
           if (!item || !payload || typeof payload.url !== 'string') continue;
-          const kind = String(item.type ?? payload.type ?? '').toLowerCase();
+          const kinds = [
+            item.type ?? item.kind ?? item.entity_type ?? item.entityType,
+            item.media_type ?? item.mediaType ?? payload.media_type ?? payload.mediaType,
+          ];
+          const mime = item.mime_type ?? item.mimeType ?? payload.mime_type ?? payload.mimeType;
           if (
-            ![
-              'image',
-              'photo',
-              'picture',
-              'video',
-              'voice',
-              'audio',
-              'audio_message',
-              'file',
-              'document',
-              'sticker',
-            ].includes(kind)
+            !kinds.some(
+              (kind) => typeof kind === 'string' && MEDIA_TYPES.has(kind.trim().toLowerCase()),
+            ) &&
+            !(typeof mime === 'string' && /^(image|video|audio)\//i.test(mime.trim()))
           )
             continue;
           const url = previewUrl(payload.url);

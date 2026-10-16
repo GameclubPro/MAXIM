@@ -79,7 +79,7 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
-  it.each(['forward', 'reply'])(
+  it.each(['forward', 'reply', 'forward-preview'])(
     'does not strike or delete short visible %s content across four bots',
     async (type) => {
       const s = await fixture(4);
@@ -98,12 +98,22 @@ describeStores('native current-rule authorization across mirrored bot delivery',
             at,
             text: type === 'reply' ? 'Да' : '',
             link: {
-              type,
+              type: type === 'reply' ? 'reply' : 'forward',
               message: {
                 mid: 'a-long-unrelated-message-id',
-                text: type === 'reply' ? 'x'.repeat(100) : 'Привет',
+                text:
+                  type === 'reply'
+                    ? 'x'.repeat(100)
+                    : type === 'forward-preview'
+                      ? 'Привет https://i.oneme.ru/i?r=preview'
+                      : 'Привет',
                 attachments: [
-                  { type: 'photo', payload: { token: 'a-long-unrelated-photo-token' } },
+                  type === 'forward-preview'
+                    ? {
+                        type: 'media',
+                        payload: { media_type: 'image', url: 'https://i.oneme.ru/i?r=preview' },
+                      }
+                    : { type: 'photo', payload: { token: 'a-long-unrelated-photo-token' } },
                 ],
               },
             },
