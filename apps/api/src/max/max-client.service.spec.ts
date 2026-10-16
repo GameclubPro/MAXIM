@@ -8023,6 +8023,79 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('edits a contact post using the documented contact identity and preserves existing buttons', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValue(of({ status: 200, data: { success: true } })),
+    };
+    const service = createService(httpService);
+    const existing = { type: 'callback', text: 'Vote', payload: 'poll|one' };
+    const added = { type: 'link' as const, text: 'Suggest', url: 'https://example.com/' };
+    jest.spyOn(service as any, 'getMessageById').mockResolvedValue({
+      body: {
+        text: null,
+        attachments: [
+          {
+            type: 'contact',
+            payload: {
+              max_info: {
+                user_id: 123456789,
+                first_name: 'Test',
+                last_name: 'Contact',
+                name: 'Test Contact',
+                is_bot: false,
+                last_activity_time: 0,
+              },
+            },
+          },
+          { type: 'inline_keyboard', payload: { buttons: [[existing]] } },
+        ],
+      },
+    });
+    try {
+      await service.editMessageInlineKeyboard('channel-1', 'contact-post', null, {
+        requireAllAttachmentsPreserved: true,
+        mergeExistingInlineKeyboard: true,
+        buttons: [[added]],
+      });
+      expect(httpService.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'put',
+          data: {
+            attachments: [
+              { type: 'contact', payload: { contact_id: '123456789', name: 'Test Contact' } },
+              { type: 'inline_keyboard', payload: { buttons: [[added], [existing]] } },
+            ],
+          },
+        }),
+      );
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it.each([
+    { max_info: { user_id: Number.MAX_SAFE_INTEGER + 1 } },
+    { contact_id: '123', max_info: { user_id: 456 } },
+    { max_info: { user_id: 123 }, unknown: 'must not disappear' },
+  ])('refuses an unsafe contact before any PUT: %j', async (payload) => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    jest.spyOn(service as any, 'getMessageById').mockResolvedValue({
+      body: { text: null, attachments: [{ type: 'contact', payload }] },
+    });
+    try {
+      await expect(
+        service.editMessageInlineKeyboard('channel-1', 'contact-post', null, {
+          requireAllAttachmentsPreserved: true,
+          buttons: [[{ type: 'link', text: 'Suggest', url: 'https://example.com/' }]],
+        }),
+      ).rejects.toThrow('Contact data cannot be preserved');
+      expect(httpService.request).not.toHaveBeenCalled();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
   it('preserves all media, existing buttons and explicit rich text when converting channel templates', async () => {
     const httpService = {
       request: jest.fn().mockReturnValue(of({ status: 200, data: { success: true } })),

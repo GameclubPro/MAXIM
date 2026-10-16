@@ -235,13 +235,13 @@ function main(argv) {
   }
   if (command === 'verify-runtime-env' && args.length === 2) {
     const enabled = parseExpectedStateArgument(args[0]);
-    const environment = JSON.parse(readFileSync(0, 'utf8'));
+    const environment = JSON.parse(readFileSync(0).toString('utf8'));
     if (!verifyPublisherRuntimeEnvironment(environment, enabled, args[1])) process.exitCode = 1;
     return;
   }
   if (command === 'verify-compose' && args.length === 2) {
     const enabled = parseExpectedStateArgument(args[0]);
-    const config = JSON.parse(readFileSync(0, 'utf8'));
+    const config = JSON.parse(readFileSync(0).toString('utf8'));
     if (!verifyPublisherComposeConfig(config, enabled, args[1])) process.exitCode = 1;
     return;
   }

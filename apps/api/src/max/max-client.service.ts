@@ -88,6 +88,7 @@ import {
 import type { MaxBotLifecycleState } from './max-bot-config.util';
 import { canExecuteActionsForBotState } from './max-bot-state.util';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
+import { normalizeEditableContactPayload } from './max-editable-contact';
 import {
   assertEditableAttachmentsPreserved,
   readStrictEditableAttachments,
@@ -6737,6 +6738,7 @@ export class MaxClientService implements OnModuleDestroy {
     const row = attachment as Record<string, unknown>;
     const type = this.readLowerString(row.type);
     const payload = row.payload;
+    if (type === 'contact') return { type, payload: normalizeEditableContactPayload(payload) };
     if (!type || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return null;
     }

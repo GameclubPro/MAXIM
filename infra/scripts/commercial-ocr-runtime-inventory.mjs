@@ -425,7 +425,7 @@ function main(argv) {
   }
   const expectedImageId = expectedImageIdRaw === 'none' ? null : expectedImageIdRaw;
   const expectedAuxiliaryService = expectedAuxiliaryRaw === 'none' ? null : expectedAuxiliaryRaw;
-  const raw = readFileSync(0, 'utf8');
+  const raw = readFileSync(0).toString('utf8');
   if (Buffer.byteLength(raw, 'utf8') > MAX_INSPECT_BYTES) {
     throw new Error('Docker inspection exceeds the inventory limit.');
   }

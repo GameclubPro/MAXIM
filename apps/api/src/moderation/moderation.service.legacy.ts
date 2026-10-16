@@ -939,15 +939,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       resolveBotId: (chatId) => this.resolveAutoAttachBotId(chatId, 'poll'),
       isMessageHeld: async (chatId, messageId) =>
         (await this.legacyHolds?.isMessageHeld(chatId, messageId)) ?? false,
-      recordReadAccessLoss: (chatId, botId, lifecycleEventAt, error) =>
-        this.recordChannelAutoPostAccessLossIfTerminal({
-          chatId,
-          botId,
-          lifecycleEventAt,
-          error,
-          source: 'channel_auto_post:demand',
-          operation: 'read',
-        }),
       attach: (managedChannel, message) =>
         this.tryAutoAttachChannelMessageButtons({
           ...message,
@@ -15240,15 +15231,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             task: 'channel-auto-post-buttons',
             action: decision.action,
             reason: decision.reason,
-            retryAfterMs: decision.retryAfterMs,
+            retryAfterMs: this.channelAutoPostScanIntervalMs,
           },
           'Paused moderation background work because the runtime governor detected pressure',
         );
       }
-      this.channelAutoPostBackoffUntilMs = Math.max(
-        this.channelAutoPostBackoffUntilMs,
-        now + decision.retryAfterMs,
-      );
+      // FLAG: Recheck local pressure on the existing scan cadence. Transport quota
+      // backoff stays at the scheduler entry; this decision never waives MAX admission.
       return null;
     }
 

@@ -363,7 +363,7 @@ container_env_summary() {
         "MAX_PUBLISHER_DISPATCH_ENABLED",
       ]);
       const result = {};
-      for (const line of readFileSync(0, "utf8").split(/\r?\n/u)) {
+      for (const line of readFileSync(0).toString("utf8").split(/\r?\n/u)) {
         const separator = line.indexOf("=");
         if (separator < 1) continue;
         const key = line.slice(0, separator);
@@ -415,7 +415,7 @@ verify_no_unreviewed_running_api_containers() {
   fi
   if ! printf '%s' "$inventory" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     process.exit(
       Array.isArray(value?.ownedUnreviewedIds) && value.ownedUnreviewedIds.length === 0 &&
       Array.isArray(value?.ambiguousIds) && value.ambiguousIds.length === 0 &&
@@ -506,7 +506,7 @@ control_field() {
   local summary="$1" field="$2"
   printf '%s' "$summary" | node -e '
     const { readFileSync } = require("node:fs");
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(0).toString("utf8"));
     const allowed = new Set([
       "result", "pauseKind", "heartbeatKind", "heartbeatEnabled"
     ]);

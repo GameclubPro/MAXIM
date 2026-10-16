@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
+import { normalizeEditableContactPayload } from './max-editable-contact';
 import {
   channelDialogButtonPresentationKey,
   channelSuggestionButtonKey,
@@ -74,7 +75,14 @@ export function assertEditableAttachmentsPreserved(
       }
     } else if (
       !row ||
-      !result.some((item) => item.type === row.type && isDeepStrictEqual(item.payload, row.payload))
+      !result.some(
+        (item) =>
+          item.type === row.type &&
+          isDeepStrictEqual(
+            item.payload,
+            row.type === 'contact' ? normalizeEditableContactPayload(row.payload) : row.payload,
+          ),
+      )
     ) {
       throw new BadRequestException('An attachment would be lost; preserving the original post.');
     }

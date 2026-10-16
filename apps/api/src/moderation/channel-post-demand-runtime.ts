@@ -22,12 +22,6 @@ export class ChannelPostDemandRuntime {
       maxClient: Pick<MaxClientService, 'getExactMessageRow'>;
       resolveBotId: (chatId: string) => Promise<string | null>;
       isMessageHeld: (chatId: string, messageId: string) => Promise<boolean>;
-      recordReadAccessLoss: (
-        chatId: string,
-        botId: string,
-        startedAt: Date,
-        error: unknown,
-      ) => Promise<boolean>;
       attach: (
         context: ManagedChannelContext,
         message: ChannelAutoPostListedMessage,
@@ -82,18 +76,13 @@ export class ChannelPostDemandRuntime {
       }
       botId ??= await this.deps.resolveBotId(item.chatId);
       if (!botId) break;
-      const startedAt = new Date();
-      let raw: Awaited<ReturnType<MaxClientService['getExactMessageRow']>>;
-      try {
-        raw = await maxClient.getExactMessageRow(item.chatId, item.messageId, {
-          botId,
-          trafficClass: 'background',
-          sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-        });
-      } catch (error: unknown) {
-        if (await this.deps.recordReadAccessLoss(item.chatId, botId, startedAt, error)) return;
-        throw error;
-      }
+      // FLAG: This request reads one message, not the channel's membership. Even a
+      // chat-shaped MAX error cannot revoke grants here; lifecycle evidence owns that.
+      const raw = await maxClient.getExactMessageRow(item.chatId, item.messageId, {
+        botId,
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      });
       // Missing MAX content is ambiguous. Retain the hint until its original horizon.
       if (!raw) continue;
       const message = parseChannelAutoPostListedMessage(

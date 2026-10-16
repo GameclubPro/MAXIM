@@ -940,7 +940,7 @@ maxim_topology_require_participant_report_guard() {
     return 1
   fi
   if ! printf '%s\0%s' "$guard_source" "$executor_source" | node -e '
-    const parts = require("node:fs").readFileSync(0, "utf8").split("\0");
+    const parts = require("node:fs").readFileSync(0).toString("utf8").split("\0");
     if (parts.length !== 2) process.exit(1);
     const [guard, executor] = parts;
     const start = executor.indexOf("private async runDeletePreDispatchGuards(");
@@ -980,7 +980,7 @@ maxim_topology_require_participant_report_guard() {
     return 1
   fi
   if ! printf '%s\0%s' "$view_source" "$submission_source" | node -e '
-    const parts = require("node:fs").readFileSync(0, "utf8").split("\0");
+    const parts = require("node:fs").readFileSync(0).toString("utf8").split("\0");
     if (parts.length !== 2) process.exit(1);
     const [view, submission] = parts;
     const summaryStart = view.indexOf("private async summaries(");
@@ -1020,7 +1020,7 @@ maxim_topology_require_message_retention_guard() {
     return 1
   fi
   if ! printf '%s' "$executor_source" | node -e '
-    const source = require("node:fs").readFileSync(0, "utf8");
+    const source = require("node:fs").readFileSync(0).toString("utf8");
     process.exit(source.includes("await this.messageRetentionGuard.assertAllowed(") &&
       source.includes("intent.\"retention_owned\" = FALSE") &&
       source.includes("Retention delete guard unavailable") &&
@@ -1245,7 +1245,7 @@ maxim_topology_require_api_commercial_ocr_version_config() {
       const expectedVersion = process.argv[1];
       const publisherPolicy = process.argv[2];
       const services = process.argv.slice(3);
-      const config = JSON.parse(readFileSync(0, "utf8"));
+      const config = JSON.parse(readFileSync(0).toString("utf8"));
       const configuredServices = services.filter((service) => config?.services?.[service]);
       const missingServices = services.filter((service) => !config?.services?.[service]);
       const valid =
@@ -1482,7 +1482,7 @@ maxim_topology_require_commercial_ocr_baseline_guard() {
   worker_source="$(git show "${commit_sha}:apps/api/src/moderation/commercial-ocr/commercial-ocr-moderation.service.ts" 2>/dev/null)" || return 1
   intent_source="$(git show "${commit_sha}:apps/api/src/moderation/moderation-delete-intent.service.ts" 2>/dev/null)" || return 1
   if ! printf '%s\0%s\0%s' "$guard_source" "$worker_source" "$intent_source" | node -e '
-    const parts=require("node:fs").readFileSync(0,"utf8").split("\0");
+    const parts=require("node:fs").readFileSync(0).toString("utf8").split("\0");
     if(parts.length!==3) process.exit(1);
     const [guard,worker,intent]=parts;
     const valid=/COMMERCIAL_OCR_DELETE_BINDING_VERSION\s*=\s*5\s+as const/u.test(guard) &&
@@ -1512,7 +1512,7 @@ maxim_topology_require_media_analysis_rollout_config() {
   local -n compose_args_ref="$compose_args_var"
   local selected_mode
   selected_mode="$(docker compose "${compose_args_ref[@]}" config --format json 2>/dev/null | node -e '
-    const config=JSON.parse(require("node:fs").readFileSync(0,"utf8"));
+    const config=JSON.parse(require("node:fs").readFileSync(0).toString("utf8"));
     const mode=config?.services?.["api-media-analysis"]?.environment?.COMMERCIAL_OCR_ROLLOUT_MODE;
     if (!["shadow","baseline"].includes(mode)) process.exit(1);
     if (mode === "baseline") {
@@ -1538,7 +1538,7 @@ maxim_topology_require_media_analysis_shadow_config() {
   if ! docker compose "${compose_args_ref[@]}" config --format json 2>/dev/null \
     | node -e '
         const { readFileSync } = require("node:fs");
-        const config = JSON.parse(readFileSync(0, "utf8"));
+        const config = JSON.parse(readFileSync(0).toString("utf8"));
         process.exit(
           config?.services?.["api-media-analysis"]?.environment?.COMMERCIAL_OCR_ROLLOUT_MODE ===
             "shadow"
@@ -1558,7 +1558,7 @@ maxim_topology_require_ocr_native_sandbox_config() {
   if ! docker compose "${compose_args_ref[@]}" config --format json 2>/dev/null \
     | node -e '
         const { readFileSync } = require("node:fs");
-        const config = JSON.parse(readFileSync(0, "utf8"));
+        const config = JSON.parse(readFileSync(0).toString("utf8"));
         const sandbox = config?.services?.["ocr-native-sandbox"];
         const media = config?.services?.["api-media-analysis"];
         const expectedCommand = [
@@ -1754,7 +1754,7 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
         const { readFileSync } = require("node:fs");
         const expectedImageId = process.argv[1];
         const mediaPolicy = process.argv[2];
-        const containers = JSON.parse(readFileSync(0, "utf8"));
+        const containers = JSON.parse(readFileSync(0).toString("utf8"));
         const sandbox = containers[0];
         const media = containers[1];
         const labels = sandbox?.Config?.Labels ?? {};
