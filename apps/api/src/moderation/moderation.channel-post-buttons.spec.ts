@@ -7,6 +7,7 @@ import {
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
 } from '../max/max-action-pre-dispatch-guard';
 import { ModerationService } from './moderation.service';
+import { ChannelPostDemandRuntime } from './channel-post-demand-runtime';
 
 async function prepareLockedEditText(
   ...[_chatId, _messageId, text, options]: Parameters<MaxClientService['editMessageInlineKeyboard']>
@@ -343,6 +344,10 @@ function configureDefaultChannelAutoPostDeleteRoute(service: ModerationService):
 }
 
 describe('ModerationService channel auto post buttons', () => {
+  beforeEach(() =>
+    jest.spyOn(ChannelPostDemandRuntime.prototype, 'selectChannels').mockResolvedValue([]),
+  );
+  afterEach(() => jest.restoreAllMocks());
   it.each(['webhook', 'poll'] as const)(
     'hands off a genuine first-edit route rejection without delivery or scan advancement: %s',
     async (source) => {

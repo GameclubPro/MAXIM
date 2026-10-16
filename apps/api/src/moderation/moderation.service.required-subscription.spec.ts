@@ -1,3 +1,4 @@
+import { ChannelPostDemandRuntime } from './channel-post-demand-runtime';
 import {
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   ChatEntityType,
@@ -78,6 +79,10 @@ function createRequiredSubscriptionService(
 }
 
 describe('ModerationService', () => {
+  beforeEach(() =>
+    jest.spyOn(ChannelPostDemandRuntime.prototype, 'selectChannels').mockResolvedValue([]),
+  );
+  afterEach(() => jest.restoreAllMocks());
   describe('required subscription', () => {
     function createPrismaForRequiredSubscription(
       settingsOverrides: Record<string, unknown> = {},

@@ -653,6 +653,12 @@ export class ChannelAutoPostScanManager {
     );
   }
 
+  isDemandDue(chatId: string): boolean {
+    // FLAG: A new post may bypass idle polling, never an exact source/token cooldown.
+    // Role-wide backoff remains at the scheduler entry boundary.
+    return this.now() >= (this.scopedThrottles.get(chatId)?.untilMs ?? 0);
+  }
+
   selectBatch<T extends { chatId: string }>(
     channels: T[],
     maxChannels = this.config.scanMaxChannels,

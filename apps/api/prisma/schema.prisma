@@ -500,6 +500,7 @@ model Chat {
   auditLogs                         AuditLog[]
   moderatorAssignments              ManagedModeratorAssignment[]
   channelAutoPostAttachMarkers      ChannelAutoPostAttachMarker[]
+  channelPostDemand                 ChannelPostDemandChannel?
   chatAutoCommentAttachMarkers      ChatAutoCommentAttachMarker[]
   channelAudienceSnapshots          ChannelAudienceSnapshot[]
   channelPosts                      ChannelPost[]
@@ -3036,6 +3037,30 @@ model MaxActionLedgerEntry {
   @@index([chatId, userId, actionType, updatedAt], map: "max_action_ledger_chat_user_action_updated_idx")
   @@index([actionType, dispatchStartedAt], map: "max_action_ledger_action_dispatch_started_idx")
   @@map("max_action_ledger")
+}
+
+model ChannelPostDemandChannel {
+  chatId String    @id @map("chat_id")
+  dueAt  DateTime? @map("due_at")
+  chat   Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  items  ChannelPostDemand[]
+
+  @@index([dueAt, chatId], map: "channel_post_demand_channels_due_idx")
+  @@map("channel_post_demand_channels")
+}
+
+model ChannelPostDemand {
+  chatId    String   @map("chat_id")
+  messageId String   @map("message_id")
+  sourceAt  DateTime @map("source_at")
+  expiresAt DateTime @map("expires_at")
+  dueAt     DateTime @map("due_at")
+  channel   ChannelPostDemandChannel @relation(fields: [chatId], references: [chatId], onDelete: Cascade)
+
+  @@id([chatId, messageId])
+  @@index([chatId, dueAt, messageId], map: "channel_post_demands_due_idx")
+  @@index([expiresAt, chatId, messageId], map: "channel_post_demands_expiry_idx")
+  @@map("channel_post_demands")
 }
 
 model ChannelAutoPostAttachMarker {

@@ -11,6 +11,7 @@ import {
 } from '../max/max-client.service';
 import { Prisma, type ChannelSettings } from '../prisma/prisma-client';
 import { ChannelAutoPostScanManager } from '../moderation/channel-auto-post-runtime';
+import { ChannelPostDemandRuntime } from '../moderation/channel-post-demand-runtime';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import {
@@ -335,6 +336,190 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     expect(s.effects.filter((effect) => effect.method === 'delete')).toEqual(deletions);
     expect(s.failures).toEqual([]);
   });
+
+  it('routes durable demand through the background scheduler within its channel budget', async () => {
+    const s = await fixture(2);
+    for (const bot of s.bots)
+      s.setBotPermissions(bot.id, ['read_all_messages', 'write', 'edit_message', 'delete_message']);
+    const [chatId] = await s.seedCatalog(2, {}, 'CHANNEL');
+    const messageId = `scheduled-demand-${randomUUID()}`;
+    const receipt = await s.ingest({
+      chatId: chatId!,
+      messageId,
+      text: 'Exact post outside latest page',
+      senderless: true,
+    });
+    const scheduler = s.moderation as unknown as {
+      backgroundTasksEnabled: boolean;
+      channelAutoPostScanMaxChannels: number;
+      resolveChannelAutoPostExecutionPlan: () => Promise<{
+        batchSize: number;
+        maxNewMessagesPerScan: number;
+        interChannelDelayMs: number;
+      }>;
+      processChannelAutoPostButtons: () => Promise<void>;
+    };
+    scheduler.backgroundTasksEnabled = true;
+    scheduler.channelAutoPostScanMaxChannels = 2;
+    jest
+      .spyOn(scheduler, 'resolveChannelAutoPostExecutionPlan')
+      .mockResolvedValue({ batchSize: 2, maxNewMessagesPerScan: 1, interChannelDelayMs: 0 });
+    const list = jest.spyOn(s.max, 'listMessages').mockResolvedValue([]);
+    await scheduler.processChannelAutoPostButtons();
+    expect(s.effects.filter((e) => e.method === 'put' && e.messageId === messageId)).toHaveLength(
+      1,
+    );
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(await s.prisma.channelPostDemand.count({ where: { chatId } })).toBe(0);
+    expect((await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt } })).status).toBe(
+      'RECEIVED',
+    );
+  });
+
+  it('retires durable demand after a confirmed webhook edit without another MAX read', async () => {
+    const s = await fixture(2);
+    const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+    const messageId = `completed-demand-${randomUUID()}`;
+    await s.ingest({
+      chatId: chatId!,
+      messageId,
+      text: 'Already decorated fixture',
+      senderless: true,
+    });
+    const marker = await s.prisma.channelAutoPostAttachMarker.create({
+      data: {
+        chatId: chatId!,
+        messageId,
+        source: 'webhook',
+        status: 'SUCCEEDED',
+        botId: s.bots[1]!.id,
+        deliveryMode: 'edit_message',
+      },
+    });
+    const runtime = (s.moderation as unknown as { channelPostDemand: ChannelPostDemandRuntime })
+      .channelPostDemand;
+    const read = jest.spyOn(s.max, 'getExactMessageRow');
+    const access = jest.spyOn(s.max, 'getCurrentChatMemberAccess');
+    await runtime.process(
+      {
+        channelSettings: await s.prisma.channelSettings.findUniqueOrThrow({ where: { chatId } }),
+        adminUserIds: [],
+      },
+      1,
+      30_000,
+    );
+    expect(read).not.toHaveBeenCalled();
+    expect(access).not.toHaveBeenCalled();
+    expect(s.effects).toEqual([]);
+    expect(await s.prisma.channelPostDemand.count({ where: { chatId } })).toBe(0);
+    expect(
+      await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({ where: { id: marker.id } }),
+    ).toEqual(marker);
+  });
+
+  it.each([
+    'allowed',
+    'access_lost',
+    'held',
+    'settings_off',
+    'source_missing',
+    'first_read_failed',
+  ] as const)(
+    'services exact durable post demand before webhook execution, guard=%s',
+    async (guard) => {
+      const s = await fixture(2);
+      for (const bot of s.bots)
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      const blockedId = `a-demand-${randomUUID()}`,
+        laterId = `b-demand-${randomUUID()}`;
+      const ids = [];
+      for (const messageId of [blockedId, laterId])
+        ids.push(
+          await s.ingest({ chatId: chatId!, messageId, text: 'Durable fixture', senderless: true }),
+        );
+      const marker = await s.prisma.channelAutoPostAttachMarker.create({
+        data: {
+          chatId: chatId!,
+          messageId: blockedId,
+          source: 'webhook',
+          botId: s.bots[1]!.id,
+          lockToken: randomUUID(),
+          lockedAt: new Date(),
+          deliveryMode: 'edit_message',
+          lastError: 'Retained unknown effect fixture',
+        },
+      });
+      const runtime = (s.moderation as unknown as { channelPostDemand: ChannelPostDemandRuntime })
+        .channelPostDemand;
+      const context = {
+        channelSettings: await s.prisma.channelSettings.findUniqueOrThrow({ where: { chatId } }),
+        adminUserIds: [],
+      };
+      const list = jest.spyOn(s.max, 'listMessages').mockResolvedValue([]);
+      expect(await s.prisma.channelPostDemand.count({ where: { chatId } })).toBe(2);
+      if (guard === 'first_read_failed') {
+        const failure = Object.assign(new Error('Source temporarily unavailable'), {
+          response: { status: 503 },
+        });
+        jest.spyOn(s.max, 'getExactMessageRow').mockRejectedValueOnce(failure);
+        await expect(runtime.process(context, 3, 30_000)).rejects.toBe(failure);
+      } else await runtime.process(context, 1, 30_000);
+      expect(s.effects).toEqual([]);
+      if (guard === 'access_lost') for (const bot of s.bots) s.denyBot(bot.id);
+      if (guard === 'held') {
+        const holds = s.moderation as unknown as {
+          legacyHolds: { isMessageHeld: (c: string, m: string) => Promise<boolean> };
+        };
+        jest
+          .spyOn(holds.legacyHolds, 'isMessageHeld')
+          .mockImplementation(async (_, id) => id === laterId);
+      }
+      if (guard === 'source_missing') s.messages.delete(laterId);
+      if (guard === 'settings_off') {
+        context.channelSettings = await s.prisma.channelSettings.update({
+          where: { chatId },
+          data: {
+            commentsEnabled: false,
+            postSignatureEnabled: false,
+            postSuggestionsEnabled: false,
+            quickButtonsEnabled: false,
+          },
+        });
+      }
+      if (guard === 'source_missing')
+        await expect(runtime.process(context, 1, 30_000)).rejects.toMatchObject({
+          response: { status: 404 },
+        });
+      else if (guard === 'access_lost')
+        await expect(runtime.process(context, 1, 30_000)).rejects.toMatchObject({
+          response: { status: 403, data: { code: 'chat.denied' } },
+        });
+      else await runtime.process(context, 1, 30_000);
+      expect(s.effects.filter((e) => e.method === 'put')).toHaveLength(
+        guard === 'allowed' || guard === 'first_read_failed' ? 1 : 0,
+      );
+      expect(s.effects.every((e) => e.method === 'put' && e.messageId === laterId)).toBe(true);
+      expect(
+        await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({ where: { id: marker.id } }),
+      ).toEqual(marker);
+      expect(list).not.toHaveBeenCalled();
+      expect(
+        (await s.prisma.webhookEvent.findMany({ where: { id: { in: ids } } })).every(
+          (r) => r.status === 'RECEIVED',
+        ),
+      ).toBe(true);
+      if (guard === 'source_missing')
+        expect(
+          await s.prisma.channelPostDemand.count({ where: { chatId, messageId: laterId } }),
+        ).toBe(1);
+    },
+  );
 
   it.each(['allowed', 'access_lost', 'held'] as const)(
     'polls a later channel post while an earlier marker stays leased, guard=%s',

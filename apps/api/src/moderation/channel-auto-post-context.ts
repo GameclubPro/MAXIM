@@ -74,3 +74,51 @@ export async function loadManagedChannelAutoPostContext(
     adminUserIds: channel.admins.map((item) => item.userId),
   };
 }
+
+export async function loadChannelAutoPostScanContexts(
+  prisma: PrismaService,
+  chatIds: readonly string[],
+): Promise<ManagedChannelContext[]> {
+  const normalizedChatIds = Array.from(
+    new Set(chatIds.map((chatId) => chatId.trim()).filter((chatId) => chatId.length > 0)),
+  );
+  if (normalizedChatIds.length === 0) {
+    return [];
+  }
+
+  const channelSettings = await prisma.channelSettings.findMany({
+    where: {
+      chatId: {
+        in: normalizedChatIds,
+      },
+      chat: {
+        entityType: ChatEntityType.CHANNEL,
+      },
+    },
+    include: {
+      chat: {
+        select: {
+          admins: {
+            select: {
+              userId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  const contextsByChatId = new Map(
+    channelSettings.map((settings) => [
+      settings.chatId,
+      {
+        channelSettings: settings,
+        adminUserIds: settings.chat.admins.map((item) => item.userId),
+      } satisfies ManagedChannelContext,
+    ]),
+  );
+
+  return normalizedChatIds.flatMap((chatId) => {
+    const context = contextsByChatId.get(chatId);
+    return context ? [context] : [];
+  });
+}

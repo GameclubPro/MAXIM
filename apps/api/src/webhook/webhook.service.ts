@@ -1,6 +1,10 @@
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { captureVoiceSourceInput, persistVoiceSource } from '../moderation/voice-webhook-source';
 import {
+  captureChannelPostDemand,
+  persistChannelPostDemand,
+} from '../moderation/channel-post-demand';
+import {
   applyManagedBotPermissionEvent,
   BOT_PERMISSION_CHANGE_UPDATE,
 } from '../max/managed-bot-permission-event';
@@ -1438,8 +1442,10 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     const retentionInput = this.messageRetention?.captureInput(update);
     const removedInput = this.retentionRemovedInput(update);
     const voiceSourceInput = captureVoiceSourceInput(update);
+    const channelPostDemand = captureChannelPostDemand(update, this.publisherBotId);
     if (
       this.legacyHolds ||
+      channelPostDemand ||
       voiceSourceInput ||
       ((retentionInput || removedInput) && this.messageRetention)
     ) {
@@ -1458,6 +1464,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
           if (voiceSourceInput && (voiceSourceInput.kind === 'invalidate' || !held))
             await persistVoiceSource(tx, voiceSourceInput, webhookEventId);
           if (disposition !== 'NOT_HELD' && disposition !== undefined) return webhookEventId;
+          if (channelPostDemand && !held) await persistChannelPostDemand(tx, channelPostDemand);
           if (retentionInput) await retention!.capture(tx, retentionInput);
           if (removedInput) await retention!.settleRemovedMessage(tx, removedInput);
           return webhookEventId;
