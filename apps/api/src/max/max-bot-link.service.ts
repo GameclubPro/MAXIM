@@ -1,3 +1,4 @@
+import { observedManagedEntityTitle } from '../common/managed-entity-title';
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { hasPersistedBoundMessage, type MaxBoundObjectReference } from './max-bound-message';
 import {
@@ -2503,7 +2504,8 @@ export class MaxBotLinkService implements OnModuleDestroy {
     );
     const normalizedPrimaryBotId =
       this.resolveOperationalBotId(params.primaryBotId) ?? observedBotIds[0] ?? null;
-    const title = params.title?.trim() || `Chat ${chatId}`;
+    const observedTitle = observedManagedEntityTitle(chatId, params.title);
+    const title = observedTitle ?? `Chat ${chatId}`;
     const entityType = params.entityType ?? undefined;
     const now = new Date();
     const existing = await this.prisma.chat.findUnique({
@@ -2531,7 +2533,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
         catalogKind,
       },
       update: {
-        title,
+        ...(observedTitle ? { title: observedTitle } : {}),
         ...(nextPrimaryBotId ? { botId: nextPrimaryBotId, primaryBotId: nextPrimaryBotId } : {}),
         ...(entityType ? { entityType } : {}),
       },
@@ -2561,7 +2563,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
 
     return this.reconcileChatPrimaryByAccess({
       chatId,
-      title,
+      title: observedTitle,
       entityType,
     });
   }
@@ -2759,7 +2761,7 @@ export class MaxBotLinkService implements OnModuleDestroy {
           state.storedPrimaryBotId === nextPrimaryBotId &&
           state.storedBotId === nextPrimaryBotId &&
           state.routingState === nextRoutingState;
-        const title = params.title?.trim() || null;
+        const title = observedManagedEntityTitle(params.chatId, params.title);
         const entityType = params.entityType ?? null;
         const metadataChanged =
           (title !== null && title !== state.title) ||

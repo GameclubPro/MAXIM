@@ -880,24 +880,11 @@ export class ManagedEntityHandshakeService {
       return;
     }
 
-    try {
-      const refreshed = await this.maxChatAdminRosterSyncService.processJob(job);
-      if (refreshed) {
-        return;
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          updateId: context.update.updateId,
-          chatId: context.chatId,
-          botId: context.botId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to refresh managed entity roster directly after handshake',
-      );
-    }
-
-    await this.maxChatAdminRosterSyncService.scheduleChatAdminRosterSync(job);
+    // FLAG: The exact bot/actor grant is already committed. The remaining full
+    // roster must have a durable handoff before confirmation, without holding
+    // the command open for every administrator's remote refresh.
+    if (!(await this.maxChatAdminRosterSyncService.scheduleChatAdminRosterSync(job)))
+      throw new Error('Managed entity roster refresh handoff unavailable');
   }
 
   private async deleteCommandMessageSafely(

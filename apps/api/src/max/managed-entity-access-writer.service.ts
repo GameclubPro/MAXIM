@@ -1,3 +1,4 @@
+import { observedManagedEntityTitle } from '../common/managed-entity-title';
 import { Injectable } from '@nestjs/common';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
 import {
@@ -92,7 +93,7 @@ export class ManagedEntityAccessWriter {
       chatId: context.chatId,
       primaryBotId: context.botId,
       botIds: [context.botId],
-      title: context.title,
+      title: observedManagedEntityTitle(context.chatId, context.title),
       entityType: context.prismaEntityType,
     });
   }
@@ -124,7 +125,9 @@ export class ManagedEntityAccessWriter {
         },
         update: {
           entityType: context.prismaEntityType,
-          title: context.title,
+          ...(observedManagedEntityTitle(context.chatId, context.title)
+            ? { title: context.title }
+            : {}),
           ...(context.link !== undefined ? { link: context.link } : {}),
           ...(context.avatarUrl !== undefined ? { avatarUrl: context.avatarUrl } : {}),
           status: 'ACTIVE',
@@ -300,7 +303,9 @@ export class ManagedEntityAccessWriter {
         },
         update: {
           entityType: context.prismaEntityType,
-          chatTitle: context.title,
+          ...(observedManagedEntityTitle(context.chatId, context.title)
+            ? { chatTitle: context.title }
+            : {}),
           sourceEventType: MANAGED_ENTITY_HANDSHAKE_SOURCE,
           botId: context.botId,
           lastEventAt: probeStartedAt,
@@ -315,7 +320,7 @@ export class ManagedEntityAccessWriter {
 
     await this.maxBotLinkService.reconcileChatPrimaryByAccess?.({
       chatId: context.chatId,
-      title: context.title,
+      title: observedManagedEntityTitle(context.chatId, context.title),
       entityType: context.prismaEntityType,
     });
     if (!(await this.publishGrantedCaches(context, probeStartedAt))) {
