@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { MESSAGE_LENGTH_POLICY_VERSION } from './moderation-message-length';
 
 const LIMIT_SANCTION_FIELDS = [
   'messageLimitsBotMessageEnabled',
@@ -112,5 +113,8 @@ export function fingerprintModerationSettings(
       ];
     });
   if (rule === 'PROFANITY') entries.push(['profanityRolloutMode', profanityRolloutMode]);
+  // FLAG: Previously measured metadata/UTF-16 length cannot authorize a queued sanction.
+  if (rule === 'MESSAGE_TOO_LONG')
+    entries.push(['messageLengthPolicyVersion', MESSAGE_LENGTH_POLICY_VERSION]);
   return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
 }

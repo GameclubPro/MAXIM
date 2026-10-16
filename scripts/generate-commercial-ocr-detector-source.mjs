@@ -17,6 +17,7 @@ const detectorSupportFiles = [
   'apps/api/src/moderation/rule-engine-commercial-second-stage-cache.ts',
   'apps/api/src/moderation/rule-engine-commercial-thresholds.ts',
   'apps/api/src/moderation/rule-engine-detection-context.ts',
+  'apps/api/src/moderation/moderation-message-length.ts',
   'apps/api/src/moderation/rule-engine-normalization.ts',
 ];
 const policySourceFiles = [

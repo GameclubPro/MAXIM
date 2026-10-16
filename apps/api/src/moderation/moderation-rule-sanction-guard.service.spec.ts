@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
 import { ModerationRuleSanctionGuardService } from './moderation-rule-sanction-guard.service';
 
@@ -63,6 +64,26 @@ function fixture() {
   return { service, settings, input, prisma, max, immunity };
 }
 describe('own-rule sanction authorization', () => {
+  it('rejects pre-upgrade length classification even with a confirmed old DELETE receipt', async () => {
+    const s = fixture();
+    const row = s.settings as Record<string, unknown>;
+    const oldEntries = [
+      'maxMessageLengthEnabled',
+      'maxMessageLength',
+      'messageLimitsBotMessageEnabled',
+      'messageLimitsWarnEnabled',
+      'messageLimitsMuteEnabled',
+      'messageLimitsBanEnabled',
+      'messageLimitsMuteDurationHours',
+    ]
+      .sort()
+      .map((key) => [key, row[key] ?? null]);
+    s.input.policySha256 = createHash('sha256').update(JSON.stringify(oldEntries)).digest('hex');
+    await expect(s.service.assertAllowed(s.input)).rejects.toMatchObject({
+      code: 'moderation_rule_sanction_no_longer_authorized',
+    });
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+  });
   it('requires exact verified reason receipt and current selected-peer author access', async () => {
     const s = fixture();
     await expect(s.service.assertAllowed(s.input)).resolves.toBeUndefined();

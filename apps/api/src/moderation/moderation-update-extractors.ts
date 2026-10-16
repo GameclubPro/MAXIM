@@ -1,5 +1,9 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { selectMaxMessageCandidate } from '../max/max-message-candidate.util';
+export {
+  measureVisibleMessageLength as calculateEffectiveMessageLength,
+  collectForwardedVisibleText as collectForwardedTextSnippets,
+} from './moderation-message-length';
 
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const MAX_MEDIA_BATCH_ID_LENGTH = 512;
@@ -21,53 +25,6 @@ export type ModerationMediaFlags = {
   hasVoiceAttachment: boolean;
   hasMediaBatch: boolean;
 };
-
-export function calculateEffectiveMessageLength(update: MaxUpdate): number {
-  const baseText = update.message?.text ?? '';
-  const baseLength = baseText.length;
-  const forwardedSnippets = collectForwardedTextSnippets(update.raw);
-
-  if (forwardedSnippets.length === 0) {
-    return baseLength;
-  }
-
-  const normalizedBaseText = baseText.toLowerCase();
-  let totalLength = baseLength;
-
-  for (const snippet of forwardedSnippets) {
-    if (!snippet) {
-      continue;
-    }
-
-    if (normalizedBaseText.includes(snippet.toLowerCase())) {
-      continue;
-    }
-
-    totalLength += snippet.length;
-  }
-
-  return totalLength;
-}
-
-export function collectForwardedTextSnippets(raw: unknown): string[] {
-  const rawRecord = asRecord(raw);
-  if (!rawRecord) {
-    return [];
-  }
-
-  const messageNode = extractRawMessageNode(rawRecord) ?? rawRecord;
-  const forwardedNodes = collectForwardedNodes(messageNode);
-  if (forwardedNodes.length === 0) {
-    return [];
-  }
-
-  const snippets = new Set<string>();
-  for (const node of forwardedNodes) {
-    collectTextSnippets(node, snippets);
-  }
-
-  return [...snippets];
-}
 
 export function hasForwardedMessage(update: MaxUpdate): boolean {
   const rawRecord = asRecord(update.raw);
@@ -206,53 +163,6 @@ export function extractDirectMediaBatchId(update: MaxUpdate): string | null {
   }
 
   return null;
-}
-
-function collectTextSnippets(node: unknown, acc: Set<string>, depth = 0): void {
-  if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
-    return;
-  }
-
-  if (typeof node === 'string') {
-    const normalized = node.trim();
-    if (normalized.length > 0) {
-      acc.add(normalized);
-    }
-    return;
-  }
-
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      collectTextSnippets(item, acc, depth + 1);
-    }
-    return;
-  }
-
-  if (typeof node !== 'object') {
-    return;
-  }
-
-  const row = node as Record<string, unknown>;
-  for (const [key, value] of Object.entries(row)) {
-    if (
-      (key === 'text' ||
-        key === 'caption' ||
-        key === 'plain' ||
-        key === 'message_text' ||
-        key === 'messageText') &&
-      typeof value === 'string'
-    ) {
-      const normalized = value.trim();
-      if (normalized.length > 0) {
-        acc.add(normalized);
-      }
-      continue;
-    }
-
-    if (value && (typeof value === 'object' || Array.isArray(value) || typeof value === 'string')) {
-      collectTextSnippets(value, acc, depth + 1);
-    }
-  }
 }
 
 function hasDirectCurrentMessageText(messageNode: Record<string, unknown>): boolean {

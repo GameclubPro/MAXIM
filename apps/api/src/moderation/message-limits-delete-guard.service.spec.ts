@@ -159,6 +159,51 @@ describe('native voice authority without MAX message GET', () => {
 });
 
 describe('current message limit deletion authorization', () => {
+  it.each(['', null])(
+    'rejects a cleared current body (%j) even when a stale alias is long',
+    async (text) => {
+      const s = fixture();
+      Object.assign(s.message.body, { text });
+      Object.assign(s.message, { text: 'old content'.repeat(100) });
+      await expect(s.service.authorize(input)).rejects.toMatchObject({
+        code: 'message_limits_delete_no_longer_authorized',
+      });
+    },
+  );
+  it.each([9, 10, 11])(
+    'rechecks %i visible characters at the actual DELETE boundary',
+    async (length) => {
+      const s = fixture();
+      s.message.body.text = '👨‍👩‍👧‍👦'.repeat(length);
+      if (length > 10)
+        await expect(s.service.authorize(input)).resolves.toEqual({ reasonKeys: ['length'] });
+      else
+        await expect(s.service.authorize(input)).rejects.toMatchObject({
+          code: 'message_limits_delete_no_longer_authorized',
+        });
+    },
+  );
+
+  it.each(['forward', 'reply'])(
+    'rejects an old length reason caused by %s metadata/quoted text',
+    async (type) => {
+      const s = fixture();
+      s.message.body.text = type === 'reply' ? 'Да' : '';
+      Object.assign(s.message, {
+        link: {
+          type,
+          message: {
+            text: type === 'reply' ? 'x'.repeat(100) : 'Привет',
+            mid: 'x'.repeat(100),
+            attachments: [{ type: 'photo', payload: { token: 'x'.repeat(100) } }],
+          },
+        },
+      });
+      await expect(s.service.authorize(input)).rejects.toMatchObject({
+        code: 'message_limits_delete_no_longer_authorized',
+      });
+    },
+  );
   it('normalizes full settings and a semantic DTO and ignores unrelated UI changes', () => {
     const subset = {
       maxMessageLengthEnabled: true,
