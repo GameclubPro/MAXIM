@@ -1008,6 +1008,71 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
+  it('recovers an independent channel while a durable edit gets a missing-ID response', async () => {
+    const s = await fixture(2);
+    for (const bot of s.bots)
+      s.setBotPermissions(bot.id, ['read_all_messages', 'write', 'edit_message', 'delete_message']);
+    const chats = await s.seedCatalog(2, {}, 'CHANNEL');
+    const verify = s.links.verifyChatExecutionProof.bind(s.links);
+    const rejection = jest
+      .spyOn(s.links, 'verifyChatExecutionProof')
+      .mockImplementation((input) =>
+        input.purpose === 'edit_message' ? Promise.resolve(false) : verify(input),
+      );
+    const receiptIds: string[] = [];
+    for (const [index, chatId] of chats.entries()) {
+      receiptIds.push(
+        await s.ingest({
+          chatId,
+          messageId: `isolated-edit-${index}`,
+          text: 'Channel post',
+          senderless: true,
+        }),
+      );
+    }
+    await s.drain();
+    rejection.mockRestore();
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    for (const id of receiptIds) await s.moderation.processWebhookEvent(id);
+    expect(handler).not.toHaveBeenCalled();
+    expect(s.effects).toEqual([]);
+    await s.prisma.channelAutoPostAttachMarker.updateMany({
+      where: { chatId: { in: chats } },
+      data: { updatedAt: new Date(Date.now() - 360_000) },
+    });
+    const edit = s.max.editMessageInlineKeyboard.bind(s.max);
+    const attempts = jest
+      .spyOn(s.max, 'editMessageInlineKeyboard')
+      .mockImplementation((chatId, ...args) => {
+        if (chatId === chats[0]) return Promise.reject(new MaxExactMessageLookupMissingIdError());
+        return edit(chatId, ...args);
+      });
+    const recovery = (
+      s.moderation as unknown as {
+        channelAutoPostLegacyRecovery: import('../moderation/channel-auto-post-legacy-recovery').ChannelAutoPostLegacyRecovery;
+      }
+    ).channelAutoPostLegacyRecovery;
+    await expect(recovery.runIfDue()).resolves.toMatchObject({
+      status: 'deferred',
+      stopCurrentTick: false,
+      mutationAttempts: 2,
+    });
+    expect(attempts).toHaveBeenCalledTimes(2);
+    expect(s.effects.filter((effect) => effect.method === 'put')).toHaveLength(1);
+    expect(s.effects.filter((effect) => effect.method !== 'put')).toEqual([]);
+    for (const [index, chatId] of chats.entries()) {
+      const marker = await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId, messageId: `isolated-edit-${index}` } },
+      });
+      expect(marker.status).toBe(index === 0 ? 'IN_PROGRESS' : 'SUCCEEDED');
+      expect(marker.deliveryMode).toBe('edit_message');
+      expect(marker.replacementSendStartedAt).toBeNull();
+      expect(marker.replacementMessageId).toBeNull();
+      expect(marker.replyMessageId).toBeNull();
+    }
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it.each(['forged', 'ambiguous', 'lost_lease', 'replacement_evidence'] as const)(
     'retains the started channel owner without a safe edit handoff: %s',
     async (failure) => {

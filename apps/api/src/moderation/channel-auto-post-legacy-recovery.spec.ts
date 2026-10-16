@@ -1,3 +1,5 @@
+import { MaxApiInternalRateLimitError } from '../max/max-client.service';
+import { MaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { ChannelAutoPostLegacyRecovery } from './channel-auto-post-legacy-recovery';
 import type { LegacyChannelEditRecoveryCandidate } from './replacement-attach-marker.store';
 
@@ -400,6 +402,94 @@ describe('ChannelAutoPostLegacyRecovery', () => {
       2,
       expect.objectContaining({ markerCursor: null, auditCursor: null }),
     );
+  });
+
+  it.each([
+    new MaxExactMessageLookupMissingIdError(),
+    new MaxApiInternalRateLimitError('cooldown', 60_000, 'external_cooldown'),
+  ])('keeps independent recovery moving after a scoped lookup failure: %s', async (error) => {
+    const candidates = Array.from({ length: 10 }, (_, i) => candidate(`channel-${i}`));
+    const lookup = jest.fn().mockImplementation(async (chatId: string) => {
+      if (!['channel-8', 'channel-9'].includes(chatId)) throw error;
+      return [];
+    });
+    const harness = createHarness({
+      candidates,
+      contextRows: candidates.map((c) => contextRow(c.chatId)),
+      lookup,
+    });
+    await expect(harness.runner.runIfDue()).resolves.toMatchObject({
+      status: 'deferred',
+      stopCurrentTick: false,
+      remoteLookups: 8,
+      mutationAttempts: 0,
+    });
+    expect(harness.claimChannelAutoPost).not.toHaveBeenCalled();
+    expect(harness.completeChannelAutoPost).not.toHaveBeenCalled();
+    harness.advance(5 * 60_000);
+    await expect(harness.runner.runIfDue()).resolves.toMatchObject({
+      status: 'deferred',
+      stopCurrentTick: false,
+      remoteLookups: 8,
+      mutationAttempts: 2,
+    });
+    expect(lookup.mock.calls.slice(8, 10).map(([chatId]) => chatId)).toEqual([
+      'channel-8',
+      'channel-9',
+    ]);
+    expect(harness.attach.mock.calls.map(([input]) => input.chatId)).toEqual([
+      'channel-8',
+      'channel-9',
+    ]);
+    expect(harness.completeChannelAutoPost).not.toHaveBeenCalled();
+    expect(harness.listCandidates).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ markerCursor: null, auditCursor: null }),
+    );
+  });
+
+  it('preserves the failed edit marker and continues independent durable edit candidates', async () => {
+    const candidates = ['blocked', 'healthy', 'healthy-next', 'budget-bound'].map((chatId) =>
+      candidate(chatId, `post-${chatId}`, 'retryable_edit_marker'),
+    );
+    const harness = createHarness({
+      candidates,
+      contextRows: candidates.map((c) => contextRow(c.chatId)),
+    });
+    harness.attach.mockRejectedValueOnce(new MaxExactMessageLookupMissingIdError());
+    await expect(harness.runner.runIfDue()).resolves.toMatchObject({
+      status: 'deferred',
+      stopCurrentTick: false,
+      mutationAttempts: 3,
+    });
+    expect(harness.attach.mock.calls.map(([input]) => input.chatId)).toEqual([
+      'blocked',
+      'healthy',
+      'healthy-next',
+    ]);
+    expect(harness.claimChannelAutoPost).not.toHaveBeenCalled();
+    expect(harness.completeChannelAutoPost).not.toHaveBeenCalled();
+    expect(harness.lookup).not.toHaveBeenCalled();
+  });
+
+  it('does not infer scoped failure from copied error text', async () => {
+    const harness = createHarness({
+      candidates: [candidate('blocked'), candidate('healthy')],
+      contextRows: [contextRow('blocked'), contextRow('healthy')],
+      lookup: jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error(new MaxExactMessageLookupMissingIdError().message), {
+            name: 'MaxExactMessageLookupMissingIdError',
+          }),
+        ),
+    });
+    await expect(harness.runner.runIfDue()).resolves.toMatchObject({
+      status: 'deferred',
+      stopCurrentTick: true,
+      remoteLookups: 1,
+    });
+    expect(harness.attach).not.toHaveBeenCalled();
   });
 
   it('holds the cursor so a second message from the same channel is recovered next sweep', async () => {

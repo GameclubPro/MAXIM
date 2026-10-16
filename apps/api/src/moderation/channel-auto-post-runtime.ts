@@ -619,6 +619,7 @@ export class ChannelAutoPostScanManager {
   private readonly now: () => number;
   private cursor = 0;
   private throttleStreak = 0;
+  private readonly scopedThrottles = new Map<string, { streak: number; untilMs: number }>();
 
   constructor(
     private readonly config: ChannelAutoPostScanConfig,
@@ -629,7 +630,10 @@ export class ChannelAutoPostScanManager {
 
   isDue(chatId: string): boolean {
     const current = this.states.get(chatId) ?? null;
-    return !current || this.now() >= current.nextScanAtMs;
+    return (
+      this.now() >=
+      Math.max(current?.nextScanAtMs ?? 0, this.scopedThrottles.get(chatId)?.untilMs ?? 0)
+    );
   }
 
   selectBatch<T extends { chatId: string }>(
@@ -737,19 +741,32 @@ export class ChannelAutoPostScanManager {
     return Math.max(1, Math.ceil(this.config.scanMaxChannels / divisor));
   }
 
-  recordTransientThrottle(chatId: string): number {
-    this.throttleStreak += 1;
+  recordTransientThrottle(chatId: string, scoped = false, retryAfterMs = 0): number {
+    const streak = scoped
+      ? (this.scopedThrottles.get(chatId)?.streak ?? 0) + 1
+      : this.throttleStreak + 1;
+    if (!scoped) this.throttleStreak = streak;
     const backoffMs = Math.min(
       this.config.throttleBackoffMaxMs,
-      this.config.rateLimitBackoffMs * 2 ** Math.min(Math.max(0, this.throttleStreak - 1), 3),
+      this.config.rateLimitBackoffMs * 2 ** Math.min(Math.max(0, streak - 1), 3),
     );
+    const delayMs = Math.max(backoffMs, Number.isFinite(retryAfterMs) ? retryAfterMs : 0);
+    if (scoped)
+      this.scopedThrottles.set(chatId, {
+        streak,
+        untilMs: Math.max(this.scopedThrottles.get(chatId)?.untilMs ?? 0, this.now() + delayMs),
+      });
     const current = this.states.get(chatId) ?? this.createState();
     this.states.set(chatId, {
       ...current,
       idleStreak: Math.min(current.idleStreak + 1, 8),
-      nextScanAtMs: Math.max(current.nextScanAtMs, this.now() + backoffMs),
+      nextScanAtMs: Math.max(current.nextScanAtMs, this.now() + delayMs),
     });
-    return backoffMs;
+    return delayMs;
+  }
+
+  resetScopedThrottle(chatId: string): void {
+    this.scopedThrottles.delete(chatId);
   }
 
   resetThrottle(): void {

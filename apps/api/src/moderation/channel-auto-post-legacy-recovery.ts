@@ -1,5 +1,7 @@
 import type { InternalChannelDialogButtonIdentity } from '../common/channel-dialog-button-identity.util';
 import type { PrismaService } from '../prisma/prisma.service';
+import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
+import { isChannelAutoPostScopedWait } from './channel-auto-post-error-scope';
 import type { ManagedChannelContext } from './moderation.service.support';
 import type {
   LegacyChannelEditRecoveryAuditCursor,
@@ -81,6 +83,7 @@ export class ChannelAutoPostLegacyRecovery {
   private markerCursor: LegacyChannelEditRecoveryMarkerCursor | null = null;
   private auditCursor: LegacyChannelEditRecoveryAuditCursor | null = null;
   private inFlight = false;
+  private resumeAfterCandidateKey: string | null = null;
 
   constructor(
     private readonly dependencies: {
@@ -138,9 +141,10 @@ export class ChannelAutoPostLegacyRecovery {
       let mutationAttempts = 0;
       let terminalizedCandidates = 0;
       let cursorCanAdvance = true;
+      let stopCurrentTick = false;
       let deferReason: ChannelAutoPostLegacyRecoveryRunResult['deferReason'] = null;
 
-      for (const candidate of page.candidates) {
+      for (const candidate of this.orderCandidates(page.candidates)) {
         // FLAG: A held source preserves its uncertain marker; never claim, finish or replay it.
         if (await this.dependencies.isMessageHeld(candidate.chatId, candidate.messageId)) continue;
         if (seenChatIds.has(candidate.chatId)) {
@@ -204,6 +208,8 @@ export class ChannelAutoPostLegacyRecovery {
             this.warn(error, candidate, 'Deferred channel post edit recovery');
             cursorCanAdvance = false;
             deferReason = 'attach_error';
+            if (this.isolateCandidateFailure(error, candidate)) continue;
+            stopCurrentTick = true;
             break;
           }
           continue;
@@ -256,6 +262,8 @@ export class ChannelAutoPostLegacyRecovery {
           this.warn(error, candidate, 'Deferred legacy channel button recovery after lookup error');
           cursorCanAdvance = false;
           deferReason = 'lookup_error';
+          if (this.isolateCandidateFailure(error, candidate)) continue;
+          stopCurrentTick = true;
           break;
         }
 
@@ -358,6 +366,8 @@ export class ChannelAutoPostLegacyRecovery {
           this.warn(error, candidate, 'Deferred legacy channel button recovery after attach error');
           cursorCanAdvance = false;
           deferReason = 'attach_error';
+          if (this.isolateCandidateFailure(error, candidate)) continue;
+          stopCurrentTick = true;
           break;
         }
       }
@@ -365,11 +375,12 @@ export class ChannelAutoPostLegacyRecovery {
       if (cursorCanAdvance) {
         this.markerCursor = page.markerScanExhausted ? null : page.nextMarkerCursor;
         this.auditCursor = page.nextAuditCursor;
+        this.resumeAfterCandidateKey = null;
       }
       return {
         status: cursorCanAdvance ? 'completed' : 'deferred',
         deferReason,
-        stopCurrentTick: deferReason === 'lookup_error' || deferReason === 'attach_error',
+        stopCurrentTick,
         scannedCandidates: page.candidates.length,
         remoteLookups,
         mutationAttempts,
@@ -378,6 +389,29 @@ export class ChannelAutoPostLegacyRecovery {
     } finally {
       this.inFlight = false;
     }
+  }
+
+  private isolateCandidateFailure(
+    error: unknown,
+    candidate: LegacyChannelEditRecoveryCandidate,
+  ): boolean {
+    if (!isChannelAutoPostScopedWait(error) && !isMaxExactMessageLookupMissingIdError(error))
+      return false;
+    this.resumeAfterCandidateKey = `${candidate.chatId}\u0000${candidate.messageId}`;
+    return true;
+  }
+
+  private orderCandidates(
+    candidates: LegacyChannelEditRecoveryCandidate[],
+  ): LegacyChannelEditRecoveryCandidate[] {
+    // FLAG: Rotate only the freshly reloaded bounded page. The SQL cursors stay before
+    // unresolved work; this scheduling hint never settles or drops a failed marker.
+    const lastIndex = candidates.findIndex(
+      (candidate) =>
+        `${candidate.chatId}\u0000${candidate.messageId}` === this.resumeAfterCandidateKey,
+    );
+    if (lastIndex < 0) return candidates;
+    return [...candidates.slice(lastIndex + 1), ...candidates.slice(0, lastIndex + 1)];
   }
 
   private async loadContexts(

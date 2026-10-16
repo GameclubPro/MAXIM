@@ -1,7 +1,7 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
-import type { MaxClientService } from '../max/max-client.service';
+import { MaxApiInternalRateLimitError, type MaxClientService } from '../max/max-client.service';
 import {
   markMaxPreDispatchGuardRejected,
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
@@ -4384,7 +4384,23 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('backs off channel polling after MAX API rate limit errors', async () => {
+  it.each([
+    { error: new Error('MAX API global rate limit exceeded'), isolated: false },
+    {
+      error: new MaxApiInternalRateLimitError('MAX rate limit', 60_000, 'role_class'),
+      isolated: false,
+    },
+    {
+      error: new MaxApiInternalRateLimitError('MAX rate limit', 60_000, 'unknown'),
+      isolated: false,
+    },
+    { error: new MaxApiInternalRateLimitError('token admission', 60_000, 'bot'), isolated: true },
+    {
+      error: new MaxApiInternalRateLimitError('cooldown', 60_000, 'external_cooldown'),
+      isolated: true,
+    },
+  ])('isolates only scoped channel polling waits: $isolated', async ({ error, isolated }) => {
+    jest.useFakeTimers({ advanceTimers: true }).setSystemTime(new Date('2026-03-30T02:00:00.000Z'));
     const prisma = {
       ...createChannelMutationGuardPrismaMock(),
       channelSettings: {
@@ -4424,7 +4440,15 @@ describe('ModerationService channel auto post buttons', () => {
     };
     const maxClient = {
       ...createChannelMutationGuardMaxClientMock(),
-      listMessages: jest.fn().mockRejectedValue(new Error('MAX API global rate limit exceeded')),
+      listMessages: jest
+        .fn<
+          ReturnType<MaxClientService['listMessages']>,
+          Parameters<MaxClientService['listMessages']>
+        >()
+        .mockImplementation(async (chatId) => {
+          if (chatId === 'channel-1') throw error;
+          return [];
+        }),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       getChatAdminIds: jest.fn(),
       deleteMessage: jest.fn(),
@@ -4451,8 +4475,10 @@ describe('ModerationService channel auto post buttons', () => {
     await (service as any).processChannelAutoPostButtons();
     await (service as any).processChannelAutoPostButtons();
 
-    expect(prisma.channelSettings.findMany).toHaveBeenCalledTimes(2);
-    expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
+    expect(prisma.channelSettings.findMany).toHaveBeenCalledTimes(isolated ? 3 : 2);
+    expect(maxClient.listMessages).toHaveBeenCalledTimes(isolated ? 2 : 1);
+    if (isolated)
+      expect(maxClient.listMessages).toHaveBeenNthCalledWith(2, 'channel-2', expect.anything());
     expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
       count: 10,
       trafficClass: 'background',

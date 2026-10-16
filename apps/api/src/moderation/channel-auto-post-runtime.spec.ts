@@ -392,6 +392,40 @@ describe('channel auto-post runtime', () => {
     expect(manager.resolveBatchSize()).toBe(8);
   });
 
+  it('backs off only the waiting channel and honors its Retry-After without shrinking other scans', () => {
+    let now = 10_000;
+    const manager = createScanManager(() => now);
+    const before = manager.advance(null, { messageId: 'original', timestampMs: 123 });
+    manager.states.set('blocked', before);
+    expect(manager.recordTransientThrottle('blocked', true, 2_000)).toBe(2_000);
+    expect(manager.resolveBatchSize()).toBe(8);
+    expect(manager.states.get('blocked')).toMatchObject({
+      latestTimestampMs: 123,
+      latestMessageIdsAtTimestamp: ['original'],
+    });
+    expect(manager.selectBatch([{ chatId: 'blocked' }, { chatId: 'healthy' }])).toEqual([
+      { chatId: 'healthy' },
+    ]);
+    expect(manager.recordTransientThrottle('other', true)).toBe(100);
+    expect(manager.recordTransientThrottle('blocked', true)).toBe(200);
+    manager.resetScopedThrottle('blocked');
+    expect(manager.recordTransientThrottle('blocked', true)).toBe(100);
+    now = 12_000;
+    expect(manager.isDue('blocked')).toBe(true);
+  });
+
+  it('does not let webhook repair hints shorten an existing scoped Retry-After', () => {
+    let now = 10_000;
+    const manager = createScanManager(() => now);
+    manager.recordTransientThrottle('blocked', true, 60_000);
+    manager.markWebhookSeen('blocked', 'later-post', 12_000);
+    now = 15_000;
+    expect(manager.isDue('blocked')).toBe(false);
+    expect(manager.isDue('independent')).toBe(true);
+    now = 70_000;
+    expect(manager.isDue('blocked')).toBe(true);
+  });
+
   it('filters scan messages and preserves the first unprocessed message at the attempt limit', async () => {
     const manager = createScanManager(() => 10_000);
     const attach = jest.fn().mockResolvedValue('attached');
