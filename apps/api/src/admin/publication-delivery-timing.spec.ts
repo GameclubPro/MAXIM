@@ -1,11 +1,153 @@
 import {
+  createPublicationExecutionObserver,
   measurePublicationStage,
   recordPublicationDispatchOutcome,
   recordPublicationReceiptTiming,
+  recordPublicationWaitTiming,
 } from './publication-delivery-timing';
 
 describe('Publication delivery timing', () => {
   const scheduledAt = new Date('2026-09-30T10:00:00Z');
+
+  afterEach(() => jest.useRealTimers());
+
+  it('distinguishes the original first claim clock from a persisted retry due time', () => {
+    jest.useFakeTimers().setSystemTime(new Date(scheduledAt.getTime() + 12_000));
+    const logger = { log: jest.fn() };
+    const observer = createPublicationExecutionObserver(
+      logger,
+      {
+        publicationOccurrenceId: 'private-occurrence',
+        mediaType: 'video',
+        imageEnabled: false,
+      },
+      true,
+    );
+    observer.onOccurrenceScheduledAt(new Date(scheduledAt.getTime() + 60_000), {
+      mode: 'NOW',
+      intentCreatedAt: scheduledAt,
+    });
+    observer.observeClaim({ attemptCount: 0, capacityDeferralCount: 0 });
+    observer.observeClaim({
+      attemptCount: 0,
+      capacityDeferralCount: 1,
+      nextAttemptAt: new Date(scheduledAt.getTime() + 10_000),
+      waitReason: 'local_capacity',
+    });
+    expect(logger.log.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({
+        stage: 'initial_recipient_claim',
+        mode: 'NOW',
+        media: 'video',
+        durationMs: 12_000,
+      }),
+      expect.objectContaining({
+        stage: 'recipient_retry_lateness',
+        reason: 'local_capacity',
+        durationMs: 2_000,
+      }),
+    ]);
+    expect(JSON.stringify(logger.log.mock.calls)).not.toContain('private');
+  });
+
+  it('does not carry a previous recipient acknowledgement into a recovery receipt', () => {
+    jest.useFakeTimers().setSystemTime(scheduledAt);
+    const logger = { log: jest.fn() };
+    const observer = createPublicationExecutionObserver(
+      logger,
+      {
+        publicationOccurrenceId: 'occurrence',
+        mediaType: null,
+        imageEnabled: true,
+      },
+      true,
+    );
+    observer.onOccurrenceScheduledAt(scheduledAt, { mode: 'ONCE', intentCreatedAt: scheduledAt });
+    observer.observeClaim({ attemptCount: 0 });
+    observer.observeAcknowledgement();
+    jest.advanceTimersByTime(250);
+    observer.observeReceipt();
+    observer.observeClaim({ attemptCount: 1 });
+    jest.advanceTimersByTime(1_000);
+    observer.observeReceipt();
+    const receiptIntervals = logger.log.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.stage === 'observed_acknowledgement_to_receipt');
+    expect(receiptIntervals).toEqual([
+      expect.objectContaining({ durationMs: 250, clock: 'wall', media: 'image' }),
+      expect.objectContaining({ durationMs: null, clock: 'unknown' }),
+    ]);
+  });
+
+  it.each([null, new Date('invalid'), new Date(scheduledAt.getTime() + 1)])(
+    'preserves unknown interval evidence for absent, invalid or backwards clocks: %s',
+    (from) => {
+      const logger = { log: jest.fn() };
+      recordPublicationWaitTiming(logger, {
+        stage: 'recipient_retry_lateness',
+        from,
+        to: scheduledAt,
+        reason: 'private-user-content',
+      });
+      expect(logger.log.mock.calls[0]![0]).toMatchObject({
+        durationMs: null,
+        clock: 'unknown',
+        reason: 'unknown',
+      });
+      expect(JSON.stringify(logger.log.mock.calls)).not.toContain('private');
+    },
+  );
+
+  it('keeps failing logger and date accessors outside dispatch control flow', () => {
+    const logger = {
+      get log(): never {
+        throw new Error('logger unavailable');
+      },
+    };
+    const invalidClock = new Date();
+    invalidClock.getTime = () => {
+      throw new Error('clock unavailable');
+    };
+    expect(() =>
+      recordPublicationWaitTiming(logger, {
+        stage: 'wakeup_queue',
+        from: scheduledAt,
+        to: scheduledAt,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      recordPublicationWaitTiming(
+        { log: jest.fn() },
+        {
+          stage: 'wakeup_queue',
+          from: invalidClock,
+          to: scheduledAt,
+        },
+      ),
+    ).not.toThrow();
+  });
+
+  it('emits no execution observations for a disabled or non-publication observer', () => {
+    const logger = { log: jest.fn() };
+    for (const [enabled, publicationOccurrenceId] of [
+      [false, 'occurrence'],
+      [true, null],
+    ] as const) {
+      const observer = createPublicationExecutionObserver(
+        logger,
+        {
+          publicationOccurrenceId,
+          mediaType: null,
+          imageEnabled: false,
+        },
+        enabled,
+      );
+      observer.observeClaim({ attemptCount: 0 });
+      observer.observeAcknowledgement();
+      observer.observeReceipt();
+    }
+    expect(logger.log).not.toHaveBeenCalled();
+  });
 
   it('observes failures without swallowing the error or leaking its content', async () => {
     const logger = { log: jest.fn() };

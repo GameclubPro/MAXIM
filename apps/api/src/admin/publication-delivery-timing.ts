@@ -1,5 +1,5 @@
 import type { Logger } from '@nestjs/common';
-import type { PublicationScheduleMode } from '../prisma/prisma-client';
+import type { ManagedBroadcastDelivery, PublicationScheduleMode } from '../prisma/prisma-client';
 
 export type PublicationExecutionTiming = {
   mode: PublicationScheduleMode;
@@ -16,6 +16,52 @@ export function resolvePublicationDeadlineWake(nextAt: Date, deadlineAt?: Date |
 }
 
 type PublicationMediaKind = 'none' | 'image' | 'video' | 'unknown';
+export type PublicationTimingDimensions = {
+  mode?: PublicationScheduleMode | null;
+  media: PublicationMediaKind;
+};
+type PublicationWaitStage =
+  | 'wakeup_queue'
+  | 'initial_recipient_claim'
+  | 'recipient_retry_lateness'
+  | 'capacity_deferral'
+  | 'observed_acknowledgement_to_receipt';
+
+const WAIT_REASONS = new Set([
+  'create',
+  'update',
+  'resume',
+  'retry',
+  'resolution',
+  'local_capacity',
+  'max_rate_limit',
+  'circuit_open',
+]);
+
+export function recordPublicationWaitTiming(
+  logger: Partial<Pick<Logger, 'log'>>,
+  input: Partial<PublicationTimingDimensions> & {
+    stage: PublicationWaitStage;
+    from: Date | null | undefined;
+    to: Date;
+    reason?: string | null;
+    outcome?: 'observed' | 'expired';
+  },
+): void {
+  observeSafely(() => {
+    const durationMs = elapsedDateMs(input.from, input.to);
+    emit(logger, {
+      metric: 'publication_wait_v1',
+      stage: input.stage,
+      mode: input.mode ?? 'UNKNOWN',
+      media: input.media ?? 'unknown',
+      reason: WAIT_REASONS.has(input.reason ?? '') ? input.reason : 'unknown',
+      outcome: input.outcome ?? 'observed',
+      durationMs,
+      clock: durationMs === null ? 'unknown' : 'wall',
+    });
+  });
+}
 export type PublicationStage =
   | 'actor_authority'
   | 'delivery_readiness'
@@ -49,9 +95,7 @@ export async function measurePublicationStage<T>(
   }
 }
 
-type PublicationTimingInput = {
-  mode?: PublicationScheduleMode | null;
-  media: PublicationMediaKind;
+type PublicationTimingInput = PublicationTimingDimensions & {
   scheduledAt?: Date | null;
   intentCreatedAt?: Date | null;
 };
@@ -63,39 +107,89 @@ export function createPublicationExecutionObserver(
 ): {
   readonly scheduledAt: Date | null;
   readonly deadlineAt: Date | null;
+  readonly dimensions: PublicationTimingDimensions;
   onOccurrenceScheduledAt: (scheduledAt: Date, execution?: PublicationExecutionTiming) => void;
   observeReceipt: () => void;
   observeAcknowledgement: () => void;
+  observeClaim: (
+    delivery: Pick<ManagedBroadcastDelivery, 'attemptCount'> &
+      Partial<
+        Pick<ManagedBroadcastDelivery, 'capacityDeferralCount' | 'nextAttemptAt' | 'waitReason'>
+      >,
+  ) => void;
 } {
   let scheduledAt: Date | null = null;
   let execution: PublicationExecutionTiming | null = null;
+  let acknowledgementAt: Date | null = null;
+  const dimensions = (): PublicationTimingDimensions => ({
+    mode: execution?.mode,
+    media: row.mediaType === 'video' ? 'video' : row.imageEnabled ? 'image' : 'none',
+  });
   const observeReceipt = () => {
     if (!enabled || !row.publicationOccurrenceId) return;
+    const persistedAt = new Date();
     recordPublicationReceiptTiming(logger, {
-      mode: execution?.mode,
+      ...dimensions(),
       intentCreatedAt: execution?.intentCreatedAt,
       scheduledAt,
-      media: row.mediaType === 'video' ? 'video' : row.imageEnabled ? 'image' : 'none',
-      receiptPersistedAt: new Date(),
+      receiptPersistedAt: persistedAt,
     });
+    recordPublicationWaitTiming(logger, {
+      ...dimensions(),
+      stage: 'observed_acknowledgement_to_receipt',
+      from: acknowledgementAt,
+      to: persistedAt,
+    });
+    acknowledgementAt = null;
   };
   return {
+    get dimensions() {
+      return dimensions();
+    },
     get deadlineAt() {
       return execution?.deadlineAt ?? null;
     },
     get scheduledAt() {
       return scheduledAt;
     },
-    observeReceipt,
+    observeReceipt: () => observeSafely(observeReceipt),
+    observeClaim: (delivery) =>
+      observeSafely(() => {
+        // FLAG: A prior recipient's response cannot time this recipient's recovery receipt.
+        // Claims are observations, not durable once-only counters or new execution authority.
+        acknowledgementAt = null;
+        if (!enabled || !row.publicationOccurrenceId) return;
+        const claimedAt = new Date();
+        if (delivery.attemptCount === 0 && (delivery.capacityDeferralCount ?? 0) === 0) {
+          recordPublicationWaitTiming(logger, {
+            ...dimensions(),
+            stage: 'initial_recipient_claim',
+            from: execution?.mode === 'NOW' ? execution.intentCreatedAt : scheduledAt,
+            to: claimedAt,
+          });
+        }
+        if (delivery.nextAttemptAt) {
+          recordPublicationWaitTiming(logger, {
+            ...dimensions(),
+            stage: 'recipient_retry_lateness',
+            from: delivery.nextAttemptAt,
+            to: claimedAt,
+            reason: delivery.waitReason,
+          });
+        }
+      }),
     observeAcknowledgement: () => {
-      if (!enabled || !row.publicationOccurrenceId) return;
-      recordPublicationReceiptTiming(logger, {
-        mode: execution?.mode,
-        intentCreatedAt: execution?.intentCreatedAt,
-        scheduledAt,
-        media: row.mediaType === 'video' ? 'video' : row.imageEnabled ? 'image' : 'none',
-        receiptPersistedAt: new Date(),
-        outcome: 'max_acknowledgement_observed',
+      observeSafely(() => {
+        if (!enabled || !row.publicationOccurrenceId) return;
+        acknowledgementAt = new Date();
+        recordPublicationReceiptTiming(logger, {
+          mode: execution?.mode,
+          intentCreatedAt: execution?.intentCreatedAt,
+          scheduledAt,
+          media: row.mediaType === 'video' ? 'video' : row.imageEnabled ? 'image' : 'none',
+          receiptPersistedAt: acknowledgementAt,
+          outcome: 'max_acknowledgement_observed',
+        });
       });
     },
     onOccurrenceScheduledAt: (nextScheduledAt, nextExecution) => {
@@ -127,28 +221,27 @@ export function recordPublicationReceiptTiming(
     outcome?: 'receipt_persisted' | 'max_acknowledgement_observed';
   },
 ): void {
-  const reference = input.mode === 'NOW' ? input.intentCreatedAt : input.scheduledAt;
-  const referenceMs = reference?.getTime();
-  const persistedMs = input.receiptPersistedAt.getTime();
-  const durationMs =
-    referenceMs !== undefined &&
-    Number.isFinite(referenceMs) &&
-    Number.isFinite(persistedMs) &&
-    persistedMs >= referenceMs
-      ? persistedMs - referenceMs
-      : null;
-  const bucket = durationMs === null ? null : LATENCY_BUCKETS.find((upper) => durationMs <= upper);
-  emit(logger, {
-    metric: 'publication_delivery_v1',
-    scope: 'delivery',
-    outcome: input.outcome ?? 'receipt_persisted',
-    mode: input.mode ?? 'UNKNOWN',
-    media: input.media,
-    clock:
-      durationMs === null ? 'unknown' : input.mode === 'NOW' ? 'intent_created_at' : 'scheduled_at',
-    durationMs,
-    latencyBucket:
-      durationMs === null ? 'unknown' : bucket === undefined ? 'over_300000ms' : `le_${bucket}ms`,
+  observeSafely(() => {
+    const reference = input.mode === 'NOW' ? input.intentCreatedAt : input.scheduledAt;
+    const durationMs = elapsedDateMs(reference, input.receiptPersistedAt);
+    const bucket =
+      durationMs === null ? null : LATENCY_BUCKETS.find((upper) => durationMs <= upper);
+    emit(logger, {
+      metric: 'publication_delivery_v1',
+      scope: 'delivery',
+      outcome: input.outcome ?? 'receipt_persisted',
+      mode: input.mode ?? 'UNKNOWN',
+      media: input.media,
+      clock:
+        durationMs === null
+          ? 'unknown'
+          : input.mode === 'NOW'
+            ? 'intent_created_at'
+            : 'scheduled_at',
+      durationMs,
+      latencyBucket:
+        durationMs === null ? 'unknown' : bucket === undefined ? 'over_300000ms' : `le_${bucket}ms`,
+    });
   });
 }
 
@@ -178,11 +271,26 @@ export function recordPublicationDispatchOutcome(
 }
 
 function emit(logger: Partial<Pick<Logger, 'log'>>, metric: Record<string, unknown>): void {
-  // FLAG: These identifier-free observations follow a successful state CAS. Logging must
-  // never change delivery recovery or imply exactly-once telemetry across a process crash.
+  // FLAG: Identifier-free observations never change recovery or imply exactly-once telemetry.
   try {
     logger.log?.(metric, 'Publication delivery observation');
   } catch {
     // FLAG: The persisted receipt or transition remains the source of truth.
+  }
+}
+
+function elapsedDateMs(from: Date | null | undefined, to: Date): number | null {
+  const fromMs = from?.getTime();
+  const toMs = to.getTime();
+  return fromMs !== undefined && Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs >= fromMs
+    ? toMs - fromMs
+    : null;
+}
+
+function observeSafely(observe: () => void): void {
+  try {
+    observe();
+  } catch {
+    // FLAG: An invalid observation or accessor must not alter the original operation.
   }
 }

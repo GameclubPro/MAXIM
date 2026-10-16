@@ -1,4 +1,5 @@
 import type { Job } from 'bullmq';
+import { Logger } from '@nestjs/common';
 import { PublisherDispatchDisabledError } from '../publisher/publisher-runtime-boundary.service';
 import { PublisherPublicationWakeupProcessor } from './publisher-publication-wakeup.processor';
 import {
@@ -25,12 +26,14 @@ describe('PublisherPublicationWakeupProcessor', () => {
   };
 
   beforeEach(() => {
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     jest.useFakeTimers().setSystemTime(now);
     process.env.APP_ROLE = 'publisher';
     process.env.APP_SERVICE_NAME = 'api-publisher';
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     jest.useRealTimers();
     if (originalRole === undefined) delete process.env.APP_ROLE;
     else process.env.APP_ROLE = originalRole;
@@ -159,6 +162,45 @@ describe('PublisherPublicationWakeupProcessor', () => {
     expect(dispatchHealth.assertDispatchAllowed).not.toHaveBeenCalled();
     expect(publicationService.processPublisherPublicationWake).not.toHaveBeenCalled();
     expect(publicationRunner.wakeAfterPublicationMaterialization).not.toHaveBeenCalled();
+    expect(Logger.prototype.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metric: 'publication_wait_v1',
+        stage: 'wakeup_queue',
+        outcome: 'expired',
+        durationMs: PUBLISHER_PUBLICATION_WAKEUP_JOB_TTL_MS,
+      }),
+      expect.any(String),
+    );
+  });
+
+  it('measures original signal age despite a newer queue timestamp without exposing identity', async () => {
+    const { processor, publicationService } = fixture();
+    const createdAt = new Date(now.getTime() - 15_000).toISOString();
+    await processor.process(job({ ...ordinaryData, createdAt }));
+    expect(Logger.prototype.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metric: 'publication_wait_v1',
+        stage: 'wakeup_queue',
+        reason: 'update',
+        durationMs: 15_000,
+        outcome: 'observed',
+      }),
+      expect.any(String),
+    );
+    expect(JSON.stringify(jest.mocked(Logger.prototype.log).mock.calls)).not.toContain(
+      'publication-1',
+    );
+    expect(publicationService.processPublisherPublicationWake).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues the same guarded operation when observation logging fails', async () => {
+    jest.mocked(Logger.prototype.log).mockImplementation(() => {
+      throw new Error('logger down');
+    });
+    const { processor, publicationService, publicationRunner } = fixture();
+    await expect(processor.process(job())).resolves.toBeUndefined();
+    expect(publicationService.processPublisherPublicationWake).toHaveBeenCalledTimes(1);
+    expect(publicationRunner.wakeAfterPublicationMaterialization).toHaveBeenCalledTimes(1);
   });
 
   it('runs runtime, identity and health guards before materialization and runner wake', async () => {

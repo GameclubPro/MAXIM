@@ -375,6 +375,20 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       durationMs: 12_000,
     });
     expect(JSON.stringify(observations)).not.toContain(row.id);
+    expect(logger.log.mock.calls.map(([event]) => event)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          metric: 'publication_wait_v1',
+          stage: 'initial_recipient_claim',
+          durationMs: 12_000,
+        }),
+        expect.objectContaining({
+          metric: 'publication_wait_v1',
+          stage: 'observed_acknowledgement_to_receipt',
+          durationMs: 0,
+        }),
+      ]),
+    );
     logger.log.mockClear();
     deliveryUpdateMany.mockImplementation(async ({ data }: any) => ({
       count: data.status === 'SENT' ? 0 : 1,
@@ -387,6 +401,19 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         .filter(([event]) => event.metric === 'publication_delivery_v1')
         .map(([event]) => event.outcome),
     ).toEqual(['max_acknowledgement_observed']);
+    expect(logger.log.mock.calls.map(([event]) => event)).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ stage: 'observed_acknowledgement_to_receipt' }),
+      ]),
+    );
+    logger.log.mockClear();
+    deliveryUpdateMany.mockResolvedValue({ count: 0 });
+    await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+      ManagedBroadcastStatus.ACTIVE,
+    ]);
+    expect(
+      logger.log.mock.calls.filter(([event]) => event.metric === 'publication_wait_v1'),
+    ).toEqual([]);
   });
 
   it('opts an ordinary Publik send out of optional message link hydration', async () => {

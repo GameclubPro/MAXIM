@@ -1,4 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import {
@@ -10,6 +11,7 @@ import { assertPublisherIdentityOrDelay } from '../publisher/publisher-identity-
 import { PublisherIdentityAttestationService } from '../publisher/publisher-identity-attestation.service';
 import { PublisherRuntimeBoundaryService } from '../publisher/publisher-runtime-boundary.service';
 import { PublicationService } from './publication.service';
+import { recordPublicationWaitTiming } from './publication-delivery-timing';
 import { PublisherPublicationDispatchRunnerService } from './publisher-publication-dispatch-runner.service';
 import {
   PUBLISHER_PUBLICATION_WAKEUP_JOB,
@@ -29,6 +31,8 @@ const WAKEUP_REASONS = new Set<PublisherPublicationWakeupReason>([
 
 @Processor(PUBLISHER_PUBLICATION_WAKEUP_QUEUE, { concurrency: 1 })
 export class PublisherPublicationWakeupProcessor extends WorkerHost {
+  private readonly logger = new Logger(PublisherPublicationWakeupProcessor.name);
+
   constructor(
     private readonly publicationService: PublicationService,
     private readonly publicationRunner: PublisherPublicationDispatchRunnerService,
@@ -49,7 +53,16 @@ export class PublisherPublicationWakeupProcessor extends WorkerHost {
     }
     const createdAtMs = Date.parse(data.createdAt);
     const queuedAtMs = Number.isFinite(createdAtMs) ? createdAtMs : job.timestamp;
-    if (Date.now() - queuedAtMs >= PUBLISHER_PUBLICATION_WAKEUP_JOB_TTL_MS) {
+    const observedAt = new Date();
+    const expired = observedAt.getTime() - queuedAtMs >= PUBLISHER_PUBLICATION_WAKEUP_JOB_TTL_MS;
+    recordPublicationWaitTiming(this.logger, {
+      stage: 'wakeup_queue',
+      from: new Date(queuedAtMs),
+      to: observedAt,
+      reason: data.reason,
+      outcome: expired ? 'expired' : 'observed',
+    });
+    if (expired) {
       return;
     }
 

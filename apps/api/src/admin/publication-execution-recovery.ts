@@ -39,7 +39,9 @@ import {
 import { PUBLISHER_MISSED_WINDOW_BLOCKER_CODE } from './publication-dispatch-issue';
 import {
   recordPublicationDispatchOutcome,
+  recordPublicationWaitTiming,
   type PublicationExecutionTiming,
+  type PublicationTimingDimensions,
 } from './publication-delivery-timing';
 
 export { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
@@ -633,6 +635,7 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
   broadcastLockToken: string;
   deliveryLockToken: string;
   sendAttemptStarted?: boolean;
+  timing?: PublicationTimingDimensions;
   error: unknown;
 }): Promise<Date | null> {
   // FLAG: Recycle only an exact limiter/circuit rejection before HTTP dispatch or an exact HTTP
@@ -710,6 +713,13 @@ export async function deferPublicationDeliveryAfterPreDispatchThrottle(options: 
     throw error;
   }
 
+  recordPublicationWaitTiming(options.context.logger, {
+    ...options.timing,
+    stage: 'capacity_deferral',
+    from: now,
+    to: retryAt,
+    reason: decision.reason,
+  });
   options.context.logger.warn(
     {
       broadcastId: options.row.id,
