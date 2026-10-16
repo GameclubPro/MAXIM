@@ -9,7 +9,8 @@ import {
   MaxApiInternalRateLimitError,
   type MaxActionJob,
 } from '../max/max-client.service';
-import { Prisma } from '../prisma/prisma-client';
+import { Prisma, type ChannelSettings } from '../prisma/prisma-client';
+import { ChannelAutoPostScanManager } from '../moderation/channel-auto-post-runtime';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import {
@@ -334,6 +335,86 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     expect(s.effects.filter((effect) => effect.method === 'delete')).toEqual(deletions);
     expect(s.failures).toEqual([]);
   });
+
+  it.each(['allowed', 'access_lost', 'held'] as const)(
+    'polls a later channel post while an earlier marker stays leased, guard=%s',
+    async (guard) => {
+      const s = await fixture(2);
+      for (const bot of s.bots)
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      const settings = await s.prisma.channelSettings.findUniqueOrThrow({ where: { chatId } });
+      const at = Date.now();
+      const blockedId = `poll-blocked-${randomUUID()}`;
+      const laterId = `poll-later-${randomUUID()}`;
+      for (const [index, id] of [blockedId, laterId].entries()) {
+        s.messages.set(id, {
+          timestamp: at + index,
+          recipient: { chat_id: chatId, chat_type: 'channel' },
+          body: { mid: id, text: 'Independent channel post' },
+        });
+      }
+      const marker = await s.prisma.channelAutoPostAttachMarker.create({
+        data: {
+          chatId: chatId!,
+          messageId: blockedId,
+          source: 'webhook',
+          botId: s.bots[1]!.id,
+          lockToken: randomUUID(),
+          lockedAt: new Date(),
+          deliveryMode: 'edit_message',
+          lastError: 'Retained unknown effect fixture',
+        },
+      });
+      jest
+        .spyOn(s.max, 'listMessages')
+        .mockImplementation(async () => [s.messages.get(laterId)!, s.messages.get(blockedId)!]);
+      const poller = s.moderation as unknown as {
+        channelAutoPostScanManager: ChannelAutoPostScanManager;
+        processManagedChannelAutoPostButtons: (
+          channel: { channelSettings: ChannelSettings; adminUserIds: string[] },
+          options: { maxNewMessagesPerScan: number },
+        ) => Promise<void>;
+      };
+      const channel = { channelSettings: settings, adminUserIds: [] };
+      await poller.processManagedChannelAutoPostButtons(channel, { maxNewMessagesPerScan: 1 });
+      expect(s.effects).toEqual([]);
+      if (guard === 'access_lost') for (const bot of s.bots) s.denyBot(bot.id);
+      if (guard === 'held') {
+        const holds = s.moderation as unknown as {
+          legacyHolds: { isMessageHeld: (chatId: string, messageId: string) => Promise<boolean> };
+        };
+        jest
+          .spyOn(holds.legacyHolds, 'isMessageHeld')
+          .mockImplementation(async (_, id) => id === laterId);
+      }
+      poller.channelAutoPostScanManager.states.get(chatId!)!.nextScanAtMs = 0;
+      await poller.processManagedChannelAutoPostButtons(channel, { maxNewMessagesPerScan: 1 });
+      expect(s.effects.filter((effect) => effect.method === 'put')).toHaveLength(
+        guard === 'allowed' ? 1 : 0,
+      );
+      expect(
+        s.effects.every((effect) => effect.method === 'put' && effect.messageId === laterId),
+      ).toBe(true);
+      expect(
+        await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({ where: { id: marker.id } }),
+      ).toEqual(marker);
+      expect(poller.channelAutoPostScanManager.states.get(chatId!)?.latestTimestampMs).toBe(0);
+      if (guard === 'allowed') {
+        expect(
+          await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({
+            where: { chatId_messageId: { chatId: chatId!, messageId: laterId } },
+          }),
+        ).toMatchObject({ status: 'SUCCEEDED', deliveryMode: 'edit_message' });
+      }
+      expect(s.failures).toEqual([]);
+    },
+  );
 
   it.each([false, true])(
     'signs a manually published channel post exactly once through mirrored receipts, senderless=%s',

@@ -5315,7 +5315,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(markerDelegate.create).not.toHaveBeenCalled();
   });
 
-  it('stops the poll scan at an in-progress auto-attach marker', async () => {
+  it('attempts the next post while retaining an in-progress auto-attach marker', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T03:00:00.000Z'));
 
     const prisma = {
@@ -5399,8 +5399,23 @@ describe('ModerationService channel auto post buttons', () => {
     configureDefaultChannelAutoPostEditRoute(service);
     await (service as any).processChannelAutoPostButtons();
 
-    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(prisma.channelAutoPostAttachMarker.findUnique).toHaveBeenCalledTimes(2);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-next-1',
+      'Следующий пост',
+      expect.any(Object),
+      expectChannelAutoPostOptions(),
+    );
+    expect(prisma.channelAutoPostAttachMarker.updateMany.mock.calls).not.toEqual(
+      expect.arrayContaining([
+        [
+          expect.objectContaining({
+            where: expect.objectContaining({ messageId: 'mid-locked-1' }),
+          }),
+        ],
+      ]),
+    );
     expect(prisma.channelAutoPostAttachMarker.findUnique).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({

@@ -69,6 +69,22 @@ type ProcessChannelAutoPostListedMessagesParams = {
   attach: (message: ChannelAutoPostListedMessage) => Promise<ChannelAutoPostAttachOutcome>;
 };
 
+type ScanPosition = Pick<ChannelAutoPostListedMessage, 'messageId' | 'timestampMs'>;
+type MessageScanProgress = {
+  lastAttempt: ScanPosition | null;
+  pending: Map<string, ScanPosition & { settled: boolean }>;
+  overflowAt: ScanPosition | null;
+};
+
+const MAX_RETAINED_SCAN_MESSAGES = 32;
+
+function compareScanPositions(left: ScanPosition, right: ScanPosition): number {
+  return (
+    left.timestampMs - right.timestampMs ||
+    (left.messageId < right.messageId ? -1 : left.messageId > right.messageId ? 1 : 0)
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -617,7 +633,8 @@ function buildStrictBotIdentityVariants(value: string): Set<string> {
 
 export class ChannelAutoPostScanManager {
   private readonly now: () => number;
-  private cursor = 0;
+  private lastSelectedChatId: string | null = null;
+  private readonly messageProgress = new Map<string, MessageScanProgress>();
   private throttleStreak = 0;
   private readonly scopedThrottles = new Map<string, { streak: number; untilMs: number }>();
 
@@ -641,21 +658,29 @@ export class ChannelAutoPostScanManager {
     maxChannels = this.config.scanMaxChannels,
   ): T[] {
     const normalizedMaxChannels = Math.max(1, Math.min(maxChannels, this.config.scanMaxChannels));
-    const dueChannels = channels.filter((channel) => this.isDue(channel.chatId));
+    const dueChannels = channels
+      .filter((channel) => this.isDue(channel.chatId))
+      .sort((left, right) =>
+        left.chatId < right.chatId ? -1 : left.chatId > right.chatId ? 1 : 0,
+      );
     if (dueChannels.length === 0) {
       return [];
     }
     if (dueChannels.length <= normalizedMaxChannels) {
-      this.cursor = 0;
+      this.lastSelectedChatId = dueChannels.at(-1)!.chatId;
       return dueChannels;
     }
 
-    const startIndex = this.cursor % dueChannels.length;
+    // FLAG: An offset into a changing due subset can starve continuously due channels.
+    const nextIndex = dueChannels.findIndex(
+      (channel) => this.lastSelectedChatId === null || channel.chatId > this.lastSelectedChatId,
+    );
+    const startIndex = Math.max(0, nextIndex);
     const batch: T[] = [];
     for (let index = 0; index < normalizedMaxChannels; index += 1) {
       batch.push(dueChannels[(startIndex + index) % dueChannels.length]!);
     }
-    this.cursor = (startIndex + batch.length) % dueChannels.length;
+    this.lastSelectedChatId = batch.at(-1)!.chatId;
     return batch;
   }
 
@@ -779,40 +804,70 @@ export class ChannelAutoPostScanManager {
         parseChannelAutoPostListedMessage(message, params.chatId, params.quickButtonsEnabled),
       )
       .filter((item): item is ChannelAutoPostListedMessage => item !== null)
-      .sort(
-        (left, right) =>
-          left.timestampMs - right.timestampMs || left.messageId.localeCompare(right.messageId),
-      );
+      .sort(compareScanPositions);
     let scanState = this.states.get(params.chatId) ?? null;
-    let sawNewMessages = false;
-    let autoAttachAttempts = 0;
+    const messages = normalizedMessages.filter((message) => this.isMessageNew(scanState, message));
+    const progress: MessageScanProgress = this.messageProgress.get(params.chatId) ?? {
+      lastAttempt: null,
+      pending: new Map(),
+      overflowAt: null,
+    };
+    this.messageProgress.set(params.chatId, progress);
 
-    for (const normalized of normalizedMessages) {
-      if (!this.isMessageNew(scanState, normalized)) {
-        continue;
+    // FLAG: Retain unvisited and unfinished positions even if MAX drops them from its latest
+    // page. On overflow freeze the advisory completion cursor conservatively; bounded fair
+    // attempts continue through the unchanged durable markers, source holds and final guards.
+    for (const message of messages) {
+      if (progress.pending.has(message.messageId)) continue;
+      const position = { messageId: message.messageId, timestampMs: message.timestampMs };
+      if (progress.pending.size < MAX_RETAINED_SCAN_MESSAGES) {
+        progress.pending.set(message.messageId, {
+          ...position,
+          settled: message.timestampMs < params.settingsUpdatedAtMs,
+        });
+      } else if (!progress.overflowAt || compareScanPositions(position, progress.overflowAt) < 0) {
+        progress.overflowAt = position;
       }
-      sawNewMessages = true;
-      // FLAG: Admission includes anonymous forwards for keyboard-only edits. The mutation
-      // path still requires a verified admin before any text-replacement send or delete.
-      if (normalized.timestampMs < params.settingsUpdatedAtMs) {
-        scanState = this.advance(scanState, normalized);
-        this.states.set(params.chatId, scanState);
-        continue;
-      }
-      if (autoAttachAttempts >= Math.max(1, params.maxNewMessagesPerScan)) {
-        break;
-      }
-
-      const outcome = await params.attach(normalized);
-      autoAttachAttempts += 1;
-      if (outcome === 'in_progress') {
-        break;
-      }
-      scanState = this.advance(scanState, normalized);
-      this.states.set(params.chatId, scanState);
     }
 
-    this.states.set(params.chatId, this.schedule(scanState, sawNewMessages));
+    const advanceSettledPrefix = () => {
+      for (const entry of [...progress.pending.values()].sort(compareScanPositions)) {
+        if (
+          !entry.settled ||
+          (progress.overflowAt && compareScanPositions(entry, progress.overflowAt) >= 0)
+        )
+          break;
+        scanState = this.advance(scanState, entry);
+        this.states.set(params.chatId, scanState);
+        progress.pending.delete(entry.messageId);
+      }
+    };
+    advanceSettledPrefix();
+    const candidates = messages.filter(
+      (message) =>
+        this.isMessageNew(scanState, message) &&
+        message.timestampMs >= params.settingsUpdatedAtMs &&
+        !progress.pending.get(message.messageId)?.settled,
+    );
+    const nextIndex = candidates.findIndex(
+      (message) => !progress.lastAttempt || compareScanPositions(message, progress.lastAttempt) > 0,
+    );
+    const startIndex = Math.max(0, nextIndex);
+    const attempts = Math.min(candidates.length, Math.max(1, params.maxNewMessagesPerScan));
+    for (let index = 0; index < attempts; index += 1) {
+      const message = candidates[(startIndex + index) % candidates.length]!;
+      progress.lastAttempt = { messageId: message.messageId, timestampMs: message.timestampMs };
+      // FLAG: This cursor allocates attempts, never execution authority. A thrown transport
+      // error still escapes to the existing scoped/global cooldown; an unknown result stays pending.
+      const outcome = await params.attach(message);
+      if (outcome === 'attached' || outcome === 'skipped' || outcome === 'noop') {
+        const entry = progress.pending.get(message.messageId);
+        if (entry) entry.settled = true;
+        advanceSettledPrefix();
+      }
+    }
+
+    this.states.set(params.chatId, this.schedule(scanState, messages.length > 0));
   }
 
   private createState(): ChannelAutoPostScanState {
