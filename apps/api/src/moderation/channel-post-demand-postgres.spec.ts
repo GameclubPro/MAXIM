@@ -116,7 +116,7 @@ native('durable channel post demand in PostgreSQL', () => {
     const parent = await db.channelPostDemandChannel.findUniqueOrThrow({
       where: { chatId: first.chatId },
     });
-    expect(parent.dueAt).toEqual(earliest.dueAt);
+    expect(parent.dueAt!.getTime()).toBeGreaterThanOrEqual(earliest.dueAt.getTime());
     expect(parent.dueAt!.getTime()).toBeLessThanOrEqual(Date.now());
     await claimChannelPostDemandItems(db, first.chatId, 1, 300_000);
     await db.$transaction((tx) => idleChannelPostDemand(tx, first.chatId));
@@ -125,6 +125,29 @@ native('durable channel post demand in PostgreSQL', () => {
         await db.channelPostDemandChannel.findUniqueOrThrow({ where: { chatId: first.chatId } })
       ).dueAt!.getTime(),
     ).toBeGreaterThan(Date.now() + 250_000);
+  });
+  it('rotates a ready hot channel behind a quiet channel without postponing its remaining posts', async () => {
+    const busy = await channel(),
+      quiet = await channel();
+    for (let i = 0; i < 12; i++) await persist(input(busy));
+    await persist(input(quiet));
+    const busyDueAt = new Date(Date.now() - 60_000);
+    const quietDueAt = new Date(Date.now() - 30_000);
+    for (const [chatId, dueAt] of [
+      [busy, busyDueAt],
+      [quiet, quietDueAt],
+    ] as const) {
+      await db.channelPostDemand.updateMany({ where: { chatId }, data: { dueAt } });
+      await db.channelPostDemandChannel.update({ where: { chatId }, data: { dueAt } });
+    }
+    expect(await claimChannelPostDemandChannels(db, 1, 30_000)).toEqual([{ chatId: busy }]);
+    await claimChannelPostDemandItems(db, busy, 1, 300_000);
+    await db.$transaction((tx) => idleChannelPostDemand(tx, busy));
+    expect(await claimChannelPostDemandChannels(db, 1, 30_000)).toEqual([{ chatId: quiet }]);
+    expect(await db.channelPostDemand.count({ where: { chatId: busy, dueAt: busyDueAt } })).toBe(
+      11,
+    );
+    expect(await claimChannelPostDemandChannels(db, 1, 30_000)).toEqual([{ chatId: busy }]);
   });
   it('wakes a delayed parent for a new post without renewing a mirrored post retry', async () => {
     const first = input(await channel());

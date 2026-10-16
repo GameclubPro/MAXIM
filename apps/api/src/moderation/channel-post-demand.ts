@@ -162,11 +162,13 @@ export async function idleChannelPostDemand(tx: Store, chatId: string): Promise<
     Prisma.sql`SELECT chat_id FROM channel_post_demand_channels WHERE chat_id = ${chatId} FOR UPDATE`,
   );
   // FLAG: Use the earliest retained child, including unvisited work after a failed
-  // read. Empty channels become idle; future-only retries consume no due-channel slot.
+  // read. Ready channels rotate behind other due channels instead of reclaiming their
+  // old queue position. Empty channels become idle; future retries consume no due slot.
   // The parent lock also serializes fresh ingress wake-ups. MAX cooldowns remain in
   // the scan manager and final transport admission, outside this scheduling hint.
   await tx.$executeRaw(Prisma.sql`UPDATE channel_post_demand_channels
-    SET due_at = (SELECT due_at FROM channel_post_demands
+    SET due_at = (SELECT GREATEST(due_at, (clock_timestamp() AT TIME ZONE 'UTC'))
+      FROM channel_post_demands
       WHERE chat_id = ${chatId} ORDER BY due_at, message_id LIMIT 1)
     WHERE chat_id = ${chatId}`);
 }

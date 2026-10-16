@@ -12,7 +12,9 @@ without a verified administrator. Existing posts are not bulk rewritten by a set
 ### Durable post scheduling
 
 The parent channel's next visit follows its earliest retained post, including an unvisited
-sibling after an exact source read fails. A channel with only future retries does not consume
+sibling after an exact source read fails. Already-ready work rotates behind other due
+channels by scheduling the parent's next visit no earlier than the end of this pass; the
+children keep their original retry times. A channel with only future retries does not consume
 a due-channel slot. Receipt capture and the parent wake-up share the existing transaction:
 only a newly inserted post wakes the parent; mirrors retain the saved post retry and horizon.
 Parent-before-child locking prevents a concurrent idle transition from losing that arrival.
