@@ -4,6 +4,7 @@ import {
   captureChannelPostDemand,
   claimChannelPostDemandChannels,
   claimChannelPostDemandItems,
+  deferUnavailableChannelPostDemand,
   idleChannelPostDemand,
   persistChannelPostDemand,
   purgeExpiredChannelPostDemands,
@@ -64,9 +65,12 @@ native('durable channel post demand in PostgreSQL', () => {
       expiresAt: new Date(Date.now() + 86_400_000),
     };
   }
+  async function persist(value: ChannelPostDemandInput) {
+    await db.$transaction((tx) => persistChannelPostDemand(tx, value));
+  }
   it('coalesces mirrors and preserves item and channel retry waits across a new client', async () => {
     const first = input(await channel());
-    await Promise.all(Array.from({ length: 4 }, () => persistChannelPostDemand(db, first)));
+    await Promise.all(Array.from({ length: 4 }, () => persist(first)));
     expect(await db.channelPostDemand.count()).toBe(1);
     await claimChannelPostDemandChannels(db, 1, 120_000);
     await claimChannelPostDemandItems(db, first.chatId, 1, 120_000);
@@ -74,7 +78,7 @@ native('durable channel post demand in PostgreSQL', () => {
     const channelBefore = await db.channelPostDemandChannel.findMany();
     const restarted = createPrismaClient(databaseUrl, { max: 1 });
     try {
-      await persistChannelPostDemand(restarted, first);
+      await restarted.$transaction((tx) => persistChannelPostDemand(tx, first));
     } finally {
       await restarted.$disconnect();
     }
@@ -85,8 +89,8 @@ native('durable channel post demand in PostgreSQL', () => {
   it('rotates channel and message attempts without settling an unfinished effect', async () => {
     const busy = await channel(),
       quiet = await channel();
-    for (let i = 0; i < 12; i++) await persistChannelPostDemand(db, input(busy));
-    await persistChannelPostDemand(db, input(quiet));
+    for (let i = 0; i < 12; i++) await persist(input(busy));
+    await persist(input(quiet));
     const claimed = await Promise.all([
       claimChannelPostDemandChannels(db, 1, 30_000),
       claimChannelPostDemandChannels(db, 1, 30_000),
@@ -97,16 +101,60 @@ native('durable channel post demand in PostgreSQL', () => {
     expect(second[0]?.messageId).not.toBe(first[0]?.messageId);
     expect(await db.channelPostDemand.count({ where: { chatId: busy } })).toBe(12);
   });
+  it('schedules the parent from its earliest remaining child, including an unvisited sibling', async () => {
+    const first = input(await channel());
+    const second = input(first.chatId);
+    await persist(first);
+    await persist(second);
+    await claimChannelPostDemandChannels(db, 1, 30_000);
+    await claimChannelPostDemandItems(db, first.chatId, 1, 300_000);
+    await db.$transaction((tx) => idleChannelPostDemand(tx, first.chatId));
+    const earliest = await db.channelPostDemand.findFirstOrThrow({
+      where: { chatId: first.chatId },
+      orderBy: [{ dueAt: 'asc' }, { messageId: 'asc' }],
+    });
+    const parent = await db.channelPostDemandChannel.findUniqueOrThrow({
+      where: { chatId: first.chatId },
+    });
+    expect(parent.dueAt).toEqual(earliest.dueAt);
+    expect(parent.dueAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    await claimChannelPostDemandItems(db, first.chatId, 1, 300_000);
+    await db.$transaction((tx) => idleChannelPostDemand(tx, first.chatId));
+    expect(
+      (
+        await db.channelPostDemandChannel.findUniqueOrThrow({ where: { chatId: first.chatId } })
+      ).dueAt!.getTime(),
+    ).toBeGreaterThan(Date.now() + 250_000);
+  });
+  it('wakes a delayed parent for a new post without renewing a mirrored post retry', async () => {
+    const first = input(await channel());
+    await persist(first);
+    await claimChannelPostDemandChannels(db, 1, 300_000);
+    await claimChannelPostDemandItems(db, first.chatId, 1, 300_000);
+    const before = await db.channelPostDemandChannel.findUniqueOrThrow({
+      where: { chatId: first.chatId },
+    });
+    await persist(first);
+    expect(
+      await db.channelPostDemandChannel.findUniqueOrThrow({ where: { chatId: first.chatId } }),
+    ).toEqual(before);
+    await persist(input(first.chatId));
+    expect(
+      (
+        await db.channelPostDemandChannel.findUniqueOrThrow({ where: { chatId: first.chatId } })
+      ).dueAt!.getTime(),
+    ).toBeLessThanOrEqual(Date.now());
+  });
   it('does not lose arrivals racing an empty-channel transition', async () => {
     const chatId = await channel();
     for (let i = 0; i < 12; i++) {
       const seed = input(chatId);
-      await persistChannelPostDemand(db, seed);
+      await persist(seed);
       await settleChannelPostDemand(db, seed);
       const next = input(chatId);
       await Promise.all([
         db.$transaction((tx) => idleChannelPostDemand(tx, chatId)),
-        persistChannelPostDemand(db, next),
+        persist(next),
       ]);
       expect(
         (await db.channelPostDemandChannel.findUniqueOrThrow({ where: { chatId } })).dueAt,
@@ -114,6 +162,29 @@ native('durable channel post demand in PostgreSQL', () => {
       expect(await db.channelPostDemand.count({ where: { chatId } })).toBe(1);
       await settleChannelPostDemand(db, next);
     }
+  });
+  it('delays only the exact read reservation and never extends its source horizon', async () => {
+    const value = input(await channel());
+    value.expiresAt = new Date(Date.now() + 120_000);
+    await persist(value);
+    const [first] = await claimChannelPostDemandItems(db, value.chatId, 1, 30_000);
+    expect(typeof first!.claimedUntil).toBe('string');
+    await db.channelPostDemand.update({
+      where: { chatId_messageId: { chatId: value.chatId, messageId: value.messageId } },
+      data: { dueAt: new Date(Date.now() - 1000) },
+    });
+    const [next] = await claimChannelPostDemandItems(db, value.chatId, 1, 30_000);
+    const read = () =>
+      db.channelPostDemand.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: value.chatId, messageId: value.messageId } },
+      });
+    const before = await read();
+    await deferUnavailableChannelPostDemand(db, first!);
+    expect(await read()).toEqual(before);
+    await deferUnavailableChannelPostDemand(db, next!);
+    expect(await read()).toEqual({ ...before, dueAt: value.expiresAt });
+    await persist(value);
+    expect(await read()).toEqual({ ...before, dueAt: value.expiresAt });
   });
   it('keeps capture atomic with the receipt and excludes held creations', async () => {
     const chatId = await channel(),
@@ -172,7 +243,7 @@ native('durable channel post demand in PostgreSQL', () => {
   });
   it('bounds due selection and expiry against retained history and a hot channel', async () => {
     const chatId = await channel();
-    await persistChannelPostDemand(db, input(chatId));
+    await persist(input(chatId));
     await db.$executeRaw(Prisma.sql`INSERT INTO channel_post_demands (chat_id,message_id,source_at,expires_at,due_at)
       SELECT ${chatId}, 'history-' || n, NOW() AT TIME ZONE 'UTC',
         (NOW() AT TIME ZONE 'UTC') - INTERVAL '1 day', (NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'
@@ -203,13 +274,39 @@ native('durable channel post demand in PostgreSQL', () => {
       expect(text).not.toContain('Seq Scan');
     }
     expect(await db.channelPostDemand.count()).toBe(24501);
+    captured.length = 0;
+    await idleChannelPostDemand(store as never, chatId);
+    for (const q of captured) {
+      const plan = await db.$queryRawUnsafe<unknown[]>(
+        `EXPLAIN (ANALYZE, FORMAT JSON) ${q.text}`,
+        ...q.values,
+      );
+      const text = JSON.stringify(plan);
+      expect(text).not.toContain('Seq Scan');
+      if (q.text.trimStart().startsWith('UPDATE ')) {
+        expect(text).toContain('channel_post_demands_due_idx');
+        const root = (plan as { 'QUERY PLAN': { Plan: Record<string, unknown> }[] }[])[0]![
+          'QUERY PLAN'
+        ][0]!.Plan;
+        const visit = (node: Record<string, unknown>) => {
+          if (node['Relation Name'] === 'channel_post_demands') {
+            expect(
+              Number(node['Actual Rows']) + Number(node['Rows Removed by Filter'] ?? 0),
+            ).toBeLessThanOrEqual(1);
+            expect(node['Actual Loops']).toBe(1);
+          }
+          for (const child of (node.Plans ?? []) as Record<string, unknown>[]) visit(child);
+        };
+        visit(root);
+      }
+    }
   });
 
   it('selects indexed due channels through idle history and skips a locked channel', async () => {
     const first = input(await channel()),
       second = input(await channel());
-    await persistChannelPostDemand(db, first);
-    await persistChannelPostDemand(db, second);
+    await persist(first);
+    await persist(second);
     const prefix = `demand-history-${randomUUID()}-`;
     const extra = Array.from({ length: 10_000 }, (_, n) => prefix + n);
     channels.push(...extra);
@@ -280,7 +377,7 @@ native('durable channel post demand in PostgreSQL', () => {
         });
       if (kind === 'before_settings') value.sourceAt = new Date(Date.now() - 120_000);
       if (kind === 'expired') value.expiresAt = new Date(Date.now() - 1);
-      await persistChannelPostDemand(db, value);
+      await persist(value);
       expect(await db.channelPostDemand.count()).toBe(0);
       expect(await db.channelPostDemandChannel.count()).toBe(0);
     },

@@ -9,6 +9,29 @@ without a verified administrator. Existing posts are not bulk rewritten by a set
 
 ## Delivery Recovery Hardening
 
+### Durable post scheduling
+
+The parent channel's next visit follows its earliest retained post, including an unvisited
+sibling after an exact source read fails. A channel with only future retries does not consume
+a due-channel slot. Receipt capture and the parent wake-up share the existing transaction:
+only a newly inserted post wakes the parent; mirrors retain the saved post retry and horizon.
+Parent-before-child locking prevents a concurrent idle transition from losing that arrival.
+Scoped MAX cooldowns, the governor, per-tick budgets and final mutation guards still apply.
+
+An exact source GET returning 404 or a locally validated missing identity remains ambiguous.
+For a post at least five minutes old, retain the hint and delay its next read by five minutes,
+bounded by the original expiry. A reservation CAS preserves PostgreSQL timestamp precision
+and prevents a late failure from overwriting a newer attempt. Fresh failures, 403, 429, server
+errors and mutation failures keep their existing handling. This never proves deletion,
+restores access, settles a webhook or authorizes replay of an uncertain action.
+
+The read-only `infra/scripts/channel-decoration-audit.cjs demand <channel-id>` mode reports
+the exact parent's schedule, at most 64 retained posts and at most 64 due-channel heads with
+explicit truncation. The fleet sample exports no channel identities. Use the existing bounded
+admin audit transport and shared PostgreSQL audit lock; it verifies indexes and plain plans
+before reads. Scheduling timestamps are not ingress, dispatch or delivery receipts. Correlate
+them with the existing closed `chat-message-window` report and independent MAX readback.
+
 The follow-up audit found additional code-level failure paths. These explain how an enabled
 setting can coexist with unsigned posts, but are not attribution to a particular complaint
 without that channel/post identity.

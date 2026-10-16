@@ -760,6 +760,92 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
+  it.each([
+    ['old_404', 600_000, 404, true],
+    ['new_404', 1_000, 404, false],
+    ['old_403', 600_000, 403, false],
+    ['old_429', 600_000, 429, false],
+    ['old_503', 600_000, 503, false],
+    ['missing_id', 600_000, null, true],
+    ['forged_missing_id', 600_000, null, false],
+  ] as const)(
+    'retains an unavailable source and wakes a fresh sibling without inheriting its retry: %s',
+    async (kind, ageMs, status, delayed) => {
+      const s = await fixture(2);
+      for (const bot of s.bots)
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      await s.prisma.channelSettings.update({
+        where: { chatId },
+        data: { updatedAt: new Date(Date.now() - 1_200_000) },
+      });
+      const missingId = `missing-${randomUUID()}`,
+        freshId = `fresh-${randomUUID()}`;
+      const receipt = await s.ingest({
+        chatId: chatId!,
+        messageId: missingId,
+        text: 'Unavailable fixture',
+        senderless: true,
+        at: Date.now() - ageMs,
+      });
+      const context = {
+        channelSettings: await s.prisma.channelSettings.findUniqueOrThrow({ where: { chatId } }),
+        adminUserIds: [],
+      };
+      const runtime = (s.moderation as unknown as { channelPostDemand: ChannelPostDemandRuntime })
+        .channelPostDemand;
+      const before = await s.prisma.channelPostDemand.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId: missingId } },
+      });
+      const failure =
+        kind === 'missing_id'
+          ? new MaxExactMessageLookupMissingIdError()
+          : kind === 'forged_missing_id'
+            ? Object.assign(
+                new Error('MAX direct message lookup returned a response without the requested id'),
+                { name: 'MaxExactMessageLookupMissingIdError' },
+              )
+            : Object.assign(new Error('Unavailable fixture'), { response: { status } });
+      const lookup = jest.spyOn(s.max, 'getExactMessageRow').mockRejectedValueOnce(failure);
+      await expect(runtime.process(context, 1, 30_000)).rejects.toBe(failure);
+      const retained = await s.prisma.channelPostDemand.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId: missingId } },
+      });
+      expect(retained.sourceAt).toEqual(before.sourceAt);
+      expect(retained.expiresAt).toEqual(before.expiresAt);
+      expect(retained.dueAt.getTime() > Date.now() + 250_000).toBe(delayed);
+      expect(
+        (await s.prisma.channelPostDemandChannel.findUniqueOrThrow({ where: { chatId } })).dueAt,
+      ).toEqual(retained.dueAt);
+      expect(s.effects).toEqual([]);
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt } })).status,
+      ).toBe('RECEIVED');
+      await s.ingest({
+        chatId: chatId!,
+        messageId: freshId,
+        text: 'Fresh fixture',
+        senderless: true,
+      });
+      expect(await runtime.selectChannels(3, 30_000)).toEqual([{ chatId }]);
+      lookup.mockClear();
+      await runtime.process(context, 1, 30_000);
+      expect(lookup.mock.calls.map((args) => args[1])).toEqual([freshId]);
+      expect(s.effects.filter((effect) => effect.method === 'put')).toHaveLength(1);
+      expect(s.effects[0]).toMatchObject({ method: 'put', messageId: freshId });
+      expect(
+        await s.prisma.channelPostDemand.findUniqueOrThrow({
+          where: { chatId_messageId: { chatId: chatId!, messageId: missingId } },
+        }),
+      ).toEqual(retained);
+    },
+  );
+
   it.each(['allowed', 'access_lost', 'held'] as const)(
     'polls a later channel post while an earlier marker stays leased, guard=%s',
     async (guard) => {
