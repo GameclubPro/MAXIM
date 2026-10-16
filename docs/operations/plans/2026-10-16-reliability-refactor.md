@@ -71,6 +71,11 @@ recovery-only returns and failed persistence do not invent local acknowledgement
 or detached actions cannot borrow another attempt's measurements; metrics contain fixed dimensions
 without identities. Complete causal coverage of deferred DELETE, direct sanctions and other SEND
 origins remains separate work; the new synchronous origin records do not prove that coverage.
+Execution media labels use the already loaded, exact actor-owned immutable content revision;
+canonical envelopes intentionally have empty media fields. Missing or contradictory metadata and
+recovery before loading stay unknown. Native regression coverage reads real saved revisions,
+including execution of an older revision after the canonical pointer changes, without media-byte
+reads or MAX calls. Historical labels are not backfilled.
 
 Both schema changes are additive. The origin index is on a new empty table; the occurrence index
 build is concurrent on retained history. No history rewrite, authority change or existing-reader

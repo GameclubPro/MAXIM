@@ -13,6 +13,10 @@ import {
 } from '../prisma/prisma-client';
 import { AdminManagedBroadcastPublicationVerification } from './admin-managed-broadcast-publication-verification';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
+import type {
+  AdminManagedBroadcastMediaRuntime,
+  ManagedBroadcastExecutionMedia,
+} from './admin-managed-broadcast-media-runtime';
 import { PUBLIK_LEDGER_DISPATCH_MARKER } from './admin-managed-broadcast-ledger-recovery';
 import type { ManagedBroadcastCommentDialogReference } from './admin-managed-broadcast-ledger';
 import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcast-target-failure';
@@ -27,6 +31,51 @@ import {
 import { MaxApiInternalRateLimitError, type MaxPublishedMessage } from '../max/max-client.service';
 
 const AUTOMATED_VERIFICATION_DUE_AT = new Date('2026-07-25T08:00:15.000Z');
+
+function publicationMediaRuntime(
+  runtime: AdminManagedBroadcastRuntime,
+): AdminManagedBroadcastMediaRuntime {
+  return Reflect.get(runtime, 'mediaRuntime') as AdminManagedBroadcastMediaRuntime;
+}
+
+function createExecutionMedia(
+  row?: Pick<
+    Parameters<AdminManagedBroadcastMediaRuntime['loadManagedBroadcastExecutionMedia']>[0],
+    'publicationContentRevisionId' | 'actorUserId'
+  >,
+  mimeTypes: readonly string[] = [],
+): ManagedBroadcastExecutionMedia {
+  return {
+    requestMedia: {
+      imageEnabled: false,
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      images: [],
+      mediaType: null,
+      mediaPayload: null,
+      mediaMimeType: '',
+      mediaFileName: '',
+    },
+    ...(row?.publicationContentRevisionId
+      ? {
+          publicationSource: {
+            contentRevisionId: row.publicationContentRevisionId,
+            actorUserId: row.actorUserId,
+            assets: mimeTypes.map((mimeType, index) => ({
+              id: `immutable-asset-${index}`,
+              actorUserId: row.actorUserId,
+              sha256: 'a'.repeat(64),
+              sizeBytes: 1,
+              mimeType,
+              fileName: 'private-file',
+              durablePayload: null,
+            })),
+          },
+        }
+      : {}),
+  };
+}
 
 const createPublicationEnvelopeRow = () => ({
   id: 'broadcast-access-check',
@@ -172,8 +221,8 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
   });
   jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue([delivery]);
   jest
-    .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
-    .mockResolvedValue({ requestMedia: {} });
+    .spyOn(publicationMediaRuntime(runtime), 'loadManagedBroadcastExecutionMedia')
+    .mockResolvedValue(createExecutionMedia(row));
   jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
   jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
     messageText: 'Publication',
@@ -266,26 +315,9 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   it('uses canonical execution media once per exact bot and passes it into media-only send preparation', async () => {
     const { runtime, row, publish } = createPublicationPrismaSendFailureHarness(null, false);
     row.text = '';
-    const execution = {
-      requestMedia: {
-        imageEnabled: false,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-        images: [],
-        mediaType: null,
-        mediaPayload: null,
-        mediaMimeType: '',
-        mediaFileName: '',
-      },
-      publicationSource: {
-        contentRevisionId: row.publicationContentRevisionId,
-        actorUserId: row.actorUserId,
-        assets: [{ id: 'immutable-image' }],
-      },
-    };
+    const execution = createExecutionMedia(row, ['image/jpeg']);
     jest
-      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
+      .spyOn(publicationMediaRuntime(runtime), 'loadManagedBroadcastExecutionMedia')
       .mockResolvedValue(execution);
     const media = { imagePayload: { token: 'canonical-image' } };
     const resolve = jest
@@ -320,6 +352,43 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     expect(build).toHaveBeenCalledTimes(2);
     expect(build.mock.calls[0]?.[4]).toBe(media);
   });
+
+  it.each([
+    ['image/jpeg', 'image'],
+    ['video/mp4', 'video'],
+  ])(
+    'observes frozen %s media with empty canonical row and request fields',
+    async (mimeType, media) => {
+      const { runtime, row, logger, publish } = createPublicationPrismaSendFailureHarness(
+        null,
+        false,
+      );
+      const execution = createExecutionMedia(row, [mimeType]);
+      const load = jest
+        .spyOn(publicationMediaRuntime(runtime), 'loadManagedBroadcastExecutionMedia')
+        .mockResolvedValue(execution);
+      expect(row).toMatchObject({ imageEnabled: false, mediaType: null });
+      expect(execution.requestMedia).toMatchObject({
+        imageEnabled: false,
+        images: [],
+        mediaType: null,
+      });
+      await (runtime as any).processManagedBroadcastOccurrence(row.id, 'deadline', new Date(), [
+        ManagedBroadcastStatus.ACTIVE,
+      ]);
+      const observations = logger.log.mock.calls.map(([event]) => event);
+      expect(observations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ stage: 'initial_recipient_claim', media }),
+          expect.objectContaining({ outcome: 'max_acknowledgement_observed', media }),
+          expect.objectContaining({ outcome: 'receipt_persisted', media }),
+          expect.objectContaining({ stage: 'ledger_observed_to_recipient', media }),
+        ]),
+      );
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(publish).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('keeps binary preparation errors marked before message dispatch', async () => {
     const { runtime, row, publish } = createPublicationPrismaSendFailureHarness(null, false);
@@ -783,7 +852,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       );
       delivery.status = status;
       const loadMedia = jest.spyOn(
-        (runtime as any).mediaRuntime,
+        publicationMediaRuntime(runtime),
         'loadManagedBroadcastExecutionMedia',
       );
       loadMedia.mockRejectedValue(new Error('Media no longer available'));
@@ -2522,7 +2591,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         'resolveManagedBroadcastTargetsFromRow',
       );
       const mediaSpy = jest.spyOn(
-        (runtime as any).mediaRuntime,
+        publicationMediaRuntime(runtime),
         'loadManagedBroadcastExecutionMedia',
       );
       const sendSpy = jest.spyOn(runtime as any, 'sendManagedBroadcastMessageImmediateWithId');
@@ -3418,8 +3487,8 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     });
     jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue(deliveries);
     jest
-      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
-      .mockResolvedValue({ requestMedia: {} });
+      .spyOn(publicationMediaRuntime(runtime), 'loadManagedBroadcastExecutionMedia')
+      .mockResolvedValue(createExecutionMedia());
     jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
     jest.spyOn(runtime as any, 'resolveDeliveryBotAssignment').mockResolvedValue('bot-1');
     jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
@@ -3556,7 +3625,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       });
       const ensureDeliveryRows = jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows');
       const loadMedia = jest.spyOn(
-        (runtime as any).mediaRuntime,
+        publicationMediaRuntime(runtime),
         'loadManagedBroadcastExecutionMedia',
       );
       jest
@@ -3789,8 +3858,8 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     });
     jest.spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows').mockResolvedValue([delivery]);
     jest
-      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
-      .mockResolvedValue({ requestMedia: {} });
+      .spyOn(publicationMediaRuntime(runtime), 'loadManagedBroadcastExecutionMedia')
+      .mockResolvedValue(createExecutionMedia());
     jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia').mockResolvedValue({});
     jest
       .spyOn((runtime as any).publicationVerification, 'verifyAfterSend')
@@ -4256,8 +4325,8 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       .spyOn(runtime as any, 'ensureManagedBroadcastDeliveryRows')
       .mockResolvedValue([ambiguousDelivery]);
     jest
-      .spyOn((runtime as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
-      .mockResolvedValue({ requestMedia: {} });
+      .spyOn(publicationMediaRuntime(runtime), 'loadManagedBroadcastExecutionMedia')
+      .mockResolvedValue(createExecutionMedia());
     const finalizeSpy = jest
       .spyOn(runtime as any, 'finalizeManagedBroadcastOccurrence')
       .mockResolvedValue({

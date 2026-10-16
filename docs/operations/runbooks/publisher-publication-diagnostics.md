@@ -122,7 +122,15 @@ publication SLO. Retain release, observation interval, sample size and truncatio
 | `observed_acknowledgement_to_receipt` | Observed wrapper return to the successful recipient receipt CAS; excludes earlier HTTP and action-ledger persistence. A recovery without a locally observed acknowledgement is unknown. |
 
 Recipient observations retain schedule mode and text/image/video dimensions from the
-existing execution snapshot. Missing, invalid or backwards clocks produce null duration,
+existing execution snapshot. Canonical media comes from the exact actor-owned frozen content
+revision already loaded for execution, not the intentionally empty envelope or request-media
+fields. A proven empty asset list is text (`none`); a compatible retained video token can identify
+historical video with a generic MIME type. Unsupported, mixed or contradictory metadata and
+opaque binary media stay `unknown`. Recovery before metadata loading also stays unknown.
+Legacy requests use their loaded media only when no saved content revision exists. This adds no
+asset-byte reads or SQL requests. Historical labels are not repaired and must not be used as a
+reliable media breakdown without checking the emitting release.
+Missing, invalid or backwards clocks produce null duration,
 not zero. These logs are diagnostic samples, not a durable cohort denominator or guaranteed
 unique events: crashes, retries and recycled pre-dispatch claims can omit or repeat samples.
 Use the persisted journals for accepted-operation counts and terminal outcomes.

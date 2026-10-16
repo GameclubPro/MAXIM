@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, Logger } from '@nestjs/common';
 import type { PublicationContentInput } from '@maxim/contracts/publication';
 import { PrismaClient, createPrismaAdapter, type Prisma } from '../prisma/prisma-client';
 import { PublicationService } from './publication.service';
@@ -9,6 +9,10 @@ import {
   reconcileRoutedManagedBroadcastSendingDeliveries,
 } from './admin-managed-broadcast-ledger-recovery';
 import { buildManagedBroadcastDeliveryActionKey } from './admin-managed-broadcast-reconciliation';
+import { AdminManagedBroadcastMediaRuntime } from './admin-managed-broadcast-media-runtime';
+import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import type { PrismaService } from '../prisma/prisma.service';
+import { createPublicationExecutionObserver } from './publication-delivery-timing';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const integration = databaseUrl ? describe : describe.skip;
@@ -163,11 +167,106 @@ integration('Publication content freeze and immutable recovery on PostgreSQL', (
     await db.maxActionLedgerEntry.deleteMany({ where: { chatId } });
     await db.publicationOccurrence.deleteMany({ where: { publicationId } });
     await db.publication.delete({ where: { id: publicationId } });
+    await db.publicationAsset.deleteMany({ where: { actorUserId: chatId } });
     await db.chat.delete({ where: { id: chatId } });
   });
   afterAll(async () => {
     await db?.$disconnect();
   });
+
+  it.each([
+    { mime: null, durable: false, expected: 'none' },
+    { mime: 'image/png', durable: false, expected: 'image' },
+    { mime: 'video/mp4', durable: false, expected: 'video' },
+    { mime: 'application/octet-stream', durable: false, expected: 'unknown' },
+    { mime: 'application/octet-stream', durable: true, expected: 'video' },
+  ])(
+    'observes $expected from the persisted frozen revision ($mime, durable=$durable)',
+    async ({ mime, durable, expected }) => {
+      if (mime) {
+        await db.publicationAsset.create({
+          data: {
+            actorUserId: chatId,
+            sha256: 'a'.repeat(64),
+            mimeType: mime,
+            sizeBytes: 10,
+            bytes: durable ? null : Buffer.alloc(10),
+            ...(durable ? { durablePayload: { token: 'synthetic-retained-video' } } : {}),
+            contentLinks: { create: { contentRevisionId, position: 0 } },
+          },
+        });
+      }
+      // FLAG: A newer revision must not relabel an already frozen execution envelope.
+      const newer = await db.publicationContentRevision.create({
+        data: { publicationId, revision: 2, text: 'Synthetic later text-only content' },
+      });
+      await db.publication.update({
+        where: { id: publicationId },
+        data: { canonicalContentRevisionId: newer.id },
+      });
+      const unavailable = (): never => {
+        throw new Error('Media metadata observation must not call MAX or authorization helpers');
+      };
+      const context = {
+        prisma: db as PrismaService,
+        logger: new Logger('FrozenRevisionObservationTest'),
+        get maxClient(): AdminManagedBroadcastRuntimeContext['maxClient'] {
+          return unavailable();
+        },
+        resolveSystemModeSnapshot: unavailable,
+        resolveDeliveryBotAssignment: unavailable,
+        resolvePrivateDeliveryBotId: unavailable,
+        resolvePrivateDialogChatId: unavailable,
+        listChatsForMassBroadcast: unavailable,
+        assertManagedEntityAdminAccess: unavailable,
+        assertManagedEntityReadAccess: unavailable,
+        resolveBroadcastButtonContext: unavailable,
+      } satisfies AdminManagedBroadcastRuntimeContext;
+      const runtime = new AdminManagedBroadcastMediaRuntime(context);
+      const row = await db.managedBroadcast.findUniqueOrThrow({ where: { id: broadcastId } });
+      expect(row).toMatchObject({
+        imageEnabled: false,
+        mediaType: null,
+        publicationContentRevisionId: contentRevisionId,
+      });
+      const log = jest.fn<void, [Record<string, unknown>, string]>();
+      const observer = createPublicationExecutionObserver({ log }, row, true);
+      expect(observer.dimensions.media).toBe('unknown');
+      const executionMedia = await runtime.loadManagedBroadcastExecutionMedia(row);
+      expect(executionMedia.requestMedia).toMatchObject({
+        imageEnabled: false,
+        mediaType: null,
+        images: [],
+      });
+      expect(executionMedia.publicationSource).toMatchObject({
+        contentRevisionId,
+        actorUserId: chatId,
+      });
+      for (const asset of executionMedia.publicationSource!.assets)
+        expect(asset).not.toHaveProperty('bytes');
+      observer.observeExecutionMedia(executionMedia);
+      observer.onOccurrenceScheduledAt(row.createdAt, {
+        mode: 'NOW',
+        intentCreatedAt: row.createdAt,
+      });
+      observer.observeClaim({ attemptCount: 0 });
+      observer.observeAcknowledgement();
+      observer.observeReceipt();
+      const observations = log.mock.calls.map(([event]) => event);
+      expect(observations.length).toBeGreaterThan(0);
+      expect(observations.every((observation) => observation.media === expected)).toBe(true);
+      expect(observations).toContainEqual(
+        expect.objectContaining({
+          metric: 'publication_wait_v1',
+          stage: 'initial_recipient_claim',
+          media: expected,
+        }),
+      );
+      expect(observations).toContainEqual(
+        expect.objectContaining({ outcome: 'receipt_persisted', media: expected }),
+      );
+    },
+  );
 
   const update = (selected = service, content: PublicationContentInput = oldContent) =>
     selected.update(
