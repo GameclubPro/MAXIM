@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createPrismaAdapter, PrismaClient } from '../prisma/prisma-client';
+import { createPrismaAdapter, Prisma, PrismaClient } from '../prisma/prisma-client';
 import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
 import { FixedModeratorPreservationService } from './fixed-moderator-preservation.service';
 
@@ -191,20 +191,19 @@ integration('initial fixed moderator preservation with PostgreSQL', () => {
   });
 
   it('uses bounded ordered index probes with retained history, a hot window and an empty recent action window', async () => {
-    for (let batch = 0; batch < 6; batch += 1) {
-      await db.maxActionLedgerEntry.createMany({
-        // FLAG: Both action types retain history. An action absent from the entire
-        // fixture cannot prove that its empty recent window uses the time-bounded index.
-        data: Array.from({ length: 4000 }, (_, index) => ({
-          jobId: randomUUID(),
-          chatId,
-          actionType: index < 2000 ? 'SEND_MESSAGE' : 'UNBAN_MEMBER',
-          updatedAt: new Date(
-            Date.now() - (batch === 0 && index < 200 ? 1000 : 7 * 24 * 60 * 60_000),
-          ),
-        })),
-      });
-    }
+    // FLAG: Both actions retain history, but UNBAN_MEMBER has no recent rows.
+    // Seed inside disposable PostgreSQL so serializing 24,000 Prisma inputs does not
+    // consume the probe test's unchanged timeout. Keep the full history and hot skew.
+    expect(
+      await db.$executeRaw(Prisma.sql`
+      INSERT INTO max_action_ledger (id, job_id, chat_id, action_type, updated_at)
+      SELECT ${chatId} || '-history-' || n, ${chatId} || '-job-' || n, ${chatId},
+        CASE WHEN n % 4000 < 2000 THEN 'SEND_MESSAGE' ELSE 'UNBAN_MEMBER' END,
+        (NOW() AT TIME ZONE 'UTC') -
+          CASE WHEN n < 200 THEN INTERVAL '1 second' ELSE INTERVAL '7 days' END
+      FROM generate_series(0,23999) n
+    `),
+    ).toBe(24_000);
     // Only the disposable database is analyzed; production uses plain EXPLAIN.
     await db.$executeRawUnsafe('ANALYZE max_action_ledger');
     expect(
