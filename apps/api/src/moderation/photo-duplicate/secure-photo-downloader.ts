@@ -532,15 +532,20 @@ function isPublicInternetAddress(address: string): boolean {
 }
 
 async function withDeadline<T>(operation: Promise<T>, deadlineAtMs: number): Promise<T> {
-  const timeoutMs = remainingMs(deadlineAtMs);
   let timeout: NodeJS.Timeout | undefined;
   try {
+    // FLAG: The operation is already running. Even an elapsed deadline must enter the race
+    // so a later DNS/body rejection or request abort cannot become an unhandled rejection.
+    // Put the deadline first so expiry still wins over an already resolved operation.
     return await Promise.race([
-      operation,
       new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new PhotoDownloadTimeoutError()), timeoutMs);
+        timeout = setTimeout(
+          () => reject(new PhotoDownloadTimeoutError()),
+          remainingMs(deadlineAtMs),
+        );
         timeout.unref?.();
       }),
+      operation,
     ]);
   } finally {
     if (timeout) {
