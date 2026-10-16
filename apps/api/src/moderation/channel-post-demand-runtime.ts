@@ -70,6 +70,16 @@ export class ChannelPostDemandRuntime {
         await settleChannelPostDemand(prisma, item);
         continue;
       }
+      // FLAG: A confirmed exact-object receipt may retire a scheduling hint without
+      // another MAX read. Pending/failed/unknown effects retain their normal fences.
+      const marker = await prisma.channelAutoPostAttachMarker.findUnique({
+        where: { chatId_messageId: { chatId: item.chatId, messageId: item.messageId } },
+        select: { status: true },
+      });
+      if (marker?.status === 'SUCCEEDED') {
+        await settleChannelPostDemand(prisma, item);
+        continue;
+      }
       botId ??= await this.deps.resolveBotId(item.chatId);
       if (!botId) break;
       const startedAt = new Date();

@@ -376,6 +376,47 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     );
   });
 
+  it('retires durable demand after a confirmed webhook edit without another MAX read', async () => {
+    const s = await fixture(2);
+    const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+    const messageId = `completed-demand-${randomUUID()}`;
+    await s.ingest({
+      chatId: chatId!,
+      messageId,
+      text: 'Already decorated fixture',
+      senderless: true,
+    });
+    const marker = await s.prisma.channelAutoPostAttachMarker.create({
+      data: {
+        chatId: chatId!,
+        messageId,
+        source: 'webhook',
+        status: 'SUCCEEDED',
+        botId: s.bots[1]!.id,
+        deliveryMode: 'edit_message',
+      },
+    });
+    const runtime = (s.moderation as unknown as { channelPostDemand: ChannelPostDemandRuntime })
+      .channelPostDemand;
+    const read = jest.spyOn(s.max, 'getExactMessageRow');
+    const access = jest.spyOn(s.max, 'getCurrentChatMemberAccess');
+    await runtime.process(
+      {
+        channelSettings: await s.prisma.channelSettings.findUniqueOrThrow({ where: { chatId } }),
+        adminUserIds: [],
+      },
+      1,
+      30_000,
+    );
+    expect(read).not.toHaveBeenCalled();
+    expect(access).not.toHaveBeenCalled();
+    expect(s.effects).toEqual([]);
+    expect(await s.prisma.channelPostDemand.count({ where: { chatId } })).toBe(0);
+    expect(
+      await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({ where: { id: marker.id } }),
+    ).toEqual(marker);
+  });
+
   it.each([
     'allowed',
     'access_lost',
