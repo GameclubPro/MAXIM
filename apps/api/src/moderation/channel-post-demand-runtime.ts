@@ -1,4 +1,5 @@
 import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
+import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   parseChannelAutoPostListedMessage,
@@ -8,6 +9,7 @@ import {
 import {
   claimChannelPostDemandChannels,
   claimChannelPostDemandItems,
+  deferUnavailableChannelPostDemand,
   idleChannelPostDemand,
   purgeExpiredChannelPostDemands,
   settleChannelPostDemand,
@@ -50,59 +52,80 @@ export class ChannelPostDemandRuntime {
       settings.commentsEnabled ||
       settings.postSuggestionsEnabled;
     let botId: string | null = null;
-    for (let attempt = 0; attempt < Math.max(1, Math.min(32, maxMessages)); attempt++) {
-      // FLAG: Reserve only the post actually visited. A failed first read must not
-      // postpone its unvisited siblings and recreate head-of-line starvation.
-      const [item] = await claimChannelPostDemandItems(prisma, settings.chatId, 1, retryMs);
-      if (!item) break;
-      if (
-        !enabled ||
-        item.expiresAt.getTime() <= Date.now() ||
-        item.sourceAt.getTime() < settings.updatedAt.getTime() ||
-        (await this.deps.isMessageHeld(item.chatId, item.messageId))
-      ) {
-        await settleChannelPostDemand(prisma, item);
-        continue;
+    try {
+      for (let attempt = 0; attempt < Math.max(1, Math.min(32, maxMessages)); attempt++) {
+        // FLAG: Reserve only the post actually visited. A failed first read must not
+        // postpone its unvisited siblings and recreate head-of-line starvation.
+        const [item] = await claimChannelPostDemandItems(prisma, settings.chatId, 1, retryMs);
+        if (!item) break;
+        if (
+          !enabled ||
+          item.expiresAt.getTime() <= Date.now() ||
+          item.sourceAt.getTime() < settings.updatedAt.getTime() ||
+          (await this.deps.isMessageHeld(item.chatId, item.messageId))
+        ) {
+          await settleChannelPostDemand(prisma, item);
+          continue;
+        }
+        // FLAG: A confirmed exact-object receipt may retire a scheduling hint without
+        // another MAX read. Pending/failed/unknown effects retain their normal fences.
+        const marker = await prisma.channelAutoPostAttachMarker.findUnique({
+          where: { chatId_messageId: { chatId: item.chatId, messageId: item.messageId } },
+          select: { status: true },
+        });
+        if (marker?.status === 'SUCCEEDED') {
+          await settleChannelPostDemand(prisma, item);
+          continue;
+        }
+        botId ??= await this.deps.resolveBotId(item.chatId);
+        if (!botId) break;
+        // FLAG: This request reads one message, not the channel's membership. Even a
+        // chat-shaped MAX error cannot revoke grants here; lifecycle evidence owns that.
+        let raw: Awaited<ReturnType<MaxClientService['getExactMessageRow']>>;
+        try {
+          raw = await maxClient.getExactMessageRow(item.chatId, item.messageId, {
+            botId,
+            trafficClass: 'background',
+            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+          });
+        } catch (error: unknown) {
+          // FLAG: Only an old source's exact GET unavailability reduces its retry rate.
+          // This is neither absence proof nor an access transition. Quota, server and
+          // mutation failures keep their existing propagation and admission boundaries.
+          const status = (error as { response?: { status?: unknown } } | null)?.response?.status;
+          if (
+            item.sourceAt.getTime() <= Date.now() - 5 * 60_000 &&
+            (status === 404 || isMaxExactMessageLookupMissingIdError(error))
+          )
+            await deferUnavailableChannelPostDemand(prisma, item);
+          throw error;
+        }
+        // Missing MAX content is ambiguous. Retain the hint until its original horizon.
+        if (!raw) {
+          if (item.sourceAt.getTime() <= Date.now() - 5 * 60_000)
+            await deferUnavailableChannelPostDemand(prisma, item);
+          continue;
+        }
+        const message = parseChannelAutoPostListedMessage(
+          raw,
+          item.chatId,
+          settings.quickButtonsEnabled,
+        );
+        if (
+          !message ||
+          message.messageId !== item.messageId ||
+          message.timestampMs !== item.sourceAt.getTime()
+        )
+          continue;
+        const outcome = await this.deps.attach(context, message);
+        if (outcome === 'attached' || outcome === 'noop' || outcome === 'skipped')
+          await settleChannelPostDemand(prisma, item);
       }
-      // FLAG: A confirmed exact-object receipt may retire a scheduling hint without
-      // another MAX read. Pending/failed/unknown effects retain their normal fences.
-      const marker = await prisma.channelAutoPostAttachMarker.findUnique({
-        where: { chatId_messageId: { chatId: item.chatId, messageId: item.messageId } },
-        select: { status: true },
+    } finally {
+      await prisma.$transaction((tx) => idleChannelPostDemand(tx, settings.chatId), {
+        timeout: 2_000,
+        maxWait: 500,
       });
-      if (marker?.status === 'SUCCEEDED') {
-        await settleChannelPostDemand(prisma, item);
-        continue;
-      }
-      botId ??= await this.deps.resolveBotId(item.chatId);
-      if (!botId) break;
-      // FLAG: This request reads one message, not the channel's membership. Even a
-      // chat-shaped MAX error cannot revoke grants here; lifecycle evidence owns that.
-      const raw = await maxClient.getExactMessageRow(item.chatId, item.messageId, {
-        botId,
-        trafficClass: 'background',
-        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-      });
-      // Missing MAX content is ambiguous. Retain the hint until its original horizon.
-      if (!raw) continue;
-      const message = parseChannelAutoPostListedMessage(
-        raw,
-        item.chatId,
-        settings.quickButtonsEnabled,
-      );
-      if (
-        !message ||
-        message.messageId !== item.messageId ||
-        message.timestampMs !== item.sourceAt.getTime()
-      )
-        continue;
-      const outcome = await this.deps.attach(context, message);
-      if (outcome === 'attached' || outcome === 'noop' || outcome === 'skipped')
-        await settleChannelPostDemand(prisma, item);
     }
-    await prisma.$transaction((tx) => idleChannelPostDemand(tx, settings.chatId), {
-      timeout: 2_000,
-      maxWait: 500,
-    });
   }
 }

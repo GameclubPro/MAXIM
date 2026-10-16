@@ -4,6 +4,22 @@
 // unbounded name predicates, webhook payloads, credentials or free-form errors.
 const CHANNEL_SAMPLE_CAP = 2048;
 const MARKER_SAMPLE_CAP = 50;
+const DEMAND_SAMPLE_CAP = 64;
+const DEMAND_SQL = {
+  parent: `SELECT due_at, statement_timestamp() AT TIME ZONE 'UTC' AS observed_at
+    FROM channel_post_demand_channels WHERE chat_id = $1`,
+  items: `SELECT message_id, source_at, expires_at, due_at
+    FROM channel_post_demands WHERE chat_id = $1
+    ORDER BY due_at, message_id LIMIT ${DEMAND_SAMPLE_CAP + 1}`,
+  backlog: `SELECT due_at FROM channel_post_demand_channels
+    WHERE due_at <= (statement_timestamp() AT TIME ZONE 'UTC')
+    ORDER BY due_at, chat_id LIMIT ${DEMAND_SAMPLE_CAP + 1}`,
+};
+const DEMAND_INDEXES = {
+  channel_post_demand_channels_pkey: ['channel_post_demand_channels', ['chat_id']],
+  channel_post_demands_due_idx: ['channel_post_demands', ['chat_id', 'due_at', 'message_id']],
+  channel_post_demand_channels_due_idx: ['channel_post_demand_channels', ['due_at', 'chat_id']],
+};
 const FIND_SQL = `SELECT id, title, updated_at FROM chats
   WHERE entity_type = 'CHANNEL'
   ORDER BY updated_at DESC, id LIMIT ${CHANNEL_SAMPLE_CAP + 1}`;
@@ -90,13 +106,14 @@ function parseArgs(args) {
     }
     return { mode, chatIds };
   }
-  if (extra.length || !['find', 'inspect'].includes(mode) || typeof value !== 'string') {
-    throw new Error('Usage: channel-decoration-audit.cjs find <title> | inspect <chat-id>');
+  if (extra.length || !['find', 'inspect', 'demand'].includes(mode) || typeof value !== 'string') {
+    throw new Error('Usage: channel-decoration-audit.cjs find <title> | inspect|demand <chat-id>');
   }
   if (mode === 'find' && (normalizeTitle(value).length < 5 || value.length > 160)) {
     throw new Error('title_bound');
   }
-  if (mode === 'inspect' && !/^-[1-9][0-9]{0,19}$/u.test(value)) throw new Error('chat_id');
+  if (['inspect', 'demand'].includes(mode) && !/^-[1-9][0-9]{0,19}$/u.test(value))
+    throw new Error('chat_id');
   return { mode, value };
 }
 
@@ -143,13 +160,15 @@ async function collect(client, options) {
       SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
       SET LOCAL max_parallel_workers_per_gather = 0; SET LOCAL jit = off; SET LOCAL work_mem = '1MB'`);
     const names =
-      options.mode === 'find'
-        ? ['chats_entity_type_updated_id_idx']
-        : ['census', 'impact'].includes(options.mode)
-          ? ['channel_settings_chat_id_key']
-          : Object.keys(INDEXES).slice(1);
+      options.mode === 'demand'
+        ? Object.keys(DEMAND_INDEXES)
+        : options.mode === 'find'
+          ? ['chats_entity_type_updated_id_idx']
+          : ['census', 'impact'].includes(options.mode)
+            ? ['channel_settings_chat_id_key']
+            : Object.keys(INDEXES).slice(1);
     for (const name of names) {
-      const [expectedTable, expectedKeys] = INDEXES[name];
+      const [expectedTable, expectedKeys] = DEMAND_INDEXES[name] ?? INDEXES[name];
       const row = (await client.query(INDEX_SQL, [`public.${name}`])).rows[0];
       if (
         !row?.ready ||
@@ -158,6 +177,37 @@ async function collect(client, options) {
         JSON.stringify(row.keys) !== JSON.stringify(expectedKeys)
       )
         throw new Error('index_not_ready');
+    }
+    if (options.mode === 'demand') {
+      // FLAG: Scheduling timestamps are not ingress/attempt/effect receipts. Inspect
+      // one channel and a capped indexed due-head sample; never scan retained history
+      // or export unrelated channel identities to infer a complete fleet backlog.
+      const report = {
+        mode: 'demand',
+        chatId: options.value,
+        remoteEffectsProven: false,
+        schedulingOnly: true,
+        sampleCap: DEMAND_SAMPLE_CAP,
+      };
+      for (const [index, [key, sql]] of Object.entries(DEMAND_SQL).entries()) {
+        const params = key === 'backlog' ? undefined : [options.value];
+        const plan = (await client.query(`EXPLAIN (FORMAT JSON) ${sql}`, params)).rows[0][
+          'QUERY PLAN'
+        ][0].Plan;
+        assertBoundedPlan(plan, names[index]);
+        const rows = (await client.query(sql, params)).rows;
+        const cap = key === 'parent' ? 1 : DEMAND_SAMPLE_CAP;
+        const sample = rows.slice(0, cap);
+        report[key] =
+          key === 'backlog'
+            ? {
+                sampledDueChannels: sample.length,
+                truncated: rows.length > cap,
+                oldestDueAt: sample[0]?.due_at ?? null,
+              }
+            : { rows: sample, truncated: rows.length > cap };
+      }
+      return report;
     }
     if (options.mode === 'find') {
       const plan = (await client.query(`EXPLAIN (FORMAT JSON) ${FIND_SQL}`)).rows[0][
@@ -244,6 +294,9 @@ async function main() {
 
 module.exports = {
   CHANNEL_SAMPLE_CAP,
+  DEMAND_SAMPLE_CAP,
+  DEMAND_SQL,
+  DEMAND_INDEXES,
   FIND_SQL,
   CENSUS_SQL,
   IMPACT_SQL,

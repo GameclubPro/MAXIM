@@ -26,6 +26,15 @@ CREATE INDEX channel_auto_post_attach_markers_chat_updated_idx
 CREATE TABLE audit_logs (chat_id text, action text, payload jsonb, created_at timestamp);
 CREATE INDEX audit_logs_chat_id_created_at_idx ON audit_logs (chat_id, created_at);`;
 
+const demandSchema = `SET TIME ZONE 'UTC';
+CREATE TABLE channel_post_demand_channels
+  (chat_id text PRIMARY KEY, due_at timestamp);
+CREATE INDEX channel_post_demand_channels_due_idx ON channel_post_demand_channels (due_at, chat_id);
+CREATE TABLE channel_post_demands
+  (chat_id text, message_id text, source_at timestamp, expires_at timestamp, due_at timestamp,
+   PRIMARY KEY (chat_id, message_id));
+CREATE INDEX channel_post_demands_due_idx ON channel_post_demands (chat_id, due_at, message_id);`;
+
 // PGlite's query uses the extended protocol; send fixed multi-statement SET via exec.
 function port(db) {
   return { query: (sql, args) => (sql.includes('SET LOCAL') ? db.exec(sql) : db.query(sql, args)) };
@@ -166,4 +175,75 @@ test('file and stdin entrypoints reject an unintended runtime role before openin
     assert.equal(JSON.parse(result.stderr).reason, 'admin_role_required');
     assert.equal(result.stdout, '');
   }
+});
+
+test('demand audit bounds pending posts and due heads before inspecting retained history', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(demandSchema);
+  await db.exec(`INSERT INTO channel_post_demand_channels
+      SELECT 'private-idle-' || n, NULL FROM generate_series(1,20000) n;
+    INSERT INTO channel_post_demand_channels
+      SELECT 'private-due-' || n, now() - interval '1 minute' FROM generate_series(1,66) n;
+    INSERT INTO channel_post_demand_channels VALUES ('-1',now() + interval '1 minute');
+    INSERT INTO channel_post_demands
+      SELECT '-1', 'target-' || lpad(n::text,3,'0'), now() - interval '5 minutes',
+        now() + interval '1 hour', now() + n * interval '1 second'
+      FROM generate_series(1,66) n;
+    INSERT INTO channel_post_demands
+      SELECT 'private-idle-' || n, 'private-message', now(), now() + interval '1 day', now()
+      FROM generate_series(1,20000) n; ANALYZE;`);
+  const result = await audit.collect(port(db), audit.parseArgs(['demand', '-1']));
+  assert.equal(result.remoteEffectsProven, false);
+  assert.equal(result.schedulingOnly, true);
+  assert.equal(result.parent.rows.length, 1);
+  assert.ok(result.parent.rows[0].due_at > result.parent.rows[0].observed_at);
+  assert.equal(result.items.rows.length, 64);
+  assert.equal(result.items.truncated, true);
+  assert.equal(result.items.rows[0].message_id, 'target-001');
+  assert.equal(result.items.rows.at(-1).message_id, 'target-064');
+  assert.equal(result.backlog.sampledDueChannels, 64);
+  assert.equal(result.backlog.truncated, true);
+  assert.doesNotMatch(JSON.stringify(result), /private-/u);
+  assert.equal((await db.query('SHOW transaction_read_only')).rows[0].transaction_read_only, 'off');
+
+  // Only the isolated fixture uses ANALYZE: prove the limit bounds actual index work
+  // with large idle history and tied due times, not just the returned report size.
+  await db.exec('SET enable_seqscan=off; SET enable_bitmapscan=off;');
+  for (const [key, sql] of Object.entries(audit.DEMAND_SQL)) {
+    const plan = (
+      await db.query(
+        `EXPLAIN (ANALYZE, FORMAT JSON) ${sql}`,
+        key === 'backlog' ? undefined : ['-1'],
+      )
+    ).rows[0]['QUERY PLAN'][0].Plan;
+    const nodes = [];
+    const visit = (node) => {
+      nodes.push(node);
+      for (const child of node.Plans ?? []) visit(child);
+    };
+    visit(plan);
+    const scans = nodes.filter((node) => /Scan$/u.test(node['Node Type']));
+    assert.equal(scans.length, 1);
+    assert.match(scans[0]['Node Type'], /Index/u);
+    assert.ok(scans[0]['Actual Rows'] + (scans[0]['Rows Removed by Filter'] ?? 0) <= 65);
+  }
+});
+
+test('demand audit distinguishes an empty queue and rejects a wrong due index', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(demandSchema);
+  const result = await audit.collect(port(db), audit.parseArgs(['demand', '-1']));
+  assert.deepEqual(result.parent, { rows: [], truncated: false });
+  assert.deepEqual(result.items, { rows: [], truncated: false });
+  assert.deepEqual(result.backlog, { sampledDueChannels: 0, truncated: false, oldestDueAt: null });
+  await db.exec(`DROP INDEX channel_post_demand_channels_due_idx;
+    CREATE INDEX channel_post_demand_channels_due_idx ON channel_post_demand_channels (chat_id, due_at);`);
+  await assert.rejects(
+    audit.collect(port(db), audit.parseArgs(['demand', '-1'])),
+    /index_not_ready/u,
+  );
+  for (const args of [['demand'], ['demand', '-1; SELECT'], ['demand', '-1', 'extra']])
+    assert.throws(() => audit.parseArgs(args));
 });

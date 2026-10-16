@@ -10,6 +10,8 @@ export type ChannelPostDemandInput = {
   sourceAt: Date;
   expiresAt: Date;
 };
+// FLAG: Preserve PostgreSQL's microseconds for the scheduling CAS; a Date loses them.
+export type ClaimedChannelPostDemand = ChannelPostDemandInput & { claimedUntil: string };
 type Store = Pick<Prisma.TransactionClient, '$executeRaw' | '$queryRaw'>;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -68,9 +70,10 @@ export async function persistChannelPostDemand(
   input: ChannelPostDemandInput,
 ): Promise<void> {
   // FLAG: Parent first, then item. The idle transition locks the same parent before
-  // checking its children, so a concurrent arrival cannot lose its wake-up. Mirrors
-  // preserve both the original horizon and an existing scheduling/cooldown delay.
-  await tx.$executeRaw(Prisma.sql`
+  // checking its children, so a concurrent arrival cannot lose its wake-up. The caller
+  // owns the receipt transaction; only a newly inserted post may wake a delayed parent.
+  // Mirrors preserve both the original horizon and the existing item/channel retry.
+  const inserted = await tx.$executeRaw(Prisma.sql`
     WITH eligible AS MATERIALIZED (
       SELECT c.id FROM chats c JOIN channel_settings s ON s.chat_id = c.id
       WHERE c.id = ${input.chatId} AND c.entity_type = 'CHANNEL'
@@ -88,6 +91,11 @@ export async function persistChannelPostDemand(
       (clock_timestamp() AT TIME ZONE 'UTC') FROM parent
     ON CONFLICT (chat_id, message_id) DO NOTHING
   `);
+  if (inserted > 0) {
+    await tx.$executeRaw(Prisma.sql`UPDATE channel_post_demand_channels
+      SET due_at = LEAST(due_at, (clock_timestamp() AT TIME ZONE 'UTC'))
+      WHERE chat_id = ${input.chatId}`);
+  }
 }
 
 export async function claimChannelPostDemandChannels(
@@ -112,7 +120,7 @@ export async function claimChannelPostDemandItems(
   chatId: string,
   limit: number,
   retryMs: number,
-): Promise<ChannelPostDemandInput[]> {
+): Promise<ClaimedChannelPostDemand[]> {
   return tx.$queryRaw(Prisma.sql`
     WITH due AS MATERIALIZED (
       SELECT chat_id, message_id FROM channel_post_demands
@@ -122,8 +130,22 @@ export async function claimChannelPostDemandItems(
       SET due_at = (clock_timestamp() AT TIME ZONE 'UTC') + ${Math.max(30_000, retryMs)} * INTERVAL '1 millisecond'
       FROM due WHERE target.chat_id = due.chat_id AND target.message_id = due.message_id
       RETURNING target.chat_id AS "chatId", target.message_id AS "messageId",
-        target.source_at AS "sourceAt", target.expires_at AS "expiresAt"
+        target.source_at AS "sourceAt", target.expires_at AS "expiresAt",
+        target.due_at::text AS "claimedUntil"
   `);
+}
+
+export async function deferUnavailableChannelPostDemand(
+  tx: Store,
+  input: ClaimedChannelPostDemand,
+): Promise<void> {
+  // FLAG: An unavailable old source is retained, never declared deleted/completed.
+  // Delay only this exact reservation; a late read cannot postpone a newer claim.
+  await tx.$executeRaw(Prisma.sql`UPDATE channel_post_demands
+    SET due_at = LEAST(expires_at, GREATEST(due_at,
+      (clock_timestamp() AT TIME ZONE 'UTC') + INTERVAL '5 minutes'))
+    WHERE chat_id = ${input.chatId} AND message_id = ${input.messageId}
+      AND source_at = ${input.sourceAt} AND due_at = ${input.claimedUntil}::timestamp`);
 }
 
 export async function settleChannelPostDemand(
@@ -139,10 +161,16 @@ export async function idleChannelPostDemand(tx: Store, chatId: string): Promise<
   await tx.$queryRaw(
     Prisma.sql`SELECT chat_id FROM channel_post_demand_channels WHERE chat_id = ${chatId} FOR UPDATE`,
   );
-  await tx.$executeRaw(Prisma.sql`UPDATE channel_post_demand_channels SET due_at = NULL
-    WHERE chat_id = ${chatId} AND NOT EXISTS (
-      SELECT 1 FROM channel_post_demands WHERE chat_id = ${chatId} LIMIT 1
-    )`);
+  // FLAG: Use the earliest retained child, including unvisited work after a failed
+  // read. Ready channels rotate behind other due channels instead of reclaiming their
+  // old queue position. Empty channels become idle; future retries consume no due slot.
+  // The parent lock also serializes fresh ingress wake-ups. MAX cooldowns remain in
+  // the scan manager and final transport admission, outside this scheduling hint.
+  await tx.$executeRaw(Prisma.sql`UPDATE channel_post_demand_channels
+    SET due_at = (SELECT GREATEST(due_at, (clock_timestamp() AT TIME ZONE 'UTC'))
+      FROM channel_post_demands
+      WHERE chat_id = ${chatId} ORDER BY due_at, message_id LIMIT 1)
+    WHERE chat_id = ${chatId}`);
 }
 
 export async function purgeExpiredChannelPostDemands(tx: Store): Promise<number> {

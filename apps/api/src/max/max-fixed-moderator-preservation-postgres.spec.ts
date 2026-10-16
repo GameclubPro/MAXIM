@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createPrismaAdapter, PrismaClient } from '../prisma/prisma-client';
+import { createPrismaAdapter, Prisma, PrismaClient } from '../prisma/prisma-client';
 import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
 import { FixedModeratorPreservationService } from './fixed-moderator-preservation.service';
 
@@ -190,21 +190,34 @@ integration('initial fixed moderator preservation with PostgreSQL', () => {
     });
   });
 
-  it('uses bounded ordered index probes with retained history, a hot window and an empty action', async () => {
-    for (let batch = 0; batch < 6; batch += 1) {
-      await db.maxActionLedgerEntry.createMany({
-        data: Array.from({ length: 2000 }, (_, index) => ({
-          jobId: randomUUID(),
-          chatId,
-          actionType: 'SEND_MESSAGE',
-          updatedAt: new Date(
-            Date.now() - (batch === 0 && index < 200 ? 1000 : 7 * 24 * 60 * 60_000),
-          ),
-        })),
-      });
-    }
+  it('uses bounded ordered index probes with retained history, a hot window and an empty recent action window', async () => {
+    // FLAG: Both actions retain history, but UNBAN_MEMBER has no recent rows.
+    // Seed inside disposable PostgreSQL so serializing 24,000 Prisma inputs does not
+    // consume the probe test's unchanged timeout. Keep the full history and hot skew.
+    expect(
+      await db.$executeRaw(Prisma.sql`
+      INSERT INTO max_action_ledger (id, job_id, chat_id, action_type, updated_at)
+      SELECT ${chatId} || '-history-' || n, ${chatId} || '-job-' || n, ${chatId},
+        CASE WHEN n % 4000 < 2000 THEN 'SEND_MESSAGE' ELSE 'UNBAN_MEMBER' END,
+        (NOW() AT TIME ZONE 'UTC') -
+          CASE WHEN n < 200 THEN INTERVAL '1 second' ELSE INTERVAL '7 days' END
+      FROM generate_series(0,23999) n
+    `),
+    ).toBe(24_000);
     // Only the disposable database is analyzed; production uses plain EXPLAIN.
     await db.$executeRawUnsafe('ANALYZE max_action_ledger');
+    expect(
+      await db.maxActionLedgerEntry.count({ where: { chatId, actionType: 'UNBAN_MEMBER' } }),
+    ).toBe(12_000);
+    expect(
+      await db.maxActionLedgerEntry.count({
+        where: {
+          chatId,
+          actionType: 'UNBAN_MEMBER',
+          updatedAt: { gte: new Date(Date.now() - 60 * 60_000) },
+        },
+      }),
+    ).toBe(0);
     receiptQueries.length = 0;
     expect(await service.preview(chatId)).toMatchObject({ reason: 'receipt_limit' });
     const captured = [...receiptQueries];
@@ -213,6 +226,7 @@ integration('initial fixed moderator preservation with PostgreSQL', () => {
       'Node Type': string;
       'Index Name'?: string;
       'Actual Rows': number;
+      'Rows Removed by Filter'?: number;
       Plans?: Plan[];
     };
     const flatten = (node: Plan): Plan[] => [node, ...(node.Plans ?? []).flatMap(flatten)];
@@ -226,11 +240,14 @@ integration('initial fixed moderator preservation with PostgreSQL', () => {
         ...params,
       );
       const nodes = flatten(result[0]!['QUERY PLAN'][0]!.Plan);
-      expect(
-        nodes.some((node) => node['Index Name'] === 'max_action_ledger_chat_action_updated_idx'),
-      ).toBe(true);
+      expect({ action, indexes: nodes.map((node) => node['Index Name']).filter(Boolean) }).toEqual({
+        action,
+        indexes: expect.arrayContaining(['max_action_ledger_chat_action_updated_idx']),
+      });
       expect(nodes.some((node) => ['Seq Scan', 'Sort'].includes(node['Node Type']))).toBe(false);
-      expect(nodes.every((node) => node['Actual Rows'] <= 65)).toBe(true);
+      expect(
+        nodes.every((node) => node['Actual Rows'] + (node['Rows Removed by Filter'] ?? 0) <= 65),
+      ).toBe(true);
     }
   });
 

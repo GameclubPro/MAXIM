@@ -106,6 +106,15 @@ before editing it; copying these notes does not install a fix or prove the deplo
    message lookup error, including chat-shaped 403/404 responses. Retain the failed hint and
    deadline and verify following-post progress. Native regressions must install the real
    lifecycle writer; an omitted optional dependency cannot prove preservation of access.
+   Channel-demand parent scheduling follows the earliest retained child after both success
+   and read failure, with a floor at the end of that pass so a hot channel rotates behind
+   other due channels without postponing its children. A unique new post may wake it inside the receipt transaction; mirrors
+   preserve existing retries. Keep parent-before-child locks, source expiry, exact reservation
+   CAS precision, scoped MAX cooldowns and bounded attempts. Old unavailable-source backoff
+   cannot settle a receipt or authorize an edit. Run native demand races/plans and moderation
+   full-path cases for an old 404 followed by a fresh post, current access/holds and mirrored
+   arrivals and a hot backlog competing with quiet channels; a queue-only mock cannot prove
+   those boundaries.
    A source-author member GET with explicit GET provenance and HTTP 429 may use only the
    existing initial no-effect, durable SEND or committed DELETE handoff boundaries above.
    A concrete local `MaxApiInternalRateLimitError` from that author GET or exact source GET
