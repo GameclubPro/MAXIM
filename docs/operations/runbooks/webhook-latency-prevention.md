@@ -102,6 +102,10 @@ before editing it; copying these notes does not install a fix or prove the deplo
    channel recovery cadence remains unchanged; this handoff prevents the next post from being
    blocked but does not prove that button recovery meets a latency target. Run the route-scope,
    channel-button, marker, recovery and native moderation-guards full-path regressions.
+   Exact channel-post demand reads cannot revoke channel or administrator grants from a
+   message lookup error, including chat-shaped 403/404 responses. Retain the failed hint and
+   deadline and verify following-post progress. Native regressions must install the real
+   lifecycle writer; an omitted optional dependency cannot prove preservation of access.
    A source-author member GET with explicit GET provenance and HTTP 429 may use only the
    existing initial no-effect, durable SEND or committed DELETE handoff boundaries above.
    A concrete local `MaxApiInternalRateLimitError` from that author GET or exact source GET

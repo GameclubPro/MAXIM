@@ -939,15 +939,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       resolveBotId: (chatId) => this.resolveAutoAttachBotId(chatId, 'poll'),
       isMessageHeld: async (chatId, messageId) =>
         (await this.legacyHolds?.isMessageHeld(chatId, messageId)) ?? false,
-      recordReadAccessLoss: (chatId, botId, lifecycleEventAt, error) =>
-        this.recordChannelAutoPostAccessLossIfTerminal({
-          chatId,
-          botId,
-          lifecycleEventAt,
-          error,
-          source: 'channel_auto_post:demand',
-          operation: 'read',
-        }),
       attach: (managedChannel, message) =>
         this.tryAutoAttachChannelMessageButtons({
           ...message,

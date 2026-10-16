@@ -15,6 +15,7 @@ import { ChannelPostDemandRuntime } from '../moderation/channel-post-demand-runt
 import { createRecoveryGovernorFixture } from '../system/background-runtime-governor.spec-support';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
+import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import {
   markMaxPreDispatchGuardRejected,
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
@@ -662,6 +663,100 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         expect(
           await s.prisma.channelPostDemand.count({ where: { chatId, messageId: laterId } }),
         ).toBe(1);
+    },
+  );
+
+  it.each([
+    [404, undefined],
+    [403, undefined],
+    [404, 'message.not.found'],
+    [404, 'chat.not.found'],
+    [403, 'chat.denied'],
+    [429, undefined],
+    [503, undefined],
+  ] as const)(
+    'preserves channel grants after exact post lookup failure %s/%s and processes its sibling',
+    async (status, code) => {
+      const s = await fixture(2);
+      for (const bot of s.bots)
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      const missingId = `a-missing-${randomUUID()}`;
+      const laterId = `b-readable-${randomUUID()}`;
+      for (const messageId of [missingId, laterId])
+        await s.ingest({
+          chatId: chatId!,
+          messageId,
+          text: 'Source lookup fixture',
+          senderless: true,
+        });
+      // FLAG: Install the real lifecycle writer. A fixture without it hid the production
+      // regression in which one missing message removed the channel's durable grants.
+      const accessLoss = new ManagedEntityAccessLossService(s.prisma as never, s.links, s.cache);
+      const removal = jest.spyOn(accessLoss, 'recordIfManagedEntityAccessLost');
+      Object.assign(s.moderation, { managedEntityAccessLossService: accessLoss });
+      await s.prisma.managedEntityAccessEdge.createMany({
+        data: s.bots.map((bot) => ({
+          chatId: chatId!,
+          userId: 'fixture-channel-admin',
+          botId: bot.id,
+          state: 'GRANTED',
+          userRole: 'ADMIN',
+          botRole: 'ADMIN',
+          checkedAt: new Date(),
+        })),
+      });
+      const edges = () =>
+        s.prisma.managedEntityAccessEdge.findMany({
+          where: { chatId },
+          orderBy: { botId: 'asc' },
+        });
+      const edgesBefore = await edges();
+      const memberships = () =>
+        s.prisma.chatBotMembership.findMany({
+          where: { chatId },
+          orderBy: { botId: 'asc' },
+        });
+      const before = await memberships();
+      const channelBefore = await s.prisma.chat.findUniqueOrThrow({ where: { id: chatId } });
+      const runtime = (s.moderation as unknown as { channelPostDemand: ChannelPostDemandRuntime })
+        .channelPostDemand;
+      const context = {
+        channelSettings: await s.prisma.channelSettings.findUniqueOrThrow({ where: { chatId } }),
+        adminUserIds: [],
+      };
+      const failure = Object.assign(new Error(`Request failed with status code ${status}`), {
+        response: { status, ...(code ? { data: { code } } : {}) },
+      });
+      jest.spyOn(s.max, 'getExactMessageRow').mockRejectedValueOnce(failure);
+      let rejected: unknown;
+      try {
+        await runtime.process(context, 1, 30_000);
+      } catch (error) {
+        rejected = error;
+      }
+      expect(await memberships()).toEqual(before);
+      expect(await edges()).toEqual(edgesBefore);
+      expect(await s.prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toEqual(
+        channelBefore,
+      );
+      expect(removal).not.toHaveBeenCalled();
+      expect(rejected).toBe(failure);
+      expect(s.effects).toEqual([]);
+      expect(
+        await s.prisma.channelPostDemand.count({ where: { chatId, messageId: missingId } }),
+      ).toBe(1);
+      await runtime.process(context, 1, 30_000);
+      expect(s.effects.filter((effect) => effect.method === 'put')).toHaveLength(1);
+      expect(s.effects[0]).toMatchObject({ method: 'put', messageId: laterId });
+      expect(
+        await s.prisma.channelPostDemand.count({ where: { chatId, messageId: laterId } }),
+      ).toBe(0);
     },
   );
 
