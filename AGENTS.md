@@ -42,6 +42,7 @@
   - `npm run check:refactor-guards`
   - `npm run check` for broad or risky work
 - Run `node scripts/agent/preflight.mjs` for early read-only generator, contract-export, and HTTP-input checks; it also runs before `agent:verify` and in CI. It is not a replacement for impact checks or exact-SHA CI. See `docs/development-reliability-plan.md` for the release checklist.
+- Keep one primary implementation/release stage active. Before broad validation, inspect changed method callers and test doubles and run the affected native integration cases. Track long-running commands, evidence freshness and unfinished acceptance gates using the [execution discipline](docs/development-reliability-plan.md#long-running-agent-work); a launched process or a passed local test is not completion.
 - Public API validation scripts now serialize generated-contract and Prisma work. Do not bypass them with `*:unlocked` or `*:source` commands unless a repo script intentionally owns the lock.
 - Use Node 24 LTS. Root `.nvmrc` pins `24`; Docker dependency layers must remain lockfile-based with `npm ci`.
 - Source and infrastructure Node test suites cap file concurrency at two because fixtures spawn nested native/CLI processes. Preserve that cap in `test:agent-tools` and `check-infra.sh`; runner CPU count alone does not bound their process/thread demand.
