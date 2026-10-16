@@ -15240,15 +15240,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             task: 'channel-auto-post-buttons',
             action: decision.action,
             reason: decision.reason,
-            retryAfterMs: decision.retryAfterMs,
+            retryAfterMs: this.channelAutoPostScanIntervalMs,
           },
           'Paused moderation background work because the runtime governor detected pressure',
         );
       }
-      this.channelAutoPostBackoffUntilMs = Math.max(
-        this.channelAutoPostBackoffUntilMs,
-        now + decision.retryAfterMs,
-      );
+      // FLAG: Recheck local pressure on the existing scan cadence. Transport quota
+      // backoff stays at the scheduler entry; this decision never waives MAX admission.
       return null;
     }
 

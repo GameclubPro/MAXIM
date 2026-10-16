@@ -451,6 +451,75 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     },
   );
 
+  it.each(['healthy', 'queue', 'cpu', 'manual', 'max', 'transport', 'unavailable'] as const)(
+    'rechecks channel pressure on the next scheduler tick without bypassing %s admission',
+    async (next) => {
+      const s = await fixture(2);
+      for (const bot of s.bots)
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      const messageId = `pressure-pulse-${randomUUID()}`;
+      await s.ingest({ chatId: chatId!, messageId, text: 'Pending action', senderless: true });
+      const { governor, snapshot } = createRecoveryGovernorFixture(s.config);
+      Object.assign(snapshot.mode, { mode: 'normal', condition: 'healthy', reason: 'healthy' });
+      snapshot.queues.operationalLagSec = 5;
+      Object.assign(s.moderation, {
+        backgroundTasksEnabled: true,
+        channelAutoPostScanMaxChannels: 2,
+        channelAutoPostScanManager: new ChannelAutoPostScanManager({
+          scanIntervalMs: 30_000,
+          scanMaxChannels: 2,
+          idleBackoffMaxMs: 300_000,
+          repairSweepMs: 60_000,
+          rateLimitBackoffMs: 60_000,
+          throttleBackoffMaxMs: 300_000,
+        }),
+        backgroundRuntimeGovernorService: governor,
+      });
+      const scheduler = s.moderation as unknown as {
+        channelAutoPostBackoffUntilMs: number;
+        processChannelAutoPostButtons: () => Promise<void>;
+      };
+      const read = jest.spyOn(s.max, 'getExactMessageRow');
+      const list = jest.spyOn(s.max, 'listMessages').mockResolvedValue([]);
+      await scheduler.processChannelAutoPostButtons();
+      expect(read).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+      snapshot.queues.operationalLagSec = next === 'queue' ? 5 : 0;
+      if (next === 'cpu') snapshot.systemPressure.loadRatio1m = 1.3;
+      if (next === 'manual')
+        Object.assign(snapshot.mode, {
+          mode: 'degrade',
+          source: 'manual',
+          manualMode: 'degrade',
+          condition: 'manual',
+        });
+      if (next === 'max') Object.assign(snapshot.mode, { mode: 'degrade', condition: 'max_api' });
+      const transportDeadline = Date.now() + 60_000;
+      if (next === 'transport') scheduler.channelAutoPostBackoffUntilMs = transportDeadline;
+      if (next === 'unavailable')
+        jest.spyOn(governor, 'decide').mockRejectedValue(new Error('offline'));
+      // FLAG: Each invocation represents a scheduled tick; real store/source clocks stay unchanged.
+      await scheduler.processChannelAutoPostButtons();
+      const admitted = next === 'healthy';
+      expect(
+        s.effects.filter((effect) => effect.method === 'put' && effect.messageId === messageId),
+      ).toHaveLength(admitted ? 1 : 0);
+      expect(await s.prisma.channelPostDemand.count({ where: { chatId } })).toBe(admitted ? 0 : 1);
+      if (!admitted) {
+        expect(read).not.toHaveBeenCalled();
+        expect(list).not.toHaveBeenCalled();
+      }
+      if (next === 'transport')
+        expect(scheduler.channelAutoPostBackoffUntilMs).toBe(transportDeadline);
+    },
+  );
+
   it('retires durable demand after a confirmed webhook edit without another MAX read', async () => {
     const s = await fixture(2);
     const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
@@ -672,6 +741,66 @@ describeStores('native current-rule authorization across mirrored bot delivery',
           }),
         ).toMatchObject({ status: 'SUCCEEDED', deliveryMode: 'edit_message' });
       }
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it.each(['profile', 'vcard'] as const)(
+    'adds channel actions to a %s contact once across mirrored bots',
+    async (kind) => {
+      const s = await fixture(2);
+      for (const bot of s.bots)
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      const [chatId] = await s.seedCatalog(1, {}, 'CHANNEL');
+      const vcard = 'BEGIN:VCARD\nVERSION:3.0\nFN:Test Contact\nEND:VCARD';
+      const payload =
+        kind === 'profile'
+          ? { max_info: { user_id: 123456789, name: 'Test Contact', is_bot: false } }
+          : { vcf_info: vcard, name: 'Test Contact' };
+      const expected =
+        kind === 'profile'
+          ? { contact_id: '123456789', name: 'Test Contact' }
+          : { vcf_info: vcard, name: 'Test Contact' };
+      const messageId = `contact-actions-${randomUUID()}`;
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            senderless: true,
+            text: '',
+            attachments: [{ type: 'contact', payload }],
+          }),
+        ),
+      );
+      await s.drain();
+      expect(s.effects).toHaveLength(1);
+      expect(s.effects[0]).toMatchObject({
+        method: 'put',
+        messageId,
+        body: {
+          attachments: [
+            { type: 'contact', payload: expected },
+            expect.objectContaining({ type: 'inline_keyboard' }),
+          ],
+        },
+      });
+      expect(s.messages.get(messageId)).toMatchObject({ body: { text: '' } });
+      expect(
+        await s.prisma.channelAutoPostAttachMarker.findUniqueOrThrow({
+          where: { chatId_messageId: { chatId: chatId!, messageId } },
+        }),
+      ).toMatchObject({ status: 'SUCCEEDED', deliveryMode: 'edit_message' });
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(s.effects).toHaveLength(1);
       expect(s.failures).toEqual([]);
     },
   );
