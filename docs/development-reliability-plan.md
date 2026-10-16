@@ -97,6 +97,60 @@ operator verification, not disabling host-key checks.
 - New enforcement remains opt-in behind an execution-time switch. Preserve rollback source floors
   for persisted jobs and verify every shared API role when that image changes.
 
+## Long-Running Agent Work
+
+Keep one primary implementation or release stage active, with a concrete result and acceptance
+checks. Read-only monitoring may continue independently. Finish the stage before opening another
+runtime workstream unless a dependency or production incident requires it. Reuse a suitable clean
+checkout; never change a checkout while its validation, deployment or monitor wrapper is running.
+
+`npm run check:docs` enforces this project's guidance budgets: 8 KiB for root entry notes,
+16 KiB per scoped entry and 24 KiB across an ancestor chain. These are repository maintenance
+limits, not a claim about Codex's configured context limit. Keep domain detail in linked references
+selected by a routing table; moving it does not make its safety constraints optional.
+
+Before the expensive validation:
+
+1. Confirm the checkout, branch, source revision, owned diff and required tool versions. Preserve
+   unrelated changes and inspect only the instructions and code needed for this stage.
+2. Find callers and test doubles of changed methods with `rg`. A changed return value, queue
+   acknowledgement or error contract affects integration fixtures as well as unit tests. Type
+   shared doubles against the real method, for example with `satisfies Pick<Service, 'method'>`;
+   do not silently treat `undefined` as a successful durable handoff.
+3. Verify named test files exist and select the affected full-path cases from the relevant
+   runbook. Run focused type/static checks and native PostgreSQL/Redis regressions first.
+   Keep cold connection/setup budgets separate from short queue-wait assertions; do not raise
+   production deadlines to accommodate a test fixture.
+4. Run the impact-selected checks once after the edit stabilizes. Repeat a broader check only
+   after changed inputs, a failure or a newly identified coverage gap. This does not reuse a
+   different revision's result as exact-SHA CI or weaken the public validation wrappers.
+
+Maintain a small private task record outside Git with the current stage, checkout and SHA, next
+action, checks and their log paths, production controller/runtime identities, and open acceptance
+gates. Update it after each completed stage and revalidate live state when resuming. Retire stale
+status entries instead of accumulating conflicting copies. Keep secrets and message content out
+of this record.
+
+Every long-running command needs its source revision, process/session identity, log, start time,
+deadline and eventual exit status. A recurring collector additionally needs a heartbeat and its
+last successful sample time. Check both process identity and sample freshness; a live process with
+stale observations is not a healthy monitor. Record gaps explicitly and retain failed evidence.
+An unexpected interruption requires inspection of the actual state before retrying; never infer
+success from the final log line or kill a process by an unverified reused PID.
+
+Report implementation, local validation, exact-SHA CI, deployment and production acceptance as
+separate states. Health checks and settled receipts do not prove every user-facing effect. Start
+the requested final observation window only after deployment and the mandatory acceptance gates
+are ready; do not count earlier diagnostics or missing samples toward it. Missing test identities,
+independent labels or real WebView access remain named gaps, not assumed passes. Resolve work that
+does not depend on those inputs while preserving the unfinished objective.
+
+After an avoidable failure, correct the narrow cause and, where appropriate, add an executable
+regression or typed boundary. Keep permanent agent notes short; put incident evidence in the dated
+record. Track first-pass validation failures, repeated failures of the same cause, time to a
+verified release, escaped production regressions and monitoring gaps. More commands or more passed
+tests alone do not demonstrate more productive work.
+
 ## Boundaries And Follow-Up
 
 `agent:verify` avoids running agent-tool tests or CSS checks twice when their aggregate command
