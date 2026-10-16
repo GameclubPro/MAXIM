@@ -1,6 +1,7 @@
 import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.service';
 import { ManagedEntityAccessWriter } from '../max/managed-entity-access-writer.service';
 import { ManagedEntityHandshakeOutcomeService } from '../max/managed-entity-handshake-outcome.service';
+import type { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
@@ -447,9 +448,8 @@ native('fresh held command ingress, real SQL authority, BullMQ and guarded MAX',
         h.links,
         (h.links as unknown as { botRegistry: MaxBotRegistryService }).botRegistry,
         {
-          processJob: async () => true,
-          scheduleChatAdminRosterSync: async () => undefined,
-        } as never,
+          scheduleChatAdminRosterSync: async () => true,
+        } satisfies Pick<MaxChatAdminRosterSyncService, 'scheduleChatAdminRosterSync'> as never,
         new ManagedEntityHandshakeOutcomeService(h.prisma as never),
         h.groupCommands,
       );

@@ -2,6 +2,7 @@ import { ChatContextCacheService } from '../chat-context/chat-context-cache.serv
 import { ManagedEntityHandshakeService } from '../max/managed-entity-handshake.service';
 import { ManagedEntityAccessWriter } from '../max/managed-entity-access-writer.service';
 import { ManagedEntityHandshakeOutcomeService } from '../max/managed-entity-handshake-outcome.service';
+import type { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { randomUUID } from 'node:crypto';
 import { Worker, type ConnectionOptions, type Queue, type Job } from 'bullmq';
 import type { MaxUpdate } from '@maxim/contracts';
@@ -33,6 +34,9 @@ import {
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const describeStores = databaseUrl && redisUrl ? describe : describe.skip;
+const acceptedRosterHandoff = {
+  scheduleChatAdminRosterSync: async () => true,
+} satisfies Pick<MaxChatAdminRosterSyncService, 'scheduleChatAdminRosterSync'>;
 jest.setTimeout(60_000);
 
 async function executeQueuedReadinessWait(s: MultibotHarness, id: string) {
@@ -437,7 +441,7 @@ describeStores('native dormant receipt and explicit activation isolation', () =>
         getAllBots: () => s.bots,
         isKnownBotUserId: (id: string) => s.bots.some((bot) => bot.id === id),
       } as never,
-      { processJob: async () => true, scheduleChatAdminRosterSync: async () => undefined } as never,
+      acceptedRosterHandoff as never,
       new ManagedEntityHandshakeOutcomeService(s.prisma as never),
       s.groupCommands,
     );
@@ -914,7 +918,7 @@ describeStores('native dormant receipt and explicit activation isolation', () =>
       s.max,
       s.links,
       registry as never,
-      { processJob: async () => true, scheduleChatAdminRosterSync: async () => undefined } as never,
+      acceptedRosterHandoff as never,
       new ManagedEntityHandshakeOutcomeService(s.prisma as never),
       s.groupCommands,
     );
