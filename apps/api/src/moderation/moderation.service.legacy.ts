@@ -428,8 +428,12 @@ import {
   ChannelAutoPostMutationGuard,
   resolveInitialChannelMutationRoute,
 } from './channel-auto-post-mutation-guard';
-import { loadManagedChannelAutoPostContext } from './channel-auto-post-context';
+import {
+  loadManagedChannelAutoPostContext,
+  loadChannelAutoPostScanContexts,
+} from './channel-auto-post-context';
 import { ChannelAutoPostLegacyRecovery } from './channel-auto-post-legacy-recovery';
+import { ChannelPostDemandRuntime } from './channel-post-demand-runtime';
 import {
   buildMaxMessageFallbackUrl,
   recordChannelAutoPostTerminalSkip,
@@ -746,6 +750,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   });
   private readonly replacementAttachMarkerStore: ReplacementAttachMarkerStore;
   private readonly channelAutoPostLegacyRecovery: ChannelAutoPostLegacyRecovery;
+  private readonly channelPostDemand: ChannelPostDemandRuntime;
   private readonly channelAutoPostMutationGuard: ChannelAutoPostMutationGuard;
   private readonly destructiveAdminRosterRefreshScheduledAtMs = new Map<string, number>();
   private readonly requiredSubscriptionMembershipCache = new Map<
@@ -927,6 +932,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.requiredSubscriptionMediaNoticeCoordinator =
       new RequiredSubscriptionMediaNoticeCoordinator(prisma.moderationEvent, redisCounter);
     this.replacementAttachMarkerStore = new ReplacementAttachMarkerStore(prisma);
+    this.channelPostDemand = new ChannelPostDemandRuntime({
+      prisma,
+      maxClient,
+      resolveBotId: (chatId) => this.resolveAutoAttachBotId(chatId, 'poll'),
+      isMessageHeld: async (chatId, messageId) =>
+        (await this.legacyHolds?.isMessageHeld(chatId, messageId)) ?? false,
+      recordReadAccessLoss: (chatId, botId, lifecycleEventAt, error) =>
+        this.recordChannelAutoPostAccessLossIfTerminal({
+          chatId,
+          botId,
+          lifecycleEventAt,
+          error,
+          source: 'channel_auto_post:demand',
+          operation: 'read',
+        }),
+      attach: (managedChannel, message) =>
+        this.tryAutoAttachChannelMessageButtons({
+          ...message,
+          chatId: managedChannel.channelSettings.chatId,
+          managedChannel,
+          source: 'poll',
+          senderAdminVerified:
+            message.senderId !== null && managedChannel.adminUserIds.includes(message.senderId),
+          allowSenderlessEngagement: true,
+        }),
+    });
     this.channelAutoPostMutationGuard = new ChannelAutoPostMutationGuard({
       maxClient,
       isCurrentChannelEntity: (chatId) => this.isCurrentChannelEntity(chatId),
@@ -14977,10 +15008,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           updatedAt: 'desc',
         },
       });
-      const scanBatchRefs = this.channelAutoPostScanManager.selectBatch(
-        channelCandidates,
+      const demandRefs = await this.channelPostDemand.selectChannels(
         executionPlan.batchSize,
+        this.channelAutoPostScanIntervalMs,
       );
+      const demandedIds = new Set(demandRefs.map((item) => item.chatId));
+      const fallbackBudget = Math.max(0, executionPlan.batchSize - demandRefs.length);
+      const scanBatchRefs = [
+        ...demandRefs.filter((item) => this.channelAutoPostScanManager.isDemandDue(item.chatId)),
+        ...(fallbackBudget > 0
+          ? this.channelAutoPostScanManager.selectBatch(
+              channelCandidates.filter((item) => !demandedIds.has(item.chatId)),
+              fallbackBudget,
+            )
+          : []),
+      ];
       const scanBatch = await this.loadChannelAutoPostScanContexts(
         scanBatchRefs.map((item) => item.chatId),
       );
@@ -14990,7 +15032,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         plan: executionPlan,
         manager: this.channelAutoPostScanManager,
         processChannel: (channel, options) =>
-          this.processManagedChannelAutoPostButtons(channel, options),
+          demandedIds.has(channel.channelSettings.chatId)
+            ? this.channelPostDemand.process(
+                channel,
+                options.maxNewMessagesPerScan,
+                this.channelAutoPostScanIntervalMs,
+              )
+            : this.processManagedChannelAutoPostButtons(channel, options),
         sleep: (ms) => this.sleep(ms),
         isTransientLookupError: (error) => this.isTransientMaxApiLookupError(error),
         onGlobalBackoff: (ms) => {
@@ -15018,48 +15066,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async loadChannelAutoPostScanContexts(
     chatIds: readonly string[],
   ): Promise<ManagedChannelContext[]> {
-    const normalizedChatIds = Array.from(
-      new Set(chatIds.map((chatId) => chatId.trim()).filter((chatId) => chatId.length > 0)),
-    );
-    if (normalizedChatIds.length === 0) {
-      return [];
-    }
-
-    const channelSettings = await this.prisma.channelSettings.findMany({
-      where: {
-        chatId: {
-          in: normalizedChatIds,
-        },
-        chat: {
-          entityType: ChatEntityType.CHANNEL,
-        },
-      },
-      include: {
-        chat: {
-          select: {
-            admins: {
-              select: {
-                userId: true,
-              },
-            },
-          },
-        },
-      },
-    });
-    const contextsByChatId = new Map(
-      channelSettings.map((settings) => [
-        settings.chatId,
-        {
-          channelSettings: settings,
-          adminUserIds: settings.chat.admins.map((item) => item.userId),
-        } satisfies ManagedChannelContext,
-      ]),
-    );
-
-    return normalizedChatIds.flatMap((chatId) => {
-      const context = contextsByChatId.get(chatId);
-      return context ? [context] : [];
-    });
+    return loadChannelAutoPostScanContexts(this.prisma, chatIds);
   }
 
   private async processManagedChannelAutoPostButtons(
