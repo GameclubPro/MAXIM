@@ -1,4 +1,5 @@
 import { DURABLE_USER_DELETE_RULES } from './durable-user-delete-rules';
+import { readExactDeleteOrigin } from './webhook-effect-origin-context';
 import {
   persistRuleFollowupBeforeDelete,
   activateOwnedRuleFollowups,
@@ -5190,6 +5191,7 @@ export class ModerationDeleteIntentService {
           : 'PENDING';
     const intentId = randomUUID();
     const reasonId = randomUUID();
+    const sourceOrigin = readExactDeleteOrigin(normalized.chatId, normalized.messageId);
     // FLAG: Receipt attribution is written only after this executor's guarded MAX success.
     // Supplied reason metadata cannot manufacture a confirmed commercial execution.
     const initialMetadata = this.asRecord(normalized.event.metadata);
@@ -5444,7 +5446,18 @@ export class ModerationDeleteIntentService {
             AND EXCLUDED."rule_code" IN (${Prisma.join([
               ...MODERATION_DELETE_INTENT_REPLACEMENT_CLEANUP_RULE_CODES,
             ])})
-          RETURNING 1
+          RETURNING "id"
+        ), recorded_origin AS (
+          -- FLAG: Only the newly inserted reason owns this provenance. A later
+          -- duplicate or rule promotion cannot backfill or replace its source.
+          INSERT INTO "moderation_delete_reason_origins" (
+            "reason_id", "source_webhook_event_id", "source_receiving_bot_id",
+            "source_execution_bot_id", "source_event_at", "source_observed_at", "source_evidence_version"
+          ) SELECT changed_reason."id", ${sourceOrigin?.sourceWebhookEventId ?? null},
+            ${sourceOrigin?.sourceReceivingBotId ?? null}, ${sourceOrigin?.sourceExecutionBotId ?? null},
+            ${sourceOrigin?.sourceEventAt ?? null}, CURRENT_TIMESTAMP, ${sourceOrigin?.sourceEvidenceVersion ?? null}
+          FROM changed_reason
+          WHERE changed_reason."id" = ${reasonId} AND ${sourceOrigin !== null}
         ), retired_retention_reason AS (
           DELETE FROM "moderation_delete_intent_reasons"
           WHERE "intent_id" = ${intent.id} AND "rule_code" = ${MESSAGE_RETENTION_RULE}

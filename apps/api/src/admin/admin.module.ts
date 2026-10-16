@@ -134,6 +134,7 @@ import { SafetyDeskService } from './safety-desk.service';
 import { SafetyDeskObservabilityController } from './safety-desk-observability.controller';
 import { SafetyDeskWebhookCohortService } from './safety-desk-webhook-cohort.service';
 import { SafetyDeskDeleteEvidenceService } from './safety-desk-delete-evidence.service';
+import { SafetyDeskPublicationCohortService } from './safety-desk-publication-cohort.service';
 import { SupportRequestsController } from './support-requests.controller';
 import { SupportRequestsService } from './support-requests.service';
 import { PublisherController } from './publisher.controller';
@@ -315,6 +316,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     SafetyDeskRetentionService,
     SafetyDeskWebhookCohortService,
     SafetyDeskDeleteEvidenceService,
+    SafetyDeskPublicationCohortService,
     SupportRequestsService,
     ...(roleRunsPublisher(getAppRole()) ? [VkParsingRunnerService] : []),
     ...(roleRunsPublisher(getAppRole()) ? [VkParsingSyncProcessor] : []),

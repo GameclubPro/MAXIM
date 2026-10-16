@@ -2468,10 +2468,27 @@ model ModerationDeleteIntentReason {
   updatedAt         DateTime   @updatedAt @map("updated_at")
 
   intent ModerationDeleteIntent @relation(fields: [intentId], references: [id], onDelete: Cascade)
+  origin ModerationDeleteReasonOrigin?
 
   @@unique([intentId, reasonKey], map: "moderation_delete_intent_reasons_intent_reason_key")
   @@index([intentId, moderationEventId], map: "moderation_delete_intent_reasons_event_idx")
   @@map("moderation_delete_intent_reasons")
+}
+
+// FLAG: Observation only; origin never grants execution or replay authority.
+// Webhook identity survives source retention without inventing historical links.
+model ModerationDeleteReasonOrigin {
+  reasonId String @id @map("reason_id")
+  sourceWebhookEventId String @map("source_webhook_event_id")
+  sourceReceivingBotId String @map("source_receiving_bot_id")
+  sourceExecutionBotId String @map("source_execution_bot_id")
+  sourceEventAt DateTime @map("source_event_at")
+  sourceObservedAt DateTime @default(now()) @map("source_observed_at")
+  sourceEvidenceVersion Int @map("source_evidence_version")
+  reason ModerationDeleteIntentReason @relation(fields: [reasonId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([sourceWebhookEventId, sourceObservedAt, reasonId], map: "moderation_delete_reason_origins_source_idx")
+  @@map("moderation_delete_reason_origins")
 }
 
 // FLAG: Only new pre-DELETE v1 envelopes may continue their own confirmed rule.
@@ -3369,6 +3386,7 @@ model PublicationOccurrence {
   @@index([legacyBroadcastId], map: "publication_occurrences_legacy_broadcast_idx")
   @@index([status, scheduledAt], map: "publication_occurrences_status_scheduled_idx")
   @@index([dispatchProfile, status, scheduledAt], map: "publication_occurrences_dispatch_status_scheduled_idx")
+  @@index([dispatchProfile, status, createdAt, id], map: "publication_occurrences_dispatch_status_created_id_idx")
   @@index([dispatchProfile, status, dispatchBlockerCode, scheduledAt, id], map: "publication_occurrences_ready_dispatch_idx")
   @@index([dispatchProfile, status, dispatchBlockedAt, scheduledAt, id], map: "publication_occurrences_blocked_dispatch_idx")
   @@index([publicationId, scheduledAt(sort: Desc), id(sort: Desc)], map: "publication_occurrences_publication_scheduled_id_idx")

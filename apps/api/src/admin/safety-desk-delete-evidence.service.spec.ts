@@ -2,12 +2,104 @@ import {
   deleteNoticeKeys,
   projectDeleteNoticeEvidence,
   projectDeleteOutcome,
+  projectDeleteReasonOrigin,
+  type DeleteReasonOriginRow,
   type DeleteFollowupEvidenceRow,
   type DeleteNoticeLedgerRow,
 } from './safety-desk-delete-evidence.service';
 
 const sourceAt = new Date('2026-10-16T18:00:00.000Z');
 const observedAt = new Date(sourceAt.getTime() + 60_000);
+
+describe('exact DELETE origin evidence', () => {
+  const target = { chatId: 'chat', messageId: 'message' };
+  const origin = (): DeleteReasonOriginRow => ({
+    reasonId: 'reason',
+    sourceWebhookEventId: 'receipt',
+    sourceReceivingBotId: 'receiving',
+    sourceExecutionBotId: 'executor',
+    sourceEventAt: sourceAt,
+    sourceObservedAt: observedAt,
+    sourceEvidenceVersion: 1,
+    receiptId: 'receipt',
+    receiptBotId: 'receiving',
+    receiptCreatedAt: sourceAt,
+    sourcePayload: {
+      type: 'message_edited',
+      botId: 'receiving',
+      eventTimestampSource: 'payload',
+      message: { ...target, createdAt: '2020-01-01T00:00:00.000Z' },
+      raw: { timestamp: sourceAt.toISOString() },
+    },
+    claimId: 'claim',
+    claimWebhookEventId: 'receipt',
+    claimExecutionBotId: 'executor',
+    claimEnforced: true,
+    claimBusinessStartedAt: sourceAt,
+  });
+  it('links exact receipt and canonical claim while keeping receiving/execution bots distinct', () => {
+    expect(projectDeleteReasonOrigin(origin(), target, observedAt)).toEqual({
+      state: 'linked',
+      webhookEventId: 'receipt',
+      receivingBotId: 'receiving',
+      executionBotId: 'executor',
+      eventAt: sourceAt.toISOString(),
+      acceptedAt: sourceAt.toISOString(),
+      recordedAt: observedAt.toISOString(),
+      evidenceVersion: 1,
+    });
+  });
+  it.each(['receipt', 'claim', 'retained-body'] as const)(
+    'preserves recorded provenance when %s is unavailable',
+    (missing) => {
+      const row = origin();
+      if (missing === 'receipt') row.receiptId = null;
+      if (missing === 'claim') row.claimId = null;
+      if (missing === 'retained-body') row.sourcePayload = {};
+      expect(projectDeleteReasonOrigin(row, target, observedAt)).toMatchObject({
+        state: 'source_unavailable',
+        webhookEventId: 'receipt',
+      });
+    },
+  );
+  it.each([
+    'clock',
+    'receiving-bot',
+    'execution-bot',
+    'claim-receipt',
+    'claim-unstarted',
+    'claim-unenforced',
+    'target',
+    'future-recording',
+    'version',
+  ])('refuses mismatched %s without inventing provenance', (failure) => {
+    const row = origin();
+    if (failure === 'clock') row.sourceEventAt = new Date(sourceAt.getTime() + 1);
+    if (failure === 'receiving-bot') row.receiptBotId = 'executor';
+    if (failure === 'execution-bot') row.claimExecutionBotId = 'receiving';
+    if (failure === 'claim-receipt') row.claimWebhookEventId = 'another-receipt';
+    if (failure === 'claim-unstarted') row.claimBusinessStartedAt = null;
+    if (failure === 'claim-unenforced') row.claimEnforced = false;
+    if (failure === 'target')
+      row.sourcePayload = {
+        ...(row.sourcePayload as object),
+        message: { ...target, messageId: 'another' },
+      };
+    if (failure === 'future-recording') row.sourceObservedAt = new Date(observedAt.getTime() + 1);
+    if (failure === 'version') row.sourceEvidenceVersion = 2;
+    expect(projectDeleteReasonOrigin(row, target, observedAt)).toMatchObject({
+      state: 'invalid_evidence',
+      webhookEventId: null,
+    });
+  });
+  it('keeps missing historical origin explicitly unrecorded', () => {
+    expect(projectDeleteReasonOrigin(undefined, target, observedAt)).toMatchObject({
+      state: 'not_recorded',
+      webhookEventId: null,
+      acceptedAt: null,
+    });
+  });
+});
 function fixture() {
   const row: DeleteFollowupEvidenceRow = {
     id: 'followup',

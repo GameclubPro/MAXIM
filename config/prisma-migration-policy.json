@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261016060000_add_channel_post_demand",
-  "baselineNamesSha256": "7a8435dea54cbc555541e08cda78e3a59fdf5b6592e6b6fd09173af956c7479a",
-  "baselineContentsSha256": "3d1af6ef38b9c7e1ecfc20c0dc11a6fc34f901d7e83a38ecdbfc056e4b7a2414",
+  "baselineThrough": "20261016190100_index_publication_occurrence_cohorts",
+  "baselineNamesSha256": "1cbc1709aa4cc80c0d4cd9399541c91428b557bcb3b1caad405abd80950b86bd",
+  "baselineContentsSha256": "60fd1a6dfcd68bdfc6c4b6f2162b39019fe7747190caa1d2bb5da607b396bd5f",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -215,6 +215,9 @@
     },
     "20261016060000_add_channel_post_demand": {
       "reason": "Indexes belong only to two new empty scheduling-hint tables. No retained webhook/marker history is indexed, scanned or backfilled. The hints grant no execution authority; existing guards and readers remain authoritative."
+    },
+    "20261016190000_add_moderation_delete_reason_origins": {
+      "reason": "The sole ordinary index belongs to a new empty observation table. No retained reasons or webhook rows are scanned, backfilled, rewritten or indexed; origins grant no execution authority. Existing readers ignore the additive table."
     }
   }
 }

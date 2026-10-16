@@ -1311,6 +1311,12 @@ button:disabled {
   color: #344054;
 }
 
+.observation-panels {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
 .cohort-desk h2 {
   margin: 0;
 }

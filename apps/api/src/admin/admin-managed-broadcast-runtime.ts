@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { withMarketplacePost } from '../max/marketplace-publication-button';
+import { persistManagedBroadcastDispatchCandidate } from './managed-broadcast-dispatch-candidate';
 import {
   addDomainRequestSchema,
   chatParticipantImmunitySchema,
@@ -3661,109 +3662,109 @@ export class AdminManagedBroadcastRuntime {
           let sendStarted = false;
           let preparedOptions: MaxSendMessageOptions | undefined;
           try {
-            const sentMessage = await routedPublicationService.publish({
-              entityId: delivery.targetChatId,
+            const sentMessage = await publicationTiming.runDispatch(
               logicalIdempotencyKey,
-              text: request.normalizedSourceText || ' ',
-              trafficClass: maxSendOptions.trafficClass ?? 'interactive',
-              actionHealthLane: maxSendOptions.actionHealthLane,
-              sourceTag: maxSendOptions.sourceTag ?? MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-              ...(publisherRoute
-                ? { publisherExactBotId: publisherRoute.exactBotId, hydrateMessageUrl: false }
-                : {}),
-              ...(row.publicationOccurrenceId
-                ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }
-                : {}),
-              prepareAttempt: async ({ botId }) => {
-                if (publisherRoute && botId !== publisherRoute.exactBotId) {
-                  throw new ServiceUnavailableException(
-                    'Publisher exact route changed before MAX dispatch',
-                  );
-                }
-                onBotSelected(botId);
-                await this.heartbeatManagedBroadcastProcessingLock(
-                  row.id,
-                  currentOccurrence,
-                  activeLease,
-                );
-                const persistedCandidate = await this.prisma.managedBroadcastDelivery.updateMany({
-                  where: {
-                    id: delivery.id,
-                    status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-                    lockToken: deliveryLockToken,
-                  },
-                  data: { botId },
-                });
-                if (persistedCandidate.count === 0) {
-                  throw new ServiceUnavailableException(
-                    'Managed broadcast delivery lock was lost before MAX dispatch',
-                  );
-                }
-                const media = await resolveMedia(botId);
-                const message = await this.messageRuntime.buildMessage(
-                  delivery.targetChatId,
-                  row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
-                  request.payload,
-                  request.normalizedSourceText,
-                  media,
-                  botId,
-                  publisherRoute?.dialogBotId ?? botId,
-                  publisherRoute
-                    ? { value: publisherRoute.dialogContext, required: true }
-                    : undefined,
-                );
-                commentDialogReferencesByBotId.set(botId, message.commentDialogReference);
-                preparedOptions = message.messageOptions;
-                if (
-                  !(await this.ensureManagedBroadcastPublicationExecutionActive(
-                    row,
-                    currentOccurrence,
-                    activeDeliveryClaim,
-                  ))
-                ) {
-                  throw new ManagedBroadcastPublicationExecutionStopped();
-                }
-                return {
-                  text: message.messageText,
-                  options: withMarketplacePost(message.messageOptions, delivery.targetChatId),
-                  ledgerContext: buildManagedBroadcastLedgerContext(message.commentDialogReference),
-                };
-              },
-              onDispatchAttempt: ({ botId }) => {
-                if (!publisherRoute) {
-                  sendStarted = true;
-                }
-                onBotSelected(botId);
-                resolvedBotIdsByChatId.set(delivery.targetChatId, botId);
-              },
-              ...(publisherRoute
-                ? {
-                    beforeSendMutation: async ({ botId }: { botId: string }) => {
-                      if (botId !== publisherRoute.exactBotId) {
-                        throw new ServiceUnavailableException(
-                          'Publisher exact route changed before MAX mutation',
-                        );
-                      }
-                      if (
-                        !(await this.ensureManagedBroadcastPublicationExecutionActive(
-                          row,
-                          currentOccurrence,
-                          activeDeliveryClaim,
-                        ))
-                      ) {
-                        throw new ManagedBroadcastPublicationExecutionStopped();
-                      }
-                      await this.publisherDispatch.assertDeliveryReady(
-                        delivery.targetChatId,
-                        publisherRoute.exactBotId,
-                        row.actorUserId,
+              maxSendOptions.trafficClass ?? 'interactive',
+              () =>
+                routedPublicationService.publish({
+                  entityId: delivery.targetChatId,
+                  logicalIdempotencyKey,
+                  text: request.normalizedSourceText || ' ',
+                  trafficClass: maxSendOptions.trafficClass ?? 'interactive',
+                  actionHealthLane: maxSendOptions.actionHealthLane,
+                  sourceTag: maxSendOptions.sourceTag ?? MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+                  ...(publisherRoute
+                    ? { publisherExactBotId: publisherRoute.exactBotId, hydrateMessageUrl: false }
+                    : {}),
+                  ...(row.publicationOccurrenceId
+                    ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }
+                    : {}),
+                  prepareAttempt: async ({ botId }) => {
+                    if (publisherRoute && botId !== publisherRoute.exactBotId) {
+                      throw new ServiceUnavailableException(
+                        'Publisher exact route changed before MAX dispatch',
                       );
+                    }
+                    onBotSelected(botId);
+                    await this.heartbeatManagedBroadcastProcessingLock(
+                      row.id,
+                      currentOccurrence,
+                      activeLease,
+                    );
+                    await persistManagedBroadcastDispatchCandidate(
+                      this.prisma,
+                      delivery.id,
+                      deliveryLockToken,
+                      botId,
+                    );
+                    const media = await resolveMedia(botId);
+                    const message = await this.messageRuntime.buildMessage(
+                      delivery.targetChatId,
+                      row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
+                      request.payload,
+                      request.normalizedSourceText,
+                      media,
+                      botId,
+                      publisherRoute?.dialogBotId ?? botId,
+                      publisherRoute
+                        ? { value: publisherRoute.dialogContext, required: true }
+                        : undefined,
+                    );
+                    commentDialogReferencesByBotId.set(botId, message.commentDialogReference);
+                    preparedOptions = message.messageOptions;
+                    if (
+                      !(await this.ensureManagedBroadcastPublicationExecutionActive(
+                        row,
+                        currentOccurrence,
+                        activeDeliveryClaim,
+                      ))
+                    ) {
+                      throw new ManagedBroadcastPublicationExecutionStopped();
+                    }
+                    return {
+                      text: message.messageText,
+                      options: withMarketplacePost(message.messageOptions, delivery.targetChatId),
+                      ledgerContext: buildManagedBroadcastLedgerContext(
+                        message.commentDialogReference,
+                      ),
+                    };
+                  },
+                  onDispatchAttempt: ({ botId }) => {
+                    if (!publisherRoute) {
                       sendStarted = true;
-                      publisherRoute.onAttemptStarted(new Date());
-                    },
-                  }
-                : {}),
-            });
+                    }
+                    onBotSelected(botId);
+                    resolvedBotIdsByChatId.set(delivery.targetChatId, botId);
+                  },
+                  ...(publisherRoute
+                    ? {
+                        beforeSendMutation: async ({ botId }: { botId: string }) => {
+                          if (botId !== publisherRoute.exactBotId) {
+                            throw new ServiceUnavailableException(
+                              'Publisher exact route changed before MAX mutation',
+                            );
+                          }
+                          if (
+                            !(await this.ensureManagedBroadcastPublicationExecutionActive(
+                              row,
+                              currentOccurrence,
+                              activeDeliveryClaim,
+                            ))
+                          ) {
+                            throw new ManagedBroadcastPublicationExecutionStopped();
+                          }
+                          await this.publisherDispatch.assertDeliveryReady(
+                            delivery.targetChatId,
+                            publisherRoute.exactBotId,
+                            row.actorUserId,
+                          );
+                          sendStarted = true;
+                          publisherRoute.onAttemptStarted(new Date());
+                        },
+                      }
+                    : {}),
+                }),
+            );
             let commentDialogReference =
               commentDialogReferencesByBotId.get(sentMessage.botId) ?? null;
             let hasCommentDialogReference = commentDialogReferencesByBotId.has(sentMessage.botId);

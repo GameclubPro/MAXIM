@@ -127,6 +127,23 @@ not zero. These logs are diagnostic samples, not a durable cohort denominator or
 unique events: crashes, retries and recycled pre-dispatch claims can omit or repeat samples.
 Use the persisted journals for accepted-operation counts and terminal outcomes.
 
+`publication_send_v1` adds exact local monotonic SEND observations with fixed mode/media/lane
+and outcome labels. `pre_http` includes preparation/admission; `final_admission` isolates the final
+request guards, and `http` ends when transport settles, before response validation and logging.
+Only a valid remote message ID establishes a local acknowledgement. `ledger_persistence` separates
+the winning CAS from exact readback after a lost database acknowledgement or a competing completion.
+`acknowledgement_to_ledger`, `acknowledgement_to_recipient` and `ledger_observed_to_recipient` retain
+those distinct boundaries. Recovered-only receipts have no fabricated HTTP clock. Failed commits,
+missing IDs and unknown effects stay unavailable; observations never authorize another SEND.
+
+The closed Safety Desk publication cohort includes every persisted occurrence status in a fixed
+fifteen-minute creation interval ending thirty seconds before observation. Counts are accepted
+created runs, not recipient deliveries or later manual retries. Each status is bounded to 512
+rows plus sentinel, with explicit incomplete coverage. Pending due/expired/unknown and future
+schedules remain separate. Mode/media use only provable saved revisions; unknown is preserved
+after latest-content retry or missing history. The observer never enumerates recipients or infers
+completion time from a mutable `updatedAt`. Its concurrent index adds no scheduling authority.
+
 The target-preparation migration replaces only the context constraint/trigger, with no
 history rewrite or validation scan. Its new constraint checks all new writes. Both API
 rollback paths require the current deadline/recipient-wait/durable-authority readers and Publisher scheduling wiring;

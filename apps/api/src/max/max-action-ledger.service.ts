@@ -1,3 +1,4 @@
+import { beginMaxSendLedgerObservation } from './max-send-observation';
 import {
   isMaxMutationOutcomeAmbiguous,
   wasMaxMessageSendAttempted,
@@ -902,6 +903,7 @@ export class MaxActionLedgerService {
     }
 
     const completedAt = new Date();
+    const observePersistence = beginMaxSendLedgerObservation(job.idempotencyKey);
     let completed: { count: number };
     try {
       completed = await this.prisma.maxActionLedgerEntry.updateMany({
@@ -932,17 +934,20 @@ export class MaxActionLedgerService {
         throw error;
       }
       if (recovered?.remoteMessageId === normalizedRemoteMessageId) {
+        observePersistence('exact_readback');
         return recovered.completedAt;
       }
       throw error;
     }
     if (completed.count === 1) {
+      observePersistence('cas_committed');
       return completedAt;
     }
 
     const row = await this.readSendDispatchState(job.idempotencyKey);
     const recovered = this.readCompletedSendDispatchFromState(job, row);
     if (recovered?.remoteMessageId === normalizedRemoteMessageId) {
+      observePersistence('exact_readback');
       return recovered.completedAt;
     }
 

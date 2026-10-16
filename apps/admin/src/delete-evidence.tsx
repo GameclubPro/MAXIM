@@ -127,9 +127,25 @@ export function DeleteEvidence({ intentId, accessCode }: { intentId: string; acc
             </div>
           </dl>
           <p>
-            Связь с исходным входящим событием не сохранена. Результат относится к выбранному
-            удалению.
+            {snapshot.originCoverage === 'partial'
+              ? 'Для части причин сохранена связь с исходным событием. Каждая связь проверяется отдельно.'
+              : 'Связь с исходным входящим событием не сохранена. Результат относится к выбранному удалению.'}
           </p>
+          {snapshot.reasons.items
+            .filter((reason) => reason.origin && reason.origin.state !== 'not_recorded')
+            .map((reason) => (
+              <article className="delete-section" key={reason.reasonKey}>
+                <strong>{reason.ruleCode}</strong>
+                <p>
+                  {reason.origin?.state === 'linked'
+                    ? `Исходное событие и исполнитель подтверждены. Событие принято: ${time(reason.origin.acceptedAt)}.`
+                    : reason.origin?.state === 'source_unavailable'
+                      ? 'Связь сохранена, но исходное событие уже недоступно для проверки.'
+                      : 'Данные связи с исходным событием не согласуются.'}
+                </p>
+                <p>Запись связи сама по себе не подтверждает удаление.</p>
+              </article>
+            ))}
           <p>
             {snapshot.reasons.items.filter((reason) => reason.decisionRecorded).length} из{' '}
             {snapshot.reasons.items.length} показанных причин имеют связанную запись действия.

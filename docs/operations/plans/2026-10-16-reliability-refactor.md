@@ -40,14 +40,42 @@ Remote success in an AMBIGUOUS intent remains `acknowledged`, never confirmed co
 A saved moderation decision is not proof of a current sanction; its exact saved event timestamp
 and follow-up identity must match. A notice receipt requires matching source, rule, policy, version and deadline, plus a
 terminal successful nonambiguous receipt. Missing, malformed and conflicting evidence never
-becomes success. `webhookLink=not_recorded` forbids guessed joins by chat/message/time. These
-routes provide no retry or mutation operation and retain the existing owner guard.
+becomes success. The legacy `webhookLink=not_recorded` field does not imply complete provenance.
+Optional per-reason `origin` evidence validates a new immutable source record against the exact
+receipt, event/edit timestamp, message and canonical EXECUTION claim, including distinct receiving
+and execution bots. Receipt retention produces `source_unavailable`; malformed evidence stays
+invalid. Historical, deferred and other-message deletes are not backfilled. Only a newly inserted
+reason records its source, atomically with that reason; conflict/promotion cannot replace it.
+These routes provide no retry or mutation operation and retain the existing owner guard.
+
+The owner-only `GET /v1/safety-desk/runtime/publication-cohort` observes PUBLIK_V1 occurrences
+created in the closed fifteen-minute interval ending thirty seconds before the observation.
+All seven statuses belong to the denominator, including canceled, failed and ambiguous outcomes.
+The exact dispatch-profile/status/created-at/id B-tree bounds 513 heads and 512 scalar PK reads
+per status. Schedule and content IDs are deduplicated; each content uses two indexed endpoint
+probes and at most ten exact position reads. Overflow, negative positions and gaps remain UNKNOWN;
+oversized content does not load asset payloads. No audience or recipient rows are read. Current revisions,
+latest-content retries or insufficient historical evidence never fabricate acceptance-time mode/media.
+Pending future, due, expired and unknown timing remain separate; due age excludes expired work.
+Saved retry deadlines are validated before comparison with the original deadline. Occurrences
+are not HTTP requests or individual recipients, and later manual retries are not separate members
+of this creation cohort. No completion latency is inferred from `updatedAt`.
 
 Publisher `publication_wait_v1` observations supplement existing timing logs; see
 [Publisher diagnostics](../runbooks/publisher-publication-diagnostics.md). Logs are sampled
 observations, not durable exactly-once counters or full accepted-operation denominators. The
-acknowledgement-to-receipt interval starts at the existing wrapper observation, not at the HTTP
-socket boundary. Exact HTTP attribution and complete causal linkage remain explicit later work.
+acknowledgement-to-receipt interval starts at the existing wrapper observation. Separate
+`publication_send_v1` monotonic observations measure the exact SEND HTTP boundary, successful
+action-ledger CAS or exact readback, and winning recipient-receipt CAS. Missing remote IDs,
+recovery-only returns and failed persistence do not invent local acknowledgement clocks. Nested
+or detached actions cannot borrow another attempt's measurements; metrics contain fixed dimensions
+without identities. Complete causal coverage of deferred DELETE, direct sanctions and other SEND
+origins remains separate work; the new synchronous origin records do not prove that coverage.
+
+Both schema changes are additive. The origin index is on a new empty table; the occurrence index
+build is concurrent on retained history. No history rewrite, authority change or existing-reader
+incompatibility is introduced. A compatible rollback may omit new observations while retaining
+existing journals; it must not drop the additive tables or relax any installed rollback floor.
 
 ## Validation and acceptance
 

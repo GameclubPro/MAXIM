@@ -5,11 +5,47 @@ import {
   recordPublicationReceiptTiming,
   recordPublicationWaitTiming,
 } from './publication-delivery-timing';
+import { beginMaxSendLedgerObservation } from '../max/max-send-observation';
 
 describe('Publication delivery timing', () => {
   const scheduledAt = new Date('2026-09-30T10:00:00Z');
 
   afterEach(() => jest.useRealTimers());
+
+  it('observes only the current recipient persistence and preserves recovered provenance', async () => {
+    const logger = { log: jest.fn() };
+    const observer = createPublicationExecutionObserver(
+      logger,
+      {
+        publicationOccurrenceId: 'private-occurrence',
+        mediaType: null,
+        imageEnabled: false,
+      },
+      true,
+    );
+    observer.onOccurrenceScheduledAt(scheduledAt, { mode: 'NOW', intentCreatedAt: scheduledAt });
+    observer.observeClaim({ attemptCount: 0 });
+    await observer.runDispatch('private-action', 'interactive', async () => {
+      beginMaxSendLedgerObservation('private-action')('exact_readback');
+    });
+    observer.observeReceipt();
+    observer.observeClaim({ attemptCount: 1 });
+    await observer.runDispatch('other-action', 'background', async () => undefined);
+    observer.observeReceipt();
+    const exact = logger.log.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.metric === 'publication_send_v1');
+    expect(exact.filter((event) => event.stage === 'http')).toEqual([]);
+    expect(exact.filter((event) => event.stage === 'ledger_observed_to_recipient')).toEqual([
+      expect.objectContaining({ outcome: 'cas_committed', mode: 'NOW', lane: 'interactive' }),
+      expect.objectContaining({
+        outcome: 'source_unavailable',
+        durationMs: null,
+        lane: 'background',
+      }),
+    ]);
+    expect(JSON.stringify(exact)).not.toContain('private');
+  });
 
   it('distinguishes the original first claim clock from a persisted retry due time', () => {
     jest.useFakeTimers().setSystemTime(new Date(scheduledAt.getTime() + 12_000));

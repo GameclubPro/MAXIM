@@ -38,7 +38,7 @@ import { Metric } from './safety-desk-ui';
 import { SupportDesk } from './support-desk';
 import { supportRequestsApiClient } from './support-requests-api-client';
 import { SafetyDeskNavigation } from './safety-desk-navigation';
-import { WebhookCohortDesk } from './webhook-cohort-desk';
+import { ObservabilityDesk } from './observability-desk';
 
 export function AdminApp() {
   const [unlocked, setUnlocked] = useState(false);
@@ -518,7 +518,7 @@ export function AdminApp() {
       ) : view === 'retention' ? (
         <RetentionDeskPane accessCode={verifiedAccessCode} controls={retention} />
       ) : view === 'observations' ? (
-        <WebhookCohortDesk accessCode={verifiedAccessCode} refreshToken={observationRefreshToken} />
+        <ObservabilityDesk accessCode={verifiedAccessCode} refreshToken={observationRefreshToken} />
       ) : (
         <DeleteDesk
           accessCode={verifiedAccessCode}
