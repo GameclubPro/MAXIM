@@ -67,6 +67,7 @@ Detailed constraints selected by the routing table in [API agent notes](../../ap
   3. `https://help.max.ru/help/bots`
   4. `https://github.com/max-messenger`
 - MAX removed bot-wide `GET /chats`; keep `listBotChats` compatibility out of production discovery and never build a new flow on it.
+- Production currently uses `https://platform-api2.max.ru`; `env.schema.ts` rejects the retired `platform-api.max.ru` host. Verify validated configuration before writing diagnostic probes and retain the normal client's shared admission/cooldown and exact bot identity.
 - Send bot tokens only as `Authorization: <token>`, never query parameters. Keep tokens and webhook secrets only in ignored env/VPS secrets.
 - Production delivery uses webhooks. Long polling is development-only and cannot coexist with a webhook subscription.
 - `MaxClientService` defaults to 30 rps per bot token (`MAX_API_GLOBAL_RPS`) with no additional aggregate 30 rps hard guard. Treat this as the current project limit, not proof of MAX quota scope or a guaranteed remote allowance. Verify current official documentation before changing it; retain per-bot queues, lane/source tags, route priorities and per-role class limits.

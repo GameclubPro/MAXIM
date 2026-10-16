@@ -75,6 +75,9 @@ code. Its detailed guards remain mandatory. Do not load unrelated domain section
 - Verify current MAX behavior against `https://dev.max.ru/docs/`, then `https://dev.max.ru/docs-api/`,
   `https://help.max.ru/help/bots` and official `https://github.com/max-messenger` sources.
   Removed `GET /chats` must not return to production discovery.
+- Production currently uses `https://platform-api2.max.ru`; `env.schema.ts` rejects the retired
+  `platform-api.max.ru` host. Check validated configuration before writing a probe; use the normal
+  client admission/cooldown and exact bot scope even for read-only diagnostic requests.
 - Tokens go only in `Authorization`, never query strings or output. Keep the Russian CA bundle.
   Production uses authenticated HTTPS webhooks; long polling is development-only.
 - Current `MaxClientService` defaults to 30 rps per bot token (`MAX_API_GLOBAL_RPS`). This is a
