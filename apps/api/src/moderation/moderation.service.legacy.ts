@@ -423,6 +423,7 @@ import {
   type ChannelAutoPostMessageText,
   type ChannelAutoPostScanState,
 } from './channel-auto-post-runtime';
+import { runChannelAutoPostScanBatch } from './channel-auto-post-scan-batch';
 import {
   ChannelAutoPostMutationGuard,
   resolveInitialChannelMutationRoute,
@@ -14949,7 +14950,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     this.channelAutoPostInFlight = true;
     try {
-      let encounteredTransientThrottle = false;
       const channelCandidates = await this.prisma.channelSettings.findMany({
         where: {
           chat: {
@@ -14985,33 +14985,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         scanBatchRefs.map((item) => item.chatId),
       );
 
-      for (const [index, managedChannel] of scanBatch.entries()) {
-        if (index > 0) {
-          await this.sleep(executionPlan.interChannelDelayMs);
-        }
-
-        try {
-          await this.processManagedChannelAutoPostButtons(managedChannel, {
-            maxNewMessagesPerScan: executionPlan.maxNewMessagesPerScan,
-          });
-        } catch (error: unknown) {
+      const encounteredTransientThrottle = await runChannelAutoPostScanBatch({
+        channels: scanBatch,
+        plan: executionPlan,
+        manager: this.channelAutoPostScanManager,
+        processChannel: (channel, options) =>
+          this.processManagedChannelAutoPostButtons(channel, options),
+        sleep: (ms) => this.sleep(ms),
+        isTransientLookupError: (error) => this.isTransientMaxApiLookupError(error),
+        onGlobalBackoff: (ms) => {
+          this.channelAutoPostBackoffUntilMs = Date.now() + ms;
+        },
+        onFailure: (chatId, error) =>
           this.logger.warn(
-            {
-              chatId: managedChannel.channelSettings.chatId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
+            { chatId, error: error instanceof Error ? error.message : 'Unknown error' },
             'Failed channel auto post buttons scan',
-          );
-          if (this.isTransientMaxApiLookupError(error)) {
-            encounteredTransientThrottle = true;
-            const backoffMs = this.channelAutoPostScanManager.recordTransientThrottle(
-              managedChannel.channelSettings.chatId,
-            );
-            this.channelAutoPostBackoffUntilMs = Date.now() + backoffMs;
-            break;
-          }
-        }
-      }
+          ),
+      });
 
       if (!encounteredTransientThrottle) {
         const recovery = await this.channelAutoPostLegacyRecovery.runIfDue();
