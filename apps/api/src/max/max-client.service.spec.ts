@@ -218,6 +218,12 @@ jest.mock('ioredis', () => {
 
               if (script.includes('MAX_API_GCRA_RESERVE_V1')) {
                 const nowMs = Date.now();
+                const windowKey = `${keys[0]}:window:v1`;
+                const window = (JSON.parse(readEntry(windowKey)?.value ?? '[]') as number[]).filter(
+                  (at) => at > nowMs - 1_000,
+                );
+                if (window.length >= Number(argValues[0]))
+                  return [0, 1, Math.max(1, window[0]! + 1_000 - nowMs)];
                 const ttlFloorMs = Number(argValues[argValues.length - 1] ?? 0);
                 const updates: Array<{ key: string; tat: number; ttlMs: number }> = [];
                 for (let index = 0; index < numKeys; index += 1) {
@@ -248,6 +254,10 @@ jest.mock('ioredis', () => {
                     expiresAtMs: nowMs + update.ttlMs,
                   });
                 }
+                store.set(windowKey, {
+                  value: JSON.stringify([...window, nowMs]),
+                  expiresAtMs: nowMs + 1_000,
+                });
                 return [1, 0, 0];
               }
 
