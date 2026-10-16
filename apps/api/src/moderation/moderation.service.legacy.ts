@@ -409,6 +409,7 @@ import {
 import { extractHttpStatusCode } from '../common/http-error.util';
 import {
   buildChannelAutoPostButtons,
+  buildChannelAutoPostGovernorRequest,
   ChannelAutoPostScanManager,
   extractChannelAutoPostDialogButtons,
   extractChannelAutoPostMessageLinkType,
@@ -953,6 +954,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId: managedChannel.channelSettings.chatId,
           managedChannel,
           source: 'poll',
+          schedulingOrigin: 'durable_demand',
           senderAdminVerified:
             message.senderId !== null && managedChannel.adminUserIds.includes(message.senderId),
           allowSenderlessEngagement: true,
@@ -15141,6 +15143,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           existingDialogThreadId: normalized.existingDialogThreadId,
           managedChannel,
           source: 'poll',
+          schedulingOrigin: 'periodic_scan',
           senderId: normalized.senderId,
           senderAdminVerified:
             normalized.senderId !== null &&
@@ -15160,11 +15163,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.backgroundRuntimeGovernorService) {
       const now = Date.now();
       const decision = await this.backgroundRuntimeGovernorService
-        .decide({
-          component: 'moderation',
-          sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-          allowQueueLagSlowPathBelowSec: this.backgroundWorkSoftPauseQueueLagSec,
-        })
+        .decide(buildChannelAutoPostGovernorRequest(this.backgroundWorkSoftPauseQueueLagSec))
         .catch((error: unknown) => {
           if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
             this.channelAutoPostPausedLogAtMs = now;
@@ -15302,6 +15301,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     existingDialogThreadId?: string | null;
     managedChannel: ManagedChannelContext;
     source: 'webhook' | 'poll';
+    schedulingOrigin?: 'durable_demand' | 'periodic_scan';
     senderId: string | null;
     senderAdminVerified: boolean;
     allowSenderlessEngagement: boolean;
@@ -15911,6 +15911,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             cleanupState: originalDeleted ? 'confirmed' : originalCleanupError ? 'failed' : 'owned',
             ...(originalCleanupError ? { cleanupError: originalCleanupError } : {}),
             source,
+            ...(params.schedulingOrigin ? { schedulingOrigin: params.schedulingOrigin } : {}),
             ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
           },
         },

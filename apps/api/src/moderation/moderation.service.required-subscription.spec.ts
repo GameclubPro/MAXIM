@@ -5714,6 +5714,7 @@ describe('ModerationService', () => {
     expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
       component: 'moderation',
       sourceTag: 'channel_auto_post',
+      allowRecoveryWindowRun: true,
       allowQueueLagSlowPathBelowSec: 5,
     });
     expect(loggerSpy).toHaveBeenCalledWith(
@@ -5764,6 +5765,7 @@ describe('ModerationService', () => {
     expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
       component: 'moderation',
       sourceTag: 'channel_auto_post',
+      allowRecoveryWindowRun: true,
       allowQueueLagSlowPathBelowSec: 5,
     });
     expect(prisma.channelSettings.findMany).not.toHaveBeenCalled();

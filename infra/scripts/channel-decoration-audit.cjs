@@ -39,6 +39,8 @@ const INSPECT_SQL = {
     CASE WHEN jsonb_typeof(payload->'signatureApplied') = 'boolean'
       THEN (payload->>'signatureApplied')::boolean ELSE NULL END AS signature_applied,
     CASE WHEN payload->>'source' IN ('webhook','poll') THEN payload->>'source' ELSE NULL END AS source,
+    CASE WHEN payload->>'schedulingOrigin' IN ('durable_demand','periodic_scan')
+      THEN payload->>'schedulingOrigin' ELSE NULL END AS scheduling_origin,
     CASE WHEN length(payload->>'messageId') BETWEEN 1 AND 128 THEN payload->>'messageId' ELSE NULL END AS message_id,
     CASE WHEN jsonb_typeof(payload->'changed'->'enabled') = 'boolean'
       THEN (payload->'changed'->>'enabled')::boolean ELSE NULL END AS changed_enabled

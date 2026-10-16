@@ -453,6 +453,24 @@ describe('BackgroundRuntimeGovernorService', () => {
       decision: { action: 'slow', reason: 'system load 90.0% of 10 CPUs' },
     },
     {
+      label: 'hard host load during queue slow progress',
+      pressure: {
+        queues: { effectiveLagSec: 12 },
+        systemPressure: { loadRatio1m: 1.3 },
+      },
+      options: { allowQueueLagSlowPathBelowSec: 30 },
+      decision: { action: 'pause', reason: 'system load 130.0% of 10 CPUs' },
+    },
+    {
+      label: 'hard IO pressure during queue slow progress',
+      pressure: {
+        queues: { effectiveLagSec: 12 },
+        systemPressure: { ioWaitRatio: 0.5 },
+      },
+      options: { allowQueueLagSlowPathBelowSec: 30 },
+      decision: { action: 'pause', reason: 'system iowait 50.0%' },
+    },
+    {
       label: 'host load pause pressure',
       pressure: { systemPressure: { loadRatio1m: 1.3 } },
       options: {},

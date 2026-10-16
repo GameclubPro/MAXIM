@@ -595,6 +595,9 @@ export class BackgroundRuntimeGovernorService {
 
     if (queueLagSec >= this.softQueueLagSec) {
       if (allowQueueLagSlowPath) {
+        // FLAG: A queue-only slow path cannot outrank a hard host pressure pause.
+        const pressure = this.buildSystemPressureDecision(snapshot.systemPressure);
+        if (pressure?.action === 'pause') return pressure;
         return {
           action: 'slow',
           retryAfterMs: this.pauseRetryAfterMs,

@@ -63,6 +63,12 @@ For a focused SQL regression, preserve the public API lock/codegen wrapper:
 node scripts/agent/with-test-stores.mjs --migrate -- npm test --workspace @maxim/api -- moderation-delete-due-postgres.spec.ts
 ```
 
+Jest options need two additional `--` separators because the public wrapper traverses two
+nested npm scripts. For example, append `-- -- -- --runTestsByPath src/path.spec.ts
+--testNamePattern 'case name'` after `npm test --workspace @maxim/api`. Confirm the final
+Jest command retains both options; otherwise npm can consume them and run whole suites.
+Keep the public wrapper and its generator locks in place.
+
 The runner requires a non-root Linux/macOS shell (WSL is supported). Each invocation creates a
 private directory, randomly named `race_test` database, fresh PostgreSQL credentials and independent loopback
 ports. PostgreSQL server and clients use UTC. Redis matches CI's host/port-only fixture contract,

@@ -12,6 +12,7 @@ import {
 import { Prisma, type ChannelSettings } from '../prisma/prisma-client';
 import { ChannelAutoPostScanManager } from '../moderation/channel-auto-post-runtime';
 import { ChannelPostDemandRuntime } from '../moderation/channel-post-demand-runtime';
+import { createRecoveryGovernorFixture } from '../system/background-runtime-governor.spec-support';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import {
@@ -375,6 +376,80 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       'RECEIVED',
     );
   });
+
+  it.each(['healthy', 'manual', 'max', 'queue', 'cpu', 'io', 'background-share'] as const)(
+    'admits channel demand through the real governor during %s recovery',
+    async (pressure) => {
+      const s = await fixture(2);
+      for (const bot of s.bots)
+        s.setBotPermissions(bot.id, [
+          'read_all_messages',
+          'write',
+          'edit_message',
+          'delete_message',
+        ]);
+      const [chatId] = await s.seedCatalog(2, {}, 'CHANNEL');
+      const messageId = `recovery-demand-${randomUUID()}`;
+      const receipt = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        text: 'Pending channel action',
+        senderless: true,
+      });
+      const { governor, snapshot } = createRecoveryGovernorFixture(s.config);
+      if (pressure === 'manual')
+        Object.assign(snapshot.mode, {
+          source: 'manual',
+          manualMode: 'degrade',
+          condition: 'manual',
+          reason: 'maintenance',
+        });
+      if (pressure === 'max')
+        Object.assign(snapshot.mode, {
+          condition: 'max_api',
+          reason: 'MAX degraded',
+        });
+      if (pressure === 'queue') snapshot.queues.operationalLagSec = 3;
+      if (pressure === 'cpu') snapshot.systemPressure.loadRatio1m = 1.3;
+      if (pressure === 'io') snapshot.systemPressure.ioWaitRatio = 0.5;
+      if (pressure === 'background-share') snapshot.backgroundShare = 0.8;
+      Object.assign(s.moderation, {
+        backgroundTasksEnabled: true,
+        channelAutoPostScanMaxChannels: 2,
+        channelAutoPostScanManager: new ChannelAutoPostScanManager({
+          scanIntervalMs: 30_000,
+          scanMaxChannels: 2,
+          idleBackoffMaxMs: 300_000,
+          repairSweepMs: 60_000,
+          rateLimitBackoffMs: 60_000,
+          throttleBackoffMaxMs: 300_000,
+        }),
+        backgroundRuntimeGovernorService: governor,
+      });
+      const scheduler = s.moderation as unknown as {
+        processChannelAutoPostButtons: () => Promise<void>;
+      };
+      const read = jest.spyOn(s.max, 'getExactMessageRow');
+      const list = jest.spyOn(s.max, 'listMessages').mockResolvedValue([]);
+      await scheduler.processChannelAutoPostButtons();
+      const admitted = pressure === 'healthy' || pressure === 'background-share';
+      expect(s.effects.filter((e) => e.method === 'put' && e.messageId === messageId)).toHaveLength(
+        admitted ? 1 : 0,
+      );
+      expect(await s.prisma.channelPostDemand.count({ where: { chatId } })).toBe(admitted ? 0 : 1);
+      if (!admitted) {
+        expect(read).not.toHaveBeenCalled();
+        expect(list).not.toHaveBeenCalled();
+      } else {
+        expect(await s.prisma.auditLog.findFirst({ where: { chatId } })).toMatchObject({
+          payload: expect.objectContaining({ source: 'poll', schedulingOrigin: 'durable_demand' }),
+        });
+      }
+      expect(
+        (await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt } })).status,
+      ).toBe('RECEIVED');
+    },
+  );
 
   it('retires durable demand after a confirmed webhook edit without another MAX read', async () => {
     const s = await fixture(2);
