@@ -1,6 +1,7 @@
 import {
   safetyDeskDecisionResponseSchema,
   safetyDeskDeleteRuntimeResponseSchema,
+  safetyDeskDeleteEvidenceResponseSchema,
   safetyDeskQueueResponseSchema,
   safetyDeskRetentionRuntimeResponseSchema,
   safetyDeskRetentionPreviewResponseSchema,
@@ -8,6 +9,7 @@ import {
   type SafetyDeskDecisionResponse,
   type SafetyDeskDeleteIntentItem,
   type SafetyDeskDeleteRuntimeResponse,
+  type SafetyDeskDeleteEvidenceResponse,
   type SafetyDeskQueueResponse,
   commercialReviewQueueResponseSchema,
   commercialReviewItemSchema,
@@ -17,6 +19,8 @@ import {
   type SafetyDeskRetentionRuntimeResponse,
   type SafetyDeskRetentionPreviewResponse,
   type SafetyDeskRetryRetentionRequest,
+  safetyDeskWebhookCohortResponseSchema,
+  type SafetyDeskWebhookCohortResponse,
 } from '@maxim/contracts/safety-desk';
 import { createAdminApiTransport, type AdminApiTransport } from './admin-request';
 
@@ -93,6 +97,28 @@ export class SafetyDeskApiClient {
       `${SAFETY_DESK_API_BASE}/runtime/deletes`,
       accessCode,
       safetyDeskDeleteRuntimeResponseSchema,
+    );
+  }
+
+  async fetchDeleteEvidence(
+    intentId: string,
+    accessCode: string,
+  ): Promise<SafetyDeskDeleteEvidenceResponse> {
+    const snapshot = await this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/deletes/${encodeURIComponent(intentId)}/evidence`,
+      accessCode,
+      safetyDeskDeleteEvidenceResponseSchema,
+    );
+    if (snapshot.intentId !== intentId)
+      throw new Error('Подтверждения относятся к другому удалению.');
+    return snapshot;
+  }
+
+  fetchWebhookCohort(accessCode: string): Promise<SafetyDeskWebhookCohortResponse> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/webhook-cohort`,
+      accessCode,
+      safetyDeskWebhookCohortResponseSchema,
     );
   }
 

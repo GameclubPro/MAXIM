@@ -6,6 +6,14 @@ import {
 } from './message-retention-summary.js';
 import { VK_PARSING_MAX_VIDEOS } from './vk-parsing-common.js';
 
+export {
+  safetyDeskWebhookStatusSchema,
+  safetyDeskWebhookCohortRowSchema,
+  safetyDeskWebhookCohortResponseSchema,
+  type SafetyDeskWebhookCohortResponse,
+  type SafetyDeskWebhookCohortRow,
+} from './safety-desk-observability.js';
+
 export const commercialReviewLabelSchema = z.enum(['COMMERCIAL', 'NOT_COMMERCIAL', 'UNSURE']);
 export type CommercialReviewLabel = z.infer<typeof commercialReviewLabelSchema>;
 export const commercialReviewDispositionSchema = z.enum(['KEEP', 'DELETE']);
@@ -656,3 +664,68 @@ export const safetyDeskRetryRetentionRequestSchema = z
   })
   .strict();
 export type SafetyDeskRetryRetentionRequest = z.infer<typeof safetyDeskRetryRetentionRequestSchema>;
+
+export const safetyDeskNoticeEvidenceSchema = z.object({
+  state: z.enum(['confirmed', 'unknown', 'pending', 'stopped', 'not_recorded', 'invalid_evidence']),
+  completedAt: z.string().datetime().nullable(),
+  remoteMessageId: z.string().max(256).nullable(),
+});
+
+export const safetyDeskDeleteEvidenceResponseSchema = z.object({
+  version: z.literal(1),
+  observedAt: z.string().datetime(),
+  intentId: z.string().min(1).max(128),
+  webhookLink: z.literal('not_recorded'),
+  deletion: z.object({
+    status: safetyDeskDeleteIntentStatusSchema,
+    outcome: z.enum([
+      'confirmed',
+      'acknowledged',
+      'already_absent',
+      'unknown',
+      'pending',
+      'stopped',
+      'observed',
+    ]),
+    createdAt: z.string().datetime(),
+    sourceMessageAt: z.string().datetime().nullable(),
+    firstAttemptAt: z.string().datetime().nullable(),
+    dispatchStartedAt: z.string().datetime().nullable(),
+    acknowledgedAt: z.string().datetime().nullable(),
+    completedAt: z.string().datetime().nullable(),
+  }),
+  reasons: z.object({
+    sampleComplete: z.boolean(),
+    items: z
+      .array(
+        z.object({
+          reasonKey: z.string().max(256),
+          ruleCode: z.string().max(120),
+          moderationEventId: z.string().max(128).nullable(),
+          decisionRecorded: z.boolean(),
+        }),
+      )
+      .max(32),
+  }),
+  followups: z.object({
+    sampleComplete: z.boolean(),
+    items: z
+      .array(
+        z.object({
+          id: z.string().min(1).max(128),
+          ruleCode: z.string().max(120),
+          status: z.string().max(64),
+          sourceAt: z.string().datetime(),
+          deadlineAt: z.string().datetime(),
+          completedAt: z.string().datetime().nullable(),
+          decisionRecorded: z.boolean(),
+          explanation: safetyDeskNoticeEvidenceSchema,
+          sanctionNotice: safetyDeskNoticeEvidenceSchema,
+        }),
+      )
+      .max(32),
+  }),
+});
+export type SafetyDeskDeleteEvidenceResponse = z.infer<
+  typeof safetyDeskDeleteEvidenceResponseSchema
+>;

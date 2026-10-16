@@ -37,6 +37,8 @@ import {
 import { Metric } from './safety-desk-ui';
 import { SupportDesk } from './support-desk';
 import { supportRequestsApiClient } from './support-requests-api-client';
+import { SafetyDeskNavigation } from './safety-desk-navigation';
+import { WebhookCohortDesk } from './webhook-cohort-desk';
 
 export function AdminApp() {
   const [unlocked, setUnlocked] = useState(false);
@@ -53,6 +55,7 @@ export function AdminApp() {
   const [supportItems, setSupportItems] = useState<SupportTicket[]>([]);
   const [deleteRuntime, setDeleteRuntime] = useState<SafetyDeskDeleteRuntimeResponse | null>(null);
   const retention = useRetentionDeskControls();
+  const [observationRefreshToken, setObservationRefreshToken] = useState(0);
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [metrics, setMetrics] = useState<Metrics>(emptyMetrics);
   const [supportMetrics, setSupportMetrics] = useState<SupportMetrics>(emptySupportMetrics);
@@ -422,53 +425,7 @@ export function AdminApp() {
           <strong>Safety Desk</strong>
           <span>{loading ? 'Обновляю...' : notice}</span>
         </div>
-        <div className="view-switch" aria-label="Раздел">
-          <button
-            className={view === 'review' ? 'is-active' : ''}
-            type="button"
-            aria-pressed={view === 'review'}
-            disabled={retention.busy}
-            onClick={() => setView('review')}
-          >
-            Публикации
-          </button>
-          <button
-            className={view === 'support' ? 'is-active' : ''}
-            type="button"
-            aria-pressed={view === 'support'}
-            disabled={retention.busy}
-            onClick={() => setView('support')}
-          >
-            Обращения
-          </button>
-          <button
-            className={view === 'deletes' ? 'is-active' : ''}
-            type="button"
-            aria-pressed={view === 'deletes'}
-            disabled={retention.busy}
-            onClick={() => setView('deletes')}
-          >
-            Удаления
-          </button>
-          <button
-            className={view === 'commercial' ? 'is-active' : ''}
-            type="button"
-            aria-pressed={view === 'commercial'}
-            disabled={retention.busy}
-            onClick={() => setView('commercial')}
-          >
-            Коммерческий фильтр
-          </button>
-          <button
-            className={view === 'retention' ? 'is-active' : ''}
-            type="button"
-            aria-pressed={view === 'retention'}
-            disabled={retention.busy}
-            onClick={() => setView('retention')}
-          >
-            Очистка
-          </button>
-        </div>
+        <SafetyDeskNavigation view={view} disabled={retention.busy} onSelect={setView} />
         <div className="desk-metrics" aria-label="Сводка">
           {view === 'review' ? (
             <>
@@ -486,6 +443,8 @@ export function AdminApp() {
             <Metric label="Режим" value="Проверка качества" tone="neutral" />
           ) : view === 'retention' ? (
             <RetentionRuntimeMetrics runtime={retention.runtime} />
+          ) : view === 'observations' ? (
+            <Metric label="Режим" value="Наблюдение" tone="neutral" />
           ) : (
             <DeleteRuntimeMetrics runtime={deleteRuntime} />
           )}
@@ -506,13 +465,19 @@ export function AdminApp() {
             className="ghost-action icon-action"
             type="button"
             disabled={loading || bulkBusy || retention.busy}
-            onClick={() => (view === 'retention' ? retention.refresh() : void refreshQueue())}
+            onClick={() =>
+              view === 'observations'
+                ? setObservationRefreshToken((value) => value + 1)
+                : view === 'retention'
+                  ? retention.refresh()
+                  : void refreshQueue()
+            }
             title="Обновить"
             aria-label="Обновить"
           >
             <Refresh width={18} height={18} />
           </button>
-          {view !== 'commercial' && (
+          {view !== 'commercial' && view !== 'observations' && (
             <button className="ghost-action" type="button" onClick={exportForMax}>
               <Download width={18} height={18} />
               Экспорт
@@ -552,8 +517,11 @@ export function AdminApp() {
         <CommercialReviewDesk accessCode={verifiedAccessCode} />
       ) : view === 'retention' ? (
         <RetentionDeskPane accessCode={verifiedAccessCode} controls={retention} />
+      ) : view === 'observations' ? (
+        <WebhookCohortDesk accessCode={verifiedAccessCode} refreshToken={observationRefreshToken} />
       ) : (
         <DeleteDesk
+          accessCode={verifiedAccessCode}
           busyAmbiguousSendId={busyAmbiguousSendId}
           busyDeleteIntentId={busyDeleteIntentId}
           filter={deleteFilter}

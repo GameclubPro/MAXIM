@@ -31,14 +31,53 @@ const statusCounts = Object.fromEntries(
     'FAILED_TERMINAL',
   ].map((status) => [status, 0]),
 );
+const deleteItems = ['a', 'b'].map((key, index) => ({
+  id: `smoke-delete-${key}`,
+  chatId: `smoke-chat-${key}`,
+  chatTitle: `Тест удаления ${key.toUpperCase()}`,
+  messageId: `smoke-message-${key}`,
+  subjectUserId: null,
+  entityType: 'CHAT',
+  originBotId: null,
+  routingPolicy: 'origin_only',
+  effectiveRoutingPolicy: 'origin_only',
+  crossBotEnabled: false,
+  routingState: 'NO_ELIGIBLE_BOT',
+  rollout: 'execute',
+  retentionOwned: false,
+  retryAllowed: index === 1,
+  status: index === 0 ? 'AMBIGUOUS' : 'FAILED_TERMINAL',
+  ageMs: 1_000,
+  attemptCount: 1,
+  executeAt: generatedAt,
+  nextAttemptAt: generatedAt,
+  retryUntilAt: '2026-07-19T00:05:00.000Z',
+  firstAttemptAt: generatedAt,
+  lastAttemptAt: generatedAt,
+  completedAt: null,
+  leaseExpiresAt: null,
+  deleteDispatchStartedAt: index === 0 ? generatedAt : null,
+  deleteDispatchStartedBotId: null,
+  remoteDeleteSucceededAt: null,
+  remoteDeleteSucceededBotId: null,
+  createdAt: generatedAt,
+  updatedAt: generatedAt,
+  lastBotId: null,
+  succeededBotId: null,
+  lastStatusCode: null,
+  lastErrorCode: null,
+  lastError: null,
+  capability: { confirmed: false, activeMembershipCount: 0, confirmedBotIds: [], memberships: [] },
+  reasons: [],
+}));
 const deleteRuntime = {
   generatedAt,
   rolloutMode: 'shadow',
   summary: {
-    total: 0,
-    open: 0,
-    failed: 0,
-    statusCounts,
+    total: 2,
+    open: 1,
+    failed: 1,
+    statusCounts: { ...statusCounts, AMBIGUOUS: 1, FAILED_TERMINAL: 1 },
     due: { count: 0, oldestAt: null },
     staleLeases: { count: 0, oldestAt: null },
     ambiguousSends: { count: 0, oldestAt: null },
@@ -50,7 +89,7 @@ const deleteRuntime = {
     },
     oldestOpen: { createdAt: null, ageMs: null },
   },
-  items: [],
+  items: deleteItems,
   ambiguousSends: [],
   giveawayWinnerNotificationDeadEnds: [],
 };
@@ -97,9 +136,53 @@ async function smokeProfile(activeBrowser, profile) {
   const context = await activeBrowser.newContext({ viewport: profile.viewport, locale: 'ru-RU' });
   const page = await context.newPage();
   const errors = [];
+  let cohortRequests = 0;
+  let cohortUnavailable = false;
+  let evidenceRequests = 0;
+  let evidenceMalformed = false;
+  const cohort = {
+    schemaVersion: 1,
+    basis: 'receipt_created_at',
+    windowSeconds: 30,
+    graceSeconds: 30,
+    windowStartedAt: '2026-10-16T18:00:00.000Z',
+    windowEndedAt: '2026-10-16T18:00:30.000Z',
+    observedAt: '2026-10-16T18:01:00.000Z',
+    sampleLimitPerStatus: 512,
+    sampleComplete: true,
+    totalCountLowerBound: 0,
+    effectsEvidence: 'not_linked',
+    rows: [
+      'RECEIVED',
+      'QUEUED',
+      'PROCESSED',
+      'DUPLICATE',
+      'FAILED',
+      'NO_REPLAY_HELD',
+      'CANCELLED',
+      'QUARANTINED',
+    ].map((status) => ({
+      status,
+      countLowerBound: 0,
+      truncated: false,
+      oldestPendingAgeSec: null,
+      expiredAtObservation: 0,
+      quarantineTimestampPresent: 0,
+      invalidProcessedClocks: 0,
+      invalidQueuedClocks: 0,
+      processedLatency: { sampleCount: 0, p95Ms: null, p99Ms: null },
+      enqueueLatency: { sampleCount: 0, p95Ms: null, p99Ms: null },
+    })),
+  };
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (message) => {
     if (message.type() === 'error') {
+      if (
+        cohortUnavailable &&
+        message.location().url === `${baseUrl}api/v1/safety-desk/runtime/webhook-cohort` &&
+        /^Failed to load resource: the server responded with a status of 503\b/.test(message.text())
+      )
+        return;
       errors.push(`console.error: ${message.text()}`);
     }
   });
@@ -114,6 +197,65 @@ async function smokeProfile(activeBrowser, profile) {
     }
     if (request.headers()['x-admin-access-code'] !== accessCode) {
       await route.fulfill({ status: 401, json: { message: 'missing access code' } });
+      return;
+    }
+    if (url.pathname.endsWith('/safety-desk/runtime/webhook-cohort')) {
+      cohortRequests += 1;
+      await route.fulfill(
+        cohortUnavailable
+          ? { status: 503, json: { message: 'Сводка обработки временно недоступна.' } }
+          : { status: 200, json: cohort },
+      );
+      return;
+    }
+    const evidenceItem = deleteItems.find((item) =>
+      url.pathname.endsWith(`/safety-desk/runtime/deletes/${item.id}/evidence`),
+    );
+    if (evidenceItem) {
+      if (request.method() !== 'GET') throw new Error('Delete evidence attempted a mutation.');
+      evidenceRequests += 1;
+      await route.fulfill({
+        status: 200,
+        json: evidenceMalformed
+          ? { version: 0 }
+          : {
+              version: 1,
+              observedAt: generatedAt,
+              intentId: evidenceItem.id,
+              webhookLink: 'not_recorded',
+              deletion: {
+                status: evidenceItem.status,
+                outcome: 'unknown',
+                createdAt: generatedAt,
+                sourceMessageAt: null,
+                firstAttemptAt: generatedAt,
+                dispatchStartedAt: generatedAt,
+                acknowledgedAt: null,
+                completedAt: null,
+              },
+              reasons: { sampleComplete: true, items: [] },
+              followups: {
+                sampleComplete: true,
+                items: [
+                  {
+                    id: 'smoke-followup',
+                    ruleCode: 'SMOKE_DELETE',
+                    status: 'IN_PROGRESS',
+                    sourceAt: generatedAt,
+                    deadlineAt: '2026-07-19T00:05:00.000Z',
+                    completedAt: null,
+                    decisionRecorded: false,
+                    explanation: { state: 'unknown', completedAt: null, remoteMessageId: null },
+                    sanctionNotice: {
+                      state: 'not_recorded',
+                      completedAt: null,
+                      remoteMessageId: null,
+                    },
+                  },
+                ],
+              },
+            },
+      });
       return;
     }
     const payload = url.pathname.endsWith('/safety-desk/queue')
@@ -139,6 +281,59 @@ async function smokeProfile(activeBrowser, profile) {
   await page.getByRole('button', { name: 'Публикации' }).waitFor();
   await page.getByRole('button', { name: 'Обращения' }).click();
   await page.getByRole('button', { name: 'Удаления' }).click();
+  const evidencePanel = page.getByRole('region', { name: 'Подтверждения результата' });
+  await evidencePanel.getByRole('button', { name: 'Проверить подтверждения' }).waitFor();
+  if (evidenceRequests !== 0)
+    throw new Error('Delete evidence loaded without an explicit request.');
+  await evidencePanel.getByRole('button', { name: 'Проверить подтверждения' }).click();
+  await evidencePanel.getByText('Исход удаления неизвестен', { exact: true }).waitFor();
+  await evidencePanel
+    .getByText('Объяснение: Исход отправки неизвестен', { exact: false })
+    .waitFor();
+  if (evidenceRequests !== 1) throw new Error('Delete evidence request was repeated.');
+  if (await page.getByRole('button', { name: 'Повторить удаление', exact: true }).count()) {
+    throw new Error('Unknown delete result exposed a retry action.');
+  }
+  if (await evidencePanel.getByRole('button', { name: /повтор|отправить|публиковать/i }).count()) {
+    throw new Error('Delete evidence panel exposed an effect action.');
+  }
+  await page.getByRole('button', { name: 'Все', exact: true }).click();
+  await page.getByRole('button', { name: /Тест удаления B/ }).click();
+  await evidencePanel.getByRole('button', { name: 'Проверить подтверждения' }).waitFor();
+  if (await evidencePanel.getByText('Исход удаления неизвестен', { exact: true }).count()) {
+    throw new Error('Evidence from a previous delete remained visible after selection changed.');
+  }
+  if (evidenceRequests !== 1)
+    throw new Error('Selecting another delete fetched evidence automatically.');
+  await page.getByRole('button', { name: 'Повторить удаление', exact: true }).waitFor();
+  evidenceMalformed = true;
+  await evidencePanel.getByRole('button', { name: 'Проверить подтверждения' }).click();
+  await evidencePanel
+    .getByRole('alert')
+    .filter({ hasText: 'Не удалось загрузить подтверждения.' })
+    .waitFor();
+  if (evidenceRequests !== 2) throw new Error('Failed evidence read was retried automatically.');
+  await page.getByRole('button', { name: 'Повторить удаление', exact: true }).waitFor();
+  if (cohortRequests !== 0) throw new Error('Closed cohort loaded before its view was opened.');
+  await page.getByRole('button', { name: 'Наблюдения' }).click();
+  await page.getByText('За этот интервал события не наблюдались.', { exact: false }).waitFor();
+  await page.getByText('Обработка события не подтверждает удаление', { exact: false }).waitFor();
+  await page.getByText(/21:00:00 МСК — .*21:00:30 МСК/).waitFor();
+  cohort.sampleComplete = false;
+  cohort.totalCountLowerBound = 512;
+  cohort.rows[2].countLowerBound = 512;
+  cohort.rows[2].truncated = true;
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await page.getByText('Неполная выборка: достигнут предел чтения', { exact: false }).waitFor();
+  cohortUnavailable = true;
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'последний успешный снимок' }).waitFor();
+  if (await page.getByRole('button', { name: /повтор|публиковать/i }).count()) {
+    throw new Error('Read-only cohort exposed an effect retry action.');
+  }
+  if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)) {
+    throw new Error(`${profile.name} cohort view has horizontal overflow.`);
+  }
   await page.getByRole('button', { name: 'Публикации' }).click();
 
   const state = await page.evaluate(() => ({

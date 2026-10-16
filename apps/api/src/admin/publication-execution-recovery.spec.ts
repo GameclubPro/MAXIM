@@ -37,7 +37,7 @@ describe('publication execution recovery', () => {
           ...tx,
           $transaction: jest.fn(async (callback) => callback(tx)),
         },
-        logger: { warn: jest.fn() },
+        logger: { warn: jest.fn(), log: jest.fn() },
       },
       row: { id: 'broadcast-1', publicationOccurrenceId: 'occurrence-1' as string | null },
       delivery: { id: 'delivery-1', targetChatId: 'chat-1', attemptCount: 0 },
@@ -374,6 +374,15 @@ describe('publication execution recovery', () => {
         expect.objectContaining({ retryAt: '2026-07-27T12:00:30.250Z' }),
         expect.any(String),
       );
+      expect(options.context.logger.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metric: 'publication_wait_v1',
+          stage: 'capacity_deferral',
+          reason: 'local_capacity',
+          durationMs: 250,
+        }),
+        expect.any(String),
+      );
     } finally {
       jest.useRealTimers();
     }
@@ -701,6 +710,7 @@ describe('publication execution recovery', () => {
     ).resolves.toBeNull();
     expect(options.context.prisma.$transaction).not.toHaveBeenCalled();
     expect(options.context.prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+    expect(options.context.logger.log).not.toHaveBeenCalled();
   });
 
   it('does not split the envelope and delivery updates when the broadcast lease was lost', async () => {
@@ -713,10 +723,27 @@ describe('publication execution recovery', () => {
     options.context.prisma.managedBroadcast.updateMany.mockResolvedValue({ count: 0 });
 
     await expect(
-      deferPublicationDeliveryAfterPreDispatchThrottle(options as never),
+      deferPublicationDeliveryAfterPreDispatchThrottle({
+        ...options,
+        sendAttemptStarted: false,
+      } as never),
     ).resolves.toBeNull();
     expect(options.context.prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
     expect(options.context.logger.warn).not.toHaveBeenCalled();
+    expect(options.context.logger.log).not.toHaveBeenCalled();
+  });
+
+  it('does not report a capacity deferral when the recipient claim CAS loses', async () => {
+    const options = createOptions(new MaxApiInternalRateLimitError('capacity', 250));
+    options.context.prisma.managedBroadcastDelivery.updateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      deferPublicationDeliveryAfterPreDispatchThrottle({
+        ...options,
+        sendAttemptStarted: false,
+      } as never),
+    ).resolves.toBeNull();
+    expect(options.context.prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledTimes(1);
+    expect(options.context.logger.log).not.toHaveBeenCalled();
   });
 
   it('returns a quarantined route to pending and serializes its next recovery slot', async () => {

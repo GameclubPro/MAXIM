@@ -22,7 +22,13 @@ import {
   type SanitizedPreviewHtml,
 } from './safety-desk-preview-security';
 
-export type DeskView = 'review' | 'support' | 'deletes' | 'commercial' | 'retention';
+export type DeskView =
+  | 'review'
+  | 'support'
+  | 'deletes'
+  | 'commercial'
+  | 'retention'
+  | 'observations';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
 export type QueueStatus = 'review' | 'approved' | 'rejected' | 'blocked';
 export type QueueSource = 'manual' | 'scheduled' | 'vk';

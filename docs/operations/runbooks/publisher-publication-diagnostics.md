@@ -111,6 +111,22 @@ post-action completion. Measure fresh due cohorts separately from historical fai
 denials and ambiguous receipts; a healthy queue or an empty sample cannot prove the
 publication SLO. Retain release, observation interval, sample size and truncation.
 
+`publication_wait_v1` adds identifier-free diagnostic intervals:
+
+| Stage                                 | Clock and boundary                                                                                                                                                                      |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wakeup_queue`                        | Original durable signal creation to processor entry, including queue retries; expired signals remain visible. No extra schedule read: mode/media are unknown.                           |
+| `initial_recipient_claim`             | Original NOW intent creation or scheduled occurrence time to a winning recipient claim with zero attempts and zero capacity deferrals.                                                  |
+| `recipient_retry_lateness`            | Persisted recipient `nextAttemptAt` to the winning claim; it never replaces the original delivery deadline.                                                                             |
+| `capacity_deferral`                   | Committed deferral decision time to its saved retry time, grouped by local capacity, MAX 429 or circuit wait. This is planned waiting, not elapsed dispatch time.                       |
+| `observed_acknowledgement_to_receipt` | Observed wrapper return to the successful recipient receipt CAS; excludes earlier HTTP and action-ledger persistence. A recovery without a locally observed acknowledgement is unknown. |
+
+Recipient observations retain schedule mode and text/image/video dimensions from the
+existing execution snapshot. Missing, invalid or backwards clocks produce null duration,
+not zero. These logs are diagnostic samples, not a durable cohort denominator or guaranteed
+unique events: crashes, retries and recycled pre-dispatch claims can omit or repeat samples.
+Use the persisted journals for accepted-operation counts and terminal outcomes.
+
 The target-preparation migration replaces only the context constraint/trigger, with no
 history rewrite or validation scan. Its new constraint checks all new writes. Both API
 rollback paths require the current deadline/recipient-wait/durable-authority readers and Publisher scheduling wiring;

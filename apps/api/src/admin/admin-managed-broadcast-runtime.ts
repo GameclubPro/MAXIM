@@ -3913,6 +3913,7 @@ export class AdminManagedBroadcastRuntime {
           continue;
         }
         claimedDeliveryCount += 1;
+        publicationTiming.observeClaim(delivery);
         if (!firstDeadlineClaimLogged && firstDeadlineScheduledAt) {
           firstDeadlineClaimLogged = true;
           const deadlineClaimedAt = new Date();
@@ -4144,6 +4145,7 @@ export class AdminManagedBroadcastRuntime {
             broadcastLockToken: activeLease.lockToken,
             deliveryLockToken,
             sendAttemptStarted,
+            timing: publicationTiming.dimensions,
             error,
           });
           if (capacityDeferredUntil) {
