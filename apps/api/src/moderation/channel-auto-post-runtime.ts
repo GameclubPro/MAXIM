@@ -13,11 +13,28 @@ import {
   renderMaxTextMarkupAsHtml,
   type MaxTextMarkup,
 } from '../common/max-text-markup.util';
-import type { MaxMessageButton, MaxSendMessageOptions } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  type MaxMessageButton,
+  type MaxSendMessageOptions,
+} from '../max/max-client.service';
 import { readStrictEditableAttachments } from '../max/max-editable-message-preservation';
 import type { ChannelSettings as PersistedChannelSettings } from '../prisma/prisma-client';
+import type { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { extractRawMessageNode } from './moderation-update-extractors';
 import { extractChannelQuickButtons, type ChannelQuickButtons } from './channel-quick-buttons';
+
+export function buildChannelAutoPostGovernorRequest(
+  queueLagCeilingSec: number,
+): Parameters<BackgroundRuntimeGovernorService['decide']>[0] {
+  // FLAG: Recovery admission still checks fresh queue/host pressure and MAX budgets.
+  return {
+    component: 'moderation',
+    sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+    allowRecoveryWindowRun: true,
+    allowQueueLagSlowPathBelowSec: queueLagCeilingSec,
+  };
+}
 
 export type ChannelAutoPostMessageText = {
   text: string | null;

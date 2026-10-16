@@ -77,6 +77,27 @@ test('exact channel inspection uses bounded indexes and omits raw errors and oth
   assert.equal((await db.query('SHOW transaction_read_only')).rows[0].transaction_read_only, 'off');
 });
 
+test('poll provenance accepts only known scheduling paths and leaves old rows unknown', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(schema);
+  for (const schedulingOrigin of ['durable_demand', 'periodic_scan', 'private unknown', null]) {
+    await db.query('INSERT INTO audit_logs VALUES ($1,$2,$3,now())', [
+      '-1',
+      'CHANNEL_AUTO_ATTACH',
+      JSON.stringify({ source: 'poll', schedulingOrigin }),
+    ]);
+  }
+  const result = await db.query(audit.INSPECT_SQL.audits, ['-1']);
+  assert.deepEqual(result.rows.map((row) => row.scheduling_origin).sort(), [
+    'durable_demand',
+    null,
+    null,
+    'periodic_scan',
+  ]);
+  assert.doesNotMatch(JSON.stringify(result.rows), /private unknown/u);
+});
+
 test('missing or incorrectly defined index fails closed before scanning', async (t) => {
   const db = new PGlite();
   t.after(() => db.close());
