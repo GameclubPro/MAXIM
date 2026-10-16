@@ -10,6 +10,56 @@ const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const describeStores = databaseUrl && redisUrl ? describe : describe.skip;
 jest.setTimeout(60_000);
 
+async function drainWithEvidence(s: MultibotHarness, receiptId: string, chatId: string) {
+  try {
+    await s.drain();
+  } catch (error) {
+    const observations = await Promise.allSettled([
+      s.prisma.webhookEvent.findUnique({
+        where: { id: receiptId },
+        select: {
+          status: true,
+          enqueueAttempts: true,
+          nextEnqueueAt: true,
+          executionDeadlineAt: true,
+        },
+      }),
+      s.prisma.moderationDeleteIntent.findMany({
+        where: { chatId },
+        take: 4,
+        select: {
+          status: true,
+          lastErrorCode: true,
+          attemptCount: true,
+          nextAttemptAt: true,
+          retryUntilAt: true,
+          leaseExpiresAt: true,
+          deleteDispatchStartedAt: true,
+          remoteDeleteSucceededAt: true,
+        },
+      }),
+      s.deleteQueue.getJobCounts('waiting', 'active', 'delayed', 'prioritized', 'failed'),
+    ]);
+    const [receipt, intents, queue] = observations.map((observation) =>
+      observation.status === 'fulfilled' ? observation.value : 'observation_failed',
+    );
+    throw new Error(
+      `Stale-access drain failed: ${JSON.stringify({
+        observedAt: new Date().toISOString(),
+        receipt,
+        intents,
+        queue,
+        requests: s.requests.slice(-16).map((request) => ({
+          botIndex: s.bots.findIndex((bot) => bot.id === request.botId),
+          method: request.method,
+          kind: request.path.endsWith('/members/me') ? 'own_member' : 'other',
+        })),
+      })}`,
+      { cause: error },
+    );
+  }
+}
+
 describeStores('native multibot absent rights webhook and independently stale route roles', () => {
   let h: MultibotHarness | undefined;
   afterEach(async () => {
@@ -203,7 +253,7 @@ describeStores('native multibot absent rights webhook and independently stale ro
       for (const role of staleRoles) expect(role.resolveBotIdSync(undefined, chatId)).toBe(oldBot);
       const requestsBefore = s.requests.length;
       await s.resume();
-      await s.drain();
+      await drainWithEvidence(s, receipt, chatId!);
 
       const after = await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
         where: { id: before.id },
