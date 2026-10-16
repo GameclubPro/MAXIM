@@ -190,13 +190,15 @@ integration('initial fixed moderator preservation with PostgreSQL', () => {
     });
   });
 
-  it('uses bounded ordered index probes with retained history, a hot window and an empty action', async () => {
+  it('uses bounded ordered index probes with retained history, a hot window and an empty recent action window', async () => {
     for (let batch = 0; batch < 6; batch += 1) {
       await db.maxActionLedgerEntry.createMany({
-        data: Array.from({ length: 2000 }, (_, index) => ({
+        // FLAG: Both action types retain history. An action absent from the entire
+        // fixture cannot prove that its empty recent window uses the time-bounded index.
+        data: Array.from({ length: 4000 }, (_, index) => ({
           jobId: randomUUID(),
           chatId,
-          actionType: 'SEND_MESSAGE',
+          actionType: index < 2000 ? 'SEND_MESSAGE' : 'UNBAN_MEMBER',
           updatedAt: new Date(
             Date.now() - (batch === 0 && index < 200 ? 1000 : 7 * 24 * 60 * 60_000),
           ),
@@ -205,6 +207,18 @@ integration('initial fixed moderator preservation with PostgreSQL', () => {
     }
     // Only the disposable database is analyzed; production uses plain EXPLAIN.
     await db.$executeRawUnsafe('ANALYZE max_action_ledger');
+    expect(
+      await db.maxActionLedgerEntry.count({ where: { chatId, actionType: 'UNBAN_MEMBER' } }),
+    ).toBe(12_000);
+    expect(
+      await db.maxActionLedgerEntry.count({
+        where: {
+          chatId,
+          actionType: 'UNBAN_MEMBER',
+          updatedAt: { gte: new Date(Date.now() - 60 * 60_000) },
+        },
+      }),
+    ).toBe(0);
     receiptQueries.length = 0;
     expect(await service.preview(chatId)).toMatchObject({ reason: 'receipt_limit' });
     const captured = [...receiptQueries];
@@ -213,6 +227,7 @@ integration('initial fixed moderator preservation with PostgreSQL', () => {
       'Node Type': string;
       'Index Name'?: string;
       'Actual Rows': number;
+      'Rows Removed by Filter'?: number;
       Plans?: Plan[];
     };
     const flatten = (node: Plan): Plan[] => [node, ...(node.Plans ?? []).flatMap(flatten)];
@@ -226,11 +241,14 @@ integration('initial fixed moderator preservation with PostgreSQL', () => {
         ...params,
       );
       const nodes = flatten(result[0]!['QUERY PLAN'][0]!.Plan);
-      expect(
-        nodes.some((node) => node['Index Name'] === 'max_action_ledger_chat_action_updated_idx'),
-      ).toBe(true);
+      expect({ action, indexes: nodes.map((node) => node['Index Name']).filter(Boolean) }).toEqual({
+        action,
+        indexes: expect.arrayContaining(['max_action_ledger_chat_action_updated_idx']),
+      });
       expect(nodes.some((node) => ['Seq Scan', 'Sort'].includes(node['Node Type']))).toBe(false);
-      expect(nodes.every((node) => node['Actual Rows'] <= 65)).toBe(true);
+      expect(
+        nodes.every((node) => node['Actual Rows'] + (node['Rows Removed by Filter'] ?? 0) <= 65),
+      ).toBe(true);
     }
   });
 

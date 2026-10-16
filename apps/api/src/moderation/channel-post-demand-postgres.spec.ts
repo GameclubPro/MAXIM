@@ -68,6 +68,16 @@ native('durable channel post demand in PostgreSQL', () => {
   async function persist(value: ChannelPostDemandInput) {
     await db.$transaction((tx) => persistChannelPostDemand(tx, value));
   }
+  async function retainIdleChannels() {
+    const prefix = `demand-history-${randomUUID()}-`;
+    const extra = Array.from({ length: 10_000 }, (_, n) => prefix + n);
+    channels.push(...extra);
+    await db.$executeRaw(Prisma.sql`INSERT INTO chats (id,title,entity_type,updated_at)
+      SELECT ${prefix} || n, 'Disposable plan fixture', 'CHANNEL', NOW() AT TIME ZONE 'UTC' FROM generate_series(0,9999) n`);
+    await db.$executeRaw(Prisma.sql`INSERT INTO channel_post_demand_channels (chat_id)
+      SELECT id FROM chats WHERE id = ANY(${extra}::text[])`);
+    await db.$executeRawUnsafe('ANALYZE channel_post_demand_channels');
+  }
   it('coalesces mirrors and preserves item and channel retry waits across a new client', async () => {
     const first = input(await channel());
     await Promise.all(Array.from({ length: 4 }, () => persist(first)));
@@ -272,6 +282,10 @@ native('durable channel post demand in PostgreSQL', () => {
         (NOW() AT TIME ZONE 'UTC') - INTERVAL '1 day', (NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'
       FROM generate_series(1,25000) n`);
     await db.$executeRawUnsafe('ANALYZE channel_post_demands');
+    // FLAG: Parent locking also needs representative history. A one-row parent table
+    // legitimately favors a sequential scan and cannot prove indexed fleet-scale work.
+    await retainIdleChannels();
+    expect(await db.channelPostDemandChannel.count()).toBe(10_001);
     const captured: Prisma.Sql[] = [];
     const store = {
       $queryRaw: async (q: Prisma.Sql) => {
@@ -306,13 +320,18 @@ native('durable channel post demand in PostgreSQL', () => {
       );
       const text = JSON.stringify(plan);
       expect(text).not.toContain('Seq Scan');
+      expect(text).toContain('channel_post_demand_channels_pkey');
       if (q.text.trimStart().startsWith('UPDATE ')) {
         expect(text).toContain('channel_post_demands_due_idx');
         const root = (plan as { 'QUERY PLAN': { Plan: Record<string, unknown> }[] }[])[0]![
           'QUERY PLAN'
         ][0]!.Plan;
         const visit = (node: Record<string, unknown>) => {
-          if (node['Relation Name'] === 'channel_post_demands') {
+          if (
+            ['channel_post_demands', 'channel_post_demand_channels'].includes(
+              String(node['Relation Name']),
+            )
+          ) {
             expect(
               Number(node['Actual Rows']) + Number(node['Rows Removed by Filter'] ?? 0),
             ).toBeLessThanOrEqual(1);
@@ -330,14 +349,7 @@ native('durable channel post demand in PostgreSQL', () => {
       second = input(await channel());
     await persist(first);
     await persist(second);
-    const prefix = `demand-history-${randomUUID()}-`;
-    const extra = Array.from({ length: 10_000 }, (_, n) => prefix + n);
-    channels.push(...extra);
-    await db.$executeRaw(Prisma.sql`INSERT INTO chats (id,title,entity_type,updated_at)
-      SELECT ${prefix} || n, 'Disposable plan fixture', 'CHANNEL', NOW() AT TIME ZONE 'UTC' FROM generate_series(0,9999) n`);
-    await db.$executeRaw(Prisma.sql`INSERT INTO channel_post_demand_channels (chat_id)
-      SELECT id FROM chats WHERE id = ANY(${extra}::text[])`);
-    await db.$executeRawUnsafe('ANALYZE channel_post_demand_channels');
+    await retainIdleChannels();
     let query: Prisma.Sql | undefined;
     await claimChannelPostDemandChannels(
       {
