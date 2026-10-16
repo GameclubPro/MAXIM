@@ -6,23 +6,253 @@ import {
   recordPublicationWaitTiming,
 } from './publication-delivery-timing';
 import { beginMaxSendLedgerObservation } from '../max/max-send-observation';
+import type { ManagedBroadcastExecutionMedia } from './admin-managed-broadcast-media-runtime';
+import { PUBLICATION_UPLOADED_VIDEO_FIELD } from './publication-video-media';
+
+const publicationRow = {
+  publicationOccurrenceId: 'private-occurrence',
+  publicationContentRevisionId: 'private-frozen-revision',
+  actorUserId: 'private-actor',
+  mediaType: null,
+  imageEnabled: false,
+};
+
+function frozenExecutionMedia(mimeTypes: readonly string[] = []): ManagedBroadcastExecutionMedia {
+  return {
+    requestMedia: {
+      imageEnabled: false,
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      images: [],
+      mediaType: null,
+      mediaPayload: null,
+      mediaMimeType: '',
+      mediaFileName: '',
+    },
+    publicationSource: {
+      contentRevisionId: publicationRow.publicationContentRevisionId,
+      actorUserId: publicationRow.actorUserId,
+      assets: mimeTypes.map((mimeType, index) => ({
+        id: `private-asset-${index}`,
+        actorUserId: publicationRow.actorUserId,
+        sha256: 'a'.repeat(64),
+        sizeBytes: 1,
+        mimeType,
+        fileName: 'private-file',
+        durablePayload: null,
+      })),
+    },
+  };
+}
 
 describe('Publication delivery timing', () => {
   const scheduledAt = new Date('2026-09-30T10:00:00Z');
 
   afterEach(() => jest.useRealTimers());
 
-  it('observes only the current recipient persistence and preserves recovered provenance', async () => {
+  it.each([
+    { mimeTypes: [], expected: 'none' },
+    { mimeTypes: ['image/jpeg'], expected: 'image' },
+    { mimeTypes: ['image/jpeg', 'image/png'], expected: 'image' },
+    { mimeTypes: ['video/mp4'], expected: 'video' },
+    { mimeTypes: ['application/octet-stream'], expected: 'unknown' },
+    { mimeTypes: [''], expected: 'unknown' },
+    { mimeTypes: ['image/jpeg', 'video/mp4'], expected: 'unknown' },
+    { mimeTypes: ['video/mp4', 'video/mp4'], expected: 'unknown' },
+  ])(
+    'uses frozen $mimeTypes media despite empty canonical envelopes',
+    async ({ mimeTypes, expected }) => {
+      const logger = { log: jest.fn() };
+      const observer = createPublicationExecutionObserver(logger, publicationRow, true);
+      observer.onOccurrenceScheduledAt(scheduledAt, { mode: 'NOW', intentCreatedAt: scheduledAt });
+      expect(observer.dimensions.media).toBe('unknown');
+      observer.observeExecutionMedia(frozenExecutionMedia(mimeTypes));
+      observer.observeClaim({ attemptCount: 0 });
+      await observer.runDispatch('private-action', 'interactive', async () => {
+        beginMaxSendLedgerObservation('private-action')('exact_readback');
+      });
+      observer.observeAcknowledgement();
+      observer.observeReceipt();
+      const observations = logger.log.mock.calls.map(([event]) => event);
+      expect(observations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ stage: 'initial_recipient_claim', media: expected }),
+          expect.objectContaining({ outcome: 'max_acknowledgement_observed', media: expected }),
+          expect.objectContaining({ outcome: 'receipt_persisted', media: expected }),
+          expect.objectContaining({ stage: 'ledger_observed_to_recipient', media: expected }),
+        ]),
+      );
+      expect(observations.every((event) => event.media === expected)).toBe(true);
+      expect(JSON.stringify(observations)).not.toContain('private');
+    },
+  );
+
+  it('keeps receipt recovery unknown when media was never loaded', () => {
     const logger = { log: jest.fn() };
-    const observer = createPublicationExecutionObserver(
-      logger,
+    const observer = createPublicationExecutionObserver(logger, publicationRow, true);
+    observer.observeClaim({ attemptCount: 1 });
+    observer.observeReceipt();
+    expect(logger.log.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ outcome: 'receipt_persisted', media: 'unknown' }),
+      expect.objectContaining({ stage: 'observed_acknowledgement_to_receipt', media: 'unknown' }),
+    ]);
+  });
+
+  it('refuses missing, mismatched and contradictory frozen metadata without legacy fallback', () => {
+    const observer = createPublicationExecutionObserver({ log: jest.fn() }, publicationRow, true);
+    const execution = frozenExecutionMedia(['image/jpeg']);
+    const source = execution.publicationSource!;
+    for (const media of [
+      { requestMedia: execution.requestMedia },
+      { ...execution, publicationSource: { ...source, contentRevisionId: 'different-revision' } },
+      { ...execution, publicationSource: { ...source, actorUserId: 'different-actor' } },
       {
-        publicationOccurrenceId: 'private-occurrence',
-        mediaType: null,
-        imageEnabled: false,
+        ...execution,
+        publicationSource: {
+          ...source,
+          assets: [{ ...source.assets[0]!, actorUserId: 'different-actor' }],
+        },
       },
+      {
+        ...execution,
+        publicationSource: {
+          ...source,
+          assets: [{ ...source.assets[0]!, durablePayload: { token: 'private-video-token' } }],
+        },
+      },
+      {
+        ...execution,
+        publicationSource: {
+          ...source,
+          assets: [{ ...source.assets[0]!, durablePayload: 'invalid' }],
+        },
+      },
+      {
+        ...execution,
+        publicationSource: {
+          ...source,
+          assets: [
+            {
+              ...source.assets[0]!,
+              mimeType: 'application/octet-stream',
+              durablePayload: {},
+            },
+          ],
+        },
+      },
+      {
+        ...execution,
+        publicationSource: {
+          ...source,
+          assets: [{ ...source.assets[0]!, sizeBytes: 0 }],
+        },
+      },
+      {
+        ...execution,
+        publicationSource: {
+          ...source,
+          assets: Array.from({ length: 11 }, () => source.assets[0]!),
+        },
+      },
+    ] satisfies ManagedBroadcastExecutionMedia[]) {
+      observer.observeExecutionMedia(media);
+      expect(observer.dimensions.media).toBe('unknown');
+    }
+  });
+
+  it.each(['video/mp4', 'application/octet-stream'])(
+    'classifies a frozen %s video with a retained token without exposing it',
+    (mimeType) => {
+      const logger = { log: jest.fn() };
+      const observer = createPublicationExecutionObserver(logger, publicationRow, true);
+      const execution = frozenExecutionMedia([mimeType]);
+      const source = execution.publicationSource!;
+      observer.observeExecutionMedia({
+        ...execution,
+        publicationSource: {
+          ...source,
+          assets: [{ ...source.assets[0]!, durablePayload: { token: 'private-video-token' } }],
+        },
+      });
+      observer.observeAcknowledgement();
+      expect(logger.log.mock.calls[0]![0]).toMatchObject({ media: 'video' });
+      expect(JSON.stringify(logger.log.mock.calls)).not.toContain('private');
+    },
+  );
+
+  it.each([
+    {},
+    { token: ' ' },
+    { token: 123 },
+    { arbitrary: 'private-value' },
+    {
+      [PUBLICATION_UPLOADED_VIDEO_FIELD]: {
+        version: 1,
+        botId: 'publisher',
+        token: 'private-token',
+      },
+    },
+    { token: 'private-token', [PUBLICATION_UPLOADED_VIDEO_FIELD]: {} },
+  ])(
+    'keeps opaque metadata with insufficient or tagged token evidence unknown: %j',
+    (durablePayload) => {
+      const observer = createPublicationExecutionObserver({ log: jest.fn() }, publicationRow, true);
+      const execution = frozenExecutionMedia(['application/octet-stream']);
+      const source = execution.publicationSource!;
+      observer.observeExecutionMedia({
+        ...execution,
+        publicationSource: { ...source, assets: [{ ...source.assets[0]!, durablePayload }] },
+      });
+      expect(observer.dimensions.media).toBe('unknown');
+    },
+  );
+
+  it('uses loaded legacy request media only without a canonical revision', () => {
+    const canonical = createPublicationExecutionObserver({ log: jest.fn() }, publicationRow, true);
+    const legacy = createPublicationExecutionObserver(
+      { log: jest.fn() },
+      { ...publicationRow, publicationContentRevisionId: null },
       true,
     );
+    const empty = frozenExecutionMedia().requestMedia;
+    for (const [requestMedia, expected] of [
+      [empty, 'none'],
+      [{ ...empty, imageEnabled: true, imageBase64: 'AA==', imageMimeType: 'image/jpeg' }, 'image'],
+      [{ ...empty, mediaType: 'video', mediaPayload: { token: 'private-video' } }, 'video'],
+      [{ ...empty, mediaType: 'video', mediaPayload: {} }, 'unknown'],
+    ] satisfies Array<[ManagedBroadcastExecutionMedia['requestMedia'], string]>) {
+      legacy.observeExecutionMedia({ requestMedia });
+      canonical.observeExecutionMedia({ requestMedia });
+      expect(legacy.dimensions.media).toBe(expected);
+      expect(canonical.dimensions.media).toBe('unknown');
+    }
+    legacy.observeExecutionMedia(frozenExecutionMedia());
+    expect(legacy.dimensions.media).toBe('unknown');
+  });
+
+  it('keeps failed media observation out of dispatch control flow and clears stale evidence', async () => {
+    const observer = createPublicationExecutionObserver({ log: jest.fn() }, publicationRow, true);
+    observer.observeExecutionMedia(frozenExecutionMedia(['image/jpeg']));
+    expect(observer.dimensions.media).toBe('image');
+    const media = frozenExecutionMedia(['video/mp4']);
+    Object.defineProperty(media, 'publicationSource', {
+      get: () => {
+        throw new Error('unavailable');
+      },
+    });
+    expect(() => observer.observeExecutionMedia(media)).not.toThrow();
+    expect(observer.dimensions.media).toBe('unknown');
+    const result = {};
+    await expect(
+      observer.runDispatch('private-action', 'interactive', async () => result),
+    ).resolves.toBe(result);
+  });
+
+  it('observes only the current recipient persistence and preserves recovered provenance', async () => {
+    const logger = { log: jest.fn() };
+    const observer = createPublicationExecutionObserver(logger, publicationRow, true);
+    observer.observeExecutionMedia(frozenExecutionMedia());
     observer.onOccurrenceScheduledAt(scheduledAt, { mode: 'NOW', intentCreatedAt: scheduledAt });
     observer.observeClaim({ attemptCount: 0 });
     await observer.runDispatch('private-action', 'interactive', async () => {
@@ -50,15 +280,8 @@ describe('Publication delivery timing', () => {
   it('distinguishes the original first claim clock from a persisted retry due time', () => {
     jest.useFakeTimers().setSystemTime(new Date(scheduledAt.getTime() + 12_000));
     const logger = { log: jest.fn() };
-    const observer = createPublicationExecutionObserver(
-      logger,
-      {
-        publicationOccurrenceId: 'private-occurrence',
-        mediaType: 'video',
-        imageEnabled: false,
-      },
-      true,
-    );
+    const observer = createPublicationExecutionObserver(logger, publicationRow, true);
+    observer.observeExecutionMedia(frozenExecutionMedia(['video/mp4']));
     observer.onOccurrenceScheduledAt(new Date(scheduledAt.getTime() + 60_000), {
       mode: 'NOW',
       intentCreatedAt: scheduledAt,
@@ -89,15 +312,8 @@ describe('Publication delivery timing', () => {
   it('does not carry a previous recipient acknowledgement into a recovery receipt', () => {
     jest.useFakeTimers().setSystemTime(scheduledAt);
     const logger = { log: jest.fn() };
-    const observer = createPublicationExecutionObserver(
-      logger,
-      {
-        publicationOccurrenceId: 'occurrence',
-        mediaType: null,
-        imageEnabled: true,
-      },
-      true,
-    );
+    const observer = createPublicationExecutionObserver(logger, publicationRow, true);
+    observer.observeExecutionMedia(frozenExecutionMedia(['image/jpeg']));
     observer.onOccurrenceScheduledAt(scheduledAt, { mode: 'ONCE', intentCreatedAt: scheduledAt });
     observer.observeClaim({ attemptCount: 0 });
     observer.observeAcknowledgement();
@@ -172,9 +388,8 @@ describe('Publication delivery timing', () => {
       const observer = createPublicationExecutionObserver(
         logger,
         {
+          ...publicationRow,
           publicationOccurrenceId,
-          mediaType: null,
-          imageEnabled: false,
         },
         enabled,
       );

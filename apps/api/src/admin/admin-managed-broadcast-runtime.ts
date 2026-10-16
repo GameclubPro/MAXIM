@@ -3429,6 +3429,7 @@ export class AdminManagedBroadcastRuntime {
           : null;
       let firstDeadlineClaimLogged = false;
       const executionMedia = await this.mediaRuntime.loadManagedBroadcastExecutionMedia(row);
+      publicationTiming.observeExecutionMedia(executionMedia);
       const request: PreparedManagedBroadcastRequest = {
         payload: {
           text: row.text,

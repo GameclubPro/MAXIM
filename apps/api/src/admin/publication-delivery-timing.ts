@@ -1,6 +1,13 @@
+import { MAX_BROADCAST_IMAGES } from '@maxim/contracts';
 import type { Logger } from '@nestjs/common';
-import type { ManagedBroadcastDelivery, PublicationScheduleMode } from '../prisma/prisma-client';
+import type {
+  ManagedBroadcast,
+  ManagedBroadcastDelivery,
+  PublicationScheduleMode,
+} from '../prisma/prisma-client';
 import { createMaxSendObservation } from '../max/max-send-observation';
+import type { ManagedBroadcastExecutionMedia } from './admin-managed-broadcast-media-runtime';
+import { hasPublicationVideoInternalMarker } from './publication-video-media';
 
 export type PublicationExecutionTiming = {
   mode: PublicationScheduleMode;
@@ -101,14 +108,118 @@ type PublicationTimingInput = PublicationTimingDimensions & {
   intentCreatedAt?: Date | null;
 };
 
+type PublicationExecutionIdentity = Pick<
+  ManagedBroadcast,
+  'publicationOccurrenceId' | 'publicationContentRevisionId' | 'actorUserId'
+>;
+
+function executionMediaKind(
+  row: PublicationExecutionIdentity,
+  executionMedia: ManagedBroadcastExecutionMedia,
+): PublicationMediaKind {
+  const source = executionMedia.publicationSource;
+  const mimeKind = (mime: unknown): PublicationMediaKind => {
+    if (typeof mime !== 'string' || mime.length > 128) return 'unknown';
+    const normalized = mime.trim().toLowerCase();
+    if (/^image\/[a-z0-9!#$&^_.+-]+$/u.test(normalized)) return 'image';
+    if (/^video\/[a-z0-9!#$&^_.+-]+$/u.test(normalized)) return 'video';
+    return 'unknown';
+  };
+  const objectPayload = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  const retainedVideoPayload = (value: unknown): boolean =>
+    objectPayload(value) &&
+    !hasPublicationVideoInternalMarker(value) &&
+    typeof value.token === 'string' &&
+    value.token.trim().length > 0;
+  if (row.publicationContentRevisionId !== null) {
+    // FLAG: Canonical envelopes and request media are intentionally empty. Only the
+    // loaded frozen revision supplies media evidence; missing metadata stays unknown.
+    if (
+      !row.publicationContentRevisionId ||
+      typeof row.actorUserId !== 'string' ||
+      !row.actorUserId.trim() ||
+      !source ||
+      source.contentRevisionId !== row.publicationContentRevisionId ||
+      source.actorUserId !== row.actorUserId ||
+      !Array.isArray(source.assets) ||
+      source.assets.length > MAX_BROADCAST_IMAGES
+    )
+      return 'unknown';
+    if (!source.assets.length) return 'none';
+    const kinds = source.assets.map((asset): PublicationMediaKind => {
+      if (
+        !asset ||
+        typeof asset.id !== 'string' ||
+        !asset.id.trim() ||
+        asset.actorUserId !== source.actorUserId ||
+        !Number.isSafeInteger(asset.sizeBytes) ||
+        asset.sizeBytes <= 0 ||
+        (asset.durablePayload !== null && !objectPayload(asset.durablePayload))
+      )
+        return 'unknown';
+      const kind = mimeKind(asset.mimeType);
+      // FLAG: A durable object enters the video execution path even with image MIME.
+      // Conflicting or opaque metadata must not become an image/none observation.
+      // Historical untagged video tokens may retain the octet-stream MIME fallback;
+      // internal upload markers still require the executor's explicit video MIME.
+      if (
+        typeof asset.mimeType === 'string' &&
+        asset.mimeType.trim().toLowerCase() === 'application/octet-stream' &&
+        retainedVideoPayload(asset.durablePayload)
+      )
+        return 'video';
+      return kind === 'image' && asset.durablePayload !== null ? 'unknown' : kind;
+    });
+    if (kinds.every((kind) => kind === 'image')) return 'image';
+    return kinds.length === 1 && kinds[0] === 'video' ? 'video' : 'unknown';
+  }
+  if (source !== undefined) return 'unknown';
+  const media = executionMedia.requestMedia;
+  if (
+    !media ||
+    !Array.isArray(media.images) ||
+    media.images.length > MAX_BROADCAST_IMAGES ||
+    typeof media.imageEnabled !== 'boolean' ||
+    typeof media.imageBase64 !== 'string'
+  )
+    return 'unknown';
+  if (media.mediaType === 'video')
+    return !media.imageEnabled &&
+      !media.images.length &&
+      !media.imageBase64 &&
+      retainedVideoPayload(media.mediaPayload)
+      ? 'video'
+      : 'unknown';
+  if (media.mediaType !== null && media.mediaType !== 'image') return 'unknown';
+  if (media.images.length)
+    return media.images.every(
+      (image) =>
+        image &&
+        typeof image.base64 === 'string' &&
+        image.base64.length > 0 &&
+        mimeKind(image.mimeType) === 'image',
+    )
+      ? 'image'
+      : 'unknown';
+  if (media.imageEnabled)
+    return media.imageBase64.length > 0 && mimeKind(media.imageMimeType) === 'image'
+      ? 'image'
+      : 'unknown';
+  return media.mediaType === null && media.mediaPayload === null && !media.imageBase64
+    ? 'none'
+    : 'unknown';
+}
+
 export function createPublicationExecutionObserver(
   logger: Partial<Pick<Logger, 'log'>>,
-  row: { publicationOccurrenceId: string | null; mediaType: string | null; imageEnabled: boolean },
+  row: PublicationExecutionIdentity,
   enabled: boolean,
 ): {
   readonly scheduledAt: Date | null;
   readonly deadlineAt: Date | null;
   readonly dimensions: PublicationTimingDimensions;
+  observeExecutionMedia: (executionMedia: ManagedBroadcastExecutionMedia) => void;
   onOccurrenceScheduledAt: (scheduledAt: Date, execution?: PublicationExecutionTiming) => void;
   observeReceipt: () => void;
   observeAcknowledgement: () => void;
@@ -128,9 +239,10 @@ export function createPublicationExecutionObserver(
   let execution: PublicationExecutionTiming | null = null;
   let acknowledgementAt: Date | null = null;
   let dispatchObservation: ReturnType<typeof createMaxSendObservation> | null = null;
+  let media: PublicationMediaKind = 'unknown';
   const dimensions = (): PublicationTimingDimensions => ({
     mode: execution?.mode,
-    media: row.mediaType === 'video' ? 'video' : row.imageEnabled ? 'image' : 'none',
+    media,
   });
   const observeReceipt = () => {
     if (!enabled || !row.publicationOccurrenceId) return;
@@ -160,6 +272,12 @@ export function createPublicationExecutionObserver(
     },
     get scheduledAt() {
       return scheduledAt;
+    },
+    observeExecutionMedia: (executionMedia) => {
+      media = 'unknown';
+      observeSafely(() => {
+        media = executionMediaKind(row, executionMedia);
+      });
     },
     observeReceipt: () => observeSafely(observeReceipt),
     runDispatch: (key, lane, operation) => {
@@ -205,7 +323,7 @@ export function createPublicationExecutionObserver(
           mode: execution?.mode,
           intentCreatedAt: execution?.intentCreatedAt,
           scheduledAt,
-          media: row.mediaType === 'video' ? 'video' : row.imageEnabled ? 'image' : 'none',
+          media,
           receiptPersistedAt: acknowledgementAt,
           outcome: 'max_acknowledgement_observed',
         });
