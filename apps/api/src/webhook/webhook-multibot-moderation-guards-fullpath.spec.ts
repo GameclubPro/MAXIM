@@ -41,6 +41,83 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     return h;
   }
 
+  it.each([19, 20, 21])(
+    'enforces the visible length boundary once across four bots (%i characters)',
+    async (length) => {
+      const s = await fixture(4);
+      const [chatId] = await s.seedCatalog(1, { maxMessageLength: 20 });
+      const messageId = `visible-length-${randomUUID()}`;
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: '👨‍👩‍👧‍👦'.repeat(length),
+          }),
+        ),
+      );
+      await s.drain();
+      if (length > 20) await waitForUserDelete(s, chatId!, messageId);
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === messageId),
+      ).toHaveLength(length > 20 ? 1 : 0);
+      if (length <= 20) expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+      const receipts = await s.prisma.webhookEvent.findMany({
+        where: { id: { in: ids } },
+        select: { status: true },
+      });
+      expect(receipts).toHaveLength(4);
+      expect(
+        receipts.every(
+          (receipt) => receipt.status === 'PROCESSED' || receipt.status === 'DUPLICATE',
+        ),
+      ).toBe(true);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it.each(['forward', 'reply'])(
+    'does not strike or delete short visible %s content across four bots',
+    async (type) => {
+      const s = await fixture(4);
+      const [chatId] = await s.seedCatalog(1, {
+        messageLimitsBanEnabled: true,
+        messageLimitsWarnEnabled: true,
+      });
+      const messageId = `visible-forward-${randomUUID()}`;
+      const at = Date.now();
+      await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            botId: bot.id,
+            at,
+            text: type === 'reply' ? 'Да' : '',
+            link: {
+              type,
+              message: {
+                mid: 'a-long-unrelated-message-id',
+                text: type === 'reply' ? 'x'.repeat(100) : 'Привет',
+                attachments: [
+                  { type: 'photo', payload: { token: 'a-long-unrelated-photo-token' } },
+                ],
+              },
+            },
+          }),
+        ),
+      );
+      await s.drain();
+      expect(s.effects).toEqual([]);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(0);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
   it.each(['off', 'shadow', 'on'] as const)(
     'deletes links from an omitted member once and progresses mirrored receipts (%s)',
     async (mode) => {

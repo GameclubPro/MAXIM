@@ -334,8 +334,9 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
 
         {openHintKey === 'maxMessageLength' ? (
           <p id="max-message-length-hint" className="settings-native-toggle__hint">
-            Удаляет сообщения длиннее выбранного количества символов. Учитывается текст обычных и
-            пересланных сообщений.
+            Удаляет сообщения длиннее выбранного лимита. Учитывает текст и подписи к медиа, в том
+            числе в пересылках, а также пробелы и переносы строк. Один эмодзи — один символ. Текст
+            цитаты при ответе не учитывается.
           </p>
         ) : null}
 

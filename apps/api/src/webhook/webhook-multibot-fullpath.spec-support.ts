@@ -892,6 +892,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     at?: number;
     attachments?: unknown[];
     senderless?: boolean;
+    link?: Record<string, unknown>;
   }) {
     const at = input.at ?? Date.now();
     const raw = {
@@ -906,6 +907,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
           chat_type: channelIds.has(input.chatId) ? 'channel' : 'chat',
         },
         timestamp: at,
+        ...(input.link ? { link: input.link } : {}),
         body: {
           mid: input.messageId,
           text: input.text,

@@ -1,6 +1,7 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import { normalizeForDetection } from './rule-engine-normalization';
 import { normalizeCommercialRawText } from './commercial/commercial-normalization';
+import { countMessageCharacters } from './moderation-message-length';
 
 export type RuleDetectionContext = {
   text: string;
@@ -24,7 +25,8 @@ export function createRuleDetectionContext(params: {
     normalizedText,
     // FLAG: Visual uppercase B means Cyrillic в; preserve its case until commercial mapping.
     rawLoweredText: settings.commercialAdsFilterEnabled ? normalizeCommercialRawText(text) : '',
-    measuredLength: typeof effectiveLength === 'number' ? effectiveLength : text.length,
+    measuredLength:
+      typeof effectiveLength === 'number' ? effectiveLength : countMessageCharacters(text),
     compactText: settings.antiDuplicateEnabled ? normalizedText.replace(/\s+/g, ' ').trim() : '',
   };
 }

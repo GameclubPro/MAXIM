@@ -12,6 +12,11 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
 }
 
 describe('createRuleDetectionContext', () => {
+  it('uses the same visible character count without an explicitly measured length', () => {
+    expect(
+      createRuleDetectionContext({ text: '🔥е\u0308👨‍👩‍👧‍👦', settings: buildSettings() }).measuredLength,
+    ).toBe(3);
+  });
   it('keeps expensive normalized fields empty when no enabled rule needs them', () => {
     const context = createRuleDetectionContext({
       text: 'Тест !!!',
