@@ -732,6 +732,16 @@ if cooldown == -1 then return {0, 0, 30000} end
 if cooldown > 0 then return {0, 0, cooldown} end
 local time = redis.call('TIME')
 local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+-- FLAG: GCRA permits an initial burst plus replenished slots inside one second.
+-- Bound the actual per-token rolling window too; all roles share KEYS[1].
+-- A local refusal must consume neither this window nor another dimension's slots.
+local windowKey = KEYS[1] .. ':window:v1'
+local windowStart = '(' .. tostring(nowMs - 1000)
+local tokenLimit = tonumber(ARGV[1])
+if redis.call('ZCOUNT', windowKey, windowStart, '+inf') >= tokenLimit then
+  local oldest = redis.call('ZRANGEBYSCORE', windowKey, windowStart, '+inf', 'WITHSCORES', 'LIMIT', 0, 1)
+  return {0, 1, math.max(1, math.ceil(tonumber(oldest[2]) + 1000 - nowMs))}
+end
 local ttlFloorMs = tonumber(ARGV[#ARGV])
 local keyCount = #KEYS
 local nextTats = {}
@@ -759,6 +769,11 @@ end
 for index = 1, keyCount do
   redis.call('SET', KEYS[index], tostring(nextTats[index]), 'PX', nextTtls[index])
 end
+-- FLAG: One atomic reservation commits all dimensions. The monotonically advancing
+-- token TAT distinguishes concurrent admissions with the same Redis millisecond.
+redis.call('ZREMRANGEBYSCORE', windowKey, '-inf', tostring(nowMs - 1000))
+redis.call('ZADD', windowKey, nowMs, tostring(nextTats[1]))
+redis.call('PEXPIRE', windowKey, 1000)
 
 return {1, 0, 0}
 `;
