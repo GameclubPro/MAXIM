@@ -11,14 +11,36 @@ import {
 import { buildMaxActionIdempotencyKey } from '../max/max-action-idempotency';
 import { Prisma, type ModerationDeleteIntent } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { readWebhookOriginEventAt } from '../moderation/webhook-effect-origin-context';
 import {
   DELETE_EVIDENCE_SAMPLE_LIMIT,
   buildDeleteEvidenceFollowupsQuery,
   buildDeleteEvidenceLedgerQuery,
   buildDeleteEvidenceReasonsQuery,
+  buildDeleteEvidenceOriginsQuery,
 } from './safety-desk-delete-evidence.query';
 
 type ReasonEvidence = SafetyDeskDeleteEvidenceResponse['reasons']['items'][number];
+type OriginEvidence = NonNullable<ReasonEvidence['origin']>;
+type ReasonEvidenceRow = Omit<ReasonEvidence, 'origin'> & { id: string };
+export type DeleteReasonOriginRow = {
+  reasonId: string;
+  sourceWebhookEventId: string;
+  sourceReceivingBotId: string;
+  sourceExecutionBotId: string;
+  sourceEventAt: Date;
+  sourceObservedAt: Date;
+  sourceEvidenceVersion: number;
+  receiptId: string | null;
+  receiptBotId: string | null;
+  receiptCreatedAt: Date | null;
+  sourcePayload: unknown;
+  claimId: string | null;
+  claimWebhookEventId: string | null;
+  claimExecutionBotId: string | null;
+  claimEnforced: boolean | null;
+  claimBusinessStartedAt: Date | null;
+};
 type NoticeEvidence = SafetyDeskDeleteEvidenceResponse['followups']['items'][number]['explanation'];
 type IntentEvidence = Pick<
   ModerationDeleteIntent,
@@ -96,6 +118,77 @@ const ABSENCE_RECEIPT_CODES = new Set([
   'guarded_image_text_stop_list_predispatch_exact_absence',
   'retention_reconciliation_absence',
 ]);
+
+export function projectDeleteReasonOrigin(
+  row: DeleteReasonOriginRow | undefined,
+  target: Pick<IntentEvidence, 'chatId' | 'messageId'>,
+  observedAt: Date,
+): OriginEvidence {
+  const empty = (state: OriginEvidence['state']): OriginEvidence => ({
+    state,
+    webhookEventId: null,
+    receivingBotId: null,
+    executionBotId: null,
+    eventAt: null,
+    acceptedAt: null,
+    recordedAt: null,
+    evidenceVersion: null,
+  });
+  if (!row) return empty('not_recorded');
+  const finiteDate = (value: Date | null): value is Date =>
+    value instanceof Date && Number.isFinite(value.getTime());
+  if (
+    row.sourceEvidenceVersion !== 1 ||
+    !nonempty(row.sourceWebhookEventId) ||
+    row.sourceWebhookEventId.length > 128 ||
+    !nonempty(row.sourceReceivingBotId) ||
+    !nonempty(row.sourceExecutionBotId) ||
+    !finiteDate(row.sourceEventAt) ||
+    !finiteDate(row.sourceObservedAt) ||
+    row.sourceObservedAt > observedAt
+  )
+    return empty('invalid_evidence');
+  const retained: OriginEvidence = {
+    state: 'source_unavailable',
+    webhookEventId: row.sourceWebhookEventId,
+    receivingBotId: row.sourceReceivingBotId,
+    executionBotId: row.sourceExecutionBotId,
+    eventAt: row.sourceEventAt.toISOString(),
+    acceptedAt: null,
+    recordedAt: row.sourceObservedAt.toISOString(),
+    evidenceVersion: 1,
+  };
+  if (!row.receiptId) return retained;
+  if (
+    row.receiptId !== row.sourceWebhookEventId ||
+    row.receiptBotId !== row.sourceReceivingBotId ||
+    !finiteDate(row.receiptCreatedAt) ||
+    row.receiptCreatedAt > row.sourceObservedAt
+  )
+    return empty('invalid_evidence');
+  retained.acceptedAt = row.receiptCreatedAt.toISOString();
+  const payload = record(row.sourcePayload),
+    message = record(payload.message);
+  if (!payload.type || !message.chatId || !message.messageId || !row.claimId) return retained;
+  const sourceAt = readWebhookOriginEventAt(payload);
+  // FLAG: A receiving bot may differ from the canonical executor. Its exact semantic
+  // EXECUTION claim establishes provenance only; it never upgrades DELETE outcome evidence.
+  if (
+    !['message_created', 'message_edited'].includes(String(payload.type).trim().toLowerCase()) ||
+    payload.botId !== row.sourceReceivingBotId ||
+    message.chatId !== target.chatId ||
+    message.messageId !== target.messageId ||
+    sourceAt?.getTime() !== row.sourceEventAt.getTime() ||
+    row.claimWebhookEventId !== row.sourceWebhookEventId ||
+    row.claimExecutionBotId !== row.sourceExecutionBotId ||
+    row.claimEnforced !== true ||
+    !finiteDate(row.claimBusinessStartedAt) ||
+    row.claimBusinessStartedAt > row.sourceObservedAt ||
+    row.claimBusinessStartedAt < row.receiptCreatedAt
+  )
+    return empty('invalid_evidence');
+  return { ...retained, state: 'linked' };
+}
 
 function validPlan(row: DeleteFollowupEvidenceRow): boolean {
   const plan = record(row.plan);
@@ -280,9 +373,15 @@ export class SafetyDeskDeleteEvidenceService {
             },
           });
           if (!intent) throw new NotFoundException('Удаление не найдено.');
-          const reasons = await tx.$queryRaw<ReasonEvidence[]>(
+          const reasons = await tx.$queryRaw<ReasonEvidenceRow[]>(
             buildDeleteEvidenceReasonsQuery(intentId),
           );
+          const selectedReasons = reasons.slice(0, DELETE_EVIDENCE_SAMPLE_LIMIT);
+          const origins = selectedReasons.length
+            ? await tx.$queryRaw<DeleteReasonOriginRow[]>(
+                buildDeleteEvidenceOriginsQuery(selectedReasons.map((reason) => reason.id)),
+              )
+            : [];
           const followups = await tx.$queryRaw<DeleteFollowupEvidenceRow[]>(
             buildDeleteEvidenceFollowupsQuery(intentId),
           );
@@ -317,6 +416,7 @@ export class SafetyDeskDeleteEvidenceService {
             observedAt: observedAt.toISOString(),
             intentId,
             webhookLink: 'not_recorded',
+            originCoverage: origins.length ? 'partial' : 'not_recorded',
             deletion: {
               status: intent.status,
               outcome: projectDeleteOutcome(intent, observedAt),
@@ -329,7 +429,14 @@ export class SafetyDeskDeleteEvidenceService {
             },
             reasons: {
               sampleComplete: reasons.length <= DELETE_EVIDENCE_SAMPLE_LIMIT,
-              items: reasons.slice(0, DELETE_EVIDENCE_SAMPLE_LIMIT),
+              items: selectedReasons.map(({ id, ...reason }) => ({
+                ...reason,
+                origin: projectDeleteReasonOrigin(
+                  origins.find((row) => row.reasonId === id),
+                  intent,
+                  observedAt,
+                ),
+              })),
             },
             followups: {
               sampleComplete: followups.length <= DELETE_EVIDENCE_SAMPLE_LIMIT,

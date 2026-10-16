@@ -1,3 +1,4 @@
+import { createMaxSendObservation } from '../max/max-send-observation';
 import { ConfigService } from '@nestjs/config';
 import { Queue, UnrecoverableError } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -32,6 +33,7 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
   let ledger: MaxActionLedgerService;
   let job: MaxActionJob;
   let request: jest.Mock;
+  let observations: Array<Parameters<Parameters<typeof createMaxSendObservation>[1]>[0]>;
   const botId = `publisher-send-test-${randomUUID()}`;
   const prefix = `publication-send-test-${randomUUID()}`;
 
@@ -58,6 +60,7 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
   });
 
   beforeEach(async () => {
+    observations = [];
     job = {
       actionType: 'SEND_MESSAGE',
       chatId: `publication-chat-${randomUUID()}`,
@@ -109,6 +112,17 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
       },
       logger: { warn: jest.fn() },
     }) as SendHarness;
+  }
+
+  function observedSend(selectedLedger = ledger): Promise<Record<string, unknown>> {
+    return createMaxSendObservation(
+      { mode: 'NOW', media: 'none', lane: 'interactive' },
+      (event) => {
+        observations.push(event);
+      },
+    ).run(job.idempotencyKey, () =>
+      client(selectedLedger).executeQueuedSendMessage(job, [], { botId }),
+    );
   }
 
   async function snapshotQueue(): Promise<Array<{ key: string; value: Buffer }>> {
@@ -174,7 +188,7 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
       await gate;
       return { message_id: `remote-${job.idempotencyKey}` };
     });
-    const first = client().executeQueuedSendMessage(job, [], { botId });
+    const first = observedSend();
     await started;
     try {
       await expect(client().executeQueuedSendMessage(job, [], { botId })).rejects.toBeInstanceOf(
@@ -186,19 +200,26 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
     await first;
     expect(request).toHaveBeenCalledTimes(1);
     expect(await ledger.getCompletedSendDispatch(job)).toBe(`remote-${job.idempotencyKey}`);
+    expect(observations.filter((event) => event.stage === 'http')).toHaveLength(1);
+    expect(observations.filter((event) => event.stage === 'ledger_persistence')).toEqual([
+      expect.objectContaining({ outcome: 'cas_committed' }),
+    ]);
   });
 
   it('recovers a SQL receipt after repeated restoration of an older Redis queue', async () => {
     const snapshot = await snapshotQueue();
-    await client().executeQueuedSendMessage(job, [], { botId });
+    await observedSend();
+    observations = [];
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await restoreQueue(snapshot);
       const restored = (await queue.getJob(job.idempotencyKey))!.data;
-      expect(await client().executeQueuedSendMessage(restored, [], { botId })).toMatchObject({
+      expect(restored).toEqual(job);
+      expect(await observedSend()).toMatchObject({
         message_id: `remote-${job.idempotencyKey}`,
       });
     }
     expect(request).toHaveBeenCalledTimes(1);
+    expect(observations.filter((event) => event.stage === 'http')).toEqual([]);
     expect(
       await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: job.idempotencyKey } }),
     ).toMatchObject({
@@ -211,9 +232,9 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
 
   it('fences MAX acceptance without a persisted receipt after stale Redis restore', async () => {
     const snapshot = await snapshotQueue();
-    await expect(
-      client(failReceiptWrite(false)).executeQueuedSendMessage(job, [], { botId }),
-    ).rejects.toBeInstanceOf(UnrecoverableError);
+    await expect(observedSend(failReceiptWrite(false))).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(observations.filter((event) => event.stage === 'http')).toHaveLength(1);
+    expect(observations.filter((event) => event.stage === 'ledger_persistence')).toEqual([]);
     await restoreQueue(snapshot);
     await expect(client().executeQueuedSendMessage(job, [], { botId })).rejects.toBeInstanceOf(
       UnrecoverableError,
@@ -230,7 +251,10 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
   });
 
   it('recovers a committed receipt with lost acknowledgement even when Redis work disappears', async () => {
-    await client(failReceiptWrite(true)).executeQueuedSendMessage(job, [], { botId });
+    await observedSend(failReceiptWrite(true));
+    expect(observations.filter((event) => event.stage === 'ledger_persistence')).toEqual([
+      expect.objectContaining({ outcome: 'exact_readback' }),
+    ]);
     await queue.obliterate({ force: true });
     expect(await queue.getJob(job.idempotencyKey)).toBeUndefined();
     expect(await client().executeQueuedSendMessage(job, [], { botId })).toMatchObject({
@@ -246,6 +270,52 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
     );
     expect(request).not.toHaveBeenCalled();
   });
+
+  it('keeps final authority rejection outside HTTP timing and releases only its unattempted fence', async () => {
+    const rejected = new Error('Synthetic final authority rejection');
+    const scope = createMaxSendObservation(
+      { mode: 'NOW', media: 'none', lane: 'interactive' },
+      (event) => {
+        observations.push(event);
+      },
+    );
+    await expect(
+      scope.run(job.idempotencyKey, () =>
+        client().executeQueuedSendMessage(job, [], { botId }, async () => {
+          throw rejected;
+        }),
+      ),
+    ).rejects.toBe(rejected);
+    expect(request).not.toHaveBeenCalled();
+    expect(observations.filter((event) => event.stage === 'http')).toEqual([]);
+    expect(observations.filter((event) => event.stage === 'final_admission')).toEqual([
+      expect.objectContaining({ outcome: 'not_dispatched' }),
+    ]);
+    expect(
+      await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: job.idempotencyKey } }),
+    ).toMatchObject({ dispatchToken: null, remoteMessageId: null, ambiguous: false });
+  });
+
+  it.each(['timeout', 'missing_remote_id'] as const)(
+    'does not convert %s observations into a receipt or authorize another SEND',
+    async (failure) => {
+      if (failure === 'timeout') request.mockRejectedValueOnce(new Error('Synthetic MAX timeout'));
+      else request.mockResolvedValueOnce({});
+      await expect(observedSend()).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(observations.filter((event) => event.stage === 'http')).toEqual([
+        expect.objectContaining({
+          outcome: failure === 'timeout' ? 'transport_error' : 'response_received',
+        }),
+      ]);
+      expect(observations.filter((event) => event.stage === 'ledger_persistence')).toEqual([]);
+      expect(observations.some((event) => event.outcome === 'remote_id_observed')).toBe(false);
+      await expect(observedSend()).rejects.toBeInstanceOf(UnrecoverableError);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(
+        await db.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: job.idempotencyKey } }),
+      ).toMatchObject({ remoteMessageId: null, ambiguous: true, terminal: true });
+    },
+  );
 
   it('keeps the external runtime fence closed when old SQL and Redis lose evidence of MAX acceptance', async () => {
     const sqlSnapshot = await db.maxActionLedgerEntry.findUniqueOrThrow({

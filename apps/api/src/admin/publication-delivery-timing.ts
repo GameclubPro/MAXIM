@@ -1,5 +1,6 @@
 import type { Logger } from '@nestjs/common';
 import type { ManagedBroadcastDelivery, PublicationScheduleMode } from '../prisma/prisma-client';
+import { createMaxSendObservation } from '../max/max-send-observation';
 
 export type PublicationExecutionTiming = {
   mode: PublicationScheduleMode;
@@ -111,6 +112,11 @@ export function createPublicationExecutionObserver(
   onOccurrenceScheduledAt: (scheduledAt: Date, execution?: PublicationExecutionTiming) => void;
   observeReceipt: () => void;
   observeAcknowledgement: () => void;
+  runDispatch<T>(
+    key: string,
+    lane: 'critical' | 'interactive' | 'background',
+    operation: () => Promise<T>,
+  ): Promise<T>;
   observeClaim: (
     delivery: Pick<ManagedBroadcastDelivery, 'attemptCount'> &
       Partial<
@@ -121,6 +127,7 @@ export function createPublicationExecutionObserver(
   let scheduledAt: Date | null = null;
   let execution: PublicationExecutionTiming | null = null;
   let acknowledgementAt: Date | null = null;
+  let dispatchObservation: ReturnType<typeof createMaxSendObservation> | null = null;
   const dimensions = (): PublicationTimingDimensions => ({
     mode: execution?.mode,
     media: row.mediaType === 'video' ? 'video' : row.imageEnabled ? 'image' : 'none',
@@ -141,6 +148,8 @@ export function createPublicationExecutionObserver(
       to: persistedAt,
     });
     acknowledgementAt = null;
+    dispatchObservation?.observeRecipientReceipt();
+    dispatchObservation = null;
   };
   return {
     get dimensions() {
@@ -153,11 +162,21 @@ export function createPublicationExecutionObserver(
       return scheduledAt;
     },
     observeReceipt: () => observeSafely(observeReceipt),
+    runDispatch: (key, lane, operation) => {
+      if (!enabled || !row.publicationOccurrenceId) return operation();
+      const dimension = dimensions();
+      dispatchObservation = createMaxSendObservation(
+        { mode: dimension.mode ?? 'UNKNOWN', media: dimension.media, lane },
+        (observation) => emit(logger, observation),
+      );
+      return dispatchObservation.run(key, operation);
+    },
     observeClaim: (delivery) =>
       observeSafely(() => {
         // FLAG: A prior recipient's response cannot time this recipient's recovery receipt.
         // Claims are observations, not durable once-only counters or new execution authority.
         acknowledgementAt = null;
+        dispatchObservation = null;
         if (!enabled || !row.publicationOccurrenceId) return;
         const claimedAt = new Date();
         if (delivery.attemptCount === 0 && (delivery.capacityDeferralCount ?? 0) === 0) {

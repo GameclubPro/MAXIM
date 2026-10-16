@@ -21,6 +21,8 @@ import {
   type SafetyDeskRetryRetentionRequest,
   safetyDeskWebhookCohortResponseSchema,
   type SafetyDeskWebhookCohortResponse,
+  safetyDeskPublicationCohortResponseSchema,
+  type SafetyDeskPublicationCohortResponse,
 } from '@maxim/contracts/safety-desk';
 import { createAdminApiTransport, type AdminApiTransport } from './admin-request';
 
@@ -119,6 +121,14 @@ export class SafetyDeskApiClient {
       `${SAFETY_DESK_API_BASE}/runtime/webhook-cohort`,
       accessCode,
       safetyDeskWebhookCohortResponseSchema,
+    );
+  }
+
+  fetchPublicationCohort(accessCode: string): Promise<SafetyDeskPublicationCohortResponse> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/publication-cohort`,
+      accessCode,
+      safetyDeskPublicationCohortResponseSchema,
     );
   }
 

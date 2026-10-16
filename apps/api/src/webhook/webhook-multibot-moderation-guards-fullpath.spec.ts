@@ -178,7 +178,30 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       expect(intent.reasons).toEqual(
         expect.arrayContaining([expect.objectContaining({ ruleCode: 'LINK_BLOCKED_DELETE' })]),
       );
+      const origins = await s.prisma.moderationDeleteReasonOrigin.findMany({
+        where: { reasonId: { in: intent.reasons.map((reason) => reason.id) } },
+      });
+      expect(origins).toHaveLength(1);
+      expect(ids).toContain(origins[0]!.sourceWebhookEventId);
+      const originReceipt = await s.prisma.webhookEvent.findUniqueOrThrow({
+        where: { id: origins[0]!.sourceWebhookEventId },
+      });
+      const owner = await s.prisma.webhookExecutionClaim.findUniqueOrThrow({
+        where: { kind_semanticKey: { kind: 'EXECUTION', semanticKey: originReceipt.semanticKey! } },
+      });
+      expect(origins[0]).toMatchObject({
+        sourceReceivingBotId: originReceipt.botId,
+        sourceExecutionBotId: owner.executionBotId,
+        sourceEventAt: new Date(at),
+        sourceEvidenceVersion: 1,
+      });
+      expect(owner.webhookEventId).toBe(originReceipt.id);
       for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(
+        await s.prisma.moderationDeleteReasonOrigin.findMany({
+          where: { reasonId: { in: intent.reasons.map((reason) => reason.id) } },
+        }),
+      ).toEqual(origins);
       const next = await s.ingest({
         chatId: chatId!,
         messageId: `after-link-${randomUUID()}`,

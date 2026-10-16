@@ -138,6 +138,7 @@ async function smokeProfile(activeBrowser, profile) {
   const errors = [];
   let cohortRequests = 0;
   let cohortUnavailable = false;
+  let publicationRequests = 0;
   let evidenceRequests = 0;
   let evidenceMalformed = false;
   const cohort = {
@@ -174,12 +175,52 @@ async function smokeProfile(activeBrowser, profile) {
       enqueueLatency: { sampleCount: 0, p95Ms: null, p99Ms: null },
     })),
   };
+  const publicationCohort = {
+    schemaVersion: 1,
+    basis: 'occurrence_created_at',
+    dispatchProfile: 'PUBLIK_V1',
+    windowSeconds: 900,
+    graceSeconds: 30,
+    windowStartedAt: '2026-10-16T18:00:00.000Z',
+    windowEndedAt: '2026-10-16T18:15:00.000Z',
+    observedAt: '2026-10-16T18:15:30.000Z',
+    sampleLimitPerStatus: 512,
+    sampleComplete: true,
+    totalCountLowerBound: 1,
+    completionTimingEvidence: 'not_recorded',
+    effectsEvidence: 'occurrence_status_only',
+    rows: ['SCHEDULED', 'IN_PROGRESS', 'SENT', 'PARTIAL', 'FAILED', 'AMBIGUOUS', 'CANCELED'].map(
+      (status) => ({
+        status,
+        countLowerBound: status === 'AMBIGUOUS' ? 1 : 0,
+        truncated: false,
+        pendingNotDue: 0,
+        pendingDue: 0,
+        pendingExpired: 0,
+        pendingTimingUnknown: 0,
+        blockedPending: 0,
+        retryAuthorizedCount: 0,
+        oldestDueAgeSec: null,
+        modeCounts: {
+          NOW: status === 'AMBIGUOUS' ? 1 : 0,
+          ONCE: 0,
+          SLOTS: 0,
+          RECURRENCE: 0,
+          UNKNOWN: 0,
+        },
+        mediaCounts: { TEXT: 0, IMAGE: 0, VIDEO: 0, UNKNOWN: status === 'AMBIGUOUS' ? 1 : 0 },
+      }),
+    ),
+  };
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (message) => {
     if (message.type() === 'error') {
       if (
         cohortUnavailable &&
-        message.location().url === `${baseUrl}api/v1/safety-desk/runtime/webhook-cohort` &&
+        ['webhook-cohort', 'publication-cohort'].some(
+          (endpoint) =>
+            message.location().url === `${baseUrl}api/v1/safety-desk/runtime/${endpoint}`,
+        ) &&
         /^Failed to load resource: the server responded with a status of 503\b/.test(message.text())
       )
         return;
@@ -208,6 +249,16 @@ async function smokeProfile(activeBrowser, profile) {
       );
       return;
     }
+    if (url.pathname.endsWith('/safety-desk/runtime/publication-cohort')) {
+      if (request.method() !== 'GET') throw new Error('Publication cohort attempted a mutation.');
+      publicationRequests += 1;
+      await route.fulfill(
+        cohortUnavailable
+          ? { status: 503, json: { message: 'Publication observations unavailable' } }
+          : { status: 200, json: publicationCohort },
+      );
+      return;
+    }
     const evidenceItem = deleteItems.find((item) =>
       url.pathname.endsWith(`/safety-desk/runtime/deletes/${item.id}/evidence`),
     );
@@ -223,6 +274,7 @@ async function smokeProfile(activeBrowser, profile) {
               observedAt: generatedAt,
               intentId: evidenceItem.id,
               webhookLink: 'not_recorded',
+              originCoverage: 'partial',
               deletion: {
                 status: evidenceItem.status,
                 outcome: 'unknown',
@@ -233,7 +285,27 @@ async function smokeProfile(activeBrowser, profile) {
                 acknowledgedAt: null,
                 completedAt: null,
               },
-              reasons: { sampleComplete: true, items: [] },
+              reasons: {
+                sampleComplete: true,
+                items: [
+                  {
+                    reasonKey: 'SMOKE_DELETE',
+                    ruleCode: 'SMOKE_DELETE',
+                    moderationEventId: null,
+                    decisionRecorded: false,
+                    origin: {
+                      state: 'linked',
+                      webhookEventId: 'smoke-receipt',
+                      receivingBotId: 'smoke-receiver',
+                      executionBotId: 'smoke-executor',
+                      eventAt: generatedAt,
+                      acceptedAt: generatedAt,
+                      recordedAt: generatedAt,
+                      evidenceVersion: 1,
+                    },
+                  },
+                ],
+              },
               followups: {
                 sampleComplete: true,
                 items: [
@@ -290,6 +362,9 @@ async function smokeProfile(activeBrowser, profile) {
   await evidencePanel
     .getByText('Объяснение: Исход отправки неизвестен', { exact: false })
     .waitFor();
+  await evidencePanel
+    .getByText('Исходное событие и исполнитель подтверждены.', { exact: false })
+    .waitFor();
   if (evidenceRequests !== 1) throw new Error('Delete evidence request was repeated.');
   if (await page.getByRole('button', { name: 'Повторить удаление', exact: true }).count()) {
     throw new Error('Unknown delete result exposed a retry action.');
@@ -314,11 +389,20 @@ async function smokeProfile(activeBrowser, profile) {
     .waitFor();
   if (evidenceRequests !== 2) throw new Error('Failed evidence read was retried automatically.');
   await page.getByRole('button', { name: 'Повторить удаление', exact: true }).waitFor();
-  if (cohortRequests !== 0) throw new Error('Closed cohort loaded before its view was opened.');
+  if (cohortRequests !== 0 || publicationRequests !== 0)
+    throw new Error('Closed cohort loaded before its view was opened.');
   await page.getByRole('button', { name: 'Наблюдения' }).click();
   await page.getByText('За этот интервал события не наблюдались.', { exact: false }).waitFor();
   await page.getByText('Обработка события не подтверждает удаление', { exact: false }).waitFor();
   await page.getByText(/21:00:00 МСК — .*21:00:30 МСК/).waitFor();
+  const publicationPanel = page.getByRole('region', { name: 'Результаты запусков Публика' });
+  await publicationPanel.getByText('Исход неизвестен', { exact: true }).first().waitFor();
+  await publicationPanel
+    .getByText('Поздний ручной повтор отдельно не учитывается.', { exact: false })
+    .waitFor();
+  await publicationPanel.getByText('Режимы и содержимое запусков', { exact: true }).click();
+  await publicationPanel.getByRole('columnheader', { name: 'Содержимое неизвестно' }).waitFor();
+  if (publicationRequests !== 1) throw new Error('Publication cohort request repeated.');
   cohort.sampleComplete = false;
   cohort.totalCountLowerBound = 512;
   cohort.rows[2].countLowerBound = 512;
@@ -328,6 +412,12 @@ async function smokeProfile(activeBrowser, profile) {
   cohortUnavailable = true;
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: 'последний успешный снимок' }).waitFor();
+  await publicationPanel
+    .getByRole('alert')
+    .filter({ hasText: 'Не удалось проверить запуски Публика.' })
+    .waitFor();
+  if (await publicationPanel.getByRole('table').count())
+    throw new Error('Failed publication refresh retained stale success.');
   if (await page.getByRole('button', { name: /повтор|публиковать/i }).count()) {
     throw new Error('Read-only cohort exposed an effect retry action.');
   }

@@ -1,4 +1,5 @@
 import { needsAutomaticMuteCleanup, persistAutomaticMuteCleanup } from './automatic-mute-cleanup';
+import { runCanonicalWebhookHandler } from './canonical-webhook-handler';
 import { verifyFreshHeldCommandAccess } from '../webhook/webhook-legacy-fresh-command';
 import { bindVoiceSourceEvidence, captureVoiceSourceInput } from './voice-webhook-source';
 import {
@@ -1395,23 +1396,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         activeBotId,
         async () => {
           hotPathProfile = this.createWebhookHotPathProfile();
-          if (activeBotId && this.maxBotContextService) {
-            await this.maxBotContextService.runWithBot(activeBotId, () =>
-              this.handleUpdate(
-                update,
-                hotPathProfile!,
-                webhookEvent.id,
-                commercialOcrPendingActivations,
-              ),
-            );
-          } else {
-            await this.handleUpdate(
+          await runCanonicalWebhookHandler(execution, this.maxBotContextService, () =>
+            this.handleUpdate(
               update,
-              hotPathProfile,
+              hotPathProfile!,
               webhookEvent.id,
               commercialOcrPendingActivations,
-            );
-          }
+            ),
+          );
         },
         () => this.readWebhookHotPathProfileSnapshot(hotPathProfile),
       );

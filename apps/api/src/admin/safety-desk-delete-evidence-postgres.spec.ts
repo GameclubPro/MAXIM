@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-client';
-import { SafetyDeskDeleteEvidenceService } from './safety-desk-delete-evidence.service';
+import {
+  SafetyDeskDeleteEvidenceService,
+  type DeleteReasonOriginRow,
+} from './safety-desk-delete-evidence.service';
 import {
   buildDeleteEvidenceFollowupsQuery,
   buildDeleteEvidenceReasonsQuery,
+  buildDeleteEvidenceOriginsQuery,
 } from './safety-desk-delete-evidence.query';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
@@ -113,6 +117,9 @@ describePostgres('native delete operation evidence', () => {
   });
 
   it('reads bounded history and projects only exact persisted receipt evidence', async () => {
+    expect(
+      await prisma.$queryRaw(buildDeleteEvidenceOriginsQuery([`evidence-reason-${suffix}-00000`])),
+    ).toEqual([]);
     const service = new SafetyDeskDeleteEvidenceService(prisma as never);
     const snapshot = await service.getEvidence(intentId);
     expect(snapshot.webhookLink).toBe('not_recorded');
@@ -158,6 +165,118 @@ describePostgres('native delete operation evidence', () => {
         Number(scans[0]!['Actual Rows']) * Number(scans[0]!['Actual Loops']),
       ).toBeLessThanOrEqual(33);
       expect(Number(scans[0]!['Rows Removed by Filter'] ?? 0)).toBe(0);
+    }
+  });
+
+  it('links bounded first-insert origins through exact receipt and execution claim, retaining gaps after source removal', async () => {
+    const receiptId = `origin-receipt-${suffix}`,
+      semanticKey = `origin-semantic-${suffix}`;
+    const claimId = `origin-claim-${suffix}`;
+    await prisma.webhookEvent.create({
+      data: {
+        id: receiptId,
+        dedupKey: receiptId,
+        semanticKey,
+        botId: 'receiving-bot',
+        status: 'PROCESSED',
+        createdAt: sourceAt,
+        rawPayload: { text: 'private source body' },
+        normalizedPayload: {
+          type: 'message_edited',
+          botId: 'receiving-bot',
+          eventTimestampSource: 'payload',
+          message: {
+            chatId,
+            messageId: 'message',
+            createdAt: '2020-01-01T00:00:00.000Z',
+            text: 'private source body',
+          },
+          raw: { timestamp: sourceAt.toISOString(), message: { text: 'private source body' } },
+        },
+      },
+    });
+    await prisma.webhookExecutionClaim.create({
+      data: {
+        id: claimId,
+        semanticKey,
+        webhookEventId: receiptId,
+        executionBotId: 'execution-bot',
+        enforced: true,
+        status: 'COMPLETED',
+        businessStartedAt: new Date(sourceAt.getTime() + 500),
+      },
+    });
+    try {
+      await prisma.$executeRaw`INSERT INTO moderation_delete_reason_origins
+        (reason_id, source_webhook_event_id, source_receiving_bot_id, source_execution_bot_id, source_event_at, source_evidence_version)
+        SELECT id, ${receiptId}, 'receiving-bot', 'execution-bot', ${sourceAt}, 1
+        FROM moderation_delete_intent_reasons WHERE intent_id = ${intentId}`;
+      await prisma.$executeRawUnsafe('ANALYZE moderation_delete_reason_origins');
+      const [origin] = await prisma.$queryRaw<DeleteReasonOriginRow[]>(
+        buildDeleteEvidenceOriginsQuery([`evidence-reason-${suffix}-00000`]),
+      );
+      expect(origin?.sourcePayload).toMatchObject({
+        raw: { timestamp: sourceAt.toISOString() },
+        message: { chatId, messageId: 'message' },
+      });
+      expect(JSON.stringify(origin)).not.toContain('private source body');
+      const service = new SafetyDeskDeleteEvidenceService(prisma as never);
+      const snapshot = await service.getEvidence(intentId);
+      expect(snapshot.originCoverage).toBe('partial');
+      expect(snapshot.reasons.items.every((reason) => reason.origin?.state === 'linked')).toBe(
+        true,
+      );
+      expect(snapshot.reasons.items[0]!.origin).toMatchObject({
+        webhookEventId: receiptId,
+        receivingBotId: 'receiving-bot',
+        executionBotId: 'execution-bot',
+        eventAt: sourceAt.toISOString(),
+        acceptedAt: sourceAt.toISOString(),
+        evidenceVersion: 1,
+      });
+      expect(JSON.stringify(snapshot)).not.toContain('private source body');
+      const reasonIds = Array.from(
+        { length: 32 },
+        (_, n) => `evidence-reason-${suffix}-${String(n).padStart(5, '0')}`,
+      );
+      const plan = await prisma.$queryRaw<
+        unknown[]
+      >(Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+        ${buildDeleteEvidenceOriginsQuery(reasonIds)}`);
+      const scans = planNodes(plan).filter(
+        (node) => node['Relation Name'] === 'moderation_delete_reason_origins',
+      );
+      expect(scans.length).toBeGreaterThan(0);
+      expect(scans.every((node) => node['Node Type'] !== 'Seq Scan')).toBe(true);
+      expect(
+        scans.reduce(
+          (sum, node) => sum + Number(node['Actual Rows']) * Number(node['Actual Loops']),
+          0,
+        ),
+      ).toBeLessThanOrEqual(32);
+      await prisma.webhookExecutionClaim.update({
+        where: { id: claimId },
+        data: { executionBotId: 'receiving-bot' },
+      });
+      expect((await service.getEvidence(intentId)).reasons.items[0]!.origin?.state).toBe(
+        'invalid_evidence',
+      );
+      await prisma.webhookExecutionClaim.update({
+        where: { id: claimId },
+        data: { executionBotId: 'execution-bot' },
+      });
+      await prisma.webhookEvent.delete({ where: { id: receiptId } });
+      const retained = await service.getEvidence(intentId);
+      expect(retained.reasons.items[0]!.origin).toMatchObject({
+        state: 'source_unavailable',
+        webhookEventId: receiptId,
+        acceptedAt: null,
+      });
+      expect(retained.deletion.outcome).toBe('confirmed');
+    } finally {
+      await prisma.$executeRaw`DELETE FROM moderation_delete_reason_origins WHERE source_webhook_event_id = ${receiptId}`;
+      await prisma.webhookExecutionClaim.deleteMany({ where: { id: claimId } });
+      await prisma.webhookEvent.deleteMany({ where: { id: receiptId } });
     }
   });
 

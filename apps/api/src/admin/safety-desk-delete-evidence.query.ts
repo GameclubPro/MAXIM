@@ -4,7 +4,7 @@ export const DELETE_EVIDENCE_SAMPLE_LIMIT = 32;
 
 export function buildDeleteEvidenceReasonsQuery(intentId: string): Prisma.Sql {
   // FLAG: Exact intent + unique reason-key order bounds reads before event metadata.
-  return Prisma.sql`SELECT reason."reason_key" AS "reasonKey", reason."rule_code" AS "ruleCode",
+  return Prisma.sql`SELECT reason."id", reason."reason_key" AS "reasonKey", reason."rule_code" AS "ruleCode",
     reason."moderation_event_id" AS "moderationEventId",
     EXISTS (SELECT 1 FROM "moderation_events" event
       WHERE event."id" = reason."moderation_event_id"
@@ -19,6 +19,44 @@ export function buildDeleteEvidenceReasonsQuery(intentId: string): Prisma.Sql {
       LIMIT ${DELETE_EVIDENCE_SAMPLE_LIMIT + 1}) reason
     JOIN "moderation_delete_intents" intent ON intent."id" = reason."intent_id"
     ORDER BY reason."reason_key"`;
+}
+
+export function buildDeleteEvidenceOriginsQuery(reasonIds: readonly string[]): Prisma.Sql {
+  const scalarTime = (path: string) => {
+    const field = Prisma.raw(`receipt."normalized_payload"#>'{raw,${path}}'`);
+    // FLAG: Cast the extracted JSON value, never the #> path literal.
+    return Prisma.sql`CASE WHEN jsonb_typeof(${field}) IN ('string', 'number')
+      AND octet_length((${field})::text) <= 130 THEN ${field} ELSE 'null'::jsonb END`;
+  };
+  // FLAG: The caller already selected at most 32 reason identities. Source and claim
+  // are exact primary/unique-key probes; no payload scan or same-chat inference.
+  return Prisma.sql`SELECT origin."reason_id" AS "reasonId",
+    left(origin."source_webhook_event_id", 129) AS "sourceWebhookEventId",
+    left(origin."source_receiving_bot_id", 513) AS "sourceReceivingBotId",
+    left(origin."source_execution_bot_id", 513) AS "sourceExecutionBotId",
+    origin."source_event_at" AS "sourceEventAt",
+    origin."source_observed_at" AS "sourceObservedAt",
+    origin."source_evidence_version" AS "sourceEvidenceVersion",
+    receipt."id" AS "receiptId", left(receipt."bot_id", 513) AS "receiptBotId",
+    receipt."created_at" AS "receiptCreatedAt",
+    jsonb_build_object('type', left(receipt."normalized_payload"->>'type', 64),
+      'eventTimestampSource', left(receipt."normalized_payload"->>'eventTimestampSource', 64),
+      'botId', left(receipt."normalized_payload"->>'botId', 513),
+      'message', jsonb_build_object(
+        'chatId', left(receipt."normalized_payload"->'message'->>'chatId', 513),
+        'messageId', left(receipt."normalized_payload"->'message'->>'messageId', 513)),
+      'raw', jsonb_build_object(
+        'timestamp', ${scalarTime('timestamp')}, 'created_at', ${scalarTime('created_at')}, 'createdAt', ${scalarTime('createdAt')},
+        'data', jsonb_build_object('timestamp', ${scalarTime('data,timestamp')}, 'created_at', ${scalarTime('data,created_at')}, 'createdAt', ${scalarTime('data,createdAt')}),
+        'event', jsonb_build_object('timestamp', ${scalarTime('event,timestamp')}, 'created_at', ${scalarTime('event,created_at')}, 'createdAt', ${scalarTime('event,createdAt')}))) AS "sourcePayload",
+    claim."id" AS "claimId", claim."webhook_event_id" AS "claimWebhookEventId",
+    left(claim."execution_bot_id", 513) AS "claimExecutionBotId", claim."enforced" AS "claimEnforced",
+    claim."business_started_at" AS "claimBusinessStartedAt"
+    FROM "moderation_delete_reason_origins" origin
+    LEFT JOIN "webhook_events" receipt ON receipt."id" = origin."source_webhook_event_id"
+    LEFT JOIN "webhook_execution_claims" claim ON claim."kind" = 'EXECUTION'
+      AND claim."semantic_key" = receipt."semantic_key"
+    WHERE origin."reason_id" IN (${Prisma.join(reasonIds)})`;
 }
 
 export function buildDeleteEvidenceFollowupsQuery(intentId: string): Prisma.Sql {

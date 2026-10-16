@@ -1,3 +1,9 @@
+import { performMaxHttpRequest } from './max-http-request';
+import {
+  observeMaxSendAdmission,
+  observeMaxSendAcknowledgement,
+  runWithMaxSendHttpObservation,
+} from './max-send-observation';
 import { readMaxChatAvatar } from './max-chat-avatar';
 import { readMaxRetryAfterMs } from './max-retry-after';
 import {
@@ -7536,18 +7542,20 @@ export class MaxClientService implements OnModuleDestroy {
       throw new UnrecoverableError('MAX SEND_MESSAGE payload has no text, attachments, or link');
     }
     const sendRequest = () =>
-      this.request<Record<string, unknown>>('post', '/messages', {
-        params: {
-          chat_id: action.chatId,
-        },
-        data: {
-          text: hasText ? action.text : null,
-          ...(hasText && action.options?.textFormat ? { format: action.options.textFormat } : {}),
-          ...(messageLink ? { link: messageLink } : {}),
-          ...(currentAttachments.length > 0 ? { attachments: currentAttachments } : {}),
-        },
-        ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
-      });
+      runWithMaxSendHttpObservation(action.idempotencyKey, () =>
+        this.request<Record<string, unknown>>('post', '/messages', {
+          params: {
+            chat_id: action.chatId,
+          },
+          data: {
+            text: hasText ? action.text : null,
+            ...(hasText && action.options?.textFormat ? { format: action.options.textFormat } : {}),
+            ...(messageLink ? { link: messageLink } : {}),
+            ...(currentAttachments.length > 0 ? { attachments: currentAttachments } : {}),
+          },
+          ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
+        }),
+      );
 
     if (!this.actionLedgerService) {
       try {
@@ -7603,6 +7611,7 @@ export class MaxClientService implements OnModuleDestroy {
           dispatchToken = claim.dispatchToken;
           const response = await sendRequest();
           const remoteMessageId = this.extractMessageIdFromSendResponse(response);
+          observeMaxSendAcknowledgement(action.idempotencyKey, Boolean(remoteMessageId));
           if (!remoteMessageId) {
             throw new Error('MAX SEND_MESSAGE response has no remote message id');
           }
@@ -8834,6 +8843,7 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<T> {
     const bot = this.getCurrentBot();
     const scope = this.mutationExecutionScope.getStore();
+    observeMaxSendAdmission(method, path);
     if (scope && method === scope.method && path === scope.path) {
       const messageId = this.readTrimmedString(this.asRecord(config.params)?.message_id);
       const existingMessage =
@@ -8891,28 +8901,26 @@ export class MaxClientService implements OnModuleDestroy {
       }, scope.guardCode);
       scope.onDispatchAttempt?.();
     }
-    const url = `${this.baseUrl}${path}`;
-    try {
-      const response = await firstValueFrom(
-        this.httpService.request<T>({
-          method,
-          url,
-          ...config,
-          headers: {
-            Authorization: bot.token,
-            ...(config.headers as Record<string, string> | undefined),
-          },
-        }),
-      );
-      this.assertSuccessfulMutationResponse(method, response.status, response.data);
-      return response.data;
-    } catch (error: unknown) {
-      // FLAG: Only this exact POST passed every guard and reached HTTP. Unknown send
-      // outcomes must retain that fact through raw helpers and queued dispatch alike.
-      throw scope?.purpose === 'send_message' && method === scope.method && path === scope.path
-        ? markMaxMessageSendAttempted(error)
-        : error;
-    }
+    return performMaxHttpRequest({
+      method,
+      path,
+      sendAttempted: Boolean(
+        scope?.purpose === 'send_message' && method === scope.method && path === scope.path,
+      ),
+      request: () =>
+        firstValueFrom(
+          this.httpService.request<T>({
+            method,
+            url: `${this.baseUrl}${path}`,
+            ...config,
+            headers: {
+              Authorization: bot.token,
+              ...(config.headers as Record<string, string> | undefined),
+            },
+          }),
+        ),
+      assertResponse: (status, data) => this.assertSuccessfulMutationResponse(method, status, data),
+    });
   }
 
   private async requestAbsolute<T = unknown>(

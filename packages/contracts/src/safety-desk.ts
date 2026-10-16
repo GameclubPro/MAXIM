@@ -13,6 +13,13 @@ export {
   type SafetyDeskWebhookCohortResponse,
   type SafetyDeskWebhookCohortRow,
 } from './safety-desk-observability.js';
+export {
+  safetyDeskPublicationCohortStatusSchema,
+  safetyDeskPublicationCohortRowSchema,
+  safetyDeskPublicationCohortResponseSchema,
+  type SafetyDeskPublicationCohortResponse,
+  type SafetyDeskPublicationCohortRow,
+} from './safety-desk-publication-cohort.js';
 
 export const commercialReviewLabelSchema = z.enum(['COMMERCIAL', 'NOT_COMMERCIAL', 'UNSURE']);
 export type CommercialReviewLabel = z.infer<typeof commercialReviewLabelSchema>;
@@ -676,6 +683,7 @@ export const safetyDeskDeleteEvidenceResponseSchema = z.object({
   observedAt: z.string().datetime(),
   intentId: z.string().min(1).max(128),
   webhookLink: z.literal('not_recorded'),
+  originCoverage: z.enum(['partial', 'not_recorded']).optional(),
   deletion: z.object({
     status: safetyDeskDeleteIntentStatusSchema,
     outcome: z.enum([
@@ -703,6 +711,18 @@ export const safetyDeskDeleteEvidenceResponseSchema = z.object({
           ruleCode: z.string().max(120),
           moderationEventId: z.string().max(128).nullable(),
           decisionRecorded: z.boolean(),
+          origin: z
+            .object({
+              state: z.enum(['linked', 'not_recorded', 'source_unavailable', 'invalid_evidence']),
+              webhookEventId: z.string().max(128).nullable(),
+              receivingBotId: z.string().max(512).nullable(),
+              executionBotId: z.string().max(512).nullable(),
+              eventAt: z.string().datetime().nullable(),
+              acceptedAt: z.string().datetime().nullable(),
+              recordedAt: z.string().datetime().nullable(),
+              evidenceVersion: z.literal(1).nullable(),
+            })
+            .optional(),
         }),
       )
       .max(32),
