@@ -104,6 +104,11 @@ checks. Read-only monitoring may continue independently. Finish the stage before
 runtime workstream unless a dependency or production incident requires it. Reuse a suitable clean
 checkout; never change a checkout while its validation, deployment or monitor wrapper is running.
 
+`npm run check:docs` enforces this project's guidance budgets: 8 KiB for root entry notes,
+16 KiB per scoped entry and 24 KiB across an ancestor chain. These are repository maintenance
+limits, not a claim about Codex's configured context limit. Keep domain detail in linked references
+selected by a routing table; moving it does not make its safety constraints optional.
+
 Before the expensive validation:
 
 1. Confirm the checkout, branch, source revision, owned diff and required tool versions. Preserve

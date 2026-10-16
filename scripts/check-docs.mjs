@@ -1,12 +1,66 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const shellFencePattern = /```(?:bash|sh|shell)\s*\n([\s\S]*?)```/gu;
 const bannedExecutablePattern =
   /(?:app2\.major-maksimov\.ru|s3:\/\/|\byc\s+storage\b|object[ -]?storage|cdn-cache)/iu;
 const composeServiceCommands = new Set(['exec', 'run', 'logs', 'restart']);
+
+// Project budgets, not a claim about a particular agent's configured context limit.
+const rootGuidanceBudget = 8 * 1024;
+const scopedGuidanceBudget = 16 * 1024;
+const guidanceChainBudget = 24 * 1024;
+
+export function findAgentGuidanceViolations(root) {
+  const paths = execFileSync(
+    'git',
+    [
+      'ls-files',
+      '--cached',
+      '--others',
+      '--exclude-standard',
+      '-z',
+      '--',
+      ':(glob)**/AGENTS.md',
+      ':(glob)**/AGENTS.override.md',
+    ],
+    { cwd: root, encoding: 'utf8' },
+  )
+    .split('\0')
+    .filter(Boolean);
+  const entries = [...new Set(paths)]
+    .filter((path) => existsSync(resolve(root, path)))
+    .map((path) => ({
+      path,
+      directory: dirname(path),
+      bytes: Buffer.byteLength(readFileSync(resolve(root, path), 'utf8')),
+    }));
+  const violations = [];
+  for (const entry of entries) {
+    const budget = entry.directory === '.' ? rootGuidanceBudget : scopedGuidanceBudget;
+    if (entry.bytes > budget) {
+      violations.push(
+        `${entry.path} exceeds the ${budget}-byte agent entry budget (${entry.bytes} bytes). Move task-specific detail to linked references; preserve safety invariants.`,
+      );
+    }
+    const chainBytes = entries
+      .filter(
+        (ancestor) =>
+          ancestor.directory === '.' ||
+          ancestor.directory === entry.directory ||
+          entry.directory.startsWith(`${ancestor.directory}/`),
+      )
+      .reduce((total, ancestor) => total + ancestor.bytes, 0);
+    if (chainBytes > guidanceChainBudget) {
+      violations.push(
+        `${entry.path} has ${chainBytes} bytes of ancestor guidance; the project budget is ${guidanceChainBudget} bytes. Keep entry files short and route detailed constraints by task.`,
+      );
+    }
+  }
+  return [...new Set(violations)].sort();
+}
 
 function isCommandWhitespace(character) {
   const code = character?.charCodeAt(0) ?? -1;
@@ -127,7 +181,7 @@ function walkMarkdown(directory) {
 }
 
 export function findDocumentationViolations(root) {
-  const violations = [];
+  const violations = findAgentGuidanceViolations(root);
   const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
   const scripts = new Set(Object.keys(packageJson.scripts ?? {}));
   const workspacePackages = new Map();

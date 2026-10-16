@@ -1,117 +1,99 @@
-# Agent Notes
+# MAXIM Agent Notes
 
-## Purpose
+## Start Here
 
-- These notes accelerate work; the repository remains the source of truth.
-- If notes conflict with code, `package.json`, Compose, or scripts, trust the repo and fix the nearest relevant `AGENTS.md`.
-- Keep agent notes durable and repo-verified. Put incidents and historical infrastructure observations in docs, not active instructions.
+- The repository is the source of truth. If notes disagree with code, `package.json`, Compose or
+  scripts, verify the implementation and fix the nearest relevant notes.
+- Read the scoped `AGENTS.md` for edited paths: `apps/api`, `apps/miniapp`, `apps/admin`,
+  `packages/contracts`, or `infra`. Follow its task-specific reference links before changing that
+  boundary. Do not read every domain runbook for an unrelated task.
+- Keep one primary implementation/release stage active. Finish its checks and result before
+  opening another runtime workstream, except for a prerequisite or urgent production incident.
+  Independent read-only monitoring can continue.
+- Preserve dirty worktrees and unrelated changes. Reuse a suitable clean checkout when isolation
+  is needed; stage only owned paths. Never change a checkout/index used by an active wrapper.
+- Continue authorized reversible work without repeated permission requests. Approval for one
+  destructive recovery does not authorize another source or a fleet-wide operation.
 
-## Scoped Instructions
+## Project And Production
 
-- Read the nearest scoped notes before editing:
-  - `apps/api/AGENTS.md`: API architecture, Prisma, MAX integration, and domain invariants.
-  - `apps/miniapp/AGENTS.md`: MAX mini app UI, bridge, WebView, CSS, and visual validation.
-  - `apps/admin/AGENTS.md`: closed Safety Desk UI and its authentication boundary.
-  - `packages/contracts/AGENTS.md`: shared contract exports and consumer impact.
-  - `infra/AGENTS.md`: Compose, nginx, VPS deploy, rollback, stateful services, and production smokes.
-- A deeper scoped file supplements this root file. Root workflow and safety rules still apply.
+- Node 24 LTS (`.nvmrc`); npm workspaces: NestJS/Fastify API with Prisma/Postgres/BullMQ/Redis,
+  React/Vite MAX mini app, closed Safety Desk, and shared Zod contracts. Use `npm ci`.
+- Production is REG.RU through `maxim-vps`, checkout `/var/www/Chat_bot`. The shared server has
+  12 physical cores / 24 threads and 64 GB RAM; preserve sibling Svyazka and Karavan workloads.
+  See [host profile](docs/operations/runbooks/reg-production-profile.md). The retired Yandex host
+  is never a deploy or database rollback target.
+- One API image serves all 14 API roles and both native auxiliaries. Topology sources are
+  `apps/api/src/runtime/runtime-topology.ts`, Compose and `infra/scripts/lib/deploy-topology.sh`.
+- The only routine mini app URL is `https://major-maksimov.ru/app/` (`miniapp-major-static`).
+  Safety Desk uses `admin-static`. CDN, Object Storage and app2 delivery remain paused.
 
-## Project Shape
+## Validate And Deliver
 
-- npm workspaces:
-  - `apps/api`: NestJS/Fastify, Prisma, BullMQ, Postgres, and Redis.
-  - `apps/miniapp`: React 19/Vite MAX mini app served under `/app/`.
-  - `apps/admin`: closed React/Vite Safety Desk; it is not a MAX mini app.
-  - `packages/contracts`: shared Zod schemas and API types.
-- Production uses one API image split by `APP_ROLE` and `APP_SERVICE_NAME`, plus `miniapp-major-static` and `admin-static`.
-- Production runs on the shared REG.RU dedicated server through `maxim-vps`, with the checkout at `/var/www/Chat_bot`. Use the [REG.RU production profile](docs/operations/runbooks/reg-production-profile.md) for hardware, storage, access and capacity decisions; the retired Yandex host is not a deploy or database rollback target.
-- Plan capacity for 12 physical cores / 24 hardware threads and 64 GB installed RAM shared with Svyazka and Karavan. Measure readiness, queue progress, database pressure and host headroom before raising worker/pool limits; MAX API quotas and native sandbox isolation do not increase with server size.
-- `https://major-maksimov.ru/app/` is the only routine production mini app URL. CDN, Object Storage, and app2 delivery are paused.
+1. Inspect the branch, diff and scoped notes. On environment setup use
+   `node scripts/agent/doctor.mjs --browser`; run `node scripts/agent/preflight.mjs` early.
+2. For changed methods, find callers and test doubles with `rg` before broad tests. Keep doubles
+   typed against the real contract. Run the affected unit and native integration cases first.
+3. Use `node scripts/agent/plan.mjs --worktree` for checks, migrations and deploy components.
+   Focused public checks include `check:api`, `check:prisma`, `check:miniapp`, `typecheck:contracts`,
+   `typecheck:admin`, `test:admin` and `check:refactor-guards`; run `npm run check` for broad/risky work.
+   Repeat broad checks only after changed inputs, failure or a newly identified coverage gap.
+4. Public API scripts own generator locks. Do not invoke `*:unlocked`, `*:source` or raw Prisma
+   generation to bypass them. Native stores: `node scripts/agent/with-test-stores.mjs --migrate --`
+   followed by the public validation command. Report store-dependent skips; mocks are not native
+   coverage. See [local environment](docs/development/agent-local-environment.md).
+5. Run `git diff --check`, stage owned paths, then
+   `./infra/scripts/local-commit-push.sh "commit message" branch`. The helper is staged-only;
+   use `--all` only intentionally and `--include-agents` for any staged `AGENTS.md`. It refuses
+   unstaged executable inputs, partial staging and index drift; use an isolated checkout instead.
+6. Require successful `Required` and `Analyze JavaScript and TypeScript` on the exact selected
+   SHA. Deploy through `./infra/scripts/vps-connect.sh deploy main --auto`; read `infra/AGENTS.md`
+   first. Verify the synchronized VPS SHA, strict smokes and immutable component manifest.
+   Do not use an old green commit's checks for a new release. Emergency bypass needs explicit reason.
+7. Unless the user says not to deploy, runtime API/UI/contracts/Prisma/Docker/MAX changes finish
+   with validation and the affected VPS deploy. Docs, notes, tests and tooling-only changes do not
+   require a runtime deploy. Recreate every API role for the shared image; do not recreate stores.
 
-## Core Workflow
+Contract changes affect API, mini app and admin. Keep exports, TypeScript paths and Jest mappers
+aligned. Unknown paths fail closed in the impact planner; renames include old and new scopes.
+Prisma changes follow the migration review in API notes. Nginx changes are manual site operations.
+Full release details: [development reliability](docs/development-reliability-plan.md).
 
-- Unless the user says not to deploy, runtime changes in API, mini app, contracts, Prisma, Docker, or MAX integration finish with local validation and the scoped VPS deploy.
-- A discovered readiness 503, failed smoke, CI failure or deploy blocker is part of finishing the authorized task: preserve evidence, diagnose the cause, implement and validate a safe correction, and continue delivery without waiting for another user command. An existing red baseline is not by itself a reason to stop or request permission. Keep exact-SHA gates and strict final smokes; destructive recovery, uncertain-effect replay and changes outside the task still require their own authority. If an external dependency truly prevents progress, report the concrete blocker and completed diagnosis.
-- Docs, agent notes, README, test-only changes, and cleanup do not require VPS deploy unless requested.
-- Prefer focused checks while iterating, then broaden in proportion to the change:
-  - `npm run typecheck:contracts`
-  - `npm run check:api`
-  - `npm run check:prisma`
-  - `npm run check:miniapp`
-  - `npm run typecheck:admin && npm run test:admin`
-  - `npm run check:refactor-guards`
-  - `npm run check` for broad or risky work
-- Run `node scripts/agent/preflight.mjs` for early read-only generator, contract-export, and HTTP-input checks; it also runs before `agent:verify` and in CI. It is not a replacement for impact checks or exact-SHA CI. See `docs/development-reliability-plan.md` for the release checklist.
-- Keep one primary implementation/release stage active. Before broad validation, inspect changed method callers and test doubles and run the affected native integration cases. Track long-running commands, evidence freshness and unfinished acceptance gates using the [execution discipline](docs/development-reliability-plan.md#long-running-agent-work); a launched process or a passed local test is not completion.
-- Public API validation scripts now serialize generated-contract and Prisma work. Do not bypass them with `*:unlocked` or `*:source` commands unless a repo script intentionally owns the lock.
-- Use Node 24 LTS. Root `.nvmrc` pins `24`; Docker dependency layers must remain lockfile-based with `npm ci`.
-- Source and infrastructure Node test suites cap file concurrency at two because fixtures spawn nested native/CLI processes. Preserve that cap in `test:agent-tools` and `check-infra.sh`; runner CPU count alone does not bound their process/thread demand.
-- Check local readiness with `node scripts/agent/doctor.mjs --browser`. For disposable native PostgreSQL 16/Redis 7, use `node scripts/agent/with-test-stores.mjs --migrate -- <public validation command>`; it owns isolated stores, UTC and cleanup. See `docs/development/agent-local-environment.md`. Report store-dependent skips; a green mock-only run is not real-store coverage.
-- Local start:
-  - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis`
-  - `npm run dev:all`, or `npm run dev:api`, `npm run dev:miniapp`, and `npm run dev:admin`
+## Non-Negotiable Boundaries
 
-## Impact Guide
+- No diagnostics, permission probes, tests or fallback error replies in user groups/channels.
+  An explicit human-admin `Старт` may produce one successful connection confirmation and mini app
+  button after fresh exact bot and human admin checks. Without bot admin rights, stay silent.
+  Other public messages require enabled product behavior or an explicit publication request.
+  Live test destinations and their verification rules are in `apps/api/AGENTS.md`.
+- Preserve current working bot assignments. Never replay uncertain effects, clear queues/Redis,
+  remove fences or fabricate completion to make lag disappear. Before webhook scheduling,
+  execution handoff or recovery changes, read the
+  [latency regression matrix](docs/operations/runbooks/webhook-latency-prevention.md).
+- Record exact incident windows and source/image before correction. Distinguish ingress,
+  selection, preparation, ordering/retry waits and action outcomes; HTTP 200 or queue age alone
+  proves neither cause nor recovery. Use [incident playbook](docs/incident-playbook.md).
+- Production SQL uses reviewed bounded audit collectors, sequentially; no ad hoc live SQL,
+  whole-table scans or live `EXPLAIN ANALYZE`. Read infrastructure notes before production work.
+- Never bypass disk floors, shared deploy locks, effect uncertainty or rollback reader checks.
+  Do not run host-wide Docker cleanup on the shared server. Do not touch another project's services.
+- No destructive Git commands without explicit authorization. Do not commit secrets, dumps,
+  private exports, build output, screenshots or local agent traces. Format only owned files.
+- New sensitive-zone comments use `FLAG:`. Read a flagged invariant twice before editing it.
+  Import public facades; only thin facade files may import `*.legacy` implementations.
 
-- `node scripts/agent/plan.mjs --worktree` is the read-only human/JSON planner for checks, migrations, deploy components, and manual operations. VPS deploy uses the checked-in Bash classifier generated from the same `config/change-impact.json`; `npm run check:infra` rejects a stale generated mapping.
-- API runtime files map to the shared API image and every role; API specs/tests alone do not deploy.
-- Contract runtime files map to contracts plus API, mini app, and Safety Desk consumers.
-- Prisma schema/migration files map to shared API validation/deploy and require the migration review described in API notes.
-- Mini app runtime/assets map to `miniapp-major-static`; mini app tests alone do not deploy.
-- Safety Desk runtime maps to `admin-static`; admin tests alone do not deploy.
-- Root dependency lock/build config changes can affect every image and require broad validation.
-- Nginx changes are manual site operations, not a substitute for container deploy.
-- Unknown new paths fail closed in both planners with full validation and all active deploy components selected for review.
-- Renames affect both old and new scopes; do not classify only the destination.
+## Evidence And Durable Knowledge
 
-## Delivery Rules
-
-- Prefer repo wrappers:
-  - commit/push: `./infra/scripts/local-commit-push.sh "<message>" main`
-  - preload a green exact-SHA CI image when the VPS cannot build: `./infra/scripts/vps-connect.sh preload-ci-image <api|miniapp|admin> <sha>`
-  - deploy: `./infra/scripts/vps-connect.sh deploy main [services|--plan|--auto|--full]`
-  - immutable component rollback: `./infra/scripts/vps-connect.sh rollback-release <release-id> [components...]`
-  - API ref-based fallback rollback: `./infra/scripts/vps-connect.sh rollback-runtime <git-ref> [services...]`
-- `local-commit-push.sh` is staged-only by default, validates only the staged impact, commits, and pushes the exact resulting `HEAD`. Use `--all` only when broad staging is intentional.
-- Staged verification refuses unstaged/untracked non-Markdown inputs, partially staged selected files, or index changes during checks. Unrelated Markdown notes may remain; submit concurrent runtime work from a separate worktree instead of validating different code than the staged commit.
-- Every `AGENTS.md` is excluded from `--all` unless `--include-agents` is present. The helper also refuses already-staged agent notes without that flag.
-- Local production deploy requires successful `Required` and `Analyze JavaScript and TypeScript` checks from GitHub Actions for the exact selected commit, then verifies that the synchronized VPS `HEAD` is the same SHA. Emergency bypass requires an explicit reason.
-- Active release components use full-SHA image refs and component manifests under `/var/lib/maxim-deploy`. The deploy records a new current manifest only after strict smokes; static-only deploys do not run Prisma migrations.
-- Never bypass the deploy disk preflight for a clean shared API build with less than 10 GiB free on `/var/lib/docker`; static-only builds require at least 6 GiB. `MAXIM_DEPLOY_DISK_MIN_FREE_BYTES` may raise but never lower the component floor. Online multibot migration preparation separately requires a 10 GiB reserve on every involved filesystem, checked at admission and supervised during work; modeled peak estimates are advisory. Prefer manifest-aware MAXIM image reclaim, expanding the disk, or preloading a reviewed immutable image; do not run host-wide Docker GC on the shared VPS.
-- Shared API or contract changes must recreate every production API role because all roles use one image; the exact list lives in `infra/AGENTS.md` and `infra/scripts/lib/deploy-topology.sh`.
-- Routine mini app work deploys and smokes `miniapp-major-static` at `https://major-maksimov.ru/app/`; never add CDN/app2/Object Storage fallback steps.
-- Safety Desk UI deploys `admin-static`; server/API authentication changes also deploy the shared API roles.
-- Rebuild only affected components. Do not recreate Postgres or Redis as part of an ordinary application deploy.
-
-## Cross-Workspace Boundaries
-
-- Contract changes normally require contracts, API, mini app, and admin validation plus corresponding runtime deploys.
-- Keep contract subpath exports, root TypeScript paths, and API Jest mappers aligned.
-- Keep `apps/api/src/runtime/runtime-topology.ts`, Compose `APP_ROLE`/`APP_SERVICE_NAME`, and deploy topology aligned.
-- Refactor guards track real `*.legacy` implementations. Import public facade modules; only thin facade files may import `.legacy` modules.
-- Runtime hot paths use focused boundaries: `WebhookIngestionService`, `ModerationExecutionService`, `MaxActionDispatchService`, and `ManagedEntitiesDiscoveryService`.
-- Admin runtime entry points use focused facades where available: `ManagedEntitiesService`, `AdminSettingsService`, `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`, and `ManagedGiveawayService`.
-
-## Change Discipline
-
-- Bot service traffic must stay out of user group chats and channels: never send diagnostics, permission checks, test messages, or fallback error replies there. An explicit administrator-authored `Старт` command may publish one successful connection confirmation with the bot's mini app button after fresh bot and user admin checks; if the bot is not an administrator, stay silent. Passive connection checks remain silent and show their result in the mini app or in the initiating private dialog. Other public bot messages are limited to administrator-enabled product features and explicitly requested publications; live test sends require an explicitly designated test destination.
-- Keep edits within the ownership boundary implied by the request; avoid unrelated refactors and metadata churn.
-- Work with a dirty tree: preserve unrelated user and agent changes, stage only owned files, and never revert another change incidentally.
-- Do not use destructive Git commands unless explicitly requested.
-- Do not commit secrets, dumps, local exports, generated build output, screenshots, or one-off debug files.
-- Keep local agent/tool traces ignored. Remove transient `.codex`, build, coverage, and debug artifacts at handoff when they are yours.
-- Before handoff, inspect `git status --short` and report validation or deployment that could not be run.
-- Run `git diff --check` on owned edits before handoff.
-- Do not format the whole repository during a scoped task; format only owned files when required.
-
-## Durable Knowledge
-
-- After each task, make a short self-learning pass:
-  - fix small in-scope issues exposed by the work when low risk;
-  - add only stable commands, service names, product invariants, integration quirks, or validation shortcuts to the nearest scoped notes;
-  - encode narrow invariants as tests, types, helpers, or code comments instead of growing agent notes;
-  - never record secrets, guesses, one-off output, personal notes, or temporary production state.
-- Prefix new sensitive-zone comments with `FLAG:`. Before editing a flagged block, read the invariant twice; do not remove flags incidentally.
-- For queue incidents, preserve exact windows and release identity before a correction. Separate ingress rate, SQL selection, preparation, ordered-head/retry waits and execution outcomes; a last-error marker, queue count or HTTP 200 alone cannot identify the cause or prove recovery. Use `docs/incident-playbook.md`.
-- Before changing webhook scheduling, execution handoffs or backlog recovery, read [webhook latency prevention](docs/operations/runbooks/webhook-latency-prevention.md) and run the affected regression rows. Preserve independent-chat progress and uncertain-effect evidence; never clear Redis, remove execution fences or fabricate completion to make lag disappear. Report closed fresh cohorts separately from cancellation success; historical emergency exceptions are not future bypass authorization.
-- When topology, deploy scripts, service names, or core workflows change, update the relevant scoped notes and active runbooks in the same work.
+- Track the current stage, checkout/SHA, next action, checks, log paths and unresolved gates in a
+  small private task record outside Git. Retire stale entries and revalidate live state on resume.
+- Track long commands by identity, log, start/deadline and exit status. Collectors also need a
+  heartbeat and last successful sample. Missing/stale samples are gaps; a launched process is not
+  proof that work continues. See [execution discipline](docs/development-reliability-plan.md#long-running-agent-work).
+- Report written, locally validated, CI-verified, deployed and production-accepted separately.
+  Run the user's final monitoring window only after its other gates are ready. Preserve failures
+  and missing coverage; do not claim all bots/functions are green from one healthy sample.
+- At handoff inspect `git status --short`; report tests/deploy/acceptance not completed. Fix small
+  in-scope issues and encode repeatable mistakes as tests/types where useful. Update scoped notes
+  and active runbooks when workflows or topology change.
+- Keep these entry files short. Put detailed invariants in task-selected references and historical
+  observations in dated incidents; never put temporary PIDs, release status, secrets or guesses here.
