@@ -138,6 +138,11 @@ jobs:
         run: npm run prisma:migrate:deploy --workspace @maxim/api
       - name: Verify migrated database matches the schema
         run: npm run prisma:check:drift --workspace @maxim/api
+      - name: Outcome cohort online migrations with native PostgreSQL
+        env:
+          MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
+          TZ: UTC
+        run: node --test --test-concurrency=1 infra/scripts/outcome-cohort-online.native.test.mjs
       - run: npm run test:postgres-races --workspace @maxim/api
       - name: Check traffic policy revision and activation guards
         env:
@@ -386,6 +391,11 @@ jobs:
         env:
           IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
         run: bash infra/scripts/smoke-multibot-online-client-ci.sh "$IMAGE_REF"
+      - name: Verify fixed outcome cohort clients and immutable receipts in API image
+        if: matrix.component == 'api'
+        env:
+          IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
+        run: bash infra/scripts/smoke-outcome-cohort-online-client-ci.sh "$IMAGE_REF"
       - name: Package immutable production image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
