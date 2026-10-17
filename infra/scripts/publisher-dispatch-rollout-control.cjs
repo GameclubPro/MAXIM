@@ -7,6 +7,9 @@ const BOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{1,127}$/u;
 const MAX_PAUSE_BYTES = 20 * 1024;
 const MAX_PRESERVED_PAUSE_BYTES = 16 * 1024;
 const HEARTBEAT_TTL_MS = 45_000;
+const RESPONSE_NONCE_PATTERN = /^[a-f0-9]{64}$/u;
+const RESPONSE_PREFIX = 'MAXIM_PUBLISHER_CONTROL_V1:';
+const MAX_CONTROL_OUTPUT_BYTES = 64 * 1024;
 const AUTHORIZATION_PAUSE_REASONS = new Set([
   'unauthorized',
   'identity_authorization_failed',
@@ -230,9 +233,81 @@ function createRedisStore(redis, pauseKey) {
   };
 }
 
+function validateControlSummary(summary, action) {
+  const observation = action === 'status' || action === 'assert-heartbeat';
+  const results = {
+    'arm-enable': ['acquired', 'blocked'],
+    'arm-disable': ['acquired', 'blocked'],
+    clear: ['cleared', 'not_owned'],
+    status: ['observed'],
+    'assert-heartbeat': ['observed'],
+  };
+  const fields = observation
+    ? ['result', 'pauseKind', 'heartbeatKind', 'heartbeatEnabled']
+    : ['result', 'pauseKind'];
+  if (
+    !summary ||
+    Array.isArray(summary) ||
+    typeof summary !== 'object' ||
+    Object.keys(summary).length !== fields.length ||
+    !fields.every((field) => Object.hasOwn(summary, field)) ||
+    !Object.hasOwn(results, action) ||
+    !results[action].includes(summary.result) ||
+    !['missing', 'operator', 'authorization', 'unknown'].includes(summary.pauseKind) ||
+    (summary.result === 'acquired' && summary.pauseKind !== 'operator') ||
+    (observation &&
+      (!['missing', 'invalid', 'fresh'].includes(summary.heartbeatKind) ||
+        (summary.heartbeatKind === 'fresh'
+          ? typeof summary.heartbeatEnabled !== 'boolean'
+          : summary.heartbeatEnabled !== null)))
+  ) {
+    throw new Error('Publisher control response schema is invalid.');
+  }
+  return summary;
+}
+
+function encodeControlResponse(summary, action, nonce) {
+  if (!RESPONSE_NONCE_PATTERN.test(nonce ?? '')) {
+    throw new Error('Publisher control response nonce is invalid.');
+  }
+  validateControlSummary(summary, action);
+  return `\n${RESPONSE_PREFIX}${nonce}:${action}:${JSON.stringify(summary)}\n`;
+}
+
+function decodeControlResponse(output, action, nonce) {
+  if (
+    !RESPONSE_NONCE_PATTERN.test(nonce ?? '') ||
+    typeof output !== 'string' ||
+    Buffer.byteLength(output, 'utf8') > MAX_CONTROL_OUTPUT_BYTES
+  ) {
+    throw new Error('Publisher control output is invalid.');
+  }
+  // FLAG: Only one nonce-bound protocol record can acknowledge a Redis effect. Compose
+  // diagnostics and arbitrary trailing JSON never count as an acknowledgement.
+  const records = output.split('\n').filter((line) => line.includes(RESPONSE_PREFIX));
+  const prefix = `${RESPONSE_PREFIX}${nonce}:${action}:`;
+  if (records.length !== 1 || !records[0].startsWith(prefix)) {
+    throw new Error('Publisher control response frame is missing or ambiguous.');
+  }
+  const payload = records[0].slice(prefix.length);
+  const summary = validateControlSummary(JSON.parse(payload), action);
+  if (JSON.stringify(summary) !== payload) {
+    throw new Error('Publisher control response is not canonical.');
+  }
+  return summary;
+}
+
 async function main() {
   const Redis = require('ioredis');
-  const action = process.argv[2];
+  const action = process.argv[__filename === '[eval]' ? 1 : 2];
+  const responseNonce = process.env.MAXIM_PUBLISHER_CONTROL_NONCE;
+  // FLAG: Existing read-only monitoring consumes plain JSON; every mutation requires
+  // the bound response protocol before connecting to Redis.
+  const plainReadOnly =
+    responseNonce === undefined && (action === 'status' || action === 'assert-heartbeat');
+  if (!plainReadOnly && !RESPONSE_NONCE_PATTERN.test(responseNonce ?? '')) {
+    throw new Error('Publisher control response nonce is invalid.');
+  }
   const botId = process.env.MAX_PUBLISHER_BOT_ID;
   const redisUrl = process.env.REDIS_URL;
   validateBotId(botId);
@@ -283,7 +358,11 @@ async function main() {
     } else {
       throw new Error('Unknown publisher rollout control action.');
     }
-    process.stdout.write(`${JSON.stringify(summary)}\n`);
+    process.stdout.write(
+      plainReadOnly
+        ? `${JSON.stringify(validateControlSummary(summary, action))}\n`
+        : encodeControlResponse(summary, action, responseNonce),
+    );
   } finally {
     await store.close();
   }
@@ -300,12 +379,14 @@ module.exports = {
   classifyPause,
   clearOperatorPause,
   createRedisStore,
+  decodeControlResponse,
+  encodeControlResponse,
   parseHeartbeat,
   validateBotId,
   validateOwnerToken,
 };
 
-if (require.main === module || __filename === '[stdin]') {
+if (require.main === module || __filename === '[stdin]' || __filename === '[eval]') {
   main().catch(() => {
     process.stderr.write('Publisher rollout control failed closed.\n');
     process.exitCode = 1;

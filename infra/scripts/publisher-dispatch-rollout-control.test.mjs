@@ -8,12 +8,15 @@ const {
   buildOperatorMarker,
   classifyPause,
   clearOperatorPause,
+  decodeControlResponse,
+  encodeControlResponse,
   parseHeartbeat,
   validateOwnerToken,
 } = require('./publisher-dispatch-rollout-control.cjs');
 
 const OWNER = `publisher-rollout:${'a'.repeat(64)}`;
 const OTHER_OWNER = `publisher-rollout:${'b'.repeat(64)}`;
+const NONCE = 'c'.repeat(64);
 const AUTH_PAUSE = JSON.stringify({
   version: 1,
   reason: 'unauthorized',
@@ -184,4 +187,49 @@ test('accepts only fresh exact-bot heartbeats with an exact boolean state', () =
   });
   assert.equal(parseHeartbeat(raw, 'different_bot', now).kind, 'invalid');
   assert.equal(parseHeartbeat(raw, 'se14088825_bot', now + 20_000).kind, 'invalid');
+});
+
+test('decodes only the bound control record despite Compose prompt contamination', () => {
+  const summary = { result: 'acquired', pauseKind: 'operator' };
+  const frame = encodeControlResponse(summary, 'arm-disable', NONCE);
+  const prompt = 'Volume infra_redis differs. Recreate (data will be lost)? [y/N] ';
+  assert.deepEqual(decodeControlResponse(`${prompt}${frame}`, 'arm-disable', NONCE), summary);
+  for (const output of [
+    '',
+    JSON.stringify(summary),
+    `${prompt}${JSON.stringify(summary)}`,
+    `${frame}${frame}`,
+    frame.replace(NONCE, 'd'.repeat(64)),
+    frame.replace('arm-disable:', 'clear:'),
+    frame.replace('"acquired"', '"cleared"'),
+    frame.replace('"operator"', '"missing"'),
+    frame.replace('"operator"', '1'),
+    frame.replace('{"result"', '{"extra":true,"result"'),
+    frame.replace('{"result"', '{"result":"blocked","result"'),
+    frame.trimStart().replace('MAXIM_', 'prefixMAXIM_'),
+    `${' '.repeat(65_536)}${frame}`,
+  ]) {
+    assert.throws(() => decodeControlResponse(output, 'arm-disable', NONCE));
+  }
+});
+
+test('enforces the action-specific response and heartbeat schema before acknowledging', () => {
+  const summary = {
+    result: 'observed',
+    pauseKind: 'missing',
+    heartbeatKind: 'fresh',
+    heartbeatEnabled: false,
+  };
+  const frame = encodeControlResponse(summary, 'status', NONCE);
+  assert.deepEqual(decodeControlResponse(frame, 'status', NONCE), summary);
+  for (const invalid of [
+    { ...summary, heartbeatEnabled: 'false' },
+    { ...summary, heartbeatKind: 'missing' },
+    { ...summary, result: 'acquired' },
+    { ...summary, pauseKind: 'other' },
+  ]) {
+    assert.throws(() => encodeControlResponse(invalid, 'status', NONCE));
+  }
+  assert.throws(() => encodeControlResponse(summary, 'clear', NONCE));
+  assert.throws(() => encodeControlResponse(summary, 'status', 'invalid'));
 });

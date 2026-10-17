@@ -588,8 +588,10 @@ test('fixed disable recovery adopts both owned fences and tolerates stopped revi
   );
   const control = functionBlock(rollout, 'publisher_control');
   assert.match(control, /run --rm --no-deps --pull never -T/u);
-  assert.match(control, /api-action node - "\$action"/u);
-  assert.match(control, /exec -T[\s\S]*api-admin node - "\$action"/u);
+  assert.match(control, /api-action node -e "\$helper_source" -- "\$action" <\/dev\/null/u);
+  assert.match(control, /docker exec -i[\s\S]*"\$admin_id" node - "\$action"/u);
+  assert.match(control, /--interactive=false/u);
+  assert.match(control, /decodeControlResponse/u);
 });
 
 test('reconciles an already exact disabled runtime without recreating API roles', () => {

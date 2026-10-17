@@ -113,3 +113,15 @@ reader/version floors. For interrupted pause/fleet state, inspect the reported c
 use the existing guarded `publisher-dispatch-disable --apply` recovery procedure. The
 selection setter refuses to adopt that state. Preserve receipts, claims, queues and
 unknown effects throughout recovery.
+
+Pause control uses the inspected running admin container ID after checking its exact
+image, Compose service and application role. A failed execution is never retried through
+another container. With a reviewed stopped admin, pause recovery can use a one-off
+action container: stdin is closed so Compose volume prompts cannot consume code or
+authorize recreation. The helper returns one nonce-bound, action-specific response;
+ordinary diagnostics and unframed JSON cannot acknowledge a mutation.
+
+An interrupted or malformed acquisition/clear response leaves the Redis outcome unknown.
+The controller reports that uncertainty before offering guarded disable recovery; it
+does not claim the marker is absent or still armed. Inspect the exact runtime and pause
+before recovery, and never repeat enable to resolve a missing acknowledgement.
