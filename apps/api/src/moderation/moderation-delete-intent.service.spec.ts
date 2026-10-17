@@ -3245,6 +3245,103 @@ describe('ModerationDeleteIntentService', () => {
     expect(result.retryDelayMs).toBeGreaterThanOrEqual(45_000);
   });
 
+  describe('direct local DELETE cooldown', () => {
+    const markedQuota = (retryAfterMs: number) =>
+      markMaxPreDispatchGuardRejected(
+        new MaxApiInternalRateLimitError('Local quota refused', retryAfterMs, 'external_cooldown'),
+        MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      );
+    const classify = (error: unknown, attemptCount = 1, dispatchMarkerPersisted = false) => {
+      const jitter = jest.spyOn(Math, 'random').mockReturnValue(0.5);
+      try {
+        const { service } = createService();
+        return (service as unknown as ServiceInternals).classifyDeleteError(
+          error,
+          attemptCount,
+          dispatchMarkerPersisted,
+        );
+      } finally {
+        jitter.mockRestore();
+      }
+    };
+
+    it.each([
+      [30_000, 1, 30_000],
+      [1_000, 1, 5_000],
+      [30_000, 4, 40_000],
+    ])('honors hint %i and attempt %i without shortening backoff', (hint, attempt, expected) => {
+      expect(classify(markedQuota(hint), attempt)).toMatchObject({
+        status: 'RETRYABLE',
+        errorCode: 'MAX_API_INTERNAL_RATE_LIMIT',
+        retryDelayMs: expected,
+      });
+    });
+
+    it('keeps retained mutation evidence ambiguous despite a genuine local rejection', () => {
+      expect(classify(markedQuota(30_000), 1, true)).toMatchObject({
+        status: 'AMBIGUOUS',
+        retryDelayMs: 30_000,
+      });
+    });
+
+    it.each([
+      ['unmarked concrete error', () => new MaxApiInternalRateLimitError('Local quota', 30_000)],
+      [
+        'copied local error fields',
+        () =>
+          markMaxPreDispatchGuardRejected(
+            Object.assign(new Error('Local quota'), {
+              code: 'MAX_API_INTERNAL_RATE_LIMIT',
+              preDispatch: true,
+              retryAfterMs: 30_000,
+            }),
+            MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+          ),
+      ],
+      [
+        'general error with a hint',
+        () => Object.assign(new Error('Failure'), { retryAfterMs: 30_000 }),
+      ],
+      [
+        'conflicting HTTP response',
+        () =>
+          Object.assign(markedQuota(30_000) as Error, {
+            response: { status: 200 },
+          }),
+      ],
+      [
+        'unclassified HTTP response',
+        () => Object.assign(markedQuota(30_000) as Error, { response: {} }),
+      ],
+      [
+        'conflicting HTTP method',
+        () =>
+          Object.assign(markedQuota(30_000) as Error, {
+            config: { method: 'get' },
+          }),
+      ],
+      ['HTTP request evidence', () => Object.assign(markedQuota(30_000) as Error, { request: {} })],
+      [
+        'false pre-dispatch flag',
+        () => Object.assign(markedQuota(30_000) as Error, { preDispatch: false }),
+      ],
+      ['zero hint', () => markedQuota(0)],
+      ['negative hint', () => markedQuota(-1)],
+      ['non-finite hint', () => markedQuota(Number.POSITIVE_INFINITY)],
+      ['NaN hint', () => markedQuota(Number.NaN)],
+      ['fractional hint', () => markedQuota(30_000.5)],
+      ['unsafe hint', () => markedQuota(Number.MAX_SAFE_INTEGER + 1)],
+      ['unrepresentable retry date', () => markedQuota(Number.MAX_SAFE_INTEGER)],
+    ] as const)('preserves ordinary retry classification for %s', (_name, error) => {
+      expect(classify(error())).toMatchObject({ status: 'RETRYABLE', retryDelayMs: 5_000 });
+    });
+
+    it('preserves transport uncertainty on a conflicting concrete error', () => {
+      const error = Object.assign(markedQuota(30_000) as Error, { code: 'ECONNRESET' });
+      expect(classify(error)).toMatchObject({ status: 'AMBIGUOUS', retryDelayMs: 5_000 });
+    });
+  });
+
   it('retains an elapsed explicit deadline when immediate execution was omitted', () => {
     const { service } = createService();
     const deadline = new Date(Date.now() - 60_000);
