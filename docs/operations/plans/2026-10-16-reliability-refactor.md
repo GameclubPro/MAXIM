@@ -1,5 +1,11 @@
 # Reliability and latency refactor
 
+The current priorities, verified release blocker and acceptance sequence are in the
+[17 October final refactoring plan](2026-10-17-bot-refactoring-final-plan.md). This document
+retains the detailed observation contracts. The stage 1c code merged as `255e07ec`, but its
+deployment stopped before runtime mutation on historical migration receipt compatibility;
+source availability must not be described as production acceptance.
+
 ## Sequential delivery
 
 Keep one implementation/release stage active. Preserve current bot assignments, execution
