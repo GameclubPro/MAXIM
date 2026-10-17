@@ -130,6 +130,7 @@ function prepare({
   sourceStatus = 0,
 } = {}) {
   return shell(`
+${block(rollout, 'read_selection_env')}
 ${block(rollout, 'prepare_selection_operation')}
 fail() { printf '%s\\n' "$*" >&2; return 1; }
 node() {
@@ -192,6 +193,7 @@ MANIFEST_SOURCE_SHA=${sha}
 RECONCILE_ONLY=0
 verify_runtime() {
   printf 'runtime:%s\\n' "$1"
+  [[ "\${3:-required}" == required ]] || return 91
   [[ "$1" == any || ${drift ? 'false' : 'true'} == true ]]
 }
 verify_compose_config() { printf 'compose\\n'; }
@@ -270,7 +272,7 @@ docker() {
   else return 92; fi
 }
 fail() { printf '%s\\n' "$*" >&2; return 1; }
-verify_runtime() { :; }
+verify_runtime() { [[ "\${3:-required}" == required ]]; }
 verify_compose_config() { :; }
 verify_preview_compose_config() { :; }
 require_stateful_services_ready() { events+=(stores); }
@@ -672,7 +674,7 @@ test('selection augments existing dispatch validation for Compose and every runt
     const body = block(rollout, name);
     assert.match(body, /expected_state=default-false/u);
     assert.match(body, /validation=\(verify-(?:compose|runtime-env) "\$expected_state"/u);
-    assert.match(body, /validation\+=\("\$EXPECTED_SELECTION_MODE"\)/u);
+    assert.match(body, /"\$EXPECTED_SELECTION_MODE"/u);
   }
   assert.match(block(rollout, 'verify_runtime'), /MAXIM_PRODUCTION_API_SERVICES\[@\]/u);
   assert.match(block(rollout, 'container_env_summary'), /"PUBLISHER_TEMPORAL_SELECTION_ROLLOUT"/u);
@@ -686,4 +688,5 @@ test('selection augments existing dispatch validation for Compose and every runt
   assert.ok(
     entrypoint.indexOf('prepare_selection_operation') < entrypoint.indexOf('rollout_preflight'),
   );
+  assert.match(entrypoint, /prepare_selection_operation\nelse\n {2}read_selection_env/u);
 });

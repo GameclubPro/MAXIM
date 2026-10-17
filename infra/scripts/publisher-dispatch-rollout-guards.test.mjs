@@ -40,6 +40,75 @@ function functionBlock(script, name) {
   return script.slice(start, end + 2);
 }
 
+test('ordinary dispatch Compose admission and preview enforce the persisted selection mode', (t) => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'publisher-persisted-mode-compose-'));
+  t.after(() => rmSync(directory, { force: true, recursive: true }));
+  const image = `maxim-api:${'a'.repeat(40)}`;
+  for (const expected of ['off', 'default-off']) {
+    const original = `MAX_PUBLISHER_DISPATCH_ENABLED=false\nUNCHANGED=value\n${expected === 'off' ? 'PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=off\n' : ''}`;
+    for (const drift of [false, true]) {
+      const config = {
+        services: Object.fromEntries(
+          productionServices.map((service) => [
+            service,
+            {
+              image,
+              environment: {
+                APP_SERVICE_NAME: service,
+                APP_ROLE:
+                  service.startsWith('api-moderation') || service === 'api-media-analysis'
+                    ? 'moderation'
+                    : service.slice(4),
+                MAX_PUBLISHER_DISPATCH_ENABLED: 'false',
+                PUBLISHER_TEMPORAL_SELECTION_ROLLOUT:
+                  drift && service === 'api-admin' ? 'test' : 'off',
+              },
+            },
+          ]),
+        ),
+      };
+      writeFileSync(resolve(directory, 'compose.json'), JSON.stringify(config));
+      writeFileSync(resolve(directory, '.env'), original);
+      for (const functionName of ['verify_compose_config', 'verify_preview_compose_config']) {
+        const result = spawnSync(
+          'bash',
+          [
+            '-c',
+            `set -euo pipefail
+${functionBlock(rollout, functionName)}
+fail() { printf '%s\\n' "$*" >&2; return 1; }
+docker() { cat compose.json; }
+STATE_HELPER="$PUBLISHER_TEST_STATE_HELPER"
+SELECTION_OPERATION=0
+CURRENT_ENV_CONFIGURED=true
+EXPECTED_SELECTION_MODE=${expected}
+MANIFEST_IMAGE_REF=${image}
+COMPOSE_FILES=()
+PREVIEW_ENV_FILE=''
+trap '[[ -z "$PREVIEW_ENV_FILE" ]] || rm -f -- "$PREVIEW_ENV_FILE"' EXIT
+${functionName} false
+printf 'compose-verified\\n'
+`,
+          ],
+          {
+            cwd: directory,
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              PUBLISHER_TEST_STATE_HELPER: resolve(
+                root,
+                'infra/scripts/publisher-dispatch-rollout-state.mjs',
+              ),
+            },
+          },
+        );
+        assert.equal(result.status, drift ? 1 : 0, `${expected}/${functionName}: ${result.stderr}`);
+        assert.equal(readFileSync(resolve(directory, '.env'), 'utf8'), original);
+      }
+    }
+  }
+});
+
 test('keeps publisher dispatch false by default and previews mutations unless apply is explicit', () => {
   assert.match(envExample, /^MAX_PUBLISHER_DISPATCH_ENABLED=false$/mu);
   assert.match(
@@ -77,7 +146,7 @@ verify_checkout_compatibility ${'b'.repeat(40)}`,
   }
 });
 
-test('renders a private false-to-true preview across all 13 env_file consumers', (t) => {
+test('renders a private false-to-true preview across all 14 env_file consumers', (t) => {
   const directory = mkdtempSync(resolve(tmpdir(), 'publisher-compose-preview-'));
   t.after(() => rmSync(directory, { force: true, recursive: true }));
   const envPath = resolve(directory, '.env');
@@ -115,7 +184,7 @@ test('renders a private false-to-true preview across all 13 env_file consumers',
   }
 });
 
-test('serializes through the shared deploy lock and fences the exact active 13-role image', () => {
+test('serializes through the shared deploy lock and fences the exact active 14-role image', () => {
   const entrypoint = rollout.lastIndexOf('parse_args "$@"');
   assert.ok(rollout.indexOf('source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"') >= 0);
   assert.ok(rollout.indexOf('source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"') >= 0);

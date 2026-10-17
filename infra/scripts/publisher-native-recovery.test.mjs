@@ -52,13 +52,57 @@ function run({
   command,
   apply = 1,
   adopt = 1,
+  executeApply = false,
+  dispatch = 'true',
+  dispatchConfigured = 'true',
+  expectedSelection = 'test',
+  runtimeSelection = 'test',
+  afterRecreateSelection = expectedSelection === 'default-off' ? undefined : expectedSelection,
+  runtimeExpectedState = 'any',
+  selectionPolicy = 'required',
+  selectionOperation = 0,
+  statusCommand = false,
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'publisher-native-recovery-'));
   const state = fixture();
+  for (const container of state.containers.filter((row) => serviceOf(row).startsWith('api-'))) {
+    container.Config.Env = container.Config.Env.filter(
+      (value) =>
+        !value.startsWith('MAX_PUBLISHER_DISPATCH_ENABLED=') &&
+        !value.startsWith('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT='),
+    );
+    if (dispatchConfigured === 'true') {
+      container.Config.Env.push(`MAX_PUBLISHER_DISPATCH_ENABLED=${dispatch}`);
+    }
+    if (runtimeSelection != null) {
+      container.Config.Env.push(`PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=${runtimeSelection}`);
+    }
+  }
   for (const service of stopped) stop(state.containers.find((row) => serviceOf(row) === service));
   mutate(state);
   writeFileSync(join(directory, 'state.json'), JSON.stringify(state));
   writeFileSync(join(directory, 'calls.jsonl'), '');
+  writeFileSync(
+    join(directory, '.env'),
+    expectedSelection === 'default-off'
+      ? 'UNCHANGED=value\n'
+      : `UNCHANGED=value\nPUBLISHER_TEMPORAL_SELECTION_ROLLOUT=${expectedSelection}\n`,
+  );
+  writeFileSync(
+    join(directory, 'recreate.cjs'),
+    `const fs=require('node:fs'),path=require('node:path');
+const file=path.join(process.env.PUBLISHER_NATIVE_TEST_DIRECTORY,'state.json');
+const state=JSON.parse(fs.readFileSync(file,'utf8'));
+for(const c of state.containers.filter(c=>c.Config.Labels['com.docker.compose.service'].startsWith('api-'))) {
+ c.State.Running=true;c.State.Status='running';
+ c.Config.Env=c.Config.Env.filter(v=>!v.startsWith('MAX_PUBLISHER_DISPATCH_ENABLED=')&&!v.startsWith('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT='));
+ c.Config.Env.push('MAX_PUBLISHER_DISPATCH_ENABLED=false');
+ const selection=${JSON.stringify(afterRecreateSelection) ?? 'undefined'};
+ if(selection!==undefined)c.Config.Env.push('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT='+selection);
+}
+fs.writeFileSync(file,JSON.stringify(state));
+`,
+  );
   writeFileSync(
     join(directory, 'docker.cjs'),
     `#!/usr/bin/env node
@@ -120,20 +164,22 @@ ${block('native_consumer_runtime_state')}
 ${block('container_env_summary')}
 ${block('verify_runtime')}
 ${block('rollout_preflight')}
+${block('apply_rollout')}
+${block('read_selection_env')}
+${block('status_command')}
 COMPOSE_FILES=(--env-file .env -p infra -f infra/docker-compose.yml)
 MAXIM_PRODUCTION_API_SERVICES=(${apiServices.join(' ')})
 MANIFEST_IMAGE_ID='${image}'
-STATE_HELPER=infra/scripts/publisher-dispatch-rollout-state.mjs
+STATE_HELPER=${quote(join(root, 'infra/scripts/publisher-dispatch-rollout-state.mjs'))}
 COMMAND_TIMEOUT_SEC=5
 EXPECTED_HAS_OCR_NATIVE_SANDBOX=1
 MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX=1
-CURRENT_ENV_STATE=true
-CURRENT_ENV_CONFIGURED=true
+CURRENT_ENV_STATE=${dispatch}
+CURRENT_ENV_CONFIGURED=${dispatchConfigured}
 DESIRED_STATE=false
-EXPECTED_SELECTION_MODE=test
 EXPECTED_OCR_VERSION=reviewed
 MANIFEST_SOURCE_SHA=${'b'.repeat(40)}
-SELECTION_OPERATION=0
+SELECTION_OPERATION=${selectionOperation}
 COMMAND=${command ?? 'disable'}
 APPLY=${apply}
 MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=${adopt}
@@ -144,13 +190,38 @@ verify_preview_compose_config() { :; }
 maxim_topology_require_api_commercial_ocr_version_config() { :; }
 maxim_topology_require_media_analysis_rollout_config() { :; }
 require_stateful_services_ready() { :; }
-${command ? 'rollout_preflight' : `verify_runtime any ${policy}`}
+ROOT_DIR=${quote(root)}
+cd "$PUBLISHER_NATIVE_TEST_DIRECTORY"
+read_selection_env
+cd "$ROOT_DIR"
+RECONCILE_ONLY=0
+ROLLOUT_COMPLETE=0
+POST_CLEAR_REARM_REQUIRED=0
+events=()
+maxim_require_ordinary_effect_authority() { :; }
+arm_operator_pause() { events+=(arm); }
+patch_dispatch_env() { events+=(patch); }
+recreate_all_api_roles() { events+=(recreate); node "$PUBLISHER_NATIVE_TEST_DIRECTORY/recreate.cjs"; }
+wait_for_url() { :; }
+wait_for_heartbeat() { events+=(heartbeat); }
+maxim_webhook_resume_after_api_fence() { events+=(resume); }
+run_health_smokes() { events+=(health); }
+maxim_topology_verify_api_commercial_ocr_version() { :; }
+maxim_topology_smoke_media_analysis_tesseract() { :; }
+clear_operator_pause() { events+=(clear); }
+best_effort_rearm_operator_pause() { events+=(rearm); }
+read_control_status() { printf '{}'; }
+control_field() { printf 'missing'; }
+publisher_secret_state() { return 1; }
+trap 'status=$?; printf "status=%s complete=%s reconcile=%s events=%s\\n" "$status" "$ROLLOUT_COMPLETE" "$RECONCILE_ONLY" "\${events[*]}"' EXIT
+${statusCommand ? 'status_command' : command ? 'rollout_preflight' : `verify_runtime ${runtimeExpectedState} ${policy} ${selectionPolicy}`}
+${executeApply ? 'apply_rollout' : ''}
 printf 'native-preflight-verified\\n'`;
   try {
     const result = spawnSync('bash', ['-c', script], {
       cwd: root,
       encoding: 'utf8',
-      timeout: 15_000,
+      timeout: executeApply ? 60_000 : 15_000,
       env: {
         ...process.env,
         PATH: `${directory}:${process.env.PATH}`,
@@ -169,10 +240,143 @@ printf 'native-preflight-verified\\n'`;
       'preflight must remain read-only',
     );
     assert.doesNotMatch(result.stdout + result.stderr, /do-not-log/u);
-    return { ...result, calls };
+    return {
+      ...result,
+      calls,
+      state: JSON.parse(readFileSync(join(directory, 'state.json'), 'utf8')),
+    };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+for (const [name, runtimeSelection, mutate] of [
+  ['all roles stale', 'test', () => {}],
+  [
+    'one role stale',
+    'off',
+    ({ containers }) => {
+      const admin = containers.find((row) => serviceOf(row) === 'api-admin');
+      admin.Config.Env = admin.Config.Env.map((value) =>
+        value.startsWith('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=')
+          ? 'PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=test'
+          : value,
+      );
+    },
+  ],
+  [
+    'one explicit key missing',
+    'off',
+    ({ containers }) => {
+      const admin = containers.find((row) => serviceOf(row) === 'api-admin');
+      admin.Config.Env = admin.Config.Env.filter(
+        (value) => !value.startsWith('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT='),
+      );
+    },
+  ],
+]) {
+  test(`disabled recovery recreates persisted selection drift: ${name}`, () => {
+    const result = run({
+      command: 'disable',
+      executeApply: true,
+      dispatch: 'false',
+      expectedSelection: 'off',
+      runtimeSelection,
+      mutate,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /status=0 complete=1 reconcile=0 events=arm patch recreate/u);
+    const apis = result.state.containers.filter((row) => serviceOf(row).startsWith('api-'));
+    assert.equal(apis.length, 14);
+    for (const container of apis) {
+      assert.ok(container.Config.Env.includes('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=off'));
+      assert.ok(!container.Config.Env.includes('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=test'));
+    }
+  });
+}
+
+for (const [name, expectedSelection, runtimeSelection] of [
+  ['explicit off', 'off', 'off'],
+  ['persisted test', 'test', 'test'],
+  ['absent mode with missing runtime keys', 'default-off', null],
+  ['absent mode with off runtime keys', 'default-off', 'off'],
+]) {
+  test(`disabled recovery keeps exact persisted selection shortcut: ${name}`, () => {
+    const result = run({
+      command: 'disable',
+      executeApply: true,
+      dispatch: 'false',
+      expectedSelection,
+      runtimeSelection,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /status=0 complete=1 reconcile=1/u);
+    assert.doesNotMatch(result.stdout, /\b(?:patch|recreate|resume|rearm)\b/u);
+  });
+}
+
+test('missing dispatch assignment retains full recovery even with exact selection', () => {
+  const result = run({
+    command: 'disable',
+    executeApply: true,
+    dispatch: 'false',
+    dispatchConfigured: 'false',
+    expectedSelection: 'off',
+    runtimeSelection: 'off',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /status=0 complete=1 reconcile=0 events=arm patch recreate/u);
+});
+
+test('post-recreation selection mismatch fails before pause release or completion', () => {
+  const result = run({
+    command: 'disable',
+    executeApply: true,
+    dispatch: 'false',
+    expectedSelection: 'off',
+    runtimeSelection: 'test',
+    afterRecreateSelection: 'test',
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /^status=1 complete=0 reconcile=0 events=arm patch recreate$/mu);
+  assert.doesNotMatch(result.stdout, /rollout complete|\b(?:heartbeat|resume|health|clear)\b/u);
+});
+
+test('guarded disabled recovery permits stale selection with both stopped native consumers', () => {
+  const result = run({
+    command: 'disable',
+    executeApply: true,
+    dispatch: 'false',
+    expectedSelection: 'off',
+    runtimeSelection: 'test',
+    stopped: [mediaService, photoConsumerService],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /status=0 complete=1 reconcile=0 events=arm patch recreate/u);
+});
+
+test('status reports persisted selection drift as mixed after exact identity admission', () => {
+  const result = run({
+    statusCommand: true,
+    dispatch: 'false',
+    expectedSelection: 'off',
+    runtimeSelection: 'test',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /dispatch status: env=false runtime=mixed/u);
+});
+
+for (const [name, options] of [
+  ['final disabled parity', { runtimeExpectedState: 'false', selectionPolicy: 'identity-only' }],
+  ['final enabled parity', { runtimeExpectedState: 'true', selectionPolicy: 'identity-only' }],
+  ['selection operation', { selectionOperation: 1, selectionPolicy: 'identity-only' }],
+  ['unknown policy', { selectionPolicy: 'skip' }],
+]) {
+  test(`selection identity exception rejects ${name}`, () => {
+    const result = run(options);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.calls.length, 0);
+  });
 }
 
 for (const stopped of [
