@@ -1154,7 +1154,7 @@ rollout_preflight() {
   verify_preview_compose_config "$DESIRED_STATE"
   maxim_topology_require_api_commercial_ocr_version_config \
     COMPOSE_FILES "$EXPECTED_OCR_VERSION" required
-  maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
+  maxim_topology_require_media_analysis_rollout_config COMPOSE_FILES "$MANIFEST_SOURCE_SHA"
   require_stateful_services_ready
   if [[ "${SELECTION_OPERATION:-0}" -ne 1 && "$COMMAND" == "disable" && "$APPLY" -eq 1 &&
         "$CURRENT_ENV_CONFIGURED" == "true" && "$CURRENT_ENV_STATE" == "false" ]] &&
@@ -1192,7 +1192,7 @@ apply_rollout() {
   verify_compose_config "$DESIRED_STATE"
   maxim_topology_require_api_commercial_ocr_version_config \
     COMPOSE_FILES "$EXPECTED_OCR_VERSION" required
-  maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
+  maxim_topology_require_media_analysis_rollout_config COMPOSE_FILES "$MANIFEST_SOURCE_SHA"
   if [[ "$RECONCILE_ONLY" -ne 1 ]]; then
     recreate_all_api_roles
   fi

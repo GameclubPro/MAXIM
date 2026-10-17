@@ -188,6 +188,7 @@ CURRENT_ENV_CONFIGURED=${configured}
 DESIRED_STATE=false
 MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=0
 EXPECTED_OCR_VERSION=fixture
+MANIFEST_SOURCE_SHA=${sha}
 RECONCILE_ONLY=0
 verify_runtime() {
   printf 'runtime:%s\\n' "$1"
@@ -196,7 +197,7 @@ verify_runtime() {
 verify_compose_config() { printf 'compose\\n'; }
 verify_preview_compose_config() { printf 'preview\\n'; }
 maxim_topology_require_api_commercial_ocr_version_config() { :; }
-maxim_topology_require_media_analysis_shadow_config() { :; }
+maxim_topology_require_media_analysis_rollout_config() { :; }
 require_stateful_services_ready() { :; }
 rollout_preflight
 printf 'reconcile:%s\\n' "$RECONCILE_ONLY"
@@ -210,6 +211,155 @@ printf 'reconcile:%s\\n' "$RECONCILE_ONLY"
       else assert.match(result.stdout, /reconcile:0/u);
     }
   }
+});
+
+function ocrCompatibility({ mode = 'baseline', failure = '', phase = 'preflight' } = {}) {
+  return shell(`
+source infra/scripts/lib/deploy-topology.sh
+${block(rollout, 'rollout_preflight')}
+${block(rollout, 'apply_rollout')}
+ROOT_DIR=${quote(root)}
+COMPOSE_FILES=(--env-file .env -p infra -f infra/docker-compose.yml)
+MANIFEST_SOURCE_SHA="$(command git rev-parse HEAD)"
+EXPECTED_OCR_VERSION=fixture
+EXPECTED_HAS_OCR_NATIVE_SANDBOX=1
+SELECTION_OPERATION=1
+COMMAND=enable
+APPLY=0
+CURRENT_ENV_STATE=true
+CURRENT_ENV_CONFIGURED=true
+DESIRED_STATE=true
+DESIRED_SELECTION_MODE=off
+MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=0
+MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE=inherited-invalid
+RECONCILE_ONLY=0
+ROLLOUT_COMPLETE=0
+POST_CLEAR_REARM_REQUIRED=0
+patched=0
+events=()
+trap 'printf "complete=%s expected=%s events=%s\\n" "$ROLLOUT_COMPLETE" "$MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE" "\${events[*]}"' EXIT
+failure_active() { [[ ${quote(phase)} == preflight || "$patched" == 1 ]]; }
+git() {
+  [[ "$1" == show && "$2" == "$MANIFEST_SOURCE_SHA:"* ]] || return 91
+  if [[ ${quote(failure)} == old-source && "$2" == *commercial-ocr-delete-guard.service.ts ]] && failure_active; then
+    printf '%s\\n' 'BASELINE' 'COMMERCIAL_OCR_DELETE_BINDING_VERSION = 4 as const'
+  else command git "$@"; fi
+}
+docker() {
+  if [[ "$1" == compose && " $* " == *' config --format json '* ]]; then
+    local active_failure=''
+    if failure_active; then active_failure=${quote(failure)}; fi
+    command node -e '
+      const [mode, failure, ...roles] = process.argv.slice(1);
+      const services = Object.fromEntries(roles.map(name => [name, { environment: {
+        COMMERCIAL_OCR_VERSION: "fixture",
+        COMMERCIAL_OCR_ROLLOUT_MODE: mode,
+        COMMERCIAL_OCR_CANARY_CHAT_IDS: "",
+      } }]));
+      if (failure === "wrong-mode") services["api-media-analysis"].environment.COMMERCIAL_OCR_ROLLOUT_MODE = "canary";
+      if (failure === "mixed-mode") services["api-action"].environment.COMMERCIAL_OCR_ROLLOUT_MODE = "shadow";
+      if (failure === "canary") services["api-moderation"].environment.COMMERCIAL_OCR_CANARY_CHAT_IDS = "private-canary";
+      process.stdout.write(JSON.stringify({ services }));
+    ' ${quote(mode)} "$active_failure" "\${MAXIM_PRODUCTION_API_SERVICES[@]}"
+  elif [[ "$1" == compose && " $* " == *' ps -q '* ]]; then
+    printf '%s' "\${*: -1}"
+  elif [[ "$1" == inspect ]]; then
+    local runtime_mode=${quote(mode)}
+    if [[ ${quote(failure)} == runtime-mode && "\${*: -1}" == api-action ]]; then runtime_mode=shadow; fi
+    printf '%s\\n' 'COMMERCIAL_OCR_VERSION=fixture' 'COMMERCIAL_OCR_CANARY_CHAT_IDS=' "COMMERCIAL_OCR_ROLLOUT_MODE=$runtime_mode"
+  else return 92; fi
+}
+fail() { printf '%s\\n' "$*" >&2; return 1; }
+verify_runtime() { :; }
+verify_compose_config() { :; }
+verify_preview_compose_config() { :; }
+require_stateful_services_ready() { events+=(stores); }
+maxim_topology_require_publisher_secret_files() { :; }
+read_control_status() { printf '{}'; }
+control_field() { printf missing; }
+maxim_require_ordinary_effect_authority() { :; }
+record_selection_audit_start() { events+=(audit-start); }
+record_selection_audit_finish() { events+=(audit-finish); }
+arm_operator_pause() { events+=(arm); }
+patch_selection_env() { patched=1; events+=(selection-patch); }
+patch_dispatch_env() { return 93; }
+recreate_all_api_roles() { events+=(recreate); }
+wait_for_url() { :; }
+wait_for_heartbeat() { :; }
+maxim_webhook_resume_after_api_fence() { events+=(resume); }
+run_health_smokes() { events+=(health); }
+maxim_topology_smoke_media_analysis_tesseract() {
+  [[ "$1" == COMPOSE_FILES && "$2" == required && "$3" == sandbox ]]
+  [[ "$MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE" == ${quote(mode)} ]]
+  events+=(native-smoke)
+}
+run_publisher_identity_probe() { events+=(identity); }
+clear_operator_pause() { events+=(clear); }
+wait_for_api_readiness() { :; }
+rollout_preflight
+events+=(preflight-complete)
+if [[ ${quote(phase)} == apply ]]; then
+  APPLY=1
+  DESIRED_SELECTION_MODE=test
+  MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE=inherited-invalid
+  apply_rollout
+fi
+`);
+}
+
+test('real OCR deployment guard accepts shadow and strict baseline in selection preview and apply', () => {
+  for (const mode of ['shadow', 'baseline']) {
+    for (const phase of ['preflight', 'apply']) {
+      const result = ocrCompatibility({ mode, phase });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, new RegExp(`expected=${mode}`));
+      assert.match(result.stdout, /stores preflight-complete/u);
+      if (phase === 'preflight') {
+        assert.match(result.stdout, /complete=0/u);
+        assert.doesNotMatch(
+          result.stdout,
+          /audit-start|selection-patch|recreate|native-smoke|clear/u,
+        );
+      } else {
+        assert.match(result.stdout, /complete=1/u);
+        assert.match(
+          result.stdout,
+          /audit-start arm selection-patch recreate resume health native-smoke identity clear audit-finish/u,
+        );
+      }
+    }
+  }
+});
+
+test('real OCR guard rejects unsupported, scoped, mixed and old-source baseline before advancing', () => {
+  for (const failure of ['wrong-mode', 'canary', 'mixed-mode', 'old-source']) {
+    for (const phase of ['preflight', 'apply']) {
+      const result = ocrCompatibility({ failure, phase });
+      assert.equal(result.status, 1, `${failure}/${phase}: ${result.stderr}`);
+      assert.match(result.stdout, /complete=0/u);
+      assert.match(
+        result.stderr,
+        /unsupported or inconsistent OCR deployment mode|Target lacks strict commercial OCR baseline authority/u,
+      );
+      assert.doesNotMatch(result.stdout + result.stderr, /private-canary/u);
+      assert.doesNotMatch(result.stdout, /recreate|native-smoke|identity|clear|audit-finish/u);
+      if (phase === 'preflight')
+        assert.doesNotMatch(result.stdout, /stores|audit-start|arm|selection-patch/u);
+      else assert.match(result.stdout, /preflight-complete audit-start arm selection-patch/u);
+    }
+  }
+});
+
+test('baseline runtime mismatch remains a failure before Publisher pause release', () => {
+  const result = ocrCompatibility({ failure: 'runtime-mode', phase: 'apply' });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(
+    result.stderr,
+    /api-action does not run with the reviewed commercial OCR baseline authority/u,
+  );
+  assert.match(result.stdout, /complete=0 expected=baseline/u);
+  assert.match(result.stdout, /selection-patch recreate resume health/u);
+  assert.doesNotMatch(result.stdout, /native-smoke|identity|clear|audit-finish/u);
 });
 
 test('atomic host patch preserves dispatch bytes and refuses every preflight value/configuration drift', (t) => {
@@ -339,7 +489,7 @@ patch_dispatch_env() { return 99; }
 patch_selection_env() { events+=(selection-patch); [[ ${quote(failAt)} != patch ]]; }
 verify_compose_config() { events+=(compose); [[ ${quote(failAt)} != compose ]]; }
 maxim_topology_require_api_commercial_ocr_version_config() { :; }
-maxim_topology_require_media_analysis_shadow_config() { :; }
+maxim_topology_require_media_analysis_rollout_config() { :; }
 recreate_all_api_roles() { events+=(all-roles); }
 verify_runtime() {
   runtime_calls=$((runtime_calls + 1))

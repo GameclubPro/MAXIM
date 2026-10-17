@@ -500,7 +500,7 @@ arm_operator_pause() { events+=(arm); }
 patch_dispatch_env() { events+=(patch); }
 verify_compose_config() { :; }
 maxim_topology_require_api_commercial_ocr_version_config() { :; }
-maxim_topology_require_media_analysis_shadow_config() { :; }
+maxim_topology_require_media_analysis_rollout_config() { :; }
 recreate_all_api_roles() { events+=(recreate); }
 verify_runtime() {
   runtime_verifications=$((runtime_verifications + 1))
@@ -617,7 +617,7 @@ arm_operator_pause() { events+=(arm); }
 patch_dispatch_env() { events+=(patch); }
 verify_compose_config() { events+=(compose); }
 maxim_topology_require_api_commercial_ocr_version_config() { events+=(ocr-config); }
-maxim_topology_require_media_analysis_shadow_config() { events+=(shadow-config); }
+maxim_topology_require_media_analysis_rollout_config() { events+=(ocr-rollout-config); }
 recreate_all_api_roles() { events+=(recreate); }
 verify_runtime() {
   runtime_calls=$((runtime_calls + 1))
@@ -658,7 +658,7 @@ printf 'status=%s complete=%s flag=%s events=%s\n' \
   assert.match(success.stdout, /status=0 complete=1 flag=0/u);
   assert.match(success.stdout, /reconcile_only=true/u);
   assert.doesNotMatch(success.stdout, /\b(?:patch|recreate|resume|rearm)\b/u);
-  assert.match(success.stdout, /arm compose ocr-config shadow-config runtime:1/u);
+  assert.match(success.stdout, /arm compose ocr-config ocr-rollout-config runtime:1/u);
   assert.match(
     success.stdout,
     /health runtime:2 ocr-version ocr-smoke clear heartbeat:2:false runtime:3/u,
