@@ -42,7 +42,7 @@ The setter enforces:
 
 No build, migration, PostgreSQL/Redis recreation or queue cleanup is part of the setter.
 Selection `off` still recreates the API roles so the requested flag reaches every role.
-The old dispatch enable/disable commands retain their existing behavior.
+Dispatch enable/disable retain their existing authority and pause semantics.
 
 ## Acceptance before expansion
 
@@ -113,6 +113,20 @@ reader/version floors. For interrupted pause/fleet state, inspect the reported c
 use the existing guarded `publisher-dispatch-disable --apply` recovery procedure. The
 selection setter refuses to adopt that state. Preserve receipts, claims, queues and
 unknown effects throughout recovery.
+
+Guarded dispatch-disable recovery reads the persisted selection mode under the shared
+lock. Its first identity check permits mode drift so the existing recovery path can
+repair it. The shortcut that avoids recreating API roles requires both an explicitly
+disabled dispatch switch and exact persisted-mode parity on all 14 roles. A stale or
+missing explicitly configured mode requires the normal complete recreation. An absent
+selection assignment means `default-off`, accepting only missing or `off` runtime values;
+an explicit `off` requires `off` in every role. Rendered Compose configuration and final
+runtime readbacks must match the preserved mode before completion. Recovery changes
+neither the saved selection assignment nor an uncertain external effect.
+
+Image rollback preserves dotenv assignments. Returning to an older image or disabling
+dispatch does not prove the selection flag is off; verify an explicit mode transition
+and its readback separately before a later compatible release can reuse that setting.
 
 Before the media wave, the controller stops only the exact existing media-analysis
 container and confirms it is stopped. The already-attested OCR sandbox stays running;
