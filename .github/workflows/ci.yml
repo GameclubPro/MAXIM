@@ -143,6 +143,11 @@ jobs:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: node --test --test-concurrency=1 infra/scripts/outcome-cohort-online.native.test.mjs infra/scripts/outcome-cohort-historical.native.test.mjs
+      - name: Quarantine proof bounds with native PostgreSQL
+        env:
+          MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
+          TZ: UTC
+        run: node --test --test-concurrency=1 infra/scripts/webhook-quarantine-proof-audit.test.mjs
       - run: npm run test:postgres-races --workspace @maxim/api
       - name: Check traffic policy revision and activation guards
         env:
