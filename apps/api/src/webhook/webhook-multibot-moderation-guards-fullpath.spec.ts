@@ -5,6 +5,7 @@ import { markMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import { MaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { Queue, type ConnectionOptions } from 'bullmq';
 import {
+  MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
   MAX_API_SOURCE_TAGS,
   MaxApiInternalRateLimitError,
   type MaxActionJob,
@@ -19,6 +20,7 @@ import { ManagedEntityAccessLossService } from '../max/managed-entity-access-los
 import {
   markMaxPreDispatchGuardRejected,
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  wasMaxPreDispatchGuardRejected,
 } from '../max/max-action-pre-dispatch-guard';
 import {
   createMultibotHarness,
@@ -1943,6 +1945,364 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       })),
     });
   }
+
+  describe('direct local DELETE cooldown', () => {
+    type StoredIntent = Prisma.ModerationDeleteIntentGetPayload<{ include: { reasons: true } }>;
+    type CooldownRejection = {
+      error: MaxApiInternalRateLimitError;
+      at: number;
+      requestsBefore: number;
+      requestsAfter: number;
+      guardsBefore: number;
+      guardsAfter: number;
+    };
+
+    async function cooldownFixture() {
+      h = await createMultibotHarness({
+        databaseUrl,
+        redisUrl,
+        bots: 1,
+        mode: 'on',
+        quotaProfile: 'production',
+      });
+      return h;
+    }
+
+    async function lengthIntent(s: MultibotHarness, chatId: string, deadlineMs = 120_000) {
+      const messageId = `local-cooldown-${randomUUID()}`;
+      const ensured = await s.intents.ensureIntent(
+        {
+          chatId,
+          messageId,
+          subjectUserId: 'fixture-user',
+          sourceMessageAt: source(s, chatId, messageId),
+          originBotId: s.bots[0]!.id,
+          routingPolicy: 'origin_only',
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          reasonKey: `length-${messageId}`,
+          ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+          event: { userId: 'fixture-user', eventType: 'MESSAGE' },
+          retryUntilAt: new Date(Date.now() + deadlineMs),
+        },
+        { enqueue: false },
+      );
+      if (ensured.rollout !== 'execute' || !ensured.intentId) {
+        throw new Error('Expected an executable DELETE cooldown fixture intent');
+      }
+      return readIntent(s, ensured.intentId);
+    }
+
+    function readIntent(s: MultibotHarness, id: string) {
+      return s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id },
+        include: { reasons: true },
+      });
+    }
+
+    async function installCooldown(s: MultibotHarness, messageIds: string[]) {
+      const cooldownKey = `maxapi:gcra:v1:bot:${s.bots[0]!.id}:all:cooldown`;
+      expect(await s.redis.exists(cooldownKey)).toBe(0);
+      const tracked = new Set(messageIds);
+      const rejected = new Map<string, CooldownRejection>();
+      const calls: string[] = [];
+      const guards: string[] = [];
+      let planted = false;
+      const originalDelete = s.max.deleteMessage.bind(s.max);
+      const spy = jest
+        .spyOn(s.max, 'deleteMessage')
+        .mockImplementation(async (chat, mid, options) => {
+          if (!tracked.has(mid)) return originalDelete(chat, mid, options);
+          calls.push(mid);
+          const proof = await s.links.getFreshChatBotExecutionProof({
+            chatId: chat,
+            botId: options!.botId!,
+            purpose: 'delete_message',
+            maxAgeMs: 300_000,
+            existingMessage: { messageId: mid },
+          });
+          expect(proof).not.toBeNull();
+          if (!planted) {
+            await s.redis.eval(MAX_API_EXTERNAL_COOLDOWN_SCRIPT, 1, cooldownKey, '30000');
+            planted = true;
+          }
+          const requestsBefore = s.requests.length;
+          const guardsBefore = guards.length;
+          try {
+            await originalDelete(chat, mid, {
+              ...options,
+              beforeImmediateDeleteMutation: async () => {
+                guards.push(mid);
+                await options?.beforeImmediateDeleteMutation?.();
+              },
+            });
+          } catch (error: unknown) {
+            if (error instanceof MaxApiInternalRateLimitError) {
+              rejected.set(mid, {
+                error,
+                at: Date.now(),
+                requestsBefore,
+                requestsAfter: s.requests.length,
+                guardsBefore,
+                guardsAfter: guards.length,
+              });
+            }
+            throw error;
+          }
+        });
+      return {
+        calls,
+        guards,
+        rejection(messageId: string) {
+          const evidence = rejected.get(messageId);
+          if (!evidence) throw new Error('Expected a genuine direct local DELETE quota rejection');
+          expect(evidence.error).toBeInstanceOf(MaxApiInternalRateLimitError);
+          expect(evidence.error).toMatchObject({
+            code: 'MAX_API_INTERNAL_RATE_LIMIT',
+            preDispatch: true,
+            limitScope: 'external_cooldown',
+          });
+          expect(wasMaxPreDispatchGuardRejected(evidence.error)).toBe(true);
+          expect(Number.isSafeInteger(evidence.error.retryAfterMs)).toBe(true);
+          expect(evidence.error.retryAfterMs).toBeGreaterThan(6_000);
+          expect(evidence.error).not.toHaveProperty('response');
+          expect(evidence.error).not.toHaveProperty('status');
+          expect(evidence.error).not.toHaveProperty('statusCode');
+          expect(evidence.requestsAfter).toBe(evidence.requestsBefore);
+          expect(evidence.guardsAfter).toBe(evidence.guardsBefore);
+          return evidence;
+        },
+        async restore() {
+          spy.mockRestore();
+          if (planted) await s.redis.del(cooldownKey);
+        },
+      };
+    }
+
+    function expectUnattempted(intent: StoredIntent, original: StoredIntent) {
+      expect(intent).toMatchObject({
+        executeAt: original.executeAt,
+        retryUntilAt: original.retryUntilAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        deleteDispatchStartedAt: null,
+        deleteDispatchStartedBotId: null,
+        remoteDeleteSucceededAt: null,
+        remoteDeleteSucceededBotId: null,
+        absenceVerifiedAt: null,
+        succeededBotId: null,
+      });
+      expect(
+        intent.reasons.every(
+          (reason) =>
+            (reason.metadata as Record<string, unknown> | null)?.moderationDeleteVerified !== true,
+        ),
+      ).toBe(true);
+    }
+
+    async function expectNoEffects(s: MultibotHarness, intent: StoredIntent) {
+      expect(s.messages.has(intent.messageId)).toBe(true);
+      expect(
+        s.requests.filter(
+          (call) => call.method === 'delete' && call.messageId === intent.messageId,
+        ),
+      ).toEqual([]);
+      expect(s.effects.filter((effect) => effect.messageId === intent.messageId)).toEqual([]);
+      expect(
+        await s.prisma.moderationEvent.count({
+          where: { chatId: intent.chatId, messageId: intent.messageId },
+        }),
+      ).toBe(0);
+      expect(await s.prisma.violation.count({ where: { chatId: intent.chatId } })).toBe(0);
+    }
+
+    async function waitUntilDue(nextAttemptAt: Date, maxWaitMs: number) {
+      const startedAt = Date.now();
+      expect(nextAttemptAt.getTime() - startedAt).toBeLessThan(maxWaitMs);
+      while (Date.now() < nextAttemptAt.getTime()) {
+        if (Date.now() - startedAt >= maxWaitMs)
+          throw new Error(`Persisted DELETE retry did not become due within ${maxWaitMs} ms`);
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(100, nextAttemptAt.getTime() - Date.now())),
+        );
+      }
+    }
+
+    it('waits for the genuine hint, resumes once and rechecks policy before dispatch', async () => {
+      const s = await cooldownFixture();
+      const [chatId, revokedChatId] = await s.seedCatalog(2);
+      const original = await lengthIntent(s, chatId!);
+      const revoked = await lengthIntent(s, revokedChatId!);
+      const cooldown = await installCooldown(s, [original.messageId, revoked.messageId]);
+      try {
+        const waiting: StoredIntent[] = [];
+        for (const intent of [original, revoked]) {
+          await s.intents.attemptIntent(intent.id);
+          const evidence = cooldown.rejection(intent.messageId);
+          const row = await readIntent(s, intent.id);
+          expect(row).toMatchObject({
+            status: 'RETRYABLE',
+            attemptCount: 1,
+            lastErrorCode: 'MAX_API_INTERNAL_RATE_LIMIT',
+            lastStatusCode: null,
+            completedAt: null,
+          });
+          expectUnattempted(row, intent);
+          expect(row.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(
+            evidence.at + evidence.error.retryAfterMs,
+          );
+          await expectNoEffects(s, row);
+          waiting.push(row);
+        }
+        for (const row of waiting) {
+          expect(Date.now()).toBeLessThan(row.nextAttemptAt.getTime());
+          await s.intents.attemptIntent(row.id);
+        }
+        await s.intents.sweepDueIntents();
+        for (const row of waiting) {
+          expect(await readIntent(s, row.id)).toEqual(row);
+          expect(await s.deleteQueue.getJob(`mdi-${row.id}`)).toBeUndefined();
+        }
+        expect(cooldown.calls).toEqual([original.messageId, revoked.messageId]);
+        expect(cooldown.guards).toEqual([]);
+
+        await s.prisma.chatSettings.update({
+          where: { chatId: revoked.chatId },
+          data: { maxMessageLengthEnabled: false },
+        });
+        await s.cache.invalidate(revoked.chatId);
+        await waitUntilDue(
+          new Date(Math.max(...waiting.map((row) => row.nextAttemptAt.getTime()))),
+          45_000,
+        );
+        await s.intents.sweepDueIntents();
+        await waitForUserDelete(s, original.chatId, original.messageId);
+        await s.drain();
+
+        const succeeded = await readIntent(s, original.id);
+        expect(succeeded).toMatchObject({
+          status: 'SUCCEEDED',
+          attemptCount: 2,
+          executeAt: original.executeAt,
+          retryUntilAt: original.retryUntilAt,
+          remoteDeleteSucceededBotId: s.bots[0]!.id,
+        });
+        expect(succeeded.remoteDeleteSucceededAt!.getTime()).toBeLessThan(
+          original.retryUntilAt.getTime(),
+        );
+        expect(
+          s.requests.filter(
+            (call) => call.method === 'delete' && call.messageId === original.messageId,
+          ),
+        ).toHaveLength(1);
+        expect(
+          s.effects.filter(
+            (effect) => effect.method === 'delete' && effect.messageId === original.messageId,
+          ),
+        ).toHaveLength(1);
+        const refused = await readIntent(s, revoked.id);
+        expect(refused).toMatchObject({ status: 'FAILED_TERMINAL', attemptCount: 2 });
+        expectUnattempted(refused, revoked);
+        await expectNoEffects(s, refused);
+        await s.intents.attemptIntent(original.id);
+        expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+        expect(s.failures).toEqual([]);
+      } finally {
+        await cooldown.restore();
+      }
+    });
+
+    it('expires when the genuine hint crosses the original future deadline', async () => {
+      const s = await cooldownFixture();
+      const [chatId] = await s.seedCatalog(1);
+      const original = await lengthIntent(s, chatId!, 15_000);
+      const cooldown = await installCooldown(s, [original.messageId]);
+      try {
+        await s.intents.attemptIntent(original.id);
+        const evidence = cooldown.rejection(original.messageId);
+        expect(evidence.at).toBeLessThan(original.retryUntilAt.getTime());
+        expect(evidence.at + evidence.error.retryAfterMs).toBeGreaterThan(
+          original.retryUntilAt.getTime(),
+        );
+        const expired = await readIntent(s, original.id);
+        expect(expired).toMatchObject({
+          status: 'EXPIRED',
+          attemptCount: 1,
+          nextAttemptAt: original.retryUntilAt,
+          lastErrorCode: 'MAX_API_INTERNAL_RATE_LIMIT',
+          lastStatusCode: null,
+        });
+        expect(expired.completedAt).not.toBeNull();
+        expectUnattempted(expired, original);
+        await expectNoEffects(s, expired);
+        await s.intents.attemptIntent(original.id);
+        await s.intents.sweepDueIntents();
+        expect(await readIntent(s, original.id)).toEqual(expired);
+        expect(await s.deleteQueue.getJob(`mdi-${original.id}`)).toBeUndefined();
+        expect(cooldown.calls).toEqual([original.messageId]);
+        expect(cooldown.guards).toEqual([]);
+        expect(s.failures).toEqual([]);
+      } finally {
+        await cooldown.restore();
+      }
+    });
+
+    it('retains AMBIGUOUS evidence from an earlier real DELETE attempt', async () => {
+      const s = await cooldownFixture();
+      const [chatId] = await s.seedCatalog(1);
+      const original = await lengthIntent(s, chatId!);
+      s.ambiguousNextDelete();
+      await s.intents.attemptIntent(original.id);
+      const ambiguous = await readIntent(s, original.id);
+      expect(ambiguous).toMatchObject({ status: 'AMBIGUOUS', attemptCount: 1 });
+      expect(ambiguous.deleteDispatchStartedAt).not.toBeNull();
+      expect(ambiguous.deleteDispatchStartedBotId).toBe(s.bots[0]!.id);
+      expect(s.messages.has(original.messageId)).toBe(true);
+      expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+      await waitUntilDue(ambiguous.nextAttemptAt, 10_000);
+
+      const cooldown = await installCooldown(s, [original.messageId]);
+      try {
+        await s.intents.attemptIntent(original.id);
+        const evidence = cooldown.rejection(original.messageId);
+        const retained = await readIntent(s, original.id);
+        expect(retained).toMatchObject({
+          status: 'AMBIGUOUS',
+          attemptCount: 2,
+          executeAt: original.executeAt,
+          retryUntilAt: original.retryUntilAt,
+          deleteDispatchStartedAt: ambiguous.deleteDispatchStartedAt,
+          deleteDispatchStartedBotId: ambiguous.deleteDispatchStartedBotId,
+          remoteDeleteSucceededAt: null,
+          remoteDeleteSucceededBotId: null,
+          succeededBotId: null,
+          completedAt: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          lastErrorCode: 'MAX_API_INTERNAL_RATE_LIMIT',
+          lastStatusCode: null,
+        });
+        expect(retained.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(
+          evidence.at + evidence.error.retryAfterMs,
+        );
+        expect(retained.reasons).toEqual(ambiguous.reasons);
+        expect(s.messages.has(original.messageId)).toBe(true);
+        expect(
+          s.requests.filter(
+            (call) => call.method === 'delete' && call.messageId === original.messageId,
+          ),
+        ).toHaveLength(1);
+        expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+        expect(await s.prisma.moderationEvent.count({ where: { chatId } })).toBe(0);
+        expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+        expect(cooldown.guards).toEqual([]);
+        expect(await s.deleteQueue.getJob(`mdi-${original.id}`)).toBeUndefined();
+        expect(s.failures).toEqual([]);
+      } finally {
+        await cooldown.restore();
+      }
+    });
+  });
 
   it.each(['peer', 'all-refused'] as const)(
     'keeps legacy DELETE executor rejection bounded and following events live: %s',

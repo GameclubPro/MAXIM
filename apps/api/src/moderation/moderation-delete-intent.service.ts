@@ -8426,6 +8426,30 @@ export class ModerationDeleteIntentService {
         retryDelayMs: Math.max(error.retryAfterMs, this.retryDelayMs(attemptCount)),
       };
     }
+    // FLAG: Only the transport's genuine pre-dispatch quota rejection supplies this
+    // wait. Retained mutation evidence takes precedence; the original retry deadline
+    // is still enforced by finishRetryableAttempt, including expiry before the hint.
+    const errorRecord = this.asRecord(error);
+    if (
+      !dispatchMarkerPersisted &&
+      error instanceof MaxApiInternalRateLimitError &&
+      error.preDispatch === true &&
+      wasMaxPreDispatchGuardRejected(error) &&
+      details.statusCode === null &&
+      errorRecord?.response === undefined &&
+      errorRecord?.request === undefined &&
+      errorRecord?.config === undefined &&
+      !this.isAmbiguousTransportError(error) &&
+      Number.isSafeInteger(error.retryAfterMs) &&
+      error.retryAfterMs > 0 &&
+      Number.isFinite(new Date(Date.now() + error.retryAfterMs).getTime())
+    ) {
+      return {
+        ...details,
+        status: 'RETRYABLE',
+        retryDelayMs: Math.max(error.retryAfterMs, this.retryDelayMs(attemptCount)),
+      };
+    }
     // FLAG: This exact local admission rejection happens before the mutation callback.
     // A surviving peer may execute only while no dispatch marker exists; any unknown
     // failure after that marker keeps the existing ambiguity fence above.
