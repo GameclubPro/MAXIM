@@ -61,7 +61,7 @@ COPY --from=build /app/apps/api/prisma ./apps/api/prisma
 COPY --from=build /app/scripts/agent/multibot-online-prepare.mjs ./scripts/agent/multibot-online-prepare.mjs
 COPY --from=build /app/scripts/agent/outcome-cohort-online-targets.mjs ./scripts/agent/outcome-cohort-online-targets.mjs
 COPY --from=build /app/scripts/agent/outcome-cohort-online-prepare.mjs ./scripts/agent/outcome-cohort-online-prepare.mjs
-COPY --from=build /app/infra/scripts/outcome-cohort-online-state.mjs ./infra/scripts/outcome-cohort-online-state.mjs
+COPY infra/scripts/outcome-cohort-online-state.mjs ./infra/scripts/outcome-cohort-online-state.mjs
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=prod-deps /app/packages/contracts/node_modules ./packages/contracts/node_modules
 COPY --from=build /app/packages/contracts/package.json ./packages/contracts/package.json

@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, resolve } from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import {
   OUTCOME_COHORT_TARGETS,
   readOutcomeCohortSource,
@@ -502,6 +513,62 @@ test('deploy gates precede quiescence, new image imports ship, historical cutoff
   assert.ok(
     old.includes("MULTIBOT_ONLINE_PREFIX_NAME = '20261005016100_index_multibot_retention_cursor'"),
   );
+});
+
+test('outcome image modules load from the narrow Docker context and isolated runtime layout', () => {
+  const dockerfile = readFileSync(resolve(root, 'apps/api/Dockerfile'), 'utf8');
+  const statePath = 'infra/scripts/outcome-cohort-online-state.mjs';
+  const copyLines = dockerfile.split(/\r?\n/u).filter((line) => line.startsWith('COPY '));
+  assert.ok(copyLines.includes(`COPY ${statePath} ./${statePath}`));
+  assert.ok(copyLines.includes('COPY scripts scripts'));
+  const exceptions = readFileSync(resolve(root, '.dockerignore'), 'utf8')
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('!infra/scripts'));
+  assert.deepEqual(exceptions, [`!${statePath}`]);
+
+  const directory = mkdtempSync(resolve(tmpdir(), 'maxim-outcome-image-modules-'));
+  const modules = [
+    'scripts/agent/multibot-online-prepare.mjs',
+    'scripts/agent/outcome-cohort-online-targets.mjs',
+    'scripts/agent/outcome-cohort-online-prepare.mjs',
+    statePath,
+  ];
+  try {
+    for (const file of modules) {
+      if (file !== statePath) {
+        assert.ok(copyLines.includes(`COPY --from=build /app/${file} ./${file}`), file);
+      }
+      const destination = resolve(directory, file);
+      mkdirSync(dirname(destination), { recursive: true });
+      cpSync(resolve(root, file), destination);
+    }
+    assert.equal(
+      existsSync(resolve(directory, 'infra/scripts/multibot-prepare-capacity.mjs')),
+      false,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `
+import assert from 'node:assert/strict';
+const runner = await import(process.argv[1]);
+const state = await import(process.argv[2]);
+assert.equal(typeof state.outcomeCohortStateSql, 'string');
+assert.throws(() => state.verifyOutcomeCohortPreparationState({}, []), /STATE_INVALID/);
+await assert.rejects(runner.runOutcomeCohortOnlinePrepare({ selector: 'delete', env: {} }), /TAGGED_DATABASE_REQUIRED/);
+`,
+        pathToFileURL(resolve(directory, modules[2])).href,
+        pathToFileURL(resolve(directory, statePath)).href,
+      ],
+      { cwd: directory, encoding: 'utf8', timeout: 5000 },
+    );
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('new shell hook preserves complete migration scope and aborts without quiescence on failure', () => {

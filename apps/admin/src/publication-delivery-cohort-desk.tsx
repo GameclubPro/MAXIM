@@ -191,6 +191,7 @@ export function PublicationDeliveryCohortDesk(props: { accessCode: string; refre
       </section>
       {selected && (
         <PublicationDeliveryEvidence
+          key={props.refreshToken}
           deliveryId={selected.id}
           request={selected.request}
           accessCode={props.accessCode}

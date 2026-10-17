@@ -145,6 +145,7 @@ async function smokeProfile(activeBrowser, profile) {
   let deliveryCohortRequests = 0;
   let deliveryEvidenceRequests = 0;
   let deliveryEvidenceMalformed = false;
+  let deliveryEvidenceDenied = false;
   let expectedAccessCode = accessCode;
   let releaseDelayedDelivery;
   const delayedDelivery = new Promise((resolve) => {
@@ -280,9 +281,10 @@ async function smokeProfile(activeBrowser, profile) {
       },
     ],
   };
+  let deliveryEvidenceObservedAt = outcomeWindow.observedAt;
   const deliveryEvidence = (deliveryId) => ({
     schemaVersion: 1,
-    observedAt: outcomeWindow.observedAt,
+    observedAt: deliveryEvidenceObservedAt,
     deliveryId,
     storedStatus: 'AMBIGUOUS',
     effectiveStatus: 'AMBIGUOUS',
@@ -401,6 +403,13 @@ async function smokeProfile(activeBrowser, profile) {
         /^Failed to load resource: the server responded with a status of 503\b/.test(message.text())
       )
         return;
+      if (
+        deliveryEvidenceDenied &&
+        message.location().url ===
+          `${baseUrl}api/v1/safety-desk/runtime/publication-deliveries/delivery-malformed/evidence` &&
+        /^Failed to load resource: the server responded with a status of 403\b/.test(message.text())
+      )
+        return;
       errors.push(`console.error: ${message.text()}`);
     }
   });
@@ -444,6 +453,10 @@ async function smokeProfile(activeBrowser, profile) {
       deliveryEvidenceRequests += 1;
       const id = decodeURIComponent(deliveryMatch[1]);
       if (id === 'delivery-slow') await delayedDelivery;
+      if (deliveryEvidenceDenied) {
+        await route.fulfill({ status: 403, json: { message: 'Forbidden' } });
+        return;
+      }
       await route.fulfill({
         status: 200,
         json: deliveryEvidenceMalformed ? { deliveryId: id } : deliveryEvidence(id),
@@ -700,8 +713,28 @@ async function smokeProfile(activeBrowser, profile) {
   if (await deliveryEvidencePanel.getByText('Исход отправки неизвестен', { exact: true }).count())
     throw new Error('Malformed delivery response retained previous success.');
   if (deliveryEvidenceRequests !== 4) throw new Error('Malformed delivery read retried.');
+  deliveryEvidenceMalformed = false;
+  deliveryEvidenceObservedAt = '2026-10-16T18:16:30.000Z';
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await deliveryEvidencePanel.getByText(/21:16:30 МСК/).waitFor();
+  if (
+    deliveryEvidenceRequests !== 5 ||
+    (await deliveryEvidencePanel.locator('code').textContent()) !== 'delivery-malformed'
+  )
+    throw new Error('Global refresh did not reread the selected delivery.');
+  deliveryEvidenceDenied = true;
   cohortUnavailable = true;
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await deliveryEvidencePanel
+    .getByRole('alert')
+    .filter({ hasText: 'Нет доступа к наблюдениям.' })
+    .waitFor();
+  if (
+    deliveryEvidenceRequests !== 6 ||
+    (await deliveryEvidencePanel.getByText('Исход отправки неизвестен', { exact: true }).count()) ||
+    (await deliveryEvidencePanel.locator('.delete-timeline').count())
+  )
+    throw new Error('Global refresh retained delivery evidence after access was denied.');
   await deliveryPanel.getByRole('alert').waitFor();
   if (await deliveryPanel.getByRole('table').count())
     throw new Error('Delivery cohort retained stale success.');
@@ -715,6 +748,7 @@ async function smokeProfile(activeBrowser, profile) {
   expectedAccessCode = 'admin-smoke-next-owner';
   cohortUnavailable = false;
   deliveryEvidenceMalformed = false;
+  deliveryEvidenceDenied = false;
   const previousEvidenceReads = deliveryEvidenceRequests;
   await page.reload();
   await page.getByPlaceholder('Введите код').fill(expectedAccessCode);

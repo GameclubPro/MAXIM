@@ -2219,7 +2219,8 @@ maxim_topology_refuse_dirty_api_build_inputs() {
     apps/miniapp/package.json \
     packages/contracts \
     scripts \
-    infra/certs >"$dirty_inputs_path"; then
+    infra/certs \
+    infra/scripts/outcome-cohort-online-state.mjs >"$dirty_inputs_path"; then
     rm -f "$dirty_inputs_path" "$ignored_inputs_path"
     echo "Could not inspect API Docker build inputs against HEAD." >&2
     return 1
@@ -2228,7 +2229,8 @@ maxim_topology_refuse_dirty_api_build_inputs() {
     apps/api \
     packages/contracts \
     scripts \
-    infra/certs >"$ignored_inputs_path"; then
+    infra/certs \
+    infra/scripts/outcome-cohort-online-state.mjs >"$ignored_inputs_path"; then
     while IFS= read -r -d '' ignored_file; do
       case "$ignored_file" in
         */node_modules/* | */dist/* | */coverage/* | apps/api/src/generated/* | *.log | *.env | */.env.* | *.codex-backup-*)
