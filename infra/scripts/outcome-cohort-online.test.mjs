@@ -506,6 +506,7 @@ test('deploy gates precede quiescence, new image imports ship, historical cutoff
   for (const file of [
     'scripts/agent/outcome-cohort-online-targets.mjs',
     'scripts/agent/outcome-cohort-online-prepare.mjs',
+    'scripts/agent/outcome-cohort-historical-compatibility.mjs',
     'infra/scripts/outcome-cohort-online-state.mjs',
   ])
     assert.ok(dockerfile.includes(file));
@@ -532,6 +533,7 @@ test('outcome image modules load from the narrow Docker context and isolated run
     'scripts/agent/multibot-online-prepare.mjs',
     'scripts/agent/outcome-cohort-online-targets.mjs',
     'scripts/agent/outcome-cohort-online-prepare.mjs',
+    'scripts/agent/outcome-cohort-historical-compatibility.mjs',
     statePath,
   ];
   try {

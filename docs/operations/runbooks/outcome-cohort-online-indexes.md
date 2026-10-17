@@ -28,6 +28,27 @@ client. The second target starts only after the first target's exact index and r
 No unrelated pending migration runs in this stage. Ordinary Prisma deployment later observes the
 completed receipts; the deploy rechecks both exact indexes after that step.
 
+The fixed reader also recognizes four historical receipt variants through
+`scripts/agent/outcome-cohort-historical-compatibility.mjs`. Each requires its exact name and
+SHA-256, a finished single-step receipt, pinned current source and successor receipts, and
+matching current catalog postconditions in the same bounded read-only snapshot. Unknown hashes,
+missing successors, unfinished or duplicate receipts and schema drift still stop preparation.
+The allowance neither executes historical SQL nor changes migration receipts or runtime settings.
+
+| Historical migration                                 | Exact historical SHA-256                                           | Content evidence                                                                        |
+| ---------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `20260301143000_add_commercial_scoring_settings`     | `bf0f08ea91e490406c5f04fe78895bdacd41eb2a475054b4b509390126068c99` | Git commit `5e5b3ef3f249838915805ec267963b39c18da197`                                   |
+| `20260301173000_add_delete_bots_messages_toggle`     | `e2be732e2c92320c22f82d89d827479532e256039ceb97e7316e200c983ee55e` | Git commit `f01eca24604f1bbd09ad5bd8313e86a13f82d7b9`                                   |
+| `20260311153000_add_night_mode_open_message_enabled` | `6327681695854247dfe8d06a42f917ed6d2af9a61fce10cdff718446219c072b` | Exact 236-byte reconstruction matching the stored digest; original commit not recovered |
+| `20260311160000_add_night_mode_open_message_text`    | `65b381f01dcd3e2870c9290118941d8ee88f977c67232ba31332d730e9c9dc2b` | Exact 96-byte reconstruction matching the stored digest; original commit not recovered  |
+
+The first variant's phrase tables and three obsolete fields were removed by later migrations;
+their absence and the surviving enum/columns are checked. Bot-removal and night-mode flags now
+have default `false`, as required by `20260726120000_disable_bot_settings_defaults`. Both removed
+night-mode names additionally require the exact combined migration
+`20260316113000_add_night_mode_open_message`. Catalog evidence proves present schema compatibility;
+it does not reconstruct historical user-setting values or the original deployment sequence.
+
 Admission for each pending target requires 120 seconds of fresh ready ingress/admin observations
 with queue lag at most 10 seconds. Storage is sampled throughout. Missing or stale observations,
 device drift, lag above 120 seconds, or lag above 30 seconds continuously for 90 seconds abort only
@@ -117,6 +138,13 @@ receipt readback and minimal read-only client isolation. It does not claim to ob
 120-second production admission; timing coverage is separate and the production supervisor always
 uses real clocks. Native infra coverage is explicitly wired into PostgreSQL CI rather than relying
 on the store-less static job's skipped tests.
+
+The historical native fixture executes the four exact SQL files in a disposable database so
+Prisma itself creates the original receipts. Explicit fixture-only schema convergence precedes
+the remaining current migrations; this is not a reenactment of production history. The ordinary
+preparation command must then add only the two target receipts and preserve every historical
+receipt. Separate negative cases reject catalog drift and missing or conflicting evidence. Never
+run fixture convergence on production or install reconstructed SQL as new source migrations.
 
 Before release require affected public checks and exact-SHA `Required` plus CodeQL. After normal
 deployment verify the shared API image across all roles, strict smokes, immutable manifest and
