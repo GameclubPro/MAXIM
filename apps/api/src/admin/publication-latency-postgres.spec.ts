@@ -22,6 +22,7 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
   let scheduleId: string;
   let contentRevisionId: string;
   let chatId: string;
+  let extraChatIds: string[];
   let now: Date;
   const queries: Prisma.QueryEvent[] = [];
 
@@ -39,7 +40,8 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
 
   beforeEach(async () => {
     now = new Date();
-    chatId = `latency-${randomUUID()}`;
+    extraChatIds = [];
+    chatId = `-${BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 12)}`)}`;
     await db.chat.create({ data: { id: chatId, title: 'Publication latency test' } });
     const publication = await db.publication.create({
       data: {
@@ -56,6 +58,7 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
           },
         },
         contentRevisions: { create: { revision: 1, text: 'Test' } },
+        targets: { create: { targetChatId: chatId, entityType: 'CHAT', position: 0 } },
       },
       include: { schedule: true, contentRevisions: true },
     });
@@ -68,7 +71,7 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
   afterEach(async () => {
     await db.publicationOccurrence.deleteMany({ where: { publicationId } });
     await db.publication.delete({ where: { id: publicationId } });
-    await db.chat.delete({ where: { id: chatId } });
+    await db.chat.deleteMany({ where: { id: { in: [chatId, ...extraChatIds] } } });
   });
 
   afterAll(async () => {
@@ -90,8 +93,14 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
     id: string,
     offsetMs: number,
     delivery: Partial<Prisma.ManagedBroadcastDeliveryCreateManyInput>,
+    originalDeliveryDeadlineAt?: Date,
   ) {
-    await db.publicationOccurrence.create({ data: occurrence(id, offsetMs) });
+    await db.publicationOccurrence.create({
+      data: {
+        ...occurrence(id, offsetMs),
+        ...(originalDeliveryDeadlineAt ? { deliveryDeadlineAt: originalDeliveryDeadlineAt } : {}),
+      },
+    });
     return db.managedBroadcast.create({
       data: {
         id: `broadcast-${id}`,
@@ -100,6 +109,7 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
         targetChatIds: [chatId],
         buttons: [],
         publicationOccurrenceId: id,
+        ...(originalDeliveryDeadlineAt ? { publicationContentRevisionId: contentRevisionId } : {}),
         dispatchProfile: 'PUBLIK_V1',
         requiredBotId: 'publisher-test',
         nextSendAt: new Date(now.getTime() + offsetMs),
@@ -112,6 +122,7 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
             dialogBotId: 'dialog-test',
             publisherDialogContext: { version: 1, dialogBotId: 'dialog-test', buttons: [] },
             publicationOccurrenceId: id,
+            ...(originalDeliveryDeadlineAt ? { contentRevisionId } : {}),
             publicationPolicyRevision: 0,
             ...(delivery.dispatchBlockerCode ? { dispatchBlockedAt: now } : {}),
             ...delivery,
@@ -205,6 +216,132 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
     );
     expect(batch.dueRows).toEqual([{ id: due.id }]);
     expect(await selectNextPendingPublisherPublicationDeadline(db as never)).toBeNull();
+  });
+
+  it('prefers ready modern NOW execution over older future retries and fresh delivery leases while retaining due verification and fallback', async () => {
+    const prefix = randomUUID();
+    const deadlineAt = new Date(now.getTime() + 86_400_000);
+    const delayedIds: string[] = [];
+    for (let index = 0; index < 12; index += 1) {
+      const retry = await envelope(
+        `${prefix}-future-retry-${index}`,
+        -600_000 + index,
+        { nextAttemptAt: new Date(now.getTime() + 60_000) },
+        deadlineAt,
+      );
+      const sending = await envelope(
+        `${prefix}-fresh-sending-${index}`,
+        -500_000 + index,
+        { status: 'SENDING', lockedAt: now, lockToken: `lease-${index}`, attemptCount: 1 },
+        deadlineAt,
+      );
+      delayedIds.push(retry.id, sending.id);
+    }
+    const ready = await envelope(`${prefix}-ready`, -1_000, {}, deadlineAt);
+    const verification = await envelope(
+      `${prefix}-verification`,
+      -2_000,
+      {
+        status: 'SENT',
+        remoteMessageId: 'remote-due-verification',
+        sentAt: new Date(now.getTime() - 60_000),
+        remoteMessageVerificationNextAt: new Date(now.getTime() - 1_000),
+      },
+      deadlineAt,
+    );
+
+    const preferred = await selectPublicationManagedBroadcastDueBatch(
+      db,
+      ['NOW'],
+      2,
+      'PUBLIK_V1',
+      '100',
+    );
+
+    expect(preferred.dueRows).toEqual([{ id: ready.id }, { id: verification.id }]);
+
+    const withFallback = await selectPublicationManagedBroadcastDueBatch(
+      db,
+      ['NOW'],
+      delayedIds.length + 2,
+      'PUBLIK_V1',
+      '100',
+    );
+    expect(withFallback.dueRows.slice(0, 2)).toEqual([{ id: ready.id }, { id: verification.id }]);
+    expect(new Set(withFallback.dueRows.map((row) => row.id))).toEqual(
+      new Set([ready.id, verification.id, ...delayedIds]),
+    );
+  });
+
+  it('keeps an expired modern NOW envelope preferred for closure even when its pending retry is in the future', async () => {
+    const prefix = randomUUID();
+    const expired = await envelope(
+      `${prefix}-expired`,
+      -86_401_000,
+      { nextAttemptAt: new Date(now.getTime() + 60_000) },
+      new Date(now.getTime() - 1_000),
+    );
+    await envelope(`${prefix}-ready`, -1_000, {}, new Date(now.getTime() + 86_400_000));
+
+    const batch = await selectPublicationManagedBroadcastDueBatch(
+      db,
+      ['NOW'],
+      1,
+      'PUBLIK_V1',
+      '100',
+    );
+
+    expect(batch.dueRows).toEqual([{ id: expired.id }]);
+  });
+
+  it('keeps due receipt verification preferred within a modern NOW envelope whose pending retry is in the future', async () => {
+    const prefix = randomUUID();
+    const deadlineAt = new Date(now.getTime() + 86_400_000);
+    const mixed = await envelope(
+      `${prefix}-mixed`,
+      -60_000,
+      { nextAttemptAt: new Date(now.getTime() + 60_000) },
+      deadlineAt,
+    );
+    const receiptTargetId = `${chatId}1`;
+    await db.chat.create({ data: { id: receiptTargetId, title: 'Synthetic receipt target' } });
+    extraChatIds.push(receiptTargetId);
+    await db.publicationTarget.create({
+      data: { publicationId, targetChatId: receiptTargetId, entityType: 'CHAT', position: 1 },
+    });
+    await db.managedBroadcast.update({
+      where: { id: mixed.id },
+      data: { targetChatIds: [chatId, receiptTargetId] },
+    });
+    await db.managedBroadcastDelivery.create({
+      data: {
+        broadcastId: mixed.id,
+        occurrenceIndex: 1,
+        targetChatId: receiptTargetId,
+        publicationOccurrenceId: mixed.publicationOccurrenceId,
+        contentRevisionId,
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-test',
+        dialogBotId: 'dialog-test',
+        publisherDialogContext: { version: 1, dialogBotId: 'dialog-test', buttons: [] },
+        publicationPolicyRevision: 0,
+        status: 'SENT',
+        remoteMessageId: 'remote-mixed-verification',
+        sentAt: new Date(now.getTime() - 60_000),
+        remoteMessageVerificationNextAt: new Date(now.getTime() - 1_000),
+      },
+    });
+    await envelope(`${prefix}-ready`, -1_000, {}, deadlineAt);
+
+    const batch = await selectPublicationManagedBroadcastDueBatch(
+      db,
+      ['NOW'],
+      1,
+      'PUBLIK_V1',
+      '100',
+    );
+
+    expect(batch.dueRows).toEqual([{ id: mixed.id }]);
   });
 
   it('wakes pending NOW work while excluding blocked and fresh in-flight deliveries', async () => {

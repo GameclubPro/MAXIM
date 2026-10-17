@@ -3,12 +3,21 @@ import { PublicationService } from './publication.service';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { PublisherDeliveryDeferredError } from './publisher-managed-broadcast-dispatch';
 import { randomUUID } from 'node:crypto';
-import { PrismaClient, createPrismaAdapter, Prisma } from '../prisma/prisma-client';
+import {
+  PrismaClient,
+  createPrismaAdapter,
+  Prisma,
+  type ManagedBroadcastDelivery,
+} from '../prisma/prisma-client';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 import { buildClearResolvedPublisherRecipientBlockerQuery } from './publisher-publication-recipient-admission';
-import { selectNextPendingPublisherPublicationDeadline } from './admin-managed-broadcast-due-selection';
+import {
+  selectNextPendingPublisherPublicationDeadline,
+  selectPublicationManagedBroadcastDueBatch,
+} from './admin-managed-broadcast-due-selection';
+import type { PublisherTemporalSelectionRollout } from './publisher-publication-temporal-enrollment';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const integration = databaseUrl ? describe : describe.skip;
@@ -18,14 +27,17 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
   let db: PrismaClient;
   let chatIds: string[] = [];
   let publicationId: string;
+  let ownedPublicationIds: string[] = [];
   let broadcastId: string;
   let occurrenceId: string;
   let actorId: string;
   let runtime: AdminManagedBroadcastRuntime;
   let admission: jest.SpyInstance;
+  let temporalSelectionQueryCount = 0;
   const botId = `publisher-admission-${randomUUID()}`;
   const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
   const remoteSend = jest.fn();
+  const runtimeLogger = { warn: jest.fn(), log: jest.fn() };
   const unavailableTargets = new Set<string>();
   const prepareContext = jest.fn(async ({ dialogBotId }: { dialogBotId: string }) => ({
     version: 1,
@@ -42,9 +54,14 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       !url.pathname.includes('race_test')
     )
       throw new Error('Disposable local race_test database required');
-    db = new PrismaClient({
+    const client = new PrismaClient({
       adapter: createPrismaAdapter(databaseUrl, { max: 3, statement_timeout: 10_000 }),
+      log: [{ emit: 'event', level: 'query' }],
     });
+    client.$on('query', (event) => {
+      if (event.query.includes('raw_execution_candidates')) temporalSelectionQueryCount += 1;
+    });
+    db = client;
     await db.$connect();
     expect(await db.$queryRawUnsafe<Array<{ TimeZone: string }>>('SHOW TimeZone')).toEqual([
       { TimeZone: 'UTC' },
@@ -53,15 +70,21 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
   beforeEach(() => {
     requestActorAccessRefresh.mockClear();
     remoteSend.mockClear();
+    runtimeLogger.log.mockClear();
+    runtimeLogger.warn.mockClear();
     prepareContext.mockClear();
     unavailableTargets.clear();
     beforeMutation = undefined;
+    temporalSelectionQueryCount = 0;
     publicationId = '';
+    ownedPublicationIds = [];
   });
   afterEach(async () => {
-    if (publicationId) {
-      await db.publicationOccurrence.deleteMany({ where: { publicationId } });
-      await db.publication.delete({ where: { id: publicationId } });
+    if (ownedPublicationIds.length > 0) {
+      await db.publicationOccurrence.deleteMany({
+        where: { publicationId: { in: ownedPublicationIds } },
+      });
+      await db.publication.deleteMany({ where: { id: { in: ownedPublicationIds } } });
     }
     for (let offset = 0; offset < chatIds.length; offset += 1_000)
       await db.chat.deleteMany({ where: { id: { in: chatIds.slice(offset, offset + 1_000) } } });
@@ -71,11 +94,14 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     await db?.$disconnect();
   });
 
-  function createRuntime() {
+  function createRuntime(
+    publisherTemporalSelectionRollout: PublisherTemporalSelectionRollout = 'off',
+  ) {
     const result = new AdminManagedBroadcastRuntime(
       {
         prisma: db,
-        logger: { warn: jest.fn(), log: jest.fn() },
+        publisherTemporalSelectionRollout,
+        logger: runtimeLogger,
         publisherRuntimeBoundaryService: { assertDispatchEnabled: () => undefined },
         publisherDispatchHealthService: {
           assertDispatchAllowed: async () => undefined,
@@ -134,12 +160,19 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     return result;
   }
 
-  async function fixture(size: number, blockedHead = 0) {
+  async function fixture(
+    size: number,
+    blockedHead = 0,
+    { temporalNow = false }: { temporalNow?: boolean } = {},
+  ) {
     const prefix = `admission-${randomUUID()}`;
     actorId = `${prefix}-actor`;
-    chatIds = Array.from(
-      { length: size },
-      (_, index) => `${prefix}-${String(index).padStart(5, '0')}`,
+    const numericTargetBase =
+      BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 10)}`) * 1_000_000n;
+    chatIds = Array.from({ length: size }, (_, index) =>
+      temporalNow
+        ? `-${numericTargetBase + BigInt(index) + 1n}`
+        : `${prefix}-${String(index).padStart(5, '0')}`,
     );
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 24 * 60 * 60_000);
@@ -186,16 +219,30 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
         lifecycle: 'ACTIVE',
         dispatchProfile: 'PUBLIK_V1',
         requiredBotId: botId,
+        ...(temporalNow
+          ? {
+              audienceMode: 'SNAPSHOT',
+              targets: {
+                create: chatIds.map((targetChatId, position) => ({
+                  targetChatId,
+                  entityType: 'CHAT' as const,
+                  position,
+                })),
+              },
+            }
+          : {}),
         schedule: {
           create: {
-            mode: 'ONCE',
+            mode: temporalNow ? 'NOW' : 'ONCE',
             status: 'ACTIVE',
-            rule: {
-              mode: 'once',
-              timezone: 'Europe/Moscow',
-              at: now.toISOString(),
-              replaceConflicts: false,
-            },
+            rule: temporalNow
+              ? { mode: 'now', timezone: 'Europe/Moscow' }
+              : {
+                  mode: 'once',
+                  timezone: 'Europe/Moscow',
+                  at: now.toISOString(),
+                  replaceConflicts: false,
+                },
           },
         },
         contentRevisions: { create: { revision: 1, text: 'Synthetic admission fixture' } },
@@ -203,6 +250,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       include: { schedule: true, contentRevisions: true },
     });
     publicationId = publication.id;
+    ownedPublicationIds.push(publication.id);
     const revision = publication.contentRevisions[0]!.id;
     const occurrence = await db.publicationOccurrence.create({
       data: {
@@ -214,6 +262,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
         status: 'IN_PROGRESS',
         dispatchProfile: 'PUBLIK_V1',
         requiredBotId: botId,
+        ...(temporalNow ? { deliveryDeadlineAt: expiresAt } : {}),
       },
     });
     occurrenceId = occurrence.id;
@@ -253,7 +302,74 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
           }),
         ),
       });
-    runtime = createRuntime();
+    runtime = createRuntime(temporalNow ? '100' : 'off');
+  }
+
+  async function olderWaitingPublication(): Promise<string> {
+    const scheduledAt = new Date(Date.now() - 60_000);
+    const publication = await db.publication.create({
+      data: {
+        actorUserId: actorId,
+        requestId: randomUUID(),
+        lifecycle: 'ACTIVE',
+        audienceMode: 'SNAPSHOT',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+        targets: { create: { targetChatId: chatIds[0]!, entityType: 'CHAT', position: 0 } },
+        schedule: {
+          create: { mode: 'NOW', status: 'ACTIVE', rule: { mode: 'now', timezone: 'UTC' } },
+        },
+        contentRevisions: { create: { revision: 1, text: 'Synthetic future-wait fixture' } },
+      },
+      include: { schedule: true, contentRevisions: true },
+    });
+    ownedPublicationIds.push(publication.id);
+    const revision = publication.contentRevisions[0]!.id;
+    const occurrence = await db.publicationOccurrence.create({
+      data: {
+        publicationId: publication.id,
+        scheduleId: publication.schedule!.id,
+        contentRevisionId: revision,
+        scheduleRevision: 1,
+        scheduledAt,
+        status: 'IN_PROGRESS',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+        deliveryDeadlineAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+    const waiting = await db.managedBroadcast.create({
+      data: {
+        sourceChatId: chatIds[0]!,
+        actorUserId: actorId,
+        targetChatIds: [chatIds[0]!],
+        buttons: [],
+        publicationOccurrenceId: occurrence.id,
+        publicationContentRevisionId: revision,
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+        nextSendAt: scheduledAt,
+        scheduleMode: 'calendar',
+        occurrences: {
+          create: { sourceChatId: chatIds[0]!, occurrenceIndex: 1, scheduledAt },
+        },
+        deliveries: {
+          create: {
+            targetChatId: chatIds[0]!,
+            occurrenceIndex: 1,
+            publicationOccurrenceId: occurrence.id,
+            contentRevisionId: revision,
+            dispatchProfile: 'PUBLIK_V1',
+            requiredBotId: botId,
+            dialogBotId: botId,
+            publisherDialogContext: { version: 1, dialogBotId: botId, buttons: [] },
+            publicationPolicyRevision: 0,
+            nextAttemptAt: new Date(Date.now() + 60_000),
+          },
+        },
+      },
+    });
+    return waiting.id;
   }
 
   async function run() {
@@ -672,6 +788,111 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       ).nextSendAt!.getTime(),
     ).toBeGreaterThan(Date.now() + 50_000);
   });
+
+  it.each(['revoked_actor', 'canceled_publication'] as const)(
+    'preserves the final %s guard after a changed temporal selection and a real SQL claim',
+    async (change) => {
+      await fixture(1, 0, { temporalNow: true });
+      const waitingId = await olderWaitingPublication();
+      const baseline = await selectPublicationManagedBroadcastDueBatch(
+        db,
+        ['NOW'],
+        10,
+        'PUBLIK_V1',
+        'off',
+      );
+      expect(baseline.dueRows).toEqual([{ id: waitingId }, { id: broadcastId }]);
+      let claimedBeforeGuard: Pick<
+        ManagedBroadcastDelivery,
+        'status' | 'attemptCount' | 'lockedAt' | 'lockToken' | 'remoteMessageId' | 'sentAt'
+      > | null = null;
+      const mutateBeforeFinalGuard = jest.fn(async () => {
+        claimedBeforeGuard = await db.managedBroadcastDelivery.findFirstOrThrow({
+          where: { broadcastId },
+          select: {
+            status: true,
+            attemptCount: true,
+            lockedAt: true,
+            lockToken: true,
+            remoteMessageId: true,
+            sentAt: true,
+          },
+        });
+        if (change === 'revoked_actor') {
+          await db.managedEntityAccessEdge.updateMany({
+            where: { chatId: chatIds[0], userId: actorId, botId },
+            data: { state: 'USER_DENIED' },
+          });
+        } else {
+          await db.publication.update({
+            where: { id: publicationId },
+            data: { lifecycle: 'CANCELED' },
+          });
+        }
+      });
+      beforeMutation = mutateBeforeFinalGuard;
+
+      // FLAG: Use the public global selector and real SQL claim. Revoke only after the
+      // owning attempt is prepared, before its final effect guard. The ready publication
+      // moves ahead of a real future wait; no MAX request is made on either path.
+      await runtime.processDueImmediatePublicationBroadcasts();
+
+      expect(temporalSelectionQueryCount).toBe(1);
+      expect(runtimeLogger.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metric: 'publication_temporal_selection_v1',
+          rollout: '100',
+          candidates: 2,
+          enrolled: 2,
+          preferredReturned: 1,
+          excludedWaiting: 1,
+          fallbackReintroduced: 1,
+          comparisonBatches: 1,
+          changedDecisionBatches: 1,
+          changedPositions: 2,
+          newlySelected: 0,
+          displaced: 0,
+        }),
+      );
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(mutateBeforeFinalGuard).toHaveBeenCalledTimes(1);
+      expect(claimedBeforeGuard).toMatchObject({
+        status: 'SENDING',
+        attemptCount: 1,
+        lockedAt: expect.any(Date),
+        lockToken: expect.any(String),
+        remoteMessageId: null,
+        sentAt: null,
+      });
+      expect(remoteSend).not.toHaveBeenCalled();
+      expect(
+        await db.managedBroadcastDelivery.findFirstOrThrow({
+          where: { broadcastId: waitingId },
+        }),
+      ).toMatchObject({
+        status: 'PENDING',
+        attemptCount: 0,
+        lockedAt: null,
+        lockToken: null,
+        remoteMessageId: null,
+      });
+      expect(
+        await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
+      ).toMatchObject({
+        status: change === 'revoked_actor' ? 'PENDING' : 'CANCELED',
+        attemptCount: 0,
+        lockedAt: null,
+        lockToken: null,
+        remoteMessageId: null,
+        sentAt: null,
+        dispatchBlockerCode:
+          change === 'revoked_actor' ? PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE : null,
+      });
+      expect(
+        (await db.publication.findUniqueOrThrow({ where: { id: publicationId } })).lifecycle,
+      ).toBe(change === 'revoked_actor' ? 'ACTIVE' : 'CANCELED');
+    },
+  );
 
   it('recovers receipts with expired authority before admission and stops remaining recipients after cancellation', async () => {
     await fixture(6, 6);

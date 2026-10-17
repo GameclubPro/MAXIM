@@ -19,6 +19,18 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('requires an explicit supported Publisher selection rollout stage', () => {
+    expect(validateEnv(createValidEnv()).PUBLISHER_TEMPORAL_SELECTION_ROLLOUT).toBe('off');
+    for (const stage of ['test', '5', '25', '100']) {
+      expect(
+        validateEnv(createValidEnv({ PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: stage }))
+          .PUBLISHER_TEMPORAL_SELECTION_ROLLOUT,
+      ).toBe(stage);
+    }
+    expect(() =>
+      validateEnv(createValidEnv({ PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: '50' })),
+    ).toThrow(/PUBLISHER_TEMPORAL_SELECTION_ROLLOUT/u);
+  });
   it('keeps prior-wait shared media admission opt-in until capacity acceptance', () => {
     expect(validateEnv(createValidEnv()).MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED).toBe(
       false,

@@ -6,6 +6,7 @@ import {
 
 function dependencies(): AdminManagedBroadcastRuntimeContext {
   return {
+    publisherTemporalSelectionRollout: 'off',
     prisma: {} as never,
     maxClient: {} as never,
     logger: { log: jest.fn(), warn: jest.fn() } as never,
@@ -26,6 +27,25 @@ function dependencies(): AdminManagedBroadcastRuntimeContext {
 
 describe('managed broadcast capability boundary', () => {
   afterEach(() => jest.useRealTimers());
+
+  it.each(['off', '100'] as const)(
+    'passes the explicit %s selection policy to the Publisher runtime',
+    async (rollout) => {
+      const findMany = jest.fn().mockResolvedValue([]);
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const context = createAdminManagedBroadcastRuntimeContext({
+        ...dependencies(),
+        publisherTemporalSelectionRollout: rollout,
+        prisma: { managedBroadcast: { findMany }, $queryRaw: queryRaw } as never,
+      });
+      const runtime = new AdminManagedBroadcastRuntime(context, 'PUBLIK_V1');
+
+      await runtime.processDueImmediatePublicationBroadcasts();
+
+      expect(queryRaw).toHaveBeenCalledTimes(rollout === 'off' ? 0 : 1);
+      expect(findMany).toHaveBeenCalledTimes(rollout === 'off' ? 3 : 2);
+    },
+  );
 
   it('keeps throttle state per runtime and shares the interval across pressure sources', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-10-03T10:00:00Z'));

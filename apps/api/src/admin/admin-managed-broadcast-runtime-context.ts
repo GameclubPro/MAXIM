@@ -19,6 +19,7 @@ import type { SystemModeSnapshot } from '../system/system-mode.service';
 import type { AdminReadBypassOptions } from './admin.service.support';
 import type { PublisherDialogContextService } from './publisher-dialog-context.service';
 import type { ChannelPostSignatureService } from './channel-post-signature.service';
+import type { PublisherTemporalSelectionRollout } from './publisher-publication-temporal-enrollment';
 
 export type ManagedBroadcastButtonContextOptions = {
   customButtons?: BroadcastLinkButton[];
@@ -48,6 +49,7 @@ export type ManagedBroadcastButtonContextResult = {
 };
 
 export type AdminManagedBroadcastRuntimeContext = {
+  readonly publisherTemporalSelectionRollout: PublisherTemporalSelectionRollout;
   readonly prisma: PrismaService;
   readonly maxClient: MaxClientService;
   readonly logger: Logger;
