@@ -421,7 +421,7 @@ import {
 import { PUBLICATION_DELIVERY_ACCESS_LOST_ERROR_CODE } from './publication-access-loss-recovery';
 import {
   selectLegacyManagedBroadcastDueBatch,
-  selectPublicationManagedBroadcastDueBatch,
+  PublisherPublicationDueSelection,
 } from './admin-managed-broadcast-due-selection';
 import { processPriorityHalfOpenPublicationVerifications } from './admin-managed-broadcast-priority-verification';
 import {
@@ -701,6 +701,7 @@ const resolveEarlierDate = (current: Date | null, candidate: Date): Date =>
   current && current.getTime() < candidate.getTime() ? current : candidate;
 
 export class AdminManagedBroadcastRuntime {
+  private readonly publicationSelection: PublisherPublicationDueSelection;
   private readonly mediaRuntime: AdminManagedBroadcastMediaRuntime;
   private readonly publicationVerification: AdminManagedBroadcastPublicationVerification;
   private readonly publisherDispatch: PublisherManagedBroadcastDispatch;
@@ -713,6 +714,7 @@ export class AdminManagedBroadcastRuntime {
       ? PrismaPublicationDispatchProfile.PUBLIK_V1
       : PrismaPublicationDispatchProfile.LEGACY_ROUTED,
   ) {
+    this.publicationSelection = new PublisherPublicationDueSelection(context);
     this.mediaRuntime = new AdminManagedBroadcastMediaRuntime(context);
     this.publicationVerification = new AdminManagedBroadcastPublicationVerification(context);
     this.publisherDispatch = new PublisherManagedBroadcastDispatch(context, context.logger);
@@ -1032,8 +1034,7 @@ export class AdminManagedBroadcastRuntime {
         budget: verificationBudget,
       });
     }
-    const { dueRows, staleLockBefore } = await selectPublicationManagedBroadcastDueBatch(
-      this.prisma,
+    const { dueRows, staleLockBefore } = await this.publicationSelection.select(
       [PrismaPublicationScheduleMode.NOW],
       MANAGED_BROADCAST_DUE_BATCH_SIZE,
       this.publicationExecutorProfile,
@@ -1124,8 +1125,7 @@ export class AdminManagedBroadcastRuntime {
     const verificationBudget = sharedVerificationBudget ?? {
       remaining: PUBLICATION_POST_SEND_VERIFY_BATCH_SIZE,
     };
-    const { dueRows, staleLockBefore } = await selectPublicationManagedBroadcastDueBatch(
-      this.prisma,
+    const { dueRows, staleLockBefore } = await this.publicationSelection.select(
       [
         PrismaPublicationScheduleMode.ONCE,
         PrismaPublicationScheduleMode.SLOTS,

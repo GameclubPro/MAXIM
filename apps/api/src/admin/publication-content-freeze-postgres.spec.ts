@@ -208,6 +208,7 @@ integration('Publication content freeze and immutable recovery on PostgreSQL', (
         throw new Error('Media metadata observation must not call MAX or authorization helpers');
       };
       const context = {
+        publisherTemporalSelectionRollout: 'off',
         prisma: db as PrismaService,
         logger: new Logger('FrozenRevisionObservationTest'),
         get maxClient(): AdminManagedBroadcastRuntimeContext['maxClient'] {

@@ -1,3 +1,5 @@
+import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import { PublisherTemporalSelectionObserver } from './publisher-publication-temporal-observation';
 import {
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
@@ -9,6 +11,16 @@ import {
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import {
+  buildPublisherTemporalExecutionDueQuery,
+  PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD,
+  type PublisherTemporalCandidate,
+  type PublisherTemporalSelectionObservation,
+} from './publisher-publication-temporal-selection';
+import {
+  buildPublisherTemporalEnrollment,
+  type PublisherTemporalSelectionRollout,
+} from './publisher-publication-temporal-enrollment';
 import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from '../max/max-send-route-health';
 import { buildManagedBroadcastAutoRetryableFailureWhere } from './admin-managed-broadcast-reconciliation';
 import {
@@ -36,6 +48,36 @@ type DueManagedBroadcastRow = { id: string };
 type PriorityHalfOpenPublicationVerificationRow = DueManagedBroadcastRow & {
   deliveryId: string;
 };
+
+export class PublisherPublicationDueSelection {
+  private readonly observer: PublisherTemporalSelectionObserver;
+
+  constructor(
+    private readonly context: Pick<
+      AdminManagedBroadcastRuntimeContext,
+      'prisma' | 'logger' | 'publisherTemporalSelectionRollout'
+    >,
+  ) {
+    this.observer = new PublisherTemporalSelectionObserver(context.logger);
+  }
+
+  async select(
+    scheduleModes: readonly PublicationScheduleMode[],
+    limit: number,
+    dispatchProfile: PublicationDispatchProfile,
+  ) {
+    const rollout = this.context.publisherTemporalSelectionRollout;
+    const batch = await selectPublicationManagedBroadcastDueBatch(
+      this.context.prisma,
+      scheduleModes,
+      limit,
+      dispatchProfile,
+      rollout,
+    );
+    this.observer.record(rollout, batch.temporalSelection);
+    return batch;
+  }
+}
 
 export type TargetedPublisherImmediatePublicationScope = {
   publicationId: string;
@@ -311,11 +353,16 @@ export async function selectPriorityHalfOpenPublicationVerificationBatch(
 }
 
 export async function selectPublicationManagedBroadcastDueBatch(
-  prisma: Pick<PrismaService, 'managedBroadcast'>,
+  prisma: Pick<PrismaService, 'managedBroadcast' | '$queryRaw'>,
   scheduleModes: readonly PublicationScheduleMode[],
   limit: number,
   dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED,
-): Promise<{ dueRows: DueManagedBroadcastRow[]; staleLockBefore: Date }> {
+  temporalRollout: PublisherTemporalSelectionRollout = 'off',
+): Promise<{
+  dueRows: DueManagedBroadcastRow[];
+  staleLockBefore: Date;
+  temporalSelection?: PublisherTemporalSelectionObservation;
+}> {
   const now = new Date();
   const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
   const boundedLimit = Math.max(0, Math.floor(limit));
@@ -331,7 +378,11 @@ export async function selectPublicationManagedBroadcastDueBatch(
       is: { schedule: { is: { mode: { in: [...scheduleModes] } } } },
     },
   };
-  const orderBy = [{ nextSendAt: 'asc' as const }, { createdAt: 'asc' as const }];
+  const orderBy = [
+    { nextSendAt: 'asc' as const },
+    { createdAt: 'asc' as const },
+    { id: 'asc' as const },
+  ];
   const unverifiedDeliveryWhere: Prisma.ManagedBroadcastDeliveryWhereInput = {
     status: ManagedBroadcastDeliveryStatus.SENT,
     remoteMessageId: { not: null },
@@ -380,8 +431,31 @@ export async function selectPublicationManagedBroadcastDueBatch(
       unverifiedDeliveryWhere,
     ],
   };
-  const selectExecutionDueRows = () =>
-    prisma.managedBroadcast.findMany({
+  const temporalCandidates: PublisherTemporalCandidate[] = [];
+  let temporalSelectionUsed = false;
+  const selectExecutionDueRows = async () => {
+    if (
+      dispatchProfile === PublicationDispatchProfile.PUBLIK_V1 &&
+      temporalRollout !== 'off' &&
+      boundedLimit <= PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD &&
+      scheduleModes.includes(PublicationScheduleMode.NOW)
+    ) {
+      const candidates = await prisma.$queryRaw<PublisherTemporalCandidate[]>(
+        buildPublisherTemporalExecutionDueQuery({
+          now,
+          staleLockBefore,
+          scheduleModes,
+          enrollment: buildPublisherTemporalEnrollment(temporalRollout),
+        }),
+      );
+      temporalCandidates.push(...candidates);
+      temporalSelectionUsed = true;
+      return candidates
+        .filter((row) => row.state !== 'excluded_waiting')
+        .slice(0, boundedLimit)
+        .map(({ id }) => ({ id }));
+    }
+    return prisma.managedBroadcast.findMany({
       where: {
         ...baseWhere,
         status: ManagedBroadcastStatus.ACTIVE,
@@ -397,6 +471,7 @@ export async function selectPublicationManagedBroadcastDueBatch(
       take: boundedLimit,
       select: { id: true },
     });
+  };
   const selectVerificationDueRows = () =>
     prisma.managedBroadcast.findMany({
       where: {
@@ -472,6 +547,33 @@ export async function selectPublicationManagedBroadcastDueBatch(
       dueRows.push(row);
       selectedIds.add(row.id);
     }
+  }
+  if (temporalSelectionUsed) {
+    // FLAG: These are repeated bounded selection observations, not unique publications or
+    // SEND outcomes. Keep identifiers local and count the actual final fallback merge.
+    const candidates = temporalCandidates;
+    const count = (state: PublisherTemporalCandidate['state']) =>
+      candidates.filter((row) => row.state === state).length;
+    const excludedWaiting = count('excluded_waiting');
+    const verificationIds = new Set(verificationOnlyRows.map((row) => row.id));
+    return {
+      dueRows,
+      staleLockBefore,
+      temporalSelection: {
+        candidates: candidates.length,
+        unsupported: count('unsupported'),
+        refused: count('refused'),
+        enrolled: count('enrolled_kept') + excludedWaiting,
+        excludedWaiting,
+        preferredReturned: executionDueRows.filter((row) => selectedIds.has(row.id)).length,
+        fallbackReintroduced: candidates.filter(
+          (row) =>
+            row.state === 'excluded_waiting' &&
+            selectedIds.has(row.id) &&
+            !verificationIds.has(row.id),
+        ).length,
+      },
+    };
   }
   return { dueRows, staleLockBefore };
 }

@@ -338,6 +338,7 @@ import {
   type ChannelEngagementDialogArtifacts,
 } from './admin-channel-engagement';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
+import { parsePublisherTemporalSelectionRollout } from './publisher-publication-temporal-enrollment';
 import { throwLegacyPublicationWritesDisabled } from './legacy-publication-write-freeze';
 import {
   applySettingsSectionToAllChats as applySettingsSectionToAllChatsValue,
@@ -729,6 +730,11 @@ export class AdminService implements OnModuleDestroy {
     // FLAG: Resolve constructor-owned dependencies lazily and preserve their receivers.
     return new AdminManagedBroadcastRuntime(
       createAdminManagedBroadcastRuntimeContext({
+        get publisherTemporalSelectionRollout() {
+          return parsePublisherTemporalSelectionRollout(
+            owner.configService.get('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT'),
+          );
+        },
         get prisma() {
           return owner.prisma;
         },
@@ -1254,7 +1260,7 @@ export class AdminService implements OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly maxClient: MaxClientService,
     private readonly chatContextCache: ChatContextCacheService,
-    configService: ConfigService,
+    private readonly configService: ConfigService,
     @Optional()
     private readonly channelStatsCollector?: ChannelStatsCollectorService,
     @Optional() private readonly redisCounter?: RedisCounterService,
