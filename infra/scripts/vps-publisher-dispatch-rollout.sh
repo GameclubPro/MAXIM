@@ -87,6 +87,7 @@ PREVIEW_ENV_FILE=""
 OPERATOR_OWNER_TOKEN=""
 EXPECTED_HEARTBEAT_STATE=""
 OPERATOR_PAUSE_ARMED=0
+OPERATOR_PAUSE_UNCERTAIN=0
 POST_CLEAR_REARM_REQUIRED=0
 RECONCILE_ONLY=0
 ROLLOUT_COMPLETE=0
@@ -128,9 +129,11 @@ cleanup() {
   fi
   maxim_webhook_rollout_warn_if_paused || true
   if [[ "$status" -ne 0 && "$APPLY" -eq 1 &&
-        "${POST_CLEAR_REARM_REQUIRED:-0}" -eq 1 && "$ROLLOUT_COMPLETE" -ne 1 ]]; then
+        ("${POST_CLEAR_REARM_REQUIRED:-0}" -eq 1 || "${OPERATOR_PAUSE_UNCERTAIN:-0}" -eq 1) &&
+        "$ROLLOUT_COMPLETE" -ne 1 ]]; then
     cat >&2 <<'RECOVERY'
 CRITICAL: Publik dispatch rollout did not complete and the operator pause could not be confirmed.
+The Redis effect may have completed despite a missing or invalid response; do not repeat enable.
 Run the guarded recovery command immediately:
   ./infra/scripts/vps-connect.sh publisher-dispatch-disable --apply
 RECOVERY
@@ -610,28 +613,81 @@ control_field() {
   ' "$field"
 }
 
+publisher_control_admin_id() {
+  local ids_raw identity env_summary
+  local ids=()
+  ids_raw="$(timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+    docker compose "${COMPOSE_FILES[@]}" ps -a -q api-admin)" || return 1
+  [[ -z "$ids_raw" ]] || mapfile -t ids <<<"$ids_raw"
+  if [[ "${#ids[@]}" -ne 1 || ! "${ids[0]}" =~ ^[a-f0-9]{64}$ ]]; then
+    fail "Publisher control requires exactly one reviewed admin container."
+    return 1
+  fi
+  identity="$(timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+    docker inspect --format \
+      '{{.Image}} {{.State.Running}} {{index .Config.Labels "com.docker.compose.project"}} {{index .Config.Labels "com.docker.compose.service"}}' \
+      "${ids[0]}")" || return 1
+  if [[ "$identity" != "$MANIFEST_IMAGE_ID true infra api-admin" &&
+        "$identity" != "$MANIFEST_IMAGE_ID false infra api-admin" ]]; then
+    fail "Publisher control admin identity does not match the exact active image and service."
+    return 1
+  fi
+  env_summary="$(container_env_summary "${ids[0]}")" || return 1
+  printf '%s' "$env_summary" | node "$STATE_HELPER" verify-runtime-env any api-admin >/dev/null || return 1
+  if [[ "$identity" == "$MANIFEST_IMAGE_ID true infra api-admin" ]]; then
+    printf '%s' "${ids[0]}"
+  fi
+}
+
 publisher_control() {
-  local action="$1"
+  local action="$1" admin_id nonce output helper_source
   local env_args=()
+  case "$action" in
+    arm-enable|arm-disable|clear|status|assert-heartbeat) ;;
+    *) fail "Publisher control action is invalid."; return 1 ;;
+  esac
   if [[ "$action" == "arm-enable" || "$action" == "arm-disable" || "$action" == "clear" ]]; then
-    [[ -n "$OPERATOR_OWNER_TOKEN" ]] || fail "Publisher operator ownership is unavailable."
+    [[ -n "$OPERATOR_OWNER_TOKEN" ]] || { fail "Publisher operator ownership is unavailable."; return 1; }
     env_args=(-e "MAXIM_PUBLISHER_ROLLOUT_OWNER_TOKEN=$OPERATOR_OWNER_TOKEN")
   elif [[ "$action" == "assert-heartbeat" ]]; then
     [[ "$EXPECTED_HEARTBEAT_STATE" == "true" || "$EXPECTED_HEARTBEAT_STATE" == "false" ]] ||
-      fail "Expected publisher heartbeat state is invalid."
+      { fail "Expected publisher heartbeat state is invalid."; return 1; }
     env_args=(-e "MAXIM_PUBLISHER_EXPECTED_HEARTBEAT=$EXPECTED_HEARTBEAT_STATE")
   fi
-  if [[ "$action" == "arm-enable" || "$action" == "arm-disable" || "$action" == "clear" ]]; then
-    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
-      docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps --pull never -T \
+  admin_id="$(publisher_control_admin_id)" || return 1
+  nonce="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')" || return 1
+  [[ "$nonce" =~ ^[a-f0-9]{64}$ ]] || return 1
+  env_args+=(-e "MAXIM_PUBLISHER_CONTROL_NONCE=$nonce")
+  if [[ -n "$admin_id" ]]; then
+    # FLAG: Dispatch to the inspected ID, never re-resolve a replacement service container.
+    # A failed exec is ambiguous and must not fall through to another Redis mutation.
+    output="$(timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker exec -i -e MAX_PUBLISHER_BOT_ID=se14088825_bot "${env_args[@]}" \
+        "$admin_id" node - "$action" <"$CONTROL_HELPER")" || return 1
+  else
+    [[ "$action" == "arm-disable" || "$action" == "clear" ]] || {
+      fail "Publisher control requires a running admin outside guarded pause recovery."
+      return 1
+    }
+    helper_source="$(cat "$CONTROL_HELPER")" || return 1
+    # FLAG: Recovery may need a stopped fleet. Closed stdin declines Compose volume
+    # recreation prompts; code travels as one argument and the response is nonce-framed.
+    output="$(timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps --pull never -T --interactive=false \
         -e MAX_PUBLISHER_BOT_ID=se14088825_bot "${env_args[@]}" \
-        api-action node - "$action" <"$CONTROL_HELPER"
-    return
+        api-action node -e "$helper_source" -- "$action" </dev/null)" || return 1
   fi
-  timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
-    docker compose "${COMPOSE_FILES[@]}" exec -T \
-      -e MAX_PUBLISHER_BOT_ID=se14088825_bot "${env_args[@]}" \
-      api-admin node - "$action" <"$CONTROL_HELPER"
+  printf '%s' "$output" | node -e '
+    try {
+      const { readFileSync } = require("node:fs");
+      const { decodeControlResponse } = require(process.argv[1]);
+      const summary = decodeControlResponse(readFileSync(0).toString("utf8"), process.argv[2], process.argv[3]);
+      process.stdout.write(JSON.stringify(summary));
+    } catch {
+      process.stderr.write("Publisher control response failed closed.\n");
+      process.exitCode = 1;
+    }
+  ' "$CONTROL_HELPER" "$action" "$nonce"
 }
 
 read_control_status() {
@@ -639,16 +695,24 @@ read_control_status() {
 }
 
 arm_operator_pause() {
-  local random_hex summary result
-  random_hex="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')" ||
+  local random_hex summary result pause_kind
+  random_hex="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')" || {
     fail "Could not generate publisher rollout ownership."
-  [[ "$random_hex" =~ ^[a-f0-9]{64}$ ]] || fail "Publisher rollout ownership is invalid."
+    return 1
+  }
+  [[ "$random_hex" =~ ^[a-f0-9]{64}$ ]] || { fail "Publisher rollout ownership is invalid."; return 1; }
   OPERATOR_OWNER_TOKEN="publisher-rollout:$random_hex"
-  summary="$(publisher_control "arm-${COMMAND}")" || fail "Could not arm publisher operator pause."
-  result="$(control_field "$summary" result)" || fail "Publisher pause result is invalid."
-  [[ "$result" == "acquired" ]] ||
+  # FLAG: A lost response cannot prove Redis did not acquire the persistent pause.
+  OPERATOR_PAUSE_UNCERTAIN=1
+  summary="$(publisher_control "arm-${COMMAND}")" || { fail "Could not arm publisher operator pause."; return 1; }
+  result="$(control_field "$summary" result)" || { fail "Publisher pause result is invalid."; return 1; }
+  pause_kind="$(control_field "$summary" pauseKind)" || { fail "Publisher pause state is invalid."; return 1; }
+  if [[ "$result" != "acquired" || "$pause_kind" != "operator" ]]; then
     fail "Publisher dispatch already has a pause that this operation cannot safely own."
+    return 1
+  fi
   OPERATOR_PAUSE_ARMED=1
+  OPERATOR_PAUSE_UNCERTAIN=0
   printf '%s\n' "Publik operator pause armed."
 }
 
@@ -665,8 +729,8 @@ best_effort_rearm_operator_pause() {
     return 1
   fi
   OPERATOR_OWNER_TOKEN="publisher-rollout:$random_hex"
-  # A timeout after the Redis request is ambiguous. Keep cleanup armed until a confirmed result.
-  OPERATOR_PAUSE_ARMED=1
+  # FLAG: A timeout after the Redis request is ambiguous until a confirmed response.
+  OPERATOR_PAUSE_UNCERTAIN=1
   if ! summary="$(publisher_control arm-disable)"; then
     printf '%s\n' \
       'CRITICAL: Publik operator pause re-arm was not confirmed; guarded disable is required.' >&2
@@ -685,30 +749,42 @@ best_effort_rearm_operator_pause() {
       'CRITICAL: Publik operator pause re-arm did not acquire the reviewed operator marker.' >&2
     return 1
   fi
+  OPERATOR_PAUSE_ARMED=1
+  OPERATOR_PAUSE_UNCERTAIN=0
   printf '%s\n' 'Publik operator pause re-armed after post-enable stability failure.'
 }
 
 clear_operator_pause() {
   maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   local summary result pause_kind
-  summary="$(publisher_control clear)" || fail "Could not clear the owned publisher operator pause."
-  result="$(control_field "$summary" result)" || fail "Publisher pause clear result is invalid."
-  pause_kind="$(control_field "$summary" pauseKind)" ||
+  OPERATOR_PAUSE_UNCERTAIN=1
+  summary="$(publisher_control clear)" || { fail "Could not clear the owned publisher operator pause."; return 1; }
+  result="$(control_field "$summary" result)" || { fail "Publisher pause clear result is invalid."; return 1; }
+  pause_kind="$(control_field "$summary" pauseKind)" || {
     fail "Publisher pause state after clear is invalid."
+    return 1
+  }
   if [[ "$result" == "cleared" || "$result" == "not_owned" ]]; then
     # The Redis mutation proved this process no longer owns an operator marker.
     OPERATOR_PAUSE_ARMED=0
+    OPERATOR_PAUSE_UNCERTAIN=0
   fi
   if [[ "$COMMAND" == "enable" ]]; then
-    [[ "$result" == "cleared" && "$pause_kind" == "missing" ]] ||
+    [[ "$result" == "cleared" && "$pause_kind" == "missing" ]] || {
       fail "Publisher operator pause was replaced by another fail-closed pause during enable."
+      return 1
+    }
   else
     if [[ "$result" == "cleared" ]]; then
-      [[ "$pause_kind" == "missing" || "$pause_kind" == "authorization" ]] ||
+      [[ "$pause_kind" == "missing" || "$pause_kind" == "authorization" ]] || {
         fail "Publisher disable restored an unreviewed pause state."
+        return 1
+      }
     else
-      [[ "$result" == "not_owned" && "$pause_kind" == "authorization" ]] ||
+      [[ "$result" == "not_owned" && "$pause_kind" == "authorization" ]] || {
         fail "Publisher operator pause ownership changed during disable."
+        return 1
+      }
     fi
   fi
   printf 'Publik operator pause released: retained_pause=%s\n' \
