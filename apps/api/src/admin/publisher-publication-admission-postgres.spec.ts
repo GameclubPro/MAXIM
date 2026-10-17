@@ -13,7 +13,10 @@ import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime'
 import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 import { buildClearResolvedPublisherRecipientBlockerQuery } from './publisher-publication-recipient-admission';
-import { selectNextPendingPublisherPublicationDeadline } from './admin-managed-broadcast-due-selection';
+import {
+  selectNextPendingPublisherPublicationDeadline,
+  selectPublicationManagedBroadcastDueBatch,
+} from './admin-managed-broadcast-due-selection';
 import type { PublisherTemporalSelectionRollout } from './publisher-publication-temporal-enrollment';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
@@ -24,6 +27,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
   let db: PrismaClient;
   let chatIds: string[] = [];
   let publicationId: string;
+  let ownedPublicationIds: string[] = [];
   let broadcastId: string;
   let occurrenceId: string;
   let actorId: string;
@@ -73,11 +77,14 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     beforeMutation = undefined;
     temporalSelectionQueryCount = 0;
     publicationId = '';
+    ownedPublicationIds = [];
   });
   afterEach(async () => {
-    if (publicationId) {
-      await db.publicationOccurrence.deleteMany({ where: { publicationId } });
-      await db.publication.delete({ where: { id: publicationId } });
+    if (ownedPublicationIds.length > 0) {
+      await db.publicationOccurrence.deleteMany({
+        where: { publicationId: { in: ownedPublicationIds } },
+      });
+      await db.publication.deleteMany({ where: { id: { in: ownedPublicationIds } } });
     }
     for (let offset = 0; offset < chatIds.length; offset += 1_000)
       await db.chat.deleteMany({ where: { id: { in: chatIds.slice(offset, offset + 1_000) } } });
@@ -243,6 +250,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       include: { schedule: true, contentRevisions: true },
     });
     publicationId = publication.id;
+    ownedPublicationIds.push(publication.id);
     const revision = publication.contentRevisions[0]!.id;
     const occurrence = await db.publicationOccurrence.create({
       data: {
@@ -295,6 +303,73 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
         ),
       });
     runtime = createRuntime(temporalNow ? '100' : 'off');
+  }
+
+  async function olderWaitingPublication(): Promise<string> {
+    const scheduledAt = new Date(Date.now() - 60_000);
+    const publication = await db.publication.create({
+      data: {
+        actorUserId: actorId,
+        requestId: randomUUID(),
+        lifecycle: 'ACTIVE',
+        audienceMode: 'SNAPSHOT',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+        targets: { create: { targetChatId: chatIds[0]!, entityType: 'CHAT', position: 0 } },
+        schedule: {
+          create: { mode: 'NOW', status: 'ACTIVE', rule: { mode: 'now', timezone: 'UTC' } },
+        },
+        contentRevisions: { create: { revision: 1, text: 'Synthetic future-wait fixture' } },
+      },
+      include: { schedule: true, contentRevisions: true },
+    });
+    ownedPublicationIds.push(publication.id);
+    const revision = publication.contentRevisions[0]!.id;
+    const occurrence = await db.publicationOccurrence.create({
+      data: {
+        publicationId: publication.id,
+        scheduleId: publication.schedule!.id,
+        contentRevisionId: revision,
+        scheduleRevision: 1,
+        scheduledAt,
+        status: 'IN_PROGRESS',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+        deliveryDeadlineAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+    const waiting = await db.managedBroadcast.create({
+      data: {
+        sourceChatId: chatIds[0]!,
+        actorUserId: actorId,
+        targetChatIds: [chatIds[0]!],
+        buttons: [],
+        publicationOccurrenceId: occurrence.id,
+        publicationContentRevisionId: revision,
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+        nextSendAt: scheduledAt,
+        scheduleMode: 'calendar',
+        occurrences: {
+          create: { sourceChatId: chatIds[0]!, occurrenceIndex: 1, scheduledAt },
+        },
+        deliveries: {
+          create: {
+            targetChatId: chatIds[0]!,
+            occurrenceIndex: 1,
+            publicationOccurrenceId: occurrence.id,
+            contentRevisionId: revision,
+            dispatchProfile: 'PUBLIK_V1',
+            requiredBotId: botId,
+            dialogBotId: botId,
+            publisherDialogContext: { version: 1, dialogBotId: botId, buttons: [] },
+            publicationPolicyRevision: 0,
+            nextAttemptAt: new Date(Date.now() + 60_000),
+          },
+        },
+      },
+    });
+    return waiting.id;
   }
 
   async function run() {
@@ -715,9 +790,18 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
   });
 
   it.each(['revoked_actor', 'canceled_publication'] as const)(
-    'preserves the final %s guard after temporal rollout 100 selection and a real SQL claim',
+    'preserves the final %s guard after a changed temporal selection and a real SQL claim',
     async (change) => {
       await fixture(1, 0, { temporalNow: true });
+      const waitingId = await olderWaitingPublication();
+      const baseline = await selectPublicationManagedBroadcastDueBatch(
+        db,
+        ['NOW'],
+        10,
+        'PUBLIK_V1',
+        'off',
+      );
+      expect(baseline.dueRows).toEqual([{ id: waitingId }, { id: broadcastId }]);
       let claimedBeforeGuard: Pick<
         ManagedBroadcastDelivery,
         'status' | 'attemptCount' | 'lockedAt' | 'lockToken' | 'remoteMessageId' | 'sentAt'
@@ -749,7 +833,8 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       beforeMutation = mutateBeforeFinalGuard;
 
       // FLAG: Use the public global selector and real SQL claim. Revoke only after the
-      // owning attempt is prepared, before its final effect guard; no MAX request is made.
+      // owning attempt is prepared, before its final effect guard. The ready publication
+      // moves ahead of a real future wait; no MAX request is made on either path.
       await runtime.processDueImmediatePublicationBroadcasts();
 
       expect(temporalSelectionQueryCount).toBe(1);
@@ -757,11 +842,16 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
         expect.objectContaining({
           metric: 'publication_temporal_selection_v1',
           rollout: '100',
-          candidates: 1,
-          enrolled: 1,
+          candidates: 2,
+          enrolled: 2,
           preferredReturned: 1,
-          excludedWaiting: 0,
-          fallbackReintroduced: 0,
+          excludedWaiting: 1,
+          fallbackReintroduced: 1,
+          comparisonBatches: 1,
+          changedDecisionBatches: 1,
+          changedPositions: 2,
+          newlySelected: 0,
+          displaced: 0,
         }),
       );
       expect(admission).toHaveBeenCalledTimes(1);
@@ -775,6 +865,17 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
         sentAt: null,
       });
       expect(remoteSend).not.toHaveBeenCalled();
+      expect(
+        await db.managedBroadcastDelivery.findFirstOrThrow({
+          where: { broadcastId: waitingId },
+        }),
+      ).toMatchObject({
+        status: 'PENDING',
+        attemptCount: 0,
+        lockedAt: null,
+        lockToken: null,
+        remoteMessageId: null,
+      });
       expect(
         await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
       ).toMatchObject({

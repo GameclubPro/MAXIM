@@ -16,6 +16,8 @@ import { pathToFileURL } from 'node:url';
 
 const MAX_DOTENV_BYTES = 1024 * 1024;
 const DISPATCH_KEY = 'MAX_PUBLISHER_DISPATCH_ENABLED';
+const SELECTION_KEY = 'PUBLISHER_TEMPORAL_SELECTION_ROLLOUT';
+const SELECTION_MODES = new Set(['off', 'test', '5', '25', '100']);
 
 export const PUBLISHER_PRODUCTION_ROLE_BY_SERVICE = Object.freeze({
   'api-ingress': 'ingress',
@@ -34,12 +36,12 @@ export const PUBLISHER_PRODUCTION_ROLE_BY_SERVICE = Object.freeze({
   'api-message-retention': 'message-retention',
 });
 
-function decodeDotenv(contents) {
+function decodeDotenv(contents, preserveBom = false) {
   const bytes = Buffer.isBuffer(contents) ? contents : Buffer.from(String(contents));
   if (bytes.byteLength > MAX_DOTENV_BYTES) {
     throw new Error(`Production dotenv must be at most ${MAX_DOTENV_BYTES} bytes.`);
   }
-  const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  const decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: preserveBom }).decode(bytes);
   if (decoded.includes('\0')) {
     throw new Error('Production dotenv must not contain NUL bytes.');
   }
@@ -115,6 +117,87 @@ export function patchPublisherDispatchEnv(contents, enabled) {
       replaced = true;
       const ending = line.endsWith('\r\n') ? '\r\n' : line.endsWith('\n') ? '\n' : '';
       return `${replacement}${ending}`;
+    })
+    .join('');
+}
+
+function requireSelectionMode(mode, allowDefault = false) {
+  if (!SELECTION_MODES.has(mode) && !(allowDefault && mode === 'default-off')) {
+    throw new Error('Publisher temporal selection mode must be off, test, 5, 25 or 100.');
+  }
+  return mode;
+}
+
+function parseSelectionAssignment(line) {
+  const body = line.replace(/\r?\n$/u, '');
+  if (!/^\s*(?:export\s+)?['"]?PUBLISHER_TEMPORAL_SELECTION_ROLLOUT(?=$|[^A-Za-z0-9_])/u.test(body))
+    return null;
+  const match =
+    /^\s*(?:export[ \t]+)?PUBLISHER_TEMPORAL_SELECTION_ROLLOUT[ \t]*=[ \t]*(off|test|5|25|100)[ \t]*$/u.exec(
+      body,
+    );
+  if (!match) throw new Error(`${SELECTION_KEY} must have one exact unquoted mode.`);
+  return match[1];
+}
+
+function inspectPublisherTemporalSelectionDotenv(contents) {
+  const decoded = decodeDotenv(contents, true);
+  const assignments = [];
+  let quotedValue = null;
+  const lines = splitLinesPreservingEndings(decoded);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    let offset = 0;
+    if (!quotedValue) {
+      const mode = parseSelectionAssignment(line);
+      if (mode !== null) assignments.push({ mode, index });
+      const quotedAssignment =
+        /^\s*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(['"`])/u.exec(line);
+      if (!quotedAssignment) continue;
+      quotedValue = quotedAssignment[1];
+      offset = quotedAssignment[0].length;
+    }
+    // FLAG: Key-shaped text inside another multiline value is data, never an assignment.
+    for (; offset < line.length; offset += 1) {
+      if (line[offset] === '\\') offset += 1;
+      else if (line[offset] === quotedValue) {
+        quotedValue = null;
+        break;
+      }
+    }
+  }
+  if (quotedValue) throw new Error('Production dotenv contains an unterminated quoted value.');
+  if (assignments.length > 1) throw new Error(`Duplicate dotenv key: ${SELECTION_KEY}.`);
+  return {
+    configured: assignments.length === 1,
+    mode: assignments[0]?.mode ?? 'off',
+    assignmentIndex: assignments[0]?.index,
+    decoded,
+  };
+}
+
+export function readPublisherTemporalSelectionEnv(contents) {
+  const { configured, mode } = inspectPublisherTemporalSelectionDotenv(contents);
+  return Object.freeze({ configured, mode });
+}
+
+export function patchPublisherTemporalSelectionEnv(contents, mode) {
+  requireSelectionMode(mode);
+  const state = inspectPublisherTemporalSelectionDotenv(contents);
+  const replacement = `${SELECTION_KEY}=${mode}`;
+  if (!state.configured) {
+    if (!state.decoded) return `${replacement}\n`;
+    const separator = state.decoded.includes('\r\n') ? '\r\n' : '\n';
+    return state.decoded.endsWith('\n')
+      ? `${state.decoded}${replacement}${separator}`
+      : `${state.decoded}${separator}${replacement}`;
+  }
+  return splitLinesPreservingEndings(state.decoded)
+    .map((line, index) => {
+      if (index !== state.assignmentIndex) return line;
+      const ending = line.endsWith('\r\n') ? '\r\n' : line.endsWith('\n') ? '\n' : '';
+      const bom = line.startsWith('\uFEFF') ? '\uFEFF' : '';
+      return `${bom}${replacement}${ending}`;
     })
     .join('');
 }
@@ -204,6 +287,108 @@ export function verifyPublisherComposeConfig(config, enabled, expectedImageRef) 
   });
 }
 
+export function verifyPublisherTemporalRuntimeEnvironment(environment, expectedMode, serviceName) {
+  requireSelectionMode(expectedMode, true);
+  // FLAG: Selection controls preference only. Reuse the exact role identity guard without
+  // changing or requiring a particular dispatch state; callers check dispatch independently.
+  if (!verifyPublisherRuntimeEnvironment(environment, 'any', serviceName)) return false;
+  return expectedMode === 'default-off'
+    ? environment[SELECTION_KEY] === undefined || environment[SELECTION_KEY] === 'off'
+    : environment[SELECTION_KEY] === expectedMode;
+}
+
+export function verifyPublisherTemporalComposeConfig(config, expectedMode, expectedImageRef) {
+  requireSelectionMode(expectedMode, true);
+  if (!verifyPublisherComposeConfig(config, 'any', expectedImageRef)) return false;
+  return Object.keys(PUBLISHER_PRODUCTION_ROLE_BY_SERVICE).every((service) =>
+    verifyPublisherTemporalRuntimeEnvironment(
+      config.services[service].environment,
+      expectedMode,
+      service,
+    ),
+  );
+}
+
+const SELECTION_SOURCE_PATHS = Object.freeze({
+  schema: 'apps/api/src/config/env.schema.ts',
+  compose: 'infra/docker-compose.yml',
+  runtime: 'apps/api/src/admin/admin.service.legacy.ts',
+  enrollment: 'apps/api/src/admin/publisher-publication-temporal-enrollment.ts',
+  selection: 'apps/api/src/admin/admin-managed-broadcast-due-selection.ts',
+  query: 'apps/api/src/admin/publisher-publication-temporal-selection.ts',
+});
+
+function compactSelectionSource(source) {
+  if (typeof source !== 'string')
+    throw new Error('Publisher temporal selection source is missing.');
+  return source
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/^\s*\/\/.*$/gmu, '')
+    .replace(/\s+/gu, '');
+}
+
+export function assertPublisherTemporalSelectionSource(sources) {
+  const checks = {
+    schema: [
+      "PUBLISHER_TEMPORAL_SELECTION_ROLLOUT:z.enum(['off','test','5','25','100']).default('off')",
+    ],
+    runtime: [
+      "import{parsePublisherTemporalSelectionRollout}from'./publisher-publication-temporal-enrollment'",
+      "get publisherTemporalSelectionRollout(){return parsePublisherTemporalSelectionRollout(owner.configService.get('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT'),);}",
+    ],
+    enrollment: [
+      "const TEST_CHAT_ID='-78271094414679'",
+      "const TEST_CHANNEL_ID='-78271171091799'",
+      'export function parsePublisherTemporalSelectionRollout(',
+      "return value==='test'||value==='5'||value==='25'||value==='100'?value:'off'",
+      'export function buildPublisherTemporalEnrollment(',
+      "if(mode==='off')return Prisma.sql`FALSE`",
+      "mode==='test'",
+      'target."target_chat_id"=${TEST_CHAT_ID}',
+      'target."target_chat_id"=${TEST_CHANNEL_ID}',
+      'buildTestSiblingAudienceProof()',
+      'publisher-temporal-v1:',
+    ],
+    selection: [
+      "from'./publisher-publication-temporal-selection'",
+      "from'./publisher-publication-temporal-enrollment'",
+      'const rollout=this.context.publisherTemporalSelectionRollout',
+      'selectPublicationManagedBroadcastDueBatch(this.context.prisma,scheduleModes,limit,dispatchProfile,rollout,)',
+      "temporalRollout!=='off'",
+      'buildPublisherTemporalExecutionDueQuery({',
+      'enrollment:buildPublisherTemporalEnrollment(temporalRollout)',
+    ],
+    query: ['export function buildPublisherTemporalExecutionDueQuery(', 'temporal_delivery_page'],
+  };
+  for (const [name, fragments] of Object.entries(checks)) {
+    const source = compactSelectionSource(sources?.[name]);
+    for (const fragment of fragments) {
+      if (!source.includes(compactSelectionSource(fragment))) {
+        throw new Error(
+          `Publisher temporal selection source guard failed: ${SELECTION_SOURCE_PATHS[name]}.`,
+        );
+      }
+    }
+  }
+  const compose = sources?.compose;
+  if (typeof compose !== 'string')
+    throw new Error('Publisher temporal selection Compose source is missing.');
+  const publisher = /^ {2}api-publisher:\r?\n(?:(?!^ {2}[A-Za-z0-9_-]+:)[\s\S])*/mu.exec(
+    compose,
+  )?.[0];
+  if (
+    !publisher ||
+    !/^ {6}PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: \$\{PUBLISHER_TEMPORAL_SELECTION_ROLLOUT:-off\}[ \t]*\r?$/mu.test(
+      publisher,
+    )
+  ) {
+    throw new Error(
+      'Publisher temporal selection source guard failed: api-publisher Compose environment.',
+    );
+  }
+  return true;
+}
+
 function parseBooleanArgument(value) {
   if (value === 'true') return true;
   if (value === 'false') return false;
@@ -233,20 +418,62 @@ function main(argv) {
     writeFileAtomic(path, patched);
     return;
   }
-  if (command === 'verify-runtime-env' && args.length === 2) {
+  if (command === 'verify-runtime-env' && (args.length === 2 || args.length === 3)) {
     const enabled = parseExpectedStateArgument(args[0]);
     const environment = JSON.parse(readFileSync(0).toString('utf8'));
-    if (!verifyPublisherRuntimeEnvironment(environment, enabled, args[1])) process.exitCode = 1;
+    const selectionMatches =
+      args.length === 2 || verifyPublisherTemporalRuntimeEnvironment(environment, args[2], args[1]);
+    if (!verifyPublisherRuntimeEnvironment(environment, enabled, args[1]) || !selectionMatches)
+      process.exitCode = 1;
     return;
   }
-  if (command === 'verify-compose' && args.length === 2) {
+  if (command === 'verify-compose' && (args.length === 2 || args.length === 3)) {
     const enabled = parseExpectedStateArgument(args[0]);
     const config = JSON.parse(readFileSync(0).toString('utf8'));
-    if (!verifyPublisherComposeConfig(config, enabled, args[1])) process.exitCode = 1;
+    const selectionMatches =
+      args.length === 2 || verifyPublisherTemporalComposeConfig(config, args[2], args[1]);
+    if (!verifyPublisherComposeConfig(config, enabled, args[1]) || !selectionMatches)
+      process.exitCode = 1;
+    return;
+  }
+  if (
+    (command === 'read-selection-env' || command === 'read-selection-env-configured') &&
+    args.length === 1
+  ) {
+    const state = readPublisherTemporalSelectionEnv(readFileSync(args[0]));
+    process.stdout.write(`${command === 'read-selection-env' ? state.mode : state.configured}\n`);
+    return;
+  }
+  if (command === 'patch-selection-env' && args.length === 2) {
+    const path = resolve(args[0]);
+    const patched = patchPublisherTemporalSelectionEnv(readFileSync(path), args[1]);
+    writeFileAtomic(path, patched);
+    return;
+  }
+  if (command === 'verify-selection-runtime-env' && args.length === 2) {
+    const environment = JSON.parse(readFileSync(0).toString('utf8'));
+    if (!verifyPublisherTemporalRuntimeEnvironment(environment, args[0], args[1]))
+      process.exitCode = 1;
+    return;
+  }
+  if (command === 'verify-selection-compose' && args.length === 2) {
+    const config = JSON.parse(readFileSync(0).toString('utf8'));
+    if (!verifyPublisherTemporalComposeConfig(config, args[0], args[1])) process.exitCode = 1;
+    return;
+  }
+  if (command === 'verify-selection-source' && args.length === 1) {
+    assertPublisherTemporalSelectionSource(
+      Object.fromEntries(
+        Object.entries(SELECTION_SOURCE_PATHS).map(([name, path]) => [
+          name,
+          readFileSync(resolve(args[0], path), 'utf8'),
+        ]),
+      ),
+    );
     return;
   }
   throw new Error(
-    'Usage: publisher-dispatch-rollout-state.mjs <read-env path|read-env-configured path|patch-env path true|false|verify-runtime-env state service|verify-compose state image>',
+    'Usage: publisher-dispatch-rollout-state.mjs <read-env path|read-env-configured path|patch-env path true|false|verify-runtime-env state service [selection-mode]|verify-compose state image [selection-mode]|read-selection-env path|read-selection-env-configured path|patch-selection-env path mode|verify-selection-runtime-env mode service|verify-selection-compose mode image|verify-selection-source root>',
   );
 }
 

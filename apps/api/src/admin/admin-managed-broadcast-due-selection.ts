@@ -352,6 +352,60 @@ export async function selectPriorityHalfOpenPublicationVerificationBatch(
   return { dueRows, staleLockBefore };
 }
 
+function mergePublicationDueRows(
+  executionDueRows: readonly DueManagedBroadcastRow[],
+  verificationDueRows: readonly DueManagedBroadcastRow[],
+  fallbackDueRows: readonly DueManagedBroadcastRow[],
+  limit: number,
+): { dueRows: DueManagedBroadcastRow[]; verificationOnlyRows: DueManagedBroadcastRow[] } {
+  const executionIds = new Set(executionDueRows.map((row) => row.id));
+  const verificationOnlyRows = verificationDueRows.filter((row) => !executionIds.has(row.id));
+  const verificationReservation = Math.min(
+    verificationOnlyRows.length,
+    MANAGED_BROADCAST_RECOVERY_BATCH_SIZE,
+    executionDueRows.length > 0 ? Math.max(0, limit - 1) : limit,
+  );
+  const dueRows: DueManagedBroadcastRow[] = [
+    ...executionDueRows.slice(0, limit - verificationReservation),
+    ...verificationOnlyRows.slice(0, verificationReservation),
+  ];
+  const selectedIds = new Set(dueRows.map((row) => row.id));
+  for (const row of [...executionDueRows, ...verificationOnlyRows, ...fallbackDueRows]) {
+    if (dueRows.length >= limit) break;
+    if (!selectedIds.has(row.id)) {
+      dueRows.push(row);
+      selectedIds.add(row.id);
+    }
+  }
+  return { dueRows, verificationOnlyRows };
+}
+
+function comparePublicationDueRows(
+  baseline: readonly DueManagedBroadcastRow[],
+  actual: readonly DueManagedBroadcastRow[],
+): Pick<
+  PublisherTemporalSelectionObservation,
+  | 'comparisonBatches'
+  | 'changedDecisionBatches'
+  | 'changedPositions'
+  | 'newlySelected'
+  | 'displaced'
+> {
+  let changedPositions = 0;
+  for (let index = 0; index < Math.max(baseline.length, actual.length); index += 1) {
+    if (baseline[index]?.id !== actual[index]?.id) changedPositions += 1;
+  }
+  const baselineIds = new Set(baseline.map((row) => row.id));
+  const actualIds = new Set(actual.map((row) => row.id));
+  return {
+    comparisonBatches: 1,
+    changedDecisionBatches: changedPositions > 0 ? 1 : 0,
+    changedPositions,
+    newlySelected: actual.filter((row) => !baselineIds.has(row.id)).length,
+    displaced: baseline.filter((row) => !actualIds.has(row.id)).length,
+  };
+}
+
 export async function selectPublicationManagedBroadcastDueBatch(
   prisma: Pick<PrismaService, 'managedBroadcast' | '$queryRaw'>,
   scheduleModes: readonly PublicationScheduleMode[],
@@ -527,27 +581,12 @@ export async function selectPublicationManagedBroadcastDueBatch(
           selectFallbackDueRows(),
         ]);
 
-  const executionIds = new Set(executionDueRows.map((row) => row.id));
-  const verificationOnlyRows = verificationDueRows.filter((row) => !executionIds.has(row.id));
-  const verificationReservation = Math.min(
-    verificationOnlyRows.length,
-    MANAGED_BROADCAST_RECOVERY_BATCH_SIZE,
-    executionDueRows.length > 0 ? Math.max(0, boundedLimit - 1) : boundedLimit,
+  const { dueRows, verificationOnlyRows } = mergePublicationDueRows(
+    executionDueRows,
+    verificationDueRows,
+    fallbackDueRows,
+    boundedLimit,
   );
-  const dueRows: DueManagedBroadcastRow[] = [
-    ...executionDueRows.slice(0, boundedLimit - verificationReservation),
-    ...verificationOnlyRows.slice(0, verificationReservation),
-  ];
-  const selectedIds = new Set(dueRows.map((row) => row.id));
-  for (const row of [...executionDueRows, ...verificationOnlyRows, ...fallbackDueRows]) {
-    if (dueRows.length >= boundedLimit) {
-      break;
-    }
-    if (!selectedIds.has(row.id)) {
-      dueRows.push(row);
-      selectedIds.add(row.id);
-    }
-  }
   if (temporalSelectionUsed) {
     // FLAG: These are repeated bounded selection observations, not unique publications or
     // SEND outcomes. Keep identifiers local and count the actual final fallback merge.
@@ -556,10 +595,22 @@ export async function selectPublicationManagedBroadcastDueBatch(
       candidates.filter((row) => row.state === state).length;
     const excludedWaiting = count('excluded_waiting');
     const verificationIds = new Set(verificationOnlyRows.map((row) => row.id));
+    const selectedIds = new Set(dueRows.map((row) => row.id));
+    // FLAG: Compare complete ordered decisions using the same already-read inputs, with
+    // an independent verification reservation for each execution set. Only candidate
+    // classification shares one SQL snapshot; verification/fallback may be newer. This
+    // pure comparison creates no second scan, claim, quota reservation or effect.
+    const baseline = mergePublicationDueRows(
+      candidates.slice(0, boundedLimit),
+      verificationDueRows,
+      fallbackDueRows,
+      boundedLimit,
+    );
     return {
       dueRows,
       staleLockBefore,
       temporalSelection: {
+        ...comparePublicationDueRows(baseline.dueRows, dueRows),
         candidates: candidates.length,
         unsupported: count('unsupported'),
         refused: count('refused'),

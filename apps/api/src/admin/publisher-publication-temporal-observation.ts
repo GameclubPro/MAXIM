@@ -10,6 +10,11 @@ const emptyCounts = (): PublisherTemporalSelectionObservation => ({
   excludedWaiting: 0,
   preferredReturned: 0,
   fallbackReintroduced: 0,
+  comparisonBatches: 0,
+  changedDecisionBatches: 0,
+  changedPositions: 0,
+  newlySelected: 0,
+  displaced: 0,
 });
 
 // FLAG: Selection observations repeat across polls; they are not unique operations or

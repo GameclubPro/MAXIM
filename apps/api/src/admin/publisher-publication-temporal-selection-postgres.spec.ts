@@ -405,6 +405,11 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       excludedWaiting: 1,
       preferredReturned: 1,
       fallbackReintroduced: 0,
+      comparisonBatches: 1,
+      changedDecisionBatches: 1,
+      changedPositions: 1,
+      newlySelected: 1,
+      displaced: 1,
     });
     expect(
       (await selectPublicationManagedBroadcastDueBatch(db, ['NOW'], 1, 'PUBLIK_V1', 'test'))
@@ -414,6 +419,155 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     const bucket = createHash('md5').update(cohortKey).digest().readUInt32BE(0) % 100;
     for (const mode of ['5', '25'] as const)
       expect(await selected(mode)).toEqual([{ id: bucket < Number(mode) ? ready.id : waiting.id }]);
+  });
+
+  it('does not count a changed decision when a future candidate follows an already filled portion', async () => {
+    const ready = await envelope(-60_000);
+    await envelope(-1_000, {
+      delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+
+    const result = await selectPublicationManagedBroadcastDueBatch(
+      db,
+      ['NOW'],
+      1,
+      'PUBLIK_V1',
+      '100',
+    );
+
+    expect(result.dueRows).toEqual([{ id: ready.id }]);
+    expect(result.temporalSelection).toMatchObject({
+      excludedWaiting: 1,
+      preferredReturned: 1,
+      fallbackReintroduced: 0,
+      comparisonBatches: 1,
+      changedDecisionBatches: 0,
+      changedPositions: 0,
+      newlySelected: 0,
+      displaced: 0,
+    });
+  });
+
+  it('does not count a changed decision when fallback restores the entire ordered baseline', async () => {
+    const first = await envelope(-60_000, {
+      delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+    const second = await envelope(-1_000, {
+      delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+
+    const result = await selectPublicationManagedBroadcastDueBatch(
+      db,
+      ['NOW'],
+      2,
+      'PUBLIK_V1',
+      '100',
+    );
+
+    expect(result.dueRows).toEqual([{ id: first.id }, { id: second.id }]);
+    expect(result.temporalSelection).toMatchObject({
+      excludedWaiting: 2,
+      preferredReturned: 0,
+      fallbackReintroduced: 2,
+      comparisonBatches: 1,
+      changedDecisionBatches: 0,
+      changedPositions: 0,
+      newlySelected: 0,
+      displaced: 0,
+    });
+  });
+
+  it('compares final decisions after retaining an independent due verification reservation', async () => {
+    await envelope(-60_000, {
+      delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+    const ready = await envelope(-1_000);
+    const verification = await envelope(-120_000, {
+      delivery: {
+        status: 'SENT',
+        sentAt: new Date(now.getTime() - 60_000),
+        remoteMessageId: 'synthetic-temporal-reservation',
+        remoteMessageVerificationNextAt: new Date(now.getTime() - 1_000),
+      },
+    });
+
+    const result = await selectPublicationManagedBroadcastDueBatch(
+      db,
+      ['NOW'],
+      2,
+      'PUBLIK_V1',
+      '100',
+    );
+
+    expect(result.dueRows).toEqual([{ id: ready.id }, { id: verification.id }]);
+    expect(result.temporalSelection).toMatchObject({
+      comparisonBatches: 1,
+      changedDecisionBatches: 1,
+      changedPositions: 1,
+      newlySelected: 1,
+      displaced: 1,
+    });
+  });
+
+  it('recomputes verification overlap for each decision when a receipt appears after classification', async () => {
+    const waiting = await envelope(-60_000, {
+      delivery: {
+        status: 'SENDING',
+        attemptCount: 1,
+        lockedAt: new Date(now.getTime() - 120_000),
+        lockToken: 'synthetic-temporal-concurrent-owner',
+      },
+    });
+    const ready = await envelope(-1_000);
+    // FLAG: This real SQL transition occurs after the bounded classifier, before the
+    // separate verification query. Both pure merges must use the same newer receipt
+    // inputs but independently remove their own execution/verification overlap.
+    const receiptAfterClassification = db.$extends({
+      query: {
+        $queryRaw: async ({ args, query }) => {
+          const result = await query(args);
+          await db.managedBroadcastDelivery.updateMany({
+            where: { broadcastId: waiting.id },
+            data: {
+              status: 'SENT',
+              lockedAt: null,
+              lockToken: null,
+              sentAt: new Date(now.getTime() - 60_000),
+              remoteMessageId: 'synthetic-temporal-concurrent-receipt',
+              remoteMessageVerificationNextAt: new Date(now.getTime() - 1_000),
+            },
+          });
+          return result;
+        },
+      },
+    });
+
+    const selectionClient: Parameters<typeof selectPublicationManagedBroadcastDueBatch>[0] = {
+      managedBroadcast: db.managedBroadcast,
+      $queryRaw: receiptAfterClassification.$queryRaw.bind(receiptAfterClassification),
+    };
+    const result = await selectPublicationManagedBroadcastDueBatch(
+      selectionClient,
+      ['NOW'],
+      2,
+      'PUBLIK_V1',
+      '100',
+    );
+
+    expect(result.dueRows).toEqual([{ id: ready.id }, { id: waiting.id }]);
+    expect(result.temporalSelection).toMatchObject({
+      excludedWaiting: 1,
+      preferredReturned: 1,
+      fallbackReintroduced: 0,
+      comparisonBatches: 1,
+      changedDecisionBatches: 1,
+      changedPositions: 2,
+      newlySelected: 0,
+      displaced: 0,
+    });
+    expect(
+      queries.filter((event) => event.query.includes('raw_execution_candidates')),
+    ).toHaveLength(1);
   });
 
   it('keeps native hash cohorts stable and nested at the 5 and 25 percent boundaries', async () => {
@@ -584,6 +738,11 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       excludedWaiting: 64,
       preferredReturned: 0,
       fallbackReintroduced: 1,
+      comparisonBatches: 1,
+      changedDecisionBatches: 0,
+      changedPositions: 0,
+      newlySelected: 0,
+      displaced: 0,
     });
     expect(fallback.dueRows).not.toContainEqual({ id: beyondBoundary.id });
 

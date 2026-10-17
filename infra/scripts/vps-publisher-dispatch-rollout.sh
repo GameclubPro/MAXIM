@@ -17,6 +17,7 @@ source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
 COMPOSE_FILES=(--env-file ".env" -p infra -f "infra/docker-compose.yml")
 RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
 STATE_HELPER="$ROOT_DIR/infra/scripts/publisher-dispatch-rollout-state.mjs"
+SELECTION_AUDIT_HELPER="$ROOT_DIR/infra/scripts/publisher-temporal-selection-audit.mjs"
 CONTROL_HELPER="$ROOT_DIR/infra/scripts/publisher-dispatch-rollout-control.cjs"
 INVENTORY_HELPER="$ROOT_DIR/infra/scripts/commercial-ocr-runtime-inventory.mjs"
 PUBLISHER_IDENTITY_PROBE_SCRIPT="apps/api/dist/apps/api/src/scripts/attest-publisher-identity.js"
@@ -51,6 +52,7 @@ HTTP_READY_SERVICES=("api-ingress" "api-admin" "api-media-analysis")
 # The rollout target must come only from the atomically patched file.
 unset \
   MAX_PUBLISHER_DISPATCH_ENABLED \
+  PUBLISHER_TEMPORAL_SELECTION_ROLLOUT \
   MAXIM_COMPOSE_SERVICE_ENV_FILE \
   MAXIM_API_IMAGE \
   COMMERCIAL_OCR_ROLLOUT_MODE \
@@ -65,6 +67,15 @@ export MAXIM_COMPOSE_SERVICE_ENV_FILE=../.env
 COMMAND="${1:-}"
 APPLY=0
 DESIRED_STATE=""
+SELECTION_OPERATION=0
+DESIRED_SELECTION_MODE=""
+CURRENT_SELECTION_MODE=""
+CURRENT_SELECTION_CONFIGURED=""
+EXPECTED_SELECTION_MODE=""
+EXPECTED_SELECTION_SOURCE_SHA="${MAXIM_EXPECTED_DEPLOY_SHA:-}"
+SELECTION_AUDIT_PATH=""
+SELECTION_AUDIT_TERMINAL=0
+SELECTION_RUNTIME_VERIFIED=false
 MANIFEST_SOURCE_SHA=""
 MANIFEST_IMAGE_REF=""
 MANIFEST_IMAGE_ID=""
@@ -86,10 +97,14 @@ Usage:
   ./infra/scripts/vps-publisher-dispatch-rollout.sh status
   ./infra/scripts/vps-publisher-dispatch-rollout.sh enable [--apply]
   ./infra/scripts/vps-publisher-dispatch-rollout.sh disable [--apply]
+  ./infra/scripts/vps-publisher-dispatch-rollout.sh selection <off|test|5|25|100> [--apply]
 
 Enable and disable are read-only previews unless --apply is supplied. Applied operations recreate
 all shared API roles from the exact active image without building, migrating, or touching stateful
 services. An incomplete operation leaves the bot-scoped operator pause armed.
+Selection changes preserve the dispatch switch and require the exact green source SHA supplied
+by vps-connect. Non-off selection requires enabled dispatch. Acceptance gates are operator-owned;
+this command never advances a stage automatically.
 USAGE
 }
 
@@ -100,6 +115,11 @@ fail() {
 
 cleanup() {
   local status=$?
+  if [[ "$status" -ne 0 && -n "${SELECTION_AUDIT_PATH:-}" &&
+        "${SELECTION_AUDIT_TERMINAL:-0}" -ne 1 ]]; then
+    record_selection_audit_finish failed "$status" ||
+      printf '%s\n' 'Selection audit remains incomplete; inspect its private record before continuing.' >&2
+  fi
   if [[ "$status" -ne 0 && "$APPLY" -eq 1 &&
         "${POST_CLEAR_REARM_REQUIRED:-0}" -eq 1 && "$ROLLOUT_COMPLETE" -ne 1 ]]; then
     if best_effort_rearm_operator_pause; then
@@ -140,6 +160,15 @@ parse_args() {
       ;;
     disable)
       DESIRED_STATE=false
+      ;;
+    selection)
+      SELECTION_OPERATION=1
+      DESIRED_SELECTION_MODE="${2:-}"
+      case "$DESIRED_SELECTION_MODE" in
+        off|test|5|25|100) ;;
+        *) fail "Selection rollout mode must be off, test, 5, 25, or 100."; return 2 ;;
+      esac
+      shift
       ;;
     -h|--help|help)
       usage
@@ -325,26 +354,81 @@ read_dispatch_env_configured() {
   node "$STATE_HELPER" read-env-configured .env
 }
 
+prepare_selection_operation() {
+  # FLAG: Never activate an ignored env key on an older active image. The normal connector
+  # proves this exact source green; the manifest fence binds it to every running API role.
+  [[ "$EXPECTED_SELECTION_SOURCE_SHA" =~ ^[a-f0-9]{40}$ &&
+     "$EXPECTED_SELECTION_SOURCE_SHA" == "$MANIFEST_SOURCE_SHA" ]] || {
+    fail "Selection rollout requires the exact green active API source SHA from vps-connect."
+    return 1
+  }
+  [[ "${MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE:-0}" == 0 ]] || {
+    fail "Selection rollout cannot adopt an interrupted release; recover that operation first."
+    return 1
+  }
+  node "$STATE_HELPER" verify-selection-source "$ROOT_DIR" || return
+  CURRENT_SELECTION_MODE="$(node "$STATE_HELPER" read-selection-env .env)" || return
+  CURRENT_SELECTION_CONFIGURED="$(node "$STATE_HELPER" read-selection-env-configured .env)" || return
+  EXPECTED_SELECTION_MODE="$CURRENT_SELECTION_MODE"
+  [[ "$CURRENT_SELECTION_CONFIGURED" == true ]] || EXPECTED_SELECTION_MODE=default-off
+  if [[ "$DESIRED_SELECTION_MODE" != off && "$CURRENT_ENV_STATE" != true ]]; then
+    fail "Non-off selection requires Publisher dispatch already enabled; its switch is preserved."
+    return 1
+  fi
+  DESIRED_STATE="$CURRENT_ENV_STATE"
+  # FLAG: Reuse the existing pause ownership/heartbeat semantics without changing dispatch.
+  # In particular, off on an already disabled Publisher must retain its authorization pause.
+  if [[ "$DESIRED_STATE" == true ]]; then COMMAND=enable; else COMMAND=disable; fi
+}
+
+record_selection_audit_start() {
+  SELECTION_AUDIT_PATH="$(node "$SELECTION_AUDIT_HELPER" start "$RELEASE_STATE_DIR" \
+    "$MANIFEST_SOURCE_SHA" "$CURRENT_SELECTION_MODE" "$CURRENT_SELECTION_CONFIGURED" \
+    "$DESIRED_SELECTION_MODE" "$CURRENT_ENV_STATE" "$CURRENT_ENV_CONFIGURED")" || return
+}
+
+record_selection_audit_finish() {
+  node "$SELECTION_AUDIT_HELPER" finish "$SELECTION_AUDIT_PATH" "$1" "$2" \
+    "$SELECTION_RUNTIME_VERIFIED" || return
+  SELECTION_AUDIT_TERMINAL=1
+}
+
 verify_compose_config() {
   local expected_state="$1"
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 && "$CURRENT_ENV_CONFIGURED" != true &&
+        "$expected_state" == false ]]; then expected_state=default-false; fi
+  local validation=(verify-compose "$expected_state" "$MANIFEST_IMAGE_REF")
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 ]]; then
+    validation+=("$EXPECTED_SELECTION_MODE")
+  fi
   if ! docker compose "${COMPOSE_FILES[@]}" config --format json 2>/dev/null |
-    node "$STATE_HELPER" verify-compose "$expected_state" "$MANIFEST_IMAGE_REF"; then
+    node "$STATE_HELPER" "${validation[@]}"; then
     fail "Compose does not define the exact reviewed 14-role publisher runtime on the active image."
   fi
 }
 
 verify_preview_compose_config() {
   local expected_state="$1"
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 && "$CURRENT_ENV_CONFIGURED" != true &&
+        "$expected_state" == false ]]; then expected_state=default-false; fi
+  local patch=(patch-env)
+  local validation=(verify-compose "$expected_state" "$MANIFEST_IMAGE_REF")
+  local preview_value="$expected_state"
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 ]]; then
+    patch=(patch-selection-env)
+    preview_value="$DESIRED_SELECTION_MODE"
+    validation+=("$DESIRED_SELECTION_MODE")
+  fi
   PREVIEW_ENV_FILE="$(mktemp /tmp/maxim-publisher-preview.XXXXXX)" ||
     fail "Could not create a private publisher preview dotenv."
   install -m 0600 .env "$PREVIEW_ENV_FILE" ||
     fail "Could not prepare a private publisher preview dotenv."
-  node "$STATE_HELPER" patch-env "$PREVIEW_ENV_FILE" "$expected_state" ||
+  node "$STATE_HELPER" "${patch[@]}" "$PREVIEW_ENV_FILE" "$preview_value" ||
     fail "Could not prepare the requested publisher preview state."
   if ! MAXIM_COMPOSE_SERVICE_ENV_FILE="$PREVIEW_ENV_FILE" \
     docker compose --env-file "$PREVIEW_ENV_FILE" -p infra -f "infra/docker-compose.yml" \
       config --format json 2>/dev/null |
-    node "$STATE_HELPER" verify-compose "$expected_state" "$MANIFEST_IMAGE_REF"; then
+    node "$STATE_HELPER" "${validation[@]}"; then
     fail "Compose cannot render the requested publisher dispatch target across all 14 API roles."
   fi
   rm -f -- "$PREVIEW_ENV_FILE"
@@ -361,6 +445,7 @@ container_env_summary() {
         "APP_ROLE",
         "APP_SERVICE_NAME",
         "MAX_PUBLISHER_DISPATCH_ENABLED",
+        "PUBLISHER_TEMPORAL_SELECTION_ROLLOUT",
       ]);
       const result = {};
       for (const line of readFileSync(0).toString("utf8").split(/\r?\n/u)) {
@@ -431,9 +516,12 @@ verify_no_unreviewed_running_api_containers() {
 
 verify_runtime() {
   local expected_state="$1"
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 && "$CURRENT_ENV_CONFIGURED" != true &&
+        "$expected_state" == false ]]; then expected_state=default-false; fi
   local state_policy="${2:-running}"
   local service container_ids_raw image_id env_summary
   local container_ids=()
+  local validation=()
   local ps_args=(ps --status running -q)
   if [[ "$state_policy" == "allow-stopped" ]]; then
     ps_args=(ps -a -q)
@@ -470,8 +558,12 @@ verify_runtime() {
       fail "Could not inspect a production API role identity."
       return 1
     }
+    validation=(verify-runtime-env "$expected_state" "$service")
+    if [[ "${SELECTION_OPERATION:-0}" -eq 1 ]]; then
+      validation+=("$EXPECTED_SELECTION_MODE")
+    fi
     if ! printf '%s' "$env_summary" |
-      node "$STATE_HELPER" verify-runtime-env "$expected_state" "$service"; then
+      node "$STATE_HELPER" "${validation[@]}"; then
       fail "A production API role does not match its exact service, APP_ROLE, or dispatch state."
       return 1
     fi
@@ -627,6 +719,26 @@ patch_dispatch_env() {
   node "$STATE_HELPER" patch-env .env "$DESIRED_STATE"
   [[ "$(read_dispatch_env)" == "$DESIRED_STATE" ]] ||
     fail "Production dotenv did not reach the requested publisher dispatch state."
+}
+
+patch_selection_env() {
+  # FLAG: Recheck the reviewed current values under the still-owned deploy lock. Patch only
+  # this finite selector key; enabling a stopped Publisher is never an implied side effect.
+  [[ "$(node "$STATE_HELPER" read-selection-env .env)" == "$CURRENT_SELECTION_MODE" &&
+     "$(node "$STATE_HELPER" read-selection-env-configured .env)" == "$CURRENT_SELECTION_CONFIGURED" &&
+     "$(read_dispatch_env)" == "$CURRENT_ENV_STATE" &&
+     "$(read_dispatch_env_configured)" == "$CURRENT_ENV_CONFIGURED" ]] || {
+    fail "Publisher configuration changed after selection preflight."
+    return 1
+  }
+  node "$STATE_HELPER" patch-selection-env .env "$DESIRED_SELECTION_MODE" || return
+  [[ "$(node "$STATE_HELPER" read-selection-env .env)" == "$DESIRED_SELECTION_MODE" &&
+     "$(read_dispatch_env)" == "$CURRENT_ENV_STATE" &&
+     "$(read_dispatch_env_configured)" == "$CURRENT_ENV_CONFIGURED" ]] || {
+    fail "Selection dotenv readback failed or Publisher dispatch changed."
+    return 1
+  }
+  EXPECTED_SELECTION_MODE="$DESIRED_SELECTION_MODE"
 }
 
 wait_for_service_running() {
@@ -1033,13 +1145,18 @@ rollout_preflight() {
     runtime_state_policy=allow-stopped
   fi
   verify_runtime any "$runtime_state_policy"
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 ]]; then
+    # FLAG: Selection changes preserve dispatch, including an absent/default-false key.
+    # Never use disable recovery semantics to silently normalize existing runtime drift.
+    verify_runtime "$current_expected"
+  fi
   verify_compose_config "$current_expected"
   verify_preview_compose_config "$DESIRED_STATE"
   maxim_topology_require_api_commercial_ocr_version_config \
     COMPOSE_FILES "$EXPECTED_OCR_VERSION" required
   maxim_topology_require_media_analysis_shadow_config COMPOSE_FILES
   require_stateful_services_ready
-  if [[ "$COMMAND" == "disable" && "$APPLY" -eq 1 &&
+  if [[ "${SELECTION_OPERATION:-0}" -ne 1 && "$COMMAND" == "disable" && "$APPLY" -eq 1 &&
         "$CURRENT_ENV_CONFIGURED" == "true" && "$CURRENT_ENV_STATE" == "false" ]] &&
     verify_runtime false >/dev/null 2>&1; then
     RECONCILE_ONLY=1
@@ -1061,9 +1178,16 @@ apply_rollout() {
     fail "Publisher reconcile-only mode is valid only for an exact disabled runtime."
     return 1
   fi
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 ]]; then
+    record_selection_audit_start
+  fi
   arm_operator_pause
   if [[ "$RECONCILE_ONLY" -ne 1 ]]; then
-    patch_dispatch_env
+    if [[ "${SELECTION_OPERATION:-0}" -eq 1 ]]; then
+      patch_selection_env
+    else
+      patch_dispatch_env
+    fi
   fi
   verify_compose_config "$DESIRED_STATE"
   maxim_topology_require_api_commercial_ocr_version_config \
@@ -1119,7 +1243,16 @@ apply_rollout() {
       verify_runtime "$DESIRED_STATE"
     fi
   fi
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 ]]; then
+    SELECTION_RUNTIME_VERIFIED=true
+    record_selection_audit_finish completed 0
+  fi
   ROLLOUT_COMPLETE=1
+  if [[ "${SELECTION_OPERATION:-0}" -eq 1 ]]; then
+    printf 'Publik selection rollout complete: mode=%s dispatch=%s roles=14 image=%s\n' \
+      "$DESIRED_SELECTION_MODE" "$DESIRED_STATE" "$MANIFEST_SOURCE_SHA"
+    return
+  fi
   printf 'Publik dispatch rollout complete: enabled=%s roles=14 image=%s reconcile_only=%s\n' \
     "$DESIRED_STATE" "$MANIFEST_SOURCE_SHA" \
     "$([[ "$RECONCILE_ONLY" -eq 1 ]] && printf '%s' true || printf '%s' false)"
@@ -1147,6 +1280,9 @@ resolve_release_fence
 CURRENT_ENV_STATE="$(read_dispatch_env)" || fail "Could not read publisher dispatch dotenv state."
 CURRENT_ENV_CONFIGURED="$(read_dispatch_env_configured)" ||
   fail "Could not read publisher dispatch dotenv configuration."
+if [[ "$SELECTION_OPERATION" -eq 1 ]]; then
+  prepare_selection_operation
+fi
 
 if [[ "$COMMAND" == "status" ]]; then
   current_compose_expected="$CURRENT_ENV_STATE"
@@ -1158,6 +1294,11 @@ fi
 
 rollout_preflight
 if [[ "$APPLY" -ne 1 ]]; then
+  if [[ "$SELECTION_OPERATION" -eq 1 ]]; then
+    printf 'Publik selection preflight passed: current=%s target=%s dispatch=%s; no state changed.\n' \
+      "$CURRENT_SELECTION_MODE" "$DESIRED_SELECTION_MODE" "$CURRENT_ENV_STATE"
+    exit 0
+  fi
   printf 'Publik dispatch preflight passed: current=%s target=%s; no state changed.\n' \
     "$CURRENT_ENV_STATE" "$DESIRED_STATE"
   exit 0

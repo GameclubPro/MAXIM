@@ -30,6 +30,11 @@ export type PublisherTemporalSelectionObservation = {
   excludedWaiting: number;
   preferredReturned: number;
   fallbackReintroduced: number;
+  comparisonBatches: number;
+  changedDecisionBatches: number;
+  changedPositions: number;
+  newlySelected: number;
+  displaced: number;
 };
 
 export type PublisherTemporalExecutionDueQueryOptions = {
