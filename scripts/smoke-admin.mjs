@@ -141,6 +141,180 @@ async function smokeProfile(activeBrowser, profile) {
   let publicationRequests = 0;
   let evidenceRequests = 0;
   let evidenceMalformed = false;
+  let deleteCohortRequests = 0;
+  let deliveryCohortRequests = 0;
+  let deliveryEvidenceRequests = 0;
+  let deliveryEvidenceMalformed = false;
+  let deliveryEvidenceDenied = false;
+  let expectedAccessCode = accessCode;
+  let releaseDelayedDelivery;
+  const delayedDelivery = new Promise((resolve) => {
+    releaseDelayedDelivery = resolve;
+  });
+  const countPartition = (keys, selected) =>
+    Object.fromEntries(keys.map((key) => [key, key === selected ? 1 : 0]));
+  const outcomeWindow = {
+    schemaVersion: 1,
+    windowSeconds: 900,
+    graceSeconds: 30,
+    windowStartedAt: '2026-10-16T18:00:00.000Z',
+    windowEndedAt: '2026-10-16T18:15:00.000Z',
+    observedAt: '2026-10-16T18:15:30.000Z',
+    sampleLimitPerStatus: 512,
+    sampleComplete: true,
+    totalCountLowerBound: 1,
+  };
+  const deleteCohort = {
+    ...outcomeWindow,
+    basis: 'delete_intent_created_at',
+    includesObservedOnly: true,
+    rows: Object.keys(statusCounts).map((status) => ({
+      status,
+      countLowerBound: status === 'AMBIGUOUS' ? 1 : 0,
+      truncated: false,
+      outcomeCounts: countPartition(
+        [
+          'confirmed',
+          'acknowledged',
+          'already_absent',
+          'unknown',
+          'stopped',
+          'observed',
+          'pending',
+        ],
+        status === 'AMBIGUOUS' ? 'unknown' : null,
+      ),
+      deadlineCounts: countPartition(
+        ['notElapsed', 'elapsed', 'invalid'],
+        status === 'AMBIGUOUS' ? 'elapsed' : null,
+      ),
+      waitCounts: countPartition(
+        [
+          'notDue',
+          'retryDue',
+          'leaseActive',
+          'leaseStale',
+          'capability',
+          'receiptSettlement',
+          'effectUnknown',
+        ],
+        status === 'AMBIGUOUS' ? 'effectUnknown' : null,
+      ),
+      waitCountsOverlap: true,
+      finalizedLatency: { sampleCount: 0, invalidClockCount: 0, p95Ms: null, p99Ms: null },
+    })),
+  };
+  const deliveryStatuses = ['PENDING', 'SENDING', 'SENT', 'FAILED', 'AMBIGUOUS', 'CANCELED'];
+  const deliveryWaitingReasons = [
+    'scheduled_not_due',
+    'deadline_elapsed',
+    'deadline_unknown',
+    'local_capacity',
+    'max_rate_limit',
+    'circuit_open',
+    'other_capacity_reason',
+    'retry_not_due',
+    'retry_due',
+    'actor_access_required',
+    'target_setup_required',
+    'publisher_unavailable',
+    'other_blocker',
+    'lease_active',
+    'lease_stale',
+    'lease_invalid',
+    'receipt_verification_wait',
+    'receipt_verification_due',
+    'verification_not_enrolled',
+    'post_action_wait',
+    'post_action_due',
+    'post_action_unknown',
+    'effect_unknown',
+    'unspecified_pending',
+  ];
+  const deliveryCohort = {
+    ...outcomeWindow,
+    basis: 'recipient_created_at',
+    dispatchProfile: 'PUBLIK_V1',
+    retryMembership: 'same_delivery',
+    completionTimingEvidence: 'not_recorded',
+    ledgerEvidence: 'not_joined',
+    rows: deliveryStatuses.map((status) => ({
+      status,
+      countLowerBound: status === 'AMBIGUOUS' ? 1 : 0,
+      truncated: false,
+      effectiveStatusCounts: countPartition(
+        deliveryStatuses,
+        status === 'AMBIGUOUS' ? status : null,
+      ),
+      receiptEvidenceCounts: countPartition(
+        ['saved', 'missing', 'legacy_unproven', 'invalid_evidence'],
+        status === 'AMBIGUOUS' ? 'missing' : null,
+      ),
+      verificationCounts: countPartition(
+        [
+          'automated_stable',
+          'operator_confirmed',
+          'legacy_unproven',
+          'pending',
+          'not_recorded',
+          'invalid_evidence',
+        ],
+        status === 'AMBIGUOUS' ? 'not_recorded' : null,
+      ),
+      deadlineCounts: countPartition(
+        ['future', 'due', 'expired', 'unknown'],
+        status === 'AMBIGUOUS' ? 'expired' : null,
+      ),
+      waitingReasonCounts: countPartition(
+        deliveryWaitingReasons,
+        status === 'AMBIGUOUS' ? 'effect_unknown' : null,
+      ),
+      waitingReasonCountsOverlap: true,
+    })),
+    examples: [
+      {
+        deliveryId: 'delivery-observed-1',
+        acceptedAt: '2026-10-16T18:05:00.000Z',
+        storedStatus: 'AMBIGUOUS',
+        effectiveStatus: 'AMBIGUOUS',
+        receipt: 'missing',
+      },
+    ],
+  };
+  let deliveryEvidenceObservedAt = outcomeWindow.observedAt;
+  const deliveryEvidence = (deliveryId) => ({
+    schemaVersion: 1,
+    observedAt: deliveryEvidenceObservedAt,
+    deliveryId,
+    storedStatus: 'AMBIGUOUS',
+    effectiveStatus: 'AMBIGUOUS',
+    acceptedAt:
+      deliveryId === 'delivery-slow' ? '2026-10-16T18:04:00.000Z' : '2026-10-16T18:05:00.000Z',
+    completionTimingEvidence: 'not_recorded',
+    binding: 'exact',
+    action: {
+      keyBasis: 'current',
+      state: 'unknown',
+      dispatchStartedAt: '2026-10-16T18:06:00.000Z',
+      journalCompletedAt: null,
+    },
+    recipient: { state: 'missing', savedSendAt: null, agreesWithAction: null },
+    verification: { state: 'not_recorded', observedAt: null },
+    waiting: {
+      reasons: ['effect_unknown'],
+      reasonsOverlap: true,
+      deadline: 'expired',
+      nextAttemptAt: null,
+      firstDeferredAt: null,
+      lastDeferredAt: null,
+      ageSinceFirstDeferralMs: null,
+      recipientBlocker: null,
+      parentBlocker: null,
+      postActions: { pin: 'NONE', deletion: 'NONE', nextAt: null },
+    },
+    clientVisibility: 'not_observed',
+    automaticRetryAllowed: false,
+  });
   const cohort = {
     schemaVersion: 1,
     basis: 'receipt_created_at',
@@ -217,11 +391,23 @@ async function smokeProfile(activeBrowser, profile) {
     if (message.type() === 'error') {
       if (
         cohortUnavailable &&
-        ['webhook-cohort', 'publication-cohort'].some(
+        [
+          'webhook-cohort',
+          'publication-cohort',
+          'delete-cohort',
+          'publication-delivery-cohort',
+        ].some(
           (endpoint) =>
             message.location().url === `${baseUrl}api/v1/safety-desk/runtime/${endpoint}`,
         ) &&
         /^Failed to load resource: the server responded with a status of 503\b/.test(message.text())
+      )
+        return;
+      if (
+        deliveryEvidenceDenied &&
+        message.location().url ===
+          `${baseUrl}api/v1/safety-desk/runtime/publication-deliveries/delivery-malformed/evidence` &&
+        /^Failed to load resource: the server responded with a status of 403\b/.test(message.text())
       )
         return;
       errors.push(`console.error: ${message.text()}`);
@@ -233,11 +419,48 @@ async function smokeProfile(activeBrowser, profile) {
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
-    if (url.search.includes(accessCode) || request.postData()?.includes(accessCode)) {
+    if (
+      [accessCode, expectedAccessCode].some(
+        (code) => url.search.includes(code) || request.postData()?.includes(code),
+      )
+    ) {
       throw new Error('Access code leaked into URL or request body.');
     }
-    if (request.headers()['x-admin-access-code'] !== accessCode) {
+    if (request.headers()['x-admin-access-code'] !== expectedAccessCode) {
       await route.fulfill({ status: 401, json: { message: 'missing access code' } });
+      return;
+    }
+    for (const [endpoint, fixture] of [
+      ['delete-cohort', deleteCohort],
+      ['publication-delivery-cohort', deliveryCohort],
+    ]) {
+      if (!url.pathname.endsWith(`/safety-desk/runtime/${endpoint}`)) continue;
+      if (request.method() !== 'GET') throw new Error('Outcome cohort attempted a mutation.');
+      if (endpoint === 'delete-cohort') deleteCohortRequests += 1;
+      else deliveryCohortRequests += 1;
+      await route.fulfill(
+        cohortUnavailable
+          ? { status: 503, json: { message: 'Unavailable' } }
+          : { status: 200, json: fixture },
+      );
+      return;
+    }
+    const deliveryMatch = url.pathname.match(
+      /\/safety-desk\/runtime\/publication-deliveries\/([^/]+)\/evidence$/u,
+    );
+    if (deliveryMatch) {
+      if (request.method() !== 'GET') throw new Error('Delivery evidence attempted a mutation.');
+      deliveryEvidenceRequests += 1;
+      const id = decodeURIComponent(deliveryMatch[1]);
+      if (id === 'delivery-slow') await delayedDelivery;
+      if (deliveryEvidenceDenied) {
+        await route.fulfill({ status: 403, json: { message: 'Forbidden' } });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        json: deliveryEvidenceMalformed ? { deliveryId: id } : deliveryEvidence(id),
+      });
       return;
     }
     if (url.pathname.endsWith('/safety-desk/runtime/webhook-cohort')) {
@@ -395,6 +618,16 @@ async function smokeProfile(activeBrowser, profile) {
   await page.getByText('За этот интервал события не наблюдались.', { exact: false }).waitFor();
   await page.getByText('Обработка события не подтверждает удаление', { exact: false }).waitFor();
   await page.getByText(/21:00:00 МСК — .*21:00:30 МСК/).waitFor();
+  if (publicationRequests || deleteCohortRequests || deliveryCohortRequests)
+    throw new Error('Hidden observation families loaded eagerly.');
+  cohort.sampleComplete = false;
+  cohort.totalCountLowerBound = 512;
+  cohort.rows[2].countLowerBound = 512;
+  cohort.rows[2].truncated = true;
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await page.getByText('Неполная выборка: достигнут предел чтения', { exact: false }).waitFor();
+  const observationSelector = page.getByRole('navigation', { name: 'Вид наблюдений' });
+  await observationSelector.getByRole('button', { name: 'Запуски Публика', exact: true }).click();
   const publicationPanel = page.getByRole('region', { name: 'Результаты запусков Публика' });
   await publicationPanel.getByText('Исход неизвестен', { exact: true }).first().waitFor();
   await publicationPanel
@@ -403,26 +636,132 @@ async function smokeProfile(activeBrowser, profile) {
   await publicationPanel.getByText('Режимы и содержимое запусков', { exact: true }).click();
   await publicationPanel.getByRole('columnheader', { name: 'Содержимое неизвестно' }).waitFor();
   if (publicationRequests !== 1) throw new Error('Publication cohort request repeated.');
-  cohort.sampleComplete = false;
-  cohort.totalCountLowerBound = 512;
-  cohort.rows[2].countLowerBound = 512;
-  cohort.rows[2].truncated = true;
-  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-  await page.getByText('Неполная выборка: достигнут предел чтения', { exact: false }).waitFor();
   cohortUnavailable = true;
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
-  await page.getByRole('alert').filter({ hasText: 'последний успешный снимок' }).waitFor();
   await publicationPanel
     .getByRole('alert')
     .filter({ hasText: 'Не удалось проверить запуски Публика.' })
     .waitFor();
   if (await publicationPanel.getByRole('table').count())
     throw new Error('Failed publication refresh retained stale success.');
+  await observationSelector.getByRole('button', { name: 'Входящие события', exact: true }).click();
+  await page
+    .getByRole('region', { name: 'Результаты обработки событий' })
+    .getByRole('alert')
+    .waitFor();
+  if (await page.getByRole('table').count())
+    throw new Error('A remounted observation retained data from its previous request.');
+  cohortUnavailable = false;
+  await observationSelector
+    .getByRole('button', { name: 'Намерения удаления', exact: true })
+    .click();
+  const deletionPanel = page.getByRole('region', { name: 'Намерения удаления', exact: true });
+  await deletionPanel.getByRole('table').first().waitFor();
+  await deletionPanel
+    .getByText('Неизвестный исход не разрешает автоматический повтор.', { exact: false })
+    .waitFor();
+  if (deleteCohortRequests !== 1 || deliveryCohortRequests !== 0)
+    throw new Error('DELETE observation loaded unrelated readers.');
+  cohortUnavailable = true;
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await deletionPanel.getByRole('alert').waitFor();
+  if (await deletionPanel.getByRole('table').count())
+    throw new Error('DELETE observation retained stale success.');
+  cohortUnavailable = false;
+  await observationSelector.getByRole('button', { name: 'Доставки Публика', exact: true }).click();
+  const deliveryPanel = page.getByRole('region', { name: 'Доставки Публика', exact: true });
+  await deliveryPanel.getByRole('table').first().waitFor();
+  if (deliveryCohortRequests !== 1 || deliveryEvidenceRequests !== 0)
+    throw new Error('Delivery evidence loaded without selection.');
+  await deliveryPanel.getByText('Проверить отдельную доставку из выборки', { exact: true }).click();
+  await deliveryPanel.getByRole('button', { name: /delivery-observed-1/ }).click();
+  const deliveryEvidencePanel = page.getByRole('region', {
+    name: 'Подтверждения доставки',
+    exact: true,
+  });
+  await deliveryEvidencePanel
+    .getByText('Исход отправки неизвестен', { exact: true })
+    .first()
+    .waitFor();
+  if (deliveryEvidenceRequests !== 1) throw new Error('Delivery evidence retried automatically.');
+  await page.getByLabel('Идентификатор доставки', { exact: true }).fill('delivery-slow');
+  const slowRequest = page.waitForRequest((request) =>
+    request.url().endsWith('/publication-deliveries/delivery-slow/evidence'),
+  );
+  await page.getByRole('button', { name: 'Проверить доставку', exact: true }).click();
+  await slowRequest;
+  await page.getByLabel('Идентификатор доставки', { exact: true }).fill('delivery-observed-2');
+  await page.getByRole('button', { name: 'Проверить доставку', exact: true }).click();
+  await deliveryEvidencePanel
+    .getByText('Исход отправки неизвестен', { exact: true })
+    .first()
+    .waitFor();
+  const slowResponse = page.waitForResponse((response) =>
+    response.url().endsWith('/publication-deliveries/delivery-slow/evidence'),
+  );
+  releaseDelayedDelivery();
+  await slowResponse;
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  if (await deliveryEvidencePanel.getByText(/21:04:00 МСК/).count())
+    throw new Error('Delayed response replaced another delivery evidence.');
+  deliveryEvidenceMalformed = true;
+  await page.getByLabel('Идентификатор доставки', { exact: true }).fill('delivery-malformed');
+  await page.getByRole('button', { name: 'Проверить доставку', exact: true }).click();
+  await deliveryEvidencePanel.getByRole('alert').waitFor();
+  if (await deliveryEvidencePanel.getByText('Исход отправки неизвестен', { exact: true }).count())
+    throw new Error('Malformed delivery response retained previous success.');
+  if (deliveryEvidenceRequests !== 4) throw new Error('Malformed delivery read retried.');
+  deliveryEvidenceMalformed = false;
+  deliveryEvidenceObservedAt = '2026-10-16T18:16:30.000Z';
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await deliveryEvidencePanel.getByText(/21:16:30 МСК/).waitFor();
+  if (
+    deliveryEvidenceRequests !== 5 ||
+    (await deliveryEvidencePanel.locator('code').textContent()) !== 'delivery-malformed'
+  )
+    throw new Error('Global refresh did not reread the selected delivery.');
+  deliveryEvidenceDenied = true;
+  cohortUnavailable = true;
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await deliveryEvidencePanel
+    .getByRole('alert')
+    .filter({ hasText: 'Нет доступа к наблюдениям.' })
+    .waitFor();
+  if (
+    deliveryEvidenceRequests !== 6 ||
+    (await deliveryEvidencePanel.getByText('Исход отправки неизвестен', { exact: true }).count()) ||
+    (await deliveryEvidencePanel.locator('.delete-timeline').count())
+  )
+    throw new Error('Global refresh retained delivery evidence after access was denied.');
+  await deliveryPanel.getByRole('alert').waitFor();
+  if (await deliveryPanel.getByRole('table').count())
+    throw new Error('Delivery cohort retained stale success.');
   if (await page.getByRole('button', { name: /повтор|публиковать/i }).count()) {
     throw new Error('Read-only cohort exposed an effect retry action.');
   }
   if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)) {
     throw new Error(`${profile.name} cohort view has horizontal overflow.`);
+  }
+  // A fresh owner session requires a new explicit delivery selection.
+  expectedAccessCode = 'admin-smoke-next-owner';
+  cohortUnavailable = false;
+  deliveryEvidenceMalformed = false;
+  deliveryEvidenceDenied = false;
+  const previousEvidenceReads = deliveryEvidenceRequests;
+  await page.reload();
+  await page.getByPlaceholder('Введите код').fill(expectedAccessCode);
+  await page.getByRole('button', { name: 'Войти' }).click();
+  await page.getByRole('button', { name: 'Наблюдения', exact: true }).click();
+  await observationSelector.getByRole('button', { name: 'Доставки Публика', exact: true }).click();
+  await deliveryPanel.getByRole('table').first().waitFor();
+  if (
+    deliveryEvidenceRequests !== previousEvidenceReads ||
+    (await deliveryEvidencePanel.count()) ||
+    (await page.getByLabel('Идентификатор доставки', { exact: true }).inputValue())
+  ) {
+    throw new Error('A new owner session retained or loaded the previous delivery selection.');
   }
   await page.getByRole('button', { name: 'Публикации' }).click();
 
@@ -432,7 +771,11 @@ async function smokeProfile(activeBrowser, profile) {
     sessionStorage: JSON.stringify(window.sessionStorage),
     hasOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
   }));
-  if (`${state.href}${state.localStorage}${state.sessionStorage}`.includes(accessCode)) {
+  if (
+    [accessCode, expectedAccessCode].some((code) =>
+      `${state.href}${state.localStorage}${state.sessionStorage}`.includes(code),
+    )
+  ) {
     errors.push('access code leaked into browser URL/storage');
   }
   if (state.hasOverflow) {

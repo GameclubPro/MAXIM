@@ -215,14 +215,8 @@ describe('exact delete operation evidence', () => {
 
   it('distinguishes a MAX acknowledgement, verified absence and an unproven terminal status', () => {
     const intent: Parameters<typeof projectDeleteOutcome>[0] = {
-      id: 'intent',
-      chatId: 'chat',
-      messageId: 'message',
-      subjectUserId: 'user',
       status: 'SUCCEEDED',
       createdAt: sourceAt,
-      sourceMessageAt: sourceAt,
-      firstAttemptAt: sourceAt,
       deleteDispatchStartedAt: null,
       remoteDeleteSucceededAt: null,
       remoteDeleteSucceededBotId: null,
@@ -230,7 +224,6 @@ describe('exact delete operation evidence', () => {
       absenceVerifiedAt: null,
       absenceVerifiedBotId: null,
       absenceVerificationCode: null,
-      originBotId: 'bot',
       succeededBotId: 'bot',
     };
     expect(projectDeleteOutcome(intent, observedAt)).toBe('unknown');

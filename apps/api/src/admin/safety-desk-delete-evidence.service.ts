@@ -301,7 +301,19 @@ export function projectDeleteNoticeEvidence(
 }
 
 export function projectDeleteOutcome(
-  intent: IntentEvidence,
+  intent: Pick<
+    IntentEvidence,
+    | 'status'
+    | 'createdAt'
+    | 'deleteDispatchStartedAt'
+    | 'remoteDeleteSucceededAt'
+    | 'remoteDeleteSucceededBotId'
+    | 'completedAt'
+    | 'absenceVerifiedAt'
+    | 'absenceVerifiedBotId'
+    | 'absenceVerificationCode'
+    | 'succeededBotId'
+  >,
   observedAt: Date,
 ): SafetyDeskDeleteEvidenceResponse['deletion']['outcome'] {
   const plausible = (at: Date | null) =>

@@ -16,6 +16,7 @@ artifacts
 infra/**
 !infra/certs/
 !infra/certs/**
+!infra/scripts/outcome-cohort-online-state.mjs
 
 apps/*/node_modules
 apps/*/dist

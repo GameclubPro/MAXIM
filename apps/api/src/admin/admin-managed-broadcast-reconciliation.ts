@@ -1,3 +1,4 @@
+import { buildPublicationDeliveryActionKey } from './publication-delivery-action-key';
 import { BadRequestException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import {
@@ -271,9 +272,15 @@ export function buildManagedBroadcastDeliveryActionKey(
   targetChatId: string,
   attemptCount = 1,
 ): string {
-  const contentRevision = row.publicationContentRevisionId
-    ? `publication-${row.publicationContentRevisionId}`
-    : `legacy-${buildManagedBroadcastSemanticContentHash(row).slice(0, 32)}`;
+  if (row.publicationContentRevisionId)
+    return buildPublicationDeliveryActionKey({
+      broadcastId: row.id,
+      occurrenceIndex,
+      targetChatId,
+      contentRevisionId: row.publicationContentRevisionId,
+      attemptCount,
+    });
+  const contentRevision = `legacy-${buildManagedBroadcastSemanticContentHash(row).slice(0, 32)}`;
   const baseKey = `managed-broadcast:send:${row.id}:occurrence:${occurrenceIndex}:target:${targetChatId}:content:${contentRevision}`;
   return attemptCount <= 1 ? baseKey : `${baseKey}:attempt:${attemptCount}`;
 }
