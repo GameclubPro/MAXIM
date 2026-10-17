@@ -39,6 +39,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh duplicate [--status <STATUS>] [--explain]
   ./infra/scripts/vps-postgres-audit.sh poll-publication <poll-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-quarantine <UTC-minute> [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-quarantine-proof <UTC-minute> [--explain]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
@@ -134,7 +135,7 @@ case "$AUDIT_MODE" in
     fi
     RULES_CLEANUP_EXPLAIN="${2:-}"
     ;;
-  webhook-quarantine)
+  webhook-quarantine|webhook-quarantine-proof)
     if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "$3" != '--explain' ) ]]; then usage; exit 2; fi
     node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "$2" --explain >/dev/null || exit 2
     QUARANTINE_MINUTE="$2"
@@ -185,6 +186,12 @@ case "$AUDIT_MODE" in
     exit 2
     ;;
 esac
+
+# FLAG: This report attests public relations. Pin resolution before the shared
+# privilege admission as well as the report, including pg_temp last explicitly.
+if [[ "$AUDIT_MODE" == 'webhook-quarantine-proof' ]]; then
+  POSTGRES_AUDIT_OPTIONS+=' -c search_path=pg_catalog,public,pg_temp'
+fi
 
 emit_prelude() {
   cat <<'SQL'
@@ -2428,6 +2435,11 @@ emit_sql() {
       if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then quarantine_args+=("$RULES_CLEANUP_EXPLAIN"); fi
       node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "${quarantine_args[@]}"
       ;;
+    webhook-quarantine-proof)
+      local quarantine_proof_args=("$QUARANTINE_MINUTE")
+      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then quarantine_proof_args+=("$RULES_CLEANUP_EXPLAIN"); fi
+      node "$ROOT_DIR/infra/scripts/webhook-quarantine-proof-audit.mjs" "${quarantine_proof_args[@]}"
+      ;;
     poll-publication)
       local poll_args=("$POLL_PUBLICATION_ID")
       if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then poll_args+=("$RULES_CLEANUP_EXPLAIN"); fi
@@ -2503,7 +2515,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-quarantine-proof" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -2613,7 +2625,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-quarantine-proof" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -2630,6 +2642,8 @@ AUDIT_PROCESS_PID=''
 
 if [[ "$status" -eq 124 ]]; then
   echo "Bounded PostgreSQL audit exceeded ${AUDIT_WALL_TIMEOUT_SEC}s and was terminated." >&2
+elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-quarantine-proof" ]]; then
+  echo "Bounded webhook quarantine proof audit failed closed (quarantine_proof_unavailable)." >&2
 elif [[ "$status" -ne 0 && ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) ]]; then
   echo "Bounded webhook owner proof audit failed closed (owner_proof_unavailable)." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "legacy-default-webhook-jobs" ]]; then

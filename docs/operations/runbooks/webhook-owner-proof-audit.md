@@ -38,6 +38,12 @@ lease errors, stored semantic matches and an execution-wait marker without expos
 The marker alone is not validated readiness authority. Source, receipt, claim and effect evidence
 remain unchanged; none of these reports can authorize a retry or settlement.
 
+For a closed minute of still-quarantined receipts, use the separate
+[`webhook-quarantine-proof` report](webhook-dependency-quarantine.md#bounded-owner-and-checkpoint-evidence).
+It caps distinct blockers before reading claims, retains semantic and linked-claim disagreements,
+and bounds journal bytes before JSON inspection. It reuses the existing grant groups, performs
+no effect-ledger search and never grants replay or settlement authority.
+
 ## Selection and limits
 
 The `canonical_owner` section describes the already selected claim owner's status,

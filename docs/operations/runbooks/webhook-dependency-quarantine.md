@@ -109,6 +109,61 @@ describe the recorded blocker, not current external effects. No report result
 permits release, cancellation, claim edits or replay. Outputs omit identities,
 message content and raw errors. Retain the original window and runtime SHA.
 
+### Bounded owner and checkpoint evidence
+
+When the minute report identifies old started blockers, inspect their saved owner/checkpoint
+metadata with the separate opt-in `webhook-quarantine-proof` report. Use reviewed exact-green
+tooling and first inspect its plain plan; this report never provisions privileges itself:
+
+```bash
+: "${QUARANTINE_AUDIT_MINUTE:?Set an exact closed UTC minute, ending in :00Z}"
+./infra/scripts/vps-connect.sh postgres-audit webhook-quarantine-proof "$QUARANTINE_AUDIT_MINUTE" --explain
+./infra/scripts/vps-connect.sh postgres-audit webhook-quarantine-proof "$QUARANTINE_AUDIT_MINUTE"
+```
+
+The initial walk retains 64 of at most 65 receipts and four of at most five journal links per
+receipt. A distinct selection over only those retained links captures 17 blocker keys and
+inspects at most 16 **before** reading blocker metadata or claims. Remaining links explicitly
+have omitted proof. Per blocker, compare its own unique semantic EXECUTION claim with up to
+two directly linked claims; retain both paths and their disagreement. Seeing two linked claims
+is a lower bound, not a complete claim census. At most three distinct claim details and their
+exact owners are read per blocker; there is no recursive traversal or action-ledger read.
+
+Six complete index definitions are attested, along with the existing eight quarantine column
+grants and the existing 25-column owner-proof group. No new grants or indexes are required;
+an absent group requires a separate reviewed provision step. READ ONLY, the shared audit lock,
+SQL/wall deadlines, memory/temp limits, private error handling and exact-backend cleanup remain
+unchanged. The session fixes `search_path` to `pg_catalog, public, pg_temp` before admission so
+inherited schema order cannot change the inspected relations. The mode is excluded from `all`
+and accepts no SQL, path, range or receipt identity.
+
+Before materialization or JSON comparisons, accept only uncompressed `command_result` values
+within 32 KiB. Compressed or larger values remain explicitly uninspected; no JSON is unpacked
+to decide admission. This can omit a valid historical checkpoint and must not be interpreted
+as its absence. Output contains temporary ordinals, finite categories, counts, timestamps and
+boolean comparisons, never keys, tokens, command JSON, messages or identifiers.
+Journal states, error text, saved semantic keys, executor identities and lease tokens have their own 8 KiB
+uncompressed admission before materialization or string operations. An uninspected token or
+executor is not an absent value; comparisons remain unproved and the omission is explicit.
+
+`EXECUTION_FINISHED` comparisons establish saved metadata only. Source semantic reconstruction,
+finished timestamp validity/order, exact runtime CAS and complete effects remain unverified.
+An unexpired lease is a stored clock observation, not proof of a live process; an expired or
+absent lease grants no authority. Known finished-handler settlement has its own runtime
+validator and must not acquire an invented requirement that the lease first expire.
+`replay_authorized`, `settlement_authorized` and `remote_effects_proven` are always false.
+
+As with the minute report, this is a snapshot of still-quarantined receipts, not every historical
+transition. `sample_complete` describes only the bounded census. Missing journals, owners or
+claims, omitted proof and disagreeing paths stay explicit and never mean healthy operation.
+Preserve the runtime/source identity, exact interval, caps and uninspected-marker counts.
+
+Local focused validation, including native plan/TOAST bounds:
+
+```bash
+node scripts/agent/with-test-stores.mjs -- node --test infra/scripts/webhook-quarantine-proof-audit.test.mjs infra/scripts/vps-postgres-audit.test.mjs
+```
+
 Prepare a green exact-SHA compatibility image with writes disabled and retain it on the
 host before activation. A healthy installation can deploy this reader release first, then
 activate in a subsequent release. For an already degraded installation, use one ordinary

@@ -702,6 +702,50 @@ test('quarantine evidence uses only a fixed minute and preserves the guarded aud
   assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'webhook_quarantine'/u);
 });
 
+test('quarantine proof fixes the minute, bounds owner reads and withholds private database errors', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const mode = 'webhook-quarantine-proof';
+  const minute = '2026-10-15T01:37:00Z';
+  for (const options of [[], ['--explain']]) {
+    const result = runAudit(data, [mode, minute, ...options]);
+    assert.equal(result.status, 0, result.stderr);
+    const sql = readFileSync(data.sql, 'utf8');
+    assert.match(sql, /BEGIN READ ONLY/u);
+    assert.match(sql, /quarantine_audit_privileges_ready/u);
+    assert.match(sql, /owner_proof_privileges_ready/u);
+    assert.match(sql, /quarantine_proof_indexes_ready/u);
+    assert.match(sql, /'audit', 'webhook_quarantine_proof'/u);
+    assert.match(sql, /'replay_authorized', false/u);
+    assert.match(sql, /'settlement_authorized', false/u);
+    assert.doesNotMatch(sql, /FROM max_action_ledger|EXPLAIN ANALYZE/u);
+    assert.equal(sql.includes('EXPLAIN (FORMAT JSON)'), options.length > 0);
+    assert.match(readFileSync(data.dockerArgs, 'utf8'), /maxim_audit/u);
+    assert.match(readFileSync(data.dockerArgs, 'utf8'), /search_path=pg_catalog,public,pg_temp/u);
+    assert.equal(runConnect(data, ['postgres-audit', mode, minute, ...options]).status, 0);
+  }
+  for (const args of [
+    [],
+    [''],
+    ["2026-10-15'; SELECT 1"],
+    ['2026-02-30T01:37:00Z'],
+    ['2026-10-15T01:37:01Z'],
+    ['/tmp/query.sql'],
+    [minute, '--apply'],
+    [minute, '--explain', 'extra'],
+  ]) {
+    assert.equal(runAudit(data, [mode, ...args]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', mode, ...args]).status, 2);
+  }
+  const failed = runAudit(data, [mode, minute], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /quarantine_proof_unavailable/u);
+  assert.doesNotMatch(failed.stdout + failed.stderr, /fixture-event-0001|ERROR near/u);
+  assert.match(readFileSync(data.cleanupArgs, 'utf8'), /pg_terminate_backend/u);
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'webhook_quarantine_proof'/u);
+});
+
 test('storage audit is opt-in, uses the bounded audit role, and rejects operator SQL', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -3615,67 +3659,69 @@ test('global audit flock rejects an overlapping diagnostic before Docker', async
   await once(holder, 'exit');
 });
 
-test('wall timeout terminates the audit and cleans only its exact backend identity', (t) => {
-  const data = fixture();
-  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+for (const modeArgs of [['queue'], ['webhook-quarantine-proof', '2026-10-15T01:37:00Z']]) {
+  test(`wall timeout cleans the exact ${modeArgs[0]} backend`, (t) => {
+    const data = fixture();
+    t.after(() => rmSync(data.directory, { force: true, recursive: true }));
 
-  const startedAt = Date.now();
-  const result = runAudit(data, ['queue'], {
-    MAXIM_POSTGRES_AUDIT_WALL_TIMEOUT_SEC: '1',
-    MOCK_AUDIT_SLEEP_SEC: '5',
+    const startedAt = Date.now();
+    const result = runAudit(data, modeArgs, {
+      MAXIM_POSTGRES_AUDIT_WALL_TIMEOUT_SEC: '1',
+      MOCK_AUDIT_SLEEP_SEC: '5',
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assert.equal(result.status, 124, result.stderr);
+    assert.ok(elapsedMs < 3_000, `audit timeout took ${elapsedMs}ms`);
+    assert.match(result.stderr, /audit exceeded 1s and was terminated/u);
+
+    const args = readFileSync(data.dockerArgs, 'utf8');
+    const appName = /PGAPPNAME=(maxim-bounded-audit-[A-Za-z0-9-]+)/u.exec(args)?.[1];
+    assert.ok(appName);
+    assert.equal(
+      existsSync(data.cleanupArgs),
+      true,
+      `${readFileSync(data.allDockerCalls, 'utf8')}\n${result.stderr}`,
+    );
+    const cleanup = readFileSync(data.cleanupArgs, 'utf8');
+    assert.match(cleanup, new RegExp(`application_name = '${appName}'`, 'u'));
+    for (const pidFile of [data.dockerPid, data.sleepPid]) {
+      const pid = Number(readFileSync(pidFile, 'utf8'));
+      assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    }
   });
-  const elapsedMs = Date.now() - startedAt;
-  assert.equal(result.status, 124, result.stderr);
-  assert.ok(elapsedMs < 3_000, `audit timeout took ${elapsedMs}ms`);
-  assert.match(result.stderr, /audit exceeded 1s and was terminated/u);
 
-  const args = readFileSync(data.dockerArgs, 'utf8');
-  const appName = /PGAPPNAME=(maxim-bounded-audit-[A-Za-z0-9-]+)/u.exec(args)?.[1];
-  assert.ok(appName);
-  assert.equal(
-    existsSync(data.cleanupArgs),
-    true,
-    `${readFileSync(data.allDockerCalls, 'utf8')}\n${result.stderr}`,
-  );
-  const cleanup = readFileSync(data.cleanupArgs, 'utf8');
-  assert.match(cleanup, new RegExp(`application_name = '${appName}'`, 'u'));
-  for (const pidFile of [data.dockerPid, data.sleepPid]) {
-    const pid = Number(readFileSync(pidFile, 'utf8'));
-    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-  }
-});
+  test(`SIGTERM preserves signal status and cleans the exact ${modeArgs[0]} backend`, async (t) => {
+    const data = fixture();
+    t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+    const child = spawn('bash', [data.auditScript, ...modeArgs], {
+      cwd: root,
+      env: { ...baseEnv(data), MOCK_AUDIT_SLEEP_SEC: '5' },
+      stdio: 'ignore',
+    });
+    t.after(() => child.kill('SIGKILL'));
+    for (let attempt = 0; attempt < 100 && !existsSync(data.auditStarted); attempt += 1) {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+    }
+    assert.equal(existsSync(data.auditStarted), true);
 
-test('SIGTERM preserves signal status and cleans the exact audit backend', async (t) => {
-  const data = fixture();
-  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
-  const child = spawn('bash', [data.auditScript, 'queue'], {
-    cwd: root,
-    env: { ...baseEnv(data), MOCK_AUDIT_SLEEP_SEC: '5' },
-    stdio: 'ignore',
+    const terminatedAt = Date.now();
+    child.kill('SIGTERM');
+    const [code, signal] = await once(child, 'exit');
+    const elapsedMs = Date.now() - terminatedAt;
+    assert.equal(signal, null);
+    assert.equal(code, 143);
+    assert.ok(elapsedMs < 3_000, `SIGTERM cleanup took ${elapsedMs}ms`);
+    const args = readFileSync(data.dockerArgs, 'utf8');
+    const appName = /PGAPPNAME=(maxim-bounded-audit-[A-Za-z0-9-]+)/u.exec(args)?.[1];
+    assert.ok(appName);
+    const cleanup = readFileSync(data.cleanupArgs, 'utf8');
+    assert.match(cleanup, new RegExp(`application_name = '${appName}'`, 'u'));
+    for (const pidFile of [data.dockerPid, data.sleepPid]) {
+      const pid = Number(readFileSync(pidFile, 'utf8'));
+      assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    }
   });
-  t.after(() => child.kill('SIGKILL'));
-  for (let attempt = 0; attempt < 100 && !existsSync(data.auditStarted); attempt += 1) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
-  }
-  assert.equal(existsSync(data.auditStarted), true);
-
-  const terminatedAt = Date.now();
-  child.kill('SIGTERM');
-  const [code, signal] = await once(child, 'exit');
-  const elapsedMs = Date.now() - terminatedAt;
-  assert.equal(signal, null);
-  assert.equal(code, 143);
-  assert.ok(elapsedMs < 3_000, `SIGTERM cleanup took ${elapsedMs}ms`);
-  const args = readFileSync(data.dockerArgs, 'utf8');
-  const appName = /PGAPPNAME=(maxim-bounded-audit-[A-Za-z0-9-]+)/u.exec(args)?.[1];
-  assert.ok(appName);
-  const cleanup = readFileSync(data.cleanupArgs, 'utf8');
-  assert.match(cleanup, new RegExp(`application_name = '${appName}'`, 'u'));
-  for (const pidFile of [data.dockerPid, data.sleepPid]) {
-    const pid = Number(readFileSync(pidFile, 'utf8'));
-    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-  }
-});
+}
 
 test('monitor delegates its database sample to the fixed bounded audit', () => {
   assert.doesNotMatch(monitor, /\bpsql\b/u);
