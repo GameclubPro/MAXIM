@@ -649,38 +649,57 @@ EOF
 }
 
 has_pulled_changes() {
-  [[ -n "$PRE_PULL_HEAD" ]] && [[ "$PRE_PULL_HEAD" != "$(git rev-parse HEAD)" ]]
+  local current_head
+  if [[ -z "$PRE_PULL_HEAD" ]] || ! current_head="$(git rev-parse --verify HEAD)"; then
+    echo "Cannot establish the deploy controller comparison revisions." >&2
+    return 2
+  fi
+  [[ "$PRE_PULL_HEAD" != "$current_head" ]]
 }
 
 diff_in_paths() {
   local status=0
 
-  if ! has_pulled_changes; then
-    return 1
-  fi
+  has_pulled_changes || status=$?
+  case "$status" in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
 
   git diff --quiet "$PRE_PULL_HEAD" HEAD -- "$@" >/dev/null 2>&1 || status=$?
   case "$status" in
     0) return 1 ;;
     1) return 0 ;;
-    *) return 1 ;;
+    *)
+      echo "Cannot compare the loaded deploy controller with synchronized source." >&2
+      return 2
+      ;;
   esac
 }
 
 reexec_if_current_script_changed() {
-  if [[ "${MAXIM_DEPLOY_SCRIPT_REEXECED:-0}" == "1" ]]; then
-    return 0
-  fi
+  local status=0
 
-  if ! diff_in_paths \
+  diff_in_paths \
     "$SCRIPT_REL_PATH" \
     "infra/scripts/lib/deploy-disk-capacity.sh" \
     "infra/scripts/lib/deploy-lock.sh" \
     "infra/scripts/lib/legacy-cold-maintenance.sh" \
     "infra/scripts/lib/deploy-topology.sh" \
+    "infra/scripts/lib/photo-native-lifecycle.sh" \
     "infra/scripts/lib/webhook-rollout-quiescence.sh" \
-    "infra/scripts/lib/change-impact-components.generated.sh"; then
-    return 0
+    "infra/scripts/lib/outcome-cohort-online-prepare.sh" \
+    "infra/scripts/lib/change-impact-components.generated.sh" || status=$?
+  case "$status" in
+    0) ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+
+  if [[ "${MAXIM_DEPLOY_SCRIPT_REEXECED:-0}" == "1" ]]; then
+    echo "Deploy controller changed again after re-exec; refusing runtime mutation." >&2
+    return 2
   fi
 
   echo "Deploy runtime tooling changed during git pull. Re-executing updated $SCRIPT_REL_PATH..."
@@ -784,6 +803,9 @@ sync_branch() {
   local stash_name
   local tracked_status
 
+  # FLAG: Capture the loaded controller before checkout can replace it. Comparing
+  # only the subsequent pull hides changes already present on the target branch.
+  PRE_PULL_HEAD="$(git rev-parse --verify HEAD)" || return 2
   git fetch origin "$BRANCH"
 
   if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
@@ -792,7 +814,6 @@ sync_branch() {
     git checkout -b "$BRANCH" "origin/$BRANCH"
   fi
 
-  PRE_PULL_HEAD="$(git rev-parse HEAD)"
   tracked_status="$(git status --porcelain --untracked-files=no)"
 
   if [[ -n "$tracked_status" ]]; then
