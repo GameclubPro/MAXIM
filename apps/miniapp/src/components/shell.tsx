@@ -1,5 +1,5 @@
 import { AppIcon } from './ui/app-icon';
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router';
 import { cn } from '../lib/cn';
 import { saveChatTitle } from '../lib/chat-titles';
@@ -27,19 +27,9 @@ import { openPublikBot, PUBLIK_BOT_URL } from '../lib/publik-bot';
 import '../styles/moderation-workspace.css';
 import '../styles/publisher-workspace.css';
 
-type BottomNavIconName = 'chats' | 'channels' | 'publications' | 'settings' | 'events';
-
-const BOTTOM_NAV_ICONS = {
-  chats: 'ChatLines',
-  channels: 'Megaphone',
-  publications: 'SendDiagonal',
-  settings: 'Settings',
-  events: 'Reports',
-} as const;
-
-function BottomNavIcon({ name }: { name: BottomNavIconName }) {
-  return <AppIcon icon={BOTTOM_NAV_ICONS[name]} className="bottom-nav__icon-svg" />;
-}
+const MaxIncidentNotice = lazy(() =>
+  import('./max-incident-notice').catch(() => ({ default: () => null })),
+);
 
 export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) {
   useEffect(() => {
@@ -257,6 +247,12 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
         <Outlet />
       </main>
 
+      {!isDialogRoute && !isGiveawayRoute && !isLegalRoute ? (
+        <Suspense fallback={null}>
+          <MaxIncidentNotice />
+        </Suspense>
+      ) : null}
+
       {shouldShowBottomNav ? (
         <nav
           className={cn(
@@ -274,7 +270,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
             aria-current={isChatsRoute && selectedRootEntityType === 'chat' ? 'page' : undefined}
           >
             <span className="bottom-nav__icon" aria-hidden>
-              <BottomNavIcon name="chats" />
+              <AppIcon icon="ChatLines" className="bottom-nav__icon-svg" />
             </span>
             <span className="bottom-nav__label">Чаты</span>
           </Link>
@@ -288,7 +284,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
             aria-current={isChatsRoute && selectedRootEntityType === 'channel' ? 'page' : undefined}
           >
             <span className="bottom-nav__icon" aria-hidden>
-              <BottomNavIcon name="channels" />
+              <AppIcon icon="Megaphone" className="bottom-nav__icon-svg" />
             </span>
             <span className="bottom-nav__label">Каналы</span>
           </Link>
@@ -299,7 +295,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
               className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
             >
               <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="publications" />
+                <AppIcon icon="SendDiagonal" className="bottom-nav__icon-svg" />
               </span>
               <span className="bottom-nav__label">Посты</span>
             </NavLink>
@@ -312,7 +308,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
               title="Открыть бота Публик"
             >
               <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="publications" />
+                <AppIcon icon="SendDiagonal" className="bottom-nav__icon-svg" />
               </span>
               <span className="bottom-nav__label">Публик</span>
             </a>
