@@ -90,8 +90,13 @@ maxim_topology_stop_photo_native_before_transition() {
 
 maxim_topology_verify_photo_native_sandbox_runtime() {
   local compose_args_var="$1" image_id="$2" policy="${3:-with-consumer}"
+  local expected_consumer_id="${4:-}" consumer_state=running
   local ids sandbox_id consumer_id='' project volume consumers expected inspection
-  [[ "$policy" == with-consumer || "$policy" == sandbox-only ]] || return 2
+  [[ "$policy" == with-consumer || "$policy" == sandbox-only || "$policy" == with-stopped-consumer ]] || return 2
+  if [[ "$policy" == with-stopped-consumer ]]; then
+    [[ "$expected_consumer_id" =~ ^[a-f0-9]{64}$ && -n "$image_id" ]] || return 2
+    consumer_state=all
+  fi
   project="$(maxim_topology_photo_project "$compose_args_var")" || return 1
   ids="$(maxim_topology_photo_container_ids "$compose_args_var" "$MAXIM_PHOTO_NATIVE_SANDBOX_SERVICE" running)" || return 1
   [[ -n "$ids" && "$ids" != *$'\n'* ]] || return 1
@@ -102,19 +107,28 @@ maxim_topology_verify_photo_native_sandbox_runtime() {
   volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/run/maxim-photo"}}{{.Name}}{{end}}{{end}}' "$sandbox_id")" || return 1
   [[ "$volume" == "${project}_photo_native_ipc" ]] || return 1
   expected="$sandbox_id"
-  if [[ "$policy" == with-consumer ]]; then
-    consumer_id="$(maxim_topology_photo_container_ids "$compose_args_var" "$MAXIM_PHOTO_NATIVE_CONSUMER" running)" || return 1
+  if [[ "$policy" != sandbox-only ]]; then
+    consumer_id="$(maxim_topology_photo_container_ids "$compose_args_var" "$MAXIM_PHOTO_NATIVE_CONSUMER" "$consumer_state")" || return 1
     [[ -n "$consumer_id" && "$consumer_id" != *$'\n'* ]] || return 1
+    [[ -z "$expected_consumer_id" || "$consumer_id" == "$expected_consumer_id" ]] || return 1
     docker inspect "$consumer_id" | node -e '
       const a=JSON.parse(require("node:fs").readFileSync(0).toString("utf8")); const c=a[0];
       const mounts=c?.Mounts?.filter(m=>m.Destination==="/run/maxim-photo")??[];
       const env=c?.Config?.Env??[]; const socket=env.filter(v=>v.startsWith("PHOTO_NATIVE_SANDBOX_SOCKET_PATH="));
-      const valid=a.length===1&&c.State?.Running===true&&c.Image===process.argv[1]&&
+      // FLAG: Stopped recovery retains the exact consumer identity and socket contract.
+      const stopped=c?.Id===process.argv[5]&&c?.State?.Running===false&&c?.State?.Status==="exited"&&
+        c?.State?.Paused===false&&c?.State?.Restarting===false&&c?.State?.Dead===false&&
+        c?.Config?.Labels?.["com.docker.compose.project"]===process.argv[4]&&
+        c?.Config?.Labels?.["com.docker.compose.service"]==="api-moderation-background"&&
+        c?.Name==="/"+process.argv[4]+"-api-moderation-background-1"&&
+        env.filter(v=>v.startsWith("APP_ROLE=")).length===1&&env.includes("APP_ROLE=moderation")&&
+        env.filter(v=>v.startsWith("APP_SERVICE_NAME=")).length===1&&env.includes("APP_SERVICE_NAME=api-moderation-background");
+      const valid=a.length===1&&(process.argv[3]==="with-stopped-consumer"?stopped:c.State?.Running===true)&&c.Image===process.argv[1]&&
         mounts.length===1&&mounts[0].Type==="volume"&&mounts[0].Name===process.argv[2]&&mounts[0].RW===false&&
         socket.length===1&&socket[0]==="PHOTO_NATIVE_SANDBOX_SOCKET_PATH=/run/maxim-photo/native-photo.sock";
       process.exit(valid?0:1);
-    ' "$image_id" "$volume" || return 1
-    expected+=$'\n'"$consumer_id"
+    ' "$image_id" "$volume" "$policy" "$project" "$expected_consumer_id" || return 1
+    [[ "$policy" != with-consumer ]] || expected+=$'\n'"$consumer_id"
   fi
   consumers="$(docker ps --no-trunc -q --filter "volume=$volume" | sort)" || return 1
   expected="$(sort <<<"$expected")"
@@ -124,7 +138,7 @@ maxim_topology_verify_photo_native_sandbox_runtime() {
 maxim_topology_verify_photo_native_sandbox_for_image() {
   local status
   if maxim_topology_image_has_photo_native_sandbox "$2"; then
-    maxim_topology_verify_photo_native_sandbox_runtime "$1" "$2" with-consumer
+    maxim_topology_verify_photo_native_sandbox_runtime "$1" "$2" "${3:-with-consumer}" "${4:-}"
   else
     status=$?
     [[ "$status" -eq 1 ]] || return "$status"

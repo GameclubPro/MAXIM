@@ -517,11 +517,26 @@ verify_no_unreviewed_running_api_containers() {
   fi
 }
 
+native_consumer_runtime_state() {
+  local state
+  state="$(
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker inspect --format '{{.State.Running}}|{{.State.Status}}|{{.State.Paused}}|{{.State.Restarting}}|{{.State.Dead}}' "$1" 2>/dev/null
+  )" || return
+  case "$state" in
+    'true|running|false|false|false') printf '%s' running ;;
+    'false|exited|false|false|false') printf '%s' stopped ;;
+    *) fail "Native API consumer is neither running nor safely stopped."; return 1 ;;
+  esac
+}
+
 verify_runtime() {
   local expected_state="$1"
   if [[ "${SELECTION_OPERATION:-0}" -eq 1 && "$CURRENT_ENV_CONFIGURED" != true &&
         "$expected_state" == false ]]; then expected_state=default-false; fi
   local state_policy="${2:-running}"
+  local media_policy=with-media photo_policy=with-consumer
+  local media_id='' photo_id='' native_state
   local service container_ids_raw image_id env_summary
   local container_ids=()
   local validation=()
@@ -570,14 +585,31 @@ verify_runtime() {
       fail "A production API role does not match its exact service, APP_ROLE, or dispatch state."
       return 1
     fi
+    case "$service" in
+      api-media-analysis) media_id="${container_ids[0]}" ;;
+      api-moderation-background) photo_id="${container_ids[0]}" ;;
+    esac
   done
+  # FLAG: Only guarded disable adoption accepts stopped consumers. Their exact API
+  # identities above and native socket profiles below remain mandatory.
+  if [[ "$state_policy" == allow-stopped ]]; then
+    if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+      native_state="$(native_consumer_runtime_state "$media_id")" || return
+      [[ "$native_state" != stopped ]] || media_policy=with-stopped-media
+    fi
+    if [[ "${MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+      native_state="$(native_consumer_runtime_state "$photo_id")" || return
+      [[ "$native_state" != stopped ]] || photo_policy=with-stopped-consumer
+    fi
+  fi
   if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
     maxim_topology_verify_ocr_native_sandbox_runtime \
-      COMPOSE_FILES "$MANIFEST_IMAGE_ID" with-media || return 1
+      COMPOSE_FILES "$MANIFEST_IMAGE_ID" "$media_policy" "$media_id" || return 1
   else
     maxim_topology_require_ocr_native_sandbox_absent COMPOSE_FILES || return 1
   fi
-  maxim_topology_verify_photo_native_sandbox_for_image COMPOSE_FILES "$MANIFEST_IMAGE_ID" || return 1
+  maxim_topology_verify_photo_native_sandbox_for_image \
+    COMPOSE_FILES "$MANIFEST_IMAGE_ID" "$photo_policy" "$photo_id" || return 1
   verify_no_unreviewed_running_api_containers || return 1
 }
 
@@ -843,6 +875,33 @@ recreate_wave() {
   done
 }
 
+stop_media_analysis_for_rollout() {
+  local container_ids_raw running
+  local container_ids=()
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES || return
+  container_ids_raw="$(
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker compose "${COMPOSE_FILES[@]}" ps -a -q "$MAXIM_MEDIA_ANALYSIS_SERVICE" 2>/dev/null
+  )" || return
+  [[ -z "$container_ids_raw" ]] || mapfile -t container_ids <<<"$container_ids_raw"
+  if [[ "${#container_ids[@]}" -ne 1 || ! "${container_ids[0]}" =~ ^[a-f0-9]{64}$ ]]; then
+    fail "Publisher rollout requires one exact media-analysis container before stopping it."
+    return 1
+  fi
+  # FLAG: Keep the already-attested sandbox running. Only its API consumer must stop
+  # before sandbox-only IPC attestation; the media wave starts its replacement afterward.
+  timeout --foreground --kill-after=5s "${DOCKER_MUTATION_TIMEOUT_SEC}s" \
+    docker stop --time 30 "${container_ids[0]}" >/dev/null || return
+  running="$(
+    timeout --foreground --kill-after=2s "${COMMAND_TIMEOUT_SEC}s" \
+      docker inspect --format '{{.State.Running}}' "${container_ids[0]}" 2>/dev/null
+  )" || return
+  if [[ "$running" != false ]]; then
+    fail "Media-analysis remained running before Publisher OCR sandbox attestation."
+    return 1
+  fi
+}
+
 recreate_all_api_roles() {
   maxim_require_ordinary_effect_authority "$ROOT_DIR" || return
   maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
@@ -850,6 +909,7 @@ recreate_all_api_roles() {
   recreate_wave "admin" "${ADMIN_WAVE[@]}"
   recreate_wave "ingress" "${INGRESS_WAVE[@]}"
   if [[ "${EXPECTED_HAS_OCR_NATIVE_SANDBOX:-0}" -eq 1 ]]; then
+    stop_media_analysis_for_rollout || return
     maxim_topology_verify_ocr_native_sandbox_runtime \
       COMPOSE_FILES "$MANIFEST_IMAGE_ID" sandbox-only
   fi

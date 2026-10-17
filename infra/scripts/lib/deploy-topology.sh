@@ -1683,6 +1683,7 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
   local compose_args_var="$1"
   local expected_image_id="${2:-}"
   local media_policy="${3:-with-media}"
+  local expected_media_id="${4:-}"
   local -n compose_args_ref="$compose_args_var"
   local sandbox_list
   local media_list
@@ -1693,9 +1694,14 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
   local volume_consumers_raw
   local volume_consumers=()
   local expected_consumers=()
+  local media_ps_args=(ps --status running -q)
 
   case "$media_policy" in
     sandbox-only | with-media) ;;
+    with-stopped-media)
+      [[ "$expected_media_id" =~ ^[a-f0-9]{64}$ && -n "$expected_image_id" ]] || return 2
+      media_ps_args=(ps -a -q)
+      ;;
     *)
       echo "Unknown OCR sandbox runtime media policy: $media_policy" >&2
       return 2
@@ -1711,16 +1717,17 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
     return 1
   fi
   inspect_ids=("${sandbox_ids[0]}")
-  if [[ "$media_policy" == "with-media" ]]; then
+  if [[ "$media_policy" != "sandbox-only" ]]; then
     media_list="$(
-      docker compose "${compose_args_ref[@]}" ps --status running -q \
+      docker compose "${compose_args_ref[@]}" "${media_ps_args[@]}" \
         "$MAXIM_MEDIA_ANALYSIS_SERVICE" 2>/dev/null
     )" || return 1
     [[ -z "$media_list" ]] || mapfile -t media_ids <<<"$media_list"
     if [[ "${#media_ids[@]}" -ne 1 ]]; then
-      echo "OCR sandbox attestation requires exactly one running media-analysis container." >&2
+      echo "OCR sandbox attestation requires exactly one media-analysis container in its selected state." >&2
       return 1
     fi
+    [[ -z "$expected_media_id" || "${media_ids[0]}" == "$expected_media_id" ]] || return 1
     inspect_ids+=("${media_ids[0]}")
   fi
 
@@ -1798,7 +1805,7 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
           Array.isArray(left) && left.length === right.length &&
           left.every((value, index) => value === right[index]);
         let valid =
-          Array.isArray(containers) && containers.length === (mediaPolicy === "with-media" ? 2 : 1) &&
+          Array.isArray(containers) && containers.length === (mediaPolicy === "sandbox-only" ? 1 : 2) &&
           sandbox?.State?.Running === true && sandbox?.State?.Status === "running" &&
           sandbox?.State?.Health?.Status === "healthy" &&
           (!expectedImageId || sandbox?.Image === expectedImageId) &&
@@ -1841,7 +1848,7 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
           socketMount?.Name === `${project}_ocr_native_ipc` &&
           socketMount?.Destination === "/run/maxim-ocr" && socketMount?.RW === true &&
           networkNames.every((networkName) => networkName === "none");
-        if (mediaPolicy === "with-media") {
+        if (mediaPolicy !== "sandbox-only") {
           const mediaMounts = (media?.Mounts ?? []).filter(
             (mount) => mount?.Destination === "/run/maxim-ocr",
           );
@@ -1865,7 +1872,18 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
             "COMMERCIAL_OCR_TESSERACT_TIMEOUT_MS", "OMP_THREAD_LIMIT",
             "PHOTO_DUPLICATE_MAX_BYTES",
           ];
-          valid = valid && media?.State?.Running === true &&
+          // FLAG: Recovery inspects the exact stopped consumer; it never omits its
+          // identity, image, native profile or read-only socket boundary.
+          const stoppedMediaValid = media?.Id === process.argv[3] && media?.State?.Running === false &&
+            media?.State?.Status === "exited" && media?.State?.Paused === false &&
+            media?.State?.Restarting === false && media?.State?.Dead === false &&
+            media?.Config?.Labels?.["com.docker.compose.project"] === project &&
+            media?.Config?.Labels?.["com.docker.compose.service"] === "api-media-analysis" &&
+            media?.Name === `/${project}-api-media-analysis-1` &&
+            mediaEnvironment.get("APP_ROLE") === "moderation" &&
+            mediaEnvironment.get("APP_SERVICE_NAME") === "api-media-analysis";
+          valid = valid && (mediaPolicy === "with-stopped-media"
+            ? stoppedMediaValid : media?.State?.Running === true) &&
             (!expectedImageId || media?.Image === expectedImageId) &&
             mediaEnvironmentValid &&
             nativeProfileKeys.every((key) => mediaEnvironment.get(key) === env.get(key)) &&
@@ -1873,7 +1891,7 @@ maxim_topology_verify_ocr_native_sandbox_runtime() {
             mediaMounts[0]?.Name === socketMount?.Name && mediaMounts[0]?.RW === false;
         }
         process.exit(valid ? 0 : 1);
-      ' "$expected_image_id" "$media_policy" >/dev/null 2>&1; then
+      ' "$expected_image_id" "$media_policy" "$expected_media_id" >/dev/null 2>&1; then
     echo "OCR sandbox runtime failed image, isolation, health, or IPC-volume attestation." >&2
     return 1
   fi

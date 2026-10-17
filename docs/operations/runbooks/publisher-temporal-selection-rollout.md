@@ -114,6 +114,18 @@ use the existing guarded `publisher-dispatch-disable --apply` recovery procedure
 selection setter refuses to adopt that state. Preserve receipts, claims, queues and
 unknown effects throughout recovery.
 
+Before the media wave, the controller stops only the exact existing media-analysis
+container and confirms it is stopped. The already-attested OCR sandbox stays running;
+its IPC volume must then have only that sandbox as a running consumer. The replacement
+media role must pass the normal two-consumer attestation before later waves start.
+
+Applied dispatch-disable recovery with explicit webhook-pause adoption can inspect
+stopped media-analysis and moderation-background consumers. It still requires each
+exact container generation, image, service, role, native profile and read-only socket
+mount, plus healthy isolated native auxiliaries and no unexpected running IPC consumers.
+Paused, restarting, dead, missing or ambiguous consumers fail closed. Ordinary status,
+preview, enable and selection operations retain their running-consumer requirement.
+
 Pause control uses the inspected running admin container ID after checking its exact
 image, Compose service and application role. A failed execution is never retried through
 another container. With a reviewed stopped admin, pause recovery can use a one-off
