@@ -4,6 +4,12 @@ import {
   OUTCOME_COHORT_TARGETS,
   readOutcomeCohortSource,
 } from '../../scripts/agent/outcome-cohort-online-targets.mjs';
+import {
+  OUTCOME_COHORT_HISTORICAL_COMPATIBILITY,
+  historicalCompatibilityCtes,
+  historicalCompatibilityProjection,
+  isCompatibleHistoricalReceipt,
+} from '../../scripts/agent/outcome-cohort-historical-compatibility.mjs';
 
 const fail = (code) => {
   throw new Error(`OUTCOME_COHORT_${code}`);
@@ -80,12 +86,13 @@ ${OUTCOME_COHORT_TARGETS.map((t) => `(${quote(t.selector)},${quote(t.table)},${q
   JOIN expected ON progress.relid=to_regclass('public.' || expected.table_name)
   LEFT JOIN pg_stat_activity activity ON activity.pid=progress.pid
   WHERE progress.datid=(SELECT oid FROM pg_database WHERE datname=current_database()) LIMIT 17
-)
+), ${historicalCompatibilityCtes}
 SELECT json_build_object(
  'indexes', (SELECT json_agg(inspected) FROM inspected),
  'receipts', COALESCE((SELECT json_agg(receipts) FROM receipts), '[]'::json),
  'artifacts', COALESCE((SELECT json_agg(relname) FROM artifacts), '[]'::json),
- 'builders', COALESCE((SELECT json_agg(builders) FROM builders), '[]'::json)
+ 'builders', COALESCE((SELECT json_agg(builders) FROM builders), '[]'::json),
+ 'historicalCompatibility', ${historicalCompatibilityProjection}
 );
 COMMIT;`;
 
@@ -111,11 +118,26 @@ export function verifyOutcomeCohortPreparationState(snapshot, source) {
       receipt.finished !== true ||
       !Number.isInteger(receipt.steps) ||
       receipt.steps < 0 ||
-      known.get(receipt.name) !== receipt.checksum ||
+      typeof receipt.name !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(receipt.checksum ?? '') ||
       active.has(receipt.name)
     )
       fail('RECEIPT_BLOCKED');
     active.set(receipt.name, receipt);
+  }
+  // FLAG: Validate every active receipt before considering the four exact historical
+  // variants. Their pinned successor receipts and current catalog must agree; no
+  // receipt is rewritten and an unknown or unfinished migration still blocks release.
+  for (const receipt of active.values()) {
+    const historical = OUTCOME_COHORT_HISTORICAL_COMPATIBILITY.some(
+      (variant) => variant.name === receipt.name && variant.checksum === receipt.checksum,
+    );
+    if (
+      historical
+        ? !isCompatibleHistoricalReceipt(receipt, known, active, snapshot.historicalCompatibility)
+        : known.get(receipt.name) !== receipt.checksum
+    )
+      fail('RECEIPT_BLOCKED');
   }
   const targets = OUTCOME_COHORT_TARGETS.map((target) => {
     const indexes = snapshot.indexes.filter((index) => index.selector === target.selector);
