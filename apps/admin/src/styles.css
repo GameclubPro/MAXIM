@@ -1317,6 +1317,35 @@ button:disabled {
   min-width: 0;
 }
 
+.observation-selector,
+.observation-evidence-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.6rem;
+}
+
+.observation-selector [aria-pressed='true'] {
+  border-color: currentColor;
+  font-weight: 700;
+}
+
+.observation-evidence-search label {
+  display: grid;
+  gap: 0.4rem;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.observation-evidence-search input {
+  min-width: 0;
+  width: 100%;
+}
+
+.cohort-desk code {
+  overflow-wrap: anywhere;
+}
+
 .cohort-desk h2 {
   margin: 0;
 }

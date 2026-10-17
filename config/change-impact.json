@@ -384,6 +384,16 @@
       "checks": ["repo-static", "agent-tools", "infra", "api", "prisma"],
       "deployComponents": ["api-shared"],
       "migrationImpact": "tooling"
+    },
+    {
+      "id": "outcome-cohort-migration-runtime",
+      "include": [
+        "scripts/agent/outcome-cohort*.mjs",
+        "infra/scripts/outcome-cohort-online-state.mjs"
+      ],
+      "checks": ["repo-static", "agent-tools", "infra", "api", "prisma"],
+      "deployComponents": ["api-shared"],
+      "migrationImpact": "tooling"
     }
   ],
   "fallback": {

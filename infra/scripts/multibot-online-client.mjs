@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { validateMultibotComposeArgs } from './multibot-prepare-capacity.mjs';
+import { requireOutcomeCohortTarget } from '../../scripts/agent/outcome-cohort-online-targets.mjs';
 
 const shaPattern = /^[a-f0-9]{40}$/u;
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/u;
@@ -169,9 +170,27 @@ export function multibotOnlineClientCreateArgs(applicationName, identity) {
 // FLAG: Await create before issuing start. A create timeout cannot cause SQL later:
 // the object has never received a start request. The supervisor owns exact removal
 // and reports uncertain preparation cleanup instead of treating name absence as proof.
-export async function createMultibotOnlineClientLauncher(
+export async function createMultibotOnlineClientLauncher(composeArgs, options = {}) {
+  return createOnlineClientLauncher(composeArgs, options, multibotOnlineClientCreateArgs);
+}
+
+export function outcomeCohortOnlineClientCreateArgs(applicationName, identity, selector) {
+  requireOutcomeCohortTarget(selector);
+  const args = multibotOnlineClientCreateArgs(applicationName, identity);
+  return [...args.slice(0, -1), 'scripts/agent/outcome-cohort-online-prepare.mjs', selector];
+}
+
+export async function createOutcomeCohortOnlineClientLauncher(composeArgs, selector, options = {}) {
+  requireOutcomeCohortTarget(selector);
+  return createOnlineClientLauncher(composeArgs, options, (applicationName, identity) =>
+    outcomeCohortOnlineClientCreateArgs(applicationName, identity, selector),
+  );
+}
+
+async function createOnlineClientLauncher(
   composeArgs,
-  { run = runClientCommand, env = process.env, start = spawn } = {},
+  { run = runClientCommand, env = process.env, start = spawn },
+  createArgs,
 ) {
   validateMultibotComposeArgs(composeArgs);
   const read = async (args, options) => {
@@ -210,6 +229,7 @@ export async function createMultibotOnlineClientLauncher(
   let preparationAttempted = false;
   let started = false;
   return {
+    identity: Object.freeze({ sourceSha: env.MAXIM_EXPECTED_DEPLOY_SHA, imageId, networkId }),
     prepare: async (applicationName) => {
       if (preparationAttempted || started) fail('ALREADY_PREPARED');
       preparationAttempted = true;
@@ -220,7 +240,7 @@ export async function createMultibotOnlineClientLauncher(
         verifyMultibotOnlineClientNetwork(freshNetworks[0], config) !== networkId
       )
         fail('NETWORK_CHANGED');
-      const args = multibotOnlineClientCreateArgs(applicationName, {
+      const args = createArgs(applicationName, {
         imageId,
         networkId,
         networkName: config.networkName,

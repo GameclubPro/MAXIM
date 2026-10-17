@@ -11,6 +11,8 @@ ORIGINAL_ARGS=("$@")
 source "$ROOT_DIR/infra/scripts/lib/deploy-topology.sh"
 # shellcheck source=infra/scripts/lib/webhook-rollout-quiescence.sh
 source "$ROOT_DIR/infra/scripts/lib/webhook-rollout-quiescence.sh"
+# shellcheck source=infra/scripts/lib/outcome-cohort-online-prepare.sh
+source "$ROOT_DIR/infra/scripts/lib/outcome-cohort-online-prepare.sh"
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 # shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
@@ -1350,6 +1352,7 @@ fi
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   require_stateful_services_ready
   maxim_webhook_preflight_multibot_prepare_capacity COMPOSE_FILES
+  maxim_outcome_cohort_preflight COMPOSE_FILES
 fi
 
 prepare_deploy_disk_capacity
@@ -1418,6 +1421,7 @@ remove_stale_service_containers "${SERVICES[@]}"
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   expected_api_image_id="$(docker image inspect --format '{{.Id}}' "$MAXIM_API_IMAGE")"
   maxim_webhook_prepare_multibot_before_quiescence COMPOSE_FILES
+  maxim_outcome_cohort_prepare
   maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES
   maxim_webhook_quiesce_legacy_ingress_for_multibot_cutover COMPOSE_FILES
   # FLAG: The first command-authority migration is an effects cutoff only after every
@@ -1428,6 +1432,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     run_migrations
   fi
   maxim_webhook_assert_multibot_migration_indexes COMPOSE_FILES
+  maxim_outcome_cohort_assert COMPOSE_FILES
   if [[ "$TARGET_HAS_MEDIA_ANALYSIS" -eq 1 ]]; then
     maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
     maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES

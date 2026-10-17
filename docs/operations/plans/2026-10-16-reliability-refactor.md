@@ -1,5 +1,11 @@
 # Reliability and latency refactor
 
+The current priorities, verified release blocker and acceptance sequence are in the
+[17 October final refactoring plan](2026-10-17-bot-refactoring-final-plan.md). This document
+retains the detailed observation contracts. The stage 1c code merged as `255e07ec`, but its
+deployment stopped before runtime mutation on historical migration receipt compatibility;
+source availability must not be described as production acceptance.
+
 ## Sequential delivery
 
 Keep one implementation/release stage active. Preserve current bot assignments, execution
@@ -77,10 +83,41 @@ recovery before loading stay unknown. Native regression coverage reads real save
 including execution of an older revision after the canonical pointer changes, without media-byte
 reads or MAX calls. Historical labels are not backfilled.
 
-Both schema changes are additive. The origin index is on a new empty table; the occurrence index
+The closed `GET /v1/safety-desk/runtime/delete-cohort` and
+`GET /v1/safety-desk/runtime/publication-delivery-cohort` observe separate fifteen-minute
+creation cohorts ending thirty seconds before the database clock. DELETE includes all ten saved
+statuses, including OBSERVED; recipient delivery includes all six PUBLIK_V1 statuses. These are
+different units and must not be added together. Each status reads at most 513 indexed heads and
+512 scalar details. Saturation is a lower bound, not an all-operations success rate. The DELETE
+projection reuses the exact evidence classifier and reports finalized-only latency with its own
+sample count. Recipient `sentAt` is a saved send clock, not SQL completion time; no recipient
+completion percentile is inferred. Later retries remain members of the original recipient row.
+
+Recipient cohorts apply the existing legacy-ambiguity classifier only after bounded selection,
+deduplicate immutable parents before primary-key probes, and expose saved receipt, verification,
+deadline and waiting-reason counts separately. They do not join the action journal. The explicit
+`GET /v1/safety-desk/runtime/publication-deliveries/:deliveryId/evidence` instead probes at most
+two exact current/legacy action keys after checking the saved content, occurrence, bot and recipient
+binding. Unknown, invalid, acknowledged and confirmed action outcomes remain distinct from saved
+recipient receipts, automated presence checks and operator confirmation. Client visibility remains
+unobserved. These endpoints never authorize or perform a retry.
+
+The new readers use one read-only RepeatableRead transaction, a two-second statement limit,
+250-millisecond lock limit and five-second transaction limit. Cohorts share concurrent requests
+and cache successful snapshots for ten seconds. Required ordinary persistent default B-tree
+definitions are attested before data access; unavailable indexes fail closed. Safety Desk mounts
+one observation family at a time, loads delivery evidence only after explicit selection, and
+discards previous request/owner evidence on a scope change or failed response.
+
+The schema changes are additive. The origin index is on a new empty table; the occurrence index
 build is concurrent on retained history. No history rewrite, authority change or existing-reader
 incompatibility is introduced. A compatible rollback may omit new observations while retaining
 existing journals; it must not drop the additive tables or relax any installed rollback floor.
+DELETE and recipient history indexes use the independent
+[supervised online preparation](../runbooks/outcome-cohort-online-indexes.md) before queue
+quiescence, with fixed checksums, two fresh admission windows, bounded storage/deadline budgets
+and exact owned cleanup. Failed receipts and partial indexes stop release progression and remain
+available for review; ordinary deployment never repairs or replays an uncertain attempt.
 
 ## Validation and acceptance
 

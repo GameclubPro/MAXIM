@@ -23,6 +23,12 @@ import {
   type SafetyDeskWebhookCohortResponse,
   safetyDeskPublicationCohortResponseSchema,
   type SafetyDeskPublicationCohortResponse,
+  safetyDeskDeleteCohortResponseSchema,
+  type SafetyDeskDeleteCohortResponse,
+  safetyDeskPublicationDeliveryCohortResponseSchema,
+  type SafetyDeskPublicationDeliveryCohortResponse,
+  safetyDeskPublicationDeliveryEvidenceResponseSchema,
+  type SafetyDeskPublicationDeliveryEvidenceResponse,
 } from '@maxim/contracts/safety-desk';
 import { createAdminApiTransport, type AdminApiTransport } from './admin-request';
 
@@ -130,6 +136,38 @@ export class SafetyDeskApiClient {
       accessCode,
       safetyDeskPublicationCohortResponseSchema,
     );
+  }
+
+  fetchDeleteCohort(accessCode: string): Promise<SafetyDeskDeleteCohortResponse> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/delete-cohort`,
+      accessCode,
+      safetyDeskDeleteCohortResponseSchema,
+    );
+  }
+
+  fetchPublicationDeliveryCohort(
+    accessCode: string,
+  ): Promise<SafetyDeskPublicationDeliveryCohortResponse> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/publication-delivery-cohort`,
+      accessCode,
+      safetyDeskPublicationDeliveryCohortResponseSchema,
+    );
+  }
+
+  async fetchPublicationDeliveryEvidence(
+    deliveryId: string,
+    accessCode: string,
+  ): Promise<SafetyDeskPublicationDeliveryEvidenceResponse> {
+    const snapshot = await this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/publication-deliveries/${encodeURIComponent(deliveryId)}/evidence`,
+      accessCode,
+      safetyDeskPublicationDeliveryEvidenceResponseSchema,
+    );
+    if (snapshot.deliveryId !== deliveryId)
+      throw new Error('Подтверждения относятся к другой доставке.');
+    return snapshot;
   }
 
   fetchRetentionRuntime(

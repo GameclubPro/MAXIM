@@ -2435,6 +2435,7 @@ model ModerationDeleteIntent {
   @@index([status, nextAttemptAt, executeAt], map: "moderation_delete_intents_due_idx")
   @@index([status, leaseExpiresAt], map: "moderation_delete_intents_lease_idx")
   @@index([status, updatedAt], map: "moderation_delete_intents_retention_idx")
+  @@index([status, createdAt, id], map: "moderation_delete_intents_status_created_id_idx")
   @@index([completedAt(sort: Desc), id(sort: Desc)], map: "moderation_delete_intents_completed_id_idx")
   @@index([chatId, status, createdAt], map: "moderation_delete_intents_chat_status_created_idx")
   @@map("moderation_delete_intents")
@@ -3583,6 +3584,7 @@ model ManagedBroadcastDelivery {
   @@index([contentRevisionId], map: "managed_broadcast_deliveries_content_revision_idx")
   @@index([dispatchProfile, status, postActionsNextAt, id], map: "managed_broadcast_deliveries_post_actions_due_idx")
   @@index([dispatchProfile, status, lockedAt], map: "managed_broadcast_deliveries_dispatch_status_locked_idx")
+  @@index([dispatchProfile, status, createdAt, id], map: "managed_broadcast_deliveries_dispatch_status_created_id_idx")
   @@map("managed_broadcast_deliveries")
 }
 
