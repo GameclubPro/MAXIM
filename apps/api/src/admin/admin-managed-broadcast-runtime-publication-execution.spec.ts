@@ -10,7 +10,9 @@ import {
   PublicationDispatchProfile,
   PublicationScheduleMode,
   PublicationScheduleStatus,
+  type Prisma,
 } from '../prisma/prisma-client';
+import type { PrismaService } from '../prisma/prisma.service';
 import { AdminManagedBroadcastPublicationVerification } from './admin-managed-broadcast-publication-verification';
 import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 import type {
@@ -29,8 +31,207 @@ import {
   MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
 } from '../max/max-action-pre-dispatch-guard';
 import { MaxApiInternalRateLimitError, type MaxPublishedMessage } from '../max/max-client.service';
+import type { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
 
 const AUTOMATED_VERIFICATION_DUE_AT = new Date('2026-07-25T08:00:15.000Z');
+
+const EXPECTED_OCCURRENCE_RESULT_SELECT = {
+  status: true,
+  sentCount: true,
+  cycleCount: true,
+  nextSendAt: true,
+} as const satisfies Prisma.ManagedBroadcastSelect;
+
+const EXPECTED_FINALIZER_DELIVERY_SELECT = {
+  targetChatId: true,
+  status: true,
+  lastErrorCode: true,
+  dispatchBlockerCode: true,
+  dispatchBlockedAt: true,
+  nextAttemptAt: true,
+  sentAt: true,
+  remoteMessageId: true,
+  remoteMessageVerifiedAt: true,
+  remoteMessageVerificationAttemptCount: true,
+  remoteMessageVerificationAbsentCount: true,
+  remoteMessageVerificationPresentCount: true,
+  remoteMessageVerificationAttemptedAt: true,
+  remoteMessageVerificationNextAt: true,
+  remoteMessageVerificationSource: true,
+} as const satisfies Prisma.ManagedBroadcastDeliverySelect;
+
+type SelectedOccurrence = Prisma.ManagedBroadcastGetPayload<{
+  select: typeof EXPECTED_OCCURRENCE_RESULT_SELECT;
+}>;
+type SelectedFinalizerDelivery = Prisma.ManagedBroadcastDeliveryGetPayload<{
+  select: typeof EXPECTED_FINALIZER_DELIVERY_SELECT;
+}>;
+
+const occurrenceProjectionSeam = (runtime: AdminManagedBroadcastRuntime) => ({
+  process: runtime['processManagedBroadcastOccurrence'].bind(runtime),
+  read: runtime['readManagedBroadcastOccurrenceResult'].bind(runtime),
+  finalize: runtime['finalizeManagedBroadcastOccurrence'].bind(runtime),
+});
+type FinalizerRow = Parameters<ReturnType<typeof occurrenceProjectionSeam>['finalize']>[0];
+type FinalizerOptions = Parameters<ReturnType<typeof occurrenceProjectionSeam>['finalize']>[5];
+
+function createFullFinalizerRow(overrides: Partial<FinalizerRow> = {}): FinalizerRow {
+  return {
+    id: 'broadcast-1',
+    sourceChatId: 'chat-source',
+    entityType: 'CHAT',
+    actorUserId: 'admin-1',
+    text: 'Projection finalizer fixture',
+    textFormat: 'plain',
+    applyToAllChats: false,
+    targetChatIds: [],
+    buttons: [],
+    buttonEnabled: false,
+    buttonUrl: '',
+    buttonText: 'Open',
+    imageEnabled: false,
+    imageBase64: '',
+    imageMimeType: '',
+    imageFileName: '',
+    mediaType: null,
+    mediaPayload: null,
+    mediaMimeType: '',
+    mediaFileName: '',
+    scheduleMode: 'calendar',
+    scheduleTimezone: 'UTC',
+    nextSendAt: new Date('2026-07-12T10:00:00.000Z'),
+    cycleEnabled: false,
+    cycleEveryHours: 1,
+    cycleCount: 1,
+    sentCount: 0,
+    status: ManagedBroadcastStatus.ACTIVE,
+    lastError: null,
+    lockedAt: null,
+    lockToken: null,
+    publicationOccurrenceId: 'occurrence-1',
+    publicationContentRevisionId: 'content-1',
+    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    requiredBotId: 'publisher-bot',
+    createdAt: new Date('2026-07-12T09:00:00.000Z'),
+    updatedAt: new Date('2026-07-12T09:00:00.000Z'),
+    ...overrides,
+  } satisfies FinalizerRow;
+}
+
+function selectedFinalizerDelivery(
+  targetChatId: string,
+  overrides: Partial<Omit<SelectedFinalizerDelivery, 'targetChatId'>> = {},
+): SelectedFinalizerDelivery {
+  return {
+    targetChatId,
+    status: overrides.status ?? ManagedBroadcastDeliveryStatus.PENDING,
+    lastErrorCode: overrides.lastErrorCode ?? null,
+    dispatchBlockerCode: overrides.dispatchBlockerCode ?? null,
+    dispatchBlockedAt: overrides.dispatchBlockedAt ?? null,
+    nextAttemptAt: overrides.nextAttemptAt ?? null,
+    sentAt: overrides.sentAt ?? null,
+    remoteMessageId: overrides.remoteMessageId ?? null,
+    remoteMessageVerifiedAt: overrides.remoteMessageVerifiedAt ?? null,
+    remoteMessageVerificationAttemptCount: overrides.remoteMessageVerificationAttemptCount ?? 0,
+    remoteMessageVerificationAbsentCount: overrides.remoteMessageVerificationAbsentCount ?? 0,
+    remoteMessageVerificationPresentCount: overrides.remoteMessageVerificationPresentCount ?? 0,
+    remoteMessageVerificationAttemptedAt: overrides.remoteMessageVerificationAttemptedAt ?? null,
+    remoteMessageVerificationNextAt: overrides.remoteMessageVerificationNextAt ?? null,
+    remoteMessageVerificationSource: overrides.remoteMessageVerificationSource ?? null,
+  };
+}
+
+function selectedOccurrenceReader(broadcastId: string, current: SelectedOccurrence | null) {
+  type Delegate = PrismaService['managedBroadcast'];
+  const query = {
+    where: { id: broadcastId },
+    select: EXPECTED_OCCURRENCE_RESULT_SELECT,
+  } as const satisfies Prisma.Args<Delegate, 'findUnique'>;
+  type Result = Prisma.Result<Delegate, typeof query, 'findUnique'>;
+  const findUnique = jest.fn(async (args: typeof query): Promise<Result> => {
+    expect(args).toEqual(query);
+    if (current)
+      expect(Object.keys(current)).toEqual(Object.keys(EXPECTED_OCCURRENCE_RESULT_SELECT));
+    return current;
+  });
+  return { findUnique, query };
+}
+
+function selectedFinalizerReader(
+  broadcastId: string,
+  deliveries: SelectedFinalizerDelivery[],
+  occurrenceIndex = 1,
+) {
+  type Delegate = PrismaService['managedBroadcastDelivery'];
+  const query = {
+    where: { broadcastId, occurrenceIndex },
+    select: EXPECTED_FINALIZER_DELIVERY_SELECT,
+  } as const satisfies Prisma.Args<Delegate, 'findMany'>;
+  type Result = Prisma.Result<Delegate, typeof query, 'findMany'>;
+  const findMany = jest.fn(async (args: typeof query): Promise<Result> => {
+    expect(args).toEqual(query);
+    for (const delivery of deliveries)
+      expect(Object.keys(delivery)).toEqual(Object.keys(EXPECTED_FINALIZER_DELIVERY_SELECT));
+    return deliveries;
+  });
+  return { findMany, query };
+}
+
+function createProjectedFinalizerHarness(
+  deliveries: SelectedFinalizerDelivery[],
+  {
+    row = createFullFinalizerRow(),
+    current = null,
+    updateCount = 1,
+  }: { row?: FinalizerRow; current?: SelectedOccurrence | null; updateCount?: number } = {},
+) {
+  const deliveryReader = selectedFinalizerReader(row.id, deliveries);
+  const occurrenceReader = selectedOccurrenceReader(row.id, current);
+  const updateMany = jest.fn(
+    async (_args: Prisma.ManagedBroadcastUpdateManyArgs): Promise<Prisma.BatchPayload> => ({
+      count: updateCount,
+    }),
+  );
+  const occurrenceUpdateMany = jest.fn(
+    async (
+      _args: Prisma.ManagedBroadcastOccurrenceUpdateManyArgs,
+    ): Promise<Prisma.BatchPayload> => ({
+      count: 1,
+    }),
+  );
+  const reservationDeleteMany = jest.fn(
+    async (
+      _args: Prisma.ManagedBroadcastCalendarReservationDeleteManyArgs,
+    ): Promise<Prisma.BatchPayload> => ({
+      count: 1,
+    }),
+  );
+  const publish = jest.fn(
+    async (..._args: Parameters<MaxRoutedPublicationService['publish']>): Promise<never> => {
+      throw new Error('Finalization must not dispatch a message');
+    },
+  );
+  const runtime = new AdminManagedBroadcastRuntime({
+    prisma: {
+      managedBroadcast: { findUnique: occurrenceReader.findUnique, updateMany },
+      managedBroadcastDelivery: { findMany: deliveryReader.findMany },
+      managedBroadcastOccurrence: { updateMany: occurrenceUpdateMany },
+      managedBroadcastCalendarReservation: { deleteMany: reservationDeleteMany },
+    },
+    maxRoutedPublicationService: { publish },
+  } as never);
+  return {
+    runtime,
+    row,
+    ...occurrenceProjectionSeam(runtime),
+    updateMany,
+    occurrenceUpdateMany,
+    reservationDeleteMany,
+    publish,
+    deliveryReader,
+    occurrenceReader,
+  };
+}
 
 function publicationMediaRuntime(
   runtime: AdminManagedBroadcastRuntime,
@@ -4002,230 +4203,106 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   it('rotates an unfinished deadline envelope behind older due work', async () => {
     const now = new Date('2026-07-12T10:05:00.000Z');
     jest.useFakeTimers().setSystemTime(now);
-    try {
-      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
-      const runtime = new AdminManagedBroadcastRuntime({
-        prisma: {
-          managedBroadcastDelivery: {
-            findMany: jest.fn().mockResolvedValue([
-              {
-                status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-                targetChatId: 'chat-1',
-              },
-              {
-                status: ManagedBroadcastDeliveryStatus.PENDING,
-                targetChatId: 'chat-2',
-              },
-            ]),
-          },
-          managedBroadcast: { updateMany },
-          managedBroadcastOccurrence: {
-            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-          },
-        },
-      } as never);
+    const harness = createProjectedFinalizerHarness([
+      selectedFinalizerDelivery('chat-1', { status: ManagedBroadcastDeliveryStatus.AMBIGUOUS }),
+      selectedFinalizerDelivery('chat-2'),
+    ]);
+    const result = await harness.finalize(harness.row, 1, [], [], null);
 
-      const result = await (runtime as any).finalizeManagedBroadcastOccurrence(
-        {
-          id: 'broadcast-1',
-          scheduleMode: 'calendar',
-          nextSendAt: new Date('2026-07-12T10:00:00.000Z'),
-          publicationOccurrenceId: 'occurrence-1',
-        },
-        1,
-        [],
-        [],
-        null,
-      );
-
-      expect(updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            status: ManagedBroadcastStatus.ACTIVE,
-            nextSendAt: now,
-          }),
-        }),
-      );
-      expect(result).toEqual(
-        expect.objectContaining({
-          status: ManagedBroadcastStatus.ACTIVE,
-          failedChatIds: ['chat-1'],
-          pendingChatIds: ['chat-2'],
-          nextSendAt: now,
-        }),
-      );
-    } finally {
-      jest.useRealTimers();
-    }
+    expect(harness.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: ManagedBroadcastStatus.ACTIVE, nextSendAt: now }),
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: ManagedBroadcastStatus.ACTIVE,
+        failedChatIds: ['chat-1'],
+        pendingChatIds: ['chat-2'],
+        nextSendAt: now,
+      }),
+    );
+    expect(harness.deliveryReader.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('preserves the earliest route retry when every pending target is quarantined', async () => {
     const now = new Date('2026-07-12T10:05:00.000Z');
     const retryAt = new Date('2026-07-12T16:05:00.000Z');
     jest.useFakeTimers().setSystemTime(now);
-    try {
-      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
-      const runtime = new AdminManagedBroadcastRuntime({
-        prisma: {
-          managedBroadcastDelivery: {
-            findMany: jest.fn().mockResolvedValue([
-              {
-                status: ManagedBroadcastDeliveryStatus.PENDING,
-                targetChatId: 'chat-1',
-                lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
-              },
-              {
-                status: ManagedBroadcastDeliveryStatus.PENDING,
-                targetChatId: 'chat-2',
-                lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
-              },
-            ]),
-          },
-          managedBroadcast: { updateMany },
-          managedBroadcastOccurrence: {
-            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-          },
-        },
-      } as never);
-
-      const result = await (runtime as any).finalizeManagedBroadcastOccurrence(
-        {
-          id: 'broadcast-1',
-          scheduleMode: 'calendar',
-          nextSendAt: now,
-          publicationOccurrenceId: 'occurrence-1',
-        },
-        1,
-        [],
-        [],
-        null,
-        { pendingNotBefore: retryAt },
-      );
-
-      expect(updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            status: ManagedBroadcastStatus.ACTIVE,
-            nextSendAt: retryAt,
-          }),
+    const harness = createProjectedFinalizerHarness(
+      ['chat-1', 'chat-2'].map((targetChatId) =>
+        selectedFinalizerDelivery(targetChatId, {
+          lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
         }),
-      );
-      expect(result).toEqual(
-        expect.objectContaining({
+      ),
+      { row: createFullFinalizerRow({ nextSendAt: now }) },
+    );
+    const result = await harness.finalize(harness.row, 1, [], [], null, {
+      pendingNotBefore: retryAt,
+    });
+
+    expect(harness.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
           status: ManagedBroadcastStatus.ACTIVE,
-          pendingChatIds: ['chat-1', 'chat-2'],
           nextSendAt: retryAt,
         }),
-      );
-    } finally {
-      jest.useRealTimers();
-    }
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: ManagedBroadcastStatus.ACTIVE,
+        pendingChatIds: ['chat-1', 'chat-2'],
+        nextSendAt: retryAt,
+      }),
+    );
   });
 
   it('schedules an unverified publication at its persisted verification retry time', async () => {
     const now = new Date('2026-07-12T10:05:00.000Z');
     const nextVerificationAt = new Date('2026-07-12T10:15:00.000Z');
     jest.useFakeTimers().setSystemTime(now);
-    try {
-      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
-      const runtime = new AdminManagedBroadcastRuntime({
-        prisma: {
-          managedBroadcastDelivery: {
-            findMany: jest.fn().mockResolvedValue([
-              {
-                status: ManagedBroadcastDeliveryStatus.SENT,
-                targetChatId: 'chat-1',
-                sentAt: new Date('2026-07-12T10:00:00.000Z'),
-                remoteMessageId: 'mid-1',
-                remoteMessageVerifiedAt: null,
-                remoteMessageVerificationNextAt: nextVerificationAt,
-              },
-            ]),
-          },
-          managedBroadcast: { updateMany },
-          managedBroadcastOccurrence: {
-            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-          },
-        },
-      } as never);
+    const harness = createProjectedFinalizerHarness([
+      selectedFinalizerDelivery('chat-1', {
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        sentAt: new Date('2026-07-12T10:00:00.000Z'),
+        remoteMessageId: 'mid-1',
+        remoteMessageVerificationNextAt: nextVerificationAt,
+      }),
+    ]);
+    const result = await harness.finalize(harness.row, 1, [], [], null);
 
-      const result = await (runtime as any).finalizeManagedBroadcastOccurrence(
-        {
-          id: 'broadcast-1',
-          scheduleMode: 'calendar',
-          nextSendAt: new Date('2026-07-12T10:00:00.000Z'),
-          publicationOccurrenceId: 'occurrence-1',
-        },
-        1,
-        [],
-        [],
-        null,
-      );
-
-      expect(updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            status: ManagedBroadcastStatus.ACTIVE,
-            nextSendAt: nextVerificationAt,
-          }),
-        }),
-      );
-      expect(result).toEqual(
-        expect.objectContaining({
+    expect(harness.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
           status: ManagedBroadcastStatus.ACTIVE,
-          pendingChatIds: [],
           nextSendAt: nextVerificationAt,
         }),
-      );
-    } finally {
-      jest.useRealTimers();
-    }
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: ManagedBroadcastStatus.ACTIVE,
+        pendingChatIds: [],
+        nextSendAt: nextVerificationAt,
+      }),
+    );
   });
 
   it('does not keep an envelope active for untouched legacy SENT verification state', async () => {
-    const broadcastUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
-    const occurrenceUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
-    const reservationDeleteMany = jest.fn().mockResolvedValue({ count: 1 });
-    const runtime = new AdminManagedBroadcastRuntime({
-      prisma: {
-        managedBroadcastDelivery: {
-          findMany: jest.fn().mockResolvedValue([
-            {
-              status: ManagedBroadcastDeliveryStatus.SENT,
-              targetChatId: 'chat-legacy',
-              sentAt: new Date('2026-07-11T10:00:00.000Z'),
-              remoteMessageId: 'mid-legacy',
-              remoteMessageVerifiedAt: null,
-              remoteMessageVerificationAttemptCount: 0,
-              remoteMessageVerificationAbsentCount: 0,
-              remoteMessageVerificationPresentCount: 0,
-              remoteMessageVerificationAttemptedAt: null,
-              remoteMessageVerificationNextAt: null,
-              remoteMessageVerificationSource: null,
-            },
-          ]),
-        },
-        managedBroadcast: { updateMany: broadcastUpdateMany },
-        managedBroadcastOccurrence: { updateMany: occurrenceUpdateMany },
-        managedBroadcastCalendarReservation: { deleteMany: reservationDeleteMany },
-      },
-    } as never);
-
-    const result = await (runtime as any).finalizeManagedBroadcastOccurrence(
-      {
-        id: 'broadcast-legacy',
-        scheduleMode: 'calendar',
-        cycleCount: 1,
-        nextSendAt: new Date('2026-07-11T10:00:00.000Z'),
-        publicationOccurrenceId: 'occurrence-legacy',
-      },
-      1,
-      [],
-      [],
-      null,
+    const harness = createProjectedFinalizerHarness(
+      [
+        selectedFinalizerDelivery('chat-legacy', {
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          sentAt: new Date('2026-07-11T10:00:00.000Z'),
+          remoteMessageId: 'mid-legacy',
+        }),
+      ],
+      { row: createFullFinalizerRow({ id: 'broadcast-legacy' }) },
     );
+    const result = await harness.finalize(harness.row, 1, [], [], null);
 
-    expect(broadcastUpdateMany).toHaveBeenCalledWith(
+    expect(harness.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           status: ManagedBroadcastStatus.COMPLETED,
@@ -4240,8 +4317,8 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         nextSendAt: null,
       }),
     );
-    expect(reservationDeleteMany).toHaveBeenCalledTimes(1);
-    expect(occurrenceUpdateMany).toHaveBeenCalledTimes(1);
+    expect(harness.reservationDeleteMany).toHaveBeenCalledTimes(1);
+    expect(harness.occurrenceUpdateMany).toHaveBeenCalledTimes(1);
   });
 
   it('finalizes an ambiguous NOW recovery envelope without dispatching it again', async () => {
@@ -4790,6 +4867,14 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       expectedFailedChatIds: ['chat-1', 'chat-2'],
       expectedCanRetry: true,
     },
+    {
+      label: 'ambiguous only',
+      deliveries: [{ status: ManagedBroadcastDeliveryStatus.AMBIGUOUS, targetChatId: 'chat-1' }],
+      expectedStatus: ManagedBroadcastStatus.FAILED,
+      expectedSentChatIds: [],
+      expectedFailedChatIds: ['chat-1'],
+      expectedCanRetry: false,
+    },
   ])(
     'treats $label deliveries as terminal undelivered with retry based only on real failures',
     async ({
@@ -4799,26 +4884,12 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       expectedFailedChatIds,
       expectedCanRetry,
     }) => {
-      const prisma = {
-        managedBroadcastDelivery: { findMany: jest.fn().mockResolvedValue(deliveries) },
-        managedBroadcast: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-        managedBroadcastOccurrence: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-      };
-      const runtime = new AdminManagedBroadcastRuntime({ prisma } as never);
-      const row = {
-        id: 'broadcast-1',
-        scheduleMode: 'calendar',
-        nextSendAt: new Date('2026-07-12T10:00:00.000Z'),
-        publicationOccurrenceId: 'occurrence-1',
-      };
-
-      const result = await (runtime as any).finalizeManagedBroadcastOccurrence(
-        row,
-        1,
-        [],
-        [],
-        null,
+      const harness = createProjectedFinalizerHarness(
+        deliveries.map(({ targetChatId, status }) =>
+          selectedFinalizerDelivery(targetChatId, { status }),
+        ),
       );
+      const result = await harness.finalize(harness.row, 1, [], [], null);
 
       expect(result).toEqual(
         expect.objectContaining({
@@ -4829,15 +4900,13 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
           canRetry: expectedCanRetry,
         }),
       );
-      expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
+      expect(harness.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ status: expectedStatus }),
         }),
       );
-      expect(prisma.managedBroadcast.updateMany.mock.calls[0]?.[0]?.data).not.toHaveProperty(
-        'sentCount',
-      );
-      expect(prisma.managedBroadcastOccurrence.updateMany).toHaveBeenCalledWith({
+      expect(harness.updateMany.mock.calls[0]?.[0]?.data).not.toHaveProperty('sentCount');
+      expect(harness.occurrenceUpdateMany).toHaveBeenCalledWith({
         where: { broadcastId: 'broadcast-1', occurrenceIndex: 1 },
         data: { status: expectedStatus },
       });
@@ -4845,32 +4914,17 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   );
 
   it('keeps legacy canceled-target completion semantics while reporting the blocked targets', async () => {
-    const prisma = {
-      managedBroadcastDelivery: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            { status: ManagedBroadcastDeliveryStatus.CANCELED, targetChatId: 'chat-1' },
-          ]),
-      },
-      managedBroadcast: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-    };
-    const runtime = new AdminManagedBroadcastRuntime({ prisma } as never);
-
-    const result = await (runtime as any).finalizeManagedBroadcastOccurrence(
+    const harness = createProjectedFinalizerHarness(
+      [selectedFinalizerDelivery('chat-1', { status: ManagedBroadcastDeliveryStatus.CANCELED })],
       {
-        id: 'broadcast-legacy',
-        scheduleMode: 'legacy',
-        nextSendAt: new Date('2026-07-12T10:00:00.000Z'),
-        cycleEveryHours: 1,
-        cycleCount: 1,
-        publicationOccurrenceId: null,
+        row: createFullFinalizerRow({
+          id: 'broadcast-legacy',
+          scheduleMode: 'legacy',
+          publicationOccurrenceId: null,
+        }),
       },
-      1,
-      [],
-      [],
-      null,
     );
+    const result = await harness.finalize(harness.row, 1, [], [], null);
 
     expect(result).toEqual(
       expect.objectContaining({
@@ -4880,7 +4934,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
         canRetry: false,
       }),
     );
-    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalledWith(
+    expect(harness.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           status: ManagedBroadcastStatus.COMPLETED,
@@ -4891,20 +4945,19 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
   });
 
   it('does not expose retry after a concurrent broadcast cancellation wins finalization', async () => {
+    const reader = selectedOccurrenceReader('broadcast-1', {
+      status: ManagedBroadcastStatus.CANCELED,
+      sentCount: 0,
+      cycleCount: 1,
+      nextSendAt: null,
+    });
     const runtime = new AdminManagedBroadcastRuntime({
       prisma: {
-        managedBroadcast: {
-          findUnique: jest.fn().mockResolvedValue({
-            status: ManagedBroadcastStatus.CANCELED,
-            sentCount: 0,
-            cycleCount: 1,
-            nextSendAt: null,
-          }),
-        },
+        managedBroadcast: { findUnique: reader.findUnique },
       },
     } as never);
 
-    const result = await (runtime as any).readManagedBroadcastOccurrenceResult(
+    const result = await occurrenceProjectionSeam(runtime).read(
       'broadcast-1',
       [],
       ['chat-1'],
@@ -4920,4 +4973,334 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       }),
     );
   });
+});
+
+describe('AdminManagedBroadcastRuntime read projections', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it.each([null, ...Object.values(ManagedBroadcastStatus)])(
+    'returns only the current E4 result after a failed claim with status %s',
+    async (status) => {
+      const now = new Date('2026-10-18T12:00:00.000Z');
+      const nextSendAt = new Date('2026-10-18T12:05:00.000Z');
+      jest.useFakeTimers().setSystemTime(now);
+      const reader = selectedOccurrenceReader(
+        'broadcast-projection-claim',
+        status === null ? null : { status, sentCount: 8, cycleCount: 3, nextSendAt },
+      );
+      const updateMany = jest.fn(
+        async (_args: Prisma.ManagedBroadcastUpdateManyArgs): Promise<Prisma.BatchPayload> => ({
+          count: 0,
+        }),
+      );
+      const publish = jest.fn(
+        async (..._args: Parameters<MaxRoutedPublicationService['publish']>): Promise<never> => {
+          throw new Error('A failed claim must not dispatch a message');
+        },
+      );
+      const runtime = new AdminManagedBroadcastRuntime(
+        {
+          prisma: { managedBroadcast: { updateMany, findUnique: reader.findUnique } },
+          maxRoutedPublicationService: { publish },
+        } as never,
+        PublicationDispatchProfile.PUBLIK_V1,
+      );
+      const prepare = jest.spyOn(runtime['publisherDispatch'], 'ensureRuntimeBoundary');
+      const staleLockBefore = new Date(now.getTime() - 60_000);
+      const result = await occurrenceProjectionSeam(runtime).process(
+        'broadcast-projection-claim',
+        'immediate',
+        staleLockBefore,
+        [ManagedBroadcastStatus.ACTIVE],
+      );
+
+      expect(updateMany).toHaveBeenCalledTimes(1);
+      expect(updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'broadcast-projection-claim',
+          status: { in: [ManagedBroadcastStatus.ACTIVE] },
+          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          nextSendAt: { lte: now },
+          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+        },
+        data: { lockedAt: now, lockToken: expect.any(String) },
+      });
+      expect(reader.findUnique).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        status: status ?? ManagedBroadcastStatus.FAILED,
+        currentOccurrence: status === null ? 1 : 3,
+        sentChatIds: [],
+        failedChatIds: [],
+        pendingChatIds: [],
+        canRetry: false,
+        firstSendError: null,
+        nextSendAt: status === null ? null : nextSendAt,
+      });
+      expect(prepare).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(
+    [null, ...Object.values(ManagedBroadcastStatus)].flatMap((status) =>
+      [undefined, true, false].map((override) => ({ status, override })),
+    ),
+  )(
+    'preserves E4 fallback status=$status override=$override and result references',
+    async ({ status, override }) => {
+      const nextSendAt = new Date('2026-10-18T12:05:00.000Z');
+      const reader = selectedOccurrenceReader(
+        'broadcast-projection-result',
+        status === null ? null : { status, sentCount: -2, cycleCount: 0, nextSendAt },
+      );
+      const runtime = new AdminManagedBroadcastRuntime({
+        prisma: { managedBroadcast: { findUnique: reader.findUnique } },
+      } as never);
+      const sentChatIds = ['sent-b', 'sent-a'];
+      const failedChatIds = ['failed-b', 'failed-a'];
+      const pendingChatIds = ['pending-b', 'pending-a'];
+      const firstSendError = new Error('Preserved attempt failure');
+      const result = await occurrenceProjectionSeam(runtime).read(
+        'broadcast-projection-result',
+        sentChatIds,
+        failedChatIds,
+        pendingChatIds,
+        firstSendError,
+        override,
+      );
+      const currentCanRetry =
+        status === ManagedBroadcastStatus.PARTIAL || status === ManagedBroadcastStatus.FAILED;
+
+      expect(reader.findUnique).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe(status ?? ManagedBroadcastStatus.FAILED);
+      expect(result.currentOccurrence).toBe(1);
+      expect(result.canRetry).toBe(override === false ? false : currentCanRetry);
+      expect(result.nextSendAt).toBe(status === null ? null : nextSendAt);
+      expect(result.sentChatIds).toBe(sentChatIds);
+      expect(result.failedChatIds).toBe(failedChatIds);
+      expect(result.pendingChatIds).toBe(pendingChatIds);
+      expect(result.firstSendError).toBe(firstSendError);
+    },
+  );
+
+  it.each([
+    { marker: 'attempt count', state: { remoteMessageVerificationAttemptCount: 1 } },
+    { marker: 'absent count', state: { remoteMessageVerificationAbsentCount: 1 } },
+    { marker: 'present count', state: { remoteMessageVerificationPresentCount: 1 } },
+    {
+      marker: 'attempted at',
+      state: { remoteMessageVerificationAttemptedAt: new Date('2026-07-12T10:00:00.000Z') },
+    },
+    {
+      marker: 'next at',
+      state: { remoteMessageVerificationNextAt: new Date('2026-07-12T10:15:00.000Z') },
+    },
+    {
+      marker: 'source',
+      state: {
+        remoteMessageVerificationSource: PublicationDeliveryVerificationSource.AUTOMATED_STABLE,
+      },
+    },
+  ] satisfies { marker: string; state: Partial<SelectedFinalizerDelivery> }[])(
+    'retains D15 verification enrollment from independent $marker',
+    async ({ state }) => {
+      const now = new Date('2026-07-12T10:05:00.000Z');
+      jest.useFakeTimers().setSystemTime(now);
+      const harness = createProjectedFinalizerHarness([
+        selectedFinalizerDelivery('chat-enrolled', {
+          status: ManagedBroadcastDeliveryStatus.SENT,
+          remoteMessageId: 'mid-enrolled',
+          sentAt: new Date('2026-07-12T10:00:00.000Z'),
+          ...state,
+        }),
+      ]);
+      const result = await harness.finalize(harness.row, 1, [], [], null);
+
+      expect(result.status).toBe(ManagedBroadcastStatus.ACTIVE);
+      expect(result.sentChatIds).toEqual(['chat-enrolled']);
+      expect(result.canRetry).toBe(false);
+      expect(result.nextSendAt).toEqual(state.remoteMessageVerificationNextAt ?? now);
+      expect(harness.reservationDeleteMany).not.toHaveBeenCalled();
+      expect(harness.publish).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([ManagedBroadcastDeliveryStatus.PENDING, ManagedBroadcastDeliveryStatus.SENDING])(
+    'keeps D15 %s retry time and wakes at the original deadline',
+    async (status) => {
+      const now = new Date('2026-07-12T10:05:00.000Z');
+      const retryAt = new Date('2026-07-12T10:30:00.000Z');
+      const deadlineAt = new Date('2026-07-12T10:10:00.000Z');
+      jest.useFakeTimers().setSystemTime(now);
+      const harness = createProjectedFinalizerHarness([
+        selectedFinalizerDelivery('chat-waiting', { status, nextAttemptAt: retryAt }),
+      ]);
+      const result = await harness.finalize(harness.row, 1, [], [], null, {
+        pendingNotBefore: retryAt,
+        deadlineAt,
+      });
+
+      expect(result.nextSendAt).toEqual(new Date(deadlineAt.getTime() + 1));
+      expect(result.pendingChatIds).toEqual(['chat-waiting']);
+      expect(result.canRetry).toBe(false);
+      expect(harness.deliveryReader.findMany).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('preserves D15 category order and first-occurrence failure deduplication', async () => {
+    const harness = createProjectedFinalizerHarness([
+      selectedFinalizerDelivery('pending-b'),
+      selectedFinalizerDelivery('failed-b', { status: ManagedBroadcastDeliveryStatus.FAILED }),
+      selectedFinalizerDelivery('sent-b', { status: ManagedBroadcastDeliveryStatus.SENT }),
+      selectedFinalizerDelivery('canceled-b', { status: ManagedBroadcastDeliveryStatus.CANCELED }),
+      selectedFinalizerDelivery('sending-a', { status: ManagedBroadcastDeliveryStatus.SENDING }),
+      selectedFinalizerDelivery('ambiguous-b', {
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+      }),
+      selectedFinalizerDelivery('sent-a', { status: ManagedBroadcastDeliveryStatus.SENT }),
+      selectedFinalizerDelivery('failed-a', { status: ManagedBroadcastDeliveryStatus.FAILED }),
+      selectedFinalizerDelivery('ambiguous-a', {
+        status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+      }),
+      selectedFinalizerDelivery('canceled-a', { status: ManagedBroadcastDeliveryStatus.CANCELED }),
+    ]);
+    const result = await harness.finalize(
+      harness.row,
+      1,
+      [],
+      ['ambiguous-b', 'supplied', 'failed-a', 'supplied'],
+      null,
+    );
+
+    expect(result.sentChatIds).toEqual(['sent-b', 'sent-a']);
+    expect(result.pendingChatIds).toEqual(['pending-b', 'sending-a']);
+    expect(result.failedChatIds).toEqual([
+      'failed-b',
+      'failed-a',
+      'ambiguous-b',
+      'ambiguous-a',
+      'canceled-b',
+      'canceled-a',
+      'supplied',
+    ]);
+    expect(result.status).toBe(ManagedBroadcastStatus.ACTIVE);
+    expect(result.canRetry).toBe(false);
+    expect(harness.publish).not.toHaveBeenCalled();
+  });
+
+  it('uses E4 without a finalizer write after recipient lease ownership is lost', async () => {
+    const current: SelectedOccurrence = {
+      status: ManagedBroadcastStatus.CANCELED,
+      sentCount: 1,
+      cycleCount: 2,
+      nextSendAt: null,
+    };
+    const harness = createProjectedFinalizerHarness(
+      [
+        selectedFinalizerDelivery('chat-pending'),
+        selectedFinalizerDelivery('chat-ambiguous', {
+          status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        }),
+      ],
+      { current },
+    );
+    const options = {
+      lease: {
+        lockedAt: new Date('2026-07-12T10:05:00.000Z'),
+        lockToken: 'old-lease',
+        lastHeartbeatAt: new Date('2026-07-12T10:05:00.000Z'),
+      },
+    } satisfies FinalizerOptions;
+    const prepare = jest
+      .spyOn(harness.runtime['publisherDispatch'], 'prepareRecipientFinalization')
+      .mockResolvedValue({ leaseOwned: false, hasImmediatelyReadyPendingDelivery: false });
+    const result = await harness.finalize(harness.row, 1, ['supplied-sent'], [], null, options);
+
+    expect(prepare).toHaveBeenCalledWith(harness.row, options.lease, [
+      selectedFinalizerDelivery('chat-pending'),
+    ]);
+    expect(result).toMatchObject({
+      status: ManagedBroadcastStatus.CANCELED,
+      currentOccurrence: 2,
+      sentChatIds: ['supplied-sent'],
+      failedChatIds: ['chat-ambiguous'],
+      pendingChatIds: ['chat-pending'],
+      canRetry: false,
+    });
+    expect(harness.occurrenceReader.findUnique).toHaveBeenCalledTimes(1);
+    expect(harness.updateMany).not.toHaveBeenCalled();
+    expect(harness.occurrenceUpdateMany).not.toHaveBeenCalled();
+    expect(harness.reservationDeleteMany).not.toHaveBeenCalled();
+    expect(harness.publish).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { branch: 'pending', status: ManagedBroadcastDeliveryStatus.PENDING, expectedRetry: false },
+    { branch: 'failure', status: ManagedBroadcastDeliveryStatus.FAILED, expectedRetry: true },
+    { branch: 'completion', status: ManagedBroadcastDeliveryStatus.SENT, expectedRetry: false },
+  ])(
+    'uses E4 and preserves the winning owner after the $branch finalizer CAS loses',
+    async ({ status, expectedRetry }) => {
+      const nextSendAt = new Date('2026-07-12T10:30:00.000Z');
+      const harness = createProjectedFinalizerHarness(
+        [selectedFinalizerDelivery('chat-target', { status })],
+        {
+          current: {
+            status: ManagedBroadcastStatus.PARTIAL,
+            sentCount: 1,
+            cycleCount: 2,
+            nextSendAt,
+          },
+          updateCount: 0,
+        },
+      );
+      const options = {
+        lease: {
+          lockedAt: new Date('2026-07-12T10:05:00.000Z'),
+          lockToken: 'old-lease',
+          lastHeartbeatAt: new Date('2026-07-12T10:05:00.000Z'),
+        },
+      } satisfies FinalizerOptions;
+      jest
+        .spyOn(harness.runtime['publisherDispatch'], 'prepareRecipientFinalization')
+        .mockResolvedValue({ leaseOwned: true, hasImmediatelyReadyPendingDelivery: true });
+      const result = await harness.finalize(harness.row, 1, [], [], null, options);
+
+      expect(harness.updateMany).toHaveBeenCalledTimes(1);
+      expect(harness.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: harness.row.id,
+          lockedAt: options.lease.lockedAt,
+          lockToken: options.lease.lockToken,
+          status: {
+            in: [
+              ManagedBroadcastStatus.ACTIVE,
+              ManagedBroadcastStatus.PARTIAL,
+              ManagedBroadcastStatus.FAILED,
+            ],
+          },
+        },
+        data: expect.any(Object),
+      });
+      expect(result.status).toBe(ManagedBroadcastStatus.PARTIAL);
+      expect(result.currentOccurrence).toBe(2);
+      expect(result.nextSendAt).toBe(nextSendAt);
+      expect(result.canRetry).toBe(expectedRetry);
+      expect(result.sentChatIds).toEqual(
+        status === ManagedBroadcastDeliveryStatus.SENT ? ['chat-target'] : [],
+      );
+      expect(result.failedChatIds).toEqual(
+        status === ManagedBroadcastDeliveryStatus.FAILED ? ['chat-target'] : [],
+      );
+      expect(result.pendingChatIds).toEqual(
+        status === ManagedBroadcastDeliveryStatus.PENDING ? ['chat-target'] : [],
+      );
+      expect(harness.occurrenceReader.findUnique).toHaveBeenCalledTimes(1);
+      expect(harness.occurrenceUpdateMany).not.toHaveBeenCalled();
+      expect(harness.reservationDeleteMany).not.toHaveBeenCalled();
+      expect(harness.publish).not.toHaveBeenCalled();
+    },
+  );
 });

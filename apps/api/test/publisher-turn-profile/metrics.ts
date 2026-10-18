@@ -1,9 +1,15 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { monitorEventLoopDelay, performance, PerformanceObserver } from 'node:perf_hooks';
 
 import { createPrismaAdapter, Prisma, PrismaClient } from '../../src/prisma/prisma-client';
 import type { PrismaService } from '../../src/prisma/prisma.service';
+import {
+  MANAGED_BROADCAST_FINALIZER_DELIVERY_SELECT,
+  MANAGED_BROADCAST_OCCURRENCE_RESULT_SELECT,
+} from '../../src/admin/admin-managed-broadcast-projections';
+import { readPublisherPreparedDialogContext } from '../../src/admin/publisher-dialog-context.service';
 
 type Factory = Prisma.PrismaClientOptionsWithAdapter['adapter'];
 type Adapter = Awaited<ReturnType<Factory['connect']>>;
@@ -41,6 +47,7 @@ interface Scope {
   affectedRows: number;
   deliverySqlRows: number;
   captures: Map<string, Query>;
+  captureBroadcastReads: boolean;
 }
 
 const scopes = new AsyncLocalStorage<Scope>();
@@ -57,6 +64,19 @@ function isDirectDeliverySelect(sql: string): boolean {
     from > 0 &&
     !sql.slice(0, from).includes('(') &&
     /\bFROM\s+(?:"public"\.)?"managed_broadcast_deliveries"(?:\s+AS\s+"[a-zA-Z0-9_]+")?\s+WHERE\b/u.test(
+      sql,
+    ) &&
+    !/\b(?:JOIN|GROUP|UNION|FOR|json_agg|jsonb_agg|count|array_agg)\b/iu.test(sql)
+  );
+}
+
+function isDirectBroadcastSelect(sql: string): boolean {
+  const from = sql.indexOf(' FROM ');
+  return (
+    /^SELECT\s/u.test(sql) &&
+    from > 0 &&
+    !sql.slice(0, from).includes('(') &&
+    /\bFROM\s+(?:"public"\.)?"managed_broadcasts"(?:\s+AS\s+"[a-zA-Z0-9_]+")?\s+WHERE\b/u.test(
       sql,
     ) &&
     !/\b(?:JOIN|GROUP|UNION|FOR|json_agg|jsonb_agg|count|array_agg)\b/iu.test(sql)
@@ -93,7 +113,8 @@ async function observed<T>(
   } else if (!metric) scope.droppedFamilies++;
   if (
     query &&
-    metric?.directDeliverySelect &&
+    (metric?.directDeliverySelect ||
+      (scope.captureBroadcastReads && isDirectBroadcastSelect(sql))) &&
     !scope.captures.has(fingerprint) &&
     scope.captures.size < MAX_CAPTURES &&
     query.args.length <= 64 &&
@@ -233,11 +254,15 @@ export function asPrismaService(client: ProfilePrisma): PrismaService {
   return client;
 }
 
-export async function profileTurn<T>(operation: () => Promise<T>) {
+export async function profileTurn<T>(
+  operation: () => Promise<T>,
+  options: { captureBroadcastReads?: boolean } = {},
+) {
   if (activeScope) throw new Error('Profile scopes must not overlap');
   const scope: Scope = {
     metrics: new Map(),
     captures: new Map(),
+    captureBroadcastReads: options.captureBroadcastReads ?? false,
     droppedFamilies: 0,
     calls: 0,
     errors: 0,
@@ -369,37 +394,267 @@ export async function explainCapturedDeliveryReads(
         ...query.args,
       );
     });
-    const nodes: Record<string, unknown>[] = [];
-    const visit = (value: unknown): void => {
-      if (!value || typeof value !== 'object' || nodes.length >= 64) return;
-      if (Array.isArray(value)) {
-        value.forEach(visit);
-        return;
-      }
-      const row = Object.fromEntries(Object.entries(value));
-      if (typeof row['Node Type'] === 'string') {
-        nodes.push(
-          Object.fromEntries(
-            Object.entries(row).filter(([key]) =>
-              [
-                'Node Type',
-                'Relation Name',
-                'Index Name',
-                'Actual Rows',
-                'Actual Loops',
-                'Actual Total Time',
-                'Shared Hit Blocks',
-                'Shared Read Blocks',
-                'Rows Removed by Filter',
-              ].includes(key),
-            ),
-          ),
-        );
-      }
-      for (const key of ['QUERY PLAN', 'Plan', 'Plans']) if (row[key]) visit(row[key]);
-    };
-    visit(result);
-    summaries.push({ fingerprint, nodes });
+    summaries.push({ fingerprint, nodes: summarizePlanNodes(result) });
   }
   return summaries;
+}
+
+function summarizePlanNodes(result: unknown): Record<string, unknown>[] {
+  const nodes: Record<string, unknown>[] = [];
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object' || nodes.length >= 64) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const row = Object.fromEntries(Object.entries(value));
+    if (typeof row['Node Type'] === 'string')
+      nodes.push(
+        Object.fromEntries(
+          Object.entries(row).filter(([key]) =>
+            [
+              'Node Type',
+              'Relation Name',
+              'Index Name',
+              'Actual Rows',
+              'Actual Loops',
+              'Actual Total Time',
+              'Shared Hit Blocks',
+              'Shared Read Blocks',
+              'Rows Removed by Filter',
+            ].includes(key),
+          ),
+        ),
+      );
+    for (const key of ['QUERY PLAN', 'Plan', 'Plans']) if (row[key]) visit(row[key]);
+  };
+  visit(result);
+  return nodes;
+}
+
+// FLAG: This encoding measures returned application JSON only, outside public-turn timing.
+// Each real Prisma row uses JSON.stringify (Date.toJSON/ISO UTC and JSON null), then LF.
+// It is neither PostgreSQL wire bytes nor V8 allocation/retained-heap evidence.
+function serializedPrismaRows(rows: readonly object[]) {
+  const digest = createHash('sha256');
+  const ownKeys = rows.length ? Object.keys(rows[0]!) : [];
+  let serializedPrismaResultUtf8Bytes = 0;
+  for (const row of rows) {
+    assert.deepEqual(Object.keys(row), ownKeys, 'Prisma row schemas must be uniform');
+    const text = `${JSON.stringify(row)}\n`;
+    serializedPrismaResultUtf8Bytes += Buffer.byteLength(text, 'utf8');
+    digest.update(text, 'utf8');
+  }
+  return {
+    encoding: 'UTF-8',
+    schema: 'prisma-row-json-v1',
+    framing:
+      'JSON.stringify(row) + LF per row, no array wrapper; Date.toJSON ISO UTC; null preserved',
+    rows: rows.length,
+    ownKeys,
+    serializedPrismaResultUtf8Bytes,
+    sha256: digest.digest('hex'),
+  };
+}
+
+function assertSelectedRow(
+  full: object,
+  projected: object,
+  select: Readonly<Record<string, true>>,
+): void {
+  const keys = Object.keys(select);
+  assert.equal(Object.keys(projected).length, keys.length);
+  for (const key of keys) {
+    assert(Object.hasOwn(projected, key));
+    assert(Object.hasOwn(full, key));
+    assert.deepEqual(Reflect.get(projected, key), Reflect.get(full, key));
+  }
+}
+
+export async function readProjectionEvidence(
+  prisma: PrismaService,
+  fixture: { broadcastId: string; botId: string; chatIds: readonly string[] },
+) {
+  assert(fixture.chatIds.length > 0 && fixture.chatIds.length <= 50_000);
+  // FLAG: The caller has reset this exact owned fixture after all timed calls. Never
+  // add ORDER BY or sort rows to conceal a changed native result sequence.
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
+      const observedReads = await profileTurn(
+        async () => {
+          const fullEnvelope = await tx.managedBroadcast.findUnique({
+            where: { id: fixture.broadcastId },
+          });
+          const projectedEnvelope = await tx.managedBroadcast.findUnique({
+            where: { id: fixture.broadcastId },
+            select: MANAGED_BROADCAST_OCCURRENCE_RESULT_SELECT,
+          });
+          const fullDeliveries = await tx.managedBroadcastDelivery.findMany({
+            where: { broadcastId: fixture.broadcastId, occurrenceIndex: 1 },
+          });
+          const projectedDeliveries = await tx.managedBroadcastDelivery.findMany({
+            where: { broadcastId: fixture.broadcastId, occurrenceIndex: 1 },
+            select: MANAGED_BROADCAST_FINALIZER_DELIVERY_SELECT,
+          });
+          return { fullEnvelope, projectedEnvelope, fullDeliveries, projectedDeliveries };
+        },
+        { captureBroadcastReads: true },
+      );
+      if (observedReads.metrics.failed) throw observedReads.failure;
+      assert.equal(observedReads.metrics.adapterErrors, 0);
+      assert.equal(observedReads.metrics.droppedFamilyObservations, 0);
+      assert(observedReads.result);
+      const { fullEnvelope, projectedEnvelope, fullDeliveries, projectedDeliveries } =
+        observedReads.result;
+      assert(fullEnvelope && projectedEnvelope);
+      assertSelectedRow(
+        fullEnvelope,
+        projectedEnvelope,
+        MANAGED_BROADCAST_OCCURRENCE_RESULT_SELECT,
+      );
+      assert.equal(Object.keys(projectedEnvelope).length, 4);
+      assert.equal(fullDeliveries.length, fixture.chatIds.length);
+      assert.equal(projectedDeliveries.length, fixture.chatIds.length);
+      const ordinalByTarget = new Map(fixture.chatIds.map((target, ordinal) => [target, ordinal]));
+      const seen = new Set<string>();
+      const targetSequence = createHash('sha256');
+      for (const [index, full] of fullDeliveries.entries()) {
+        const projected = projectedDeliveries[index]!;
+        assert.equal(projected.targetChatId, full.targetChatId, 'Native delivery sequence changed');
+        assertSelectedRow(full, projected, MANAGED_BROADCAST_FINALIZER_DELIVERY_SELECT);
+        assert.equal(Object.keys(projected).length, 15);
+        assert(!Object.hasOwn(projected, 'publisherDialogContext'));
+        const ordinal = ordinalByTarget.get(full.targetChatId);
+        assert.notEqual(ordinal, undefined, 'Read escaped the owned target fixture');
+        assert(!seen.has(full.targetChatId), 'Duplicate native recipient');
+        seen.add(full.targetChatId);
+        targetSequence.update(`${ordinal}\n`);
+      }
+      assert.equal(seen.size, fixture.chatIds.length);
+      assert.deepEqual(
+        readPublisherPreparedDialogContext(
+          fullDeliveries[0]!.publisherDialogContext,
+          fixture.botId,
+        ),
+        { version: 1, dialogBotId: fixture.botId, buttons: [], reference: null },
+      );
+
+      // Row-wise serialization is deliberately after the observation interval. Only scalar
+      // evidence leaves this transaction; no full row objects survive into the report.
+      const serialized = {
+        fullEnvelope: serializedPrismaRows([fullEnvelope]),
+        projectedEnvelope: serializedPrismaRows([projectedEnvelope]),
+        fullDeliveries: serializedPrismaRows(fullDeliveries),
+        projectedDeliveries: serializedPrismaRows(projectedDeliveries),
+      };
+      assert(
+        serialized.projectedEnvelope.serializedPrismaResultUtf8Bytes <
+          serialized.fullEnvelope.serializedPrismaResultUtf8Bytes,
+      );
+      assert(
+        serialized.projectedDeliveries.serializedPrismaResultUtf8Bytes <
+          serialized.fullDeliveries.serializedPrismaResultUtf8Bytes,
+      );
+      const storage = await tx.$queryRaw<
+        {
+          compression: string | null;
+          rows: number;
+          storedBytesMin: number;
+          storedBytesMax: number;
+          storedBytesTotal: number;
+          logicalUtf8BytesMin: number;
+          logicalUtf8BytesMax: number;
+          logicalUtf8BytesTotal: number;
+        }[]
+      >(Prisma.sql`
+      SELECT pg_column_compression(publisher_dialog_context) AS compression,
+        count(*)::int AS rows,
+        min(pg_column_size(publisher_dialog_context))::float8 AS "storedBytesMin",
+        max(pg_column_size(publisher_dialog_context))::float8 AS "storedBytesMax",
+        sum(pg_column_size(publisher_dialog_context))::float8 AS "storedBytesTotal",
+        min(octet_length(convert_to(publisher_dialog_context::text, 'UTF8')))::float8 AS "logicalUtf8BytesMin",
+        max(octet_length(convert_to(publisher_dialog_context::text, 'UTF8')))::float8 AS "logicalUtf8BytesMax",
+        sum(octet_length(convert_to(publisher_dialog_context::text, 'UTF8')))::float8 AS "logicalUtf8BytesTotal"
+      FROM managed_broadcast_deliveries
+      WHERE broadcast_id = ${fixture.broadcastId} AND occurrence_index = 1
+      GROUP BY pg_column_compression(publisher_dialog_context)
+    `);
+      assert.equal(
+        storage.reduce((sum, group) => sum + group.rows, 0),
+        fixture.chatIds.length,
+      );
+      assert(storage.length > 0 && storage.length <= 3);
+
+      const captures = [...observedReads.captures.values()];
+      assert.equal(captures.length, 4, 'All four actual generated E/D SQL shapes are required');
+      const labels = [
+        'fullEnvelope',
+        'projectedEnvelope',
+        'fullDeliveries',
+        'projectedDeliveries',
+      ] as const;
+      for (const [first, second] of [
+        [0, 1],
+        [2, 3],
+      ] as const) {
+        const a = captures[first]!;
+        const b = captures[second]!;
+        assert.equal(
+          a.sql.slice(a.sql.indexOf(' FROM ')),
+          b.sql.slice(b.sql.indexOf(' FROM ')),
+          'Only selected SQL columns may change',
+        );
+        assert.deepEqual(a.args, b.args, 'Native read predicates/parameters changed');
+      }
+      const plans = [];
+      for (const [index, query] of captures.entries()) {
+        assert(index < 2 ? isDirectBroadcastSelect(query.sql) : isDirectDeliverySelect(query.sql));
+        assert(query.sql.length <= 65536 && query.args.length <= 64);
+        const result = await tx.$queryRawUnsafe<unknown>(
+          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query.sql}`,
+          ...query.args,
+        );
+        const nodes = summarizePlanNodes(result);
+        assert(nodes.length > 0 && nodes.length < 64, 'A bounded complete plan is required');
+        plans.push({
+          shape: labels[index],
+          sql: query.sql,
+          parameterCount: query.args.length,
+          nodes,
+        });
+      }
+      return {
+        isolation: 'RepeatableRead',
+        readOnly: true,
+        resetBeforeReadPair: true,
+        occurrenceIndex: 1,
+        deliveries: fullDeliveries.length,
+        selectedEnvelopeOwnKeys: 4,
+        selectedDeliveryOwnKeys: 15,
+        selectedValuesEqual: true,
+        targetIdentityAndSequenceEqual: true,
+        targetSequenceOrdinalSha256: targetSequence.digest('hex'),
+        sqlPredicatesAndTopologyEqual: true,
+        serializationOutsidePublicTurnTiming: true,
+        serialized,
+        plans,
+        contextStorage: {
+          groups: storage,
+          logicalEncoding: 'UTF-8 of PostgreSQL jsonb::text',
+          storedSizeMeaning:
+            'pg_column_size of the observed datum; compression from pg_column_compression',
+          externalToastPlacement:
+            'unproven; compression and datum size alone do not establish external storage',
+        },
+        limitations:
+          'Returned read rows/JSON bytes are not whole-turn hydration, wire bytes, allocations or retained heap; full D remains O(N).',
+      };
+    },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+      maxWait: 10_000,
+      timeout: 120_000,
+    },
+  );
 }

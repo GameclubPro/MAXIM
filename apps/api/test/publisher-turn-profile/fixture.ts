@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { Prisma, type ManagedBroadcastDeliveryStatus } from '../../src/prisma/prisma-client';
 import type { PrismaService } from '../../src/prisma/prisma.service';
 import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from '../../src/admin/publication-dispatch-issue';
 import { PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA } from '../../src/admin/publication-delivery-verification-state';
+import { readPublisherPreparedDialogContext } from '../../src/admin/publisher-dialog-context.service';
 import type { ProfileRuntimeSnapshot, ProfileTurn } from './runtime';
 
 export type ProfileFixtureState = 'ready' | 'future-retry' | 'verification' | 'blocked-head';
@@ -14,6 +15,7 @@ export interface ProfileFixtureOptions {
   size: number;
   state: ProfileFixtureState;
   schedule?: ProfileFixtureSchedule;
+  contextPaddingBytes?: 0 | 8192;
 }
 
 export interface ProfilePostconditions {
@@ -23,6 +25,9 @@ export interface ProfilePostconditions {
   dueVerificationRemaining: number;
   broadcastStatus: string;
   occurrenceStatus: string;
+  actionTargetOrdinals: number[];
+  verificationTargetOrdinals: number[];
+  receiptLinkage: { checked: number; normalizedSha256: string };
 }
 
 export interface ProfileFixture {
@@ -39,6 +44,7 @@ export interface ProfileFixture {
   readonly state: ProfileFixtureState;
   readonly schedule: ProfileFixtureSchedule;
   readonly dueVerificationCount: number;
+  readonly context: { paddingBytes: number; inputUtf8Bytes: number; parserAccepted: true };
   reset(): Promise<void>;
   assertPostconditions(
     turn: ProfileTurn,
@@ -117,7 +123,6 @@ export async function createProfileFixture(
   if (schedule === 'ONCE') assert.equal(state, 'ready', 'The scheduled control must be ready');
   assert.equal(activeFixture, undefined, 'Clean up the previous profile fixture first');
   const owner = Symbol('publisher-turn-profile');
-  activeFixture = owner;
   const token = randomUUID();
   const botId = `publisher-profile-${token}`;
   const actorId = `publisher-profile-actor-${token}`;
@@ -134,6 +139,23 @@ export async function createProfileFixture(
   );
   const dueVerificationCount = state === 'verification' ? Math.min(50, size) : 0;
   const dueVerificationTargets = chatIds.slice(0, dueVerificationCount);
+  const paddingBytes = options.contextPaddingBytes ?? 0;
+  assert(paddingBytes === 0 || paddingBytes === 8192);
+  const semanticContext = { version: 1, dialogBotId: botId, buttons: [], reference: null };
+  const deliveryContext = {
+    ...semanticContext,
+    ...(paddingBytes ? { profilePadding: 'p'.repeat(paddingBytes) } : {}),
+  } satisfies Prisma.InputJsonObject;
+  const parsedContext = readPublisherPreparedDialogContext(deliveryContext, botId);
+  assert(parsedContext, 'The actual context parser must accept the fixture payload');
+  assert.deepEqual(parsedContext, readPublisherPreparedDialogContext(semanticContext, botId));
+  const context = {
+    paddingBytes,
+    inputUtf8Bytes: Buffer.byteLength(JSON.stringify(deliveryContext), 'utf8'),
+    parserAccepted: true,
+  } as const;
+  assert(context.inputUtf8Bytes < 64 * 1024);
+  activeFixture = owner;
   let cleaned = false;
 
   function assertActive(): void {
@@ -372,17 +394,17 @@ export async function createProfileFixture(
     assert.equal(snapshot.sentTargetIds.length, snapshot.sendCount);
     const targetOffset = state === 'blocked-head' ? 4 : 0;
     assert.deepEqual(
-      new Set(snapshot.sentTargetIds),
-      new Set(expectedNoSend ? [] : chatIds.slice(targetOffset, targetOffset + snapshot.sendCount)),
-      'The public turn must dispatch the intended recipient quantum',
+      snapshot.sentTargetIds,
+      expectedNoSend ? [] : chatIds.slice(targetOffset, targetOffset + snapshot.sendCount),
+      'The public turn must preserve the intended recipient sequence',
     );
     if (state === 'verification' && !maintenance) {
       assert.equal(snapshot.presenceMessageIdsTruncated, false);
       assert.equal(snapshot.presenceMessageIds.length, dueVerificationCount);
       assert.deepEqual(
-        new Set(snapshot.presenceMessageIds),
-        new Set(dueVerificationTargets.map((chatId) => `profile-receipt-${chatId}`)),
-        'The verifier must reconcile exactly the enrolled receipts',
+        snapshot.presenceMessageIds,
+        dueVerificationTargets.map((chatId) => `profile-receipt-${chatId}`),
+        'The verifier must preserve the enrolled receipt sequence',
       );
     }
     const deliveries: Record<ManagedBroadcastDeliveryStatus, number> = {
@@ -422,6 +444,34 @@ export async function createProfileFixture(
       'Every synthetic successful SEND must persist its receipt',
     );
     assert.equal(attempted, expectedSent);
+    const receiptDigest = createHash('sha256');
+    if (state === 'verification') {
+      const [linkage] = await prisma.$queryRaw<{ mismatches: number }[]>(Prisma.sql`
+        SELECT count(*)::int AS mismatches FROM managed_broadcast_deliveries
+        WHERE broadcast_id = ${broadcastId} AND occurrence_index = 1
+          AND (bot_id IS DISTINCT FROM ${botId}
+            OR remote_message_id IS DISTINCT FROM ('profile-receipt-' || target_chat_id))
+      `);
+      assert.equal(linkage?.mismatches, 0, 'Every receipt must retain its original target and bot');
+      for (let ordinal = 0; ordinal < size; ordinal++)
+        receiptDigest.update(`${JSON.stringify([ordinal, 'seed-receipt', 'fixture-publisher'])}\n`);
+    } else if (snapshot.sentTargetIds.length) {
+      const rows = await prisma.managedBroadcastDelivery.findMany({
+        where: { broadcastId, targetChatId: { in: [...snapshot.sentTargetIds] } },
+        select: { targetChatId: true, remoteMessageId: true, botId: true },
+      });
+      assert.equal(rows.length, snapshot.sentTargetIds.length);
+      const byTarget = new Map(rows.map((row) => [row.targetChatId, row]));
+      for (const [index, target] of snapshot.sentTargetIds.entries()) {
+        const row = byTarget.get(target);
+        assert(row);
+        assert.equal(row.remoteMessageId, `profile-${broadcastId}-${index + 1}`);
+        assert.equal(row.botId, botId);
+        receiptDigest.update(
+          `${JSON.stringify([chatIds.indexOf(target), index + 1, 'fixture-publisher'])}\n`,
+        );
+      }
+    }
     assert.equal(
       await prisma.managedBroadcastDelivery.count({
         where: { broadcastId, status: 'SENT', botId, remoteMessageId: { not: null } },
@@ -465,6 +515,11 @@ export async function createProfileFixture(
       dueVerificationRemaining,
       broadcastStatus: broadcast.status,
       occurrenceStatus: occurrence.status,
+      actionTargetOrdinals: snapshot.sentTargetIds.map((id) => chatIds.indexOf(id)),
+      verificationTargetOrdinals: snapshot.presenceMessageIds.map((id) =>
+        chatIds.indexOf(id.slice('profile-receipt-'.length)),
+      ),
+      receiptLinkage: { checked: expectedSent, normalizedSha256: receiptDigest.digest('hex') },
     };
   }
 
@@ -566,6 +621,7 @@ export async function createProfileFixture(
       },
     });
     let position = 0;
+    let deliveryPosition = 0;
     for (const ids of batches(chatIds)) {
       await prisma.publicationTarget.createMany({
         data: ids.map(
@@ -580,6 +636,9 @@ export async function createProfileFixture(
       await prisma.managedBroadcastDelivery.createMany({
         data: ids.map(
           (targetChatId): Prisma.ManagedBroadcastDeliveryCreateManyInput => ({
+            // FLAG: Existing SQL tie-breaks by id; keep its fixture order tied to the
+            // immutable audience ordinal across independent baseline/candidate seeds.
+            id: `publisher-profile-delivery-${token}-${String(deliveryPosition++).padStart(5, '0')}`,
             broadcastId,
             targetChatId,
             occurrenceIndex: 1,
@@ -589,12 +648,7 @@ export async function createProfileFixture(
             requiredBotId: botId,
             dialogBotId: botId,
             publicationPolicyRevision: 0,
-            publisherDialogContext: {
-              version: 1,
-              dialogBotId: botId,
-              buttons: [],
-              reference: null,
-            },
+            publisherDialogContext: deliveryContext,
             ...(state === 'verification'
               ? {
                   status: 'SENT',
@@ -646,6 +700,7 @@ export async function createProfileFixture(
       state,
       schedule,
       dueVerificationCount,
+      context,
       reset,
       cleanup,
       assertPostconditions,

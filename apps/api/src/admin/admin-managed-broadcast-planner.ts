@@ -360,7 +360,9 @@ export function buildManagedBroadcastTargetPreviewBundle(
   return { previews, overflowCount: Math.max(0, normalizedIds.length - previews.length) };
 }
 
-export function getCurrentManagedBroadcastOccurrence(row: PersistedManagedBroadcast): number {
+export function getCurrentManagedBroadcastOccurrence(
+  row: Pick<PersistedManagedBroadcast, 'sentCount' | 'cycleCount'>,
+): number {
   return Math.min(Math.max(1, row.sentCount + 1), Math.max(1, row.cycleCount));
 }
 

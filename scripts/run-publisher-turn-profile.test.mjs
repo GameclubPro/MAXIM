@@ -8,6 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import {
   createProfileChildEnvironment,
+  createProfileFailureReport,
+  expectedProfileCellCount,
   parseProfileArguments,
   validateProfileEnvironment,
 } from './run-publisher-turn-profile.mjs';
@@ -34,6 +36,60 @@ test('profile defaults rollup to off and pins both rollout modes independently o
     assert.equal(env.MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE, 'off');
     assert.equal(env.MAXIM_PUBLISHER_TURN_PROFILE_OUTPUT, output);
     assert.equal(env.TZ, 'UTC');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('projection selects exactly five cells, pins off modes and rejects conflicting selectors', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'publisher-profile-projection-'));
+  try {
+    const output = join(directory, 'report.json');
+    const options = parseProfileArguments(['--projection', '--output', output]);
+    assert.equal(options.mode, 'projection');
+    assert.equal(options.rollupNoopMode, 'off');
+    assert.equal(options.deadlineMs, 2_700_000);
+    const env = createProfileChildEnvironment(
+      {
+        MAXIM_PUBLISHER_TURN_PROFILE: 'full',
+        PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: '100',
+        PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: '100',
+      },
+      options,
+    );
+    assert.equal(env.MAXIM_PUBLISHER_TURN_PROFILE, 'projection');
+    assert.equal(env.PUBLISHER_TEMPORAL_SELECTION_ROLLOUT, 'off');
+    assert.equal(env.PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT, 'off');
+    assert.equal(env.MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE, 'off');
+    for (const selectors of [
+      ['--smoke', '--projection'],
+      ['--projection', '--smoke'],
+      ['--projection', '--projection'],
+      ['--smoke', '--smoke'],
+    ])
+      assert.throws(() => parseProfileArguments([...selectors, '--output', output]), /Usage:/u);
+    for (const args of [
+      ['--projection', '--rollup-noop-mode', '100'],
+      ['--rollup-noop-mode', '100', '--projection'],
+    ])
+      assert.throws(() => parseProfileArguments([...args, '--output', output]), /requires.*off/u);
+    assert.throws(
+      () => createProfileChildEnvironment({}, { ...options, rollupNoopMode: '100' }),
+      /requires.*off/u,
+    );
+    for (const [mode, count] of [
+      ['full', 24],
+      ['smoke', 7],
+      ['projection', 5],
+    ]) {
+      assert.equal(expectedProfileCellCount(mode), count);
+      const failed = createProfileFailureReport({ ...options, mode }, '2026-10-18T00:00:00Z');
+      assert.equal(failed.complete, false);
+      assert.equal(failed.mode, mode);
+      assert.equal(failed.missingCells, count);
+      assert.deepEqual(failed.configuration, { selectionMode: 'off', rollupNoopMode: 'off' });
+    }
+    assert.throws(() => expectedProfileCellCount('unknown'), /Unsupported/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

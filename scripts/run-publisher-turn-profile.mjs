@@ -27,12 +27,15 @@ export function validateProfileEnvironment(env) {
 
 export function parseProfileArguments(args) {
   let mode = 'full';
+  let modeSupplied = false;
   let output;
   let rollupNoopMode = 'off';
   let rollupNoopModeSupplied = false;
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--smoke') mode = 'smoke';
-    else if (args[i] === '--output' && args[i + 1]) output = args[++i];
+    if (['--smoke', '--projection'].includes(args[i]) && !modeSupplied) {
+      mode = args[i] === '--projection' ? 'projection' : 'smoke';
+      modeSupplied = true;
+    } else if (args[i] === '--output' && args[i + 1]) output = args[++i];
     else if (
       args[i] === '--rollup-noop-mode' &&
       !rollupNoopModeSupplied &&
@@ -42,9 +45,11 @@ export function parseProfileArguments(args) {
       rollupNoopModeSupplied = true;
     } else
       throw new Error(
-        'Usage: test:publisher-full-turn-profile -- [--smoke] [--rollup-noop-mode off|100] --output <new absolute .json>',
+        'Usage: test:publisher-full-turn-profile -- [--smoke|--projection] [--rollup-noop-mode off|100] --output <new absolute .json>',
       );
   }
+  if (mode === 'projection' && rollupNoopMode !== 'off')
+    throw new Error('The projection profile requires rollup-noop mode off.');
   if (!output || !isAbsolute(output) || !output.endsWith('.json') || existsSync(output)) {
     throw new Error('Profile output must be a new absolute .json path.');
   }
@@ -54,7 +59,29 @@ export function parseProfileArguments(args) {
   return { mode, output, rollupNoopMode, deadlineMs: mode === 'smoke' ? 300_000 : 2_700_000 };
 }
 
+export function expectedProfileCellCount(mode) {
+  if (mode === 'full') return 24;
+  if (mode === 'smoke') return 7;
+  if (mode === 'projection') return 5;
+  throw new Error('Unsupported Publisher profile mode.');
+}
+
+export function createProfileFailureReport(options, startedAt) {
+  return {
+    schemaVersion: 1,
+    status: 'failed_before_report',
+    startedAt,
+    endedAt: new Date().toISOString(),
+    mode: options.mode,
+    configuration: { selectionMode: 'off', rollupNoopMode: options.rollupNoopMode },
+    complete: false,
+    missingCells: expectedProfileCellCount(options.mode),
+  };
+}
+
 export function createProfileChildEnvironment(env, options) {
+  if (options.mode === 'projection' && options.rollupNoopMode !== 'off')
+    throw new Error('The projection profile requires rollup-noop mode off.');
   return {
     ...env,
     APP_ROLE: 'publisher',
@@ -144,23 +171,7 @@ async function main() {
     if (!existsSync(options.output))
       writeFileSync(
         options.output,
-        `${JSON.stringify(
-          {
-            schemaVersion: 1,
-            status: 'failed_before_report',
-            startedAt,
-            endedAt: new Date().toISOString(),
-            mode: options.mode,
-            configuration: {
-              selectionMode: 'off',
-              rollupNoopMode: options.rollupNoopMode,
-            },
-            complete: false,
-            missingCells: options.mode === 'full' ? 24 : 7,
-          },
-          null,
-          2,
-        )}\n`,
+        `${JSON.stringify(createProfileFailureReport(options, startedAt), null, 2)}\n`,
         { flag: 'wx', mode: 0o600 },
       );
     throw error;
