@@ -448,83 +448,16 @@ export function assertPublisherRollupNoopSource(sources) {
       'configService:ConfigService,',
       'this.occurrenceRollupNoop=new PublicationOccurrenceRollupNoopReader(',
       "parsePublicationOccurrenceRollupNoopRollout(configService.get<unknown>('PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT'),)",
-      'if(await this.occurrenceRollupNoop.canSkip(occurrenceId))return;',
+      'if(await this.occurrenceRollupNoop.canSkip(occurrenceId))return;await rollupPublicationOccurrence(this.prisma,occurrenceId);',
     ],
     reader: [
-      "const TEST_CHAT_ID='-78271094414679'",
-      "const TEST_CHANNEL_ID='-78271171091799'",
       'export function parsePublicationOccurrenceRollupNoopRollout(',
       "return value==='test'||value==='5'||value==='25'||value==='100'?value:'off'",
+      "export type PublicationOccurrenceRollupNoopQueryRollout=Exclude<PublicationOccurrenceRollupNoopRollout,'off'|'test'>",
       'export function buildPublicationOccurrenceRollupNoopQuery(',
-      "rollout==='test'?buildTestEnrollment()",
+      'rollout:PublicationOccurrenceRollupNoopQueryRollout,',
+      "if(rollout!=='5'&&rollout!=='25'&&rollout!=='100'){throw new TypeError('Unsupported publication occurrence rollup query mode');}",
       'publisher-occurrence-rollup-noop-v1:',
-      `WITH rollup_envelope_page AS MATERIALIZED (
-        SELECT envelope."id"
-        FROM "managed_broadcasts" AS envelope
-        WHERE envelope."publication_occurrence_id" = occurrence."id"
-        LIMIT 3
-      )
-      SELECT CASE WHEN COUNT(*) BETWEEN 1 AND 2 THEN NOT EXISTS (
-        SELECT 1
-        FROM rollup_envelope_page AS envelope_id
-        CROSS JOIN LATERAL (
-          SELECT "id", "dispatch_profile", "required_bot_id", "publication_content_revision_id",
-            "apply_to_all_chats", "target_chat_ids", "entity_type"
-          FROM "managed_broadcasts"
-          WHERE "id" = envelope_id."id"
-          OFFSET 0
-        ) AS saved
-        WHERE (CASE WHEN saved."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
-          AND saved."required_bot_id" = occurrence."required_bot_id"
-          AND saved."publication_content_revision_id" = occurrence."content_revision_id"
-          AND saved."apply_to_all_chats" = FALSE
-        THEN (`,
-      `WITH rollup_recipient_keys AS MATERIALIZED (
-          SELECT recipient_key."broadcast_id", recipient_key."occurrence_index",
-            recipient_key."target_chat_id"
-          FROM "managed_broadcast_deliveries" AS recipient_key
-          WHERE recipient_key."broadcast_id" >= saved."id"
-          ORDER BY recipient_key."broadcast_id", recipient_key."occurrence_index",
-            recipient_key."target_chat_id"
-          LIMIT 3
-        ), rollup_recipient_page AS MATERIALIZED (
-          SELECT recipient."target_chat_id", recipient."publication_occurrence_id",
-            recipient."content_revision_id", recipient."required_bot_id", recipient."dispatch_profile"
-          FROM rollup_recipient_keys AS candidate
-          CROSS JOIN LATERAL (
-            SELECT recipient_saved."broadcast_id", recipient_saved."occurrence_index",
-              recipient_saved."target_chat_id", recipient_saved."publication_occurrence_id",
-              recipient_saved."content_revision_id", recipient_saved."required_bot_id",
-              recipient_saved."dispatch_profile"
-            FROM "managed_broadcast_deliveries" AS recipient_saved
-            WHERE ROW(recipient_saved."broadcast_id", recipient_saved."occurrence_index",
-              recipient_saved."target_chat_id") >= ROW(candidate."broadcast_id",
-                candidate."occurrence_index", candidate."target_chat_id")
-            ORDER BY recipient_saved."broadcast_id", recipient_saved."occurrence_index",
-              recipient_saved."target_chat_id"
-            LIMIT 1
-          ) AS recipient
-          WHERE candidate."broadcast_id" = saved."id"
-            AND recipient."broadcast_id" = candidate."broadcast_id"
-            AND recipient."occurrence_index" = candidate."occurrence_index"
-            AND recipient."target_chat_id" = candidate."target_chat_id"
-        )
-        SELECT COUNT(*) <= 2 AND COALESCE(BOOL_AND((
-          recipient."target_chat_id" = CASE saved."entity_type"
-            WHEN 'CHAT'::"ChatEntityType" THEN \${TEST_CHAT_ID}
-            WHEN 'CHANNEL'::"ChatEntityType" THEN \${TEST_CHANNEL_ID}
-          END
-          AND recipient."publication_occurrence_id" = occurrence."id"
-          AND recipient."content_revision_id" = occurrence."content_revision_id"
-          AND recipient."required_bot_id" = occurrence."required_bot_id"
-          AND recipient."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
-        ) IS TRUE), TRUE)
-        FROM rollup_recipient_page AS recipient
-      ) ELSE FALSE END) IS NOT TRUE
-    ) ELSE FALSE END
-    FROM rollup_envelope_page`,
-      'pg_column_compression(saved."target_chat_ids") IS NULL',
-      'pg_column_size(saved."target_chat_ids") <= ${MAX_TEST_AUDIENCE_JSON_BYTES}',
       `WITH rollup_scope AS MATERIALIZED (
       WITH rollup_occurrence_admission AS MATERIALIZED (
         SELECT CASE WHEN (
@@ -577,6 +510,7 @@ export function assertPublisherRollupNoopSource(sources) {
       'return snapshot.status === expected',
       'export class PublicationOccurrenceRollupNoopReader',
       "if(this.rollout==='off')return false",
+      "if(this.rollout==='test'){this.observer.record(this.rollout,false,'fallback');return false;}",
       'buildPublicationOccurrenceRollupNoopQuery(occurrenceId,this.rollout)',
       'const decisionNow=new Date()',
       'isUnchangedPublicationOccurrenceRollup(snapshot,decisionNow)',
@@ -594,6 +528,13 @@ export function assertPublisherRollupNoopSource(sources) {
     }
   }
   const reader = compactSelectionSource(sources.reader);
+  if (
+    /buildTestEnrollment|rollup_recipient_|rollup_envelope_page|target_chat_ids|publication_targets|pg_column_(?:size|compression)/u.test(
+      reader,
+    )
+  ) {
+    throw new Error('Publisher rollup no-op source guard failed: retired test enrollment.');
+  }
   for (const [status, witness] of [
     ['SENDING', 'hasSending'],
     ['PENDING', 'hasActivePending'],
@@ -624,10 +565,13 @@ export function assertPublisherRollupNoopSource(sources) {
   }
   const method = reader.slice(reader.indexOf('asynccanSkip('));
   const off = method.indexOf("if(this.rollout==='off')returnfalse");
+  const test = method.indexOf(
+    "if(this.rollout==='test'){this.observer.record(this.rollout,false,'fallback');returnfalse;}",
+  );
   const query = method.indexOf('awaitthis.prisma.$queryRaw');
   const clock = method.indexOf('constdecisionNow=newDate()');
-  if (off < 0 || query <= off || clock <= query) {
-    throw new Error('Publisher rollup no-op source guard failed: off/query/clock ordering.');
+  if (off < 0 || test <= off || query <= test || clock <= query) {
+    throw new Error('Publisher rollup no-op source guard failed: off/test/query/clock ordering.');
   }
   const compose = sources?.compose;
   const publisher =

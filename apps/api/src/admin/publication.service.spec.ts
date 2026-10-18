@@ -2935,52 +2935,63 @@ describe('PublicationService', () => {
     }
   });
 
-  it('rolls an ambiguous delivery up without making it retryable', async () => {
-    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
-    const observedAt = new Date('2026-07-10T10:01:00.000Z');
-    const { presenter, service } = createService({
-      publicationOccurrence: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'occurrence-1',
-          status: PublicationOccurrenceStatus.IN_PROGRESS,
-          updatedAt: observedAt,
-          scheduleRevision: 4,
-          contentRevisionId: 'content-1',
-          scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
-          legacyBroadcasts: [
-            {
-              status: ManagedBroadcastStatus.FAILED,
-              deliveries: [{ status: ManagedBroadcastDeliveryStatus.AMBIGUOUS }],
-            },
-          ],
-        }),
-        updateMany,
-      },
-    });
-
-    await (service as any).rollupOccurrence('occurrence-1');
-
-    expect(updateMany).toHaveBeenCalledWith({
-      where: {
+  it.each(['off', 'test'] as const)(
+    'rolls an ambiguous delivery up in %s mode without making it retryable',
+    async (mode) => {
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const observedAt = new Date('2026-07-10T10:01:00.000Z');
+      const sqlRead: jest.MockedFunction<PrismaService['$queryRaw']> = jest.fn();
+      const fullRead = jest.fn().mockResolvedValue({
         id: 'occurrence-1',
         status: PublicationOccurrenceStatus.IN_PROGRESS,
         updatedAt: observedAt,
         scheduleRevision: 4,
         contentRevisionId: 'content-1',
-      },
-      data: { status: PublicationOccurrenceStatus.AMBIGUOUS },
-    });
-    expect(
-      presenter.buildDeliveryStats([{ status: ManagedBroadcastDeliveryStatus.AMBIGUOUS }]),
-    ).toEqual({
-      total: 1,
-      pending: 0,
-      sent: 0,
-      failed: 0,
-      ambiguous: 1,
-      canceled: 0,
-    });
-  });
+        scheduledAt: new Date('2026-07-10T10:00:00.000Z'),
+        legacyBroadcasts: [
+          {
+            status: ManagedBroadcastStatus.FAILED,
+            deliveries: [{ status: ManagedBroadcastDeliveryStatus.AMBIGUOUS }],
+          },
+        ],
+      });
+      const { presenter, service } = createService(
+        {
+          $queryRaw: sqlRead,
+          publicationOccurrence: {
+            findUnique: fullRead,
+            updateMany,
+          },
+        },
+        mode,
+      );
+
+      await (service as any).rollupOccurrence('occurrence-1');
+      expect(sqlRead).not.toHaveBeenCalled();
+      expect(fullRead).toHaveBeenCalledTimes(1);
+
+      expect(updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'occurrence-1',
+          status: PublicationOccurrenceStatus.IN_PROGRESS,
+          updatedAt: observedAt,
+          scheduleRevision: 4,
+          contentRevisionId: 'content-1',
+        },
+        data: { status: PublicationOccurrenceStatus.AMBIGUOUS },
+      });
+      expect(
+        presenter.buildDeliveryStats([{ status: ManagedBroadcastDeliveryStatus.AMBIGUOUS }]),
+      ).toEqual({
+        total: 1,
+        pending: 0,
+        sent: 0,
+        failed: 0,
+        ambiguous: 1,
+        canceled: 0,
+      });
+    },
+  );
 
   it('rolls a terminal canceled envelope with only sent deliveries up as sent', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });

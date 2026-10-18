@@ -1,5 +1,9 @@
 import { performMaxHttpRequest } from './max-http-request';
 import {
+  projectMaxActionFailureDiagnostic,
+  type MaxActionFailureFacts,
+} from './max-action-failure-diagnostic';
+import {
   observeMaxSendAdmission,
   observeMaxSendAcknowledgement,
   runWithMaxSendHttpObservation,
@@ -6912,6 +6916,7 @@ export class MaxClientService implements OnModuleDestroy {
           trafficClass,
           lane: actionHealthLane,
           sourceTag,
+          facts: { failureOrigin: 'local_quota', isCritical: true },
         });
       }
       throw error;
@@ -6935,6 +6940,7 @@ export class MaxClientService implements OnModuleDestroy {
             trafficClass,
             lane: actionHealthLane,
             sourceTag,
+            facts: { failureOrigin: 'local_quota', isCritical: true },
           });
         }
         throw error;
@@ -6962,6 +6968,7 @@ export class MaxClientService implements OnModuleDestroy {
         trafficClass,
         lane: actionHealthLane,
         sourceTag,
+        facts: { failureOrigin: 'unlinked', isCritical },
       });
       if (isCritical) {
         await this.registerCriticalFailure(bot.id, circuitPermit);
@@ -7220,6 +7227,7 @@ export class MaxClientService implements OnModuleDestroy {
       trafficClass: MaxApiTrafficClass;
       lane: ActionHealthLane;
       sourceTag: string | null;
+      facts: MaxActionFailureFacts;
     },
   ): void {
     if (params.trafficClass === 'background' || params.lane === 'background') {
@@ -7246,6 +7254,7 @@ export class MaxClientService implements OnModuleDestroy {
         lane: params.lane,
         sourceTag: params.sourceTag,
         botId: params.botId,
+        ...projectMaxActionFailureDiagnostic(params.facts),
       },
       'Recorded unignored user-facing MAX API action failure',
     );

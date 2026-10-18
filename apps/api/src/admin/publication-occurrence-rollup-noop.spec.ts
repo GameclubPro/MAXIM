@@ -67,7 +67,7 @@ describe('Publication occurrence unchanged-rollup reader', () => {
     const db = database();
     const failure = new Error('database admission failed');
     db.$queryRaw.mockRejectedValue(failure);
-    const reader = new PublicationOccurrenceRollupNoopReader(db, 'test', {
+    const reader = new PublicationOccurrenceRollupNoopReader(db, '100', {
       log: () => {
         throw new Error('diagnostic unavailable');
       },
@@ -156,6 +156,33 @@ describe('Publication occurrence unchanged-rollup reader', () => {
         expect(query.sql).toContain('publisher-occurrence-rollup-noop-v1:');
         expect(query.sql).not.toContain('publisher-temporal-v1:');
       }
+    },
+  );
+
+  it('refuses test mode before SQL even if a database double would claim enrollment', async () => {
+    const db = database();
+    db.$queryRaw.mockResolvedValue([snapshot()]);
+    const log = jest.fn();
+    const reader = new PublicationOccurrenceRollupNoopReader(db, 'test', { log });
+    await expect(reader.canSkip('not-read')).resolves.toBe(false);
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rollout: 'test',
+        admitted: 0,
+        unchanged: 0,
+        fallback: 1,
+        error: 0,
+      }),
+    );
+  });
+
+  it.each(['test', 'off', 'invalid', undefined, 100])(
+    'refuses unsupported direct query mode %j before constructing SQL',
+    (mode) => {
+      expect(() =>
+        Reflect.apply(buildPublicationOccurrenceRollupNoopQuery, undefined, ['bound-id', mode]),
+      ).toThrow('Unsupported publication occurrence rollup query mode');
     },
   );
 });
