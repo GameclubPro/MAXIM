@@ -472,7 +472,7 @@ describe('PublisherChatCommentRecoveryService', () => {
 
       expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledTimes(1);
       expect(harness.job.retry).toHaveBeenCalledTimes(1);
-      harness.service.onModuleDestroy();
+      await harness.service.onModuleDestroy();
     } finally {
       jest.useRealTimers();
     }
@@ -497,13 +497,14 @@ describe('PublisherChatCommentRecoveryService', () => {
       expect(harness.identityAttestation.assertAttested).toHaveBeenCalledTimes(1);
       expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledTimes(1);
       expect(harness.queue.getJob).toHaveBeenCalledTimes(1);
-      harness.service.onModuleDestroy();
+      await harness.service.onModuleDestroy();
     } finally {
       jest.useRealTimers();
     }
   });
 
   it('rechecks an operator pause after waiting for the shared background lane', async () => {
+    jest.useFakeTimers();
     const harness = createHarness();
     let globallyPaused = false;
     harness.health.isGloballyPaused.mockImplementation(async () => globallyPaused);
@@ -518,15 +519,62 @@ describe('PublisherChatCommentRecoveryService', () => {
       },
     );
 
-    const recovery = (harness.service as any).runScheduledRecovery() as Promise<void>;
-    while (harness.backgroundWork.runExclusive.mock.calls.length === 0) await Promise.resolve();
-    globallyPaused = true;
-    release();
-    await recovery;
+    try {
+      harness.service.onModuleInit();
+      jest.advanceTimersByTime(PUBLISHER_CHAT_COMMENT_RECOVERY_STARTUP_DELAY_MS);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(harness.backgroundWork.runExclusive).toHaveBeenCalledTimes(1);
+      globallyPaused = true;
+      release();
+      await harness.service.onModuleDestroy();
 
-    expect(harness.health.isGloballyPaused).toHaveBeenCalledTimes(2);
-    expect(harness.identityAttestation.assertAttested).not.toHaveBeenCalled();
-    expect(harness.prisma.chatAutoCommentAttachMarker.findMany).not.toHaveBeenCalled();
+      expect(harness.health.isGloballyPaused).toHaveBeenCalledTimes(2);
+      expect(harness.identityAttestation.assertAttested).not.toHaveBeenCalled();
+      expect(harness.prisma.chatAutoCommentAttachMarker.findMany).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await harness.service.onModuleDestroy();
+      jest.useRealTimers();
+    }
+  });
+
+  it('drains the accepted retry tail before closing and refuses new recovery work', async () => {
+    const harness = createHarness();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const retry = jest.spyOn(harness.job, 'retry').mockImplementation(async () => gate);
+    const recovery = harness.service.recoverOnce();
+    let drained = false;
+    try {
+      for (let step = 0; step < 30 && retry.mock.calls.length === 0; step += 1) {
+        await Promise.resolve();
+      }
+      expect(retry).toHaveBeenCalledTimes(1);
+      const [worker] = harness.service.stopWorkerAdmission();
+      const closing = worker.pause(false).then(() => {
+        drained = true;
+      });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      expect(await harness.service.recoverOnce()).toMatchObject({
+        scanned: 0,
+        retried: 0,
+        alreadyRunning: false,
+      });
+      release();
+      expect(await recovery).toMatchObject({ scanned: 1, retried: 1 });
+      await closing;
+      await worker.close(false);
+      expect(drained).toBe(true);
+      expect(harness.prisma.chatAutoCommentAttachMarker.findMany).toHaveBeenCalledTimes(1);
+      expect(retry).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await recovery;
+      await harness.service.onModuleDestroy();
+    }
   });
 
   it('defers an explicit remote-send recovery while dispatch is paused', async () => {
@@ -560,7 +608,7 @@ describe('PublisherChatCommentRecoveryService', () => {
 
       expect(harness.health.isGloballyPaused).not.toHaveBeenCalled();
       expect(recover).not.toHaveBeenCalled();
-      harness.service.onModuleDestroy();
+      await harness.service.onModuleDestroy();
     } finally {
       jest.useRealTimers();
     }
