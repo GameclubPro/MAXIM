@@ -1,44 +1,20 @@
-import { MaxActionLedgerStatus } from '../prisma/prisma-client';
+import { MaxActionLedgerStatus, type MaxActionLedgerEntry } from '../prisma/prisma-client';
+import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from '../max/max-action-pre-dispatch-guard';
 import {
   buildMaxActionChannelSuggestionPublicationJobId,
   MAX_ACTION_CHANNEL_SUGGESTION_PUBLICATION_SOURCE_TAG,
 } from '../max/max-action-ledger-keys';
 import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.service';
 
-function createCandidate(
-  overrides: Partial<{
-    id: string;
-    jobId: string;
-    chatId: string;
-    actionType: string;
-    status: MaxActionLedgerStatus;
-    attemptCount: number;
-    firstAttemptAt: Date | null;
-    lastAttemptAt: Date | null;
-    dispatchToken: string | null;
-    dispatchStartedAt: Date | null;
-    dispatchBotId: string | null;
-    remoteMessageId: string | null;
-    botId: string | null;
-    messageId: string | null;
-    userId: string | null;
-    sourceTag: string | null;
-    trafficClass: string | null;
-    actionHealthLane: string | null;
-    lastStatusCode: number | null;
-    lastErrorCode: string | null;
-    lastError: string | null;
-    metadata: Record<string, unknown> | null;
-    createdAt: Date;
-    updatedAt: Date;
-  }> = {},
-) {
+function createCandidate(overrides: Partial<MaxActionLedgerEntry> = {}) {
   return {
     id: 'ledger-1',
     jobId: 'job-1',
     chatId: 'chat-1',
     actionType: 'SEND_MESSAGE',
     status: MaxActionLedgerStatus.ENQUEUED,
+    ambiguous: false,
+    terminal: false,
     attemptCount: 0,
     firstAttemptAt: null,
     lastAttemptAt: null,
@@ -290,6 +266,180 @@ describe('MaxActionLedgerWatchdogService', () => {
       );
     },
   );
+
+  describe('retained final member guard refusal', () => {
+    function guardCandidate(overrides: Parameters<typeof createCandidate>[0] = {}) {
+      return createCandidate({
+        actionType: 'BAN_MEMBER',
+        status: MaxActionLedgerStatus.FAILED_RETRYABLE,
+        userId: 'user-1',
+        attemptCount: 1,
+        firstAttemptAt: new Date(Date.now() - 11 * 60_000),
+        lastAttemptAt: new Date(Date.now() - 10 * 60_000),
+        lastErrorCode: MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+        ...overrides,
+      });
+    }
+
+    function failedJob(row: ReturnType<typeof guardCandidate>) {
+      return {
+        id: row.jobId,
+        data: {
+          actionType: row.actionType,
+          chatId: row.chatId,
+          userId: row.userId,
+          botId: row.botId,
+          idempotencyKey: row.jobId,
+        },
+        getState: jest.fn().mockResolvedValue('failed'),
+        retry: jest.fn().mockResolvedValue(undefined),
+        processedOn: Date.now() - 10 * 60_000,
+        attemptsMade: 1,
+      };
+    }
+
+    const cases = (['BAN_MEMBER', 'KICK_MEMBER'] as const).flatMap((actionType) =>
+      ([null, 404] as const).flatMap((lastStatusCode) =>
+        (['on', 'shadow', 'canary-selected', 'canary-unselected'] as const).flatMap((mode) =>
+          (['missing', 'failed'] as const).map((jobState) => ({
+            actionType,
+            lastStatusCode,
+            mode,
+            jobState,
+          })),
+        ),
+      ),
+    );
+
+    it.each(cases)(
+      'defers $actionType/$lastStatusCode/$mode/$jobState without changing the row or queue',
+      async ({ actionType, lastStatusCode, mode, jobState }) => {
+        const row = guardCandidate({ actionType, lastStatusCode });
+        const retained = failedJob(row);
+        const h = createHarness({
+          rows: [row],
+          mode: mode.startsWith('canary') ? 'canary' : mode === 'on' ? 'on' : 'shadow',
+          canaryPercent: 100,
+          canaryEntityIds: mode === 'canary-selected' ? row.chatId : '',
+          criticalJob: jobState === 'failed' ? retained : undefined,
+        });
+
+        await h.service.runNow();
+
+        expect(h.prisma.maxActionLedgerEntry.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            select: expect.objectContaining({ ambiguous: true, terminal: true }),
+          }),
+        );
+        expect(h.prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+        for (const queue of [h.queue, h.criticalQueue, h.interactiveQueue, h.backgroundQueue]) {
+          expect(queue.add).not.toHaveBeenCalled();
+        }
+        expect(retained.retry).not.toHaveBeenCalled();
+        expect(await h.service.getSnapshot()).toEqual(
+          expect.objectContaining({
+            lastError: null,
+            lastDeferredCount: 1,
+            lastReconciledCount: 0,
+            lastQuarantinedCount: 0,
+            lastTerminalFailedCount: 0,
+            lastRequeuedCount: 0,
+            lastWouldQuarantineCount: 0,
+            lastWouldTerminalFailCount: 0,
+            lastWouldRequeueCount: 0,
+          }),
+        );
+      },
+    );
+
+    it.each([
+      { ambiguous: true },
+      { terminal: true },
+      { actionType: 'TRY_UNBAN_MEMBER' },
+      { actionType: 'UNBAN_MEMBER' },
+      { status: MaxActionLedgerStatus.IN_PROGRESS },
+      { status: MaxActionLedgerStatus.ENQUEUED },
+      { botId: null },
+      { botId: ' ' },
+      { userId: null },
+      { userId: ' ' },
+      { chatId: ' ' },
+      { jobId: ' ' },
+      { dispatchToken: 'dispatch' },
+      { dispatchToken: '' },
+      { dispatchStartedAt: new Date(1) },
+      { dispatchBotId: 'bot-1' },
+      { dispatchBotId: '' },
+      { remoteMessageId: 'receipt' },
+      { remoteMessageId: '' },
+      { lastErrorCode: 'other_guard' },
+    ] satisfies Parameters<typeof createCandidate>[0][])(
+      'keeps contradictory candidate %j on its existing fenced path',
+      async (overrides) => {
+        const h = createHarness({ rows: [guardCandidate(overrides)] });
+        await h.service.runNow();
+        const snapshot = await h.service.getSnapshot();
+        expect(snapshot.lastDeferredCount).toBe(0);
+        expect(snapshot.lastRequeuedCount).toBe(0);
+        expect(h.criticalQueue.add).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['actionType', 'chatId', 'userId', 'botId', 'idempotencyKey'] as const)(
+      'refuses a failed job with a different %s',
+      async (field) => {
+        const row = guardCandidate();
+        const job = failedJob(row);
+        job.data[field] = 'different';
+        const h = createHarness({ rows: [row], criticalJob: job });
+        await h.service.runNow();
+        expect((await h.service.getSnapshot()).lastDeferredCount).toBe(0);
+        expect(job.retry).not.toHaveBeenCalled();
+        expect(h.criticalQueue.add).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses conflicting job identity and multiple retained owners', async () => {
+      const row = guardCandidate();
+      const wrongId = failedJob(row);
+      wrongId.id = 'different';
+      const one = createHarness({ rows: [row], criticalJob: wrongId });
+      await one.service.runNow();
+      expect((await one.service.getSnapshot()).lastDeferredCount).toBe(0);
+      const two = createHarness({ rows: [row], criticalJob: failedJob(row), job: failedJob(row) });
+      await two.service.runNow();
+      expect((await two.service.getSnapshot()).lastDeferredCount).toBe(0);
+      expect(two.criticalQueue.add).not.toHaveBeenCalled();
+      expect(two.queue.add).not.toHaveBeenCalled();
+    });
+
+    it.each(['waiting', 'delayed', 'active', 'completed'] as const)(
+      'preserves existing %s job handling ahead of the new classification',
+      async (state) => {
+        const row = guardCandidate();
+        const job = failedJob(row);
+        job.getState.mockResolvedValue(state);
+        job.processedOn = Date.now();
+        const h = createHarness({ rows: [row], criticalJob: job });
+        await h.service.runNow();
+        const snapshot = await h.service.getSnapshot();
+        expect(job.retry).not.toHaveBeenCalled();
+        expect(h.criticalQueue.add).not.toHaveBeenCalled();
+        if (state === 'completed') {
+          expect(snapshot.lastRecoveredSucceededCount).toBe(1);
+          expect(snapshot.lastDeferredCount).toBe(0);
+          expect(h.prisma.maxActionLedgerEntry.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+              data: expect.objectContaining({ status: MaxActionLedgerStatus.SUCCEEDED }),
+            }),
+          );
+        } else {
+          expect(snapshot.lastDeferredCount).toBe(1);
+          expect(h.prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+        }
+      },
+    );
+  });
 
   it('retries one matching retained failed BullMQ job instead of adding a duplicate', async () => {
     const row = createCandidate({
