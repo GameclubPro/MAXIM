@@ -412,9 +412,16 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   let db: PrismaClient;
   let sourceChatId: string;
   let root: Root;
-  let publicationIds: string[];
-  let ownedChatIds: string[];
+  let publicationIds: string[] = [];
+  let ownedChatIds: string[] = [];
   let sequence: number;
+  let sharedChurnFixture = false;
+  let activeChurnPhase: { stopped: boolean; deadline: number; done: Promise<void> } | undefined;
+
+  function checkChurnPhase(): void {
+    if (activeChurnPhase && (activeChurnPhase.stopped || Date.now() >= activeChurnPhase.deadline))
+      throw new Error('Owned churn phase stopped before its next SQL operation');
+  }
   const queries: Prisma.QueryEvent[] = [];
   const dialogBotId = `rollup-noop-dialog-${randomUUID()}`;
 
@@ -437,18 +444,25 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     ]);
   });
 
-  beforeEach(async () => {
+  async function initializeOwnedFixture() {
     publicationIds = [];
     ownedChatIds = [];
     sequence = 0;
     sourceChatId = `-${BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 12)}`)}`;
+    checkChurnPhase();
     await db.chat.create({ data: { id: sourceChatId, title: 'Synthetic rollup no-op fixture' } });
     ownedChatIds.push(sourceChatId);
+    checkChurnPhase();
     root = await publication();
     queries.length = 0;
-  });
+  }
 
-  afterEach(async () => cleanupOwnedFixture(publicationIds, ownedChatIds), 60_000);
+  beforeEach(async () => {
+    if (!sharedChurnFixture) await initializeOwnedFixture();
+  });
+  afterEach(async () => {
+    if (!sharedChurnFixture) await cleanupOwnedFixture(publicationIds, ownedChatIds);
+  }, 60_000);
   afterAll(async () => db?.$disconnect());
 
   async function cleanupOwnedFixture(ownedPublications: string[], ownedChats: string[]) {
@@ -593,6 +607,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     botId = `rollup-noop-bot-${randomUUID()}`,
     client: Prisma.TransactionClient = db,
   ): Promise<Root> {
+    checkChurnPhase();
     const value = await client.publication.create({
       data: {
         id,
@@ -610,6 +625,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       include: { schedule: true, contentRevisions: true },
     });
     publicationIds.push(value.id);
+    checkChurnPhase();
     const revisionId = value.contentRevisions[0]!.id;
     await client.publication.update({
       where: { id: value.id },
@@ -639,6 +655,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     // FLAG: Bound each setup statement while retaining the complete native FK graph.
     // Append callers use fresh slots to preserve the native publication/revision key.
     for (let first = firstSlot; first < firstSlot + count; first += 1_000) {
+      checkChurnPhase();
       await client.$executeRaw(Prisma.sql`
         INSERT INTO publications (
           id, actor_user_id, request_id, lifecycle, dispatch_profile, required_bot_id, updated_at
@@ -651,6 +668,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       publicationIds.push(
         ...Array.from({ length: 1_000 }, (_, index) => `${prefix}${first + index}`),
       );
+      checkChurnPhase();
       await client.$executeRaw(Prisma.sql`
         INSERT INTO publication_occurrences (
           id, publication_id, schedule_id, content_revision_id,
@@ -662,6 +680,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           'SENT'::"PublicationOccurrenceStatus", ${decisionAt}
         FROM generate_series(${first}::integer, ${first + 999}::integer) n
       `);
+      checkChurnPhase();
       await client.$executeRaw(Prisma.sql`
         INSERT INTO managed_broadcasts (
           id, source_chat_id, actor_user_id, entity_type, target_chat_ids, buttons,
@@ -678,6 +697,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     if (client === db) {
       // FLAG: These positive-plan fixtures explicitly opt into analyzed parents.
       // The caller-owned transaction below separately proves zero/positive stale stats.
+      checkChurnPhase();
       await db.$executeRawUnsafe(
         'ANALYZE publications, publication_occurrences, managed_broadcasts',
       );
@@ -694,6 +714,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     client: Prisma.TransactionClient = db,
   ): Promise<Occurrence> {
     const parent = options.publication ?? root;
+    checkChurnPhase();
     const row = await client.publicationOccurrence.create({
       data: {
         ...(options.id ? { id: options.id } : {}),
@@ -710,6 +731,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     if (client === db) {
       // FLAG: Positive shortcut cases require supported statistics. No runtime
       // ANALYZE is added, and the unsupported-stat transaction never takes this path.
+      checkChurnPhase();
       await db.$executeRawUnsafe('ANALYZE publication_occurrences');
     }
     return { ...parent, occurrenceId: row.id };
@@ -728,6 +750,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     client: Prisma.TransactionClient = db,
   ): Promise<Envelope> {
     const envelopeRevisionId = options.revisionId ?? parent.revisionId;
+    checkChurnPhase();
     const row = await client.managedBroadcast.create({
       data: {
         ...(options.id ? { id: options.id } : {}),
@@ -754,6 +777,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   ) {
     const status = options.status ?? 'PENDING';
     const sent = status === 'SENT';
+    checkChurnPhase();
     return client.managedBroadcastDelivery.create({
       data: {
         broadcastId: item.broadcastId,
@@ -790,6 +814,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     mode: Mode = '100',
     client: QueryReader = db,
   ): Promise<PublicationOccurrenceRollupNoopSnapshot | undefined> {
+    checkChurnPhase();
     const rows = await client.$queryRaw<PublicationOccurrenceRollupNoopSnapshot[]>(
       buildPublicationOccurrenceRollupNoopQuery(item.occurrenceId, mode),
     );
@@ -805,6 +830,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   ) => isUnchangedPublicationOccurrenceRollup(await probe(item, mode, client), now);
 
   function original(client: Pick<Prisma.TransactionClient, 'publicationOccurrence'>, id: string) {
+    checkChurnPhase();
     return client.publicationOccurrence.findUniqueOrThrow({
       where: { id },
       include: {
@@ -833,6 +859,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   }
 
   async function identity(item: Occurrence, client: QueryReader = db) {
+    checkChurnPhase();
     return client.$queryRaw<
       Array<{ status: PublicationOccurrenceStatus; updatedAt: Date; xmin: string; ctid: string }>
     >(Prisma.sql`
@@ -935,6 +962,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
 
   async function explain(item: Occurrence, mode: Mode = '100', client: QueryReader = db) {
     // FLAG: ANALYZE is restricted to the disposable local race_test database above.
+    checkChurnPhase();
     return client.$queryRaw<Explained>(
       Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${buildPublicationOccurrenceRollupNoopQuery(item.occurrenceId, mode)}`,
     );
@@ -1647,34 +1675,93 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     },
   );
 
-  it('keeps test refusal and numeric proofs bounded across one fixed 50000-row owned insert/delete cycle', async () => {
-    const item = await occurrence();
-    const prefix = `synthetic-recipient-churn-${randomUUID()}-`;
-    const linked = await envelope(item, { id: `${prefix}b`, savedTargets: [designated.CHAT] });
-    await retainOwnedParentHistory(item);
-    for (let index = 1; index <= 64; index += 1) {
-      await delivery(linked, { targetChatId: `synthetic-churn-${index}`, status: 'SENT' });
-      await delivery(linked, {
-        occurrenceIndex: 2,
-        targetChatId: `synthetic-churn-${index}`,
-        status: 'SENDING',
+  describe('one fixed 50000-row owned recipient churn history', () => {
+    let item: Occurrence;
+    let churn: Envelope;
+    let emptyTail: Envelope;
+    let oneTail: Envelope;
+    let completedPhase = 0;
+    let phaseFailed = false;
+
+    beforeAll(() => {
+      sharedChurnFixture = true;
+      publicationIds = [];
+      ownedChatIds = [];
+    });
+
+    async function drainPhase() {
+      const phase = activeChurnPhase;
+      if (!phase) return;
+      phase.stopped = true;
+      await phase.done.catch(() => undefined);
+      activeChurnPhase = undefined;
+    }
+
+    afterEach(drainPhase, 15_000);
+    afterAll(async () => {
+      // FLAG: A Jest timeout does not cancel its async body. Stop new SQL and await
+      // the owned phase before cleanup; never reset ownership under a running body.
+      await drainPhase();
+      try {
+        await cleanupOwnedFixture(publicationIds, ownedChatIds);
+      } finally {
+        sharedChurnFixture = false;
+      }
+    }, 60_000);
+
+    it('drains an in-flight operation and refuses its next SQL boundary before cleanup', async () => {
+      const release = gate();
+      const state = { stopped: false, deadline: Date.now() + 18_000, done: Promise.resolve() };
+      activeChurnPhase = state;
+      const nextSql = jest.fn();
+      state.done = release.promise.then(() => {
+        checkChurnPhase();
+        nextSql();
+      });
+      const rejected = expect(state.done).rejects.toThrow('stopped before its next SQL');
+      let drained = false;
+      const draining = drainPhase().then(() => {
+        drained = true;
+      });
+      try {
+        await Promise.resolve();
+        expect(drained).toBe(false);
+        expect(state.stopped).toBe(true);
+      } finally {
+        release.resolve();
+        await draining;
+      }
+      await rejected;
+      expect(nextSql).not.toHaveBeenCalled();
+      expect(activeChurnPhase).toBeUndefined();
+    });
+
+    function phase(index: number, name: string, run: () => Promise<void>) {
+      it(name, async () => {
+        expect(phaseFailed).toBe(false);
+        expect(completedPhase).toBe(index - 1);
+        // FLAG: Preserve the 30 s test and 10 s statement limits. The soft stop
+        // prevents the next SQL; afterEach also drains a timed-out current statement.
+        const state = { stopped: false, deadline: Date.now() + 18_000, done: Promise.resolve() };
+        activeChurnPhase = state;
+        state.done = Promise.resolve()
+          .then(run)
+          .then(() => {
+            checkChurnPhase();
+            completedPhase = index;
+          })
+          .catch((error: unknown) => {
+            phaseFailed = true;
+            throw error;
+          });
+        await state.done;
       });
     }
-    const foreign = await envelope(await occurrence(), { id: `${prefix}c` });
-    await delivery(foreign, { status: 'SENT' });
-    const churn = await envelope(await occurrence(), { id: `${prefix}a` });
-    const emptyTail = await envelope(await occurrence(), {
-      id: `${prefix}z`,
-      savedTargets: [designated.CHAT],
-    });
-    const oneTail = await envelope(await occurrence(), {
-      id: `${prefix}y`,
-      savedTargets: [designated.CHAT],
-    });
-    await delivery(oneTail, { targetChatId: designated.CHAT });
 
     async function capture(phase: string, expectedCount: number): Promise<void> {
+      checkChurnPhase();
       expect(await db.managedBroadcastDelivery.count()).toBe(expectedCount);
+      checkChurnPhase();
       const relations = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
         SELECT relname AS relation, relpages AS pages, reltuples::double precision AS "estimatedRows",
           relallvisible AS "allVisiblePages", pg_relation_size(oid)::text AS bytes
@@ -1685,6 +1772,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           'managed_broadcast_deliveries_broadcast_occurrence_status_idx'::regclass
         ) ORDER BY relname
       `);
+      checkChurnPhase();
       const activity = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
         SELECT n_live_tup::double precision AS "estimatedLiveRows",
           n_dead_tup::double precision AS "estimatedDeadRows", last_analyze, last_autoanalyze,
@@ -1693,6 +1781,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
         FROM pg_catalog.pg_stat_all_tables
         WHERE relid = 'managed_broadcast_deliveries'::regclass
       `);
+      checkChurnPhase();
       const columns = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
         SELECT attname AS column, avg_width AS "averageWidth", n_distinct AS "distinctEstimate",
           correlation
@@ -1711,6 +1800,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           columns,
         }),
       );
+      checkChurnPhase();
       await db.$transaction(
         async (tx) => {
           for (const [tail, expectedUnchanged] of [
@@ -1718,9 +1808,13 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
             [emptyTail, false],
             [oneTail, true],
           ] as const) {
+            checkChurnPhase();
             const before = await identity(tail, tx);
+            checkChurnPhase();
             await expectTestRefusalNoWrite(tail, tx);
+            checkChurnPhase();
             expect(await unchanged(tail, '100', decisionAt, tx)).toBe(expectedUnchanged);
+            checkChurnPhase();
             const old = await original(tx, tail.occurrenceId);
             const canonical = resolvePublicationOccurrenceRollupStatus(
               old.legacyBroadcasts,
@@ -1729,6 +1823,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
             );
             if (expectedUnchanged) {
               expect(canonical).toBe(old.status);
+              checkChurnPhase();
               await expectEquivalentNoWrite(tail, '100', tx);
             }
             console.info(
@@ -1740,7 +1835,9 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
                 canonical,
               }),
             );
+            checkChurnPhase();
             expectBoundedPlan(await explain(tail, '100', tx), '100', true);
+            checkChurnPhase();
             expect(await identity(tail, tx)).toEqual(before);
           }
         },
@@ -1748,12 +1845,47 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       );
     }
 
-    // FLAG: Construct finite disposable history; do not repeat until a desired plan,
-    // force planner settings, vacuum away evidence or change any production statistics.
-    await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
-    await capture('baseline', 130);
-    for (let first = 1; first <= 50_000; first += 2_500) {
-      const inserted = await db.$executeRaw(Prisma.sql`
+    phase(
+      1,
+      'constructs one retained native fixture without replacing its physical history',
+      async () => {
+        await initializeOwnedFixture();
+        item = await occurrence();
+        const prefix = `synthetic-recipient-churn-${randomUUID()}-`;
+        const linked = await envelope(item, { id: `${prefix}b`, savedTargets: [designated.CHAT] });
+        await retainOwnedParentHistory(item);
+        for (let index = 1; index <= 64; index += 1) {
+          checkChurnPhase();
+          await delivery(linked, { targetChatId: `synthetic-churn-${index}`, status: 'SENT' });
+          await delivery(linked, {
+            occurrenceIndex: 2,
+            targetChatId: `synthetic-churn-${index}`,
+            status: 'SENDING',
+          });
+        }
+        const foreign = await envelope(await occurrence(), { id: `${prefix}c` });
+        await delivery(foreign, { status: 'SENT' });
+        churn = await envelope(await occurrence(), { id: `${prefix}a` });
+        emptyTail = await envelope(await occurrence(), {
+          id: `${prefix}z`,
+          savedTargets: [designated.CHAT],
+        });
+        oneTail = await envelope(await occurrence(), {
+          id: `${prefix}y`,
+          savedTargets: [designated.CHAT],
+        });
+        await delivery(oneTail, { targetChatId: designated.CHAT });
+      },
+    );
+    phase(2, 'proves test refusal and bounded numeric work before churn', async () => {
+      checkChurnPhase();
+      await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+      await capture('baseline', 130);
+    });
+    phase(3, 'inserts exactly 50000 owned recipients in finite chunks', async () => {
+      for (let first = 1; first <= 50_000; first += 2_500) {
+        checkChurnPhase();
+        const inserted = await db.$executeRaw(Prisma.sql`
         INSERT INTO managed_broadcast_deliveries (
           id, broadcast_id, occurrence_index, target_chat_id, content_revision_id,
           dialog_bot_id, publisher_dialog_context, publication_policy_revision, status, updated_at
@@ -1764,32 +1896,50 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           'PENDING'::"ManagedBroadcastDeliveryStatus", ${decisionAt}
         FROM generate_series(${first}::integer, ${first + 2_499}::integer) n
       `);
-      expect(inserted).toBe(2_500);
-    }
-    await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
-    await capture('retained-50000', 50_130);
-    let removed = 0;
-    for (let page = 0; page < 100; page += 1) {
-      const rows = await db.managedBroadcastDelivery.findMany({
-        where: { broadcastId: churn.broadcastId },
-        select: { id: true },
-        orderBy: [{ broadcastId: 'asc' }, { occurrenceIndex: 'asc' }, { targetChatId: 'asc' }],
-        take: 500,
-      });
-      expect(rows).toHaveLength(500);
-      const result = await db.managedBroadcastDelivery.deleteMany({
-        where: { broadcastId: churn.broadcastId, id: { in: rows.map((row) => row.id) } },
-      });
-      expect(result.count).toBe(500);
-      removed += result.count;
-    }
-    expect(removed).toBe(50_000);
-    expect(
-      await db.managedBroadcastDelivery.count({ where: { broadcastId: churn.broadcastId } }),
-    ).toBe(0);
-    await capture('deleted-stale-statistics', 130);
-    await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
-    await capture('deleted-analyzed', 130);
+        expect(inserted).toBe(2_500);
+      }
+      checkChurnPhase();
+      await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+    });
+    phase(4, 'proves test refusal and bounded numeric work with retained churn', async () => {
+      await capture('retained-50000', 50_130);
+    });
+    phase(
+      5,
+      'deletes exactly the owned churn in bounded pages without vacuuming history',
+      async () => {
+        let removed = 0;
+        for (let page = 0; page < 100; page += 1) {
+          checkChurnPhase();
+          const rows = await db.managedBroadcastDelivery.findMany({
+            where: { broadcastId: churn.broadcastId },
+            select: { id: true },
+            orderBy: [{ broadcastId: 'asc' }, { occurrenceIndex: 'asc' }, { targetChatId: 'asc' }],
+            take: 500,
+          });
+          expect(rows).toHaveLength(500);
+          checkChurnPhase();
+          const result = await db.managedBroadcastDelivery.deleteMany({
+            where: { broadcastId: churn.broadcastId, id: { in: rows.map((row) => row.id) } },
+          });
+          expect(result.count).toBe(500);
+          removed += result.count;
+        }
+        expect(removed).toBe(50_000);
+        checkChurnPhase();
+        expect(
+          await db.managedBroadcastDelivery.count({ where: { broadcastId: churn.broadcastId } }),
+        ).toBe(0);
+      },
+    );
+    phase(6, 'proves bounded work after deletion with stale statistics', async () => {
+      await capture('deleted-stale-statistics', 130);
+    });
+    phase(7, 'proves bounded work after analyzing the same deleted history', async () => {
+      checkChurnPhase();
+      await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+      await capture('deleted-analyzed', 130);
+    });
   });
 
   const readParentStatistics = (client: QueryReader = db) =>
