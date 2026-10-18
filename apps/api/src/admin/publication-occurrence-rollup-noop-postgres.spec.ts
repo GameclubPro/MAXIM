@@ -897,6 +897,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       // would miss its uncommitted native fixture and break the comparison oracle.
       await assertOriginal(item, mode, client);
     } else {
+      checkChurnPhase();
       await db.$transaction((tx) => assertOriginal(item, mode, tx), {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
         timeout: 15_000,
@@ -1610,18 +1611,95 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     },
   );
 
-  it.each([64, 10_000, 50_000])(
-    'keeps positive and negative scalar plans bounded with %i recipients plus retained index2 history',
-    async (size) => {
-      const item = await occurrence();
-      const linked = await envelope(item, { savedTargets: { foreignLargeSnapshot: true } });
-      await retainOwnedParentHistory(item);
-      // FLAG: Bound fixture writes under the existing 10 s statement timeout.
-      // Retain both complete occurrence indexes and every physical-plan budget.
+  async function drainPhase() {
+    const phase = activeChurnPhase;
+    if (!phase) return;
+    phase.stopped = true;
+    await phase.done.catch(() => undefined);
+    if (activeChurnPhase === phase) activeChurnPhase = undefined;
+  }
+
+  function ownedFixturePhases(recipients?: number) {
+    let completedPhase = 0;
+    let phaseFailed = false;
+    return (index: number, name: string, run: () => Promise<void>) => {
+      it(name, async () => {
+        expect(phaseFailed).toBe(false);
+        expect(completedPhase).toBe(index - 1);
+        expect(activeChurnPhase).toBeUndefined();
+        // FLAG: Preserve the 30 s test and 10 s statement limits. The soft stop
+        // prevents the next SQL; afterEach drains the actual promise before cleanup.
+        const state = { stopped: false, deadline: Date.now() + 18_000, done: Promise.resolve() };
+        const startedAt = performance.now();
+        activeChurnPhase = state;
+        state.done = Promise.resolve()
+          .then(run)
+          .then(() => {
+            checkChurnPhase();
+            completedPhase = index;
+          })
+          .catch((error: unknown) => {
+            phaseFailed = true;
+            throw error;
+          })
+          .finally(() => {
+            if (recipients !== undefined)
+              console.info('Publication rollup scalar fixture phase', {
+                recipients,
+                phase: name,
+                completed: completedPhase === index,
+                elapsedMs: Math.round(performance.now() - startedAt),
+              });
+          });
+        await state.done;
+      });
+    };
+  }
+
+  describe.each([64, 10_000, 50_000])(
+    'positive and negative scalar plans with %i recipients plus retained index2 history',
+    (size) => {
+      let item: Occurrence;
+      let linked: Envelope;
+      const phase = ownedFixturePhases(size);
+      beforeAll(() => {
+        sharedChurnFixture = true;
+        publicationIds = [];
+        ownedChatIds = [];
+      });
+      afterEach(drainPhase, 15_000);
+      afterAll(async () => {
+        // FLAG: Jest timeout does not cancel SQL. Drain its owner before deleting
+        // any fixture rows; the next phase cannot run after a failed or stopped phase.
+        await drainPhase();
+        try {
+          await cleanupOwnedFixture(publicationIds, ownedChatIds);
+        } finally {
+          sharedChurnFixture = false;
+        }
+      }, 60_000);
+
+      phase(1, 'creates the owned fixture and complete retained parent history', async () => {
+        await initializeOwnedFixture();
+        item = await occurrence();
+        linked = await envelope(item, { savedTargets: { foreignLargeSnapshot: true } });
+        await retainOwnedParentHistory(item);
+      });
+      // FLAG: Each phase owns at most 10000 recipients, using the same 2500-recipient
+      // SQL batches. Both complete indexes, native triggers and plan budgets remain.
+      const recipientsPerPhase = 10_000;
       const setupBatchSize = 2_500;
-      for (let first = 1; first <= size; first += setupBatchSize) {
-        const last = Math.min(size, first + setupBatchSize - 1);
-        const inserted = await db.$executeRaw(Prisma.sql`
+      let nextPhase = 2;
+      for (let rangeFirst = 1; rangeFirst <= size; rangeFirst += recipientsPerPhase) {
+        const rangeLast = Math.min(size, rangeFirst + recipientsPerPhase - 1);
+        phase(
+          nextPhase++,
+          `retains both indexes for recipients ${rangeFirst}–${rangeLast}`,
+          async () => {
+            for (let first = rangeFirst; first <= rangeLast; first += setupBatchSize) {
+              const last = Math.min(rangeLast, first + setupBatchSize - 1);
+              checkChurnPhase();
+              const inserted = await db.$executeRaw(Prisma.sql`
         INSERT INTO managed_broadcast_deliveries (
           id, broadcast_id, occurrence_index, target_chat_id,
           content_revision_id, dialog_bot_id, publisher_dialog_context,
@@ -1644,34 +1722,52 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
         FROM generate_series(${first}::integer, ${last}::integer) n
         CROSS JOIN generate_series(1, 2) occurrence_index
       `);
-        expect(inserted).toBe((last - first + 1) * 2);
+              expect(inserted).toBe((last - first + 1) * 2);
+            }
+          },
+        );
       }
-      expect(
-        await db.managedBroadcastDelivery.groupBy({
-          by: ['occurrenceIndex', 'status'],
-          where: { broadcastId: linked.broadcastId },
-          orderBy: { occurrenceIndex: 'asc' },
-          _count: true,
-        }),
-      ).toEqual([
-        { occurrenceIndex: 1, status: 'SENT', _count: size },
-        { occurrenceIndex: 2, status: 'SENDING', _count: size },
-      ]);
-      // Numeric mode must not inspect saved audience JSON; both seeks are exact index1/status.
-      expect(await unchanged(item)).toBe(false);
-      expectBoundedPlan(await explain(item), '100', true);
-      await delivery(linked, { status: 'SENDING', targetChatId: 'synthetic-rollup-late-witness' });
-      await expectEquivalentNoWrite(item);
-      expectBoundedPlan(await explain(item), '100', true);
-      // Unsupported test mode must not execute an enrollment probe even for a large ledger.
-      await db.managedBroadcast.update({
-        where: { id: linked.broadcastId },
-        data: { targetChatIds: [designated.CHAT] },
+      phase(nextPhase++, 'proves full cardinality and bounded negative scalar work', async () => {
+        checkChurnPhase();
+        expect(
+          await db.managedBroadcastDelivery.groupBy({
+            by: ['occurrenceIndex', 'status'],
+            where: { broadcastId: linked.broadcastId },
+            orderBy: { occurrenceIndex: 'asc' },
+            _count: true,
+          }),
+        ).toEqual([
+          { occurrenceIndex: 1, status: 'SENT', _count: size },
+          { occurrenceIndex: 2, status: 'SENDING', _count: size },
+        ]);
+        // Numeric mode must not inspect saved audience JSON; both seeks are exact index1/status.
+        expect(await unchanged(item)).toBe(false);
+        expectBoundedPlan(await explain(item), '100', true);
       });
-      await expectTestRefusalNoWrite(item);
-      const second = await envelope(item, { entityType: 'CHANNEL' });
-      await delivery(second, { status: 'SENDING' });
-      expectBoundedPlan(await explain(item), '100', true);
+      phase(
+        nextPhase++,
+        'compares the full original oracle and bounded positive scalar work',
+        async () => {
+          await delivery(linked, {
+            status: 'SENDING',
+            targetChatId: 'synthetic-rollup-late-witness',
+          });
+          await expectEquivalentNoWrite(item);
+          expectBoundedPlan(await explain(item), '100', true);
+        },
+      );
+      phase(nextPhase, 'retains test refusal and a second channel envelope', async () => {
+        // Unsupported test mode must not execute an enrollment probe even for a large ledger.
+        checkChurnPhase();
+        await db.managedBroadcast.update({
+          where: { id: linked.broadcastId },
+          data: { targetChatIds: [designated.CHAT] },
+        });
+        await expectTestRefusalNoWrite(item);
+        const second = await envelope(item, { entityType: 'CHANNEL' });
+        await delivery(second, { status: 'SENDING' });
+        expectBoundedPlan(await explain(item), '100', true);
+      });
     },
   );
 
@@ -1680,22 +1776,13 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     let churn: Envelope;
     let emptyTail: Envelope;
     let oneTail: Envelope;
-    let completedPhase = 0;
-    let phaseFailed = false;
+    const phase = ownedFixturePhases();
 
     beforeAll(() => {
       sharedChurnFixture = true;
       publicationIds = [];
       ownedChatIds = [];
     });
-
-    async function drainPhase() {
-      const phase = activeChurnPhase;
-      if (!phase) return;
-      phase.stopped = true;
-      await phase.done.catch(() => undefined);
-      activeChurnPhase = undefined;
-    }
 
     afterEach(drainPhase, 15_000);
     afterAll(async () => {
@@ -1735,28 +1822,6 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       expect(nextSql).not.toHaveBeenCalled();
       expect(activeChurnPhase).toBeUndefined();
     });
-
-    function phase(index: number, name: string, run: () => Promise<void>) {
-      it(name, async () => {
-        expect(phaseFailed).toBe(false);
-        expect(completedPhase).toBe(index - 1);
-        // FLAG: Preserve the 30 s test and 10 s statement limits. The soft stop
-        // prevents the next SQL; afterEach also drains a timed-out current statement.
-        const state = { stopped: false, deadline: Date.now() + 18_000, done: Promise.resolve() };
-        activeChurnPhase = state;
-        state.done = Promise.resolve()
-          .then(run)
-          .then(() => {
-            checkChurnPhase();
-            completedPhase = index;
-          })
-          .catch((error: unknown) => {
-            phaseFailed = true;
-            throw error;
-          });
-        await state.done;
-      });
-    }
 
     async function capture(phase: string, expectedCount: number): Promise<void> {
       checkChurnPhase();
