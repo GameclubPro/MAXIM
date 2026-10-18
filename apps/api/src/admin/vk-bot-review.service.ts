@@ -1100,11 +1100,12 @@ export class VkBotReviewService {
   }
 
   private async answer(data: VkBotReviewJob, text: string): Promise<void> {
-    if (!data.callbackId) return;
+    if (!data.callbackId || !data.privateChatId) return;
     try {
       await this.max.answerCallback(data.callbackId, text, undefined, {
         botId: data.requiredBotId,
         sourceTag: MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
+        rateLimitEntityId: data.privateChatId,
       });
     } catch {
       /* Persisted decisions remain authoritative. */

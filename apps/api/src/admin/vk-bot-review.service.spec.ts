@@ -2,7 +2,11 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
-import type { MaxSendMessageOptions } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  type MaxClientService,
+  type MaxSendMessageOptions,
+} from '../max/max-client.service';
 import { WebhookParser } from '../webhook/webhook.parser';
 import {
   PublisherVkBotReviewQueueService,
@@ -130,7 +134,12 @@ function fixture() {
         },
       ),
     editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
-    answerCallback: jest.fn().mockResolvedValue(undefined),
+    answerCallback: jest
+      .fn<
+        ReturnType<MaxClientService['answerCallback']>,
+        Parameters<MaxClientService['answerCallback']>
+      >()
+      .mockResolvedValue(undefined),
   };
   const config = { get: jest.fn().mockReturnValue(true) };
   const queue = { enqueueTick: jest.fn().mockResolvedValue(undefined) };
@@ -170,7 +179,8 @@ function fixture() {
     advance(row: unknown): Promise<void>;
     decide(data: unknown): Promise<void>;
   };
-  const callback = {
+  const callback: VkBotReviewJob = {
+    version: 1,
     kind: 'vk-bot-review',
     requiredBotId: 'publik_bot',
     action: 'publish',
@@ -180,6 +190,7 @@ function fixture() {
     callbackId: 'cb',
     id: 'review-1',
     revision: 1,
+    requestedAt: new Date().toISOString(),
   };
   return {
     registry,
@@ -323,9 +334,93 @@ describe('VkBotReviewService', () => {
       expect(publish.publishBotReviewedPost).toHaveBeenCalledTimes(1);
       expect(publish.publishBotReviewedPost).toHaveBeenCalledWith('review-1');
       expect(review.status).toBe('APPROVED');
+      expect(max.answerCallback).toHaveBeenCalledTimes(2);
+      for (const call of max.answerCallback.mock.calls) {
+        expect(call).toEqual([
+          'vk-callback',
+          'Готово.',
+          undefined,
+          {
+            botId: 'publik_bot',
+            sourceTag: MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
+            rateLimitEntityId: '42',
+          },
+        ]);
+      }
     } finally {
       environment.restore();
     }
+  });
+
+  describe('callback admission in api-publisher', () => {
+    let restoreEnvironment: () => void;
+    beforeEach(() => {
+      const environment = jest.replaceProperty(process, 'env', {
+        ...process.env,
+        APP_ROLE: 'publisher',
+        APP_SERVICE_NAME: 'api-publisher',
+      });
+      restoreEnvironment = () => environment.restore();
+    });
+    afterEach(() => restoreEnvironment());
+
+    it.each([
+      { revision: 2, notification: 'Эта кнопка устарела.' },
+      { privateChatId: '99', notification: 'Личный диалог не подтверждён.' },
+    ])(
+      'scopes a refused decision to its actual private chat: %j',
+      async ({ notification, ...patch }) => {
+        const { service, callback, max, prisma, publish, queue } = fixture();
+        const data = { ...callback, ...patch };
+        await service.process({ data } as never);
+        expect(max.answerCallback).toHaveBeenCalledTimes(1);
+        expect(max.answerCallback).toHaveBeenCalledWith(data.callbackId, notification, undefined, {
+          botId: 'publik_bot',
+          sourceTag: MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
+          rateLimitEntityId: data.privateChatId,
+        });
+        expect(prisma.vkBotReview.updateMany).not.toHaveBeenCalled();
+        expect(publish.publishBotReviewedPost).not.toHaveBeenCalled();
+        expect(queue.enqueueTick).toHaveBeenCalledWith(5000);
+      },
+    );
+
+    it('keeps a saved approval authoritative when MAX rejects its acknowledgement', async () => {
+      const { service, callback, max, prisma, row, publish, queue } = fixture();
+      prisma.vkBotReview.updateMany.mockImplementation(async ({ data }) => {
+        Object.assign(row, data);
+        return { count: 1 };
+      });
+      max.answerCallback.mockRejectedValue(new Error('MAX answer unavailable'));
+      await expect(service.process({ data: callback } as never)).resolves.toBeUndefined();
+      await expect(service.process({ data: callback } as never)).resolves.toBeUndefined();
+      expect(row.status).toBe('APPROVED');
+      expect(publish.publishBotReviewedPost).toHaveBeenCalledTimes(1);
+      expect(max.answerCallback).toHaveBeenCalledTimes(2);
+      expect(max.answerCallback).toHaveBeenLastCalledWith('cb', 'Готово.', undefined, {
+        botId: 'publik_bot',
+        sourceTag: MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
+        rateLimitEntityId: '42',
+      });
+      expect(queue.enqueueTick).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not guess a scope or start business work when the job has no private chat', async () => {
+      const { service, callback, max, prisma, publish, queue } = fixture();
+      await service.process({ data: { ...callback, privateChatId: undefined } } as never);
+      expect(prisma.vkBotReviewInbox.findUnique).not.toHaveBeenCalled();
+      expect(prisma.vkBotReview.findFirst).not.toHaveBeenCalled();
+      expect(max.answerCallback).not.toHaveBeenCalled();
+      expect(publish.publishBotReviewedPost).not.toHaveBeenCalled();
+      expect(queue.enqueueTick).not.toHaveBeenCalled();
+    });
+
+    it('does not send an acknowledgement when the accepted job has no callback', async () => {
+      const { service, callback, max, row } = fixture();
+      row.status = 'APPROVED';
+      await service.process({ data: { ...callback, callbackId: undefined } } as never);
+      expect(max.answerCallback).not.toHaveBeenCalled();
+    });
   });
 
   it('finishes an existing preview/control pair ahead of new previews', async () => {
