@@ -646,6 +646,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     client: Prisma.TransactionClient = db,
     count: 1_000 | 10_000 = 10_000,
     firstSlot = 1,
+    analyzeParents = true,
   ): Promise<void> {
     // FLAG: Add only this test's retained parent metadata. Delivery cardinality,
     // physical-plan budgets, native constraints and owned cleanup remain unchanged.
@@ -694,7 +695,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
         FROM generate_series(${first}::integer, ${first + 999}::integer) n
       `);
     }
-    if (client === db) {
+    if (client === db && analyzeParents) {
       // FLAG: These positive-plan fixtures explicitly opt into analyzed parents.
       // The caller-owned transaction below separately proves zero/positive stale stats.
       checkChurnPhase();
@@ -1643,13 +1644,12 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
             throw error;
           })
           .finally(() => {
-            if (recipients !== undefined)
-              console.info('Publication rollup scalar fixture phase', {
-                recipients,
-                phase: name,
-                completed: completedPhase === index,
-                elapsedMs: Math.round(performance.now() - startedAt),
-              });
+            console.info('Publication rollup owned fixture phase', {
+              recipients,
+              phase: name,
+              completed: completedPhase === index,
+              elapsedMs: Math.round(performance.now() - startedAt),
+            });
           });
         await state.done;
       });
@@ -1662,6 +1662,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       let item: Occurrence;
       let linked: Envelope;
       const phase = ownedFixturePhases(size);
+      const parentPrefix = `synthetic-retained-${randomUUID()}-`;
       beforeAll(() => {
         sharedChurnFixture = true;
         publicationIds = [];
@@ -1679,17 +1680,23 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
         }
       }, 60_000);
 
-      phase(1, 'creates the owned fixture and complete retained parent history', async () => {
+      phase(1, 'creates the owned scalar fixture', async () => {
         await initializeOwnedFixture();
         item = await occurrence();
         linked = await envelope(item, { savedTargets: { foreignLargeSnapshot: true } });
-        await retainOwnedParentHistory(item);
       });
+      let nextPhase = 2;
+      // FLAG: Retain all 10000 parents and analyze once after the final chunk.
+      // Each owner keeps the original SQL, soft-stop, drain and Jest budgets.
+      for (let first = 1; first <= 10_000; first += 1_000) {
+        phase(nextPhase++, `retains parent slots ${first}–${first + 999}`, async () => {
+          await retainOwnedParentHistory(item, parentPrefix, db, 1_000, first, first === 9_001);
+        });
+      }
       // FLAG: Each phase owns at most 10000 recipients, using the same 2500-recipient
       // SQL batches. Both complete indexes, native triggers and plan budgets remain.
       const recipientsPerPhase = 10_000;
       const setupBatchSize = 2_500;
-      let nextPhase = 2;
       for (let rangeFirst = 1; rangeFirst <= size; rangeFirst += recipientsPerPhase) {
         const rangeLast = Math.min(size, rangeFirst + recipientsPerPhase - 1);
         phase(
@@ -1776,6 +1783,9 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     let churn: Envelope;
     let emptyTail: Envelope;
     let oneTail: Envelope;
+    let linked: Envelope;
+    const prefix = `synthetic-recipient-churn-${randomUUID()}-`;
+    const parentPrefix = `synthetic-retained-${randomUUID()}-`;
     const phase = ownedFixturePhases();
 
     beforeAll(() => {
@@ -1910,47 +1920,53 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       );
     }
 
-    phase(
-      1,
-      'constructs one retained native fixture without replacing its physical history',
-      async () => {
-        await initializeOwnedFixture();
-        item = await occurrence();
-        const prefix = `synthetic-recipient-churn-${randomUUID()}-`;
-        const linked = await envelope(item, { id: `${prefix}b`, savedTargets: [designated.CHAT] });
-        await retainOwnedParentHistory(item);
-        for (let index = 1; index <= 64; index += 1) {
-          checkChurnPhase();
-          await delivery(linked, { targetChatId: `synthetic-churn-${index}`, status: 'SENT' });
-          await delivery(linked, {
-            occurrenceIndex: 2,
-            targetChatId: `synthetic-churn-${index}`,
-            status: 'SENDING',
-          });
-        }
-        const foreign = await envelope(await occurrence(), { id: `${prefix}c` });
-        await delivery(foreign, { status: 'SENT' });
-        churn = await envelope(await occurrence(), { id: `${prefix}a` });
-        emptyTail = await envelope(await occurrence(), {
-          id: `${prefix}z`,
-          savedTargets: [designated.CHAT],
+    phase(1, 'creates one owned churn fixture without replacing its physical history', async () => {
+      await initializeOwnedFixture();
+      item = await occurrence();
+      linked = await envelope(item, { id: `${prefix}b`, savedTargets: [designated.CHAT] });
+    });
+    let nextPhase = 2;
+    for (let first = 1; first <= 10_000; first += 1_000) {
+      phase(nextPhase++, `retains churn parent slots ${first}–${first + 999}`, async () => {
+        await retainOwnedParentHistory(item, parentPrefix, db, 1_000, first, first === 9_001);
+      });
+    }
+    phase(nextPhase++, 'retains both complete 64-recipient histories', async () => {
+      for (let index = 1; index <= 64; index += 1) {
+        checkChurnPhase();
+        await delivery(linked, { targetChatId: `synthetic-churn-${index}`, status: 'SENT' });
+        await delivery(linked, {
+          occurrenceIndex: 2,
+          targetChatId: `synthetic-churn-${index}`,
+          status: 'SENDING',
         });
-        oneTail = await envelope(await occurrence(), {
-          id: `${prefix}y`,
-          savedTargets: [designated.CHAT],
-        });
-        await delivery(oneTail, { targetChatId: designated.CHAT });
-      },
-    );
-    phase(2, 'proves test refusal and bounded numeric work before churn', async () => {
+      }
+    });
+    phase(nextPhase++, 'retains foreign, empty and one-recipient tails', async () => {
+      const foreign = await envelope(await occurrence(), { id: `${prefix}c` });
+      await delivery(foreign, { status: 'SENT' });
+      churn = await envelope(await occurrence(), { id: `${prefix}a` });
+      emptyTail = await envelope(await occurrence(), {
+        id: `${prefix}z`,
+        savedTargets: [designated.CHAT],
+      });
+      oneTail = await envelope(await occurrence(), {
+        id: `${prefix}y`,
+        savedTargets: [designated.CHAT],
+      });
+      await delivery(oneTail, { targetChatId: designated.CHAT });
+    });
+    phase(nextPhase++, 'proves test refusal and bounded numeric work before churn', async () => {
       checkChurnPhase();
       await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
       await capture('baseline', 130);
     });
-    phase(3, 'inserts exactly 50000 owned recipients in finite chunks', async () => {
-      for (let first = 1; first <= 50_000; first += 2_500) {
-        checkChurnPhase();
-        const inserted = await db.$executeRaw(Prisma.sql`
+    for (let rangeFirst = 1; rangeFirst <= 50_000; rangeFirst += 10_000) {
+      const rangeLast = rangeFirst + 9_999;
+      phase(nextPhase++, `inserts churn recipients ${rangeFirst}–${rangeLast}`, async () => {
+        for (let first = rangeFirst; first <= rangeLast; first += 2_500) {
+          checkChurnPhase();
+          const inserted = await db.$executeRaw(Prisma.sql`
         INSERT INTO managed_broadcast_deliveries (
           id, broadcast_id, occurrence_index, target_chat_id, content_revision_id,
           dialog_bot_id, publisher_dialog_context, publication_policy_revision, status, updated_at
@@ -1961,20 +1977,26 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           'PENDING'::"ManagedBroadcastDeliveryStatus", ${decisionAt}
         FROM generate_series(${first}::integer, ${first + 2_499}::integer) n
       `);
-        expect(inserted).toBe(2_500);
-      }
+          expect(inserted).toBe(2_500);
+        }
+      });
+    }
+    phase(nextPhase++, 'analyzes all 50000 retained churn recipients', async () => {
       checkChurnPhase();
       await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
     });
-    phase(4, 'proves test refusal and bounded numeric work with retained churn', async () => {
-      await capture('retained-50000', 50_130);
-    });
     phase(
-      5,
-      'deletes exactly the owned churn in bounded pages without vacuuming history',
+      nextPhase++,
+      'proves test refusal and bounded numeric work with retained churn',
       async () => {
+        await capture('retained-50000', 50_130);
+      },
+    );
+    for (let rangeFirst = 1; rangeFirst <= 50_000; rangeFirst += 10_000) {
+      const rangeLast = rangeFirst + 9_999;
+      phase(nextPhase++, `deletes owned churn recipients ${rangeFirst}–${rangeLast}`, async () => {
         let removed = 0;
-        for (let page = 0; page < 100; page += 1) {
+        for (let page = 0; page < 20; page += 1) {
           checkChurnPhase();
           const rows = await db.managedBroadcastDelivery.findMany({
             where: { broadcastId: churn.broadcastId },
@@ -1990,17 +2012,23 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           expect(result.count).toBe(500);
           removed += result.count;
         }
-        expect(removed).toBe(50_000);
+        expect(removed).toBe(10_000);
+      });
+    }
+    phase(
+      nextPhase++,
+      'proves all 50000 owned churn recipients were removed without vacuum',
+      async () => {
         checkChurnPhase();
         expect(
           await db.managedBroadcastDelivery.count({ where: { broadcastId: churn.broadcastId } }),
         ).toBe(0);
       },
     );
-    phase(6, 'proves bounded work after deletion with stale statistics', async () => {
+    phase(nextPhase++, 'proves bounded work after deletion with stale statistics', async () => {
       await capture('deleted-stale-statistics', 130);
     });
-    phase(7, 'proves bounded work after analyzing the same deleted history', async () => {
+    phase(nextPhase, 'proves bounded work after analyzing the same deleted history', async () => {
       checkChurnPhase();
       await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
       await capture('deleted-analyzed', 130);
