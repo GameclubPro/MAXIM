@@ -295,7 +295,10 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   const channelIds = new Set<string>();
   const deniedBots = new Set<string>();
   const rateLimitedDeleteBots = new Set<string>();
-  const ownMemberProbeOverrides = new Map<string, 'unavailable' | 'permissions_unknown'>();
+  const ownMemberProbeOverrides = new Map<
+    string,
+    'unavailable' | 'permissions_unknown' | 'not_found'
+  >();
   const botPermissions = new Map(
     bots.map((bot) => [bot.id, ['read_all_messages', 'write', 'add_remove_members']]),
   );
@@ -364,6 +367,10 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             if (override === 'unavailable')
               throw Object.assign(new Error('Simulated own-member lookup unavailable'), {
                 response: { status: 503, data: { code: 'fixture.lookup.unavailable' } },
+              });
+            if (override === 'not_found')
+              throw Object.assign(new Error('Simulated own-member lookup not found'), {
+                response: { status: 404, data: { code: 'fixture.lookup.not_found' } },
               });
             data =
               override === 'permissions_unknown'
@@ -1214,7 +1221,10 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       if (enabled) rateLimitedDeleteBots.add(botId);
       else rateLimitedDeleteBots.delete(botId);
     },
-    setOwnMemberProbe: (botId: string, result: 'unavailable' | 'permissions_unknown' | null) => {
+    setOwnMemberProbe: (
+      botId: string,
+      result: 'unavailable' | 'permissions_unknown' | 'not_found' | null,
+    ) => {
       if (result === null) ownMemberProbeOverrides.delete(botId);
       else ownMemberProbeOverrides.set(botId, result);
     },

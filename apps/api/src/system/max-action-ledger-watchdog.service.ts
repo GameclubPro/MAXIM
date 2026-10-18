@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import type { MaxActionLedgerWatchdogSnapshot } from '@maxim/contracts/system';
 import type { Job, JobState, Queue } from 'bullmq';
 import { createHash } from 'node:crypto';
-import { MaxActionLedgerStatus } from '../prisma/prisma-client';
+import { MaxActionLedgerStatus, type Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsAction, roleRunsAdmin } from '../runtime/app-role';
 import { RedisCounterService } from '../moderation/redis-counter.service';
@@ -22,6 +22,7 @@ import type {
   MaxActionRoutingMetadata,
 } from '../max/max-client.service';
 import { hasMaxInsufficientRightsMessage } from '../max/max-member-error.util';
+import { MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE } from '../max/max-action-pre-dispatch-guard';
 
 const WATCHDOG_LOCK_KEY = 'system:max-action-ledger:watchdog:lock:v1';
 const WATCHDOG_STATUS_KEY = 'system:max-action-ledger:watchdog:status:v1';
@@ -65,32 +66,38 @@ type ActionJobObservation = {
   state: JobState | 'unknown';
 };
 
-type LedgerCandidate = {
-  id: string;
-  jobId: string;
-  chatId: string;
-  actionType: string;
-  status: MaxActionLedgerStatus;
-  attemptCount: number;
-  firstAttemptAt: Date | null;
-  lastAttemptAt: Date | null;
-  dispatchToken: string | null;
-  dispatchStartedAt: Date | null;
-  dispatchBotId: string | null;
-  remoteMessageId: string | null;
-  botId: string | null;
-  messageId: string | null;
-  userId: string | null;
-  sourceTag: string | null;
-  trafficClass: string | null;
-  actionHealthLane: string | null;
-  lastStatusCode: number | null;
-  lastErrorCode: string | null;
-  lastError: string | null;
-  metadata: unknown;
-  createdAt: Date;
-  updatedAt: Date;
-};
+const LEDGER_CANDIDATE_SELECT = {
+  id: true,
+  jobId: true,
+  chatId: true,
+  actionType: true,
+  status: true,
+  ambiguous: true,
+  terminal: true,
+  attemptCount: true,
+  firstAttemptAt: true,
+  lastAttemptAt: true,
+  dispatchToken: true,
+  dispatchStartedAt: true,
+  dispatchBotId: true,
+  remoteMessageId: true,
+  botId: true,
+  messageId: true,
+  userId: true,
+  sourceTag: true,
+  trafficClass: true,
+  actionHealthLane: true,
+  lastStatusCode: true,
+  lastErrorCode: true,
+  lastError: true,
+  metadata: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.MaxActionLedgerEntrySelect;
+
+type LedgerCandidate = Prisma.MaxActionLedgerEntryGetPayload<{
+  select: typeof LEDGER_CANDIDATE_SELECT;
+}>;
 
 type WatchdogScanCursor = Pick<LedgerCandidate, 'id' | 'updatedAt'>;
 
@@ -352,32 +359,7 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
         },
         orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
         take,
-        select: {
-          id: true,
-          jobId: true,
-          chatId: true,
-          actionType: true,
-          status: true,
-          attemptCount: true,
-          firstAttemptAt: true,
-          lastAttemptAt: true,
-          dispatchToken: true,
-          dispatchStartedAt: true,
-          dispatchBotId: true,
-          remoteMessageId: true,
-          botId: true,
-          messageId: true,
-          userId: true,
-          sourceTag: true,
-          trafficClass: true,
-          actionHealthLane: true,
-          lastStatusCode: true,
-          lastErrorCode: true,
-          lastError: true,
-          metadata: true,
-          createdAt: true,
-          updatedAt: true,
-        },
+        select: LEDGER_CANDIDATE_SELECT,
       });
       if (rows.length === 0) {
         reachedEnd = true;
@@ -458,6 +440,11 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
         error: null,
         outcome: 'succeeded',
       });
+      return;
+    }
+
+    if (this.shouldDeferFinalMemberGuardFailure(row, observations)) {
+      summary.lastDeferredCount += 1;
       return;
     }
 
@@ -580,6 +567,44 @@ export class MaxActionLedgerWatchdogService implements OnModuleInit, OnModuleDes
       outcome: 'terminal_failed',
       retryOrphanTerminalized: row.status === MaxActionLedgerStatus.FAILED_RETRYABLE,
     });
+  }
+
+  // FLAG: The stable guard code retains the writer's no-dispatch classification, not its cause
+  // or current authority. Preserve it without ledger mutation, retry or inferred completion.
+  private shouldDeferFinalMemberGuardFailure(
+    row: LedgerCandidate,
+    observations: readonly ActionJobObservation[],
+  ): boolean {
+    if (
+      (row.actionType !== 'BAN_MEMBER' && row.actionType !== 'KICK_MEMBER') ||
+      row.status !== MaxActionLedgerStatus.FAILED_RETRYABLE ||
+      row.ambiguous !== false ||
+      row.terminal !== false ||
+      row.lastErrorCode !== MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE ||
+      !row.botId?.trim() ||
+      !row.userId?.trim() ||
+      !row.chatId.trim() ||
+      !row.jobId.trim() ||
+      row.dispatchToken !== null ||
+      row.dispatchStartedAt !== null ||
+      row.dispatchBotId !== null ||
+      row.remoteMessageId !== null
+    ) {
+      return false;
+    }
+    if (observations.length === 0) return true;
+    if (observations.length !== 1) return false;
+    const { job, state } = observations[0]!;
+    const data = this.asRecord(job.data);
+    return (
+      state === 'failed' &&
+      job.id === row.jobId &&
+      data?.actionType === row.actionType &&
+      data.chatId === row.chatId &&
+      data.userId === row.userId &&
+      data.botId === row.botId &&
+      data.idempotencyKey === row.jobId
+    );
   }
 
   // FLAG: Recovery is restricted to local pre-dispatch failures that prove MAX was not called.

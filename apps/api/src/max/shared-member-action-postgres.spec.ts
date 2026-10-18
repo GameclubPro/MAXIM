@@ -1,7 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
+import { Job, Queue, QueueEvents, Worker } from 'bullmq';
 import { MaxActionLedgerService } from './max-action-ledger.service';
-import type { MaxActionJob } from './max-client.service';
+import { MaxApiInternalRateLimitError, type MaxActionJob } from './max-client.service';
+import { normalizeMaxApiRateLimitServiceScope } from './max-api-metrics-key.util';
+import {
+  MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  wasMaxPreDispatchGuardRejected,
+} from './max-action-pre-dispatch-guard';
+import { wasMaxMemberMutationAttempted } from './max-member-error.util';
 import { Prisma } from '../prisma/prisma-client';
+import { PrismaService } from '../prisma/prisma.service';
+import { RedisCounterService } from '../moderation/redis-counter.service';
+import { MaxActionLedgerWatchdogService } from '../system/max-action-ledger-watchdog.service';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -12,11 +23,28 @@ const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const stores = databaseUrl && redisUrl ? describe : describe.skip;
 jest.setTimeout(60_000);
 
+function fixtureAdmissionFailureKeys(botId: string): string[] {
+  return [
+    `maxapi:gcra:v1:bot:${botId}:all:cooldown`,
+    `maxapi:circuit:v1:${botId}:failures`,
+    `maxapi:circuit:v1:${botId}:open-until`,
+    `maxapi:circuit:v1:${botId}:half-open-probe`,
+  ];
+}
+
 stores('shared production member identity on PostgreSQL/Redis/BullMQ', () => {
   let h: MultibotHarness | undefined;
   afterEach(async () => {
-    await h?.dispose();
+    const owned = h;
     h = undefined;
+    try {
+      // FLAG: These serial local fixtures reuse exact bot ids. Retain no failure history
+      // from their simulated attempted timeouts in the next fixture's admission state.
+      if (owned)
+        await owned.redis.del(...owned.bots.flatMap((bot) => fixtureAdmissionFailureKeys(bot.id)));
+    } finally {
+      await owned?.dispose();
+    }
   });
   async function fixture(bots = 4) {
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' });
@@ -268,6 +296,456 @@ stores('shared production member identity on PostgreSQL/Redis/BullMQ', () => {
         for (const child of (node.Plans ?? []) as Record<string, unknown>[]) walk(child);
       };
       walk(plans[0]!['QUERY PLAN'][0]!.Plan);
+    },
+  );
+});
+
+stores('native final member guard ledger watchdog', () => {
+  const watchdogKeys = [
+    'system:max-action-ledger:watchdog:lock:v1',
+    'system:max-action-ledger:watchdog:status:v1',
+    'system:max-action-ledger:watchdog:cursor:v1',
+  ] as const;
+  let h: MultibotHarness | undefined;
+  let watchdog: MaxActionLedgerWatchdogService | undefined;
+  let watchdogPrisma: PrismaService | undefined;
+  let watchdogCounter: RedisCounterService | undefined;
+  let actionQueue: Queue<MaxActionJob> | undefined;
+  let actionEvents: QueueEvents | undefined;
+  let actionWorker: Worker<MaxActionJob> | undefined;
+  let ownsWatchdogKeys = false;
+  let seededRoleTatKey: string | undefined;
+
+  afterEach(async () => {
+    const errors: unknown[] = [];
+    const cleanup = async (operation: () => unknown) => {
+      try {
+        await operation();
+      } catch (error: unknown) {
+        errors.push(error);
+      }
+    };
+    await cleanup(() => watchdog?.onModuleDestroy());
+    await cleanup(() => actionWorker?.close());
+    await cleanup(() => actionEvents?.close());
+    const ownedQueue = actionQueue;
+    if (ownedQueue) {
+      await cleanup(() => ownedQueue.obliterate({ force: true }));
+      await cleanup(() => ownedQueue.close());
+    }
+    const ownedHarness = h;
+    if (ownedHarness && ownsWatchdogKeys) {
+      await cleanup(async () => {
+        // FLAG: A completed run must release its own lock; never erase a retained lock to pass.
+        expect(await ownedHarness.redis.get(watchdogKeys[0])).toBeNull();
+        await ownedHarness.redis.del(...watchdogKeys);
+      });
+    }
+    const ownedRoleTatKey = seededRoleTatKey;
+    if (ownedHarness && ownedRoleTatKey)
+      await cleanup(() => ownedHarness.redis.del(ownedRoleTatKey));
+    if (ownedHarness)
+      await cleanup(() =>
+        ownedHarness.redis.del(
+          ...ownedHarness.bots.flatMap((bot) => fixtureAdmissionFailureKeys(bot.id)),
+        ),
+      );
+    await cleanup(() => watchdogCounter?.onModuleDestroy());
+    await cleanup(() => watchdogPrisma?.onModuleDestroy());
+    await cleanup(() => ownedHarness?.dispose());
+    watchdog = undefined;
+    watchdogPrisma = undefined;
+    watchdogCounter = undefined;
+    actionQueue = undefined;
+    actionEvents = undefined;
+    actionWorker = undefined;
+    h = undefined;
+    ownsWatchdogKeys = false;
+    seededRoleTatKey = undefined;
+    jest.restoreAllMocks();
+    if (errors.length > 0)
+      throw new AggregateError(errors, 'Native member watchdog cleanup failed');
+  });
+
+  async function createNativeWatchdog() {
+    const previousPoolMax = process.env.PRISMA_PG_POOL_MAX;
+    try {
+      process.env.PRISMA_PG_POOL_MAX = '2';
+      watchdogPrisma = new PrismaService();
+    } finally {
+      if (previousPoolMax === undefined) delete process.env.PRISMA_PG_POOL_MAX;
+      else process.env.PRISMA_PG_POOL_MAX = previousPoolMax;
+    }
+    await watchdogPrisma.onModuleInit();
+    watchdogCounter = new RedisCounterService(new ConfigService({ REDIS_URL: redisUrl }));
+    const localRedis = new URL(redisUrl);
+    actionQueue = new Queue<MaxActionJob>(`member-watchdog-${randomUUID()}`, {
+      connection: {
+        host: localRedis.hostname.replace(/^\[|\]$/gu, ''),
+        port: Number(localRedis.port || 6379),
+        ...(localRedis.username ? { username: decodeURIComponent(localRedis.username) } : {}),
+        ...(localRedis.password ? { password: decodeURIComponent(localRedis.password) } : {}),
+        db: Number(localRedis.pathname.slice(1) || 0),
+      },
+    });
+    await actionQueue.waitUntilReady();
+    const previousRole = process.env.APP_ROLE;
+    try {
+      process.env.APP_ROLE = 'action';
+      watchdog = new MaxActionLedgerWatchdogService(
+        watchdogPrisma,
+        watchdogCounter,
+        actionQueue,
+        undefined,
+        undefined,
+        undefined,
+        new ConfigService({ MAX_ACTION_LEDGER_WATCHDOG_MODE: 'on' }),
+      );
+    } finally {
+      if (previousRole === undefined) delete process.env.APP_ROLE;
+      else process.env.APP_ROLE = previousRole;
+    }
+    return { queue: actionQueue, watchdog };
+  }
+
+  it.each(
+    (['BAN_MEMBER', 'KICK_MEMBER'] as const).flatMap((actionType) =>
+      (['role_class_quota', 'proof404'] as const).flatMap((guard) =>
+        (['missing', 'retained_failed'] as const).map((jobState) => ({
+          actionType,
+          guard,
+          jobState,
+        })),
+      ),
+    ),
+  )(
+    'defers genuine $actionType $guard evidence with $jobState BullMQ ownership without another mutation',
+    async ({ actionType, guard, jobState }) => {
+      expect(process.env.DATABASE_URL?.trim()).toBe(databaseUrl);
+      const s = await createMultibotHarness({ databaseUrl, redisUrl, bots: 1, mode: 'on' });
+      h = s;
+      expect(await s.redis.exists(...watchdogKeys)).toBe(0);
+      ownsWatchdogKeys = true;
+      const [seededChatId] = await s.seedCatalog(1);
+      const chatId = seededChatId!;
+      const bot = s.bots[0]!;
+      const userId = 'fixture-user';
+      const rawKey = `guard-watchdog-${randomUUID()}`;
+      const jobId = s.max.getExplicitActionJobId(actionType, rawKey);
+      const failureKeys = fixtureAdmissionFailureKeys(bot.id);
+      expect(await s.redis.mget(...failureKeys)).toEqual(failureKeys.map(() => null));
+      const proofRequest = { chatId, botId: bot.id, purpose: 'moderate_member' as const };
+      expect(await s.links.getFreshChatBotExecutionProof(proofRequest)).not.toBeNull();
+
+      if (guard === 'role_class_quota') {
+        const serviceScope = normalizeMaxApiRateLimitServiceScope(s.config.get('APP_SERVICE_NAME'));
+        expect(serviceScope).toBe('api-moderation');
+        const roleTatKey = `maxapi:gcra:v1:service:${serviceScope}:bot:${bot.id}:class:critical`;
+        const [seconds, microseconds] = await s.redis.time();
+        const redisNowMs = Number(seconds) * 1_000 + Math.floor(Number(microseconds) / 1_000);
+        await s.redis.set(roleTatKey, String(redisNowMs + 60_000), 'PX', 120_000);
+        seededRoleTatKey = roleTatKey;
+      } else {
+        const membership = await s.prisma.chatBotMembership.update({
+          where: { chatId_botId: { chatId, botId: bot.id } },
+          data: { botAccessCheckedAt: null, botAccessSource: null },
+        });
+        expect(membership).toMatchObject({ status: 'ACTIVE', botAccessState: 'CONFIRMED_ADMIN' });
+        expect(await s.links.getFreshChatBotExecutionProof(proofRequest)).toBeNull();
+        expect(
+          await s.links.isChatBotExecutionActivationRequired(chatId, bot.id, 'moderate_member'),
+        ).toBe(false);
+        s.setOwnMemberProbe(bot.id, 'not_found');
+      }
+
+      const recordFailed = jest.spyOn(s.ledger, 'recordFailed');
+      const options = {
+        botId: bot.id,
+        immediate: true,
+        idempotencyKey: rawKey,
+        trafficClass: 'critical' as const,
+        actionHealthLane: 'critical' as const,
+        timeoutMs: 1,
+      };
+      let failure: unknown;
+      try {
+        if (actionType === 'BAN_MEMBER') await s.max.banMember(chatId, userId, options);
+        else await s.max.kickMember(chatId, userId, options);
+      } catch (error: unknown) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(wasMaxPreDispatchGuardRejected(failure)).toBe(true);
+      expect(wasMaxMemberMutationAttempted(failure)).toBe(false);
+      if (guard === 'role_class_quota') {
+        expect(failure).toBeInstanceOf(MaxApiInternalRateLimitError);
+        if (!(failure instanceof MaxApiInternalRateLimitError))
+          throw new Error('Expected the real role-class limiter rejection');
+        expect(failure.limitScope).toBe('role_class');
+        expect(failure.retryAfterMs).toBeGreaterThan(0);
+      } else {
+        expect(failure).toMatchObject({
+          code: 'max_action_executor_proof_rejected',
+          response: { status: 404, data: { code: 'fixture.lookup.not_found' } },
+        });
+      }
+      const ownMemberRequests = () =>
+        s.requests.filter(
+          (request) => request.method === 'get' && request.path === `/chats/${chatId}/members/me`,
+        );
+      const memberMutations = () =>
+        s.requests.filter(
+          (request) => request.method === 'delete' && request.path === `/chats/${chatId}/members`,
+        );
+      expect(ownMemberRequests()).toHaveLength(guard === 'proof404' ? 1 : 0);
+      expect(memberMutations()).toHaveLength(0);
+      expect(s.effects).toHaveLength(0);
+      expect(recordFailed).toHaveBeenCalledTimes(1);
+      const [capturedJob, capturedFailure] = recordFailed.mock.calls[0]!;
+      expect(capturedJob).toMatchObject({
+        actionType,
+        chatId,
+        userId,
+        botId: bot.id,
+        idempotencyKey: jobId,
+        attempt: 1,
+      });
+      expect(capturedFailure).toBe(failure);
+      const writtenRow = await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({
+        where: { jobId },
+      });
+      expect(writtenRow).toMatchObject({
+        jobId,
+        actionType,
+        chatId,
+        userId,
+        botId: bot.id,
+        status: 'FAILED_RETRYABLE',
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 1,
+        lastErrorCode: MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+        lastStatusCode: guard === 'proof404' ? 404 : null,
+        dispatchToken: null,
+        dispatchStartedAt: null,
+        dispatchBotId: null,
+        remoteMessageId: null,
+      });
+      await expect(s.ledger.assertCanExecute(capturedJob)).resolves.toBeUndefined();
+      const agedAt = new Date(Date.now() - 6 * 60_000);
+      const agedRow = await s.prisma.maxActionLedgerEntry.update({
+        where: { jobId },
+        data: { updatedAt: agedAt },
+      });
+      expect(agedRow).toEqual({ ...writtenRow, updatedAt: agedAt });
+
+      const native = await createNativeWatchdog();
+      expect(await native.queue.getJob(jobId)).toBeUndefined();
+      if (jobState === 'retained_failed') {
+        actionEvents = new QueueEvents(native.queue.name, { connection: { url: redisUrl } });
+        await actionEvents.waitUntilReady();
+        const workerCalls = jest.fn(async () => {
+          throw new Error('Native guard fixture retained failure');
+        });
+        actionWorker = new Worker<MaxActionJob>(native.queue.name, workerCalls, {
+          connection: { url: redisUrl },
+        });
+        await actionWorker.waitUntilReady();
+        // FLAG: This worker creates only a genuine retained failed BullMQ state. It cannot
+        // execute MAX or rewrite the real pre-dispatch ledger outcome captured above.
+        const retained = await native.queue.add('execute-max-action', capturedJob, {
+          jobId,
+          attempts: 1,
+          removeOnFail: false,
+        });
+        await expect(retained.waitUntilFinished(actionEvents, 10_000)).rejects.toThrow(
+          'Native guard fixture retained failure',
+        );
+        await actionWorker.close();
+        actionWorker = undefined;
+        expect(workerCalls).toHaveBeenCalledTimes(1);
+        const observedJob = await native.queue.getJob(jobId);
+        expect(observedJob).toBeDefined();
+        expect(observedJob?.id).toBe(jobId);
+        expect(observedJob?.data).toEqual(capturedJob);
+        expect(await observedJob?.getState()).toBe('failed');
+        expect(observedJob?.attemptsMade).toBe(1);
+        expect(await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId } })).toEqual(
+          agedRow,
+        );
+      }
+      const queueAdd = jest.spyOn(native.queue, 'add');
+      const jobRetry = jest.spyOn(Job.prototype, 'retry');
+      await native.watchdog.runNow();
+      const snapshot = await native.watchdog.getSnapshot();
+      expect(snapshot).toMatchObject({ activeOnThisRole: true, mode: 'on', lastError: null });
+      expect(snapshot.lastSuccessAt).toEqual(expect.any(String));
+      const observedRow = await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({
+        where: { jobId },
+      });
+      // FLAG: A genuine no-dispatch writer outcome must survive maintenance unchanged. This
+      // asserts the intended invariant, including on the unfixed watchdog baseline.
+      expect({
+        row: observedRow,
+        scanned: snapshot.lastScannedCount,
+        deferred: snapshot.lastDeferredCount,
+        reconciled: snapshot.lastReconciledCount,
+        quarantined: snapshot.lastQuarantinedCount,
+        terminalFailed: snapshot.lastTerminalFailedCount,
+        requeued: snapshot.lastRequeuedCount,
+        queueAdds: queueAdd.mock.calls.length,
+        jobRetries: jobRetry.mock.calls.length,
+        ownMemberRequests: ownMemberRequests().length,
+        memberMutations: memberMutations().length,
+        effects: s.effects.length,
+      }).toEqual({
+        row: agedRow,
+        scanned: 1,
+        deferred: 1,
+        reconciled: 0,
+        quarantined: 0,
+        terminalFailed: 0,
+        requeued: 0,
+        queueAdds: 0,
+        jobRetries: 0,
+        ownMemberRequests: guard === 'proof404' ? 1 : 0,
+        memberMutations: 0,
+        effects: 0,
+      });
+      await expect(s.ledger.assertCanExecute(capturedJob)).resolves.toBeUndefined();
+      if (jobState === 'retained_failed') {
+        const retained = await native.queue.getJob(jobId);
+        expect(await retained?.getState()).toBe('failed');
+        expect(retained?.attemptsMade).toBe(1);
+        expect(retained?.data).toEqual(capturedJob);
+      }
+    },
+  );
+
+  it.each(
+    (['BAN_MEMBER', 'KICK_MEMBER'] as const).flatMap((actionType) =>
+      (['acknowledged', 'attempted_timeout'] as const).map((outcome) => ({ actionType, outcome })),
+    ),
+  )(
+    'preserves public $actionType $outcome evidence and its single effect through watchdog inspection',
+    async ({ actionType, outcome }) => {
+      expect(process.env.DATABASE_URL?.trim()).toBe(databaseUrl);
+      const s = await createMultibotHarness({ databaseUrl, redisUrl, bots: 1, mode: 'on' });
+      h = s;
+      expect(await s.redis.exists(...watchdogKeys)).toBe(0);
+      ownsWatchdogKeys = true;
+      const [seededChatId] = await s.seedCatalog(1);
+      const chatId = seededChatId!;
+      const bot = s.bots[0]!;
+      const userId = 'fixture-user';
+      const rawKey = `terminal-watchdog-${randomUUID()}`;
+      const jobId = s.max.getExplicitActionJobId(actionType, rawKey);
+      const recordStarted = jest.spyOn(s.ledger, 'recordStarted');
+      const recordSucceeded = jest.spyOn(s.ledger, 'recordSucceeded');
+      const recordFailed = jest.spyOn(s.ledger, 'recordFailed');
+      const options = {
+        botId: bot.id,
+        immediate: true,
+        idempotencyKey: rawKey,
+        trafficClass: 'critical' as const,
+        actionHealthLane: 'critical' as const,
+      };
+      const execute = () =>
+        actionType === 'BAN_MEMBER'
+          ? s.max.banMember(chatId, userId, options)
+          : s.max.kickMember(chatId, userId, options);
+      if (outcome === 'attempted_timeout') s.ambiguousNextMemberMutation();
+      let failure: unknown;
+      try {
+        await execute();
+      } catch (error: unknown) {
+        failure = error;
+      }
+      if (outcome === 'attempted_timeout') {
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).toMatchObject({
+          message: expect.stringContaining(`Ambiguous MAX ${actionType} transport failure`),
+        });
+        expect(wasMaxMemberMutationAttempted(failure)).toBe(true);
+        expect(wasMaxPreDispatchGuardRejected(failure)).toBe(false);
+        expect(recordFailed).toHaveBeenCalledTimes(1);
+        expect(recordFailed.mock.calls[0]?.[1]).toBe(failure);
+        expect(recordSucceeded).not.toHaveBeenCalled();
+      } else {
+        expect(failure).toBeUndefined();
+        expect(recordSucceeded).toHaveBeenCalledTimes(1);
+        expect(recordFailed).not.toHaveBeenCalled();
+      }
+      expect(recordStarted).toHaveBeenCalledTimes(1);
+      const [capturedJob] = recordStarted.mock.calls[0]!;
+      expect(capturedJob).toMatchObject({
+        actionType,
+        chatId,
+        userId,
+        botId: bot.id,
+        idempotencyKey: jobId,
+      });
+      const writtenRow = await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({
+        where: { jobId },
+      });
+      expect(writtenRow).toMatchObject({
+        jobId,
+        actionType,
+        chatId,
+        userId,
+        botId: bot.id,
+        status: outcome === 'acknowledged' ? 'SUCCEEDED' : 'AMBIGUOUS',
+        ambiguous: outcome === 'attempted_timeout',
+        terminal: true,
+        attemptCount: 1,
+      });
+      expect(writtenRow.lastErrorCode).not.toBe(MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE);
+      const agedAt = new Date(Date.now() - 6 * 60_000);
+      const agedRow = await s.prisma.maxActionLedgerEntry.update({
+        where: { jobId },
+        data: { updatedAt: agedAt },
+      });
+      expect(agedRow).toEqual({ ...writtenRow, updatedAt: agedAt });
+
+      const native = await createNativeWatchdog();
+      expect(await native.queue.getJob(jobId)).toBeUndefined();
+      const queueAdd = jest.spyOn(native.queue, 'add');
+      const jobRetry = jest.spyOn(Job.prototype, 'retry');
+      await native.watchdog.runNow();
+      const snapshot = await native.watchdog.getSnapshot();
+      expect(snapshot).toMatchObject({
+        activeOnThisRole: true,
+        mode: 'on',
+        lastError: null,
+        lastScannedCount: 0,
+        lastDeferredCount: 0,
+        lastReconciledCount: 0,
+        lastQuarantinedCount: 0,
+        lastTerminalFailedCount: 0,
+        lastRequeuedCount: 0,
+      });
+      expect(snapshot.lastSuccessAt).toEqual(expect.any(String));
+      expect(await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId } })).toEqual(
+        agedRow,
+      );
+      await expect(s.ledger.assertCanExecute(capturedJob)).rejects.toThrow('no longer executable');
+      await expect(execute()).rejects.toThrow('no longer executable');
+      expect(queueAdd).not.toHaveBeenCalled();
+      expect(jobRetry).not.toHaveBeenCalled();
+      expect(
+        s.requests.filter(
+          (request) => request.method === 'delete' && request.path === `/chats/${chatId}/members`,
+        ),
+      ).toHaveLength(1);
+      expect(s.effects).toHaveLength(1);
+      expect(s.effects[0]).toMatchObject({
+        method: 'delete',
+        path: `/chats/${chatId}/members`,
+        botId: bot.id,
+      });
+      expect(await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId } })).toEqual(
+        agedRow,
+      );
     },
   );
 });
