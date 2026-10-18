@@ -61,6 +61,9 @@ import type { PublisherStartJob } from '../publisher/publisher-start.queue';
 import type { Job } from 'bullmq';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation/moderation.service.support';
 import { ConfigService } from '@nestjs/config';
+import type { Logger } from '@nestjs/common';
+import type { ActionHealthService } from '../system/action-health.service';
+import type { MaxActionLedgerService } from './max-action-ledger.service';
 import { ModerationStateDeleteGuardService } from '../moderation/moderation-state-delete-guard.service';
 import { RequiredSubscriptionExecutionGuardService } from '../moderation/required-subscription-execution-guard.service';
 import { fingerprintModerationSettings } from '../moderation/message-limits-delete-guard.service';
@@ -1307,10 +1310,26 @@ describe('MaxClientService inline keyboard guardrails', () => {
     it('releases the claimed send fence when its deferred quota rejects and preserves critical health', async () => {
       const request = jest.fn();
       const ledger = {
-        claimSendDispatch: jest.fn(async () => ({ kind: 'claimed', dispatchToken: 'quota-fence' })),
-        releaseSendDispatch: jest.fn(),
-        completeSendDispatch: jest.fn(),
-        recordAmbiguousSendDispatch: jest.fn(),
+        claimSendDispatch: jest
+          .fn<
+            ReturnType<MaxActionLedgerService['claimSendDispatch']>,
+            Parameters<MaxActionLedgerService['claimSendDispatch']>
+          >()
+          .mockResolvedValue({ kind: 'claimed', dispatchToken: 'quota-fence' }),
+        releaseSendDispatch: jest
+          .fn<
+            ReturnType<MaxActionLedgerService['releaseSendDispatch']>,
+            Parameters<MaxActionLedgerService['releaseSendDispatch']>
+          >()
+          .mockResolvedValue(undefined),
+        completeSendDispatch: jest.fn<
+          ReturnType<MaxActionLedgerService['completeSendDispatch']>,
+          Parameters<MaxActionLedgerService['completeSendDispatch']>
+        >(),
+        recordAmbiguousSendDispatch: jest.fn<
+          ReturnType<MaxActionLedgerService['recordAmbiguousSendDispatch']>,
+          Parameters<MaxActionLedgerService['recordAmbiguousSendDispatch']>
+        >(),
       };
       const service = createService(
         { request },
@@ -1318,9 +1337,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         undefined,
         ledger,
       );
-      jest
-        .spyOn(service as any, 'tryReserveRateLimitSlot')
-        .mockResolvedValue({ ok: false, retryAfterMs: 1000, reason: 'quota busy' });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      diagnostics.quota.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1000]);
       const permit = jest.fn();
       try {
         const job = {
@@ -1334,18 +1352,32 @@ describe('MaxClientService inline keyboard guardrails', () => {
         };
         await expect(
           service.executeActionJob(job, { beforeSendMutation: permit }),
-        ).rejects.toMatchObject({ code: 'MAX_API_INTERNAL_RATE_LIMIT', preDispatch: true });
+        ).rejects.toMatchObject({
+          code: 'MAX_API_INTERNAL_RATE_LIMIT',
+          preDispatch: true,
+          retryAfterMs: 1000,
+        });
         expect(ledger.releaseSendDispatch).toHaveBeenCalledWith(job, 'quota-fence');
         expect(ledger.recordAmbiguousSendDispatch).not.toHaveBeenCalled();
         expect(ledger.completeSendDispatch).not.toHaveBeenCalled();
         expect(permit).not.toHaveBeenCalled();
         expect(request).not.toHaveBeenCalled();
-        expect((service as any).actionHealthService.recordFailureForLane).toHaveBeenCalledTimes(1);
-        expect((service as any).actionHealthService.recordFailureForLane).toHaveBeenCalledWith(
-          'critical',
-          true,
-          '777000_bot',
-        );
+        expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+        expect(diagnostics.failure).toHaveBeenCalledWith('critical', true, '777000_bot');
+        expect(
+          diagnostics.warn.mock.calls.filter(([, message]) => message === ACTION_FAILURE_WARNING),
+        ).toEqual([
+          [
+            expect.objectContaining({
+              failureOrigin: 'local_quota',
+              isCritical: true,
+              requestAssociation: 'unlinked',
+              method: 'unknown',
+              endpointKind: 'unknown',
+            }),
+            ACTION_FAILURE_WARNING,
+          ],
+        ]);
       } finally {
         await service.onModuleDestroy();
       }
@@ -1354,10 +1386,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
     it('counts a nested critical lookup quota rejection once while the final send permit is running', async () => {
       const request = jest.fn();
       const service = createService({ request }, { MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '0' });
-      jest
-        .spyOn(service as any, 'tryReserveRateLimitSlot')
-        .mockResolvedValueOnce({ ok: true })
-        .mockResolvedValue({ ok: false, retryAfterMs: 1000, reason: 'nested lookup quota busy' });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      diagnostics.quota
+        .mockResolvedValueOnce([1, 0, 0])
+        .mockResolvedValueOnce([1, 0, 0])
+        .mockResolvedValueOnce([1, 0, 0])
+        .mockResolvedValueOnce([0, 2, 1000]);
       try {
         await expect(
           service.sendMessageImmediateWithId('-123', 'text', {
@@ -1369,7 +1403,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
             },
           }),
         ).rejects.toMatchObject({ code: 'MAX_API_INTERNAL_RATE_LIMIT' });
-        expect((service as any).actionHealthService.recordFailureForLane).toHaveBeenCalledTimes(1);
+        expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+        expect(
+          diagnostics.warn.mock.calls.filter(([, message]) => message === ACTION_FAILURE_WARNING),
+        ).toHaveLength(1);
         expect(request).not.toHaveBeenCalled();
       } finally {
         await service.onModuleDestroy();
@@ -1784,6 +1821,25 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }
     });
   });
+
+  const ACTION_FAILURE_WARNING = 'Recorded unignored user-facing MAX API action failure';
+
+  function observeActionFailureDiagnostics(service: MaxClientService) {
+    const runtime = service as unknown as {
+      logger: Pick<Logger, 'warn'>;
+      actionHealthService: Pick<
+        ActionHealthService,
+        'recordFailureForLane' | 'recordSuccessForLane'
+      >;
+      limiterRedis: Pick<Redis, 'eval'>;
+    };
+    return {
+      warn: jest.spyOn(runtime.logger, 'warn').mockImplementation(() => undefined),
+      failure: jest.spyOn(runtime.actionHealthService, 'recordFailureForLane'),
+      success: jest.spyOn(runtime.actionHealthService, 'recordSuccessForLane'),
+      quota: jest.spyOn(runtime.limiterRedis, 'eval'),
+    };
+  }
 
   function createService(
     httpService: { request?: jest.Mock } = {},
@@ -10085,14 +10141,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       request: jest.fn().mockReturnValue(throwError(() => error)),
     };
     const service = createService(httpService);
-    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
-    const actionHealthService = (
-      service as unknown as {
-        actionHealthService: {
-          recordFailureForLane: jest.Mock;
-        };
-      }
-    ).actionHealthService;
+    const diagnostics = observeActionFailureDiagnostics(service);
     const requestOptions = {
       bypassCache: true,
       trafficClass: 'critical' as const,
@@ -10105,8 +10154,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
     jest.advanceTimersByTime(29_999);
     await expect(service.getChatSnapshot('chat-private-3', requestOptions)).rejects.toBe(error);
 
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenLastCalledWith(
+    expect(diagnostics.warn).toHaveBeenCalledTimes(1);
+    expect(diagnostics.warn).toHaveBeenLastCalledWith(
       {
         statusCode: 503,
         errorCode: 'service.unavailable',
@@ -10115,6 +10164,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
         lane: 'interactive',
         sourceTag: 'required_subscription_membership',
         botId: '777000_bot',
+        failureOrigin: 'unlinked',
+        isCritical: true,
+        requestAssociation: 'unlinked',
+        method: 'unknown',
+        endpointKind: 'unknown',
       },
       'Recorded unignored user-facing MAX API action failure',
     );
@@ -10122,12 +10176,111 @@ describe('MaxClientService inline keyboard guardrails', () => {
     jest.advanceTimersByTime(1);
     await expect(service.getChatSnapshot('chat-private-4', requestOptions)).rejects.toBe(error);
 
-    expect(warnSpy).toHaveBeenCalledTimes(2);
-    expect(actionHealthService.recordFailureForLane).toHaveBeenCalledTimes(4);
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('chat-private');
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('user-private');
+    expect(diagnostics.warn).toHaveBeenCalledTimes(2);
+    expect(diagnostics.failure).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(diagnostics.warn.mock.calls)).not.toContain('chat-private');
+    expect(JSON.stringify(diagnostics.warn.mock.calls)).not.toContain('user-private');
 
     await service.onModuleDestroy();
+  });
+
+  it.each([
+    { status: 404, code: 'chat.not.found', isCritical: false },
+    { status: 503, code: 'service.unavailable', isCritical: true },
+    { status: 429, code: 'rate.limit', isCritical: true },
+    { status: undefined, code: 'ECONNABORTED', isCritical: true },
+  ])(
+    '2A0 preserves classifier criticality $isCritical for $code without inferring an HTTP association',
+    async ({ status, code, isCritical }) => {
+      const error = Object.freeze(
+        Object.assign(new Error('private-user private-chat private-token'), {
+          code,
+          ...(status === undefined ? {} : { response: { status, data: { code } } }),
+          config: {
+            method: 'post',
+            url: 'https://private.example/messages',
+            headers: { Authorization: 'private-token' },
+            data: 'private-body',
+          },
+        }),
+      );
+      const service = createService({
+        request: jest.fn().mockReturnValue(throwError(() => error)),
+      });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      try {
+        await expect(
+          service.getChatSnapshot('private-chat', {
+            bypassCache: true,
+            trafficClass: 'critical',
+            actionHealthLane: 'critical',
+            sourceTag: 'moderation_sanction',
+          }),
+        ).rejects.toBe(error);
+
+        expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+        expect(diagnostics.failure).toHaveBeenCalledWith('critical', isCritical, '777000_bot');
+        expect(diagnostics.warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            failureOrigin: 'unlinked',
+            isCritical,
+            requestAssociation: 'unlinked',
+            method: 'unknown',
+            endpointKind: 'unknown',
+          }),
+          ACTION_FAILURE_WARNING,
+        );
+        const actionWarnings = diagnostics.warn.mock.calls.filter(
+          ([, message]) => message === ACTION_FAILURE_WARNING,
+        );
+        expect(actionWarnings).toHaveLength(1);
+        expect(JSON.stringify(actionWarnings)).not.toMatch(
+          /private-(?:user|chat|token|body)|private\.example/,
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
+  it('2A0 identifies an initial critical quota refusal without HTTP or retry changes', async () => {
+    const request = jest.fn();
+    const service = createService({ request }, { MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '0' });
+    const diagnostics = observeActionFailureDiagnostics(service);
+    diagnostics.quota.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1234]);
+    try {
+      await expect(
+        service.getChatSnapshot('private-chat', {
+          bypassCache: true,
+          trafficClass: 'critical',
+          actionHealthLane: 'interactive',
+        }),
+      ).rejects.toMatchObject({
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        preDispatch: true,
+        retryAfterMs: 1234,
+      });
+      expect(request).not.toHaveBeenCalled();
+      expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+      expect(diagnostics.failure).toHaveBeenCalledWith('interactive', true, '777000_bot');
+      expect(diagnostics.success).not.toHaveBeenCalled();
+      expect(
+        diagnostics.warn.mock.calls.filter(([, message]) => message === ACTION_FAILURE_WARNING),
+      ).toEqual([
+        [
+          expect.objectContaining({
+            failureOrigin: 'local_quota',
+            isCritical: true,
+            requestAssociation: 'unlinked',
+            method: 'unknown',
+            endpointKind: 'unknown',
+          }),
+          ACTION_FAILURE_WARNING,
+        ],
+      ]);
+    } finally {
+      await service.onModuleDestroy();
+    }
   });
 
   it('does not log action failure diagnostics for background traffic or lanes', async () => {
@@ -13950,15 +14103,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const service = createService(httpService, {
       MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '0',
     });
-    const actionHealthService = (
-      service as unknown as {
-        actionHealthService: {
-          recordFailureForLane: jest.Mock;
-        };
-      }
-    ).actionHealthService;
-    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
-    limiterRedis.eval.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1]);
+    const diagnostics = observeActionFailureDiagnostics(service);
+    diagnostics.quota.mockResolvedValueOnce([1, 0, 0]).mockResolvedValueOnce([0, 2, 1]);
 
     await expect(
       service.deleteMessage('chat-1', 'message-1', {
@@ -13968,10 +14114,16 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }),
     ).rejects.toMatchObject({ code: 'MAX_API_INTERNAL_RATE_LIMIT' });
 
-    expect(actionHealthService.recordFailureForLane).toHaveBeenCalledWith(
-      'critical',
-      true,
-      '777000_bot',
+    expect(diagnostics.failure).toHaveBeenCalledWith('critical', true, '777000_bot');
+    expect(diagnostics.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        failureOrigin: 'local_quota',
+        isCritical: true,
+        requestAssociation: 'unlinked',
+        method: 'unknown',
+        endpointKind: 'unknown',
+      }),
+      ACTION_FAILURE_WARNING,
     );
     expect(httpService.request).not.toHaveBeenCalled();
 

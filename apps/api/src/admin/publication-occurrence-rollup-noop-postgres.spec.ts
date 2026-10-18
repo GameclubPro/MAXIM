@@ -12,6 +12,7 @@ import {
   isUnchangedPublicationOccurrenceRollup,
   PublicationOccurrenceRollupNoopReader,
   type PublicationOccurrenceRollupNoopSnapshot,
+  type PublicationOccurrenceRollupNoopQueryRollout,
 } from './publication-occurrence-rollup-noop';
 import { findFullPublicationRouteOutageTarget } from './publication-access-loss-recovery';
 import { resolvePublicationOccurrenceRollupStatus } from './publication-delivery-verification-state';
@@ -22,7 +23,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
 const postgres = databaseUrl ? describe : describe.skip;
 const decisionAt = new Date('2026-10-18T12:00:00.000Z');
 const designated = { CHAT: '-78271094414679', CHANNEL: '-78271171091799' } as const;
-type Mode = 'test' | '5' | '25' | '100';
+type Mode = PublicationOccurrenceRollupNoopQueryRollout;
 type QueryReader = Pick<Prisma.TransactionClient, '$queryRaw'>;
 type Root = {
   publicationId: string;
@@ -229,89 +230,6 @@ function expectBoundedCatalogScan(node: PlanNode): void {
   expect(node['Shared Hit Blocks']! + node['Shared Read Blocks']!).toBeLessThanOrEqual(8);
 }
 
-function expectRecipientScanEvidence(node: PlanNode, rows: number, loops: number): void {
-  expect(node['Relation Name']).toBe('managed_broadcast_deliveries');
-  expect(node['Index Name']).toBe('managed_broadcast_deliveries_broadcast_occurrence_target_key');
-  expect(node.Filter).toBeUndefined();
-  expect(node['Rows Removed by Filter'] ?? 0).toBe(0);
-  expect(node['Rows Removed by Index Recheck'] ?? 0).toBe(0);
-  for (const field of [
-    'Actual Rows',
-    'Actual Loops',
-    'Shared Hit Blocks',
-    'Shared Read Blocks',
-  ] as const) {
-    expect(Number.isFinite(node[field])).toBe(true);
-    expect(node[field]).toBeGreaterThanOrEqual(0);
-  }
-  expect(node['Actual Rows']).toBeLessThanOrEqual(rows);
-  expect(node['Actual Loops']).toBeGreaterThan(0);
-  expect(node['Actual Loops']).toBeLessThanOrEqual(loops);
-  expect(examined(node)).toBeLessThanOrEqual(6);
-  expect(node['Shared Hit Blocks']! + node['Shared Read Blocks']!).toBeLessThan(256);
-  if (node['Node Type'] === 'Index Only Scan' || node['Heap Fetches'] !== undefined) {
-    expect(Number.isFinite(node['Heap Fetches'])).toBe(true);
-    expect(node['Heap Fetches']).toBeGreaterThanOrEqual(0);
-    expect(node['Heap Fetches']).toBeLessThanOrEqual(6);
-  }
-}
-
-function expectRecipientKeySeek(node: PlanNode, nodes: PlanNode[]): void {
-  // FLAG: Cap the leading key-only seek before exact envelope filtering. An
-  // ordered output without a direct LIMIT can still read retained history.
-  expectRecipientScanEvidence(node, 3, 2);
-  expect(node['Node Type']).toBe('Index Only Scan');
-  expect(node.Alias).toBe('recipient_key');
-  const envelopeAliases = nodes
-    .filter(
-      (candidate) =>
-        candidate['Relation Name'] === 'managed_broadcasts' &&
-        candidate['Index Name'] === 'managed_broadcasts_pkey' &&
-        candidate['Index Cond'] === '(id = envelope_id.id)',
-    )
-    .map((candidate) => candidate.Alias)
-    .filter((alias): alias is string => typeof alias === 'string');
-  expect(['saved', ...envelopeAliases].map((alias) => `(broadcast_id >= ${alias}.id)`)).toContain(
-    node['Index Cond'],
-  );
-  const caps = nodes.filter((candidate) => candidate.Plans?.includes(node));
-  expect(caps).toHaveLength(1);
-  const cap = caps[0]!;
-  expect(cap['Node Type']).toBe('Limit');
-  expect(cap.Plans).toEqual([node]);
-  for (const field of ['Actual Rows', 'Actual Loops'] as const) {
-    expect(Number.isFinite(cap[field])).toBe(true);
-    expect(cap[field]).toBeGreaterThanOrEqual(0);
-    expect(cap[field]).toBe(node[field]);
-  }
-  expect(cap['Actual Rows']).toBeLessThanOrEqual(3);
-  expect(cap['Actual Loops']).toBeLessThanOrEqual(2);
-}
-
-function expectRecipientMetadataSeek(node: PlanNode, nodes: PlanNode[]): void {
-  // FLAG: Seek one full composite key before exact identity checks. Scalar
-  // equalities can pick a non-leading index and scan retained recipient history.
-  expectRecipientScanEvidence(node, 1, 6);
-  expect(node['Node Type']).toBe('Index Scan');
-  expect(node.Alias).toBe('recipient_saved');
-  expect(node['Scan Direction']).toBe('Forward');
-  expect(node['Index Cond']).toMatch(
-    /^\(ROW\(broadcast_id, occurrence_index, target_chat_id\) >= ROW\((candidate(?:_\d+)?)\.broadcast_id, \1\.occurrence_index, \1\.target_chat_id\)\)$/u,
-  );
-  const caps = nodes.filter((candidate) => candidate.Plans?.includes(node));
-  expect(caps).toHaveLength(1);
-  const cap = caps[0]!;
-  expect(cap['Node Type']).toBe('Limit');
-  expect(cap.Plans).toEqual([node]);
-  for (const field of ['Actual Rows', 'Actual Loops'] as const) {
-    expect(Number.isFinite(cap[field])).toBe(true);
-    expect(cap[field]).toBeGreaterThanOrEqual(0);
-    expect(cap[field]).toBe(node[field]);
-  }
-  expect(cap['Actual Rows']).toBeLessThanOrEqual(1);
-  expect(cap['Actual Loops']).toBeLessThanOrEqual(6);
-}
-
 describe('Bounded tiny occurrence/envelope/publication heap validation', () => {
   function tinyScan(): PlanNode {
     return {
@@ -442,162 +360,6 @@ describe('Bounded tiny occurrence/envelope/publication heap validation', () => {
   });
 });
 
-describe('Bounded test-enrollment recipient plan validation', () => {
-  function keySeek(): PlanNode {
-    return {
-      'Node Type': 'Index Only Scan',
-      'Relation Name': 'managed_broadcast_deliveries',
-      Alias: 'recipient_key',
-      'Index Name': 'managed_broadcast_deliveries_broadcast_occurrence_target_key',
-      'Index Cond': '(broadcast_id >= saved.id)',
-      'Actual Rows': 3,
-      'Actual Loops': 2,
-      'Heap Fetches': 6,
-      'Shared Hit Blocks': 8,
-      'Shared Read Blocks': 0,
-    };
-  }
-
-  function cap(node: PlanNode): PlanNode {
-    return {
-      'Node Type': 'Limit',
-      'Actual Rows': node['Actual Rows'],
-      'Actual Loops': node['Actual Loops'],
-      Plans: [node],
-    };
-  }
-
-  function metadataSeek(): PlanNode {
-    return {
-      ...keySeek(),
-      'Node Type': 'Index Scan',
-      'Scan Direction': 'Forward',
-      Alias: 'recipient_saved',
-      'Index Cond':
-        '(ROW(broadcast_id, occurrence_index, target_chat_id) >= ROW(candidate_1.broadcast_id, candidate_1.occurrence_index, candidate_1.target_chat_id))',
-      'Actual Rows': 1,
-      'Actual Loops': 6,
-      'Heap Fetches': undefined,
-    };
-  }
-
-  it('accepts the capped leading-key page and composite metadata seek at their physical budgets', () => {
-    const key = keySeek();
-    expectRecipientKeySeek(key, [key, cap(key)]);
-    const metadata = metadataSeek();
-    expectRecipientMetadataSeek(metadata, [metadata, cap(metadata)]);
-  });
-
-  it.each<Partial<PlanNode>>([
-    { 'Node Type': 'Index Scan' },
-    { 'Node Type': 'Bitmap Heap Scan' },
-    { 'Node Type': 'Seq Scan' },
-    { 'Index Name': 'managed_broadcast_deliveries_broadcast_occurrence_status_idx' },
-    { 'Index Cond': '(occurrence_index >= saved.id)' },
-    { 'Index Cond': '(broadcast_id = saved.id)' },
-    { 'Index Cond': '(broadcast_id >= foreign.id)' },
-    { 'Index Cond': '((broadcast_id >= saved.id) AND (occurrence_index = 1))' },
-    { Filter: '(status = PENDING)' },
-    { 'Rows Removed by Filter': 1 },
-    { 'Rows Removed by Index Recheck': 1 },
-    { 'Actual Rows': 4 },
-    { 'Actual Rows': NaN },
-    { 'Actual Loops': 3 },
-    { 'Actual Loops': 0 },
-    { 'Heap Fetches': 7 },
-    { 'Heap Fetches': undefined },
-    { 'Heap Fetches': NaN },
-    { 'Shared Hit Blocks': undefined },
-    { 'Shared Hit Blocks': -1 },
-    { 'Shared Hit Blocks': 255, 'Shared Read Blocks': 1 },
-    { 'Shared Read Blocks': NaN },
-  ])('refuses a recipient key seek with unsupported evidence %j', (mutation) => {
-    const key = { ...keySeek(), ...mutation };
-    expect(() => expectRecipientKeySeek(key, [key, cap(key)])).toThrow();
-  });
-
-  it.each(['missing cap', 'sort before cap', 'multiple children', 'inconsistent count'] as const)(
-    'refuses a recipient key page with %s even if the scan currently returns only three rows',
-    (variant) => {
-      const key = keySeek();
-      const limit = cap(key);
-      let nodes = [key, limit];
-      if (variant === 'missing cap') nodes = [key];
-      if (variant === 'sort before cap') {
-        const sort = { ...limit, 'Node Type': 'Sort' };
-        limit.Plans = [sort];
-        nodes = [key, sort, limit];
-      }
-      if (variant === 'multiple children') limit.Plans = [key, { ...key }];
-      if (variant === 'inconsistent count') limit['Actual Rows'] = 2;
-      expect(() => expectRecipientKeySeek(key, nodes)).toThrow();
-    },
-  );
-
-  it.each<Partial<PlanNode>>([
-    { 'Node Type': 'Index Only Scan' },
-    { 'Node Type': 'Bitmap Heap Scan' },
-    { 'Node Type': 'Seq Scan' },
-    { 'Index Name': 'managed_broadcast_deliveries_broadcast_occurrence_status_idx' },
-    { 'Index Name': 'managed_broadcast_deliveries_target_remote_idx' },
-    { 'Scan Direction': 'Backward' },
-    { 'Index Cond': '(broadcast_id = candidate_1.broadcast_id)' },
-    {
-      'Index Cond':
-        '((broadcast_id = candidate_1.broadcast_id) AND (occurrence_index = candidate_1.occurrence_index) AND (target_chat_id = candidate_1.target_chat_id))',
-    },
-    {
-      'Index Cond':
-        '(ROW(broadcast_id, occurrence_index) >= ROW(candidate_1.broadcast_id, candidate_1.occurrence_index))',
-    },
-    {
-      'Index Cond':
-        '(ROW(broadcast_id, occurrence_index, target_chat_id) >= ROW(candidate_1.broadcast_id, candidate_1.occurrence_index, candidate_2.target_chat_id))',
-    },
-    {
-      'Index Cond':
-        '(ROW(broadcast_id, occurrence_index, target_chat_id) <= ROW(candidate_1.broadcast_id, candidate_1.occurrence_index, candidate_1.target_chat_id))',
-    },
-    {
-      'Index Cond':
-        '(ROW(broadcast_id, occurrence_index, target_chat_id) > ROW(candidate_1.broadcast_id, candidate_1.occurrence_index, candidate_1.target_chat_id))',
-    },
-    {
-      'Index Cond':
-        '(ROW(target_chat_id, occurrence_index, broadcast_id) >= ROW(candidate_1.target_chat_id, candidate_1.occurrence_index, candidate_1.broadcast_id))',
-    },
-    {
-      'Index Cond':
-        '((ROW(broadcast_id, occurrence_index, target_chat_id) >= ROW(candidate_1.broadcast_id, candidate_1.occurrence_index, candidate_1.target_chat_id)) AND (status = PENDING))',
-    },
-    { Filter: '(content_revision_id = occurrence.content_revision_id)' },
-    { 'Actual Rows': 2 },
-    { 'Actual Loops': 7 },
-    { 'Shared Read Blocks': -1 },
-  ])('refuses recipient metadata without the bounded full-key lower seek %j', (mutation) => {
-    const metadata = { ...metadataSeek(), ...mutation };
-    expect(() => expectRecipientMetadataSeek(metadata, [metadata, cap(metadata)])).toThrow();
-  });
-
-  it.each(['missing cap', 'sort before cap', 'multiple children', 'inconsistent count'] as const)(
-    'refuses a metadata seek with %s even if the scan currently returns only one row',
-    (variant) => {
-      const metadata = metadataSeek();
-      const limit = cap(metadata);
-      let nodes = [metadata, limit];
-      if (variant === 'missing cap') nodes = [metadata];
-      if (variant === 'sort before cap') {
-        const sort = { ...limit, 'Node Type': 'Sort' };
-        limit.Plans = [sort];
-        nodes = [metadata, sort, limit];
-      }
-      if (variant === 'multiple children') limit.Plans = [metadata, { ...metadata }];
-      if (variant === 'inconsistent count') limit['Actual Rows'] = 0;
-      expect(() => expectRecipientMetadataSeek(metadata, nodes)).toThrow();
-    },
-  );
-});
-
 describe('Exact envelope bitmap plan validation', () => {
   function validBitmap(): PlanNode {
     return {
@@ -650,9 +412,16 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   let db: PrismaClient;
   let sourceChatId: string;
   let root: Root;
-  let publicationIds: string[];
-  let ownedChatIds: string[];
+  let publicationIds: string[] = [];
+  let ownedChatIds: string[] = [];
   let sequence: number;
+  let sharedChurnFixture = false;
+  let activeChurnPhase: { stopped: boolean; deadline: number; done: Promise<void> } | undefined;
+
+  function checkChurnPhase(): void {
+    if (activeChurnPhase && (activeChurnPhase.stopped || Date.now() >= activeChurnPhase.deadline))
+      throw new Error('Owned churn phase stopped before its next SQL operation');
+  }
   const queries: Prisma.QueryEvent[] = [];
   const dialogBotId = `rollup-noop-dialog-${randomUUID()}`;
 
@@ -675,18 +444,25 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     ]);
   });
 
-  beforeEach(async () => {
+  async function initializeOwnedFixture() {
     publicationIds = [];
     ownedChatIds = [];
     sequence = 0;
     sourceChatId = `-${BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 12)}`)}`;
+    checkChurnPhase();
     await db.chat.create({ data: { id: sourceChatId, title: 'Synthetic rollup no-op fixture' } });
     ownedChatIds.push(sourceChatId);
+    checkChurnPhase();
     root = await publication();
     queries.length = 0;
-  });
+  }
 
-  afterEach(async () => cleanupOwnedFixture(publicationIds, ownedChatIds), 60_000);
+  beforeEach(async () => {
+    if (!sharedChurnFixture) await initializeOwnedFixture();
+  });
+  afterEach(async () => {
+    if (!sharedChurnFixture) await cleanupOwnedFixture(publicationIds, ownedChatIds);
+  }, 60_000);
   afterAll(async () => db?.$disconnect());
 
   async function cleanupOwnedFixture(ownedPublications: string[], ownedChats: string[]) {
@@ -831,6 +607,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     botId = `rollup-noop-bot-${randomUUID()}`,
     client: Prisma.TransactionClient = db,
   ): Promise<Root> {
+    checkChurnPhase();
     const value = await client.publication.create({
       data: {
         id,
@@ -848,6 +625,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       include: { schedule: true, contentRevisions: true },
     });
     publicationIds.push(value.id);
+    checkChurnPhase();
     const revisionId = value.contentRevisions[0]!.id;
     await client.publication.update({
       where: { id: value.id },
@@ -877,6 +655,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     // FLAG: Bound each setup statement while retaining the complete native FK graph.
     // Append callers use fresh slots to preserve the native publication/revision key.
     for (let first = firstSlot; first < firstSlot + count; first += 1_000) {
+      checkChurnPhase();
       await client.$executeRaw(Prisma.sql`
         INSERT INTO publications (
           id, actor_user_id, request_id, lifecycle, dispatch_profile, required_bot_id, updated_at
@@ -889,6 +668,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       publicationIds.push(
         ...Array.from({ length: 1_000 }, (_, index) => `${prefix}${first + index}`),
       );
+      checkChurnPhase();
       await client.$executeRaw(Prisma.sql`
         INSERT INTO publication_occurrences (
           id, publication_id, schedule_id, content_revision_id,
@@ -900,6 +680,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           'SENT'::"PublicationOccurrenceStatus", ${decisionAt}
         FROM generate_series(${first}::integer, ${first + 999}::integer) n
       `);
+      checkChurnPhase();
       await client.$executeRaw(Prisma.sql`
         INSERT INTO managed_broadcasts (
           id, source_chat_id, actor_user_id, entity_type, target_chat_ids, buttons,
@@ -916,6 +697,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     if (client === db) {
       // FLAG: These positive-plan fixtures explicitly opt into analyzed parents.
       // The caller-owned transaction below separately proves zero/positive stale stats.
+      checkChurnPhase();
       await db.$executeRawUnsafe(
         'ANALYZE publications, publication_occurrences, managed_broadcasts',
       );
@@ -932,6 +714,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     client: Prisma.TransactionClient = db,
   ): Promise<Occurrence> {
     const parent = options.publication ?? root;
+    checkChurnPhase();
     const row = await client.publicationOccurrence.create({
       data: {
         ...(options.id ? { id: options.id } : {}),
@@ -948,6 +731,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     if (client === db) {
       // FLAG: Positive shortcut cases require supported statistics. No runtime
       // ANALYZE is added, and the unsupported-stat transaction never takes this path.
+      checkChurnPhase();
       await db.$executeRawUnsafe('ANALYZE publication_occurrences');
     }
     return { ...parent, occurrenceId: row.id };
@@ -966,6 +750,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     client: Prisma.TransactionClient = db,
   ): Promise<Envelope> {
     const envelopeRevisionId = options.revisionId ?? parent.revisionId;
+    checkChurnPhase();
     const row = await client.managedBroadcast.create({
       data: {
         ...(options.id ? { id: options.id } : {}),
@@ -992,6 +777,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   ) {
     const status = options.status ?? 'PENDING';
     const sent = status === 'SENT';
+    checkChurnPhase();
     return client.managedBroadcastDelivery.create({
       data: {
         broadcastId: item.broadcastId,
@@ -1028,6 +814,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     mode: Mode = '100',
     client: QueryReader = db,
   ): Promise<PublicationOccurrenceRollupNoopSnapshot | undefined> {
+    checkChurnPhase();
     const rows = await client.$queryRaw<PublicationOccurrenceRollupNoopSnapshot[]>(
       buildPublicationOccurrenceRollupNoopQuery(item.occurrenceId, mode),
     );
@@ -1043,6 +830,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   ) => isUnchangedPublicationOccurrenceRollup(await probe(item, mode, client), now);
 
   function original(client: Pick<Prisma.TransactionClient, 'publicationOccurrence'>, id: string) {
+    checkChurnPhase();
     return client.publicationOccurrence.findUniqueOrThrow({
       where: { id },
       include: {
@@ -1071,6 +859,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   }
 
   async function identity(item: Occurrence, client: QueryReader = db) {
+    checkChurnPhase();
     return client.$queryRaw<
       Array<{ status: PublicationOccurrenceStatus; updatedAt: Date; xmin: string; ctid: string }>
     >(Prisma.sql`
@@ -1116,6 +905,36 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     expect(await identity(item, client ?? db)).toEqual(before);
   }
 
+  async function expectTestRefusalNoWrite(item: Occurrence, client: QueryReader = db) {
+    const before = await identity(item, client);
+    const attempted = jest.fn((_query: TemplateStringsArray | Prisma.Sql) => undefined);
+    const counted: QueryReader = {
+      $queryRaw<T = unknown>(
+        query: TemplateStringsArray | Prisma.Sql,
+        ...values: unknown[]
+      ): Prisma.PrismaPromise<T> {
+        attempted(query);
+        return client.$queryRaw<T>(query, ...values);
+      },
+    };
+    const logger = { log: jest.fn() };
+    const reader = new PublicationOccurrenceRollupNoopReader(counted, 'test', logger);
+    const firstQuery = queries.length;
+    expect(await reader.canSkip(item.occurrenceId)).toBe(false);
+    expect(attempted).not.toHaveBeenCalled();
+    expect(queries.slice(firstQuery)).toHaveLength(0);
+    expect(logger.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rollout: 'test',
+        admitted: 0,
+        unchanged: 0,
+        fallback: 1,
+        error: 0,
+      }),
+    );
+    expect(await identity(item, client)).toEqual(before);
+  }
+
   async function ensureDesignatedChats() {
     const created = await db.chat.createManyAndReturn({
       data: (['CHAT', 'CHANNEL'] as const).map((entityType) => ({
@@ -1143,6 +962,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
 
   async function explain(item: Occurrence, mode: Mode = '100', client: QueryReader = db) {
     // FLAG: ANALYZE is restricted to the disposable local race_test database above.
+    checkChurnPhase();
     return client.$queryRaw<Explained>(
       Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${buildPublicationOccurrenceRollupNoopQuery(item.occurrenceId, mode)}`,
     );
@@ -1193,12 +1013,6 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     );
     expect(deliveryScans.length).toBeGreaterThan(0);
     for (const node of deliveryScans) {
-      if (node.Alias === 'recipient_key' || node.Alias === 'recipient_saved') {
-        expect(mode).toBe('test');
-        if (node.Alias === 'recipient_key') expectRecipientKeySeek(node, nodes);
-        else expectRecipientMetadataSeek(node, nodes);
-        continue;
-      }
       expect(node['Rows Removed by Filter'] ?? 0).toBe(0);
       expect(node['Index Name']).toMatch(
         /^managed_broadcast_deliveries_broadcast_occurrence_(?:target_key|status_idx)$/u,
@@ -1243,25 +1057,16 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
         node['Node Type'] === 'Bitmap Heap Scan'
           ? node.Plans!.find((child) => child['Node Type'] === 'Bitmap Index Scan')!
           : node;
-      if (seek['Index Name'] === 'managed_broadcasts_pkey') {
-        expect(mode).toBe('test');
-        expect(seek['Node Type']).toBe('Index Scan');
-        expect(seek['Index Cond']).toBe('(id = envelope_id.id)');
-        expect(seek.Filter).toBeUndefined();
-        expect(seek['Actual Rows']).toBeLessThanOrEqual(1);
-      } else {
-        expect(seek['Index Name']).toBe('managed_broadcasts_pub_occurrence_entity_key');
-        expect(seek['Index Cond']).toContain('publication_occurrence_id');
-      }
-      // FLAG: The identity seek has at most two rows; test metadata/status filters may
-      // reject those already-bounded rows without searching additional history.
+      expect(seek['Index Name']).toBe('managed_broadcasts_pub_occurrence_entity_key');
+      expect(seek['Index Cond']).toContain('publication_occurrence_id');
+      // FLAG: The exact occurrence/entity identity has at most two linked envelopes.
+      // Status checks must not search additional retained history.
       expect(examined(node)).toBeLessThanOrEqual(2);
       expect(node['Actual Loops']).toBeLessThanOrEqual(2);
     }
-    if (mode !== 'test') {
-      expect(nodes.some((node) => node['Relation Name'] === 'publication_targets')).toBe(false);
-      expect(nodes.some((node) => node['Node Type'] === 'Function Scan')).toBe(false);
-    }
+    expect(nodes.some((node) => node['Relation Name'] === 'publication_targets')).toBe(false);
+    expect(nodes.some((node) => node['Node Type'] === 'Function Scan')).toBe(false);
+    expect(nodes.some((node) => node.Alias?.startsWith('recipient_'))).toBe(false);
   }
 
   function expectUnsupportedStatisticsPlan(plan: Explained): void {
@@ -1295,6 +1100,28 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     expect(await reader.canSkip(item.occurrenceId)).toBe(false);
     expect(queries).toHaveLength(0);
     expect(logger.log).not.toHaveBeenCalled();
+  });
+
+  it('declines unsupported test mode before a real SQL or business-table read', async () => {
+    const item = await occurrence();
+    await delivery(await designatedEnvelope(item), { targetChatId: designated.CHAT });
+    await expectTestRefusalNoWrite(item);
+    await expectEquivalentNoWrite(item);
+  });
+
+  it('keeps canonical AMBIGUOUS reconciliation reachable when test mode declines', async () => {
+    const item = await occurrence({ scheduledAt: new Date('2020-01-01T00:00:00.000Z') });
+    const linked = await envelope(item);
+    const unknown = await delivery(linked, { status: 'AMBIGUOUS' });
+    await expectTestRefusalNoWrite(item);
+    await rollupPublicationOccurrence(
+      db as Parameters<typeof rollupPublicationOccurrence>[0],
+      item.occurrenceId,
+    );
+    expect((await identity(item))[0]!.status).toBe('AMBIGUOUS');
+    expect(
+      (await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: unknown.id } })).status,
+    ).toBe('AMBIGUOUS');
   });
 
   it('uses one actual scalar SQL read and preserves row identity through the Reader boundary', async () => {
@@ -1425,11 +1252,13 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       select: { id: true },
     });
     expect(next?.id).toBe(neighbor.occurrenceId);
-    for (const mode of ['100', 'test'] as const) {
+    await expectTestRefusalNoWrite(neighbor);
+    for (const mode of ['100'] as const) {
       await expectEquivalentNoWrite(neighbor, mode);
       for (const occurrenceId of [absent, `${prefix}c`]) {
         expect(await probe({ ...neighbor, occurrenceId }, mode)).toBeUndefined();
         expect(await unchanged({ ...neighbor, occurrenceId }, mode)).toBe(false);
+        await expectTestRefusalNoWrite({ ...neighbor, occurrenceId });
       }
     }
     expect(await identity(neighbor)).toEqual(before);
@@ -1559,7 +1388,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
   });
 
   it.each(['CHAT', 'CHANNEL', 'BOTH'] as const)(
-    'enrolls the exact saved %s occurrence without requiring current publication targets',
+    'declines test mode without reading an exact saved %s audience',
     async (kind) => {
       await ensureDesignatedChats();
       const item = await occurrence();
@@ -1567,130 +1396,53 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
         const linked = await designatedEnvelope(item, entityType);
         await delivery(linked, { targetChatId: designated[entityType] });
       }
-      expect(
-        await db.publicationTarget.count({ where: { publicationId: root.publicationId } }),
-      ).toBe(0);
-      await expectEquivalentNoWrite(item, 'test');
+      await expectTestRefusalNoWrite(item);
+      await expectEquivalentNoWrite(item);
     },
   );
-
-  it('checks both saved envelopes of this occurrence even if only one supplies the witness', async () => {
-    const item = await occurrence();
-    await delivery(await designatedEnvelope(item), { targetChatId: designated.CHAT });
-    const second = await envelope(item, { entityType: 'CHANNEL', savedTargets: [sourceChatId] });
-    expect(await unchanged(item, 'test')).toBe(false);
-    await db.managedBroadcast.update({
-      where: { id: second.broadcastId },
-      data: { targetChatIds: [designated.CHANNEL] },
-    });
-    // FLAG: An empty sibling is allowed; the independent positive proof still needs real work.
-    await expectEquivalentNoWrite(item, 'test');
-    await delivery(second, { targetChatId: sourceChatId, status: 'SENT' });
-    expect(await unchanged(item, 'test')).toBe(false);
-  });
-
-  it.each([
-    ['foreign', ['-999999']],
-    ['mixed', [designated.CHAT, '-999999']],
-    ['wrong entity', [designated.CHANNEL]],
-    ['empty', []],
-    ['object', { target: designated.CHAT }],
-    ['string', designated.CHAT],
-  ] satisfies Array<[string, Prisma.InputJsonValue]>)(
-    'refuses the %s saved audience before considering a matching delivery',
-    async (_label, savedTargets) => {
-      const item = await occurrence();
-      await delivery(await envelope(item, { savedTargets }), { targetChatId: designated.CHAT });
-      expect(await unchanged(item, 'test')).toBe(false);
-      expect(await unchanged(item, '100')).toBe(true);
-    },
-  );
-
-  it('refuses apply-to-all and a historical envelope content revision mismatch', async () => {
-    const item = await occurrence();
-    const linked = await designatedEnvelope(item);
-    await delivery(linked, { targetChatId: designated.CHAT });
-    await db.managedBroadcast.update({
-      where: { id: linked.broadcastId },
-      data: { applyToAllChats: true },
-    });
-    expect(await unchanged(item, 'test')).toBe(false);
-    const next = await db.publicationContentRevision.create({
-      data: { publicationId: root.publicationId, revision: 2, text: 'Synthetic newer revision' },
-    });
-    await db.managedBroadcast.update({
-      where: { id: linked.broadcastId },
-      data: { applyToAllChats: false, publicationContentRevisionId: next.id },
-    });
-    expect(await unchanged(item, 'test')).toBe(false);
-    expect(await unchanged(item, '100')).toBe(true);
-  });
-
-  it('rejects retained older delivery revisions through the unfiltered recipient page', async () => {
-    const prior = await occurrence();
-    const priorEnvelope = await designatedEnvelope(prior);
-    const receipt = await delivery(priorEnvelope, {
-      occurrenceIndex: 2,
-      targetChatId: designated.CHAT,
-      status: 'SENT',
-    });
-    const next = await db.publicationContentRevision.create({
-      data: { publicationId: root.publicationId, revision: 2, text: 'Synthetic newer revision' },
-    });
-    await db.publication.update({
-      where: { id: root.publicationId },
-      data: { canonicalContentRevisionId: next.id },
-    });
-    await db.publicationOccurrence.update({
-      where: { id: prior.occurrenceId },
-      data: { contentRevisionId: next.id },
-    });
-    await db.managedBroadcast.update({
-      where: { id: priorEnvelope.broadcastId },
-      data: { publicationContentRevisionId: next.id },
-    });
-    const item = { ...prior, revisionId: next.id };
-    const linked = { ...priorEnvelope, revisionId: next.id, envelopeRevisionId: next.id };
-    await delivery(linked, { targetChatId: designated.CHAT });
-    expect(
-      (await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: receipt.id } }))
-        .contentRevisionId,
-    ).toBe(root.revisionId);
-    expect(await unchanged(item, 'test')).toBe(false);
-    expect(await unchanged(item, '100')).toBe(true);
-  });
 
   it.each([0, 1, 2, 3])(
-    'bounds the complete saved recipient membership at page size %i',
+    'declines test mode without probing %i saved recipients or neighboring broadcasts',
     async (size) => {
       const item = await occurrence();
       const prefix = `synthetic-recipient-neighbor-${randomUUID()}-`;
-      const linked = await envelope(item, {
-        id: `${prefix}b`,
-        savedTargets: [designated.CHAT],
-      });
+      const linked = await envelope(item, { id: `${prefix}b`, savedTargets: [designated.CHAT] });
       for (const suffix of ['a', 'c']) {
         const foreign = await envelope(await occurrence(), { id: `${prefix}${suffix}` });
-        await delivery(foreign, { targetChatId: sourceChatId, status: 'SENDING' });
+        await delivery(foreign, { status: 'SENDING' });
       }
       for (let index = 1; index <= size; index += 1)
         await delivery(linked, { occurrenceIndex: index, targetChatId: designated.CHAT });
-      expect(await unchanged(item, 'test')).toBe(size > 0 && size <= 2);
+      await expectTestRefusalNoWrite(item);
+      expect(await unchanged(item, '100')).toBe(size > 0);
+      if (size > 0) await expectEquivalentNoWrite(item);
     },
   );
 
-  it('rejects a foreign recipient even with a valid saved JSON and a matching first recipient', async () => {
+  it.each([
+    { indexes: [] },
+    { indexes: [-2_147_483_648] },
+    { indexes: [2_147_483_647] },
+    { indexes: [-2_147_483_648, 2_147_483_647] },
+    { indexes: [-1, 0] },
+    { indexes: [-2_147_483_648, 0, 2_147_483_647] },
+  ])(
+    'declines test mode without reading integer-edge recipient history %j',
+    async ({ indexes }) => {
+      const item = await occurrence();
+      const linked = await designatedEnvelope(item);
+      for (const occurrenceIndex of indexes)
+        await delivery(linked, { occurrenceIndex, targetChatId: designated.CHAT });
+      await expectTestRefusalNoWrite(item);
+      expect(await unchanged(item, '100')).toBe(false);
+    },
+  );
+
+  it('keeps numeric proof independent of saved and editable audience/content metadata', async () => {
+    await ensureDesignatedChats();
     const item = await occurrence();
     const linked = await designatedEnvelope(item);
     await delivery(linked, { targetChatId: designated.CHAT });
-    await delivery(linked, { targetChatId: sourceChatId, status: 'SENT' });
-    expect(await unchanged(item, 'test')).toBe(false);
-    expect(await unchanged(item, '100')).toBe(true);
-  });
-
-  it('uses this saved occurrence after current targets/content and foreign history change', async () => {
-    const item = await occurrence();
-    await delivery(await designatedEnvelope(item), { targetChatId: designated.CHAT });
     await db.publicationTarget.create({
       data: {
         publicationId: root.publicationId,
@@ -1710,64 +1462,28 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       where: { id: root.publicationId },
       data: { canonicalContentRevisionId: next.id },
     });
+    await db.managedBroadcast.update({
+      where: { id: linked.broadcastId },
+      data: {
+        applyToAllChats: true,
+        targetChatIds: { foreign: true },
+        publicationContentRevisionId: next.id,
+      },
+    });
+    await expectTestRefusalNoWrite(item);
+    await expectEquivalentNoWrite(item);
     const history = await occurrence({ status: 'SENT' });
     await delivery(await envelope(history), { status: 'SENT' });
     await retainOwnedParentHistory(history);
-    await expectEquivalentNoWrite(item, 'test');
-    const plan = await explain(item, 'test');
-    expectBoundedPlan(plan, 'test', true);
-    const nodes = planNodes(plan);
-    expect(nodes.some((node) => node['Relation Name'] === 'publication_targets')).toBe(false);
-    expectOccurrenceSeek(nodes, true);
-    for (const scan of nodes.filter(
-      (node) => node['Relation Name'] === 'publication_occurrences' && node['Actual Loops'] > 0,
-    )) {
-      expect(scan['Shared Hit Blocks'] ?? 0).toBeLessThan(32);
-      expect(scan['Shared Read Blocks'] ?? 0).toBeLessThan(32);
-    }
-  });
-
-  it('does not infer saved test enrollment from the current designated publication targets', async () => {
-    await ensureDesignatedChats();
-    const item = await occurrence();
-    await delivery(await envelope(item));
-    await db.publicationTarget.create({
-      data: {
-        publicationId: root.publicationId,
-        targetChatId: designated.CHAT,
-        entityType: 'CHAT',
-        position: 0,
-      },
-    });
-    expect(await unchanged(item, 'test')).toBe(false);
-  });
-
-  it('rejects compressed and uncompressed oversized saved JSON before audience work', async () => {
-    const item = await occurrence();
-    const linked = await designatedEnvelope(item);
-    await delivery(linked, { targetChatId: designated.CHAT });
-    const uncompressed = Array.from({ length: 24 }, () => randomUUID());
-    await db.managedBroadcast.update({
-      where: { id: linked.broadcastId },
-      data: { targetChatIds: uncompressed },
-    });
-    const stored = () =>
-      db.$queryRaw<Array<{ compression: string | null; bytes: number }>>(Prisma.sql`
-      SELECT pg_column_compression(target_chat_ids) AS compression,
-        pg_column_size(target_chat_ids) AS bytes
-      FROM managed_broadcasts WHERE id = ${linked.broadcastId}
-    `);
-    expect((await stored())[0]).toMatchObject({ compression: null });
-    expect((await stored())[0]!.bytes).toBeGreaterThan(256);
-    expect(await unchanged(item, 'test')).toBe(false);
+    expectBoundedPlan(await explain(item), '100', true);
     await db.$executeRaw(Prisma.sql`
       UPDATE managed_broadcasts SET target_chat_ids = (
         SELECT jsonb_agg(${designated.CHAT}::text) FROM generate_series(1, 50000)
       ) WHERE id = ${linked.broadcastId}
     `);
-    expect((await stored())[0]!.compression).not.toBeNull();
-    expect(await unchanged(item, 'test')).toBe(false);
-    expect(await unchanged(item, '100')).toBe(true);
+    await expectTestRefusalNoWrite(item);
+    await expectEquivalentNoWrite(item);
+    expectBoundedPlan(await explain(item), '100', true);
   });
 
   it('keeps independent native 5/25/100 cohorts stable across occurrences at exact hash boundaries', async () => {
@@ -1947,18 +1663,284 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       await delivery(linked, { status: 'SENDING', targetChatId: 'synthetic-rollup-late-witness' });
       await expectEquivalentNoWrite(item);
       expectBoundedPlan(await explain(item), '100', true);
-      // Test enrollment rejects a large actual ledger through its unfiltered three-row page.
+      // Unsupported test mode must not execute an enrollment probe even for a large ledger.
       await db.managedBroadcast.update({
         where: { id: linked.broadcastId },
         data: { targetChatIds: [designated.CHAT] },
       });
-      expect(await unchanged(item, 'test')).toBe(false);
-      expectBoundedPlan(await explain(item, 'test'), 'test', true);
+      await expectTestRefusalNoWrite(item);
       const second = await envelope(item, { entityType: 'CHANNEL' });
       await delivery(second, { status: 'SENDING' });
       expectBoundedPlan(await explain(item), '100', true);
     },
   );
+
+  describe('one fixed 50000-row owned recipient churn history', () => {
+    let item: Occurrence;
+    let churn: Envelope;
+    let emptyTail: Envelope;
+    let oneTail: Envelope;
+    let completedPhase = 0;
+    let phaseFailed = false;
+
+    beforeAll(() => {
+      sharedChurnFixture = true;
+      publicationIds = [];
+      ownedChatIds = [];
+    });
+
+    async function drainPhase() {
+      const phase = activeChurnPhase;
+      if (!phase) return;
+      phase.stopped = true;
+      await phase.done.catch(() => undefined);
+      activeChurnPhase = undefined;
+    }
+
+    afterEach(drainPhase, 15_000);
+    afterAll(async () => {
+      // FLAG: A Jest timeout does not cancel its async body. Stop new SQL and await
+      // the owned phase before cleanup; never reset ownership under a running body.
+      await drainPhase();
+      try {
+        await cleanupOwnedFixture(publicationIds, ownedChatIds);
+      } finally {
+        sharedChurnFixture = false;
+      }
+    }, 60_000);
+
+    it('drains an in-flight operation and refuses its next SQL boundary before cleanup', async () => {
+      const release = gate();
+      const state = { stopped: false, deadline: Date.now() + 18_000, done: Promise.resolve() };
+      activeChurnPhase = state;
+      const nextSql = jest.fn();
+      state.done = release.promise.then(() => {
+        checkChurnPhase();
+        nextSql();
+      });
+      const rejected = expect(state.done).rejects.toThrow('stopped before its next SQL');
+      let drained = false;
+      const draining = drainPhase().then(() => {
+        drained = true;
+      });
+      try {
+        await Promise.resolve();
+        expect(drained).toBe(false);
+        expect(state.stopped).toBe(true);
+      } finally {
+        release.resolve();
+        await draining;
+      }
+      await rejected;
+      expect(nextSql).not.toHaveBeenCalled();
+      expect(activeChurnPhase).toBeUndefined();
+    });
+
+    function phase(index: number, name: string, run: () => Promise<void>) {
+      it(name, async () => {
+        expect(phaseFailed).toBe(false);
+        expect(completedPhase).toBe(index - 1);
+        // FLAG: Preserve the 30 s test and 10 s statement limits. The soft stop
+        // prevents the next SQL; afterEach also drains a timed-out current statement.
+        const state = { stopped: false, deadline: Date.now() + 18_000, done: Promise.resolve() };
+        activeChurnPhase = state;
+        state.done = Promise.resolve()
+          .then(run)
+          .then(() => {
+            checkChurnPhase();
+            completedPhase = index;
+          })
+          .catch((error: unknown) => {
+            phaseFailed = true;
+            throw error;
+          });
+        await state.done;
+      });
+    }
+
+    async function capture(phase: string, expectedCount: number): Promise<void> {
+      checkChurnPhase();
+      expect(await db.managedBroadcastDelivery.count()).toBe(expectedCount);
+      checkChurnPhase();
+      const relations = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+        SELECT relname AS relation, relpages AS pages, reltuples::double precision AS "estimatedRows",
+          relallvisible AS "allVisiblePages", pg_relation_size(oid)::text AS bytes
+        FROM pg_catalog.pg_class
+        WHERE oid IN (
+          'managed_broadcast_deliveries'::regclass,
+          'managed_broadcast_deliveries_broadcast_occurrence_target_key'::regclass,
+          'managed_broadcast_deliveries_broadcast_occurrence_status_idx'::regclass
+        ) ORDER BY relname
+      `);
+      checkChurnPhase();
+      const activity = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+        SELECT n_live_tup::double precision AS "estimatedLiveRows",
+          n_dead_tup::double precision AS "estimatedDeadRows", last_analyze, last_autoanalyze,
+          last_vacuum, last_autovacuum, analyze_count::double precision AS "analyzeCount",
+          autovacuum_count::double precision AS "autovacuumCount"
+        FROM pg_catalog.pg_stat_all_tables
+        WHERE relid = 'managed_broadcast_deliveries'::regclass
+      `);
+      checkChurnPhase();
+      const columns = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+        SELECT attname AS column, avg_width AS "averageWidth", n_distinct AS "distinctEstimate",
+          correlation
+        FROM pg_catalog.pg_stats
+        WHERE schemaname = 'public' AND tablename = 'managed_broadcast_deliveries'
+          AND attname IN ('broadcast_id', 'occurrence_index', 'target_chat_id', 'status')
+        ORDER BY attname
+      `);
+      console.info(
+        'Publication recipient fixed churn statistics',
+        JSON.stringify({
+          phase,
+          actualRows: expectedCount,
+          relations,
+          activity,
+          columns,
+        }),
+      );
+      checkChurnPhase();
+      await db.$transaction(
+        async (tx) => {
+          for (const [tail, expectedUnchanged] of [
+            [item, false],
+            [emptyTail, false],
+            [oneTail, true],
+          ] as const) {
+            checkChurnPhase();
+            const before = await identity(tail, tx);
+            checkChurnPhase();
+            await expectTestRefusalNoWrite(tail, tx);
+            checkChurnPhase();
+            expect(await unchanged(tail, '100', decisionAt, tx)).toBe(expectedUnchanged);
+            checkChurnPhase();
+            const old = await original(tx, tail.occurrenceId);
+            const canonical = resolvePublicationOccurrenceRollupStatus(
+              old.legacyBroadcasts,
+              old.scheduledAt,
+              decisionAt,
+            );
+            if (expectedUnchanged) {
+              expect(canonical).toBe(old.status);
+              checkChurnPhase();
+              await expectEquivalentNoWrite(tail, '100', tx);
+            }
+            console.info(
+              'Publication recipient refusal and numeric churn phase',
+              JSON.stringify({
+                phase,
+                case: tail === item ? 'retained' : tail === emptyTail ? 'empty' : 'one',
+                shortcut: expectedUnchanged,
+                canonical,
+              }),
+            );
+            checkChurnPhase();
+            expectBoundedPlan(await explain(tail, '100', tx), '100', true);
+            checkChurnPhase();
+            expect(await identity(tail, tx)).toEqual(before);
+          }
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, timeout: 15_000 },
+      );
+    }
+
+    phase(
+      1,
+      'constructs one retained native fixture without replacing its physical history',
+      async () => {
+        await initializeOwnedFixture();
+        item = await occurrence();
+        const prefix = `synthetic-recipient-churn-${randomUUID()}-`;
+        const linked = await envelope(item, { id: `${prefix}b`, savedTargets: [designated.CHAT] });
+        await retainOwnedParentHistory(item);
+        for (let index = 1; index <= 64; index += 1) {
+          checkChurnPhase();
+          await delivery(linked, { targetChatId: `synthetic-churn-${index}`, status: 'SENT' });
+          await delivery(linked, {
+            occurrenceIndex: 2,
+            targetChatId: `synthetic-churn-${index}`,
+            status: 'SENDING',
+          });
+        }
+        const foreign = await envelope(await occurrence(), { id: `${prefix}c` });
+        await delivery(foreign, { status: 'SENT' });
+        churn = await envelope(await occurrence(), { id: `${prefix}a` });
+        emptyTail = await envelope(await occurrence(), {
+          id: `${prefix}z`,
+          savedTargets: [designated.CHAT],
+        });
+        oneTail = await envelope(await occurrence(), {
+          id: `${prefix}y`,
+          savedTargets: [designated.CHAT],
+        });
+        await delivery(oneTail, { targetChatId: designated.CHAT });
+      },
+    );
+    phase(2, 'proves test refusal and bounded numeric work before churn', async () => {
+      checkChurnPhase();
+      await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+      await capture('baseline', 130);
+    });
+    phase(3, 'inserts exactly 50000 owned recipients in finite chunks', async () => {
+      for (let first = 1; first <= 50_000; first += 2_500) {
+        checkChurnPhase();
+        const inserted = await db.$executeRaw(Prisma.sql`
+        INSERT INTO managed_broadcast_deliveries (
+          id, broadcast_id, occurrence_index, target_chat_id, content_revision_id,
+          dialog_bot_id, publisher_dialog_context, publication_policy_revision, status, updated_at
+        )
+        SELECT ${churn.broadcastId} || '-churn-' || n::text, ${churn.broadcastId}, 1,
+          'synthetic-recipient-churn-' || n::text, ${churn.revisionId}, ${dialogBotId},
+          ${JSON.stringify({ version: 1, dialogBotId, buttons: [] })}::jsonb, 0,
+          'PENDING'::"ManagedBroadcastDeliveryStatus", ${decisionAt}
+        FROM generate_series(${first}::integer, ${first + 2_499}::integer) n
+      `);
+        expect(inserted).toBe(2_500);
+      }
+      checkChurnPhase();
+      await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+    });
+    phase(4, 'proves test refusal and bounded numeric work with retained churn', async () => {
+      await capture('retained-50000', 50_130);
+    });
+    phase(
+      5,
+      'deletes exactly the owned churn in bounded pages without vacuuming history',
+      async () => {
+        let removed = 0;
+        for (let page = 0; page < 100; page += 1) {
+          checkChurnPhase();
+          const rows = await db.managedBroadcastDelivery.findMany({
+            where: { broadcastId: churn.broadcastId },
+            select: { id: true },
+            orderBy: [{ broadcastId: 'asc' }, { occurrenceIndex: 'asc' }, { targetChatId: 'asc' }],
+            take: 500,
+          });
+          expect(rows).toHaveLength(500);
+          checkChurnPhase();
+          const result = await db.managedBroadcastDelivery.deleteMany({
+            where: { broadcastId: churn.broadcastId, id: { in: rows.map((row) => row.id) } },
+          });
+          expect(result.count).toBe(500);
+          removed += result.count;
+        }
+        expect(removed).toBe(50_000);
+        checkChurnPhase();
+        expect(
+          await db.managedBroadcastDelivery.count({ where: { broadcastId: churn.broadcastId } }),
+        ).toBe(0);
+      },
+    );
+    phase(6, 'proves bounded work after deletion with stale statistics', async () => {
+      await capture('deleted-stale-statistics', 130);
+    });
+    phase(7, 'proves bounded work after analyzing the same deleted history', async () => {
+      checkChurnPhase();
+      await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+      await capture('deleted-analyzed', 130);
+    });
+  });
 
   const readParentStatistics = (client: QueryReader = db) =>
     client.$queryRaw<Array<{ relation: string; estimatedRows: number }>>(Prisma.sql`
@@ -2006,7 +1988,8 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
               },
             });
           }
-          for (const mode of ['100', 'test'] as const) {
+          await expectTestRefusalNoWrite(item, tx);
+          for (const mode of ['100'] as const) {
             expect(await readParentStatistics(tx)).toEqual(emptyParentStatistics);
             expect(await probe(item, mode, tx)).toBeUndefined();
             // FLAG: The existing reader remains the decision oracle when the
@@ -2142,8 +2125,7 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           });
           await assertNoWrite();
           await assertPlan();
-          await assertNoWrite('test');
-          await assertPlan('test');
+          await expectTestRefusalNoWrite(item, tx);
           expect(await identity(item, tx)).toEqual(before);
           await assertPhaseStatistics();
         }

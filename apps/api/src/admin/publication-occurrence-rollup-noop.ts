@@ -4,6 +4,10 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { PublicationOccurrenceRollupNoopObserver } from './publication-occurrence-rollup-noop-observer';
 
 export type PublicationOccurrenceRollupNoopRollout = 'off' | 'test' | '5' | '25' | '100';
+export type PublicationOccurrenceRollupNoopQueryRollout = Exclude<
+  PublicationOccurrenceRollupNoopRollout,
+  'off' | 'test'
+>;
 export type PublicationOccurrenceRollupNoopSnapshot = {
   status: PublicationOccurrenceStatus;
   scheduledAt: Date;
@@ -12,106 +16,23 @@ export type PublicationOccurrenceRollupNoopSnapshot = {
   hasActivePending: boolean;
 };
 
-const TEST_CHAT_ID = '-78271094414679';
-const TEST_CHANNEL_ID = '-78271171091799';
-const MAX_TEST_AUDIENCE_JSON_BYTES = 256;
-
 export function parsePublicationOccurrenceRollupNoopRollout(
   value: unknown,
 ): PublicationOccurrenceRollupNoopRollout {
   return value === 'test' || value === '5' || value === '25' || value === '100' ? value : 'off';
 }
 
-function buildTestEnrollment(): Prisma.Sql {
-  // FLAG: Enroll this saved occurrence, including every linked envelope and unfiltered
-  // recipient page. Current editable targets and other occurrences are not its audience.
-  return Prisma.sql`(
-    WITH rollup_envelope_page AS MATERIALIZED (
-      SELECT envelope."id"
-      FROM "managed_broadcasts" AS envelope
-      WHERE envelope."publication_occurrence_id" = occurrence."id"
-      LIMIT 3
-    )
-    SELECT CASE WHEN COUNT(*) BETWEEN 1 AND 2 THEN NOT EXISTS (
-      SELECT 1
-      FROM rollup_envelope_page AS envelope_id
-      CROSS JOIN LATERAL (
-        SELECT "id", "dispatch_profile", "required_bot_id", "publication_content_revision_id",
-          "apply_to_all_chats", "target_chat_ids", "entity_type"
-        FROM "managed_broadcasts"
-        WHERE "id" = envelope_id."id"
-        OFFSET 0
-      ) AS saved
-      WHERE (CASE WHEN saved."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
-        AND saved."required_bot_id" = occurrence."required_bot_id"
-        AND saved."publication_content_revision_id" = occurrence."content_revision_id"
-        AND saved."apply_to_all_chats" = FALSE
-      THEN (
-        CASE WHEN pg_column_compression(saved."target_chat_ids") IS NULL
-          AND pg_column_size(saved."target_chat_ids") <= ${MAX_TEST_AUDIENCE_JSON_BYTES}
-        THEN saved."target_chat_ids" = jsonb_build_array(CASE saved."entity_type"
-          WHEN 'CHAT'::"ChatEntityType" THEN ${TEST_CHAT_ID}
-          WHEN 'CHANNEL'::"ChatEntityType" THEN ${TEST_CHANNEL_ID}
-        END)
-        ELSE FALSE END
-      ) AND (
-        WITH rollup_recipient_keys AS MATERIALIZED (
-          SELECT recipient_key."broadcast_id", recipient_key."occurrence_index",
-            recipient_key."target_chat_id"
-          FROM "managed_broadcast_deliveries" AS recipient_key
-          WHERE recipient_key."broadcast_id" >= saved."id"
-          ORDER BY recipient_key."broadcast_id", recipient_key."occurrence_index",
-            recipient_key."target_chat_id"
-          LIMIT 3
-        ), rollup_recipient_page AS MATERIALIZED (
-          SELECT recipient."target_chat_id", recipient."publication_occurrence_id",
-            recipient."content_revision_id", recipient."required_bot_id", recipient."dispatch_profile"
-          FROM rollup_recipient_keys AS candidate
-          CROSS JOIN LATERAL (
-            SELECT recipient_saved."broadcast_id", recipient_saved."occurrence_index",
-              recipient_saved."target_chat_id", recipient_saved."publication_occurrence_id",
-              recipient_saved."content_revision_id", recipient_saved."required_bot_id",
-              recipient_saved."dispatch_profile"
-            FROM "managed_broadcast_deliveries" AS recipient_saved
-            WHERE ROW(recipient_saved."broadcast_id", recipient_saved."occurrence_index",
-              recipient_saved."target_chat_id") >= ROW(candidate."broadcast_id",
-                candidate."occurrence_index", candidate."target_chat_id")
-            ORDER BY recipient_saved."broadcast_id", recipient_saved."occurrence_index",
-              recipient_saved."target_chat_id"
-            LIMIT 1
-          ) AS recipient
-          WHERE candidate."broadcast_id" = saved."id"
-            AND recipient."broadcast_id" = candidate."broadcast_id"
-            AND recipient."occurrence_index" = candidate."occurrence_index"
-            AND recipient."target_chat_id" = candidate."target_chat_id"
-        )
-        SELECT COUNT(*) <= 2 AND COALESCE(BOOL_AND((
-          recipient."target_chat_id" = CASE saved."entity_type"
-            WHEN 'CHAT'::"ChatEntityType" THEN ${TEST_CHAT_ID}
-            WHEN 'CHANNEL'::"ChatEntityType" THEN ${TEST_CHANNEL_ID}
-          END
-          AND recipient."publication_occurrence_id" = occurrence."id"
-          AND recipient."content_revision_id" = occurrence."content_revision_id"
-          AND recipient."required_bot_id" = occurrence."required_bot_id"
-          AND recipient."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
-        ) IS TRUE), TRUE)
-        FROM rollup_recipient_page AS recipient
-      ) ELSE FALSE END) IS NOT TRUE
-    ) ELSE FALSE END
-    FROM rollup_envelope_page
-  )`;
-}
-
 export function buildPublicationOccurrenceRollupNoopQuery(
   occurrenceId: string,
-  rollout: Exclude<PublicationOccurrenceRollupNoopRollout, 'off'>,
+  rollout: PublicationOccurrenceRollupNoopQueryRollout,
 ): Prisma.Sql {
+  if (rollout !== '5' && rollout !== '25' && rollout !== '100') {
+    throw new TypeError('Unsupported publication occurrence rollup query mode');
+  }
   const enrollment =
-    rollout === 'test'
-      ? buildTestEnrollment()
-      : rollout === '100'
-        ? Prisma.sql`TRUE`
-        : Prisma.sql`(
+    rollout === '100'
+      ? Prisma.sql`TRUE`
+      : Prisma.sql`(
             ('x' || substr(md5(
               'publisher-occurrence-rollup-noop-v1:'
               || octet_length(publication."required_bot_id")::text || ':'
@@ -256,6 +177,12 @@ export class PublicationOccurrenceRollupNoopReader {
 
   async canSkip(occurrenceId: string): Promise<boolean> {
     if (this.rollout === 'off') return false;
+    // FLAG: Test enrollment has no accepted bounded recipient plan. Decline before
+    // any SQL so the caller executes the canonical full rollup, including uncertainty.
+    if (this.rollout === 'test') {
+      this.observer.record(this.rollout, false, 'fallback');
+      return false;
+    }
     try {
       const rows = await this.prisma.$queryRaw<PublicationOccurrenceRollupNoopSnapshot[]>(
         buildPublicationOccurrenceRollupNoopQuery(occurrenceId, this.rollout),

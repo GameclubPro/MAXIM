@@ -40,19 +40,29 @@ broadcast/index/status, using the matching order and `LIMIT 1`. Exact identity i
 after that bound; a neighboring key never proves the witness. The installed-source guard
 requires both complete probes, including their bounds and final exact comparisons.
 
-`off` performs no extra SQL or observation. `test` admits only the exact saved
-occurrence: every linked envelope must contain the designated singleton chat
-`-78271094414679` or channel `-78271171091799` for its stored entity type, with matching
-route, bot and revision. The saved audience must be uncompressed and at most 256 bytes.
-Envelope fields use exact parameterized LATERAL reads. Each recipient page first reads
-up to three unfiltered keys in broadcast/occurrence/target order, then checks exact
-broadcast ownership and seeks metadata with the complete composite lower bound,
-matching order and LIMIT 1. All three identity columns must match after that cap.
-Preserve materialized pages, both capped occurrence seeks, envelope LATERAL `OFFSET 0`,
-and recipient metadata limits. More than two own rows refuses enrollment;
-neighboring broadcast keys never establish recipient identity. Current editable targets and other historical
-occurrences do not redefine this operation. These bounds are admission constraints,
-not a replacement for fresh live test authorization.
+`off` performs no extra SQL or observation. `test` remains a recognized configuration
+value for compatible readers, but the shortcut is currently unsupported: `canSkip`
+returns false before any SQL and emits only the existing unadmitted fallback
+observation. The caller continues through the canonical full rollup. The query
+builder accepts numeric modes only and refuses unsupported runtime arguments before
+constructing SQL. An enrolled-looking database response cannot bypass this refusal.
+This is a conservative correction after native plan failures, not accepted acceleration.
+
+The retired test audience SQL selected saved envelopes/recipient keys before membership
+filters. Native checks rejected the original LIMIT3 (Seq Scan + Sort) and four
+replacement candidates: global LIMIT1 successors read 1,359 blocks on a dead
+foreign tail; two upper-bound variants and exact-broadcast/suffix successors
+selected Bitmap Heap + Sort over 128/127/126 rows.
+No failed shape remains reachable through test mode. Native tests retain no-SQL/no-write
+refusal, canonical caller fallthrough and numeric equivalence/strict physical plans
+across baseline, 50,000 retained rows, deleted stale statistics and deleted after
+ANALYZE, including empty/one-row tails. Budgets and timeouts are unchanged; no VACUUM
+or planner forcing is used. Finite checks do not prove a universal MVCC bound.
+
+Reopening test enrollment needs a separately reviewed bounded design and native proof.
+Test-only refusal produces zero shortcut exposure and cannot satisfy enabled-path or
+numeric rollout acceptance. Live tests can still exercise normal product behavior in
+the designated entities after fresh exact authorization, with marked content.
 
 `5`, `25` and `100` use the separate stable bot/publication namespace
 `publisher-occurrence-rollup-noop-v1`. Numeric modes do not inspect saved audience JSON
@@ -61,12 +71,13 @@ or scan publication history. Changing temporal selection alone never enables thi
 ## Preview and apply
 
 First deploy the compatible runtime with default `off` through the normal release flow.
+Do not activate `test` expecting shortcut exposure while its reader is unsupported.
 Use the exact installed source SHA with successful `Required` and
 `Analyze JavaScript and TypeScript` checks, including for preview:
 
 ```bash
-./infra/scripts/vps-connect.sh publisher-rollup-noop-rollout test
-./infra/scripts/vps-connect.sh publisher-rollup-noop-rollout test --apply
+./infra/scripts/vps-connect.sh publisher-rollup-noop-rollout off
+./infra/scripts/vps-connect.sh publisher-rollup-noop-rollout off --apply
 ```
 
 Finite modes are `off`, `test`, `5`, `25` and `100`. The controller never promotes a stage
@@ -122,7 +133,9 @@ even when additive DELETE receipt references are present. The existing sliding
 created-occurrence report establishes occurrence-status evidence only; repeated
 observer counters and test shortcuts do not establish a complete operation/receipt
 or exposure denominator. Keep missing links, retention gaps and saturation explicit.
-Until that separate acceptance, only `off` and designated `test` enrollment are permitted.
+Until that separate acceptance, only `off` and the configured `test` fallback are
+permitted. Reopening test enrollment requires its separate physical proof; fallback
+observations supply no shortcut exposure.
 Then observe `5` and `25` for at least 24 hours each, and `100` for at least 48 hours.
 Record exact source/image, UTC windows, collectors, sample gaps, fixed cohort counts,
 actual exposure and comparable load. Keep NOW/scheduled and media dimensions separate;

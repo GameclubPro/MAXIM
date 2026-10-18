@@ -669,175 +669,71 @@ test('rollup source guard binds real installed consumer, default-off, proof and 
     ],
     ['reader', (value) => value.replace("if (this.rollout === 'off') return false;", '')],
     ['reader', (value) => value.replace('return snapshot.status === expected', 'return true')],
+    ['reader', (value) => value.replace("if (this.rollout === 'test') {", 'if (false) {')],
     [
       'reader',
-      (value) => value.replace('rollup_recipient_page AS MATERIALIZED', 'rollup_recipient_page AS'),
+      (value) =>
+        value.replace(
+          "this.observer.record(this.rollout, false, 'fallback');\n      return false;",
+          "this.observer.record(this.rollout, false, 'fallback');\n      return true;",
+        ),
+    ],
+    [
+      'reader',
+      (value) => value.replace("if (this.rollout === 'test') {", "if (this.rollout !== 'test') {"),
+    ],
+    [
+      'reader',
+      (value) =>
+        value.replace(
+          /(export type PublicationOccurrenceRollupNoopQueryRollout = Exclude<[\s\S]*?)'off' \| 'test'/u,
+          "$1'off'",
+        ),
+    ],
+    [
+      'reader',
+      (value) =>
+        value.replace(
+          "rollout !== '5' && rollout !== '25' && rollout !== '100'",
+          "rollout !== '5' && rollout !== '25'",
+        ),
+    ],
+    [
+      'reader',
+      (value) =>
+        value.replace(
+          "throw new TypeError('Unsupported publication occurrence rollup query mode');",
+          '',
+        ),
+    ],
+    [
+      'reader',
+      (value) =>
+        value.replace(
+          "    if (this.rollout === 'test') {",
+          "    await this.prisma.$queryRaw(Prisma.sql`SELECT 1`);\n    if (this.rollout === 'test') {",
+        ),
+    ],
+    [
+      'reader',
+      (value) =>
+        value.replace(
+          "    if (this.rollout === 'off') return false;",
+          "    await this.prisma.$queryRaw(Prisma.sql`SELECT 1`);\n    if (this.rollout === 'off') return false;",
+        ),
+    ],
+    [
+      'runtime',
+      (value) => value.replace('await rollupPublicationOccurrence(this.prisma, occurrenceId);', ''),
     ],
     ...[
-      (value) => value.replace('rollup_recipient_keys AS MATERIALIZED', 'rollup_recipient_keys AS'),
-      (value) => value.replace('SELECT recipient_key."broadcast_id"', 'SELECT recipient_key.*'),
-      (value) =>
-        value.replace(
-          'recipient_key."broadcast_id" >= saved."id"',
-          'recipient_key."broadcast_id" > saved."id"',
-        ),
-      (value) =>
-        value.replace(
-          'recipient_key."broadcast_id" >= saved."id"',
-          'recipient_key."broadcast_id" = saved."id"',
-        ),
-      (value) => value.replace('>= saved."id"', '>= occurrence."id"'),
-      (value) =>
-        value.replace(/^[ \t]*ORDER BY recipient_key[^\n]+\n[ \t]*recipient_key[^\n]+$/mu, ''),
-      (value) =>
-        value.replace(
-          /(ORDER BY recipient_key\."broadcast_id",[^\n]+\n[ \t]*recipient_key\."target_chat_id")/u,
-          '$1 DESC',
-        ),
-      (value) =>
-        value.replace(
-          /ORDER BY recipient_key\."broadcast_id",[^\n]+\n[ \t]*recipient_key\."target_chat_id"/u,
-          (order) => order.replace('recipient_key."target_chat_id"', 'recipient_key."status"'),
-        ),
-      (value) => value.replace(/^[ \t]*LIMIT 3[ \t]*$/mu, ''),
-      (value) => value.replace('LIMIT 3', 'LIMIT 2'),
-      (value) => value.replace('LIMIT 3', 'LIMIT 4'),
-      (value) =>
-        value.replace(
-          'WHERE recipient_key."broadcast_id" >= saved."id"',
-          `WHERE recipient_key."broadcast_id" >= saved."id" AND recipient_key."status" = 'PENDING'`,
-        ),
-      (value) =>
-        value.replace(
-          'WHERE recipient_key."broadcast_id" >= saved."id"',
-          'WHERE recipient_key."broadcast_id" >= saved."id" AND recipient_key."occurrence_index" = 1',
-        ),
-      (value) =>
-        value.replace(
-          'WHERE recipient_key."broadcast_id" >= saved."id"',
-          'WHERE recipient_key."broadcast_id" >= saved."id" AND recipient_key."content_revision_id" = occurrence."content_revision_id"',
-        ),
-    ].map((mutate) => [
-      'reader',
-      (value) =>
-        value.replace(/WITH rollup_recipient_keys AS MATERIALIZED \([\s\S]*?\n[ \t]*\)/u, mutate),
-    ]),
-    ...[
-      (value) => value.replace('CROSS JOIN LATERAL', 'CROSS JOIN'),
-      (value) => value.replace('>= ROW(candidate."broadcast_id"', '> ROW(candidate."broadcast_id"'),
-      (value) => value.replace('>= ROW(candidate."broadcast_id"', '= ROW(candidate."broadcast_id"'),
-      (value) => value.replace('>= ROW(candidate."broadcast_id"', '>= ROW(saved."id"'),
-      (value) =>
-        value.replace(/^[ \t]*ORDER BY recipient_saved[^\n]+\n[ \t]*recipient_saved[^\n]+$/mu, ''),
-      (value) =>
-        value.replace(
-          /(ORDER BY recipient_saved\."broadcast_id",[^\n]+\n[ \t]*recipient_saved\."target_chat_id")/u,
-          '$1 DESC',
-        ),
-      (value) => value.replace(/^[ \t]*LIMIT 1[ \t]*$/mu, ''),
-      (value) => value.replace('LIMIT 1', 'LIMIT 2'),
-      (value) =>
-        value.replace(
-          'candidate."occurrence_index", candidate."target_chat_id")',
-          'candidate."occurrence_index", candidate."target_chat_id") AND recipient_saved."status" = \'PENDING\'',
-        ),
-      (value) => value.replace(/^[ \t]*AND recipient\."broadcast_id"[^\n]+$/mu, ''),
-      (value) => value.replace(/^[ \t]*AND recipient\."occurrence_index"[^\n]+$/mu, ''),
-      (value) => value.replace(/^[ \t]*AND recipient\."target_chat_id"[^\n]+$/mu, ''),
-      (value) =>
-        value.replace(
-          'recipient."broadcast_id" = candidate."broadcast_id"',
-          'recipient."broadcast_id" >= candidate."broadcast_id"',
-        ),
-      (value) =>
-        value.replace(
-          'recipient."broadcast_id" = candidate."broadcast_id"',
-          'recipient."broadcast_id" = saved."id"',
-        ),
-      (value) => value.replace('candidate."occurrence_index"', 'candidate."target_chat_id"'),
-      (value) => value.replace('candidate."target_chat_id"', 'saved."id"'),
-      (value) => value.replace('candidate."broadcast_id" = saved."id"', 'TRUE'),
-      (value) =>
-        value.replace(
-          'candidate."broadcast_id" = saved."id"',
-          'candidate."broadcast_id" >= saved."id"',
-        ),
-      (value) =>
-        value.replace(
-          'candidate."broadcast_id" = saved."id"',
-          'candidate."broadcast_id" = occurrence."id"',
-        ),
-      (value) =>
-        value.replace(
-          'candidate."broadcast_id" = saved."id"',
-          'candidate."broadcast_id" = saved."id" OR TRUE',
-        ),
-    ].map((mutate) => [
-      'reader',
-      (value) =>
-        value.replace(
-          /rollup_recipient_page AS MATERIALIZED \([\s\S]*?\n[ \t]*\)\n[ \t]*SELECT COUNT/u,
-          mutate,
-        ),
-    ]),
-    ...[
-      (value) => value.replace('rollup_envelope_page AS MATERIALIZED', 'rollup_envelope_page AS'),
-      (value) => value.replace('LIMIT 3', 'LIMIT 2'),
-      (value) => value.replace('envelope."publication_occurrence_id" = occurrence."id"', 'TRUE'),
-      (value) =>
-        value.replace(
-          'envelope."publication_occurrence_id" = occurrence."id"',
-          'envelope."publication_occurrence_id" >= occurrence."id"',
-        ),
-    ].map((mutate) => [
-      'reader',
-      (value) =>
-        value.replace(/WITH rollup_envelope_page AS MATERIALIZED \([\s\S]*?\n[ \t]*\)/u, mutate),
-    ]),
-    ...[
-      (value) => value.replace('CROSS JOIN LATERAL', 'CROSS JOIN'),
-      (value) => value.replace(/^[ \t]*OFFSET 0[ \t]*$/mu, ''),
-      (value) => value.replace('OFFSET 0', 'OFFSET 1'),
-      (value) => value.replace('"id" = envelope_id."id"', '"id" >= envelope_id."id"'),
-      (value) => value.replace('"id" = envelope_id."id"', '"id" = occurrence."id"'),
-      (value) => value.replace('"id" = envelope_id."id"', '"id" = envelope_id."id" OR TRUE'),
-    ].map((mutate) => [
-      'reader',
-      (value) =>
-        value.replace(/FROM rollup_envelope_page AS envelope_id[\s\S]*?\) AS saved/u, mutate),
-    ]),
-    ['reader', (value) => value.replace('-78271171091799', '-1')],
-    ['reader', (value) => value.replace('COUNT(*) BETWEEN 1 AND 2', 'COUNT(*) <= 2')],
-    [
-      'reader',
-      (value) => value.replace('COUNT(*) <= 2 AND COALESCE', 'COUNT(*) <= 3 AND COALESCE'),
-    ],
-    [
-      'reader',
-      (value) => value.replace('saved."required_bot_id" = occurrence."required_bot_id"', 'TRUE'),
-    ],
-    [
-      'reader',
-      (value) =>
-        value.replace(
-          'saved."publication_content_revision_id" = occurrence."content_revision_id"',
-          'TRUE',
-        ),
-    ],
-    [
-      'reader',
-      (value) => value.replace('recipient."publication_occurrence_id" = occurrence."id"', 'TRUE'),
-    ],
-    [
-      'reader',
-      (value) =>
-        value.replace('recipient."content_revision_id" = occurrence."content_revision_id"', 'TRUE'),
-    ],
-    [
-      'reader',
-      (value) =>
-        value.replace('recipient."required_bot_id" = occurrence."required_bot_id"', 'TRUE'),
-    ],
+      'buildTestEnrollment',
+      'rollup_recipient_first',
+      'rollup_envelope_page',
+      'target_chat_ids',
+      'publication_targets',
+      'pg_column_size',
+    ].map((retired) => ['reader', (value) => value + `\nconst ${retired} = true;\n`]),
     ['reader', (value) => value.replace('rollup_scope AS MATERIALIZED', 'rollup_scope AS')],
     [
       'reader',
@@ -1024,12 +920,20 @@ test('rollup source guard binds real installed consumer, default-off, proof and 
           .replace('      const decisionNow = new Date();', ''),
     ],
   ];
-  for (const [name, mutate] of mutations) {
+  for (const [index, [name, mutate]] of mutations.entries()) {
     const sources = rollupSources();
     const mutated = mutate(sources[name]);
-    assert.notEqual(mutated, sources[name], `mutation must change ${name}`);
+    assert.equal(
+      mutated !== sources[name],
+      true,
+      `mutation ${index} must change ${name}: ${mutate.toString()}`,
+    );
     sources[name] = mutated;
-    assert.throws(() => assertPublisherRollupNoopSource(sources), /source guard failed/u, name);
+    assert.throws(
+      () => assertPublisherRollupNoopSource(sources),
+      /source guard failed/u,
+      `mutation ${index} ${name}: ${mutate.toString()}`,
+    );
   }
   for (const name of ['schema', 'runtime', 'reader']) {
     const sources = rollupSources();
