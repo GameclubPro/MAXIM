@@ -1,5 +1,15 @@
 import { performMaxHttpRequest } from './max-http-request';
 import {
+  beginMaxHttpFailureRequest,
+  closeMaxHttpFailureOwner,
+  consumeMaxHttpOutcome,
+  createMaxHttpFailureOwner,
+  mapMaxHttpOutcome,
+  type MaxHttpFailureAssociation,
+  type MaxHttpFailureOwner,
+  type MaxHttpOutcome,
+} from './max-http-failure-association';
+import {
   projectMaxActionFailureDiagnostic,
   type MaxActionFailureFacts,
 } from './max-action-failure-diagnostic';
@@ -293,6 +303,32 @@ export type MaxChatMembersPage = {
 };
 
 export type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
+
+// FLAG: Descriptors contain no active owner. Each controlling wrapper owns one
+// invocation, including early admission failure; values and errors stay separate.
+const MAX_HTTP_ASSOCIATED_OPERATION = Symbol('max-http-associated-operation');
+type MaxHttpOperation<T> =
+  | (() => Promise<T>)
+  | Readonly<{
+      [MAX_HTTP_ASSOCIATED_OPERATION]: (owner: MaxHttpFailureOwner) => Promise<MaxHttpOutcome<T>>;
+    }>;
+
+function associatedMaxHttpOperation<T>(
+  operation: (owner: MaxHttpFailureOwner) => Promise<MaxHttpOutcome<T>>,
+): MaxHttpOperation<T> {
+  return { [MAX_HTTP_ASSOCIATED_OPERATION]: operation };
+}
+
+function scopeMaxHttpOperation<T>(
+  operation: MaxHttpOperation<T>,
+  scope: <R>(run: () => Promise<R>) => Promise<R>,
+): MaxHttpOperation<T> {
+  return typeof operation === 'function'
+    ? () => scope(operation)
+    : associatedMaxHttpOperation((owner) =>
+        scope(() => operation[MAX_HTTP_ASSOCIATED_OPERATION](owner)),
+      );
+}
 
 type MaxMessageMutationOperation = 'send' | 'edit' | 'delete' | 'answer';
 
@@ -3101,15 +3137,22 @@ export class MaxClientService implements OnModuleDestroy {
           await this.executeMessageMutation(
             'delete',
             action.chatId,
-            async () => {
-              const response = await this.request<Record<string, unknown>>('delete', '/messages', {
-                params: {
-                  message_id: deleteMessageId,
+            associatedMaxHttpOperation(async (owner) => {
+              const response = await this.request<Record<string, unknown>>(
+                'delete',
+                '/messages',
+                {
+                  params: {
+                    message_id: deleteMessageId,
+                  },
+                  ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
                 },
-                ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
+                owner,
+              );
+              return mapMaxHttpOutcome(response, (value) => {
+                this.assertSuccessfulDeleteMessageResponse(value);
               });
-              this.assertSuccessfulDeleteMessageResponse(response);
-            },
+            }),
             mutationOptions,
             beforeDelete,
           );
@@ -3754,14 +3797,16 @@ export class MaxClientService implements OnModuleDestroy {
 
       const data = await this.executeChatRequest(
         chatId,
-        async () =>
+        associatedMaxHttpOperation(async (owner) =>
           this.request<Record<string, unknown>>(
             'get',
             `/chats/${chatId}/members?${query.toString()}`,
             {
               ...(timeoutMs ? { timeout: timeoutMs } : {}),
             },
+            owner,
           ),
+        ),
         options,
       );
       const members = Array.isArray(data?.members)
@@ -6878,7 +6923,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async executeReadRequest<T>(
-    operation: () => Promise<T>,
+    operation: MaxHttpOperation<T>,
     options: {
       chatId?: string | null;
       trafficClass?: MaxApiTrafficClass;
@@ -6896,44 +6941,23 @@ export class MaxClientService implements OnModuleDestroy {
     const trafficClass = options.trafficClass ?? 'interactive';
     const actionHealthLane = options.actionHealthLane ?? trafficClass;
     const sourceTag = this.normalizeMetricSourceTag(options.sourceTag);
-    const circuitPermit = await this.acquireCircuitPermit(bot.id);
+    const associationOwner = typeof operation === 'function' ? null : createMaxHttpFailureOwner();
     try {
-      if (!options.deferRateLimitReservation)
-        await this.reserveRateLimitSlot(
-          bot.id,
-          options.chatId ?? null,
-          trafficClass,
-          sourceTag,
-          options.timeoutMs,
-          options.messageMutation,
-        );
-    } catch (error: unknown) {
-      await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
-      if (trafficClass === 'critical' && error instanceof MaxApiInternalRateLimitError) {
-        this.actionHealthService.recordFailureForLane(actionHealthLane, true, bot.id);
-        this.logUserFacingActionFailure(error, {
-          botId: bot.id,
-          trafficClass,
-          lane: actionHealthLane,
-          sourceTag,
-          facts: { failureOrigin: 'local_quota', isCritical: true },
-        });
-      }
-      throw error;
-    }
-
-    try {
-      const result = await this.botContext.runWithBot(bot.id, () => operation());
-      await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
-      this.actionHealthService.recordSuccessForLane(actionHealthLane, bot.id);
-      return result;
-    } catch (error: unknown) {
-      if (
-        options.deferredQuotaState?.error === error &&
-        error instanceof MaxApiInternalRateLimitError
-      ) {
+      let failureAssociation: MaxHttpFailureAssociation | null = null;
+      const circuitPermit = await this.acquireCircuitPermit(bot.id);
+      try {
+        if (!options.deferRateLimitReservation)
+          await this.reserveRateLimitSlot(
+            bot.id,
+            options.chatId ?? null,
+            trafficClass,
+            sourceTag,
+            options.timeoutMs,
+            options.messageMutation,
+          );
+      } catch (error: unknown) {
         await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
-        if (trafficClass === 'critical') {
+        if (trafficClass === 'critical' && error instanceof MaxApiInternalRateLimitError) {
           this.actionHealthService.recordFailureForLane(actionHealthLane, true, bot.id);
           this.logUserFacingActionFailure(error, {
             botId: bot.id,
@@ -6945,66 +6969,112 @@ export class MaxClientService implements OnModuleDestroy {
         }
         throw error;
       }
-      if (this.shouldIgnoreActionHealthFailure(error, options)) {
-        await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
-        throw error;
-      }
 
-      const status = this.extractStatusCode(error);
-      const ignoreFailureMetrics =
-        typeof status === 'number' &&
-        Boolean(options.ignoreFailureMetricStatuses?.includes(status));
-      if (ignoreFailureMetrics) {
+      try {
+        const terminal = await this.botContext.runWithBot<T | MaxHttpOutcome<T>>(bot.id, () =>
+          typeof operation === 'function'
+            ? operation()
+            : operation[MAX_HTTP_ASSOCIATED_OPERATION](associationOwner!),
+        );
+        let result: T;
+        if (associationOwner) {
+          const outcome = consumeMaxHttpOutcome(associationOwner, terminal as MaxHttpOutcome<T>);
+          if (outcome.kind === 'failure') {
+            failureAssociation = outcome.association;
+            throw outcome.error;
+          }
+          result = outcome.value;
+        } else {
+          result = terminal as T;
+        }
         await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
+        this.actionHealthService.recordSuccessForLane(actionHealthLane, bot.id);
+        return result;
+      } catch (error: unknown) {
+        if (
+          options.deferredQuotaState?.error === error &&
+          error instanceof MaxApiInternalRateLimitError
+        ) {
+          await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
+          if (trafficClass === 'critical') {
+            this.actionHealthService.recordFailureForLane(actionHealthLane, true, bot.id);
+            this.logUserFacingActionFailure(error, {
+              botId: bot.id,
+              trafficClass,
+              lane: actionHealthLane,
+              sourceTag,
+              facts: { failureOrigin: 'local_quota', isCritical: true },
+            });
+          }
+          throw error;
+        }
+        if (this.shouldIgnoreActionHealthFailure(error, options)) {
+          await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
+          throw error;
+        }
+
+        const status = this.extractStatusCode(error);
+        const ignoreFailureMetrics =
+          typeof status === 'number' &&
+          Boolean(options.ignoreFailureMetricStatuses?.includes(status));
+        if (ignoreFailureMetrics) {
+          await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
+          throw error;
+        }
+        const isCritical =
+          status === 429 ||
+          (typeof status === 'number' && status >= 500) ||
+          this.isCriticalNetworkFailure(error);
+        this.actionHealthService.recordFailureForLane(actionHealthLane, isCritical, bot.id);
+        this.logUserFacingActionFailure(error, {
+          botId: bot.id,
+          trafficClass,
+          lane: actionHealthLane,
+          sourceTag,
+          facts: { failureOrigin: 'unlinked', isCritical },
+          association: failureAssociation,
+        });
+        if (isCritical) {
+          await this.registerCriticalFailure(bot.id, circuitPermit);
+        } else {
+          await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
+        }
+        if (status === 429) {
+          try {
+            await this.limiterRedis.eval(
+              MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
+              1,
+              `maxapi:gcra:v1:bot:${bot.id}:all:cooldown`,
+              String(Math.max(1, readMaxRetryAfterMs(error, Date.now()) || 30_000)),
+            );
+          } catch {
+            // FLAG: Preserve the actual HTTP 429 for durable retry even if Redis is unavailable.
+            // The next reservation still fails closed when the authoritative limiter is down.
+            this.logger.warn(
+              { botId: bot.id },
+              'Failed to retain MAX external rate-limit cooldown',
+            );
+          }
+          await this.recordRateLimitOutcome({
+            origin: 'external_429',
+            botId: bot.id,
+            chatId: options.chatId ?? null,
+            trafficClass,
+            sourceTag,
+            statusCode: status,
+            reason: this.extractErrorMessage(error) || 'MAX API 429 rate limit',
+          });
+        }
         throw error;
       }
-      const isCritical =
-        status === 429 ||
-        (typeof status === 'number' && status >= 500) ||
-        this.isCriticalNetworkFailure(error);
-      this.actionHealthService.recordFailureForLane(actionHealthLane, isCritical, bot.id);
-      this.logUserFacingActionFailure(error, {
-        botId: bot.id,
-        trafficClass,
-        lane: actionHealthLane,
-        sourceTag,
-        facts: { failureOrigin: 'unlinked', isCritical },
-      });
-      if (isCritical) {
-        await this.registerCriticalFailure(bot.id, circuitPermit);
-      } else {
-        await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
-      }
-      if (status === 429) {
-        try {
-          await this.limiterRedis.eval(
-            MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
-            1,
-            `maxapi:gcra:v1:bot:${bot.id}:all:cooldown`,
-            String(Math.max(1, readMaxRetryAfterMs(error, Date.now()) || 30_000)),
-          );
-        } catch {
-          // FLAG: Preserve the actual HTTP 429 for durable retry even if Redis is unavailable.
-          // The next reservation still fails closed when the authoritative limiter is down.
-          this.logger.warn({ botId: bot.id }, 'Failed to retain MAX external rate-limit cooldown');
-        }
-        await this.recordRateLimitOutcome({
-          origin: 'external_429',
-          botId: bot.id,
-          chatId: options.chatId ?? null,
-          trafficClass,
-          sourceTag,
-          statusCode: status,
-          reason: this.extractErrorMessage(error) || 'MAX API 429 rate limit',
-        });
-      }
-      throw error;
+    } finally {
+      if (associationOwner) closeMaxHttpFailureOwner(associationOwner);
     }
   }
 
   private async executeChatRequest<T>(
     chatId: string,
-    operation: () => Promise<T>,
+    operation: MaxHttpOperation<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<T> {
     const normalizedOptions = this.normalizeReadRequestOptions(options);
@@ -7021,7 +7091,7 @@ export class MaxClientService implements OnModuleDestroy {
 
   private async executeMutation<T>(
     chatId: string | null,
-    operation: () => Promise<T>,
+    operation: MaxHttpOperation<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
     executionOptions: {
       requireExecutableBot?: boolean;
@@ -7082,14 +7152,14 @@ export class MaxClientService implements OnModuleDestroy {
   private async executeMessageMutation<T>(
     operationType: MaxMessageMutationOperation,
     entityId: string | null,
-    operation: () => Promise<T>,
+    operation: MaxHttpOperation<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
     finalGuard?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
   ): Promise<T> {
     const quotaState: { error?: unknown } = {};
     const scopedOperation =
       entityId && operationType !== 'answer'
-        ? () =>
+        ? scopeMaxHttpOperation(operation, (run) =>
             this.mutationExecutionScope.run(
               {
                 chatId: entityId,
@@ -7113,8 +7183,9 @@ export class MaxClientService implements OnModuleDestroy {
                 messageMutation: { operation: operationType, entityId },
                 finalGuard,
               },
-              operation,
-            )
+              run,
+            ),
+          )
         : operation;
     return this.executeMutation(entityId, scopedOperation, options, {
       deferRateLimitReservation: Boolean(entityId && operationType !== 'answer'),
@@ -7129,7 +7200,7 @@ export class MaxClientService implements OnModuleDestroy {
   private async executeMemberMutation<T>(
     chatId: string,
     method: 'post' | 'delete',
-    operation: () => Promise<T>,
+    operation: MaxHttpOperation<T>,
     options: MaxApiRequestOptions,
     finalGuard: ((revalidateRoute?: () => Promise<void>) => Promise<void>) | undefined,
     onDispatchAttempt: () => void,
@@ -7137,7 +7208,7 @@ export class MaxClientService implements OnModuleDestroy {
     const quotaState: { error?: unknown } = {};
     return this.executeMutation(
       chatId,
-      () =>
+      scopeMaxHttpOperation(operation, (run) =>
         this.mutationExecutionScope.run(
           {
             chatId,
@@ -7150,8 +7221,9 @@ export class MaxClientService implements OnModuleDestroy {
             finalGuard,
             onDispatchAttempt,
           },
-          operation,
+          run,
         ),
+      ),
       options,
       { deferRateLimitReservation: true, deferredQuotaState: quotaState },
     );
@@ -7228,6 +7300,7 @@ export class MaxClientService implements OnModuleDestroy {
       lane: ActionHealthLane;
       sourceTag: string | null;
       facts: MaxActionFailureFacts;
+      association?: MaxHttpFailureAssociation | null;
     },
   ): void {
     if (params.trafficClass === 'background' || params.lane === 'background') {
@@ -7254,7 +7327,7 @@ export class MaxClientService implements OnModuleDestroy {
         lane: params.lane,
         sourceTag: params.sourceTag,
         botId: params.botId,
-        ...projectMaxActionFailureDiagnostic(params.facts),
+        ...projectMaxActionFailureDiagnostic(params.facts, params.association),
       },
       'Recorded unignored user-facing MAX API action failure',
     );
@@ -7817,16 +7890,23 @@ export class MaxClientService implements OnModuleDestroy {
       await this.executeMemberMutation(
         action.chatId,
         'delete',
-        async () => {
-          const response = await this.request('delete', `/chats/${action.chatId}/members`, {
-            params: {
-              user_id: action.userId,
-              ...(options.block || options.explicitBlock ? { block: options.block } : {}),
+        associatedMaxHttpOperation(async (owner) => {
+          const response = await this.request(
+            'delete',
+            `/chats/${action.chatId}/members`,
+            {
+              params: {
+                user_id: action.userId,
+                ...(options.block || options.explicitBlock ? { block: options.block } : {}),
+              },
+              ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
             },
-            ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
+            owner,
+          );
+          return mapMaxHttpOutcome(response, (value) => {
+            this.assertSuccessfulMemberMutationResponse(value);
           });
-          this.assertSuccessfulMemberMutationResponse(response);
-        },
+        }),
         mutationOptions,
         options.beforeMutation,
         () => {
@@ -8845,13 +8925,39 @@ export class MaxClientService implements OnModuleDestroy {
     return typeof maybeStatus === 'number' ? maybeStatus : null;
   }
 
+  private request<T = unknown>(
+    method: 'get' | 'delete',
+    path: string,
+    config: Record<string, unknown>,
+    owner: MaxHttpFailureOwner,
+  ): Promise<MaxHttpOutcome<T>>;
+  private request<T = unknown>(
+    method: 'delete' | 'post' | 'get' | 'put',
+    path: string,
+    config?: Record<string, unknown>,
+  ): Promise<T>;
   private async request<T = unknown>(
     method: 'delete' | 'post' | 'get' | 'put',
     path: string,
     config: Record<string, unknown> = {},
-  ): Promise<T> {
+    owner?: MaxHttpFailureOwner,
+  ): Promise<T | MaxHttpOutcome<T>> {
     const bot = this.getCurrentBot();
     const scope = this.mutationExecutionScope.getStore();
+    // FLAG: Prepare only finite association facts before any final authority wait.
+    // Overrides preserve Axios behavior and disable proof, never business execution.
+    const association = owner
+      ? beginMaxHttpFailureRequest(
+          owner,
+          method === 'get' ? 'get' : 'delete',
+          path === '/messages' ? 'messages' : 'chat_members',
+          !('method' in config) &&
+            !('url' in config) &&
+            ((method === 'delete' && path === '/messages') ||
+              (method === 'delete' && /^\/chats\/[^/?#]+\/members$/u.test(path)) ||
+              (method === 'get' && /^\/chats\/[^/?#]+\/members\?user_ids=[^&#]+$/u.test(path))),
+        )
+      : undefined;
     observeMaxSendAdmission(method, path);
     if (scope && method === scope.method && path === scope.path) {
       const messageId = this.readTrimmedString(this.asRecord(config.params)?.message_id);
@@ -8913,6 +9019,7 @@ export class MaxClientService implements OnModuleDestroy {
     return performMaxHttpRequest({
       method,
       path,
+      association,
       sendAttempted: Boolean(
         scope?.purpose === 'send_message' && method === scope.method && path === scope.path,
       ),
