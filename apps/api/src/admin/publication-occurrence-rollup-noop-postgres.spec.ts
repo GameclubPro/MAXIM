@@ -1900,7 +1900,12 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
       const item = await occurrence();
       const linked = await envelope(item, { savedTargets: { foreignLargeSnapshot: true } });
       await retainOwnedParentHistory(item);
-      await db.$executeRaw(Prisma.sql`
+      // FLAG: Bound fixture writes under the existing 10 s statement timeout.
+      // Retain both complete occurrence indexes and every physical-plan budget.
+      const setupBatchSize = 2_500;
+      for (let first = 1; first <= size; first += setupBatchSize) {
+        const last = Math.min(size, first + setupBatchSize - 1);
+        const inserted = await db.$executeRaw(Prisma.sql`
         INSERT INTO managed_broadcast_deliveries (
           id, broadcast_id, occurrence_index, target_chat_id,
           content_revision_id, dialog_bot_id, publisher_dialog_context,
@@ -1920,9 +1925,22 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           CASE WHEN occurrence_index = 1 THEN ${decisionAt}::timestamp ELSE NULL END,
           CASE WHEN occurrence_index = 2 THEN ${decisionAt}::timestamp ELSE NULL END,
           CASE WHEN occurrence_index = 2 THEN 'synthetic-rollup-held-' || n::text ELSE NULL END
-        FROM generate_series(1, ${size}::integer) n
+        FROM generate_series(${first}::integer, ${last}::integer) n
         CROSS JOIN generate_series(1, 2) occurrence_index
       `);
+        expect(inserted).toBe((last - first + 1) * 2);
+      }
+      expect(
+        await db.managedBroadcastDelivery.groupBy({
+          by: ['occurrenceIndex', 'status'],
+          where: { broadcastId: linked.broadcastId },
+          orderBy: { occurrenceIndex: 'asc' },
+          _count: true,
+        }),
+      ).toEqual([
+        { occurrenceIndex: 1, status: 'SENT', _count: size },
+        { occurrenceIndex: 2, status: 'SENDING', _count: size },
+      ]);
       // Numeric mode must not inspect saved audience JSON; both seeks are exact index1/status.
       expect(await unchanged(item)).toBe(false);
       expectBoundedPlan(await explain(item), '100', true);
