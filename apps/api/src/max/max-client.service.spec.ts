@@ -10243,6 +10243,571 @@ describe('MaxClientService inline keyboard guardrails', () => {
     },
   );
 
+  describe('2A invocation-owned HTTP failure diagnostics through public paths', () => {
+    const requestOptions = {
+      botId: '777000_bot',
+      trafficClass: 'critical' as const,
+      actionHealthLane: 'critical' as const,
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_SANCTION,
+    };
+
+    function executeMemberJob(service: MaxClientService) {
+      return service.executeActionJob({
+        actionType: 'KICK_MEMBER',
+        chatId: 'private-chat',
+        userId: 'private-user',
+        attempt: 1,
+        idempotencyKey: 'private-member-job',
+        createdAt: new Date().toISOString(),
+        ...requestOptions,
+      });
+    }
+
+    function executeSelectedPath(
+      service: MaxClientService,
+      path: 'targeted_get' | 'message_delete' | 'member_delete',
+    ) {
+      if (path === 'targeted_get')
+        return service.getChatMembersAccess('private-chat', ['private-user'], {
+          ...requestOptions,
+          bypassCache: true,
+        });
+      if (path === 'message_delete')
+        return service.deleteMessage('private-chat', 'private-message', {
+          ...requestOptions,
+          immediate: true,
+        });
+      return executeMemberJob(service);
+    }
+
+    it.each([
+      { path: 'targeted_get' as const, method: 'get', endpointKind: 'chat_members' },
+      { path: 'message_delete' as const, method: 'delete', endpointKind: 'messages' },
+      { path: 'member_delete' as const, method: 'delete', endpointKind: 'chat_members' },
+    ])(
+      'links $path adapter rejection without borrowing error.config or changing accounting',
+      async ({ path, method, endpointKind }) => {
+        const error = Object.freeze(
+          Object.assign(new Error('private-user private-chat private-token'), {
+            response: { status: 404, data: { code: 'not.found' } },
+            config: {
+              method: 'post',
+              url: 'https://private.example/incorrect-endpoint',
+              headers: { Authorization: 'private-token' },
+              data: 'private-body',
+            },
+          }),
+        );
+        const request = jest.fn().mockReturnValue(throwError(() => error));
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        try {
+          await expect(executeSelectedPath(service, path)).rejects.toBe(error);
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledWith('critical', false, '777000_bot');
+          expect(diagnostics.success).not.toHaveBeenCalled();
+          expect(diagnostics.warn).toHaveBeenCalledWith(
+            {
+              statusCode: 404,
+              errorCode: 'not.found',
+              limitScope: null,
+              trafficClass: 'critical',
+              lane: 'critical',
+              sourceTag: MAX_API_SOURCE_TAGS.MODERATION_SANCTION,
+              botId: '777000_bot',
+              failureOrigin: 'unlinked',
+              isCritical: false,
+              requestAssociation: 'linked',
+              method,
+              endpointKind,
+              phase: 'adapter_rejection',
+              receivedStatusCode: null,
+            },
+            ACTION_FAILURE_WARNING,
+          );
+          const admissionCalls = diagnostics.quota.mock.calls
+            .map(([script]) => String(script))
+            .filter((script) => /MAX_API_(?:CIRCUIT|GCRA)_/u.test(script));
+          expect(admissionCalls).toHaveLength(2);
+          expect(admissionCalls[0]).toContain('MAX_API_CIRCUIT_ACQUIRE_V1');
+          expect(admissionCalls[1]).toContain('MAX_API_GCRA_RESERVE_V1');
+          expect(diagnostics.quota.mock.invocationCallOrder[1]).toBeLessThan(
+            request.mock.invocationCallOrder[0]!,
+          );
+          expect(request.mock.invocationCallOrder[0]).toBeLessThan(
+            diagnostics.failure.mock.invocationCallOrder[0]!,
+          );
+          expect(JSON.stringify(diagnostics.warn.mock.calls)).not.toMatch(
+            /private-(?:user|chat|token|body|message|member-job)|private\.example/,
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['synchronous', 'observable'] as const)(
+      'preserves a public message-delete timeout from a %s adapter failure',
+      async (mode) => {
+        const error = Object.freeze(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }));
+        const request = jest.fn(() => {
+          if (mode === 'synchronous') throw error;
+          return throwError(() => error);
+        });
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        try {
+          await expect(executeSelectedPath(service, 'message_delete')).rejects.toBe(error);
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledWith('critical', true, '777000_bot');
+          expect(diagnostics.success).not.toHaveBeenCalled();
+          expect(diagnostics.warn).toHaveBeenCalledWith(
+            expect.objectContaining({
+              statusCode: null,
+              errorCode: 'econnaborted',
+              isCritical: true,
+              requestAssociation: 'linked',
+              method: 'delete',
+              endpointKind: 'messages',
+              phase: 'adapter_rejection',
+              receivedStatusCode: null,
+            }),
+            ACTION_FAILURE_WARNING,
+          );
+          expect(
+            diagnostics.quota.mock.calls.filter(([script]) =>
+              String(script).includes('MAX_API_CIRCUIT_FAILURE_V1'),
+            ),
+          ).toHaveLength(1);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('retains external429 circuit and cooldown order while keeping received HTTP status unknown', async () => {
+      const error = Object.assign(new Error('limited'), {
+        response: { status: 429, data: { code: 'rate.limit' } },
+      });
+      const request = jest.fn().mockReturnValue(throwError(() => error));
+      const service = createService({ request });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      try {
+        await expect(executeSelectedPath(service, 'targeted_get')).rejects.toBe(error);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+        expect(diagnostics.failure).toHaveBeenCalledWith('critical', true, '777000_bot');
+        expect(diagnostics.success).not.toHaveBeenCalled();
+        const events = diagnostics.quota.mock.calls.flatMap(([script], index) => {
+          const name = String(script).match(
+            /MAX_API_(?:CIRCUIT_ACQUIRE|GCRA_RESERVE|CIRCUIT_FAILURE|EXTERNAL_COOLDOWN)_V1/u,
+          )?.[0];
+          return name ? [{ name, order: diagnostics.quota.mock.invocationCallOrder[index]! }] : [];
+        });
+        expect(events.map(({ name }) => name)).toEqual([
+          'MAX_API_CIRCUIT_ACQUIRE_V1',
+          'MAX_API_GCRA_RESERVE_V1',
+          'MAX_API_CIRCUIT_FAILURE_V1',
+          'MAX_API_EXTERNAL_COOLDOWN_V1',
+        ]);
+        expect(events[1]!.order).toBeLessThan(request.mock.invocationCallOrder[0]!);
+        expect(request.mock.invocationCallOrder[0]).toBeLessThan(
+          diagnostics.failure.mock.invocationCallOrder[0]!,
+        );
+        expect(diagnostics.failure.mock.invocationCallOrder[0]).toBeLessThan(events[2]!.order);
+        expect(diagnostics.warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            statusCode: 429,
+            requestAssociation: 'linked',
+            method: 'get',
+            endpointKind: 'chat_members',
+            phase: 'adapter_rejection',
+            receivedStatusCode: null,
+          }),
+          ACTION_FAILURE_WARNING,
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each([
+      { status: 202, receivedStatusCode: 202 },
+      { status: undefined, receivedStatusCode: null },
+      { status: Number.NaN, receivedStatusCode: null },
+      { status: Number.POSITIVE_INFINITY, receivedStatusCode: null },
+    ])(
+      'keeps resolved status $status distinct from synthetic rejection status',
+      async ({ status, receivedStatusCode }) => {
+        const request = jest.fn().mockReturnValue(of({ status, data: {} }));
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        try {
+          const failure: unknown = await executeSelectedPath(service, 'message_delete').catch(
+            (error: unknown) => error,
+          );
+          expect(failure).toBeInstanceOf(MaxApiRequestRejectedError);
+          expect(failure).toMatchObject({ response: { status: 200, data: {} } });
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledWith('critical', false, '777000_bot');
+          expect(diagnostics.success).not.toHaveBeenCalled();
+          expect(diagnostics.warn).toHaveBeenCalledWith(
+            expect.objectContaining({
+              statusCode: 200,
+              requestAssociation: 'linked',
+              method: 'delete',
+              endpointKind: 'messages',
+              phase: 'domain_validation',
+              receivedStatusCode,
+            }),
+            ACTION_FAILURE_WARNING,
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['message_delete', 'member_delete'] as const)(
+      'keeps generic response rejection separate from domain validation for $0',
+      async (path) => {
+        const payload = { success: false, code: 'request.rejected', message: 'rejected' };
+        const request = jest.fn().mockReturnValue(of({ status: 202, data: payload }));
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        try {
+          const failure: unknown = await executeSelectedPath(service, path).catch(
+            (error: unknown) => error,
+          );
+          expect(failure).toBeInstanceOf(MaxApiRequestRejectedError);
+          expect(failure).toMatchObject({ response: { status: 202, data: payload } });
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledWith('critical', false, '777000_bot');
+          expect(diagnostics.success).not.toHaveBeenCalled();
+          expect(diagnostics.warn).toHaveBeenCalledWith(
+            expect.objectContaining({
+              statusCode: 202,
+              requestAssociation: 'linked',
+              method: 'delete',
+              endpointKind: path === 'message_delete' ? 'messages' : 'chat_members',
+              phase: 'response_rejection',
+              receivedStatusCode: 202,
+            }),
+            ACTION_FAILURE_WARNING,
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('keeps failed member mutation evidence and its original unrecoverable domain error', async () => {
+      const request = jest
+        .fn()
+        .mockReturnValue(
+          of({ status: 200, data: { success: true, failed_user_ids: ['private-user'] } }),
+        );
+      const service = createService({ request });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      try {
+        const failure: unknown = await executeMemberJob(service).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(UnrecoverableError);
+        expect(failure).toMatchObject({
+          message:
+            'Ambiguous MAX KICK_MEMBER transport failure for chat private-chat user private-user: ambiguous max member mutation response: expected success=true',
+        });
+        expect(wasMaxMemberMutationAttempted(failure)).toBe(true);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+        expect(diagnostics.failure).toHaveBeenCalledWith('critical', true, '777000_bot');
+        expect(diagnostics.success).not.toHaveBeenCalled();
+        expect(diagnostics.warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            isCritical: true,
+            requestAssociation: 'linked',
+            method: 'delete',
+            endpointKind: 'chat_members',
+            phase: 'domain_validation',
+            receivedStatusCode: 200,
+          }),
+          ACTION_FAILURE_WARNING,
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each([undefined, Number.NaN, 200])(
+      'preserves successful undefined message-delete results with resolved status %s',
+      async (status) => {
+        const request = jest.fn().mockReturnValue(of({ status, data: { success: true } }));
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        try {
+          await expect(executeSelectedPath(service, 'message_delete')).resolves.toBeUndefined();
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(diagnostics.success).toHaveBeenCalledTimes(1);
+          expect(diagnostics.success).toHaveBeenCalledWith('critical', '777000_bot');
+          expect(diagnostics.failure).not.toHaveBeenCalled();
+          expect(diagnostics.warn).not.toHaveBeenCalled();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('gives each targeted chunk its own outcome and does not count a prior success twice', async () => {
+      const userIds = Array.from({ length: 101 }, (_, index) => `private-user-${index}`);
+      const error = Object.freeze(
+        Object.assign(new Error('second chunk unavailable'), {
+          response: { status: 503, data: { code: 'service.unavailable' } },
+        }),
+      );
+      const request = jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              members: userIds.slice(0, 100).map((userId) => ({ user_id: userId, role: 'member' })),
+            },
+          }),
+        )
+        .mockReturnValueOnce(throwError(() => error));
+      const service = createService({ request });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      try {
+        await expect(
+          service.getChatMembersAccess('private-chat', userIds, {
+            ...requestOptions,
+            bypassCache: true,
+          }),
+        ).rejects.toBe(error);
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(request).toHaveBeenNthCalledWith(
+          2,
+          expect.objectContaining({
+            method: 'get',
+            url: 'https://platform-api2.max.ru/chats/private-chat/members?user_ids=private-user-100',
+          }),
+        );
+        expect(diagnostics.success).toHaveBeenCalledTimes(1);
+        expect(diagnostics.success).toHaveBeenCalledWith('critical', '777000_bot');
+        expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+        expect(diagnostics.failure).toHaveBeenCalledWith('critical', true, '777000_bot');
+        expect(diagnostics.warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            requestAssociation: 'linked',
+            method: 'get',
+            endpointKind: 'chat_members',
+            phase: 'adapter_rejection',
+            receivedStatusCode: null,
+          }),
+          ACTION_FAILURE_WARNING,
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('keeps targeted cache and in-flight followers outside HTTP success accounting', async () => {
+      let finishRequest: (value: {
+        status: number;
+        data: { members: { user_id: string; role: string }[] };
+      }) => void = () => undefined;
+      const response = new Promise<{
+        status: number;
+        data: { members: { user_id: string; role: string }[] };
+      }>((resolve) => {
+        finishRequest = resolve;
+      });
+      let markRequestStarted: () => void = () => undefined;
+      const requestStarted = new Promise<void>((resolve) => {
+        markRequestStarted = resolve;
+      });
+      const request = jest.fn(() => {
+        markRequestStarted();
+        return from(response);
+      });
+      const service = createService({ request });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      try {
+        const first = service.getChatMembersAccess(
+          'private-chat',
+          ['private-user'],
+          requestOptions,
+        );
+        const follower = service.getChatMembersAccess(
+          'private-chat',
+          ['private-user'],
+          requestOptions,
+        );
+        await requestStarted;
+        finishRequest({
+          status: 200,
+          data: { members: [{ user_id: 'private-user', role: 'member' }] },
+        });
+        const [firstResult, followerResult] = await Promise.all([first, follower]);
+        const cachedResult = await service.getChatMembersAccess(
+          'private-chat',
+          ['private-user'],
+          requestOptions,
+        );
+        expect([...firstResult.keys()]).toEqual(['private-user']);
+        expect(followerResult).toEqual(firstResult);
+        expect(cachedResult).toEqual(firstResult);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(diagnostics.success).toHaveBeenCalledTimes(1);
+        expect(diagnostics.success).toHaveBeenCalledWith('critical', '777000_bot');
+        expect(diagnostics.failure).not.toHaveBeenCalled();
+        expect(diagnostics.warn).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('does not carry a linked frozen error into a later unsupported public request', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-10-18T20:00:00.000Z'));
+      const error = Object.freeze(
+        Object.assign(new Error('same failure object'), {
+          response: { status: 404, data: { code: 'not.found' } },
+        }),
+      );
+      const request = jest.fn().mockReturnValue(throwError(() => error));
+      const service = createService({ request });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      try {
+        await expect(executeSelectedPath(service, 'targeted_get')).rejects.toBe(error);
+        jest.advanceTimersByTime(30_000);
+        await expect(
+          service.getChatSnapshot('private-chat', {
+            ...requestOptions,
+            bypassCache: true,
+          }),
+        ).rejects.toBe(error);
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(diagnostics.failure).toHaveBeenCalledTimes(2);
+        expect(diagnostics.success).not.toHaveBeenCalled();
+        expect(diagnostics.warn).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({
+            requestAssociation: 'linked',
+            method: 'get',
+            endpointKind: 'chat_members',
+            phase: 'adapter_rejection',
+            receivedStatusCode: null,
+          }),
+          ACTION_FAILURE_WARNING,
+        );
+        expect(diagnostics.warn).toHaveBeenNthCalledWith(
+          2,
+          {
+            statusCode: 404,
+            errorCode: 'not.found',
+            limitScope: null,
+            trafficClass: 'critical',
+            lane: 'critical',
+            sourceTag: MAX_API_SOURCE_TAGS.MODERATION_SANCTION,
+            botId: '777000_bot',
+            failureOrigin: 'unlinked',
+            isCritical: false,
+            requestAssociation: 'unlinked',
+            method: 'unknown',
+            endpointKind: 'unknown',
+          },
+          ACTION_FAILURE_WARNING,
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('keeps malformed targeted200 parsing after wrapper success without a new HTTP failure', async () => {
+      const request = jest.fn().mockReturnValue(of({ status: 200, data: { success: false } }));
+      const service = createService({ request });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      try {
+        await expect(executeSelectedPath(service, 'targeted_get')).rejects.toThrow(
+          'Invalid MAX chat members response',
+        );
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(diagnostics.success).toHaveBeenCalledTimes(1);
+        expect(diagnostics.success).toHaveBeenCalledWith('critical', '777000_bot');
+        expect(diagnostics.failure).not.toHaveBeenCalled();
+        expect(diagnostics.warn).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(
+      (['message_delete', 'message_send'] as const).flatMap((path) =>
+        [403, 404].map((status) => ({ path, status })),
+      ),
+    )(
+      'attributes a nested final-guard GET$status only to GET before $path',
+      async ({ path, status }) => {
+        const error = Object.assign(new Error('guard membership unavailable'), {
+          response: { status, data: { code: status === 403 ? 'chat.denied' : 'not.found' } },
+        });
+        const request = jest.fn().mockReturnValue(throwError(() => error));
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        const guard = jest.fn(async () => {
+          await service.getChatMembersAccess('private-chat', ['private-user'], {
+            ...requestOptions,
+            bypassCache: true,
+          });
+        });
+        try {
+          const operation =
+            path === 'message_delete'
+              ? service.deleteMessage('private-chat', 'private-message', {
+                  ...requestOptions,
+                  immediate: true,
+                  beforeImmediateDeleteMutation: guard,
+                })
+              : service.sendMessageImmediateWithId(
+                  'private-chat',
+                  'guarded notice',
+                  { beforeSend: guard },
+                  requestOptions,
+                );
+          await expect(operation).rejects.toBe(error);
+          expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
+          expect(guard).toHaveBeenCalledTimes(1);
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(request).toHaveBeenCalledWith(expect.objectContaining({ method: 'get' }));
+          expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledWith('critical', false, '777000_bot');
+          expect(diagnostics.success).not.toHaveBeenCalled();
+          expect(diagnostics.warn).toHaveBeenCalledTimes(1);
+          expect(diagnostics.warn).toHaveBeenCalledWith(
+            expect.objectContaining({
+              requestAssociation: 'linked',
+              method: 'get',
+              endpointKind: 'chat_members',
+              phase: 'adapter_rejection',
+              receivedStatusCode: null,
+            }),
+            ACTION_FAILURE_WARNING,
+          );
+          expect(
+            diagnostics.quota.mock.calls.filter(([script]) =>
+              String(script).includes('MAX_API_CIRCUIT_ACQUIRE_V1'),
+            ),
+          ).toHaveLength(2);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+  });
+
   it('2A0 identifies an initial critical quota refusal without HTTP or retry changes', async () => {
     const request = jest.fn();
     const service = createService({ request }, { MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '0' });
