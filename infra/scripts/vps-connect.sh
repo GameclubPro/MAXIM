@@ -91,6 +91,7 @@ Commands:
   postgres-audit multibot-preparation [--explain]
   postgres-audit webhook-owner-proof [--explain]
   postgres-audit webhook-source-proof [--explain]
+  postgres-audit webhook-source-envelope <owner-receipt-id> [--explain]
   postgres-audit webhook-retry-proof [--explain]
   postgres-audit webhook-queued-proof [--explain]
   postgres-audit commercial-quality [--explain]
@@ -551,6 +552,13 @@ postgres_audit() {
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2
     fi
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
+
+  if [[ "$mode" == 'webhook-source-envelope' ]]; then
+    if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "$3" != '--explain' ) ]]; then return 2; fi
+    node "$ROOT_DIR/infra/scripts/webhook-source-envelope-audit.mjs" "$2" --explain >/dev/null || return 2
     remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
     return
   fi
