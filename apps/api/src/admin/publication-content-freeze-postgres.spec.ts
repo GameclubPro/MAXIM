@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ConflictException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { PublicationContentInput } from '@maxim/contracts/publication';
 import { PrismaClient, createPrismaAdapter, type Prisma } from '../prisma/prisma-client';
 import { PublicationService } from './publication.service';
@@ -75,6 +76,7 @@ integration('Publication content freeze and immutable recovery on PostgreSQL', (
         assertTargetsReady: async () => undefined,
       } as never,
       { enqueueAfterCommittedMutation: async () => undefined } as never,
+      new ConfigService({ PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: 'off' }),
     );
     jest.spyOn(result, 'get').mockResolvedValue({ id: publicationId } as never);
     return result;

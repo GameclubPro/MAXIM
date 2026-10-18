@@ -17,7 +17,10 @@ import { basename, dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { writeFileAtomic } from './publisher-dispatch-rollout-state.mjs';
 
-const DIRECTORY = 'publisher-selection-rollouts';
+const OPERATIONS = Object.freeze({
+  selection: { directory: 'publisher-selection-rollouts', retained: 'Rollup' },
+  'rollup-noop': { directory: 'publisher-rollup-noop-rollouts', retained: 'Selection' },
+});
 const MODES = new Set(['off', 'test', '5', '25', '100']);
 const OPERATION = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
 const MAX_BYTES = 4096;
@@ -29,7 +32,7 @@ function requireDirectory(path, privateMode = false) {
     stat.isSymbolicLink() ||
     (privateMode && ((stat.mode & 0o777) !== 0o700 || stat.uid !== process.getuid()))
   ) {
-    throw new Error('Selection audit requires an owned protected directory.');
+    throw new Error('Publisher mode audit requires an owned protected directory.');
   }
 }
 
@@ -42,13 +45,13 @@ function syncDirectory(path) {
   }
 }
 
-function validate(record) {
+function validate(record, operation) {
   if (
     !record ||
     typeof record !== 'object' ||
     Array.isArray(record) ||
     record.version !== 1 ||
-    record.operation !== 'selection' ||
+    record.operation !== operation ||
     !OPERATION.test(record.operationId) ||
     !/^[a-f0-9]{40}$/u.test(record.sourceSha) ||
     !MODES.has(record.fromMode) ||
@@ -61,29 +64,40 @@ function validate(record) {
     typeof record.startedAt !== 'string' ||
     !Number.isFinite(Date.parse(record.startedAt))
   ) {
-    throw new Error('Invalid selection audit record.');
+    throw new Error('Invalid publisher mode audit record.');
   }
   if (
     (!record.fromConfigured && record.fromMode !== 'off') ||
     (!record.dispatchConfigured && record.dispatchEnabled) ||
     (record.toMode !== 'off' && !record.dispatchEnabled)
   ) {
-    throw new Error('Inconsistent selection audit configuration.');
+    throw new Error('Inconsistent publisher mode audit configuration.');
+  }
+  const retained = OPERATIONS[operation].retained;
+  const mode = record[`retained${retained}Mode`];
+  const configured = record[`retained${retained}Configured`];
+  // FLAG: Old selection v1 records have no counterpart fields. New rollup records must
+  // bind the retained selector; a partially present pair is never a compatible old record.
+  if (operation !== 'selection' || mode !== undefined || configured !== undefined) {
+    if (!MODES.has(mode) || typeof configured !== 'boolean' || (!configured && mode !== 'off')) {
+      throw new Error('Invalid retained rollout configuration.');
+    }
   }
 }
 
-function encode(record) {
-  validate(record);
+function encode(record, operation) {
+  validate(record, operation);
   const contents = `${JSON.stringify(record)}\n`;
   if (Buffer.byteLength(contents) > MAX_BYTES)
-    throw new Error('Selection audit record is too large.');
+    throw new Error('Publisher mode audit record is too large.');
   return contents;
 }
 
-export function startSelectionAudit(stateDir, input) {
+function startAudit(stateDir, input, operation) {
+  const operationSpec = OPERATIONS[operation];
   const root = resolve(stateDir);
   requireDirectory(root);
-  const directory = resolve(root, DIRECTORY);
+  const directory = resolve(root, operationSpec.directory);
   try {
     mkdirSync(directory, { mode: 0o700 });
   } catch (error) {
@@ -92,7 +106,7 @@ export function startSelectionAudit(stateDir, input) {
   requireDirectory(directory, true);
   const record = {
     version: 1,
-    operation: 'selection',
+    operation,
     operationId: randomUUID(),
     sourceSha: input.sourceSha,
     fromMode: input.fromMode,
@@ -103,8 +117,16 @@ export function startSelectionAudit(stateDir, input) {
     status: 'started',
     startedAt: new Date().toISOString(),
     runtimeVerified: false,
+    ...(input[`retained${operationSpec.retained}Mode`] !== undefined ||
+    input[`retained${operationSpec.retained}Configured`] !== undefined
+      ? {
+          [`retained${operationSpec.retained}Mode`]: input[`retained${operationSpec.retained}Mode`],
+          [`retained${operationSpec.retained}Configured`]:
+            input[`retained${operationSpec.retained}Configured`],
+        }
+      : {}),
   };
-  const contents = encode(record);
+  const contents = encode(record, operation);
   const path = resolve(directory, `${record.operationId}.json`);
   const temporary = resolve(directory, `.${record.operationId}.pending`);
   // FLAG: This is operational evidence only. It never authorizes recovery or modifies
@@ -131,11 +153,11 @@ export function startSelectionAudit(stateDir, input) {
   return path;
 }
 
-export function finishSelectionAudit(path, status, exitCode, runtimeVerified) {
+function finishAudit(path, status, exitCode, runtimeVerified, operation) {
   const target = resolve(path);
   const directory = dirname(target);
   if (
-    basename(directory) !== DIRECTORY ||
+    basename(directory) !== OPERATIONS[operation].directory ||
     !OPERATION.test(basename(target, '.json')) ||
     !target.endsWith('.json') ||
     !['completed', 'failed'].includes(status) ||
@@ -146,7 +168,7 @@ export function finishSelectionAudit(path, status, exitCode, runtimeVerified) {
     (status === 'completed' && (exitCode !== 0 || !runtimeVerified)) ||
     (status === 'failed' && exitCode === 0)
   ) {
-    throw new Error('Invalid selection audit completion.');
+    throw new Error('Invalid publisher mode audit completion.');
   }
   requireDirectory(directory, true);
   const stat = lstatSync(target);
@@ -157,26 +179,49 @@ export function finishSelectionAudit(path, status, exitCode, runtimeVerified) {
     stat.uid !== process.getuid() ||
     (stat.mode & 0o777) !== 0o600
   ) {
-    throw new Error('Selection audit requires a bounded owned private record.');
+    throw new Error('Publisher mode audit requires a bounded owned private record.');
   }
   const record = JSON.parse(readFileSync(target, 'utf8'));
-  validate(record);
+  validate(record, operation);
   if (record.status !== 'started' || record.operationId !== basename(target, '.json')) {
-    throw new Error('Selection audit is already terminal or has a different identity.');
+    throw new Error('Publisher mode audit is already terminal or has a different identity.');
   }
   writeFileAtomic(
     target,
-    encode({ ...record, status, exitCode, runtimeVerified, finishedAt: new Date().toISOString() }),
+    encode(
+      { ...record, status, exitCode, runtimeVerified, finishedAt: new Date().toISOString() },
+      operation,
+    ),
   );
 }
 
+export function startSelectionAudit(stateDir, input) {
+  return startAudit(stateDir, input, 'selection');
+}
+
+export function finishSelectionAudit(path, status, exitCode, runtimeVerified) {
+  return finishAudit(path, status, exitCode, runtimeVerified, 'selection');
+}
+
+export function startRollupNoopAudit(stateDir, input) {
+  return startAudit(stateDir, input, 'rollup-noop');
+}
+
+export function finishRollupNoopAudit(path, status, exitCode, runtimeVerified) {
+  return finishAudit(path, status, exitCode, runtimeVerified, 'rollup-noop');
+}
+
 function boolean(value) {
-  if (value !== 'true' && value !== 'false') throw new Error('Selection audit expects a boolean.');
+  if (value !== 'true' && value !== 'false')
+    throw new Error('Publisher mode audit expects a boolean.');
   return value === 'true';
 }
 
 function main([command, ...args]) {
-  if (command === 'start' && args.length === 7) {
+  if (
+    (command === 'start' && (args.length === 7 || args.length === 9)) ||
+    (command === 'start-rollup' && args.length === 9)
+  ) {
     const [
       directory,
       sourceSha,
@@ -185,26 +230,46 @@ function main([command, ...args]) {
       toMode,
       dispatchEnabled,
       dispatchConfigured,
+      retainedMode,
+      retainedConfigured,
     ] = args;
+    const operation = command === 'start' ? 'selection' : 'rollup-noop';
+    const retained = OPERATIONS[operation].retained;
     process.stdout.write(
-      `${startSelectionAudit(directory, {
-        sourceSha,
-        fromMode,
-        fromConfigured: boolean(fromConfigured),
-        toMode,
-        dispatchEnabled: boolean(dispatchEnabled),
-        dispatchConfigured: boolean(dispatchConfigured),
-      })}\n`,
+      `${startAudit(
+        directory,
+        {
+          sourceSha,
+          fromMode,
+          fromConfigured: boolean(fromConfigured),
+          toMode,
+          dispatchEnabled: boolean(dispatchEnabled),
+          dispatchConfigured: boolean(dispatchConfigured),
+          ...(args.length === 9
+            ? {
+                [`retained${retained}Mode`]: retainedMode,
+                [`retained${retained}Configured`]: boolean(retainedConfigured),
+              }
+            : {}),
+        },
+        operation,
+      )}\n`,
     );
     return;
   }
-  if (command === 'finish' && args.length === 4) {
+  if ((command === 'finish' || command === 'finish-rollup') && args.length === 4) {
     if (!/^(?:0|[1-9][0-9]{0,2})$/u.test(args[2])) throw new Error('Invalid audit exit code.');
-    finishSelectionAudit(args[0], args[1], Number(args[2]), boolean(args[3]));
+    finishAudit(
+      args[0],
+      args[1],
+      Number(args[2]),
+      boolean(args[3]),
+      command === 'finish' ? 'selection' : 'rollup-noop',
+    );
     return;
   }
   throw new Error(
-    'Usage: publisher-temporal-selection-audit.mjs start stateDir sha fromMode fromConfigured toMode dispatch dispatchConfigured | finish recordPath completed|failed exitCode runtimeVerified',
+    'Usage: publisher-temporal-selection-audit.mjs start stateDir sha fromMode fromConfigured toMode dispatch dispatchConfigured [retainedRollupMode retainedRollupConfigured] | start-rollup stateDir sha fromMode fromConfigured toMode dispatch dispatchConfigured retainedSelectionMode retainedSelectionConfigured | finish|finish-rollup recordPath completed|failed exitCode runtimeVerified',
   );
 }
 
@@ -214,7 +279,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   } catch {
     // FLAG: Avoid serializing filesystem errors or the input record into operational logs.
     process.stderr.write(
-      'Selection audit could not be recorded; retain the current runtime and inspect private evidence.\n',
+      'Publisher mode audit could not be recorded; retain the current runtime and inspect private evidence.\n',
     );
     process.exitCode = 1;
   }

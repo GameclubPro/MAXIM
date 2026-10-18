@@ -56,9 +56,18 @@ cells.push(
 const mode = process.env.MAXIM_PUBLISHER_TURN_PROFILE;
 const output = process.env.MAXIM_PUBLISHER_TURN_PROFILE_OUTPUT;
 const url = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL;
+const rollupNoopMode = process.env.MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE;
 if (!['full', 'smoke'].includes(mode ?? '') || !output || !url) {
   throw new Error('Use the public test:publisher-full-turn-profile runner with disposable stores.');
 }
+if (
+  (rollupNoopMode !== 'off' && rollupNoopMode !== '100') ||
+  process.env.PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT !== rollupNoopMode ||
+  process.env.PUBLISHER_TEMPORAL_SELECTION_ROLLOUT !== 'off'
+) {
+  throw new Error('Publisher profile requires explicit matching rollout modes from its runner.');
+}
+const runtimeOptions = Object.freeze({ rollupNoopMode });
 const database = new URL(url);
 if (
   !['localhost', '127.0.0.1', '[::1]'].includes(database.hostname) ||
@@ -117,10 +126,11 @@ const report = {
     hardwareThreads: cpus().length,
     totalMemoryBytes: totalmem(),
   },
-  configuration: {
+  configuration: Object.freeze({
     poolMax: 3,
     statementTimeoutMs: 10000,
     selectionMode: 'off',
+    rollupNoopMode,
     quantum: 4,
     measuredRepetitions: 3,
     warmups: 1,
@@ -129,12 +139,14 @@ const report = {
     syntheticMax: true,
     population:
       'pre-materialized full snapshot targets, grants, bindings, reservations and recipients',
-  },
+  }),
   limitations: [
     'Synthetic MAX transport/readiness boundary; no real HTTP/quota or client visibility.',
     'Three measurements support median/range, not production p95/p99.',
+    'Occurrence and publication statistics are analyzed before each cell outside timing; unsupported statistics use the unchanged full reader.',
     'Hydrated delivery count is unobserved; SQL row count is reported separately.',
     'Delivery SQL rows include only calibrated direct SELECT shapes; captured plans replay after turn mutations and ANALYZE.',
+    'Scalar probe output rows do not measure physical SQL work or delivery rows visited; native query plans establish those bounds separately.',
     'The test-only single active scope covers Prisma engine callbacks outside AsyncLocalStorage; overlapping turns are forbidden.',
     'Memory peaks are sampled; event-loop stalls can hide a peak.',
   ],
@@ -171,6 +183,7 @@ test('finite native Publisher public-turn profile', async () => {
       await fixture.reset();
       const active = fixture;
       const runtime = await createProfileRuntime(active, {
+        ...runtimeOptions,
         beforeSendMutation: async () => {
           if (control === 'revoke') await active.denyActorTargets();
           else await active.cancelPublication();
@@ -195,7 +208,7 @@ test('finite native Publisher public-turn profile', async () => {
     stage = 'fresh-denial';
     await fixture.reset();
     await fixture.setFreshDeniedHead(4);
-    const denied = await createProfileRuntime(fixture);
+    const denied = await createProfileRuntime(fixture, runtimeOptions);
     try {
       await denied.run('now');
       expect(denied.snapshot().sendCount).toBe(0);
@@ -208,7 +221,7 @@ test('finite native Publisher public-turn profile', async () => {
       select: { nextSendAt: true },
     });
     expect(nextSend.nextSendAt?.getTime()).toBeLessThanOrEqual(Date.now());
-    const following = await createProfileRuntime(fixture);
+    const following = await createProfileRuntime(fixture, runtimeOptions);
     try {
       await following.run('now');
       expect(following.snapshot().sendCount).toBe(4);
@@ -242,7 +255,7 @@ test('finite native Publisher public-turn profile', async () => {
     for (const control of smallControls) {
       stage = `small-${control.state}-${control.turn}`;
       fixture = await createProfileFixture(service, { size: 64, state: control.state });
-      const runtime = await createProfileRuntime(fixture);
+      const runtime = await createProfileRuntime(fixture, runtimeOptions);
       try {
         await runtime.run(control.turn);
         await fixture.assertPostconditions(control.turn, runtime.snapshot());
@@ -268,10 +281,11 @@ test('finite native Publisher public-turn profile', async () => {
       // Disposable store only. Never include fixture preparation/statistics in turn timing.
       await prisma.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
       await prisma.$executeRawUnsafe('ANALYZE managed_broadcasts');
+      await prisma.$executeRawUnsafe('ANALYZE publications, publication_occurrences');
       entry.setupMs = performance.now() - setup;
       for (let repetition = 0; repetition < 4; repetition++) {
         await fixture.reset();
-        const runtime = await createProfileRuntime(fixture);
+        const runtime = await createProfileRuntime(fixture, runtimeOptions);
         try {
           const measured = await profileTurn(() => runtime.run(entry.cell.turn));
           const counters = runtime.snapshot();

@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url';
 const MAX_DOTENV_BYTES = 1024 * 1024;
 const DISPATCH_KEY = 'MAX_PUBLISHER_DISPATCH_ENABLED';
 const SELECTION_KEY = 'PUBLISHER_TEMPORAL_SELECTION_ROLLOUT';
+const ROLLUP_KEY = 'PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT';
 const SELECTION_MODES = new Set(['off', 'test', '5', '25', '100']);
 
 export const PUBLISHER_PRODUCTION_ROLE_BY_SERVICE = Object.freeze({
@@ -121,26 +122,27 @@ export function patchPublisherDispatchEnv(contents, enabled) {
     .join('');
 }
 
-function requireSelectionMode(mode, allowDefault = false) {
+function requireRolloutMode(mode, allowDefault = false) {
   if (!SELECTION_MODES.has(mode) && !(allowDefault && mode === 'default-off')) {
-    throw new Error('Publisher temporal selection mode must be off, test, 5, 25 or 100.');
+    throw new Error('Publisher rollout mode must be off, test, 5, 25 or 100.');
   }
   return mode;
 }
 
-function parseSelectionAssignment(line) {
+function parseModeAssignment(line, key) {
   const body = line.replace(/\r?\n$/u, '');
-  if (!/^\s*(?:export\s+)?['"]?PUBLISHER_TEMPORAL_SELECTION_ROLLOUT(?=$|[^A-Za-z0-9_])/u.test(body))
-    return null;
-  const match =
-    /^\s*(?:export[ \t]+)?PUBLISHER_TEMPORAL_SELECTION_ROLLOUT[ \t]*=[ \t]*(off|test|5|25|100)[ \t]*$/u.exec(
-      body,
-    );
-  if (!match) throw new Error(`${SELECTION_KEY} must have one exact unquoted mode.`);
+  const prefix = new RegExp(`^\\s*(?:export\\s+)?['"]?${key}(?=$|[^A-Za-z0-9_])`, 'u');
+  if (!prefix.test(body)) return null;
+  const assignment = new RegExp(
+    `^\\s*(?:export[ \\t]+)?${key}[ \\t]*=[ \\t]*(off|test|5|25|100)[ \\t]*$`,
+    'u',
+  );
+  const match = assignment.exec(body);
+  if (!match) throw new Error(`${key} must have one exact unquoted mode.`);
   return match[1];
 }
 
-function inspectPublisherTemporalSelectionDotenv(contents) {
+function inspectPublisherModeDotenv(contents, key) {
   const decoded = decodeDotenv(contents, true);
   const assignments = [];
   let quotedValue = null;
@@ -149,7 +151,7 @@ function inspectPublisherTemporalSelectionDotenv(contents) {
     const line = lines[index];
     let offset = 0;
     if (!quotedValue) {
-      const mode = parseSelectionAssignment(line);
+      const mode = parseModeAssignment(line, key);
       if (mode !== null) assignments.push({ mode, index });
       const quotedAssignment =
         /^\s*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(['"`])/u.exec(line);
@@ -167,7 +169,7 @@ function inspectPublisherTemporalSelectionDotenv(contents) {
     }
   }
   if (quotedValue) throw new Error('Production dotenv contains an unterminated quoted value.');
-  if (assignments.length > 1) throw new Error(`Duplicate dotenv key: ${SELECTION_KEY}.`);
+  if (assignments.length > 1) throw new Error(`Duplicate dotenv key: ${key}.`);
   return {
     configured: assignments.length === 1,
     mode: assignments[0]?.mode ?? 'off',
@@ -177,14 +179,14 @@ function inspectPublisherTemporalSelectionDotenv(contents) {
 }
 
 export function readPublisherTemporalSelectionEnv(contents) {
-  const { configured, mode } = inspectPublisherTemporalSelectionDotenv(contents);
+  const { configured, mode } = inspectPublisherModeDotenv(contents, SELECTION_KEY);
   return Object.freeze({ configured, mode });
 }
 
-export function patchPublisherTemporalSelectionEnv(contents, mode) {
-  requireSelectionMode(mode);
-  const state = inspectPublisherTemporalSelectionDotenv(contents);
-  const replacement = `${SELECTION_KEY}=${mode}`;
+function patchPublisherModeEnv(contents, mode, key) {
+  requireRolloutMode(mode);
+  const state = inspectPublisherModeDotenv(contents, key);
+  const replacement = `${key}=${mode}`;
   if (!state.configured) {
     if (!state.decoded) return `${replacement}\n`;
     const separator = state.decoded.includes('\r\n') ? '\r\n' : '\n';
@@ -200,6 +202,19 @@ export function patchPublisherTemporalSelectionEnv(contents, mode) {
       return `${bom}${replacement}${ending}`;
     })
     .join('');
+}
+
+export function patchPublisherTemporalSelectionEnv(contents, mode) {
+  return patchPublisherModeEnv(contents, mode, SELECTION_KEY);
+}
+
+export function readPublisherRollupNoopEnv(contents) {
+  const { configured, mode } = inspectPublisherModeDotenv(contents, ROLLUP_KEY);
+  return Object.freeze({ configured, mode });
+}
+
+export function patchPublisherRollupNoopEnv(contents, mode) {
+  return patchPublisherModeEnv(contents, mode, ROLLUP_KEY);
 }
 
 export function writeFileAtomic(path, contents) {
@@ -287,26 +302,52 @@ export function verifyPublisherComposeConfig(config, enabled, expectedImageRef) 
   });
 }
 
-export function verifyPublisherTemporalRuntimeEnvironment(environment, expectedMode, serviceName) {
-  requireSelectionMode(expectedMode, true);
-  // FLAG: Selection controls preference only. Reuse the exact role identity guard without
-  // changing or requiring a particular dispatch state; callers check dispatch independently.
+function verifyPublisherModeRuntimeEnvironment(environment, expectedMode, serviceName, key) {
+  requireRolloutMode(expectedMode, true);
+  // FLAG: A reader mode never supplies SEND authority. Keep exact role identity and
+  // independently validate dispatch and both persisted mode assignments at the caller.
   if (!verifyPublisherRuntimeEnvironment(environment, 'any', serviceName)) return false;
   return expectedMode === 'default-off'
-    ? environment[SELECTION_KEY] === undefined || environment[SELECTION_KEY] === 'off'
-    : environment[SELECTION_KEY] === expectedMode;
+    ? environment[key] === undefined || environment[key] === 'off'
+    : environment[key] === expectedMode;
 }
 
-export function verifyPublisherTemporalComposeConfig(config, expectedMode, expectedImageRef) {
-  requireSelectionMode(expectedMode, true);
+function verifyPublisherModeComposeConfig(config, expectedMode, expectedImageRef, key) {
+  requireRolloutMode(expectedMode, true);
   if (!verifyPublisherComposeConfig(config, 'any', expectedImageRef)) return false;
   return Object.keys(PUBLISHER_PRODUCTION_ROLE_BY_SERVICE).every((service) =>
-    verifyPublisherTemporalRuntimeEnvironment(
+    verifyPublisherModeRuntimeEnvironment(
       config.services[service].environment,
       expectedMode,
       service,
+      key,
     ),
   );
+}
+
+export function verifyPublisherTemporalRuntimeEnvironment(environment, expectedMode, serviceName) {
+  return verifyPublisherModeRuntimeEnvironment(
+    environment,
+    expectedMode,
+    serviceName,
+    SELECTION_KEY,
+  );
+}
+
+export function verifyPublisherTemporalComposeConfig(config, expectedMode, expectedImageRef) {
+  return verifyPublisherModeComposeConfig(config, expectedMode, expectedImageRef, SELECTION_KEY);
+}
+
+export function verifyPublisherRollupNoopRuntimeEnvironment(
+  environment,
+  expectedMode,
+  serviceName,
+) {
+  return verifyPublisherModeRuntimeEnvironment(environment, expectedMode, serviceName, ROLLUP_KEY);
+}
+
+export function verifyPublisherRollupNoopComposeConfig(config, expectedMode, expectedImageRef) {
+  return verifyPublisherModeComposeConfig(config, expectedMode, expectedImageRef, ROLLUP_KEY);
 }
 
 const SELECTION_SOURCE_PATHS = Object.freeze({
@@ -389,6 +430,223 @@ export function assertPublisherTemporalSelectionSource(sources) {
   return true;
 }
 
+const ROLLUP_SOURCE_PATHS = Object.freeze({
+  schema: 'apps/api/src/config/env.schema.ts',
+  compose: 'infra/docker-compose.yml',
+  runtime: 'apps/api/src/admin/publication.service.ts',
+  reader: 'apps/api/src/admin/publication-occurrence-rollup-noop.ts',
+});
+
+export function assertPublisherRollupNoopSource(sources) {
+  const checks = {
+    schema: [
+      "PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT:z.enum(['off','test','5','25','100']).default('off')",
+    ],
+    runtime: [
+      "import{ConfigService}from'@nestjs/config'",
+      "from'./publication-occurrence-rollup-noop'",
+      'configService:ConfigService,',
+      'this.occurrenceRollupNoop=new PublicationOccurrenceRollupNoopReader(',
+      "parsePublicationOccurrenceRollupNoopRollout(configService.get<unknown>('PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT'),)",
+      'if(await this.occurrenceRollupNoop.canSkip(occurrenceId))return;',
+    ],
+    reader: [
+      "const TEST_CHAT_ID='-78271094414679'",
+      "const TEST_CHANNEL_ID='-78271171091799'",
+      'export function parsePublicationOccurrenceRollupNoopRollout(',
+      "return value==='test'||value==='5'||value==='25'||value==='100'?value:'off'",
+      'export function buildPublicationOccurrenceRollupNoopQuery(',
+      "rollout==='test'?buildTestEnrollment()",
+      'publisher-occurrence-rollup-noop-v1:',
+      `WITH rollup_envelope_page AS MATERIALIZED (
+        SELECT envelope."id"
+        FROM "managed_broadcasts" AS envelope
+        WHERE envelope."publication_occurrence_id" = occurrence."id"
+        LIMIT 3
+      )
+      SELECT CASE WHEN COUNT(*) BETWEEN 1 AND 2 THEN NOT EXISTS (
+        SELECT 1
+        FROM rollup_envelope_page AS envelope_id
+        CROSS JOIN LATERAL (
+          SELECT "id", "dispatch_profile", "required_bot_id", "publication_content_revision_id",
+            "apply_to_all_chats", "target_chat_ids", "entity_type"
+          FROM "managed_broadcasts"
+          WHERE "id" = envelope_id."id"
+          OFFSET 0
+        ) AS saved
+        WHERE (CASE WHEN saved."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
+          AND saved."required_bot_id" = occurrence."required_bot_id"
+          AND saved."publication_content_revision_id" = occurrence."content_revision_id"
+          AND saved."apply_to_all_chats" = FALSE
+        THEN (`,
+      `WITH rollup_recipient_keys AS MATERIALIZED (
+          SELECT recipient_key."broadcast_id", recipient_key."occurrence_index",
+            recipient_key."target_chat_id"
+          FROM "managed_broadcast_deliveries" AS recipient_key
+          WHERE recipient_key."broadcast_id" >= saved."id"
+          ORDER BY recipient_key."broadcast_id", recipient_key."occurrence_index",
+            recipient_key."target_chat_id"
+          LIMIT 3
+        ), rollup_recipient_page AS MATERIALIZED (
+          SELECT recipient."target_chat_id", recipient."publication_occurrence_id",
+            recipient."content_revision_id", recipient."required_bot_id", recipient."dispatch_profile"
+          FROM rollup_recipient_keys AS candidate
+          CROSS JOIN LATERAL (
+            SELECT recipient_saved."broadcast_id", recipient_saved."occurrence_index",
+              recipient_saved."target_chat_id", recipient_saved."publication_occurrence_id",
+              recipient_saved."content_revision_id", recipient_saved."required_bot_id",
+              recipient_saved."dispatch_profile"
+            FROM "managed_broadcast_deliveries" AS recipient_saved
+            WHERE ROW(recipient_saved."broadcast_id", recipient_saved."occurrence_index",
+              recipient_saved."target_chat_id") >= ROW(candidate."broadcast_id",
+                candidate."occurrence_index", candidate."target_chat_id")
+            ORDER BY recipient_saved."broadcast_id", recipient_saved."occurrence_index",
+              recipient_saved."target_chat_id"
+            LIMIT 1
+          ) AS recipient
+          WHERE candidate."broadcast_id" = saved."id"
+            AND recipient."broadcast_id" = candidate."broadcast_id"
+            AND recipient."occurrence_index" = candidate."occurrence_index"
+            AND recipient."target_chat_id" = candidate."target_chat_id"
+        )
+        SELECT COUNT(*) <= 2 AND COALESCE(BOOL_AND((
+          recipient."target_chat_id" = CASE saved."entity_type"
+            WHEN 'CHAT'::"ChatEntityType" THEN \${TEST_CHAT_ID}
+            WHEN 'CHANNEL'::"ChatEntityType" THEN \${TEST_CHANNEL_ID}
+          END
+          AND recipient."publication_occurrence_id" = occurrence."id"
+          AND recipient."content_revision_id" = occurrence."content_revision_id"
+          AND recipient."required_bot_id" = occurrence."required_bot_id"
+          AND recipient."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
+        ) IS TRUE), TRUE)
+        FROM rollup_recipient_page AS recipient
+      ) ELSE FALSE END) IS NOT TRUE
+    ) ELSE FALSE END
+    FROM rollup_envelope_page`,
+      'pg_column_compression(saved."target_chat_ids") IS NULL',
+      'pg_column_size(saved."target_chat_ids") <= ${MAX_TEST_AUDIENCE_JSON_BYTES}',
+      `WITH rollup_scope AS MATERIALIZED (
+      WITH rollup_occurrence_admission AS MATERIALIZED (
+        SELECT CASE WHEN (
+          SELECT reltuples > 0
+          FROM pg_catalog.pg_class
+          WHERE oid = 'publication_occurrences'::regclass
+        ) THEN (
+          SELECT "id" FROM "publication_occurrences"
+          WHERE "id" >= \${occurrenceId}
+          ORDER BY "id"
+          LIMIT 1
+        ) ELSE NULL END AS "id"
+      ), rollup_occurrence_key AS MATERIALIZED (
+        SELECT "id" FROM rollup_occurrence_admission
+        WHERE "id" IS NOT NULL
+      ), rollup_occurrence AS MATERIALIZED (
+        SELECT occurrence."id", occurrence."publication_id", occurrence."status",
+          occurrence."scheduled_at", occurrence."required_bot_id",
+          occurrence."dispatch_profile", occurrence."content_revision_id"
+        FROM rollup_occurrence_key AS candidate
+        CROSS JOIN LATERAL (
+          SELECT "id", "publication_id", "status", "scheduled_at", "required_bot_id",
+            "dispatch_profile", "content_revision_id"
+          FROM "publication_occurrences"
+          WHERE "id" >= candidate."id"
+          ORDER BY "id"
+          LIMIT 1
+        ) AS occurrence
+        WHERE occurrence."id" = candidate."id"
+      )
+      SELECT occurrence."id", occurrence."status", occurrence."scheduled_at" AS "scheduledAt"`,
+      `FROM rollup_occurrence AS occurrence
+        INNER JOIN "publications" AS publication ON publication."id" = occurrence."publication_id"
+        WHERE occurrence."id" = \${occurrenceId}
+          AND occurrence."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
+          AND occurrence."status" IN (
+            'SCHEDULED'::"PublicationOccurrenceStatus", 'IN_PROGRESS'::"PublicationOccurrenceStatus"
+          )
+      ), rollup_linked_envelopes AS MATERIALIZED (`,
+      `rollup_linked_envelopes AS MATERIALIZED (
+        SELECT envelope."id", envelope."status"
+        FROM "managed_broadcasts" AS envelope
+        WHERE envelope."publication_occurrence_id" = (
+          SELECT "id" FROM rollup_scope WHERE "enrolled"
+        )
+      )`,
+      'snapshot?.enrolled !== true',
+      '(snapshot.hasSending !== true && snapshot.hasActivePending !== true)',
+      'snapshot.scheduledAt > decisionNow',
+      'return snapshot.status === expected',
+      'export class PublicationOccurrenceRollupNoopReader',
+      "if(this.rollout==='off')return false",
+      'buildPublicationOccurrenceRollupNoopQuery(occurrenceId,this.rollout)',
+      'const decisionNow=new Date()',
+      'isUnchangedPublicationOccurrenceRollup(snapshot,decisionNow)',
+      'throw error;',
+    ],
+  };
+  for (const [name, fragments] of Object.entries(checks)) {
+    const source = compactSelectionSource(sources?.[name]);
+    for (const fragment of fragments) {
+      if (!source.includes(compactSelectionSource(fragment))) {
+        throw new Error(
+          `Publisher rollup no-op source guard failed: ${ROLLUP_SOURCE_PATHS[name]}.`,
+        );
+      }
+    }
+  }
+  const reader = compactSelectionSource(sources.reader);
+  for (const [status, witness] of [
+    ['SENDING', 'hasSending'],
+    ['PENDING', 'hasActivePending'],
+  ]) {
+    const proof = compactSelectionSource(`
+      CASE WHEN scope."enrolled" THEN EXISTS (
+        SELECT 1 FROM rollup_linked_envelopes AS envelope
+        WHERE ${status === 'PENDING' ? `envelope."status" = 'ACTIVE'::"ManagedBroadcastStatus" AND` : ''}
+          EXISTS (
+            WITH rollup_delivery_probe AS MATERIALIZED (
+              SELECT delivery."broadcast_id", delivery."occurrence_index", delivery."status"
+              FROM "managed_broadcast_deliveries" AS delivery
+              WHERE ROW(delivery."broadcast_id", delivery."occurrence_index", delivery."status")
+                >= ROW(envelope."id", 1, '${status}'::"ManagedBroadcastDeliveryStatus")
+              ORDER BY delivery."broadcast_id", delivery."occurrence_index", delivery."status"
+              LIMIT 1
+            )
+            SELECT 1 FROM rollup_delivery_probe AS candidate
+            WHERE candidate."broadcast_id" = envelope."id"
+              AND candidate."occurrence_index" = 1
+              AND candidate."status" = '${status}'::"ManagedBroadcastDeliveryStatus"
+          )
+      ) ELSE FALSE END AS "${witness}"
+    `);
+    if (!reader.includes(proof)) {
+      throw new Error(`Publisher rollup no-op source guard failed: bounded ${status} witness.`);
+    }
+  }
+  const method = reader.slice(reader.indexOf('asynccanSkip('));
+  const off = method.indexOf("if(this.rollout==='off')returnfalse");
+  const query = method.indexOf('awaitthis.prisma.$queryRaw');
+  const clock = method.indexOf('constdecisionNow=newDate()');
+  if (off < 0 || query <= off || clock <= query) {
+    throw new Error('Publisher rollup no-op source guard failed: off/query/clock ordering.');
+  }
+  const compose = sources?.compose;
+  const publisher =
+    typeof compose === 'string'
+      ? /^ {2}api-publisher:\r?\n(?:(?!^ {2}[A-Za-z0-9_-]+:)[\s\S])*/mu.exec(compose)?.[0]
+      : null;
+  if (
+    !publisher ||
+    !/^ {6}PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: \$\{PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT:-off\}[ \t]*\r?$/mu.test(
+      publisher,
+    )
+  ) {
+    throw new Error(
+      'Publisher rollup no-op source guard failed: api-publisher Compose environment.',
+    );
+  }
+  return true;
+}
+
 function parseBooleanArgument(value) {
   if (value === 'true') return true;
   if (value === 'false') return false;
@@ -418,21 +676,33 @@ function main(argv) {
     writeFileAtomic(path, patched);
     return;
   }
-  if (command === 'verify-runtime-env' && (args.length === 2 || args.length === 3)) {
+  if (command === 'verify-runtime-env' && args.length >= 2 && args.length <= 4) {
     const enabled = parseExpectedStateArgument(args[0]);
     const environment = JSON.parse(readFileSync(0).toString('utf8'));
     const selectionMatches =
-      args.length === 2 || verifyPublisherTemporalRuntimeEnvironment(environment, args[2], args[1]);
-    if (!verifyPublisherRuntimeEnvironment(environment, enabled, args[1]) || !selectionMatches)
+      args.length < 3 || verifyPublisherTemporalRuntimeEnvironment(environment, args[2], args[1]);
+    const rollupMatches =
+      args.length < 4 || verifyPublisherRollupNoopRuntimeEnvironment(environment, args[3], args[1]);
+    if (
+      !verifyPublisherRuntimeEnvironment(environment, enabled, args[1]) ||
+      !selectionMatches ||
+      !rollupMatches
+    )
       process.exitCode = 1;
     return;
   }
-  if (command === 'verify-compose' && (args.length === 2 || args.length === 3)) {
+  if (command === 'verify-compose' && args.length >= 2 && args.length <= 4) {
     const enabled = parseExpectedStateArgument(args[0]);
     const config = JSON.parse(readFileSync(0).toString('utf8'));
     const selectionMatches =
-      args.length === 2 || verifyPublisherTemporalComposeConfig(config, args[2], args[1]);
-    if (!verifyPublisherComposeConfig(config, enabled, args[1]) || !selectionMatches)
+      args.length < 3 || verifyPublisherTemporalComposeConfig(config, args[2], args[1]);
+    const rollupMatches =
+      args.length < 4 || verifyPublisherRollupNoopComposeConfig(config, args[3], args[1]);
+    if (
+      !verifyPublisherComposeConfig(config, enabled, args[1]) ||
+      !selectionMatches ||
+      !rollupMatches
+    )
       process.exitCode = 1;
     return;
   }
@@ -472,8 +742,43 @@ function main(argv) {
     );
     return;
   }
+  if (
+    (command === 'read-rollup-env' || command === 'read-rollup-env-configured') &&
+    args.length === 1
+  ) {
+    const state = readPublisherRollupNoopEnv(readFileSync(args[0]));
+    process.stdout.write(`${command === 'read-rollup-env' ? state.mode : state.configured}\n`);
+    return;
+  }
+  if (command === 'patch-rollup-env' && args.length === 2) {
+    const path = resolve(args[0]);
+    writeFileAtomic(path, patchPublisherRollupNoopEnv(readFileSync(path), args[1]));
+    return;
+  }
+  if (command === 'verify-rollup-runtime-env' && args.length === 2) {
+    const environment = JSON.parse(readFileSync(0).toString('utf8'));
+    if (!verifyPublisherRollupNoopRuntimeEnvironment(environment, args[0], args[1]))
+      process.exitCode = 1;
+    return;
+  }
+  if (command === 'verify-rollup-compose' && args.length === 2) {
+    const config = JSON.parse(readFileSync(0).toString('utf8'));
+    if (!verifyPublisherRollupNoopComposeConfig(config, args[0], args[1])) process.exitCode = 1;
+    return;
+  }
+  if (command === 'verify-rollup-source' && args.length === 1) {
+    assertPublisherRollupNoopSource(
+      Object.fromEntries(
+        Object.entries(ROLLUP_SOURCE_PATHS).map(([name, path]) => [
+          name,
+          readFileSync(resolve(args[0], path), 'utf8'),
+        ]),
+      ),
+    );
+    return;
+  }
   throw new Error(
-    'Usage: publisher-dispatch-rollout-state.mjs <read-env path|read-env-configured path|patch-env path true|false|verify-runtime-env state service [selection-mode]|verify-compose state image [selection-mode]|read-selection-env path|read-selection-env-configured path|patch-selection-env path mode|verify-selection-runtime-env mode service|verify-selection-compose mode image|verify-selection-source root>',
+    'Usage: publisher-dispatch-rollout-state.mjs <read-env path|read-env-configured path|patch-env path true|false|verify-runtime-env state service [selection-mode [rollup-mode]]|verify-compose state image [selection-mode [rollup-mode]]|read-selection-env path|read-selection-env-configured path|patch-selection-env path mode|verify-selection-runtime-env mode service|verify-selection-compose mode image|verify-selection-source root|read-rollup-env path|read-rollup-env-configured path|patch-rollup-env path mode|verify-rollup-runtime-env mode service|verify-rollup-compose mode image|verify-rollup-source root>',
   );
 }
 

@@ -33,7 +33,7 @@ jobs:
         run: node scripts/agent/preflight.mjs
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
-      - run: npm run check:static
+      - run: npm run check:static:ci
       - run: npm run check:docs
       - name: ShellCheck infrastructure scripts
         run: find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck

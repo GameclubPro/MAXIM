@@ -6,7 +6,92 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
-import { validateProfileEnvironment } from './run-publisher-turn-profile.mjs';
+import {
+  createProfileChildEnvironment,
+  parseProfileArguments,
+  validateProfileEnvironment,
+} from './run-publisher-turn-profile.mjs';
+
+test('profile defaults rollup to off and pins both rollout modes independently of ambient env', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'publisher-profile-mode-'));
+  try {
+    const output = join(directory, 'report.json');
+    const options = parseProfileArguments(['--output', output]);
+    assert.equal(options.rollupNoopMode, 'off');
+    assert.equal(options.mode, 'full');
+    assert.equal(options.deadlineMs, 2_700_000);
+    const env = createProfileChildEnvironment(
+      {
+        PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: '100',
+        PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: '100',
+        MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE: '100',
+        TZ: 'UTC',
+      },
+      options,
+    );
+    assert.equal(env.PUBLISHER_TEMPORAL_SELECTION_ROLLOUT, 'off');
+    assert.equal(env.PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT, 'off');
+    assert.equal(env.MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE, 'off');
+    assert.equal(env.MAXIM_PUBLISHER_TURN_PROFILE_OUTPUT, output);
+    assert.equal(env.TZ, 'UTC');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('profile allows only an explicit off or 100 rollup comparison without changing deadlines', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'publisher-profile-mode-'));
+  try {
+    const output = join(directory, 'report.json');
+    for (const rollupNoopMode of ['off', '100']) {
+      const options = parseProfileArguments([
+        '--smoke',
+        '--rollup-noop-mode',
+        rollupNoopMode,
+        '--output',
+        output,
+      ]);
+      assert.equal(options.rollupNoopMode, rollupNoopMode);
+      assert.equal(options.mode, 'smoke');
+      assert.equal(options.deadlineMs, 300_000);
+      const env = createProfileChildEnvironment(
+        {
+          PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: '25',
+          PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: 'test',
+          MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE: 'test',
+        },
+        options,
+      );
+      assert.equal(env.PUBLISHER_TEMPORAL_SELECTION_ROLLOUT, 'off');
+      assert.equal(env.PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT, rollupNoopMode);
+      assert.equal(env.MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE, rollupNoopMode);
+    }
+    for (const value of ['test', '5', '25', 'on', 'OFF', ' 100', '']) {
+      assert.throws(
+        () => parseProfileArguments(['--rollup-noop-mode', value, '--output', output]),
+        /Usage:/u,
+      );
+    }
+    assert.throws(
+      () => parseProfileArguments(['--output', output, '--rollup-noop-mode']),
+      /Usage:/u,
+    );
+    assert.throws(
+      () =>
+        parseProfileArguments([
+          '--rollup-noop-mode',
+          'off',
+          '--rollup-noop-mode',
+          '100',
+          '--output',
+          output,
+        ]),
+      /Usage:/u,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('profile refuses production, query host overrides, ordinary local databases and non-UTC', () => {
   for (const url of [
@@ -108,10 +193,9 @@ setInterval(()=>{},1000);
         if (error.code !== 'ENOENT') throw error;
       }
       assert.equal(live, false, 'An exited leader must not leave its descendant executing');
-      assert.equal(
-        JSON.parse(await readFile(join(directory, 'report.json'), 'utf8')).complete,
-        false,
-      );
+      const report = JSON.parse(await readFile(join(directory, 'report.json'), 'utf8'));
+      assert.equal(report.complete, false);
+      assert.deepEqual(report.configuration, { selectionMode: 'off', rollupNoopMode: 'off' });
     } finally {
       if (runner && runner.exitCode === null) runner.kill('SIGKILL');
       if (owned) {

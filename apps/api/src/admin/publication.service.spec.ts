@@ -14,6 +14,9 @@ import {
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import { MAX_PUBLICATION_EXPLICIT_SLOTS } from '@maxim/contracts/publication';
+import { ConfigService } from '@nestjs/config';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { PublicationOccurrenceRollupNoopRollout } from './publication-occurrence-rollup-noop';
 import {
   BadRequestException,
   ConflictException,
@@ -45,7 +48,10 @@ import {
 } from './publication-video-media';
 import { TINY_VALID_MP4 } from '../../test/fixtures/max-media';
 
-function createService(prismaOverrides: Record<string, unknown> = {}) {
+function createService(
+  prismaOverrides: Record<string, unknown> = {},
+  rollupMode: PublicationOccurrenceRollupNoopRollout = 'off',
+) {
   const prisma = {
     managedBroadcastDelivery: { groupBy: jest.fn().mockResolvedValue([]) },
     managedBroadcastCalendarReservation: { findMany: jest.fn().mockResolvedValue([]) },
@@ -182,6 +188,7 @@ function createService(prismaOverrides: Record<string, unknown> = {}) {
     {} as never,
     publisherRouting as never,
     publisherPublicationWakeupQueue as never,
+    new ConfigService({ PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: rollupMode }),
   );
   return {
     contentService,
@@ -5240,7 +5247,7 @@ describe('PublicationService', () => {
     );
   });
 
-  it('repairs an interrupted manual resolution on replay and wakes its pending fanout', async () => {
+  it('retains the manual CAS and repairs a failed rollup probe on replay without redoing the mutation', async () => {
     const occurrenceUpdatedAt = new Date('2026-09-04T09:00:00.000Z');
     const tx = {
       auditLog: { create: jest.fn().mockResolvedValue({}) },
@@ -5293,33 +5300,45 @@ describe('PublicationService', () => {
     };
     const findMutation = jest.fn().mockResolvedValueOnce(null);
     const transaction = jest.fn((callback: (client: typeof tx) => unknown) => callback(tx));
-    const { service, publisherPublicationWakeupQueue } = createService({
-      publicationMutationRecord: { findUnique: findMutation },
-      publication: {
-        findFirst: jest.fn().mockResolvedValue({
-          id: 'publication-1',
-          version: 2,
-          lifecycle: PublicationLifecycle.ERROR,
-          targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
-        }),
+    const rollupFailure = new Error('rollup probe unavailable');
+    const rollupProbe: jest.MockedFunction<PrismaService['$queryRaw']> = jest.fn();
+    rollupProbe.mockRejectedValueOnce(rollupFailure).mockResolvedValueOnce([
+      {
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        scheduledAt: new Date('2020-09-04T08:00:00.000Z'),
+        enrolled: true,
+        hasSending: false,
+        hasActivePending: true,
       },
-      managedBroadcastDelivery: {
-        findFirst: jest.fn().mockResolvedValue({
-          id: 'delivery-1',
-          broadcastId: 'broadcast-1',
-          occurrenceIndex: 1,
-          status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
-          sentAt: null,
-          remoteMessageId: 'mid-manual-confirmed',
-        }),
+    ]);
+    const fullOccurrenceReader = jest.fn();
+    const { service, publisherPublicationWakeupQueue } = createService(
+      {
+        $queryRaw: rollupProbe,
+        publicationOccurrence: { findUnique: fullOccurrenceReader },
+        publicationMutationRecord: { findUnique: findMutation },
+        publication: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'publication-1',
+            version: 2,
+            lifecycle: PublicationLifecycle.ERROR,
+            targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT }],
+          }),
+        },
+        managedBroadcastDelivery: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'delivery-1',
+            broadcastId: 'broadcast-1',
+            occurrenceIndex: 1,
+            status: ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+            sentAt: null,
+            remoteMessageId: 'mid-manual-confirmed',
+          }),
+        },
+        $transaction: transaction,
       },
-      $transaction: transaction,
-    });
-    const rollupFailure = new Error('rollup unavailable');
-    const rollupOccurrence = jest
-      .spyOn(service as any, 'rollupOccurrence')
-      .mockRejectedValueOnce(rollupFailure)
-      .mockResolvedValueOnce(undefined);
+      '100',
+    );
     const rollupLifecycle = jest
       .spyOn(service as any, 'rollupPublicationLifecycle')
       .mockResolvedValue(undefined);
@@ -5404,7 +5423,8 @@ describe('PublicationService', () => {
       },
       data: { status: PublicationScheduleStatus.ACTIVE, lastError: null },
     });
-    expect(rollupOccurrence).toHaveBeenCalledTimes(2);
+    expect(rollupProbe).toHaveBeenCalledTimes(2);
+    expect(fullOccurrenceReader).not.toHaveBeenCalled();
     expect(rollupLifecycle).toHaveBeenCalledTimes(1);
     expect(publisherPublicationWakeupQueue.enqueueResolution).toHaveBeenCalledWith(
       'publication-1',

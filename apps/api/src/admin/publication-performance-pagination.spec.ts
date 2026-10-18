@@ -3,6 +3,7 @@ import {
   encodePublicationListCursor,
   type PublicationDeliveryStats,
 } from '@maxim/contracts/publication';
+import { ConfigService } from '@nestjs/config';
 import {
   ManagedBroadcastDeliveryStatus,
   PublicationDispatchProfile,
@@ -71,6 +72,7 @@ function createPublicationService(prisma: Record<string, unknown>) {
     {} as never,
     publisherRouting as never,
     { enqueueAfterCommittedMutation: jest.fn().mockResolvedValue(undefined) } as never,
+    new ConfigService({ PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: 'off' }),
   );
   return { presenter, publisherRouting, service };
 }

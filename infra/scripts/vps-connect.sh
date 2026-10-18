@@ -117,6 +117,7 @@ Commands:
                               Preview or fail-closed disable Publik dispatch
   publisher-dispatch-status   Read privacy-safe Publik dispatch rollout status
   publisher-selection-rollout <off|test|5|25|100> [--apply]
+  publisher-rollup-noop-rollout <off|test|5|25|100> [--apply]
                               Preview or change selection stage without changing dispatch
   vk-parsing-retire-legacy-queue [--apply [--reviewed-digest <sha256>]]
                               Preview or remove the retired vk-parsing-publish queue
@@ -947,29 +948,43 @@ publisher_dispatch_command() {
   remote_exec "$remote_command"
 }
 
-publisher_selection_command() {
+publisher_reader_mode_command() {
+  local operation="${1:-}"
+  case "$operation" in
+    selection|rollup-noop) ;;
+    *) echo 'Unknown Publisher reader mode operation.' >&2; return 2 ;;
+  esac
+  shift
   local mode="${1:-}" apply="${2:-}"
   if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$apply" != --apply ) ]]; then
-    echo "Usage: $0 publisher-selection-rollout <off|test|5|25|100> [--apply]" >&2
+    echo "Usage: $0 publisher-${operation}-rollout <off|test|5|25|100> [--apply]" >&2
     return 2
   fi
   case "$mode" in
     off|test|5|25|100) ;;
-    *) echo 'Selection rollout mode must be off, test, 5, 25, or 100.' >&2; return 2 ;;
+    *) echo 'Publisher reader mode rollout mode must be off, test, 5, 25, or 100.' >&2; return 2 ;;
   esac
   if [[ "${MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE:-0}" != 0 ]]; then
-    echo 'Selection rollout cannot adopt an interrupted release; recover that operation first.' >&2
+    echo 'Publisher reader mode rollout cannot adopt an interrupted release; recover that operation first.' >&2
     return 2
   fi
   local target_sha remote_command
-  local remote_args=(./infra/scripts/vps-publisher-dispatch-rollout.sh selection "$mode")
+  local remote_args=(./infra/scripts/vps-publisher-dispatch-rollout.sh "$operation" "$mode")
   [[ "$apply" != --apply ]] || remote_args+=(--apply)
   target_sha="$(git -C "$ROOT_DIR" rev-parse --verify HEAD)" || return
-  # FLAG: Selection activation has no emergency bypass. Bind the reviewed exact source to
-  # the remote manifest/image fence; the setter separately proves the installed selector.
+  # FLAG: Reader mode activation has no emergency bypass. Bind the reviewed exact source to
+  # the remote manifest/image fence; the setter separately proves the installed consumer.
   node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" || return
   remote_command="$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" "${remote_args[@]}")"
   remote_exec "$remote_command"
+}
+
+publisher_selection_command() {
+  publisher_reader_mode_command selection "$@"
+}
+
+publisher_rollup_noop_command() {
+  publisher_reader_mode_command rollup-noop "$@"
 }
 
 vk_parsing_retire_legacy_queue() {
@@ -1695,6 +1710,9 @@ case "$command" in
     ;;
   publisher-selection-rollout)
     publisher_selection_command "$@"
+    ;;
+  publisher-rollup-noop-rollout)
+    publisher_rollup_noop_command "$@"
     ;;
   vk-parsing-retire-legacy-queue)
     vk_parsing_retire_legacy_queue "$@"

@@ -199,9 +199,13 @@ async function run({
   expectedSelection = 'test',
   runtimeSelection = 'test',
   afterRecreateSelection = expectedSelection === 'default-off' ? undefined : expectedSelection,
+  expectedRollup = 'default-off',
+  runtimeRollup,
+  afterRecreateRollup = expectedRollup === 'default-off' ? undefined : expectedRollup,
   runtimeExpectedState = 'any',
   selectionPolicy = 'required',
   selectionOperation = 0,
+  modeOperation = selectionOperation ? 'selection' : '',
   statusCommand = false,
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'publisher-native-recovery-'));
@@ -210,10 +214,14 @@ async function run({
     container.Config.Env = container.Config.Env.filter(
       (value) =>
         !value.startsWith('MAX_PUBLISHER_DISPATCH_ENABLED=') &&
-        !value.startsWith('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT='),
+        !value.startsWith('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=') &&
+        !value.startsWith('PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT='),
     );
     if (dispatchConfigured === 'true') {
       container.Config.Env.push(`MAX_PUBLISHER_DISPATCH_ENABLED=${dispatch}`);
+    }
+    if (runtimeRollup != null) {
+      container.Config.Env.push(`PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT=${runtimeRollup}`);
     }
     if (runtimeSelection != null) {
       container.Config.Env.push(`PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=${runtimeSelection}`);
@@ -224,9 +232,7 @@ async function run({
   writeFileSync(join(directory, 'state.json'), JSON.stringify(state));
   writeFileSync(
     join(directory, '.env'),
-    expectedSelection === 'default-off'
-      ? 'UNCHANGED=value\n'
-      : `UNCHANGED=value\nPUBLISHER_TEMPORAL_SELECTION_ROLLOUT=${expectedSelection}\n`,
+    `UNCHANGED=value\n${expectedSelection === 'default-off' ? '' : `PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=${expectedSelection}\n`}${expectedRollup === 'default-off' ? '' : `PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT=${expectedRollup}\n`}`,
   );
   writeFileSync(
     join(directory, 'recreate.cjs'),
@@ -235,10 +241,12 @@ const file=path.join(process.env.PUBLISHER_NATIVE_TEST_DIRECTORY,'state.json');
 const state=JSON.parse(fs.readFileSync(file,'utf8'));
 for(const c of state.containers.filter(c=>c.Config.Labels['com.docker.compose.service'].startsWith('api-'))) {
  c.State.Running=true;c.State.Status='running';
- c.Config.Env=c.Config.Env.filter(v=>!v.startsWith('MAX_PUBLISHER_DISPATCH_ENABLED=')&&!v.startsWith('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT='));
+ c.Config.Env=c.Config.Env.filter(v=>!v.startsWith('MAX_PUBLISHER_DISPATCH_ENABLED=')&&!v.startsWith('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=')&&!v.startsWith('PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT='));
  c.Config.Env.push('MAX_PUBLISHER_DISPATCH_ENABLED=false');
  const selection=${JSON.stringify(afterRecreateSelection) ?? 'undefined'};
  if(selection!==undefined)c.Config.Env.push('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT='+selection);
+ const rollup=${JSON.stringify(afterRecreateRollup) ?? 'undefined'};
+ if(rollup!==undefined)c.Config.Env.push('PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT='+rollup);
 }
 fs.writeFileSync(file,JSON.stringify(state));
 `,
@@ -270,7 +278,7 @@ ${block('container_env_summary')}
 ${block('verify_runtime')}
 ${block('rollout_preflight')}
 ${block('apply_rollout')}
-${block('read_selection_env')}
+${block('read_rollout_modes')}
 ${block('status_command')}
 COMPOSE_FILES=(--env-file .env -p infra -f infra/docker-compose.yml)
 MAXIM_PRODUCTION_API_SERVICES=(${apiServices.join(' ')})
@@ -284,7 +292,7 @@ CURRENT_ENV_CONFIGURED=${dispatchConfigured}
 DESIRED_STATE=false
 EXPECTED_OCR_VERSION=reviewed
 MANIFEST_SOURCE_SHA=${'b'.repeat(40)}
-SELECTION_OPERATION=${selectionOperation}
+MODE_OPERATION=${quote(modeOperation)}
 COMMAND=${command ?? 'disable'}
 APPLY=${apply}
 MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=${adopt}
@@ -297,7 +305,7 @@ maxim_topology_require_media_analysis_rollout_config() { :; }
 require_stateful_services_ready() { :; }
 ROOT_DIR=${quote(root)}
 cd "$PUBLISHER_NATIVE_TEST_DIRECTORY"
-read_selection_env
+read_rollout_modes
 cd "$ROOT_DIR"
 RECONCILE_ONLY=0
 ROLLOUT_COMPLETE=0
@@ -691,5 +699,111 @@ for (const [command, apply, adopt] of [
       (await run({ stopped: [mediaService, photoConsumerService], command, apply, adopt })).status,
       0,
     );
+  });
+}
+
+for (const [name, runtimeRollup, mutate] of [
+  ['all stale', 'test', () => {}],
+  [
+    'one stale',
+    'off',
+    (state) => {
+      const admin = state.containers.find((row) => serviceOf(row) === 'api-admin');
+      admin.Config.Env = admin.Config.Env.map((value) =>
+        value.startsWith('PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT=')
+          ? 'PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT=test'
+          : value,
+      );
+    },
+  ],
+  ['missing explicit key', undefined, () => {}],
+]) {
+  test(`disabled recovery repairs persisted rollup mode drift: ${name}`, async () => {
+    const result = await run({
+      command: 'disable',
+      executeApply: true,
+      dispatch: 'false',
+      expectedRollup: 'off',
+      runtimeRollup,
+      mutate,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /status=0 complete=1 reconcile=0 events=arm patch recreate/u);
+    const apis = result.state.containers.filter((row) => serviceOf(row).startsWith('api-'));
+    assert.equal(apis.length, 14);
+    for (const container of apis) {
+      assert.ok(container.Config.Env.includes('PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT=off'));
+      assert.ok(container.Config.Env.includes('PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=test'));
+    }
+  });
+}
+
+for (const [expectedRollup, runtimeRollup] of [
+  ['off', 'off'],
+  ['test', 'test'],
+  ['default-off', undefined],
+  ['default-off', 'off'],
+]) {
+  test(`disabled recovery reuses exact persisted rollup parity: ${expectedRollup}/${runtimeRollup}`, async () => {
+    const result = await run({
+      command: 'disable',
+      executeApply: true,
+      dispatch: 'false',
+      expectedRollup,
+      runtimeRollup,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /complete=1 reconcile=1/u);
+    assert.doesNotMatch(result.stdout, /\b(?:patch|recreate|resume)\b/u);
+  });
+}
+
+test('post-recreation rollup drift prevents pause release and completion', async () => {
+  const result = await run({
+    command: 'disable',
+    executeApply: true,
+    dispatch: 'false',
+    expectedRollup: 'off',
+    runtimeRollup: 'test',
+    afterRecreateRollup: 'test',
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /^status=1 complete=0 reconcile=0 events=arm patch recreate$/mu);
+});
+
+test('ordinary disable repairs both mode drifts with both native consumers stopped', async () => {
+  const result = await run({
+    command: 'disable',
+    executeApply: true,
+    dispatch: 'false',
+    expectedSelection: 'off',
+    runtimeSelection: 'test',
+    expectedRollup: 'off',
+    runtimeRollup: 'test',
+    stopped: [mediaService, photoConsumerService],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /complete=1 reconcile=0 events=arm patch recreate/u);
+});
+
+for (const modeOperation of ['selection', 'rollup-noop']) {
+  test(`${modeOperation} off cannot use stopped-consumer adoption or identity-only admission`, async () => {
+    for (const options of [
+      { policy: 'allow-stopped' },
+      { selectionPolicy: 'identity-only' },
+      { command: 'disable', executeApply: true, stopped: [mediaService, photoConsumerService] },
+    ]) {
+      const result = await run({
+        modeOperation,
+        dispatch: 'false',
+        expectedSelection: 'off',
+        runtimeSelection: 'off',
+        expectedRollup: 'off',
+        runtimeRollup: 'off',
+        ...options,
+      });
+      assert.equal(result.status, 1, result.stderr);
+      assert.doesNotMatch(result.stdout, /rollout complete|complete=1/u);
+    }
   });
 }

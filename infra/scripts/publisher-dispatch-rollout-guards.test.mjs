@@ -79,9 +79,10 @@ ${functionBlock(rollout, functionName)}
 fail() { printf '%s\\n' "$*" >&2; return 1; }
 docker() { cat compose.json; }
 STATE_HELPER="$PUBLISHER_TEST_STATE_HELPER"
-SELECTION_OPERATION=0
+MODE_OPERATION=''
 CURRENT_ENV_CONFIGURED=true
 EXPECTED_SELECTION_MODE=${expected}
+EXPECTED_ROLLUP_MODE=default-off
 MANIFEST_IMAGE_REF=${image}
 COMPOSE_FILES=()
 PREVIEW_ENV_FILE=''
