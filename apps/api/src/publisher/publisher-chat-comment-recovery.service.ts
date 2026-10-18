@@ -7,6 +7,11 @@ import {
   type PublisherChatCommentLockEpoch,
 } from '../moderation/replacement-attach-marker.store';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  RUNTIME_WORKER_SHUTDOWN_GRACE_MS,
+  RuntimeWorkerOwner,
+  type RuntimeWorker,
+} from '../runtime/runtime-worker-shutdown';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
 import {
@@ -49,13 +54,42 @@ export type PublisherChatCommentRecoveryResult = {
 };
 
 @Injectable()
-export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModuleDestroy {
+export class PublisherChatCommentRecoveryService
+  extends RuntimeWorkerOwner
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(PublisherChatCommentRecoveryService.name);
   private readonly publisherBotId: string;
   private startupTimer: NodeJS.Timeout | null = null;
   private intervalTimer: NodeJS.Timeout | null = null;
   private scanCursorId: string | null = null;
   private inFlight: Promise<PublisherChatCommentRecoveryResult> | null = null;
+  private scheduledRun: Promise<void> | null = null;
+  private stopping = false;
+  private forcedClosed = false;
+  private readonly activeOperations = new Set<Promise<unknown>>();
+  private destroyRun: Promise<void> | null = null;
+  private resolveForcedDestroy: (() => void) | null = null;
+  private readonly runtimeWorker: RuntimeWorker = {
+    name: 'publisher-chat-comment-recovery',
+    pause: async (doNotWaitActive) => {
+      this.stopAdmission();
+      if (!doNotWaitActive && !this.forcedClosed) {
+        await this.drainAcceptedOperations();
+      }
+    },
+    close: async (force) => {
+      this.stopAdmission();
+      if (force) {
+        this.forcedClosed = true;
+        this.resolveForcedDestroy?.();
+      }
+      if (!this.forcedClosed) {
+        await this.drainAcceptedOperations();
+      }
+    },
+  };
+  private readonly runtimeWorkers = [this.runtimeWorker] as const;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -68,11 +102,17 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
     private readonly identityAttestation: PublisherIdentityAttestationService,
     private readonly backgroundWork: PublisherBackgroundWorkCoordinatorService,
   ) {
+    super();
     this.publisherBotId = credentials.getBotId();
   }
 
   onModuleInit(): void {
-    if (!this.runtimeBoundary.dispatchEnabled) {
+    if (
+      this.stopping ||
+      this.startupTimer ||
+      this.intervalTimer ||
+      !this.runtimeBoundary.dispatchEnabled
+    ) {
       return;
     }
     this.startupTimer = setTimeout(() => {
@@ -86,7 +126,22 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
     this.intervalTimer.unref();
   }
 
-  onModuleDestroy(): void {
+  stopWorkerAdmission(): readonly RuntimeWorker[] {
+    this.stopAdmission();
+    return this.runtimeWorkers;
+  }
+
+  onModuleDestroy(): Promise<void> {
+    this.stopAdmission();
+    if (this.forcedClosed) {
+      return Promise.resolve();
+    }
+    this.destroyRun ??= this.drainBeforeDirectDestroy();
+    return this.destroyRun;
+  }
+
+  private stopAdmission(): void {
+    this.stopping = true;
     if (this.startupTimer) {
       clearTimeout(this.startupTimer);
       this.startupTimer = null;
@@ -98,7 +153,44 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
   }
 
   async recoverOnce(now = new Date()): Promise<PublisherChatCommentRecoveryResult> {
-    return this.recoverCoordinated(now, false);
+    if (this.stopping) {
+      return this.emptyResult();
+    }
+    return this.trackAcceptedOperation(this.recoverCoordinated(now, false));
+  }
+
+  private trackAcceptedOperation<T>(run: Promise<T>): Promise<T> {
+    this.activeOperations.add(run);
+    const clear = () => this.activeOperations.delete(run);
+    void run.then(clear, clear);
+    return run;
+  }
+
+  private async drainAcceptedOperations(): Promise<void> {
+    await Promise.allSettled([...this.activeOperations]);
+  }
+
+  private async drainBeforeDirectDestroy(): Promise<void> {
+    if (this.activeOperations.size === 0) {
+      return;
+    }
+    let timeout: NodeJS.Timeout | null = null;
+    try {
+      // FLAG: Direct Nest teardown shares one grace budget; runtime force never waits again.
+      await Promise.race([
+        this.drainAcceptedOperations(),
+        new Promise<void>((resolve) => {
+          this.resolveForcedDestroy = resolve;
+          timeout = setTimeout(() => {
+            this.forcedClosed = true;
+            resolve();
+          }, RUNTIME_WORKER_SHUTDOWN_GRACE_MS);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.resolveForcedDestroy = null;
+    }
   }
 
   private async recoverCoordinated(
@@ -464,14 +556,21 @@ export class PublisherChatCommentRecoveryService implements OnModuleInit, OnModu
   }
 
   private triggerScheduledRecovery(): void {
-    if (this.inFlight) {
+    if (this.stopping || this.inFlight || this.scheduledRun) {
       return;
     }
-    void this.runScheduledRecovery().catch((error: unknown) => {
+    // FLAG: Accepted work includes the first pause check and final result/error handling.
+    const run = this.runScheduledRecovery().catch((error: unknown) => {
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
         'Publisher chat-comment recovery sweep failed',
       );
     });
+    this.scheduledRun = run;
+    this.trackAcceptedOperation(run);
+    const clear = () => {
+      if (this.scheduledRun === run) this.scheduledRun = null;
+    };
+    void run.then(clear, clear);
   }
 }
