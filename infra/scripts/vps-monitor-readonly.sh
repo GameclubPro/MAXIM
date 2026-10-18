@@ -92,33 +92,55 @@ sample_capacity_once() {
   CAPACITY_SAMPLE_INDEX=$((CAPACITY_SAMPLE_INDEX + 1))
 }
 
+read_capacity_owner_start_ticks() {
+  local owner_pid="$1"
+  local owner_stat
+  local fields
+  local -a owner_fields
+
+  if ! is_positive_integer "$owner_pid" ||
+    ! owner_stat="$(cat -- "/proc/$owner_pid/stat" 2>/dev/null)"; then
+    return 1
+  fi
+  fields="${owner_stat##*) }"
+  if [[ "$fields" == "$owner_stat" || "$owner_stat" != "$owner_pid ("* ]]; then
+    return 1
+  fi
+  read -r -a owner_fields <<<"$fields"
+  # FLAG: Field 22 follows the LAST comm delimiter; a reused PID or dead owner
+  # cannot authorize further probes after the nominal diagnostic deadline.
+  if ((${#owner_fields[@]} < 20)) ||
+    [[ "${owner_fields[0]}" == "Z" || "${owner_fields[0]}" == "X" || "${owner_fields[0]}" == "x" ]] ||
+    ! is_positive_integer "${owner_fields[19]}"; then
+    return 1
+  fi
+  printf '%s\n' "${owner_fields[19]}"
+}
+
 run_capacity_sampler() {
   local monitor_pid="$1"
   local stop_at="$2"
   local lock_fd="$3"
+  local owner_start_ticks="${MAXIM_MONITOR_CAPACITY_OWNER_START_TICKS:-}"
   local next_sample_at
   local now
-  local remaining
   local sleep_for
 
   if ! is_positive_integer "$monitor_pid" || ! is_positive_integer "$stop_at" ||
-    ! is_positive_integer "$lock_fd" || ! flock -n "$lock_fd"; then
+    ! is_positive_integer "$lock_fd" || ! is_positive_integer "$owner_start_ticks" ||
+    ! flock -n "$lock_fd"; then
     echo "Capacity sampler received an invalid owner or lock." >&2
     return 2
   fi
 
   next_sample_at=$(date +%s)
-  while kill -0 "$monitor_pid" 2>/dev/null; do
+  while kill -0 "$monitor_pid" 2>/dev/null &&
+    [[ "$(read_capacity_owner_start_ticks "$monitor_pid")" == "$owner_start_ticks" ]]; do
     now=$(date +%s)
-    if ((now >= stop_at)); then
-      # Stay reapable until the owning monitor finishes its current diagnostic step.
-      sleep 1
-      continue
-    fi
+    # FLAG: Diagnostics can outlive the nominal end. Keep sampling until the
+    # owning monitor finishes; existing supervision and group cleanup still apply.
     if ((now < next_sample_at)); then
       sleep_for=$((next_sample_at - now))
-      remaining=$((stop_at - now))
-      if ((sleep_for > remaining)); then sleep_for=$remaining; fi
       sleep "$sleep_for"
       continue
     fi
@@ -952,7 +974,12 @@ run_monitor() {
 start_capacity_sampler() {
   local monitor_pid="$BASHPID"
   local stop_at="$1"
+  local owner_start_ticks
 
+  if ! owner_start_ticks="$(read_capacity_owner_start_ticks "$monitor_pid")"; then
+    echo "Capacity sampler could not identify its owner generation." >&2
+    return 2
+  fi
   exec {CAPACITY_SAMPLER_LOCK_FD}>>"$CAPACITY_SAMPLER_LOCK_FILE"
   if ! flock -n "$CAPACITY_SAMPLER_LOCK_FD"; then
     exec {CAPACITY_SAMPLER_LOCK_FD}>&-
@@ -964,7 +991,8 @@ start_capacity_sampler() {
   (
     # The sampler must not keep the full-monitor lock alive if its owner exits abruptly.
     exec {MONITOR_LOCK_FD}>&-
-    exec setsid "$ROOT_DIR/infra/scripts/vps-monitor-readonly.sh" \
+    MAXIM_MONITOR_CAPACITY_OWNER_START_TICKS="$owner_start_ticks" \
+      exec setsid "$ROOT_DIR/infra/scripts/vps-monitor-readonly.sh" \
       --internal-capacity-sampler "$monitor_pid" "$stop_at" "$CAPACITY_SAMPLER_LOCK_FD"
   ) &
   CAPACITY_SAMPLER_PID=$!
