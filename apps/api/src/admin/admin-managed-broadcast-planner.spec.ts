@@ -3,6 +3,7 @@ import {
   buildLegacyManagedBroadcastUpcomingSlots,
   buildManagedBroadcastCalendarReservationRows,
   buildManagedBroadcastDeliveryRows,
+  getCurrentManagedBroadcastOccurrence,
   normalizeManagedBroadcastTargetChatIds,
   parseManagedBroadcastCalendarSlots,
   parseManagedBroadcastSendAt,
@@ -11,6 +12,18 @@ import {
 import { ChatEntityType, ManagedBroadcastDeliveryStatus } from '../prisma/prisma-client';
 
 describe('admin managed broadcast planner', () => {
+  it.each([
+    { sentCount: 0, cycleCount: 3, expected: 1 },
+    { sentCount: 1, cycleCount: 3, expected: 2 },
+    { sentCount: 3, cycleCount: 3, expected: 3 },
+    { sentCount: 9, cycleCount: 3, expected: 3 },
+    { sentCount: 0, cycleCount: 0, expected: 1 },
+    { sentCount: -2, cycleCount: 3, expected: 1 },
+    { sentCount: 2, cycleCount: -3, expected: 1 },
+  ])('clamps occurrence from only the saved counts: %j', ({ sentCount, cycleCount, expected }) => {
+    expect(getCurrentManagedBroadcastOccurrence({ sentCount, cycleCount })).toBe(expected);
+  });
+
   it('normalizes selected targets and preserves the current-chat fallback', () => {
     expect(normalizeManagedBroadcastTargetChatIds([' chat-2 ', 'chat-2', ''])).toEqual(['chat-2']);
     expect(

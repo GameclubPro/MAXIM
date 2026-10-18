@@ -14,8 +14,6 @@ import {
   channelStatsQuerySchema,
   channelStatsResponseSchema,
   channelDialogResponseSchema,
-  type ChannelDialogNotificationMode,
-  type ChannelDialogNotificationSettings,
   channelDialogTypeSchema,
   channelSettingsSchema,
   createChannelDialogMessageRequestSchema,
@@ -34,68 +32,23 @@ import {
   managedEntityBotCapabilitySchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
-  type ChannelDialogMessage,
-  type ChannelDialogAttachment,
-  type ChannelDialogReactionGroup,
-  type ChannelDialogReplyPreview,
-  type ChannelDialogSuggestionReviewStatus,
-  type ToggleChannelDialogReactionResponse,
-  type ChatParticipantImmunity,
-  type ChatParticipantItem,
-  type ChatParticipantImmunityUpdateResult,
-  type ChatParticipantsPage,
-  type ChatParticipantsQuery,
-  type ChannelDialogType,
-  type ChannelStatsBucket,
-  type ChannelStatsQuery,
-  type ChannelStatsRange,
-  type ChannelStatsResponse,
-  type ChannelOverview,
-  type ApplySectionToAllResponse,
-  type ApplySettingsTarget,
-  type ApplySectionTargetPreviewResponse,
   type ManagedBroadcastDetails,
   type ManagedBroadcastCalendarResponse,
-  type ManagedEntityFavoriteType,
-  type MembershipActivityPage,
-  type MembershipActivityQuery,
   managedBroadcastDetailsSchema,
   type ManagedBroadcastSummary,
   type ManagedBroadcastTargetPreview,
-  type ManagedEntityBotCapability,
   managedBroadcastCalendarResponseSchema,
   managedBroadcastSummarySchema,
-  type ChannelSettings,
-  type ChatSettingsScreenResponse,
   type ChatRules,
-  type ChatSettings,
   chatSettingsSchema,
-  type ChannelSettingsScreenResponse,
-  type DomainAllowlistEntry,
-  type LogsDashboardViolation,
-  type LogsDashboardRange,
-  type LogsDashboardResponse,
   type ManagedEntityType,
-  type ManualModerationActionResult,
-  type ModerationFeedPage,
-  type ModerationFeedQuery,
-  type ModerationEvent,
-  type UpdateChatRulesRequest,
-  type PublishChatRulesResult,
   type BroadcastTextFormat,
   type BroadcastTargetMode,
   type BroadcastLinkButton,
-  type ManagedEntityAssignedBot,
-  type ManagedEntitiesListResponse,
-  type ManagedEntitiesResponseDiff,
-  type ManagedEntitiesResponseSnapshot,
-  type ManagedEntitiesRefreshState,
   type SendBroadcastRequest,
   type SendBroadcastResult,
   type SendBroadcastTestResult,
   type ChatSummary,
-  type ManagedEntityHeader,
-  type ResolveRequiredSubscriptionChannelResponse,
   MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
   inferAllowlistMatchType,
@@ -112,7 +65,6 @@ import {
   updateChannelDialogNotificationsResponseSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
-  type AllowlistMatchType,
   MAX_BROADCAST_IMAGES,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
@@ -172,11 +124,7 @@ import {
 } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  ChatContextCacheService,
-  type ManagedEntitiesPublishedDiff,
-  type ManagedEntitiesPublishedSnapshot,
-} from '../chat-context/chat-context-cache.service';
+import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
@@ -186,22 +134,10 @@ import {
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
-  type MaxActionDispatchOptions,
-  type MaxActionLedgerContext,
-  type MaxAttachmentPayload,
-  type MaxBotChat,
-  type MaxChatMemberAccess,
-  type MaxChatMemberRole,
-  type MaxChatRosterMember,
-  type MaxMessageButton,
   type MaxPublishedMessage,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
-import {
-  MaxBotLinkService,
-  type MaxBotRoute,
-  type MaxBotRouteRequest,
-} from '../max/max-bot-link.service';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
@@ -225,7 +161,6 @@ import {
   ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
   PERMANENT_ACTIVE_MUTE_CACHE_TTL_SEC,
   buildActiveMuteStateKey,
-  type CachedActiveMuteState,
 } from '../moderation/moderation-state.util';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import {
@@ -240,21 +175,9 @@ import {
   type MaxRoutedPublicationResult,
 } from '../max/max-routed-publication.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
-import {
-  ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
-  type AdminManagedEntitiesRefreshJob,
-} from './admin-managed-entities-refresh.queue';
-import {
-  ADMIN_MANUAL_FANOUT_QUEUE,
-  type AdminManualFanoutJob,
-  type AdminManualBanFanoutJob,
-  type AdminManualGroupModerationCommandJob,
-  type AdminManualMuteFanoutJob,
-} from './admin-manual-fanout.queue';
-import {
-  ADMIN_SUGGESTION_DELIVERY_QUEUE,
-  type AdminSuggestionDeliveryJob,
-} from './admin-suggestion-delivery.queue';
+import { ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE } from './admin-managed-entities-refresh.queue';
+import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
+import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
 import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
 import { toggleDialogReactionValue } from './admin-channel-dialog-reaction';
 import { getChannelSuggestionRedirectValue } from './admin-channel-dialog-redirect';
@@ -275,11 +198,7 @@ import {
   resolveRulesImageFileName as resolveRulesImageFileNameValue,
   saveChatRulesDraft,
 } from './admin-chat-rules';
-import {
-  publishChannelEngagementMessage as publishChannelEngagementMessageValue,
-  type BuildChannelEngagementDialogArtifactsParams,
-  type ChannelEngagementDialogArtifacts,
-} from './admin-channel-engagement';
+import { publishChannelEngagementMessage as publishChannelEngagementMessageValue } from './admin-channel-engagement';
 import {
   applySettingsSectionToAllChats as applySettingsSectionToAllChatsValue,
   applySettingsToAllChats as applySettingsToAllChatsValue,
@@ -292,7 +211,6 @@ import {
 import {
   readChatSettings as readChatSettingsValue,
   saveChatSettings as saveChatSettingsValue,
-  type ResolvedBotAssignmentData,
 } from './admin-chat-settings';
 import { getManagedEntityHeaderValue } from './admin-managed-entity-header';
 import {
@@ -386,6 +304,10 @@ import {
   toLegacyCycleEveryDays,
 } from './admin-managed-broadcast-planner';
 import {
+  MANAGED_BROADCAST_FINALIZER_DELIVERY_SELECT,
+  MANAGED_BROADCAST_OCCURRENCE_RESULT_SELECT,
+} from './admin-managed-broadcast-projections';
+import {
   buildManagedBroadcastDeliveryActionKey as buildManagedBroadcastDeliveryActionKeyValue,
   buildManagedBroadcastFailureMessage,
   createManagedBroadcastDeliverySnapshot as createManagedBroadcastDeliverySnapshotValue,
@@ -451,8 +373,6 @@ import {
   selectChannelStatsContentBucketRows,
   selectChannelStatsMembershipBucketRows,
   selectModerationFeedReadModelRows,
-  type ChannelStatsContentBucketRow,
-  type ChannelStatsMembershipBucketRow,
 } from './stats-read-model-selectors';
 
 import {
@@ -596,76 +516,17 @@ import {
   readNonNegativeConfigInt,
   sleep,
   sleepIfNeeded,
-  type ApplySettingsToAllChatsResult,
-  type ManagedEntityTypeFilter,
-  type ManagedEntitiesListResult,
-  type ManagedEntitiesRefreshPresentation,
-  type ManagedEntitiesRefreshJobOutcome,
-  type ManagedEntitiesManualRefreshBlockReason,
-  type ManagedEntitiesPublishedSnapshotReadResult,
-  type ManagedEntitiesPublishedDiffReadResult,
   type ChannelPublicationEngagementContext,
-  type ManagedEntitiesListOptions,
-  type ManagedEntitiesDiscoverySnapshot,
-  type ManagedBotChatCatalogSnapshotRow,
-  type ManagedBotChatMembershipSnapshotRow,
-  type ManagedEntityBotProfileSnapshot,
-  type AssertChatAdminOptions,
   type AdminReadBypassOptions,
-  type TimedPromiseCacheEntry,
-  type TimedValueCacheEntry,
-  type ManagedEntityBotAssignmentsRow,
-  type AdminAccessResolution,
-  type ManagedEntityAccessRoleValue,
-  type ManagedEntityAccessStateValue,
-  type ManagedEntityAccessEdgeClient,
   type AdminActionSource,
-  type ManualBanFollowUpSource,
-  type AdoptChatRulesFromMessageInput,
-  type ManualMemberModerationAction,
-  type ManualMemberManageMembersAction,
-  type ManualModerationBotAction,
-  type ManualBanExecutionMode,
-  type ManualUnbanExecutionMode,
-  type ManualModerationExecutionOptions,
-  type ResolveManualModerationActionBotAssignmentOptions,
-  type ResolvedUserProfile,
-  type ResolveUserProfilesOptions,
-  type ModerationFeedCursor,
-  type ChatParticipantsSearchCursor,
-  type ChannelSuggestionActor,
-  type ChannelSuggestionImageAsset,
-  type ChannelDialogAttachmentAsset,
-  type ChannelSuggestionTextMarkup,
-  type ChannelSuggestionDeliveryInput,
-  type ModerationViolationRow,
   type PreparedManagedBroadcastRequest,
   type ManagedBroadcastResolvedMedia,
   type ManagedBroadcastMaxApiOptions,
   type ManagedBroadcastSchedulePlan,
   type ManagedBroadcastBackgroundDecision,
-  type ParsedManagedBroadcastCalendarSlots,
   type BroadcastOccurrenceResult,
   type ManagedBroadcastDeliverySnapshot,
   type ManagedBroadcastTargetPreviewBundle,
-  type ManagedBroadcastFailureBreakdown,
-  type MembershipEventRow,
-  type ChannelStatsPostRow,
-  type ChannelStatsViewSnapshotRow,
-  type ChannelStatsPostViewMetric,
-  type ChannelStatsContentBucketPoint,
-  type ChannelStatsPeriodTotals,
-  type ChannelStatsComparisonSeries,
-  type ChannelStatsPreviousPeriodSnapshot,
-  type ChannelStatsDeltaMetric,
-  type ChannelStatsGraphMarker,
-  type ChannelStatsBestWindow,
-  type ChannelDialogMessageSource,
-  type DialogMessageEntityType,
-  type CommentDialogNotificationKind,
-  type ChannelSuggestionFromBotPayload,
-  type ChannelSuggestionReviewAction,
-  type ChannelSuggestionAdminDelivery,
 } from './admin.service.support';
 export type {
   AdminActionSource,
@@ -3204,6 +3065,7 @@ export class AdminManagedBroadcastRuntime {
         if (claim.count === 0) {
           const current = await this.prisma.managedBroadcast.findUnique({
             where: { id: broadcastId },
+            select: MANAGED_BROADCAST_OCCURRENCE_RESULT_SELECT,
           });
           return {
             status: current?.status ?? PrismaManagedBroadcastStatus.FAILED,
@@ -5797,6 +5659,7 @@ export class AdminManagedBroadcastRuntime {
   ): Promise<BroadcastOccurrenceResult> {
     const current = await this.prisma.managedBroadcast.findUnique({
       where: { id: broadcastId },
+      select: MANAGED_BROADCAST_OCCURRENCE_RESULT_SELECT,
     });
     const currentCanRetry =
       current?.status === PrismaManagedBroadcastStatus.PARTIAL ||
@@ -5832,18 +5695,19 @@ export class AdminManagedBroadcastRuntime {
         broadcastId: row.id,
         occurrenceIndex: currentOccurrence,
       },
+      select: MANAGED_BROADCAST_FINALIZER_DELIVERY_SELECT,
     });
     const deliveredChats = deliveries.filter(
-      (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.SENT,
+      (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.SENT,
     );
     const failedChats = deliveries.filter(
-      (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
+      (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
     );
     const ambiguousChats = deliveries.filter(
-      (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS,
+      (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.AMBIGUOUS,
     );
     const canceledChats = deliveries.filter(
-      (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.CANCELED,
+      (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.CANCELED,
     );
     const failedLikeChats = [...failedChats, ...ambiguousChats, ...canceledChats];
     const terminalFailureChats = [
@@ -5852,19 +5716,16 @@ export class AdminManagedBroadcastRuntime {
       ...(row.publicationOccurrenceId ? canceledChats : []),
     ];
     const failedLikeChatIds = [
-      ...new Set([
-        ...failedLikeChats.map((delivery: any) => delivery.targetChatId),
-        ...failedChatIds,
-      ]),
+      ...new Set([...failedLikeChats.map((delivery) => delivery.targetChatId), ...failedChatIds]),
     ];
     const pendingChats = deliveries.filter(
-      (delivery: any) =>
+      (delivery) =>
         delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
         delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
     );
     const unverifiedPublicationChats = row.publicationOccurrenceId
       ? deliveredChats.filter(
-          (delivery: any) =>
+          (delivery) =>
             delivery.remoteMessageId !== null &&
             delivery.remoteMessageVerifiedAt === null &&
             hasPublicationDeliveryAutomatedVerificationState(delivery),
@@ -5880,7 +5741,7 @@ export class AdminManagedBroadcastRuntime {
         row.id,
         sentChatIds,
         failedLikeChatIds,
-        pendingChats.map((delivery: any) => delivery.targetChatId),
+        pendingChats.map((delivery) => delivery.targetChatId),
         firstSendError,
         false,
       );
@@ -5919,9 +5780,9 @@ export class AdminManagedBroadcastRuntime {
           row.id,
           sentChatIds.length > 0
             ? sentChatIds
-            : deliveredChats.map((delivery: any) => delivery.targetChatId),
+            : deliveredChats.map((delivery) => delivery.targetChatId),
           failedLikeChatIds,
-          pendingChats.map((delivery: any) => delivery.targetChatId),
+          pendingChats.map((delivery) => delivery.targetChatId),
           firstSendError,
           false,
         );
@@ -5944,9 +5805,9 @@ export class AdminManagedBroadcastRuntime {
         sentChatIds:
           sentChatIds.length > 0
             ? sentChatIds
-            : deliveredChats.map((delivery: any) => delivery.targetChatId),
+            : deliveredChats.map((delivery) => delivery.targetChatId),
         failedChatIds: failedLikeChatIds,
-        pendingChatIds: pendingChats.map((delivery: any) => delivery.targetChatId),
+        pendingChatIds: pendingChats.map((delivery) => delivery.targetChatId),
         canRetry: false,
         firstSendError,
         nextSendAt: deferredNextSendAt,
@@ -5992,9 +5853,9 @@ export class AdminManagedBroadcastRuntime {
           row.id,
           sentChatIds.length > 0
             ? sentChatIds
-            : deliveredChats.map((delivery: any) => delivery.targetChatId),
+            : deliveredChats.map((delivery) => delivery.targetChatId),
           failedLikeChatIds,
-          pendingChats.map((delivery: any) => delivery.targetChatId),
+          pendingChats.map((delivery) => delivery.targetChatId),
           firstSendError,
           canRetry,
         );
@@ -6017,9 +5878,9 @@ export class AdminManagedBroadcastRuntime {
         sentChatIds:
           sentChatIds.length > 0
             ? sentChatIds
-            : deliveredChats.map((delivery: any) => delivery.targetChatId),
+            : deliveredChats.map((delivery) => delivery.targetChatId),
         failedChatIds: failedLikeChatIds,
-        pendingChatIds: pendingChats.map((delivery: any) => delivery.targetChatId),
+        pendingChatIds: pendingChats.map((delivery) => delivery.targetChatId),
         canRetry,
         firstSendError,
         nextSendAt: row.nextSendAt,
@@ -6057,7 +5918,7 @@ export class AdminManagedBroadcastRuntime {
         row.id,
         sentChatIds.length > 0
           ? sentChatIds
-          : deliveredChats.map((delivery: any) => delivery.targetChatId),
+          : deliveredChats.map((delivery) => delivery.targetChatId),
         failedLikeChatIds,
         [],
         firstSendError,
@@ -6091,7 +5952,7 @@ export class AdminManagedBroadcastRuntime {
       sentChatIds:
         sentChatIds.length > 0
           ? sentChatIds
-          : deliveredChats.map((delivery: any) => delivery.targetChatId),
+          : deliveredChats.map((delivery) => delivery.targetChatId),
       failedChatIds: failedLikeChatIds,
       pendingChatIds: [],
       canRetry: false,

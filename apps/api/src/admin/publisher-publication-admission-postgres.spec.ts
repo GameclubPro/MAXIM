@@ -23,8 +23,47 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
 const integration = databaseUrl ? describe : describe.skip;
 jest.setTimeout(90_000);
 
+const EXPECTED_NATIVE_OCCURRENCE_RESULT_SELECT = {
+  status: true,
+  sentCount: true,
+  cycleCount: true,
+  nextSendAt: true,
+} as const satisfies Prisma.ManagedBroadcastSelect;
+const EXPECTED_NATIVE_FINALIZER_DELIVERY_SELECT = {
+  targetChatId: true,
+  status: true,
+  lastErrorCode: true,
+  dispatchBlockerCode: true,
+  dispatchBlockedAt: true,
+  nextAttemptAt: true,
+  sentAt: true,
+  remoteMessageId: true,
+  remoteMessageVerifiedAt: true,
+  remoteMessageVerificationAttemptCount: true,
+  remoteMessageVerificationAbsentCount: true,
+  remoteMessageVerificationPresentCount: true,
+  remoteMessageVerificationAttemptedAt: true,
+  remoteMessageVerificationNextAt: true,
+  remoteMessageVerificationSource: true,
+} as const satisfies Prisma.ManagedBroadcastDeliverySelect;
+const nativeProjectionSeam = (runtime: AdminManagedBroadcastRuntime) => ({
+  process: runtime['processManagedBroadcastOccurrence'].bind(runtime),
+  finalize: runtime['finalizeManagedBroadcastOccurrence'].bind(runtime),
+});
+type NativeFinalizerRow = Parameters<ReturnType<typeof nativeProjectionSeam>['finalize']>[0];
+type NativeFinalizerOptions = Parameters<ReturnType<typeof nativeProjectionSeam>['finalize']>[5];
+
+function projectionGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 integration('Publisher bounded recipient admission on PostgreSQL', () => {
   let db: PrismaClient;
+  let competingDb: PrismaClient;
   let chatIds: string[] = [];
   let publicationId: string;
   let ownedPublicationIds: string[] = [];
@@ -63,6 +102,10 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     });
     db = client;
     await db.$connect();
+    competingDb = new PrismaClient({
+      adapter: createPrismaAdapter(databaseUrl, { max: 1, statement_timeout: 10_000 }),
+    });
+    await competingDb.$connect();
     expect(await db.$queryRawUnsafe<Array<{ TimeZone: string }>>('SHOW TimeZone')).toEqual([
       { TimeZone: 'UTC' },
     ]);
@@ -91,8 +134,41 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     chatIds = [];
   });
   afterAll(async () => {
-    await db?.$disconnect();
+    try {
+      await competingDb?.$disconnect();
+    } finally {
+      await db?.$disconnect();
+    }
   });
+
+  async function seedProjectionFinalizerSentinels(row: NativeFinalizerRow) {
+    await db.managedBroadcastCalendarReservation.create({
+      data: {
+        broadcastId,
+        sourceChatId: chatIds[0]!,
+        occurrenceIndex: 1,
+        targetChatId: chatIds[0]!,
+        scheduledAt: row.nextSendAt!,
+      },
+    });
+    return {
+      reservations: await db.managedBroadcastCalendarReservation.findMany({
+        where: { broadcastId },
+      }),
+      occurrences: await db.managedBroadcastOccurrence.findMany({ where: { broadcastId } }),
+    };
+  }
+
+  async function expectProjectionFinalizerSentinels(
+    before: Awaited<ReturnType<typeof seedProjectionFinalizerSentinels>>,
+  ) {
+    expect(
+      await db.managedBroadcastCalendarReservation.findMany({ where: { broadcastId } }),
+    ).toEqual(before.reservations);
+    expect(await db.managedBroadcastOccurrence.findMany({ where: { broadcastId } })).toEqual(
+      before.occurrences,
+    );
+  }
 
   function createRuntime(
     publisherTemporalSelectionRollout: PublisherTemporalSelectionRollout = 'off',
@@ -976,4 +1052,260 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       });
     }
   });
+
+  it('reads the native E4 fallback without preparing or sending after a competing claim', async () => {
+    await fixture(1);
+    const lockedAt = new Date();
+    const owner = await competingDb.managedBroadcast.update({
+      where: { id: broadcastId },
+      data: { lockedAt, lockToken: 'projection-native-current-owner' },
+    });
+    const envelopeReader = jest.spyOn(db.managedBroadcast, 'findUnique');
+    const deliveryReader = jest.spyOn(db.managedBroadcastDelivery, 'findMany');
+    try {
+      const result = await nativeProjectionSeam(runtime).process(
+        broadcastId,
+        'deadline',
+        new Date(lockedAt.getTime() - 60_000),
+        ['ACTIVE'],
+      );
+      expect(envelopeReader.mock.calls).toEqual([
+        [
+          {
+            where: { id: broadcastId },
+            select: EXPECTED_NATIVE_OCCURRENCE_RESULT_SELECT,
+          },
+        ],
+      ]);
+      expect(deliveryReader).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        status: 'ACTIVE',
+        currentOccurrence: 1,
+        sentChatIds: [],
+        failedChatIds: [],
+        pendingChatIds: [],
+        canRetry: false,
+        firstSendError: null,
+        nextSendAt: owner.nextSendAt,
+      });
+    } finally {
+      envelopeReader.mockRestore();
+      deliveryReader.mockRestore();
+    }
+    expect(await db.managedBroadcast.findUniqueOrThrow({ where: { id: broadcastId } })).toEqual(
+      owner,
+    );
+    expect(
+      await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
+    ).toMatchObject({ status: 'PENDING', attemptCount: 0, remoteMessageId: null });
+    expect(prepareContext).not.toHaveBeenCalled();
+    expect(remoteSend).not.toHaveBeenCalled();
+  });
+
+  it('retains native D15 receipts and E4 state when the recipient finalizer lease is lost', async () => {
+    await fixture(2);
+    const lockedAt = new Date();
+    const row = await db.managedBroadcast.update({
+      where: { id: broadcastId },
+      data: { lockedAt, lockToken: 'projection-native-old-owner' },
+    });
+    const options = {
+      lease: { lockedAt, lockToken: 'projection-native-old-owner', lastHeartbeatAt: lockedAt },
+    } satisfies NativeFinalizerOptions;
+    const receipt = await db.managedBroadcastDelivery.findFirstOrThrow({
+      where: { broadcastId, targetChatId: chatIds[0] },
+    });
+    await db.managedBroadcastDelivery.update({
+      where: { id: receipt.id },
+      data: {
+        status: 'SENT',
+        remoteMessageId: 'projection-native-retained-receipt',
+        sentAt: lockedAt,
+        botId,
+        attemptCount: 1,
+      },
+    });
+    const before = await seedProjectionFinalizerSentinels(row);
+    const winner = await competingDb.managedBroadcast.update({
+      where: { id: broadcastId },
+      data: {
+        lockedAt: new Date(lockedAt.getTime() + 1),
+        lockToken: 'projection-native-new-owner',
+      },
+    });
+    const envelopeReader = jest.spyOn(db.managedBroadcast, 'findUnique');
+    const deliveryReader = jest.spyOn(db.managedBroadcastDelivery, 'findMany');
+    try {
+      const result = await nativeProjectionSeam(runtime).finalize(
+        row,
+        1,
+        [chatIds[0]!],
+        [],
+        null,
+        options,
+      );
+      expect(deliveryReader.mock.calls).toEqual([
+        [
+          {
+            where: { broadcastId, occurrenceIndex: 1 },
+            select: EXPECTED_NATIVE_FINALIZER_DELIVERY_SELECT,
+          },
+        ],
+      ]);
+      expect(envelopeReader.mock.calls).toEqual([
+        [
+          {
+            where: { id: broadcastId },
+            select: EXPECTED_NATIVE_OCCURRENCE_RESULT_SELECT,
+          },
+        ],
+      ]);
+      expect(result).toMatchObject({
+        status: 'ACTIVE',
+        sentChatIds: [chatIds[0]],
+        pendingChatIds: [chatIds[1]],
+        canRetry: false,
+        nextSendAt: winner.nextSendAt,
+      });
+    } finally {
+      envelopeReader.mockRestore();
+      deliveryReader.mockRestore();
+    }
+    expect(await db.managedBroadcast.findUniqueOrThrow({ where: { id: broadcastId } })).toEqual(
+      winner,
+    );
+    expect(
+      await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: receipt.id } }),
+    ).toMatchObject({
+      status: 'SENT',
+      remoteMessageId: 'projection-native-retained-receipt',
+      attemptCount: 1,
+      botId,
+    });
+    await expectProjectionFinalizerSentinels(before);
+    expect(remoteSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { branch: 'pending', status: 'PENDING' },
+    { branch: 'failure', status: 'FAILED' },
+    { branch: 'completion', status: 'SENT' },
+  ] satisfies { branch: string; status: ManagedBroadcastDelivery['status'] }[])(
+    'retains native E4/D15 and canceled winner after the $branch finalizer CAS loses',
+    async ({ status }) => {
+      await fixture(1);
+      const lockedAt = new Date();
+      const row = await db.managedBroadcast.update({
+        where: { id: broadcastId },
+        data: { lockedAt, lockToken: 'projection-native-cas-owner' },
+      });
+      await db.managedBroadcastDelivery.updateMany({
+        where: { broadcastId },
+        data: {
+          status,
+          ...(status === 'SENT'
+            ? {
+                remoteMessageId: 'projection-native-cas-receipt',
+                sentAt: lockedAt,
+                botId,
+                attemptCount: 1,
+              }
+            : {}),
+        },
+      });
+      const before = await seedProjectionFinalizerSentinels(row);
+      const options = {
+        lease: { lockedAt, lockToken: 'projection-native-cas-owner', lastHeartbeatAt: lockedAt },
+      } satisfies NativeFinalizerOptions;
+      const entered = projectionGate();
+      const release = projectionGate();
+      const dispatch = runtime['publisherDispatch'];
+      const prepare = dispatch.prepareRecipientFinalization.bind(dispatch);
+      // FLAG: Gate after the actual lease-check transaction commits. The independent
+      // client then wins before the unchanged finalizer CAS; no SQL outcome is mocked.
+      const prepareGate = jest
+        .spyOn(dispatch, 'prepareRecipientFinalization')
+        .mockImplementation(
+          async (...args: Parameters<typeof prepare>): ReturnType<typeof prepare> => {
+            const result = await prepare(...args);
+            expect(result.leaseOwned).toBe(true);
+            entered.resolve();
+            await release.promise;
+            return result;
+          },
+        );
+      const envelopeReader = jest.spyOn(db.managedBroadcast, 'findUnique');
+      const deliveryReader = jest.spyOn(db.managedBroadcastDelivery, 'findMany');
+      const pending = nativeProjectionSeam(runtime).finalize(row, 1, [], [], null, options);
+      let winner: NativeFinalizerRow | undefined;
+      try {
+        await Promise.race([
+          entered.promise,
+          pending.then(() => {
+            throw new Error('Finalizer returned before the native CAS gate');
+          }),
+        ]);
+        winner = await competingDb.managedBroadcast.update({
+          where: { id: broadcastId },
+          data: {
+            status: 'CANCELED',
+            lockedAt: new Date(lockedAt.getTime() + 1),
+            lockToken: 'projection-native-canceled-owner',
+            sentCount: 1,
+            cycleCount: 2,
+            nextSendAt: null,
+            lastError: 'Winning native cancellation',
+          },
+        });
+        release.resolve();
+        const result = await pending;
+        expect(deliveryReader.mock.calls).toEqual([
+          [
+            {
+              where: { broadcastId, occurrenceIndex: 1 },
+              select: EXPECTED_NATIVE_FINALIZER_DELIVERY_SELECT,
+            },
+          ],
+        ]);
+        expect(envelopeReader.mock.calls).toEqual([
+          [
+            {
+              where: { id: broadcastId },
+              select: EXPECTED_NATIVE_OCCURRENCE_RESULT_SELECT,
+            },
+          ],
+        ]);
+        expect(result).toMatchObject({
+          status: 'CANCELED',
+          currentOccurrence: 2,
+          canRetry: false,
+          nextSendAt: null,
+        });
+        expect(result.sentChatIds).toEqual(status === 'SENT' ? [chatIds[0]] : []);
+        expect(result.failedChatIds).toEqual(status === 'FAILED' ? [chatIds[0]] : []);
+        expect(result.pendingChatIds).toEqual(status === 'PENDING' ? [chatIds[0]] : []);
+      } finally {
+        release.resolve();
+        await pending.catch(() => undefined);
+        prepareGate.mockRestore();
+        envelopeReader.mockRestore();
+        deliveryReader.mockRestore();
+      }
+      expect(winner).toBeDefined();
+      expect(await db.managedBroadcast.findUniqueOrThrow({ where: { id: broadcastId } })).toEqual(
+        winner,
+      );
+      await expectProjectionFinalizerSentinels(before);
+      if (status === 'SENT')
+        expect(
+          await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
+        ).toMatchObject({
+          status: 'SENT',
+          remoteMessageId: 'projection-native-cas-receipt',
+          attemptCount: 1,
+          botId,
+        });
+      expect(remoteSend).not.toHaveBeenCalled();
+    },
+  );
 });

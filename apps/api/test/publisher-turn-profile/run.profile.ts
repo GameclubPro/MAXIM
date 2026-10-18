@@ -12,6 +12,7 @@ import {
   explainCapturedDeliveryReads,
   ProfilePrisma,
   profileTurn,
+  readProjectionEvidence,
 } from './metrics';
 import { createProfileRuntime, type ProfileTurn } from './runtime';
 
@@ -57,13 +58,14 @@ const mode = process.env.MAXIM_PUBLISHER_TURN_PROFILE;
 const output = process.env.MAXIM_PUBLISHER_TURN_PROFILE_OUTPUT;
 const url = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL;
 const rollupNoopMode = process.env.MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE;
-if (!['full', 'smoke'].includes(mode ?? '') || !output || !url) {
+if (!['full', 'smoke', 'projection'].includes(mode ?? '') || !output || !url) {
   throw new Error('Use the public test:publisher-full-turn-profile runner with disposable stores.');
 }
 if (
   (rollupNoopMode !== 'off' && rollupNoopMode !== '100') ||
   process.env.PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT !== rollupNoopMode ||
-  process.env.PUBLISHER_TEMPORAL_SELECTION_ROLLOUT !== 'off'
+  process.env.PUBLISHER_TEMPORAL_SELECTION_ROLLOUT !== 'off' ||
+  (mode === 'projection' && rollupNoopMode !== 'off')
 ) {
   throw new Error('Publisher profile requires explicit matching rollout modes from its runner.');
 }
@@ -78,9 +80,39 @@ if (
 ) {
   throw new Error('Refusing non-disposable profile store');
 }
-const selected = mode === 'smoke' ? cells.filter((cell) => cell.size === 64) : cells;
+const projectionCells: Cell[] = [
+  ...[64, 10000, 50000].map(
+    (size): Cell => ({
+      id: `ready-${size}-now`,
+      size,
+      state: 'ready',
+      schedule: 'NOW',
+      turn: 'now',
+    }),
+  ),
+  { id: 'verification-64-now', size: 64, state: 'verification', schedule: 'NOW', turn: 'now' },
+  { id: 'ready-64-deadline', size: 64, state: 'ready', schedule: 'ONCE', turn: 'deadline' },
+];
+const selected =
+  mode === 'projection'
+    ? projectionCells
+    : mode === 'smoke'
+      ? cells.filter((cell) => cell.size === 64)
+      : cells;
+const expectedCells = mode === 'projection' ? 5 : mode === 'smoke' ? 7 : 24;
+if (selected.length !== expectedCells) throw new Error('Incomplete Publisher profile cell matrix');
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-const sourceFiles = ['fixture.ts', 'runtime.ts', 'metrics.ts', 'run.profile.ts'];
+const sourceFiles = [
+  'fixture.ts',
+  'runtime.ts',
+  'metrics.ts',
+  'run.profile.ts',
+  '../../src/admin/admin-managed-broadcast-projections.ts',
+  '../../src/admin/admin-managed-broadcast-runtime.ts',
+  '../../src/admin/admin-managed-broadcast-planner.ts',
+  '../../../../scripts/run-publisher-turn-profile.mjs',
+  '../../../../scripts/run-publisher-turn-profile.test.mjs',
+];
 const sourceDigests = Object.fromEntries(
   sourceFiles.map((name) => [
     name,
@@ -105,6 +137,8 @@ interface CellResult {
   elapsedMedianMs?: number;
   elapsedRangeMs?: [number, number];
   plans?: unknown;
+  context?: ProfileFixture['context'];
+  projectionEvidence?: Awaited<ReturnType<typeof readProjectionEvidence>>;
 }
 const report = {
   schemaVersion: 1,
@@ -134,6 +168,11 @@ const report = {
     quantum: 4,
     measuredRepetitions: 3,
     warmups: 1,
+    expectedCells,
+    expectedPublicTurnCalls: expectedCells * 4,
+    expectedControls: 7,
+    expectedNativeReadPairs: mode === 'projection' ? 3 : 0,
+    readyContextPaddingBytes: mode === 'projection' ? 8192 : 0,
     nativePostgres: true,
     nativeRedisCoverage: false,
     syntheticMax: true,
@@ -149,6 +188,8 @@ const report = {
     'Scalar probe output rows do not measure physical SQL work or delivery rows visited; native query plans establish those bounds separately.',
     'The test-only single active scope covers Prisma engine callbacks outside AsyncLocalStorage; overlapping turns are forbidden.',
     'Memory peaks are sampled; event-loop stalls can hide a peak.',
+    'Projection proof resets and reads reuse the ready fixtures after timing; identical diagnostic/cell order is required across arms because later cache and process memory can be affected.',
+    'Row-wise JSON bytes are exact application serialization, not PostgreSQL wire, allocation or retained heap; compression does not by itself prove external TOAST placement.',
   ],
   calibration: null as unknown,
   controls: [] as { name: string; passed: boolean }[],
@@ -225,9 +266,7 @@ test('finite native Publisher public-turn profile', async () => {
     try {
       await following.run('now');
       expect(following.snapshot().sendCount).toBe(4);
-      expect(new Set(following.snapshot().sentTargetIds)).toEqual(
-        new Set(fixture.chatIds.slice(4)),
-      );
+      expect(following.snapshot().sentTargetIds).toEqual(fixture.chatIds.slice(4));
       expect(
         await prisma.managedBroadcastDelivery.count({
           where: {
@@ -277,23 +316,35 @@ test('finite native Publisher public-turn profile', async () => {
         size: entry.cell.size,
         state: entry.cell.state,
         schedule: entry.cell.schedule,
+        contextPaddingBytes:
+          mode === 'projection' && entry.cell.state === 'ready' && entry.cell.turn === 'now'
+            ? 8192
+            : 0,
       });
       // Disposable store only. Never include fixture preparation/statistics in turn timing.
       await prisma.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
       await prisma.$executeRawUnsafe('ANALYZE managed_broadcasts');
       await prisma.$executeRawUnsafe('ANALYZE publications, publication_occurrences');
       entry.setupMs = performance.now() - setup;
+      entry.context = fixture.context;
       for (let repetition = 0; repetition < 4; repetition++) {
         await fixture.reset();
         const runtime = await createProfileRuntime(fixture, runtimeOptions);
         try {
           const measured = await profileTurn(() => runtime.run(entry.cell.turn));
           const counters = runtime.snapshot();
+          const { sentTargetIds, presenceMessageIds, ...scalarCounters } = counters;
           const sample: Sample = {
             repetition,
             warmup: repetition === 0,
             metrics: measured.metrics,
-            counters,
+            counters: {
+              ...scalarCounters,
+              sentTargetOrdinals: sentTargetIds.map((id) => fixture!.chatIds.indexOf(id)),
+              verificationTargetOrdinals: presenceMessageIds.map((id) =>
+                fixture!.chatIds.indexOf(id.slice('profile-receipt-'.length)),
+              ),
+            },
             outcomes: null,
           };
           entry.samples.push(sample);
@@ -322,6 +373,13 @@ test('finite native Publisher public-turn profile', async () => {
         .sort((a, b) => a - b);
       entry.elapsedMedianMs = elapsed[1];
       entry.elapsedRangeMs = [elapsed[0]!, elapsed[2]!];
+      if (mode === 'projection' && entry.cell.state === 'ready' && entry.cell.turn === 'now') {
+        stage = `${entry.cell.id}:native-read-pair`;
+        save();
+        await fixture.reset();
+        entry.projectionEvidence = await readProjectionEvidence(service, fixture);
+        save();
+      }
       entry.status = 'complete';
       save();
       await fixture.cleanup();
@@ -344,10 +402,26 @@ test('finite native Publisher public-turn profile', async () => {
       }
       if (
         report.status === 'running' &&
-        report.cells.every((entry) => entry.status === 'complete')
+        report.cells.length === expectedCells &&
+        report.controls.length === 7 &&
+        report.controls.every((control) => control.passed) &&
+        report.cells.every(
+          (entry) =>
+            entry.status === 'complete' &&
+            entry.samples.length === 4 &&
+            entry.samples.filter((sample) => !sample.warmup).length === 3,
+        ) &&
+        (mode !== 'projection' ||
+          report.cells.filter((entry) => entry.projectionEvidence).length === 3)
       ) {
         report.status = 'complete';
         report.complete = true;
+      } else if (report.status === 'running') {
+        report.status = 'failed';
+        report.failure = { stage: 'completeness', name: 'IncompleteProfile' };
+        executionError ??= new Error(
+          'Publisher profile is missing a cell, sample, control or native read pair.',
+        );
       }
     } catch (error) {
       report.status = 'failed';

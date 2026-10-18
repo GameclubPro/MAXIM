@@ -12,6 +12,10 @@ node scripts/agent/with-test-stores.mjs --migrate -- \
 
 node scripts/agent/with-test-stores.mjs --migrate -- \
   npm run test:publisher-full-turn-profile --workspace @maxim/api -- \
+  --projection --rollup-noop-mode off --output /absolute/private/new-projection.json
+
+node scripts/agent/with-test-stores.mjs --migrate -- \
+  npm run test:publisher-full-turn-profile --workspace @maxim/api -- \
   --rollup-noop-mode off --output /absolute/private/new-full-profile-off.json
 
 node scripts/agent/with-test-stores.mjs --migrate -- \
@@ -25,7 +29,7 @@ the disposable `maxim_race_test_*` namespace, connection query overrides and non
 The exact `?schema=public` suffix from the store wrapper is supported. There is no missing-store
 skip. Default Jest discovery excludes `.profile.ts`; ordinary CI does not seed large audiences.
 
-The smoke runs the seven 64-recipient cells. Both modes first calibrate driver row counts and
+The smoke runs the seven 64-recipient cells. All modes first calibrate driver row counts and
 check final revocation, cancellation, independent progress after denied recipients, verification,
 persisted blockers and targeted dispatch on small fixtures. The full matrix has 24 cells, each
 with one warm-up and three measured calls (96 calls, 72 measurements):
@@ -69,7 +73,7 @@ every 20 ms, including sample count and largest gap; CPU is the Node process, no
 GC observations can lag the interval. Read-only SELECT plans are replayed after the turn and
 ANALYZE on the disposable database, so they do not represent the original exact snapshot.
 
-The runner has a five-minute smoke or 45-minute full deadline, including preparation. It terminates
+The runner has a five-minute smoke or 45-minute full/projection deadline, including preparation. It terminates
 the owned child process group on failure/timeout and waits for bounded group cleanup before
 releasing its lock. It never races active SQL against fixture deletion. A partial report or a
 missing cell is not success; completion requires successful fixture and connection teardown.
@@ -212,3 +216,61 @@ is cumulative and periodic sampling gaps remain; no exact peak, isolated allocat
 reduction or leak result follows. Physical query-plan evidence is separate from
 returned rows. The retained same-key MVCC failure prevents a universal heap-fetch
 bound; fresh/positive-stale native witnesses use distinct keys and unchanged limits.
+
+## Narrow read projections on 18 October 2026
+
+`--projection` runs only ready NOW with 64/10,000/50,000 recipients, verification NOW64,
+and scheduled/deadline64: one warm-up and three measured calls per cell, 20 calls per arm,
+plus the seven controls. It rejects combination with `--smoke` or rollup mode `100`.
+Ready NOW contexts contain 8 KiB of compressible padding accepted by the real context parser
+under its 64 KiB cap. Fixture delivery IDs retain audience ordinals for existing SQL tie-breaks;
+actions, verification and exact target/bot/receipt linkage are checked without sorting.
+
+After each ready cell's timed calls and postconditions, reset the same fixture and compare
+full/projected envelope and delivery reads inside one read-only RepeatableRead transaction.
+Require the same values, cardinality, target identities and original sequence, exactly four
+envelope fields and 15 delivery fields, and generated SQL differing only in selected columns.
+Independent databases do not promise equal physical row order without `ORDER BY`: retain both
+native sequence hashes as observations; action and receipt order must still match between arms.
+The diagnostic transaction has a 120-second total bound; the existing 10-second statement and
+3 GiB Node heap budgets remain unchanged.
+
+Serialize each real returned Prisma row with `JSON.stringify(row) + LF`, using UTF-8,
+Date ISO UTC and preserved nulls, outside public-turn timing. Record exact bytes, keys, row
+counts and digests; these are application JSON bytes, not wire bytes, allocations or retained
+heap. Record observed context compression/sizes and actual disposable query plans separately.
+Do not sort native read pairs or infer external TOAST placement from compression alone.
+Keep identical tooling/configuration/payload/order in both arms, verify source hashes before
+and after, and retain failures, sample gaps and all measured resource counters.
+
+The matched pair completed at 12:01:44 UTC: deployed baseline `9938017b` against the candidate
+with only E4/D15 production read projections and the planner count Pick. Both store wrappers
+exited zero, removed owned stores and passed all five cells, seven controls and three native
+read pairs. Eighteen source/configuration files per checkout matched before/after. All 20
+normalized outcomes, action/verification sequences, receipt linkages, method call/row counts,
+affected rows and observed `executeRaw` families matched. `queryRaw` fingerprints mix reads
+and returning DML, so this is not independent attribution of every write statement.
+
+| Cell                 | Baseline median ms | Candidate median ms | Direct delivery SELECT rows, both arms |
+| -------------------- | -----------------: | ------------------: | -------------------------------------: |
+| Ready NOW64          |              83.48 |               73.50 |                                    128 |
+| Ready NOW10k         |             876.98 |              565.97 |                                 20,000 |
+| Ready NOW50k         |           4,073.93 |            2,423.99 |                                100,000 |
+| Verification NOW64   |             134.50 |              125.08 |                                    178 |
+| Scheduled/deadline64 |              86.14 |               78.76 |                                    128 |
+
+The 50k delivery read's row-wise JSON decreased from 493,800,000 to 23,350,000 bytes
+(95.27%); cardinality remained 50,000. All three sizes observed `pglz` compression;
+external TOAST placement remains unproved. The complete turn still reads O(N) rows.
+
+Resource flags remain open: 10k system-CPU median increased 52.694 to 175.754 ms
+(observed maximum decreased 7.86%), 10k post-call heap median increased 71.66%
+(maximum 23.64%), and 50k system-CPU maximum increased 37.46% (median decreased 7.71%).
+The 10k pre-call heap already differed; GC observations and cumulative process memory are
+not synchronized across arms. This does not establish the cause, a leak result or universal
+memory improvement. Total Node CPU medians decreased 38.24%/42.50% at 10k/50k, and no cell's
+elapsed median or observed maximum increased. Sampling gaps and all outliers are retained.
+Three measurements with synthetic MAX establish neither production p95/p99 nor a production
+speedup. Functional/payload evidence, resource review, exact CI, deployment and live acceptance
+are separate gates. The initial private comparator failure over independent unordered row
+hashes is retained; correcting that comparator changed no application, SQL, fixture or report.
