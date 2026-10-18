@@ -31,12 +31,12 @@ its own reviewed preview and explicit apply; the tool never promotes a stage.
 The setter enforces:
 
 - The shared deploy lock, exact active source/image fence, source schema and actual
-  selector wiring, exact topology, and initial dispatch/selection parity in all 14 roles.
+  selector wiring, exact topology, and initial dispatch and both reader-mode parities in all 14 roles.
 - Finite unambiguous dotenv values. Non-off selection requires dispatch already enabled.
-  The dispatch assignment, including its absence, and all unrelated bytes are preserved.
+  The dispatch and occurrence-rollup assignments, including their absence, and all unrelated bytes are preserved.
 - A durable private operation record before mutation, then the existing owned Publisher
   pause, webhook quiescence and complete API role recreation on the installed image.
-- Effective Compose and runtime readback of both flags, exact image and role identity,
+- Effective Compose and runtime readback of dispatch and both reader modes, exact image and role identity,
   native auxiliary attestation, strict health/stability smokes, identity verification
   when dispatch is enabled, and the existing pause-release protocol.
 
@@ -88,7 +88,7 @@ see [publication diagnostics](publisher-publication-diagnostics.md).
 Each applied selection operation keeps one bounded private JSON record under
 `/var/lib/maxim-deploy/publisher-selection-rollouts/<operation-id>.json`. It records
 `operation=selection`, exact source SHA, original/requested mode, whether the original
-key existed, retained dispatch state, start/finish UTC times, terminal status and whether
+key existed, retained dispatch state, retained rollup mode/configured pair in new records, start/finish UTC times, terminal status and whether
 runtime readback completed. Files are fsynced, at most 4 KiB and mode `0600`; the containing
 directory is owned and mode `0700`. No content, bot/user identifiers or secrets are recorded.
 These records are operational evidence, not recovery authority, and never replace the
@@ -114,7 +114,7 @@ use the existing guarded `publisher-dispatch-disable --apply` recovery procedure
 selection setter refuses to adopt that state. Preserve receipts, claims, queues and
 unknown effects throughout recovery.
 
-Guarded dispatch-disable recovery reads the persisted selection mode under the shared
+Guarded dispatch-disable recovery reads both persisted reader modes under the shared
 lock. Its first identity check permits mode drift so the existing recovery path can
 repair it. The shortcut that avoids recreating API roles requires both an explicitly
 disabled dispatch switch and exact persisted-mode parity on all 14 roles. A stale or
@@ -151,3 +151,7 @@ An interrupted or malformed acquisition/clear response leaves the Redis outcome 
 The controller reports that uncertainty before offering guarded disable recovery; it
 does not claim the marker is absent or still armed. Inspect the exact runtime and pause
 before recovery, and never repeat enable to resolve a missing acknowledgement.
+
+The independent occurrence reader has its own default-off mode and
+[rollout procedure](publisher-occurrence-rollup-noop-rollout.md). Original selection v1
+audit records without the retained rollup pair remain readable.

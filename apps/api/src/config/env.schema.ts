@@ -190,6 +190,9 @@ const envSchema = z.object({
   ),
   MAX_PUBLISHER_DISPATCH_ENABLED: envBoolean(false),
   PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: z.enum(['off', 'test', '5', '25', '100']).default('off'),
+  PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: z
+    .enum(['off', 'test', '5', '25', '100'])
+    .default('off'),
   MAX_PUBLISHER_ACCESS_REFRESH_MODE: z.enum(['off', 'canary', 'on']).default('off'),
   PUBLISHER_POST_IMPORT_ENABLED: envBoolean(false),
   PUBLISHER_AUTO_REPLY_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1_500),

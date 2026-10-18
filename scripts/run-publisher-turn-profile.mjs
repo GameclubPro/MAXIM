@@ -28,12 +28,21 @@ export function validateProfileEnvironment(env) {
 export function parseProfileArguments(args) {
   let mode = 'full';
   let output;
+  let rollupNoopMode = 'off';
+  let rollupNoopModeSupplied = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--smoke') mode = 'smoke';
     else if (args[i] === '--output' && args[i + 1]) output = args[++i];
-    else
+    else if (
+      args[i] === '--rollup-noop-mode' &&
+      !rollupNoopModeSupplied &&
+      ['off', '100'].includes(args[i + 1])
+    ) {
+      rollupNoopMode = args[++i];
+      rollupNoopModeSupplied = true;
+    } else
       throw new Error(
-        'Usage: test:publisher-full-turn-profile -- [--smoke] --output <new absolute .json>',
+        'Usage: test:publisher-full-turn-profile -- [--smoke] [--rollup-noop-mode off|100] --output <new absolute .json>',
       );
   }
   if (!output || !isAbsolute(output) || !output.endsWith('.json') || existsSync(output)) {
@@ -42,21 +51,27 @@ export function parseProfileArguments(args) {
   const parent = lstatSync(dirname(output));
   if (!parent.isDirectory() || parent.isSymbolicLink())
     throw new Error('Unsafe profile output directory.');
-  return { mode, output, deadlineMs: mode === 'smoke' ? 300_000 : 2_700_000 };
+  return { mode, output, rollupNoopMode, deadlineMs: mode === 'smoke' ? 300_000 : 2_700_000 };
+}
+
+export function createProfileChildEnvironment(env, options) {
+  return {
+    ...env,
+    APP_ROLE: 'publisher',
+    MAXIM_PUBLISHER_DISPATCH_ENABLED: 'true',
+    PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: 'off',
+    PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: options.rollupNoopMode,
+    MAXIM_PUBLISHER_TURN_PROFILE: options.mode,
+    MAXIM_PUBLISHER_TURN_PROFILE_OUTPUT: options.output,
+    MAXIM_PUBLISHER_TURN_PROFILE_ROLLUP_NOOP_MODE: options.rollupNoopMode,
+  };
 }
 
 async function main() {
   const options = parseProfileArguments(process.argv.slice(2));
   validateProfileEnvironment(process.env);
   const cwd = resolve(import.meta.dirname, '../apps/api');
-  const env = {
-    ...process.env,
-    APP_ROLE: 'publisher',
-    MAXIM_PUBLISHER_DISPATCH_ENABLED: 'true',
-    PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: 'off',
-    MAXIM_PUBLISHER_TURN_PROFILE: options.mode,
-    MAXIM_PUBLISHER_TURN_PROFILE_OUTPUT: options.output,
-  };
+  const env = createProfileChildEnvironment(process.env, options);
   const startedAt = new Date().toISOString();
   const deadline = Date.now() + options.deadlineMs;
   let activeChild;
@@ -136,6 +151,10 @@ async function main() {
             startedAt,
             endedAt: new Date().toISOString(),
             mode: options.mode,
+            configuration: {
+              selectionMode: 'off',
+              rollupNoopMode: options.rollupNoopMode,
+            },
             complete: false,
             missingCells: options.mode === 'full' ? 24 : 7,
           },

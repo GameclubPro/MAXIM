@@ -27,6 +27,7 @@ import { SystemModeService, type SystemModeSnapshot } from '../../src/system/sys
 import type { ProfileFixture } from './fixture';
 
 export type ProfileTurn = 'now' | 'targeted' | 'deadline' | 'maintenance-run' | 'maintenance-pause';
+export type ProfileRollupNoopMode = 'off' | '100';
 
 export type ProfileRuntimeSnapshot = {
   sendCount: number;
@@ -106,7 +107,10 @@ function healthySystemMode(): SystemModeSnapshot {
 
 export async function createProfileRuntime(
   fixture: ProfileFixture,
-  options: { beforeSendMutation?: () => Promise<void> } = {},
+  options: {
+    beforeSendMutation?: () => Promise<void>;
+    rollupNoopMode?: ProfileRollupNoopMode;
+  } = {},
 ): Promise<ProfileRuntime> {
   if (!roleRunsPublisher(getAppRole())) {
     throw new Error('Publisher full-turn profile requires APP_ROLE=publisher');
@@ -132,6 +136,8 @@ export async function createProfileRuntime(
   const config = new ConfigService({
     MAX_PUBLISHER_BOT_ID: fixture.botId,
     MAX_PUBLISHER_DISPATCH_ENABLED: true,
+    PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: 'off',
+    PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: options.rollupNoopMode ?? 'off',
   });
 
   const heartbeat = {
@@ -448,6 +454,7 @@ export async function createProfileRuntime(
           SystemModeService,
           PublicationPublisherRoutingService,
           PublisherPublicationWakeupQueueService,
+          ConfigService,
         ],
         useFactory: (
           content: PublicationContentService,
@@ -458,6 +465,7 @@ export async function createProfileRuntime(
           mode: SystemModeService,
           routing: PublicationPublisherRoutingService,
           wakeups: PublisherPublicationWakeupQueueService,
+          runtimeConfig: ConfigService,
         ) =>
           new PublicationService(
             fixture.prisma,
@@ -469,6 +477,7 @@ export async function createProfileRuntime(
             mode,
             routing,
             wakeups,
+            runtimeConfig,
           ),
       },
     ],

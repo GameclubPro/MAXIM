@@ -1,0 +1,138 @@
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import test from 'node:test';
+
+const root = resolve(import.meta.dirname, '../..');
+const read = (path) => readFileSync(resolve(root, path), 'utf8');
+const scripts = JSON.parse(read('package.json')).scripts;
+const workflow = read('.github/workflows/ci.yml');
+const testPrefix = 'node --test --test-concurrency=2 ';
+const staticPrefix = 'npm run lint && npm run check:refactor-guards && ';
+const fullGlobs = [
+  'scripts/*.test.mjs',
+  'scripts/agent/test/*.test.mjs',
+  'scripts/ci/*.test.mjs',
+  'infra/scripts/*.test.mjs',
+];
+
+function parseTestGlobs(command) {
+  assert.equal(typeof command, 'string');
+  assert.equal(command, command.trim(), 'Unsupported command whitespace');
+  assert.ok(command.startsWith(testPrefix), 'Expected the bounded public Node test command');
+  const globs = command.slice(testPrefix.length).split(' ');
+  for (const glob of globs) {
+    assert.match(glob, /^(?:[a-z0-9-]+\/)+\*\.test\.mjs$/u, 'Unsupported test command grammar');
+  }
+  assert.equal(new Set(globs).size, globs.length, 'Duplicate test glob');
+  return globs;
+}
+
+function expandTestGlobs(globs) {
+  const files = globs.flatMap((glob) => {
+    const directory = glob.slice(0, -'/*.test.mjs'.length);
+    const entries = readdirSync(resolve(root, directory), { withFileTypes: true }).filter(
+      (entry) => !entry.name.startsWith('.') && entry.name.endsWith('.test.mjs'),
+    );
+    assert.ok(entries.length > 0, `Empty test glob: ${glob}`);
+    return entries.map((entry) => {
+      assert.ok(entry.isFile(), `Test glob selects a non-file: ${directory}/${entry.name}`);
+      return `${directory}/${entry.name}`;
+    });
+  });
+  assert.equal(new Set(files).size, files.length, 'A test file is selected more than once');
+  return files.sort();
+}
+
+function jobBody(id) {
+  const jobs = [...workflow.matchAll(/^ {2}([a-z][a-z0-9-]*):$/gmu)];
+  const indexes = jobs.flatMap((entry, index) => (entry[1] === id ? [index] : []));
+  assert.equal(indexes.length, 1, `Expected exactly one CI job: ${id}`);
+  const index = indexes[0];
+  return workflow.slice(jobs[index].index, jobs[index + 1]?.index ?? workflow.length);
+}
+
+test('preserves full public aggregates while adding the CI-only core selection', () => {
+  assert.equal(scripts['test:agent-tools'], `${testPrefix}${fullGlobs.join(' ')}`);
+  assert.equal(scripts['check:static'], `${staticPrefix}npm run test:agent-tools`);
+  assert.equal(scripts['check:static:ci'], `${staticPrefix}npm run test:agent-tools:core`);
+  assert.equal(scripts['check:infra'], 'bash infra/scripts/check-infra.sh');
+  assert.deepEqual(parseTestGlobs(scripts['test:agent-tools:core']), fullGlobs.slice(0, -1));
+});
+
+test('CI core and standalone infrastructure select the full inventory exactly once', () => {
+  const infra = read('infra/scripts/check-infra.sh');
+  assert.match(infra, /^set -euo pipefail$/mu);
+  const commands = infra.split(/\r?\n/u).filter((line) => /^node --test(?: |$)/u.test(line));
+  assert.equal(commands.length, 1, 'Expected one standalone infrastructure test invocation');
+  const infraGlobs = parseTestGlobs(commands[0]);
+  assert.deepEqual(infraGlobs, ['infra/scripts/*.test.mjs']);
+  const full = expandTestGlobs(parseTestGlobs(scripts['test:agent-tools']));
+  const core = expandTestGlobs(parseTestGlobs(scripts['test:agent-tools:core']));
+  const infrastructure = expandTestGlobs(infraGlobs);
+  const infrastructureSet = new Set(infrastructure);
+  assert.deepEqual(
+    core.filter((file) => infrastructureSet.has(file)),
+    [],
+    'Infrastructure tests must not also execute in the CI core aggregate',
+  );
+  assert.deepEqual([...core, ...infrastructure].sort(), full);
+  assert.ok(core.includes('scripts/ci/static-coverage.test.mjs'), 'This guard must run in CI');
+});
+
+test('inventory parser rejects shell wrappers, skip flags and unsupported globs', () => {
+  for (const command of [
+    `env ${testPrefix}scripts/*.test.mjs`,
+    `${testPrefix}scripts/*.test.mjs || true`,
+    `${testPrefix}--test-skip-pattern=slow scripts/*.test.mjs`,
+    `${testPrefix}scripts/**/*.test.mjs`,
+    `${testPrefix}../scripts/*.test.mjs`,
+    `${testPrefix}scripts/*.test.mjs scripts/*.test.mjs`,
+    `${testPrefix}scripts/*.test.mjs\n`,
+  ]) {
+    assert.throws(() => parseTestGlobs(command));
+  }
+});
+
+test('Static keeps its twelve-minute budget and every blocking validation step', () => {
+  const job = jobBody('static');
+  assert.match(job, /^ {4}name: Static$/mu);
+  assert.deepEqual(
+    [...job.matchAll(/^ {4}timeout-minutes: (.+)$/gmu)].map((entry) => entry[1]),
+    ['12'],
+  );
+  assert.doesNotMatch(job, /^\s*(?:-\s*)?(?:if|continue-on-error|shell|working-directory):/mu);
+  const runs = [...job.matchAll(/^ {6}(?:- | {2})run: (.+)$/gmu)].map((entry) => entry[1]);
+  assert.deepEqual(runs, [
+    'npm ci',
+    'node scripts/agent/preflight.mjs',
+    'npm audit --omit=dev --audit-level=high',
+    'npm run check:static:ci',
+    'npm run check:docs',
+    "find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck",
+    'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7',
+    'npm run check:infra',
+  ]);
+});
+
+test('Required still rejects any non-successful Static result', () => {
+  const job = jobBody('required');
+  assert.match(job, /^ {4}name: Required$/mu);
+  assert.match(job, /^ {4}if: always\(\)$/mu);
+  assert.doesNotMatch(job, /^\s*(?:-\s*)?(?:continue-on-error|shell):/mu);
+  assert.equal([...job.matchAll(/^\s*(?:-\s*)?if:/gmu)].length, 1);
+  const needs = /^ {4}needs:\n((?: {6}- [a-z][a-z0-9-]*\n)+)/mu.exec(job);
+  assert.ok(needs, 'Required must declare its blocking lanes');
+  assert.equal([...needs[1].matchAll(/^ {6}- static$/gmu)].length, 1);
+  assert.match(job, /^ {10}STATIC_RESULT: \$\{\{ needs\.static\.result \}\}$/mu);
+  const run = /^ {8}run: \|\n((?: {10}[^\n]*(?:\n|$))+)/mu.exec(job);
+  assert.ok(run, 'Required must execute its result check');
+  const body = run[1]
+    .replace(/^ {10}/gmu, '')
+    .trimEnd()
+    .replace(/\\\n */gu, '');
+  const loop = /^for result in (.+); do\n {2}test "\$result" = "success"\ndone$/u.exec(body);
+  assert.ok(loop, 'Required must fail normally for a non-success result');
+  assert.match(loop[1], /^(?:"\$[A-Z][A-Z_]+" )*"\$[A-Z][A-Z_]+"$/u);
+  assert.equal(loop[1].split(' ').filter((value) => value === '"$STATIC_RESULT"').length, 1);
+});

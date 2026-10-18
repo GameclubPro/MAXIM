@@ -19,6 +19,24 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('keeps the occurrence rollup reader independent, default off and finite', () => {
+    expect(validateEnv(createValidEnv()).PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT).toBe('off');
+    for (const stage of ['off', 'test', '5', '25', '100']) {
+      const config = validateEnv(
+        createValidEnv({ PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: stage }),
+      );
+      expect(config.PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT).toBe(stage);
+      expect(config.PUBLISHER_TEMPORAL_SELECTION_ROLLOUT).toBe('off');
+      expect(config.MAX_PUBLISHER_DISPATCH_ENABLED).toBe(false);
+    }
+    expect(
+      validateEnv(createValidEnv({ PUBLISHER_TEMPORAL_SELECTION_ROLLOUT: '100' }))
+        .PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT,
+    ).toBe('off');
+    expect(() =>
+      validateEnv(createValidEnv({ PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: '50' })),
+    ).toThrow(/PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT/u);
+  });
   it('requires an explicit supported Publisher selection rollout stage', () => {
     expect(validateEnv(createValidEnv()).PUBLISHER_TEMPORAL_SELECTION_ROLLOUT).toBe('off');
     for (const stage of ['test', '5', '25', '100']) {

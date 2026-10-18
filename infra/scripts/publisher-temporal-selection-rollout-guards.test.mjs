@@ -15,6 +15,8 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import {
   finishSelectionAudit,
+  finishRollupNoopAudit,
+  startRollupNoopAudit,
   startSelectionAudit,
 } from './publisher-temporal-selection-audit.mjs';
 
@@ -38,11 +40,18 @@ function block(script, name) {
 }
 
 function shell(source, options = {}) {
-  return spawnSync('bash', ['-c', `set -euo pipefail\n${source}`], {
-    cwd: root,
-    encoding: 'utf8',
-    ...options,
-  });
+  return spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -euo pipefail\nMODE_OPERATION=selection\nCURRENT_ROLLUP_MODE=off\nCURRENT_ROLLUP_CONFIGURED=false\nEXPECTED_ROLLUP_MODE=default-off\nEXPECTED_SELECTION_MODE=default-off\n${block(rollout, 'mode_state_operation')}\n${source}`,
+    ],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      ...options,
+    },
+  );
 }
 
 function directory(t) {
@@ -51,9 +60,11 @@ function directory(t) {
   return path;
 }
 
-function connector(args, ciStatus = 0, adoption = '0') {
+function connector(args, ciStatus = 0, adoption = '0', operation = 'selection') {
   return shell(`
+${block(connect, 'publisher_reader_mode_command')}
 ${block(connect, 'publisher_selection_command')}
+${block(connect, 'publisher_rollup_noop_command')}
 ROOT_DIR=/fixture
 MAXIM_DEPLOY_EMERGENCY_SKIP_CI=1
 MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=${quote(adoption)}
@@ -61,7 +72,7 @@ git() { printf '%s\\n' ${sha}; }
 node() { printf 'ci:%s\\n' "$*"; return ${ciStatus}; }
 shell_quote_args() { printf '%q ' "$@"; }
 remote_exec() { printf 'remote:%s\\n' "$1"; }
-publisher_selection_command ${args.map(quote).join(' ')}
+${operation === 'selection' ? 'publisher_selection_command' : 'publisher_rollup_noop_command'} ${args.map(quote).join(' ')}
 `);
 }
 
@@ -103,21 +114,23 @@ test('red exact-SHA CI and interrupted-release adoption block the connector with
 });
 
 test('host argument parsing preserves preview and rejects unsupported or repeated arguments', () => {
-  const parse = (args) =>
+  const parse = (args, operation) =>
     shell(`
 ${block(rollout, 'parse_args')}
 fail() { printf '%s\\n' "$*" >&2; return 1; }
 usage() { :; }
-COMMAND=selection
+COMMAND=${quote(operation)}
 APPLY=0
-SELECTION_OPERATION=0
-parse_args selection ${args.map(quote).join(' ')}
-printf '%s:%s:%s\\n' "$SELECTION_OPERATION" "$DESIRED_SELECTION_MODE" "$APPLY"
+MODE_OPERATION=''
+parse_args ${quote(operation)} ${args.map(quote).join(' ')}
+printf '%s:%s:%s\\n' "$MODE_OPERATION" "$DESIRED_MODE" "$APPLY"
 `);
-  assert.equal(parse(['test']).stdout, '1:test:0\n');
-  assert.equal(parse(['off', '--apply']).stdout, '1:off:1\n');
-  for (const args of [[], ['50'], ['test', '--apply', '--apply'], ['test', 'extra']]) {
-    assert.notEqual(parse(args).status, 0, JSON.stringify(args));
+  for (const operation of ['selection', 'rollup-noop']) {
+    assert.equal(parse(['test'], operation).stdout, `${operation}:test:0\n`);
+    assert.equal(parse(['off', '--apply'], operation).stdout, `${operation}:off:1\n`);
+    for (const args of [[], ['50'], ['test', '--apply', '--apply'], ['test', 'extra']]) {
+      assert.notEqual(parse(args, operation).status, 0, JSON.stringify(args));
+    }
   }
 });
 
@@ -128,28 +141,30 @@ function prepare({
   expected = sha,
   adoption = '0',
   sourceStatus = 0,
+  operation = 'selection',
 } = {}) {
   return shell(`
-${block(rollout, 'read_selection_env')}
-${block(rollout, 'prepare_selection_operation')}
+${block(rollout, 'read_rollout_modes')}
+${block(rollout, 'prepare_mode_operation')}
 fail() { printf '%s\\n' "$*" >&2; return 1; }
 node() {
   case "$2" in
-    verify-selection-source) printf 'source-check\\n' >&2; return ${sourceStatus} ;;
-    read-selection-env) printf 'off\\n' ;;
-    read-selection-env-configured) printf 'false\\n' ;;
+    verify-selection-source|verify-rollup-source) printf 'source-check\\n' >&2; return ${sourceStatus} ;;
+    read-selection-env|read-rollup-env) printf 'off\\n' ;;
+    read-selection-env-configured|read-rollup-env-configured) printf 'false\\n' ;;
     *) return 99 ;;
   esac
 }
 STATE_HELPER=/helper
 ROOT_DIR=/fixture
-EXPECTED_SELECTION_SOURCE_SHA=${quote(expected)}
+MODE_OPERATION=${quote(operation)}
+EXPECTED_MODE_SOURCE_SHA=${quote(expected)}
 MANIFEST_SOURCE_SHA=${sha}
 MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=${quote(adoption)}
 CURRENT_ENV_STATE=${dispatch}
 CURRENT_ENV_CONFIGURED=${configured}
-DESIRED_SELECTION_MODE=${mode}
-prepare_selection_operation
+DESIRED_MODE=${mode}
+prepare_mode_operation
 printf '%s:%s:%s:%s\\n' "$COMMAND" "$DESIRED_STATE" "$EXPECTED_SELECTION_MODE" "$CURRENT_SELECTION_CONFIGURED"
 `);
 }
@@ -181,7 +196,7 @@ test('selection off requires exact disabled runtime and never takes the reconcil
     for (const drift of [false, true]) {
       const result = shell(`
 ${block(rollout, 'rollout_preflight')}
-SELECTION_OPERATION=1
+MODE_OPERATION=selection
 COMMAND=disable
 APPLY=1
 CURRENT_ENV_STATE=false
@@ -225,13 +240,13 @@ COMPOSE_FILES=(--env-file .env -p infra -f infra/docker-compose.yml)
 MANIFEST_SOURCE_SHA="$(command git rev-parse HEAD)"
 EXPECTED_OCR_VERSION=fixture
 EXPECTED_HAS_OCR_NATIVE_SANDBOX=1
-SELECTION_OPERATION=1
+MODE_OPERATION=selection
 COMMAND=enable
 APPLY=0
 CURRENT_ENV_STATE=true
 CURRENT_ENV_CONFIGURED=true
 DESIRED_STATE=true
-DESIRED_SELECTION_MODE=off
+DESIRED_MODE=off
 MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE=0
 MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE=inherited-invalid
 RECONCILE_ONLY=0
@@ -280,10 +295,10 @@ maxim_topology_require_publisher_secret_files() { :; }
 read_control_status() { printf '{}'; }
 control_field() { printf missing; }
 maxim_require_ordinary_effect_authority() { :; }
-record_selection_audit_start() { events+=(audit-start); }
-record_selection_audit_finish() { events+=(audit-finish); }
+record_mode_audit_start() { events+=(audit-start); }
+record_mode_audit_finish() { events+=(audit-finish); }
 arm_operator_pause() { events+=(arm); }
-patch_selection_env() { patched=1; events+=(selection-patch); }
+patch_mode_env() { patched=1; events+=(selection-patch); }
 patch_dispatch_env() { return 93; }
 recreate_all_api_roles() { events+=(recreate); }
 wait_for_url() { :; }
@@ -302,7 +317,7 @@ rollout_preflight
 events+=(preflight-complete)
 if [[ ${quote(phase)} == apply ]]; then
   APPLY=1
-  DESIRED_SELECTION_MODE=test
+  DESIRED_MODE=test
   MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE=inherited-invalid
   apply_rollout
 fi
@@ -375,15 +390,15 @@ test('atomic host patch preserves dispatch bytes and refuses every preflight val
       `
 ${block(rollout, 'read_dispatch_env')}
 ${block(rollout, 'read_dispatch_env_configured')}
-${block(rollout, 'patch_selection_env')}
+${block(rollout, 'patch_mode_env')}
 fail() { printf '%s\\n' "$*" >&2; return 1; }
 STATE_HELPER=${quote(helper)}
 CURRENT_SELECTION_MODE=${expectedMode}
 CURRENT_SELECTION_CONFIGURED=${expectedConfigured}
 CURRENT_ENV_STATE=true
 CURRENT_ENV_CONFIGURED=true
-DESIRED_SELECTION_MODE=test
-patch_selection_env
+DESIRED_MODE=test
+patch_mode_env
 printf 'expected:%s\\n' "$EXPECTED_SELECTION_MODE"
 `,
       { cwd: dir },
@@ -414,15 +429,15 @@ test('selection off appends only its key when dispatch is absent', (t) => {
     `
 ${block(rollout, 'read_dispatch_env')}
 ${block(rollout, 'read_dispatch_env_configured')}
-${block(rollout, 'patch_selection_env')}
+${block(rollout, 'patch_mode_env')}
 fail() { return 1; }
 STATE_HELPER=${quote(helper)}
 CURRENT_SELECTION_MODE=off
 CURRENT_SELECTION_CONFIGURED=false
 CURRENT_ENV_STATE=false
 CURRENT_ENV_CONFIGURED=false
-DESIRED_SELECTION_MODE=off
-patch_selection_env
+DESIRED_MODE=off
+patch_mode_env
 `,
     { cwd: dir },
   );
@@ -442,9 +457,9 @@ test('preview patches only a private dotenv and validates retained dispatch with
 ${block(rollout, 'verify_preview_compose_config')}
 fail() { printf '%s\\n' "$*" >&2; return 1; }
 STATE_HELPER=${quote(helper)}
-SELECTION_OPERATION=1
+MODE_OPERATION=selection
 CURRENT_ENV_CONFIGURED=false
-DESIRED_SELECTION_MODE=off
+DESIRED_MODE=off
 MANIFEST_IMAGE_REF=maxim-api:${sha}
 node() {
   if [[ "$2" == patch-selection-env ]]; then command node "$@"; return; fi
@@ -467,14 +482,14 @@ verify_preview_compose_config false
   assert.equal(readFileSync(resolve(dir, '.env'), 'utf8'), original);
 });
 
-function apply(failAt, dispatch = 'true') {
+function apply(failAt, dispatch = 'true', operation = 'selection') {
   return shell(`
 ${block(rollout, 'apply_rollout')}
 ROOT_DIR=/fixture
-SELECTION_OPERATION=1
+MODE_OPERATION=${quote(operation)}
 COMMAND=${dispatch === 'true' ? 'enable' : 'disable'}
 DESIRED_STATE=${dispatch}
-DESIRED_SELECTION_MODE=${dispatch === 'true' ? 'test' : 'off'}
+DESIRED_MODE=${dispatch === 'true' ? 'test' : 'off'}
 EXPECTED_OCR_VERSION=fixture
 MANIFEST_SOURCE_SHA=${sha}
 RECONCILE_ONLY=0
@@ -484,11 +499,11 @@ events=()
 runtime_calls=0
 trap 'printf "complete=%s events=%s\\n" "$ROLLOUT_COMPLETE" "\${events[*]}"' EXIT
 maxim_require_ordinary_effect_authority() { :; }
-record_selection_audit_start() { events+=(audit-start); [[ ${quote(failAt)} != audit-start ]]; }
-record_selection_audit_finish() { events+=(audit-finish); [[ ${quote(failAt)} != audit-finish ]]; }
+record_mode_audit_start() { events+=(audit-start); [[ ${quote(failAt)} != audit-start ]]; }
+record_mode_audit_finish() { events+=(audit-finish); [[ ${quote(failAt)} != audit-finish ]]; }
 arm_operator_pause() { events+=(arm); }
 patch_dispatch_env() { return 99; }
-patch_selection_env() { events+=(selection-patch); [[ ${quote(failAt)} != patch ]]; }
+patch_mode_env() { events+=(selection-patch); [[ ${quote(failAt)} != patch ]]; }
 verify_compose_config() { events+=(compose); [[ ${quote(failAt)} != compose ]]; }
 maxim_topology_require_api_commercial_ocr_version_config() { :; }
 maxim_topology_require_media_analysis_rollout_config() { :; }
@@ -613,20 +628,20 @@ test('audit refuses invalid stages, unsafe paths, oversize records and unproved 
 test('shell audit wrappers round-trip exact transition fields through the actual CLI', (t) => {
   const dir = directory(t);
   const result = shell(`
-${block(rollout, 'record_selection_audit_start')}
-${block(rollout, 'record_selection_audit_finish')}
-SELECTION_AUDIT_HELPER=${quote(auditHelper)}
+${block(rollout, 'record_mode_audit_start')}
+${block(rollout, 'record_mode_audit_finish')}
+MODE_AUDIT_HELPER=${quote(auditHelper)}
 RELEASE_STATE_DIR=${quote(dir)}
 MANIFEST_SOURCE_SHA=${sha}
 CURRENT_SELECTION_MODE=test
 CURRENT_SELECTION_CONFIGURED=true
-DESIRED_SELECTION_MODE=5
+DESIRED_MODE=5
 CURRENT_ENV_STATE=true
 CURRENT_ENV_CONFIGURED=true
-SELECTION_RUNTIME_VERIFIED=true
-record_selection_audit_start
-record_selection_audit_finish completed 0
-[[ "$SELECTION_AUDIT_TERMINAL" -eq 1 ]]
+MODE_RUNTIME_VERIFIED=true
+record_mode_audit_start
+record_mode_audit_finish completed 0
+[[ "$MODE_AUDIT_TERMINAL" -eq 1 ]]
 `);
   assert.equal(result.status, 0, result.stderr);
   const auditDir = resolve(dir, 'publisher-selection-rollouts');
@@ -645,11 +660,11 @@ test('cleanup records the original failure and leaves the existing operator fenc
   const path = startSelectionAudit(dir, auditInput);
   const result = shell(`
 ${block(rollout, 'cleanup')}
-${block(rollout, 'record_selection_audit_finish')}
-SELECTION_AUDIT_HELPER=${quote(auditHelper)}
-SELECTION_AUDIT_PATH=${quote(path)}
-SELECTION_AUDIT_TERMINAL=0
-SELECTION_RUNTIME_VERIFIED=false
+${block(rollout, 'record_mode_audit_finish')}
+MODE_AUDIT_HELPER=${quote(auditHelper)}
+MODE_AUDIT_PATH=${quote(path)}
+MODE_AUDIT_TERMINAL=0
+MODE_RUNTIME_VERIFIED=false
 APPLY=1
 OPERATOR_PAUSE_ARMED=1
 POST_CLEAR_REARM_REQUIRED=0
@@ -683,10 +698,221 @@ test('selection augments existing dispatch validation for Compose and every runt
     entrypoint.indexOf('acquire_deploy_lock') < entrypoint.indexOf('resolve_release_fence'),
   );
   assert.ok(
-    entrypoint.indexOf('resolve_release_fence') < entrypoint.indexOf('prepare_selection_operation'),
+    entrypoint.indexOf('resolve_release_fence') < entrypoint.indexOf('prepare_mode_operation'),
   );
-  assert.ok(
-    entrypoint.indexOf('prepare_selection_operation') < entrypoint.indexOf('rollout_preflight'),
+  assert.ok(entrypoint.indexOf('prepare_mode_operation') < entrypoint.indexOf('rollout_preflight'));
+  assert.match(entrypoint, /prepare_mode_operation\nelse\n {2}read_rollout_modes/u);
+});
+
+for (const operation of ['selection', 'rollup-noop']) {
+  const stateOperation = operation === 'selection' ? 'selection' : 'rollup';
+  const selectedKey =
+    operation === 'selection'
+      ? 'PUBLISHER_TEMPORAL_SELECTION_ROLLOUT'
+      : 'PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT';
+  const siblingKey =
+    operation === 'selection'
+      ? 'PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT'
+      : 'PUBLISHER_TEMPORAL_SELECTION_ROLLOUT';
+  const auditDirectory =
+    operation === 'selection' ? 'publisher-selection-rollouts' : 'publisher-rollup-noop-rollouts';
+
+  test(`${operation}: connector and installed-source admission remain finite, exact and non-adopting`, () => {
+    for (const mode of ['off', 'test', '5', '25', '100']) {
+      const result = connector([mode, '--apply'], 0, '0', operation);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, new RegExp(`rollout.sh ${operation} ${mode} --apply`));
+      assert.equal(prepare({ operation, mode }).status, 0);
+    }
+    assert.equal(connector(['test'], 17, '0', operation).status, 17);
+    assert.doesNotMatch(connector(['off', '--apply'], 0, '1', operation).stdout, /ci:|remote:/u);
+    assert.equal(prepare({ operation, expected: 'b'.repeat(40) }).status, 1);
+    assert.equal(prepare({ operation, sourceStatus: 7 }).status, 7);
+    assert.equal(prepare({ operation, adoption: '1' }).status, 1);
+    assert.equal(prepare({ operation, dispatch: 'false' }).status, 1);
+  });
+
+  test(`${operation}: real dotenv patch preserves sibling value and presence and refuses sibling drift`, (t) => {
+    const dir = directory(t);
+    const file = resolve(dir, '.env');
+    for (const sibling of [undefined, 'off', 'test', '25']) {
+      const siblingLine = sibling === undefined ? '' : `${siblingKey}=${sibling}\r\n`;
+      const original = `\uFEFFOTHER="keep\n${selectedKey}=100\n"\r\nMAX_PUBLISHER_DISPATCH_ENABLED=true\n${siblingLine}${selectedKey}=off\r\nTAIL=value`;
+      const execute = (contents) => {
+        writeFileSync(file, contents, { mode: 0o600 });
+        return shell(
+          `
+${block(rollout, 'read_dispatch_env')}
+${block(rollout, 'read_dispatch_env_configured')}
+${block(rollout, 'patch_mode_env')}
+fail() { printf '%s\\n' "$*" >&2; return 1; }
+STATE_HELPER=${quote(helper)}
+MODE_OPERATION=${quote(operation)}
+CURRENT_SELECTION_MODE=${operation === 'selection' ? 'off' : (sibling ?? 'off')}
+CURRENT_SELECTION_CONFIGURED=${operation === 'selection' || sibling !== undefined}
+CURRENT_ROLLUP_MODE=${operation === 'rollup-noop' ? 'off' : (sibling ?? 'off')}
+CURRENT_ROLLUP_CONFIGURED=${operation === 'rollup-noop' || sibling !== undefined}
+CURRENT_ENV_STATE=true
+CURRENT_ENV_CONFIGURED=true
+DESIRED_MODE=test
+patch_mode_env
+`,
+          { cwd: dir },
+        );
+      };
+      const success = execute(original);
+      assert.equal(success.status, 0, success.stderr);
+      assert.equal(
+        readFileSync(file, 'utf8'),
+        original.replace(`${selectedKey}=off`, `${selectedKey}=test`),
+      );
+      const drifted =
+        sibling === undefined
+          ? `${original}\n${siblingKey}=off\n`
+          : original.replace(siblingLine, '');
+      const refused = execute(drifted);
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.equal(readFileSync(file, 'utf8'), drifted);
+    }
+  });
+
+  test(`${operation}: preview checks both mode values and mutates only its private dotenv`, (t) => {
+    const dir = directory(t);
+    const original = `${siblingKey}=test\nOTHER=value\n`;
+    writeFileSync(resolve(dir, '.env'), original, { mode: 0o600 });
+    const result = shell(
+      `
+${block(rollout, 'verify_preview_compose_config')}
+fail() { printf '%s\\n' "$*" >&2; return 1; }
+STATE_HELPER=${quote(helper)}
+MODE_OPERATION=${quote(operation)}
+CURRENT_ENV_CONFIGURED=false
+EXPECTED_SELECTION_MODE=${operation === 'selection' ? 'default-off' : 'test'}
+EXPECTED_ROLLUP_MODE=${operation === 'rollup-noop' ? 'default-off' : 'test'}
+DESIRED_MODE=off
+MANIFEST_IMAGE_REF=maxim-api:${sha}
+node() {
+  if [[ "$2" == patch-${stateOperation}-env ]]; then command node "$@"; return; fi
+  [[ "$2" == verify-compose && "$3" == default-false && "$5" == ${operation === 'selection' ? 'off' : 'test'} && "$6" == ${operation === 'rollup-noop' ? 'off' : 'test'} ]]
+  cat >/dev/null
+}
+docker() {
+  [[ "$MAXIM_COMPOSE_SERVICE_ENV_FILE" != .env ]]
+  [[ "$(command node "$STATE_HELPER" read-env-configured "$MAXIM_COMPOSE_SERVICE_ENV_FILE")" == false ]]
+  [[ "$(command node "$STATE_HELPER" read-${stateOperation}-env-configured "$MAXIM_COMPOSE_SERVICE_ENV_FILE")" == true ]]
+  printf '{}'
+}
+verify_preview_compose_config false
+[[ -z "$PREVIEW_ENV_FILE" ]]
+`,
+      { cwd: dir },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(resolve(dir, '.env'), 'utf8'), original);
+  });
+
+  test(`${operation}: shared lifecycle retains failures, all-role recreation and no disabled shortcut`, () => {
+    const result = apply('none', 'false', operation);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /all-roles/u);
+    assert.match(result.stdout, /complete=1/u);
+    for (const failure of [
+      'audit-start',
+      'patch',
+      'compose',
+      'runtime',
+      'final-runtime',
+      'audit-finish',
+    ]) {
+      const failed = apply(failure, 'true', operation);
+      assert.equal(failed.status, 1, `${failure}: ${failed.stderr}`);
+      assert.match(failed.stdout, /complete=0/u);
+      assert.doesNotMatch(failed.stdout, /rollout complete/u);
+    }
+    const reconcile = shell(`
+${block(rollout, 'apply_rollout')}
+ROOT_DIR=/fixture
+MODE_OPERATION=${quote(operation)}
+COMMAND=disable
+DESIRED_STATE=false
+RECONCILE_ONLY=1
+maxim_require_ordinary_effect_authority() { :; }
+fail() { return 1; }
+arm_operator_pause() { printf 'unexpected-mutation'; }
+apply_rollout
+`);
+    assert.equal(reconcile.status, 1, reconcile.stderr);
+    assert.doesNotMatch(reconcile.stdout, /unexpected/u);
+  });
+
+  test(`${operation}: real audit CLI binds the retained sibling and rejects completion with the other operation`, (t) => {
+    const dir = directory(t);
+    const result = shell(`
+${block(rollout, 'record_mode_audit_start')}
+${block(rollout, 'record_mode_audit_finish')}
+MODE_OPERATION=${quote(operation)}
+MODE_AUDIT_HELPER=${quote(auditHelper)}
+RELEASE_STATE_DIR=${quote(dir)}
+MANIFEST_SOURCE_SHA=${sha}
+CURRENT_SELECTION_MODE=test
+CURRENT_SELECTION_CONFIGURED=true
+CURRENT_ROLLUP_MODE=off
+CURRENT_ROLLUP_CONFIGURED=false
+DESIRED_MODE=5
+CURRENT_ENV_STATE=true
+CURRENT_ENV_CONFIGURED=true
+MODE_RUNTIME_VERIFIED=true
+record_mode_audit_start
+printf '%s\\n' "$MODE_AUDIT_PATH"
+`);
+    assert.equal(result.status, 0, result.stderr);
+    const path = result.stdout.trim();
+    assert.equal(resolve(dir, auditDirectory, path.split('/').at(-1)), path);
+    const record = JSON.parse(readFileSync(path, 'utf8'));
+    assert.equal(record.operation, operation);
+    assert.equal(
+      record[operation === 'selection' ? 'retainedRollupMode' : 'retainedSelectionMode'],
+      operation === 'selection' ? 'off' : 'test',
+    );
+    assert.equal(
+      record[
+        operation === 'selection' ? 'retainedRollupConfigured' : 'retainedSelectionConfigured'
+      ],
+      operation !== 'selection',
+    );
+    const finish = operation === 'selection' ? finishSelectionAudit : finishRollupNoopAudit;
+    const other = operation === 'selection' ? finishRollupNoopAudit : finishSelectionAudit;
+    assert.throws(() => other(path, 'completed', 0, true), /Invalid/u);
+    finish(path, 'completed', 0, true);
+    assert.throws(() => finish(path, 'completed', 0, true), /terminal/u);
+  });
+}
+
+test('new rollup audits require a complete valid retained selector pair while old selection v1 remains readable', (t) => {
+  const dir = directory(t);
+  for (const retained of [
+    {},
+    { retainedSelectionMode: 'test' },
+    { retainedSelectionConfigured: true },
+    { retainedSelectionMode: 'test', retainedSelectionConfigured: false },
+    { retainedSelectionMode: '50', retainedSelectionConfigured: true },
+  ])
+    assert.throws(() => startRollupNoopAudit(dir, { ...auditInput, ...retained }), /retained/u);
+  assert.throws(
+    () => startSelectionAudit(dir, { ...auditInput, retainedRollupMode: 'off' }),
+    /retained/u,
   );
-  assert.match(entrypoint, /prepare_selection_operation\nelse\n {2}read_selection_env/u);
+  const path = startSelectionAudit(dir, auditInput);
+  const record = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(record.retainedRollupMode, undefined);
+  finishSelectionAudit(path, 'completed', 0, true);
+  const rollup = startRollupNoopAudit(dir, {
+    ...auditInput,
+    retainedSelectionMode: 'test',
+    retainedSelectionConfigured: true,
+  });
+  const malformed = JSON.parse(readFileSync(rollup, 'utf8'));
+  malformed.operation = 'selection';
+  writeFileSync(rollup, JSON.stringify(malformed));
+  assert.throws(() => finishRollupNoopAudit(rollup, 'failed', 1, false), /Invalid/u);
 });

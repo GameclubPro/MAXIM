@@ -45,6 +45,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import {
@@ -69,14 +70,8 @@ import { isPrismaKnownError } from './admin-legacy-utils';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { PUBLISHER_EXPLICIT_RETRY_CODE } from './publication-dispatch-issue';
-import {
-  deleteUnstartedPublicationExecutionEnvelopes,
-  rollupPublicationOccurrenceWithRouteOutageRecovery,
-} from './publication-access-loss-recovery';
-import {
-  PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA,
-  resolvePublicationOccurrenceRollupStatus,
-} from './publication-delivery-verification-state';
+import { deleteUnstartedPublicationExecutionEnvelopes } from './publication-access-loss-recovery';
+import { PUBLICATION_DELIVERY_VERIFICATION_RESET_DATA } from './publication-delivery-verification-state';
 import {
   normalizePublicationContent,
   PublicationContentService,
@@ -115,6 +110,11 @@ import {
   type PublicationOccurrenceDispatchScope,
 } from './publication-occurrence-dispatcher';
 import { PublicationOccurrenceRollupScanner } from './publication-occurrence-rollup-scanner';
+import { rollupPublicationOccurrence } from './publication-occurrence-rollup';
+import {
+  parsePublicationOccurrenceRollupNoopRollout,
+  PublicationOccurrenceRollupNoopReader,
+} from './publication-occurrence-rollup-noop';
 import {
   PublicationPresenterService,
   PUBLICATION_DELIVERY_PRESENTATION_INCLUDE,
@@ -179,6 +179,7 @@ export class PublicationService {
   private readonly logger = new Logger(PublicationService.name);
   private throttleLogAtMs = 0;
   private readonly activeOccurrenceRollups = new PublicationOccurrenceRollupScanner();
+  private readonly occurrenceRollupNoop: PublicationOccurrenceRollupNoopReader;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -190,7 +191,16 @@ export class PublicationService {
     private readonly systemModeService: SystemModeService,
     private readonly publisherRouting: PublicationPublisherRoutingService,
     private readonly publisherPublicationWakeupQueue: PublisherPublicationWakeupQueueService,
-  ) {}
+    configService: ConfigService,
+  ) {
+    this.occurrenceRollupNoop = new PublicationOccurrenceRollupNoopReader(
+      prisma,
+      parsePublicationOccurrenceRollupNoopRollout(
+        configService.get<unknown>('PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT'),
+      ),
+      this.logger,
+    );
+  }
 
   async list(
     user: AuthUser,
@@ -2396,48 +2406,8 @@ export class PublicationService {
   }
 
   private async rollupOccurrence(occurrenceId: string): Promise<void> {
-    const occurrence = await this.prisma.publicationOccurrence.findUnique({
-      where: { id: occurrenceId },
-      include: {
-        legacyBroadcasts: {
-          include: {
-            deliveries: {
-              select: {
-                status: true,
-                targetChatId: true,
-                lastErrorCode: true,
-                lastError: true,
-                remoteMessageId: true,
-                remoteMessageVerifiedAt: true,
-                remoteMessageVerificationAttemptCount: true,
-                remoteMessageVerificationAbsentCount: true,
-                remoteMessageVerificationPresentCount: true,
-                remoteMessageVerificationAttemptedAt: true,
-                remoteMessageVerificationNextAt: true,
-                remoteMessageVerificationSource: true,
-              },
-            },
-          },
-        },
-      },
-    });
-    if (!occurrence || occurrence.status === PublicationOccurrenceStatus.CANCELED) {
-      return;
-    }
-    const deliveries = occurrence.legacyBroadcasts.flatMap((broadcast) => broadcast.deliveries);
-    if (deliveries.length === 0) {
-      return;
-    }
-    const status = resolvePublicationOccurrenceRollupStatus(
-      occurrence.legacyBroadcasts,
-      occurrence.scheduledAt,
-    );
-    await rollupPublicationOccurrenceWithRouteOutageRecovery(
-      this.prisma,
-      occurrence,
-      status,
-      deliveries,
-    );
+    if (await this.occurrenceRollupNoop.canSkip(occurrenceId)) return;
+    await rollupPublicationOccurrence(this.prisma, occurrenceId);
   }
 
   private async rollupPublicationLifecycles(): Promise<void> {
