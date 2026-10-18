@@ -112,6 +112,9 @@ The runtime, database clock, original source, migration boundary, exact claim,
 bounded index plans, descendant inventory and current bot catalog must all agree.
 Never derive settlement authority from age, a missing ledger row, arbitrary GET404
 or a queue count. Preserve the exact window and release identity in the incident.
+For `source_forward_shape` refusals, inspect the nominated owner with the bounded
+[exact envelope diagnostic](webhook-source-envelope-diagnostics.md) before changing a
+content profile. Shape metadata is not admission or permission to stop services.
 
 Redis structural admission performs two independent complete `SCAN MATCH bull:*`
 censuses, each ending at cursor zero. Each pass caps database size at 12 million
