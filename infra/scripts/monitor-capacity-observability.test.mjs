@@ -1609,18 +1609,21 @@ test('raw monitor logs are exclusive, private, and ephemeral by default', () => 
   assert.equal(existsSync(rejectedPath), false);
 });
 
-test('capacity scheduler runs independently at a bounded cadence without overlapping itself', () => {
+test('capacity scheduler keeps its cadence through diagnostics beyond the nominal deadline', () => {
   const harness = [
     'set -euo pipefail',
     'clock=100',
     'CAPACITY_INTERVAL_SEC=15',
+    'MAXIM_MONITOR_CAPACITY_OWNER_START_TICKS=123',
+    'read_capacity_owner_start_ticks() { printf "123\\n"; }',
     'capacity_samples=0',
     'date() { [[ "$1" == "+%s" ]] && printf "%s\\n" "$clock"; }',
-    'sleep() { clock=$((clock + $1)); }',
-    'kill() { ((clock < 146)); }',
+    'sleep() { (($1 > 0)) || return 99; clock=$((clock + $1)); }',
+    'kill() { ((clock < 206)); }',
     'flock() { return 0; }',
     'sample_capacity_once() {',
     '  capacity_samples=$((capacity_samples + 1))',
+    '  printf "sample=%s\\n" "$clock"',
     '}',
     shellFunction('is_positive_integer'),
     shellFunction('run_capacity_sampler'),
@@ -1629,7 +1632,10 @@ test('capacity scheduler runs independently at a bounded cadence without overlap
   ].join('\n');
   const result = spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'samples=4 clock=146\n');
+  assert.equal(
+    result.stdout,
+    'sample=100\nsample=115\nsample=130\nsample=145\nsample=160\nsample=175\nsample=190\nsample=205\nsamples=8 clock=220\n',
+  );
   assert.doesNotMatch(shellFunction('sample_once'), /capacity-observability/u);
   assert.doesNotMatch(shellFunction('run_monitor'), /sample_capacity|capacity-observability/u);
   const wrapper = shellFunction('run_monitor_with_capacity_sampler');
@@ -1637,6 +1643,69 @@ test('capacity scheduler runs independently at a bounded cadence without overlap
   assert.ok(
     wrapper.indexOf('start_monitor_worker') < wrapper.indexOf('wait "$MONITOR_WORKER_PID"'),
   );
+});
+
+test('a slow capacity probe keeps one owner without overlapping or catch-up bursts', () => {
+  const harness = [
+    'set -euo pipefail',
+    'clock=100',
+    'CAPACITY_INTERVAL_SEC=15',
+    'MAXIM_MONITOR_CAPACITY_OWNER_START_TICKS=123',
+    'read_capacity_owner_start_ticks() { printf "123\\n"; }',
+    'date() { [[ "$1" == "+%s" ]] && printf "%s\\n" "$clock"; }',
+    'sleep() { (($1 > 0)) || return 99; clock=$((clock + $1)); }',
+    'kill() { ((clock < 190)); }',
+    'flock() { return 0; }',
+    'sample_capacity_once() { printf "sample=%s\\n" "$clock"; clock=$((clock + 20)); }',
+    shellFunction('is_positive_integer'),
+    shellFunction('run_capacity_sampler'),
+    'run_capacity_sampler 42 110 9',
+    'printf "finished=%s\\n" "$clock"',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'sample=100\nsample=135\nsample=170\nfinished=190\n');
+});
+
+test('capacity sampler stops when its PID belongs to another owner generation', () => {
+  const harness = [
+    'set -euo pipefail',
+    'clock=100',
+    'CAPACITY_INTERVAL_SEC=15',
+    'MAXIM_MONITOR_CAPACITY_OWNER_START_TICKS=123',
+    'date() { [[ "$1" == "+%s" ]] && printf "%s\\n" "$clock"; }',
+    'sleep() { clock=$((clock + $1)); }',
+    'kill() { return 0; }',
+    'read_capacity_owner_start_ticks() { if ((clock < 130)); then printf "123\\n"; else printf "456\\n"; fi; }',
+    'flock() { return 0; }',
+    'sample_capacity_once() { printf "sample=%s\\n" "$clock"; }',
+    shellFunction('is_positive_integer'),
+    shellFunction('run_capacity_sampler'),
+    'run_capacity_sampler 42 110 9',
+    'printf "finished=%s\\n" "$clock"',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', harness], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'sample=100\nsample=115\nfinished=130\n');
+});
+
+test('capacity owner generation reader handles comm delimiters and newlines and refuses missing processes', () => {
+  const harness = [
+    'set -euo pipefail',
+    shellFunction('is_positive_integer'),
+    shellFunction('read_capacity_owner_start_ticks'),
+    'owner_pid=$BASHPID',
+    'ticks="$(read_capacity_owner_start_ticks "$owner_pid")"',
+    '[[ "$ticks" =~ ^[1-9][0-9]*$ ]]',
+    'printf "a) \\nb) c\\n" >"/proc/$owner_pid/comm"',
+    '[[ "$(read_capacity_owner_start_ticks "$owner_pid")" == "$ticks" ]]',
+    'if read_capacity_owner_start_ticks 0; then exit 90; fi',
+    'if read_capacity_owner_start_ticks 999999999; then exit 91; fi',
+    'printf "owner_generation_validated\\n"',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'owner_generation_validated\n');
 });
 
 test('occupied capacity lock fails before the heavy monitor worker starts', () => {
@@ -1653,6 +1722,8 @@ test('occupied capacity lock fails before the heavy monitor worker starts', () =
     'exec {MONITOR_LOCK_FD}>"$2"',
     'exec {held_lock_fd}>>"$CAPACITY_SAMPLER_LOCK_FILE"',
     'flock -n "$held_lock_fd"',
+    shellFunction('is_positive_integer'),
+    shellFunction('read_capacity_owner_start_ticks'),
     shellFunction('start_capacity_sampler'),
     shellFunction('stop_capacity_sampler'),
     shellFunction('run_monitor_with_capacity_sampler'),
