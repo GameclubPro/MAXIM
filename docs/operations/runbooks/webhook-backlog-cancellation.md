@@ -17,7 +17,74 @@ require re-attestation through the identical request; do not infer that an unkno
 owned or change the journal to pass. Historical direct-host emergency exceptions do not waive
 the normal connector's exact-SHA CI gate.
 
-Create a private mode-0600 JSON request with these four fields:
+## Exact nominated sources: v2
+
+Prefer v2 when the operator elects to cancel a finite list of old started, unfinished
+execution owners. Its read-only preview does not authorize stopping the fleet. Complete
+the native scope, interruption and representative-history checks, apply the additive
+operation-child lookup index and deploy the new client to all fourteen API roles and both
+native auxiliaries, then obtain concrete stopped-fleet scope authorization before apply.
+Keep one primary recovery stage active.
+
+Create a private mode-0600 nomination with exactly `version: 2`, `id`, `cutoff`,
+`sourceSha`, `imageId`, and `rootIds`. The latter contains 1–128 sorted, unique receipt
+IDs. All v2 JSON uses recursively sorted object keys, UTF-8 and one final newline;
+arrays retain their order. Duplicate or unknown fields, noncanonical bytes, future
+cutoffs and changed identities refuse. Nomination and apply inputs are bounded to
+16 KiB and 4 KiB respectively.
+
+Run `./infra/scripts/vps-connect.sh preview-webhook-backlog /absolute/private/nomination.json`.
+The connector requires exact green CI and matching installed source/image. The installed
+image's client performs read-only PostgreSQL and Redis inspection, without constructing
+BullMQ queues. It records the exact roots, stable claim/receipt digests and attributed
+queue/job identities in private immutable evidence under
+`/var/lib/maxim-deploy/backlog-cancellation-<id>/`. A READY result includes `previewSha256`;
+DENY, truncation, missing evidence or a cap is not permission to broaden the scope.
+
+Selection uses primary-key root reads and indexed semantic/pending-message families,
+not the global pre-cutoff backlog. The pending-message index excludes QUARANTINED;
+the preview does not claim to enumerate all quarantined message-family rows. Publications,
+future timers and unattributed jobs remain protected. Reply-only links, any-operation
+child membership and global holds never nominate children. Locked selected jobs remain
+reported and fenced rather than forcibly removed.
+
+The child operation index leads with `cancellation_id`, then `kind, child_key`, so
+exact resume can prove the complete owned set without scanning unrelated child history.
+Its concurrent additive migration preserves old readers and data. Verify its native
+representative plan and valid installed definition; a missing/invalid index refuses.
+An interrupted build retains its migration/index evidence and requires the reviewed
+migration recovery procedure, never an automatic retry or ad hoc repair SQL.
+
+For an approved READY preview, create the separate private apply input with exactly
+`version: 2`, the same `id`, `cutoff`, `sourceSha`, `imageId`, and `previewSha256`, then
+run `./infra/scripts/vps-connect.sh cancel-webhook-backlog /absolute/private/apply.json`.
+The controller binds the client and all sixteen container generations, rechecks the
+roots before stopping, then validates the full exact scope while stopped. New roots,
+claims, family members or children require a new preview; only the documented queue
+bookkeeping fields and non-root RECEIVED→QUEUED transition may drift. Original
+snapshots are captured only after stopped validation. The seal, guarded CANCELLED
+projection and exact job retirement preserve unknown effects and existing receipts.
+
+Before any SQL operation write, a refusal can restore the same captured fleet only
+after an independent installed-client proof that the operation is absent and no
+writer survives. Its lifecycle finishes as `ABORTED_UNWRITTEN` with a nonzero exit,
+zero cancellations and retained evidence. A failed restoration keeps STOPPED and
+permits only the identical request's restoration branch. After any operation write,
+failure retains STOPPED and the immutable scope; resume with the same apply input.
+Never use the legacy `--resume-pending` continuation for v2.
+
+Restoration starts the captured native auxiliaries before API consumers and verifies
+exact generations and dependency health. Existing automatic queue-only degradation
+can remain visible after restoration; COMPLETE does not assert recovered latency.
+Record actual preview/apply duration, row/byte budgets, projected/removed/locked
+counts and retained uncertainty. Compiled ceilings are safety bounds, not downtime
+estimates. Fresh closed cohorts, external action evidence and the sustained acceptance
+window below remain separate release gates.
+
+## Legacy broad cancellation: v1
+
+The unchanged v1 protocol selects global pre-cutoff work. It is not an exact-source
+substitute for v2. Create a private mode-0600 JSON request with these four fields:
 
 ```json
 {
@@ -95,5 +162,16 @@ Local validation uses real isolated stores:
 
 ```bash
 node scripts/agent/with-test-stores.mjs --migrate -- npm test --workspace @maxim/api -- webhook-backlog-cancellation-postgres
+node scripts/agent/with-test-stores.mjs --migrate -- npm test --workspace @maxim/api -- cancel-webhook-backlog-v2
 node --test infra/scripts/backlog-cancellation.test.mjs
+node --test infra/scripts/backlog-cancellation-routing.test.mjs infra/scripts/backlog-cancellation-v2-host.test.mjs
 ```
+
+The API Docker CI job separately runs `smoke-backlog-cancellation-v2-ci.sh` against
+the exact built image on a rootful daemon with enforced memory and CPU limits.
+It uses disposable fully migrated PostgreSQL/Redis, private data-only mounts,
+the installed client and the real native isolation inspector. Both successful
+cancellation and an injected pre-writer refusal must restore the same sixteen
+container generations, with native auxiliaries first. API processes in this
+fixture are idle identity fixtures: the gate does not claim production HTTP or
+bot behavior acceptance. A rootless ABI rehearsal cannot replace this gate.

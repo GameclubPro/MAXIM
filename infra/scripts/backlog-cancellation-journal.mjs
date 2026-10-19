@@ -36,6 +36,35 @@ export function readBacklogCancellation(directory) {
       !['PREPARED', 'STOPPED', 'APPLIED', 'COMPLETE'].includes(state.phase)
     )
       throw new Error('Invalid backlog cancellation journal');
+    // FLAG: Legacy guards retain the same phase fence for scoped operations. An aborted
+    // lifecycle is explicit and cannot be read as successful cancellation by a v2 resume.
+    if (
+      (state.request.version !== undefined && state.request.version !== 2) ||
+      (state.request.version === 2 &&
+        (Object.keys(state.request).sort().join(',') !==
+          'cutoff,id,imageId,previewSha256,sourceSha,version' ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+            state.request.id,
+          ) ||
+          !/^[a-f0-9]{40}$/.test(state.request.sourceSha ?? '') ||
+          !/^sha256:[a-f0-9]{64}$/.test(state.request.imageId ?? '') ||
+          !Number.isFinite(Date.parse(state.request.cutoff)) ||
+          new Date(state.request.cutoff).toISOString() !== state.request.cutoff ||
+          !/^[a-f0-9]{64}$/.test(state.request.previewSha256 ?? '') ||
+          state.previewSha256 !== state.request.previewSha256 ||
+          !/^[a-f0-9]{64}$/.test(state.nominationSha256 ?? '') ||
+          Object.keys(state.bindings ?? {})
+            .sort()
+            .join(',') !== 'clientSha256,runtimeDigest' ||
+          !/^[a-f0-9]{64}$/.test(state.bindings?.runtimeDigest ?? '') ||
+          !/^[a-f0-9]{64}$/.test(state.bindings?.clientSha256 ?? '') ||
+          (state.outcome !== undefined &&
+            !['APPLIED', 'ABORTED_UNWRITTEN'].includes(state.outcome)) ||
+          (state.phase === 'COMPLETE' && state.outcome === undefined) ||
+          (state.abortPending !== undefined && state.abortPending !== true) ||
+          (state.outcome === 'APPLIED' && state.abortPending === true)))
+    )
+      throw new Error('Invalid scoped cancellation journal');
     return state;
   } finally {
     closeSync(fd);

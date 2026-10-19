@@ -810,6 +810,47 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     });
   }
 
+  async function retainOwnedDeliveryPlanHistory(item: Envelope): Promise<void> {
+    // FLAG: This separate completed envelope makes delivery statistics representative
+    // without adding recipients to the occurrence whose unchanged status is proved.
+    // Keep native attribution/context/receipt constraints and the strict scan budgets.
+    expect(publicationIds).toContain(item.publicationId);
+    expect(item.profile).toBe('PUBLIK_V1');
+    const prefix = `${item.broadcastId}-plan-history-`;
+    checkChurnPhase();
+    const inserted = await db.$executeRaw(Prisma.sql`
+      INSERT INTO managed_broadcast_deliveries (
+        id, broadcast_id, occurrence_index, target_chat_id, content_revision_id,
+        dialog_bot_id, publisher_dialog_context, publication_policy_revision,
+        status, attempt_count, bot_id, sent_at, remote_message_id,
+        remote_message_verified_at, updated_at
+      )
+      SELECT ${prefix} || n::text, ${item.broadcastId}, 1,
+        'synthetic-rollup-plan-history-' || n::text, ${item.envelopeRevisionId},
+        ${dialogBotId}, ${JSON.stringify({ version: 1, dialogBotId, buttons: [] })}::jsonb,
+        0, 'SENT'::"ManagedBroadcastDeliveryStatus", 1, ${item.botId},
+        ${new Date(decisionAt.getTime() - 1_000)}, ${prefix} || 'receipt-' || n::text,
+        ${decisionAt}, ${decisionAt}
+      FROM generate_series(1, 1000) n
+    `);
+    expect(inserted).toBe(1_000);
+    checkChurnPhase();
+    expect(
+      await db.managedBroadcastDelivery.count({
+        where: {
+          broadcastId: item.broadcastId,
+          publicationOccurrenceId: item.occurrenceId,
+          contentRevisionId: item.envelopeRevisionId,
+          occurrenceIndex: 1,
+          status: 'SENT',
+          dispatchProfile: 'PUBLIK_V1',
+        },
+      }),
+    ).toBe(1_000);
+    checkChurnPhase();
+    await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+  }
+
   async function probe(
     item: Occurrence,
     mode: Mode = '100',
@@ -1475,8 +1516,9 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
     await expectTestRefusalNoWrite(item);
     await expectEquivalentNoWrite(item);
     const history = await occurrence({ status: 'SENT' });
-    await delivery(await envelope(history), { status: 'SENT' });
+    const retained = await envelope(history, { status: 'COMPLETED' });
     await retainOwnedParentHistory(history);
+    await retainOwnedDeliveryPlanHistory(retained);
     expectBoundedPlan(await explain(item), '100', true);
     await db.$executeRaw(Prisma.sql`
       UPDATE managed_broadcasts SET target_chat_ids = (
@@ -1693,6 +1735,12 @@ postgres('Publication occurrence rollup no-op proofs on PostgreSQL', () => {
           await retainOwnedParentHistory(item, parentPrefix, db, 1_000, first, first === 9_001);
         });
       }
+      phase(nextPhase++, 'retains separate owned delivery plan history', async () => {
+        const history = await occurrence({ status: 'SENT' });
+        const retained = await envelope(history, { status: 'COMPLETED' });
+        expect(retained.occurrenceId).not.toBe(item.occurrenceId);
+        await retainOwnedDeliveryPlanHistory(retained);
+      });
       // FLAG: Each phase owns at most 10000 recipients, using the same 2500-recipient
       // SQL batches. Both complete indexes, native triggers and plan budgets remain.
       const recipientsPerPhase = 10_000;
