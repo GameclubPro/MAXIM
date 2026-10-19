@@ -1,19 +1,10 @@
-import type { PublicationDraft, PublicationEditScope } from './publication-model';
+import type { PublicationDraft } from './publication-model';
+import { buildTestPublicationRequest } from './publication-model';
 import {
-  buildCreatePublicationRequest,
-  buildTestPublicationRequest,
-  buildUpdatePublicationRequest,
-} from './publication-model';
-
-export type PublicationSaveRequestContext =
-  | { kind: 'create' | 'duplicate' }
-  | {
-      kind: 'edit' | 'import' | 'draft';
-      publicationId: string;
-      expectedRevision: number;
-      sessionId?: string | null;
-      editScope?: PublicationEditScope | null;
-    };
+  buildPublicationSaveRequest,
+  type PublicationSaveRequestContext,
+} from './publication-save-request';
+export type { PublicationSaveRequestContext } from './publication-save-request';
 
 export type PublicationRetryRequestKeyInput =
   | { publicationId: string; occurrenceId: string; contentMode: 'original' }
@@ -100,25 +91,18 @@ export function buildPublicationSaveRequestKey(
   context: PublicationSaveRequestContext,
   replaceConflicts: boolean,
 ): PublicationRequestKey {
-  const request =
-    context.kind === 'edit' || context.kind === 'import' || context.kind === 'draft'
-      ? buildUpdatePublicationRequest(
-          draft,
-          context.expectedRevision,
-          REQUEST_KEY_PLACEHOLDER,
-          replaceConflicts,
-          context.kind === 'edit' && context.editScope === 'retry',
-        )
-      : buildCreatePublicationRequest(draft, REQUEST_KEY_PLACEHOLDER, { replaceConflicts });
+  const request = buildPublicationSaveRequest(
+    draft,
+    context,
+    REQUEST_KEY_PLACEHOLDER,
+    replaceConflicts,
+  );
 
   return createRequestKey({
-    operation:
-      context.kind === 'edit' || context.kind === 'import' || context.kind === 'draft'
-        ? 'update'
-        : 'create',
+    operation: request.operation,
     context,
     replaceConflicts,
-    payload: withoutRequestId(request),
+    payload: withoutRequestId(request.payload),
   });
 }
 

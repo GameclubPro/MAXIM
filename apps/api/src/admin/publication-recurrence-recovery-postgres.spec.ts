@@ -516,6 +516,161 @@ postgres('Publication recurrence failure fencing on PostgreSQL', () => {
     ).toMatchObject({ status: 'SENDING', attemptCount: 2, lockToken: ownerToken });
   });
 
+  it('settles a superseded recurrence on its transaction connection while the second pool connection waits for the calendar lock', async () => {
+    const { occurrence, row, delivery } = await createLateEnvelope();
+    const now = new Date();
+    const deliveryDeadlineAt = new Date(now.getTime() + 3_600_000);
+    await db.publicationSchedule.update({
+      where: { id: occurrence.scheduleId },
+      data: {
+        mode: 'RECURRENCE',
+        rule: {
+          mode: 'recurrence',
+          latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp: 'latest' },
+        },
+      },
+    });
+    await db.publicationOccurrence.update({
+      where: { id: occurrence.id },
+      data: { deliveryDeadlineAt },
+    });
+    const newer = await db.publicationOccurrence.create({
+      data: {
+        publicationId,
+        scheduleId: occurrence.scheduleId,
+        scheduleRevision: occurrence.scheduleRevision,
+        contentRevisionId: occurrence.contentRevisionId,
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publisher-test',
+        scheduledAt: new Date(now.getTime() - 30 * 60_000),
+        deliveryDeadlineAt,
+      },
+    });
+    const lockToken = randomUUID();
+    await db.managedBroadcastDelivery.update({
+      where: { id: delivery.id },
+      data: { status: 'SENDING', attemptCount: 1, lockedAt: now, lockToken },
+    });
+    expect(
+      await ensureManagedBroadcastPublicationExecutionActive({
+        prisma: db as unknown as PrismaService,
+        row,
+        occurrenceIndex: 1,
+        preDispatchClaim: { id: delivery.id, lockToken, attemptCount: 1 },
+      }),
+    ).toBe(false);
+
+    const limitedDb = new PrismaClient({
+      adapter: createPrismaAdapter(databaseUrl, {
+        max: 2,
+        connectionTimeoutMillis: 300,
+        statement_timeout: 10_000,
+      }),
+    });
+    let reachedOccurrenceRead!: () => void;
+    const occurrenceRead = new Promise<void>((resolve) => {
+      reachedOccurrenceRead = resolve;
+    });
+    let releaseOccurrenceRead!: () => void;
+    const occurrenceReadRelease = new Promise<void>((resolve) => {
+      releaseOccurrenceRead = resolve;
+    });
+    let competingStarted!: (pid: number) => void;
+    const competingReady = new Promise<number>((resolve) => {
+      competingStarted = resolve;
+    });
+    const guardedDb = {
+      $transaction: (run: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+        limitedDb.$transaction(async (tx) => {
+          const guardedTx = new Proxy(tx, {
+            get(target, key) {
+              if (key === 'publicationOccurrence')
+                return new Proxy(target.publicationOccurrence, {
+                  get(delegate, method) {
+                    if (method === 'findUnique')
+                      return async (args: Parameters<typeof delegate.findUnique>[0]) => {
+                        const saved = await delegate.findUnique(args);
+                        reachedOccurrenceRead();
+                        await occurrenceReadRelease;
+                        return saved;
+                      };
+                    return Reflect.get(delegate, method);
+                  },
+                });
+              return Reflect.get(target, key);
+            },
+          });
+          return run(guardedTx);
+        }),
+      // FLAG: Preserve the real root delegate so this test reproduces a read escaping the
+      // transaction; it must compete for the same two-connection pool as the waiting writer.
+      publicationOccurrence: limitedDb.publicationOccurrence,
+    };
+    let cleaning: Promise<void> | undefined;
+    let competing: Promise<void> | undefined;
+    let competingAcquired = false;
+    try {
+      await limitedDb.$connect();
+      cleaning = cancelPublicationDeliveryBeforeStoppedDispatch(
+        guardedDb as unknown as PrismaService,
+        { id: delivery.id, lockToken, attemptCount: 0, sendAttemptStarted: false },
+      );
+      await Promise.race([
+        occurrenceRead,
+        cleaning.then(() => {
+          throw new Error('Cleanup completed before reaching its recurrence read');
+        }),
+      ]);
+      competing = limitedDb.$transaction(async (tx) => {
+        const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>(
+          Prisma.sql`SELECT pg_backend_pid() AS pid`,
+        );
+        competingStarted(pid);
+        await lockCalendar(tx);
+        competingAcquired = true;
+      });
+      const competingPid = await Promise.race([
+        competingReady,
+        competing.then(() => {
+          throw new Error('Competing writer completed before requesting the calendar lock');
+        }),
+      ]);
+      const observeUntil = Date.now() + 2_000;
+      let waitingForCalendar = false;
+      do {
+        const [state] = await db.$queryRaw<Array<{ waiting: boolean }>>(Prisma.sql`
+          SELECT "wait_event_type" = 'Lock' AND "wait_event" = 'advisory' AS "waiting"
+          FROM pg_stat_activity
+          WHERE pid = ${competingPid}
+        `);
+        waitingForCalendar = state?.waiting === true;
+        if (!waitingForCalendar) await new Promise((resolve) => setTimeout(resolve, 10));
+      } while (!waitingForCalendar && Date.now() < observeUntil);
+      expect(waitingForCalendar).toBe(true);
+      releaseOccurrenceRead();
+      await Promise.all([cleaning, competing]);
+      expect(competingAcquired).toBe(true);
+      expect(await db.managedBroadcast.findUnique({ where: { id: row.id } })).toBeNull();
+      expect(
+        await db.managedBroadcastDelivery.findUnique({ where: { id: delivery.id } }),
+      ).toBeNull();
+      expect(
+        await db.publicationOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } }),
+      ).toMatchObject({
+        status: 'CANCELED',
+        dispatchBlockerCode: 'PUBLISHER_WINDOW_EXPIRED',
+        deliveryDeadlineAt,
+      });
+      expect(
+        await db.publicationOccurrence.findUniqueOrThrow({ where: { id: newer.id } }),
+      ).toMatchObject({ status: 'SCHEDULED', deliveryDeadlineAt });
+    } finally {
+      releaseOccurrenceRead();
+      await Promise.allSettled([cleaning, competing]);
+      await limitedDb.$disconnect();
+    }
+  });
+
   it.each(['edit', 'cancel', 'content'] as const)(
     'fences nonterminal retry deferral behind a concurrent %s',
     async (operation) => {

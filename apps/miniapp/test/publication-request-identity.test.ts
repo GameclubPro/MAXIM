@@ -16,6 +16,11 @@ import {
   type PublicationRequestIdentity,
   type PublicationRequestKey,
 } from '../src/features/publications/publication-request-identity';
+import {
+  preparePublicationSave,
+  resolvePublicationSaveRequestContext,
+} from '../src/features/publications/publication-save-request';
+import type { ApiTransport } from '../src/lib/api/transport';
 
 const chatTarget = {
   id: 'chat-1',
@@ -40,6 +45,64 @@ function createIdentityResolver() {
   ): PublicationRequestIdentity =>
     resolvePublicationRequestIdentity(current, key, () => `request-id-${++sequence}`);
 }
+
+test('save context retains cloud identity and only enables a partial request for an existing edit', () => {
+  const draft = createEmptyPublicationDraft([chatTarget]);
+  const edit = {
+    kind: 'edit' as const,
+    publicationId: 'saved-post',
+    expectedRevision: 4,
+    editScope: 'future' as const,
+  };
+  assert.deepEqual(resolvePublicationSaveRequestContext(draft, null, true), { kind: 'create' });
+  assert.deepEqual(resolvePublicationSaveRequestContext(draft, edit, true), {
+    ...edit,
+    contentOnly: true,
+  });
+  const imported = {
+    kind: 'import' as const,
+    publicationId: 'imported',
+    expectedRevision: 3,
+    sessionId: 'session',
+  };
+  assert.deepEqual(resolvePublicationSaveRequestContext(draft, imported, true), imported);
+  assert.deepEqual(
+    resolvePublicationSaveRequestContext(
+      { ...draft, cloudDraft: { id: 'cloud-draft', revision: 7 } },
+      { kind: 'duplicate' },
+      true,
+    ),
+    { kind: 'draft', publicationId: 'cloud-draft', expectedRevision: 7 },
+  );
+});
+
+test('a prepared save retains its exact partial payload across access refresh retries', async () => {
+  const draft = createEmptyPublicationDraft([chatTarget]);
+  draft.text = 'Исходный текст';
+  const context = {
+    kind: 'edit' as const,
+    publicationId: 'saved-post',
+    expectedRevision: 4,
+    editScope: 'future' as const,
+    contentOnly: true,
+  };
+  const calls: { path: string; body: unknown }[] = [];
+  const api: ApiTransport = {
+    request: async (path, init) => {
+      calls.push({ path, body: JSON.parse(String(init?.body)) });
+      throw new Error('transport unavailable');
+    },
+    requestKeepalive() {},
+  };
+  const save = preparePublicationSave(api, draft, context, 'stable_request', false);
+  draft.text = 'Другой текст';
+  await assert.rejects(save(), /transport unavailable/u);
+  await assert.rejects(save(), /transport unavailable/u);
+  assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0]?.path, '/publications/saved-post');
+  assert.equal((calls[0]?.body as { content: { text: string } }).content.text, 'Исходный текст');
+  assert.equal('schedule' in (calls[0]?.body as object), false);
+});
 
 test('reuses a save request ID until payload, context, or replacement intent changes', () => {
   const draft = createEmptyPublicationDraft([chatTarget]);
@@ -153,6 +216,29 @@ test('a single scheduled retry save preserves the existing audience and send int
   assert.equal('schedule' in payload, false);
   assert.equal('intent' in payload, false);
   assert.equal(payload.expectedRevision, 2);
+});
+
+test('content-only future edits fingerprint the exact partial update separately from schedule changes', () => {
+  const draft = createEmptyPublicationDraft([chatTarget]);
+  draft.text = 'Исправленный текст';
+  draft.timingMode = 'once';
+  draft.onceDate = '2030-01-01';
+  draft.onceTime = '13:00';
+  draft.scheduledSlots = ['2030-01-01T10:00:00Z'];
+  draft.scheduleTimezone = 'Europe/Moscow';
+  const context = {
+    kind: 'edit' as const,
+    publicationId: 'publication-live',
+    expectedRevision: 2,
+    editScope: 'future' as const,
+  };
+  const partial = buildPublicationSaveRequestKey(draft, { ...context, contentOnly: true }, false);
+  const full = buildPublicationSaveRequestKey(draft, { ...context, contentOnly: false }, false);
+  const payload = (partial as { payload: Record<string, unknown> }).payload;
+  assert.equal('audience' in payload, false);
+  assert.equal('schedule' in payload, false);
+  assert.equal('intent' in payload, false);
+  assert.equal(arePublicationRequestKeysEqual(partial, full), false);
 });
 
 test('restores a lost pending create across reload without persisting payload content', () => {

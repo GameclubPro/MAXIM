@@ -283,6 +283,332 @@ integration('Publication content freeze and immutable recovery on PostgreSQL', (
       'PUBLIK_V1',
     );
 
+  async function prepareCalendarReservation(
+    at = new Date(Math.ceil((Date.now() + 120_000) / 60_000) * 60_000),
+  ) {
+    await db.publicationSchedule.update({
+      where: { publicationId },
+      data: {
+        rule: { mode: 'once', timezone: 'UTC', at: at.toISOString(), replaceConflicts: false },
+      },
+    });
+    await db.publicationOccurrence.update({
+      where: { id: occurrenceId },
+      data: { scheduledAt: at },
+    });
+    await db.managedBroadcast.update({ where: { id: broadcastId }, data: { nextSendAt: at } });
+    await db.managedBroadcastCalendarReservation.create({
+      data: {
+        broadcastId,
+        sourceChatId: chatId,
+        targetChatId: chatId,
+        occurrenceIndex: 1,
+        scheduledAt: at,
+      },
+    });
+    return at;
+  }
+
+  it('edits a prepared schedule without conflicting with its own retained slot', async () => {
+    const at = await prepareCalendarReservation();
+    const later = new Date(at.getTime() + 60_000);
+    await expect(
+      service.update(
+        publicationId,
+        user(),
+        {
+          requestId: `calendar_${randomUUID()}`,
+          expectedRevision: 1,
+          schedule: {
+            mode: 'slots',
+            timezone: 'UTC',
+            slots: [at.toISOString(), later.toISOString()],
+            replaceConflicts: false,
+          },
+          intent: 'publish',
+        },
+        'PUBLIK_V1',
+      ),
+    ).resolves.toMatchObject({ id: publicationId });
+    expect(
+      await db.publicationSchedule.findUniqueOrThrow({ where: { publicationId } }),
+    ).toMatchObject({
+      revision: 2,
+      mode: 'SLOTS',
+    });
+    expect(
+      await db.publicationOccurrence.findUniqueOrThrow({ where: { id: occurrenceId } }),
+    ).toMatchObject({
+      status: 'CANCELED',
+    });
+    expect(
+      await db.publicationOccurrence.findMany({
+        where: { publicationId, scheduleRevision: 2 },
+        orderBy: { scheduledAt: 'asc' },
+        select: { scheduledAt: true, status: true },
+      }),
+    ).toEqual([
+      { scheduledAt: at, status: 'SCHEDULED' },
+      { scheduledAt: later, status: 'SCHEDULED' },
+    ]);
+    expect(await db.managedBroadcastCalendarReservation.count({ where: { broadcastId } })).toBe(0);
+    expect(
+      await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: deliveryId } }),
+    ).toMatchObject({
+      status: 'CANCELED',
+      attemptCount: 0,
+      remoteMessageId: null,
+    });
+  });
+
+  it("retains another publication's prepared calendar conflict", async () => {
+    const at = await prepareCalendarReservation();
+    await expect(
+      (
+        service as unknown as {
+          assertCalendarAvailability(
+            targets: Array<{ chatId: string; entityType: 'chat' }>,
+            slots: Date[],
+            schedule: unknown,
+            actorUserId: string,
+            excludePublicationId: string,
+          ): Promise<void>;
+        }
+      ).assertCalendarAvailability(
+        [{ chatId, entityType: 'chat' }],
+        [at],
+        { mode: 'once', timezone: 'UTC', at: at.toISOString(), replaceConflicts: false },
+        chatId,
+        randomUUID(),
+      ),
+    ).rejects.toMatchObject({ response: { code: 'PUBLICATION_SCHEDULE_CONFLICT' } });
+    expect(await db.managedBroadcastCalendarReservation.count({ where: { broadcastId } })).toBe(1);
+  });
+
+  it.each(
+    (['SENDING', 'SENT', 'AMBIGUOUS'] as const).flatMap((status) =>
+      [false, true].map((replaceConflicts) => ({ status, replaceConflicts })),
+    ),
+  )(
+    'refuses a retained $status slot even with replaceConflicts=$replaceConflicts',
+    async ({ status, replaceConflicts }) => {
+      const at = await prepareCalendarReservation(
+        new Date(Math.floor((Date.now() - 60_000) / 60_000) * 60_000),
+      );
+      await db.publicationOccurrence.update({
+        where: { id: occurrenceId },
+        data: { status: status === 'SENT' ? 'SENT' : 'IN_PROGRESS' },
+      });
+      await db.managedBroadcastDelivery.update({
+        where: { id: deliveryId },
+        data: {
+          status,
+          attemptCount: 1,
+          botId,
+          lockedAt: status === 'SENDING' ? new Date() : null,
+          lockToken: status === 'SENDING' ? 'synthetic-retained-claim' : null,
+          remoteMessageId: status === 'SENT' ? 'synthetic-confirmed-message' : null,
+          sentAt: status === 'SENT' ? new Date() : null,
+        },
+      });
+      if (status === 'SENT') {
+        await db.managedBroadcastCalendarReservation.deleteMany({ where: { broadcastId } });
+        await db.managedBroadcast.update({
+          where: { id: broadcastId },
+          data: { status: 'COMPLETED', sentCount: 1, nextSendAt: null },
+        });
+      }
+      const evidence = await db.managedBroadcastDelivery.findUniqueOrThrow({
+        where: { id: deliveryId },
+      });
+      await expect(
+        service.update(
+          publicationId,
+          user(),
+          {
+            requestId: `retained_${randomUUID()}`,
+            expectedRevision: 1,
+            schedule: {
+              mode: 'slots',
+              timezone: 'UTC',
+              slots: [at.toISOString(), new Date(at.getTime() + 600_000).toISOString()],
+              replaceConflicts,
+            },
+            intent: 'publish',
+          },
+          'PUBLIK_V1',
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW' },
+      });
+      expect(
+        await db.publication.findUniqueOrThrow({ where: { id: publicationId } }),
+      ).toMatchObject({ version: 1 });
+      expect(
+        await db.publicationSchedule.findUniqueOrThrow({ where: { publicationId } }),
+      ).toMatchObject({ revision: 1 });
+      expect(await db.publicationOccurrence.count({ where: { publicationId } })).toBe(1);
+      expect(
+        await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: deliveryId } }),
+      ).toEqual(evidence);
+    },
+  );
+
+  it("preserves a paused parent's prior-revision receipt after its reservation was released", async () => {
+    const at = await prepareCalendarReservation(
+      new Date(Math.floor((Date.now() - 60_000) / 60_000) * 60_000),
+    );
+    await db.publication.update({ where: { id: publicationId }, data: { lifecycle: 'PAUSED' } });
+    await db.publicationSchedule.update({
+      where: { publicationId },
+      data: { status: 'PAUSED', revision: 2 },
+    });
+    await db.publicationOccurrence.update({
+      where: { id: occurrenceId },
+      data: { status: 'SENT' },
+    });
+    await db.managedBroadcastDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        status: 'SENT',
+        attemptCount: 1,
+        botId,
+        remoteMessageId: 'synthetic-paused-receipt',
+        sentAt: new Date(),
+      },
+    });
+    await db.managedBroadcastCalendarReservation.deleteMany({ where: { broadcastId } });
+    await db.managedBroadcast.update({
+      where: { id: broadcastId },
+      data: { status: 'COMPLETED', sentCount: 1, nextSendAt: null },
+    });
+    await expect(
+      service.update(
+        publicationId,
+        user(),
+        {
+          requestId: `paused_${randomUUID()}`,
+          expectedRevision: 1,
+          schedule: {
+            mode: 'slots',
+            timezone: 'UTC',
+            slots: [at.toISOString()],
+            replaceConflicts: true,
+          },
+          intent: 'publish',
+        },
+        'PUBLIK_V1',
+      ),
+    ).rejects.toMatchObject({ response: { code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW' } });
+    expect(await db.publication.findUniqueOrThrow({ where: { id: publicationId } })).toMatchObject({
+      lifecycle: 'PAUSED',
+      version: 1,
+    });
+    expect(
+      await db.publicationSchedule.findUniqueOrThrow({ where: { publicationId } }),
+    ).toMatchObject({ revision: 2, status: 'PAUSED' });
+    expect(await db.publicationOccurrence.count({ where: { publicationId } })).toBe(1);
+    expect(
+      await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: deliveryId } }),
+    ).toMatchObject({
+      status: 'SENT',
+      attemptCount: 1,
+      remoteMessageId: 'synthetic-paused-receipt',
+    });
+  });
+
+  it('replaces an elapsed retained slot only when its in-progress envelope is untouched', async () => {
+    const at = await prepareCalendarReservation(
+      new Date(Math.floor((Date.now() - 60_000) / 60_000) * 60_000),
+    );
+    await db.publicationOccurrence.update({
+      where: { id: occurrenceId },
+      data: { status: 'IN_PROGRESS' },
+    });
+    await expect(
+      service.update(
+        publicationId,
+        user(),
+        {
+          requestId: `untouched_${randomUUID()}`,
+          expectedRevision: 1,
+          schedule: {
+            mode: 'slots',
+            timezone: 'UTC',
+            slots: [at.toISOString()],
+            replaceConflicts: false,
+          },
+          intent: 'publish',
+        },
+        'PUBLIK_V1',
+      ),
+    ).resolves.toMatchObject({ id: publicationId });
+    expect(
+      await db.publicationOccurrence.findUniqueOrThrow({ where: { id: occurrenceId } }),
+    ).toMatchObject({ status: 'CANCELED' });
+    expect(await db.managedBroadcastCalendarReservation.count({ where: { broadcastId } })).toBe(0);
+    expect(
+      await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: deliveryId } }),
+    ).toMatchObject({ status: 'CANCELED', attemptCount: 0, remoteMessageId: null });
+    expect(
+      await db.publicationOccurrence.count({
+        where: { publicationId, scheduleRevision: 2, scheduledAt: at, status: 'SCHEDULED' },
+      }),
+    ).toBe(1);
+  });
+
+  it('rechecks a retained slot claimed after preflight and rolls back the new schedule', async () => {
+    const at = await prepareCalendarReservation();
+    let claimed = false;
+    const racingDb = new Proxy(db, {
+      get(target, key) {
+        if (key !== '$transaction') return Reflect.get(target, key);
+        return async (run: (tx: Prisma.TransactionClient) => Promise<unknown>) => {
+          await db.managedBroadcastDelivery.update({
+            where: { id: deliveryId },
+            data: {
+              status: 'SENDING',
+              attemptCount: 1,
+              lockedAt: new Date(),
+              lockToken: 'synthetic-preflight-race',
+            },
+          });
+          claimed = true;
+          return target.$transaction(run);
+        };
+      },
+    });
+    await expect(
+      createService(racingDb).update(
+        publicationId,
+        user(),
+        {
+          requestId: `calendar_race_${randomUUID()}`,
+          expectedRevision: 1,
+          schedule: {
+            mode: 'slots',
+            timezone: 'UTC',
+            slots: [at.toISOString(), new Date(at.getTime() + 60_000).toISOString()],
+            replaceConflicts: true,
+          },
+          intent: 'publish',
+        },
+        'PUBLIK_V1',
+      ),
+    ).rejects.toMatchObject({ response: { code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW' } });
+    expect(claimed).toBe(true);
+    expect(await db.publication.findUniqueOrThrow({ where: { id: publicationId } })).toMatchObject({
+      version: 1,
+    });
+    expect(
+      await db.publicationSchedule.findUniqueOrThrow({ where: { publicationId } }),
+    ).toMatchObject({ revision: 1 });
+    expect(await db.publicationOccurrence.count({ where: { publicationId } })).toBe(1);
+    expect(
+      await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: deliveryId } }),
+    ).toMatchObject({ status: 'SENDING', attemptCount: 1, lockToken: 'synthetic-preflight-race' });
+  });
+
   function interceptEnvelopeUpdate(hook: (run: () => Promise<unknown>) => Promise<unknown>) {
     return new Proxy(db, {
       get(target, key) {

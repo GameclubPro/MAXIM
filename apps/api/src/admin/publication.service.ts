@@ -94,6 +94,11 @@ import {
   releaseRetiredMajorCalendarSlots,
 } from './publication-calendar';
 import {
+  findPublicationCalendarConflicts,
+  type PublicationCalendarConflictOccurrence,
+  type PublicationCalendarConflicts,
+} from './publication-calendar-conflicts';
+import {
   buildUnsafePublicationExecutionDeliveryWhere,
   cancelUnstartedPublicationExecutionBroadcasts,
   reviseUnstartedPublicationExecutionBroadcasts,
@@ -144,34 +149,6 @@ const PUBLICATION_DISPATCH_BATCH = 50;
 const PUBLICATION_DEADLINE_DISPATCH_BATCH = 25;
 const PUBLICATION_SLOW_BATCH = 2;
 const PUBLICATION_RECONCILE_BATCH = 200;
-
-type PublicationCalendarConflictOccurrence = {
-  id: string;
-  publicationId: string;
-  scheduleId: string;
-  scheduleRevision: number;
-  scheduledAt: Date;
-  schedule: {
-    revision: number;
-  };
-  publication: {
-    actorUserId: string;
-    targets: Array<{
-      targetChatId: string;
-      entityType: ChatEntityType;
-    }>;
-  };
-};
-
-type PublicationCalendarConflicts = {
-  reservations: Array<{
-    broadcastId: string;
-    entityType: ChatEntityType;
-    targetChatId: string;
-    scheduledAt: Date;
-  }>;
-  occurrences: PublicationCalendarConflictOccurrence[];
-};
 
 class StalePublicationRollupError extends Error {}
 
@@ -995,7 +972,7 @@ export class PublicationService {
           });
         }
         if (shouldRebuildSchedule) {
-          await this.cancelFuturePublicationWork(tx, publicationId, now);
+          await this.cancelFuturePublicationWork(tx, publicationId, now, initialSlots);
           if (desiredIntent === 'publish' && schedule && initialSlots.length > 0) {
             await this.reservePublicationCalendar(
               tx,
@@ -3145,7 +3122,7 @@ export class PublicationService {
     if (!schedule || schedule.mode === 'now' || slots.length === 0) {
       return;
     }
-    const conflicts = await this.findPublicationCalendarConflicts(
+    const conflicts = await findPublicationCalendarConflicts(
       this.prisma,
       targets,
       slots,
@@ -3176,7 +3153,7 @@ export class PublicationService {
     if (!calendarAlreadyLocked) {
       await this.lockPublicationCalendar(tx);
     }
-    const conflicts = await this.findPublicationCalendarConflicts(
+    const conflicts = await findPublicationCalendarConflicts(
       tx,
       targets,
       slots,
@@ -3247,79 +3224,6 @@ export class PublicationService {
     await tx.$executeRaw(Prisma.sql`
       SELECT pg_advisory_xact_lock(hashtext('publication-calendar'))
     `);
-  }
-
-  private async findPublicationCalendarConflicts(
-    client: any,
-    targets: ResolvedPublicationTarget[],
-    slots: Date[],
-    excludePublicationId?: string,
-  ): Promise<PublicationCalendarConflicts> {
-    const targetPredicates = buildPublicationCalendarTargetPredicates(targets);
-    const [reservations, occurrenceCandidates] = await Promise.all([
-      client.managedBroadcastCalendarReservation.findMany({
-        where: {
-          scheduledAt: { in: slots },
-          OR: targetPredicates,
-          broadcast: { is: { dispatchProfile: PublicationDispatchProfile.PUBLIK_V1 } },
-        },
-        orderBy: { scheduledAt: 'asc' },
-        select: {
-          broadcastId: true,
-          entityType: true,
-          targetChatId: true,
-          scheduledAt: true,
-        },
-      }),
-      client.publicationOccurrence.findMany({
-        where: {
-          ...(excludePublicationId ? { publicationId: { not: excludePublicationId } } : {}),
-          scheduledAt: { in: slots },
-          status: {
-            in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
-          },
-          schedule: {
-            is: {
-              status: {
-                in: [PublicationScheduleStatus.ACTIVE, PublicationScheduleStatus.ERROR],
-              },
-            },
-          },
-          publication: {
-            is: {
-              dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-              lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
-              targets: { some: { OR: targetPredicates } },
-            },
-          },
-        },
-        orderBy: { scheduledAt: 'asc' },
-        select: {
-          id: true,
-          publicationId: true,
-          scheduleId: true,
-          scheduleRevision: true,
-          scheduledAt: true,
-          schedule: { select: { revision: true } },
-          publication: {
-            select: {
-              actorUserId: true,
-              targets: {
-                orderBy: { position: 'asc' },
-                select: { targetChatId: true, entityType: true },
-              },
-            },
-          },
-        },
-      }),
-    ]);
-    return {
-      reservations,
-      occurrences: occurrenceCandidates.filter(
-        (occurrence: PublicationCalendarConflictOccurrence) =>
-          occurrence.scheduleRevision === occurrence.schedule.revision,
-      ),
-    };
   }
 
   private throwPublicationCalendarConflict(
@@ -3449,7 +3353,9 @@ export class PublicationService {
     tx: any,
     publicationId: string,
     now: Date,
+    retainedSlots: Date[] = [],
   ): Promise<void> {
+    const elapsedRetainedSlots = retainedSlots.filter((slot) => slot < now);
     const occurrences = await tx.publicationOccurrence.findMany({
       where: {
         publicationId,
@@ -3457,7 +3363,16 @@ export class PublicationService {
           { status: PublicationOccurrenceStatus.SCHEDULED },
           {
             status: PublicationOccurrenceStatus.IN_PROGRESS,
-            scheduledAt: { gte: now },
+            // FLAG: Only an explicit schedule replacement may reclaim its own elapsed,
+            // untouched retained slot; ordinary pause/cancel keeps its historical scope.
+            ...(elapsedRetainedSlots.length
+              ? {
+                  OR: [
+                    { scheduledAt: { gte: now } },
+                    { scheduledAt: { in: elapsedRetainedSlots } },
+                  ],
+                }
+              : { scheduledAt: { gte: now } }),
           },
         ],
         deliveries: {

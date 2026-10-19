@@ -53,14 +53,12 @@ import { PublicationCreateSheet } from '../features/publications/publication-cre
 import { PublicationButtonsSheet } from '../features/publications/publication-buttons-sheet';
 import { formatTimezoneLabel } from '../lib/timezone-label';
 import {
-  buildCreatePublicationRequest,
   buildPublicationSaveFeedback,
   buildPublicationSystemButtons,
   buildTestPublicationRequest,
   canReviewPublicationScheduleDecision,
   hasPublicationScheduleError,
   getPublicationEditorTitle,
-  buildUpdatePublicationRequest,
   createEmptyPublicationDraft,
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
@@ -68,12 +66,14 @@ import {
   getPublicationExplicitSlotsLimitFeedback,
   getPublicationFeedStatusLabel,
   getPublicationPrimaryActionLabel,
+  getPublicationOnceSlot,
   getPublicationTargetKey,
   hasSamePublicationTargetMetadata,
   getPublicationTimingIssue,
   isIsolatedPublicationEditor,
   isPublicationRevisionConflictError,
   PUBLICATION_TEXT_MAX_LENGTH,
+  PUBLICATION_MIN_SCHEDULE_DELAY_MS,
   publicationDraftNeedsVideoReselection,
   shouldReviewPublicationScheduleConflict,
   type PublicationEntityFilter,
@@ -88,6 +88,10 @@ import {
   PUBLICATION_TEST_RESULT_PENDING_FEEDBACK,
   isPublicationTestResultPendingError,
 } from '../features/publications/publication-request-identity';
+import {
+  resolvePublicationSaveRequestContext,
+  preparePublicationSave,
+} from '../features/publications/publication-save-request';
 import { PublisherPostImportStatus } from '../features/publications/publisher-post-import-status';
 import { PublicationTargetNotices } from '../features/publications/publication-target-notices';
 import { PublicationTargetPicker } from '../features/publications/publication-target-picker';
@@ -100,11 +104,7 @@ import {
   usePublisherDraftTargetHydration,
 } from '../features/publications/use-publisher-draft-target-hydration';
 import { usePublisherTargetErrorFeedback } from '../features/publications/use-publisher-target-error-feedback';
-import {
-  createPublication,
-  testPublication,
-  updatePublication,
-} from '../lib/api/publication-client';
+import { testPublication } from '../lib/api/publication-client';
 import type { ApiTransport } from '../lib/api/transport';
 import {
   hasBroadcastLinkButtonErrors,
@@ -369,32 +369,16 @@ export function PublicationsPage({
       try {
         const snapshot = await cloudDraft.flush();
         controller.signal.throwIfAborted();
-        const context = snapshot.cloudDraft
-          ? {
-              kind: 'draft' as const,
-              publicationId: snapshot.cloudDraft.id,
-              expectedRevision: snapshot.cloudDraft.revision,
-            }
-          : (editorContext ?? { kind: 'create' as const });
+        const context = resolvePublicationSaveRequestContext(
+          snapshot,
+          editorContext,
+          editorSession.canPreservePublicationSchedule(snapshot),
+        );
         const requestId = requestIds.resolveSaveRequestId(snapshot, context, replaceConflicts);
-        let save: () => ReturnType<typeof createPublication>;
-        if (context.kind === 'edit' || context.kind === 'import' || context.kind === 'draft') {
-          const request = buildUpdatePublicationRequest(
-            snapshot,
-            context.expectedRevision,
-            requestId,
-            replaceConflicts,
-            context.kind === 'edit' && context.editScope === 'retry',
-          );
-          save = () => updatePublication(api, context.publicationId, request);
-        } else {
-          const request = buildCreatePublicationRequest(snapshot, requestId, { replaceConflicts });
-          save = () => createPublication(api, request);
-        }
         return await savePublicationWithAccessRefresh({
           api,
           targets: snapshot.targets.map(({ id, entityType }) => ({ id, entityType })),
-          save,
+          save: preparePublicationSave(api, snapshot, context, requestId, replaceConflicts),
           signal: controller.signal,
           onRefreshing: () => setRefreshingSaveAccess(true),
         });
@@ -515,9 +499,11 @@ export function PublicationsPage({
   const anyBusy = isBusy || resolveAmbiguousMutation.isPending;
   const isRetryVersionEditor =
     editorContext?.kind === 'edit' && editorContext.editScope === 'retry';
-  const recurrenceError = isRetryVersionEditor ? null : getRecurrenceError(draft);
-  const timingIssue = isRetryVersionEditor ? null : getPublicationTimingIssue(draft);
-  const explicitSlotsLimitFeedback = isRetryVersionEditor
+  const preservesSavedSchedule =
+    isRetryVersionEditor || editorSession.canPreservePublicationSchedule();
+  const recurrenceError = preservesSavedSchedule ? null : getRecurrenceError(draft);
+  const timingIssue = preservesSavedSchedule ? null : getPublicationTimingIssue(draft);
+  const explicitSlotsLimitFeedback = preservesSavedSchedule
     ? null
     : getPublicationExplicitSlotsLimitFeedback(draft);
   const validationIssues = useMemo<BroadcastPublishIssueAction[]>(() => {
@@ -716,7 +702,7 @@ export function PublicationsPage({
     if (!isRetryVersionEditor && selectedPublisherTargetUnavailable) {
       return reject('targets', 'Выбранный получатель пока не готов к публикации через Публик.');
     }
-    if (!options.ignoreSchedule && !isRetryVersionEditor) {
+    if (!options.ignoreSchedule && !preservesSavedSchedule) {
       if (reportExplicitSlotsLimit()) {
         return false;
       }
@@ -786,11 +772,15 @@ export function PublicationsPage({
 
   function updateOnceSlot(onceDate: string, onceTime: string, scheduledAt: string | null) {
     setDraft((current) => {
+      const preservedAt =
+        current.onceDate === onceDate && current.onceTime === onceTime
+          ? getPublicationOnceSlot(current)
+          : null;
       return {
         ...current,
         onceDate,
         onceTime,
-        scheduledSlots: scheduledAt ? [scheduledAt] : [],
+        scheduledSlots: preservedAt ? [preservedAt] : scheduledAt ? [scheduledAt] : [],
       };
     });
     setFieldError('');
@@ -1336,10 +1326,12 @@ export function PublicationsPage({
       const { parsePublicationScheduleField } =
         await import('../features/publications/publication-schedule-fields');
       setDraft((current) => {
-        const at = parsePublicationScheduleField(
-          `${current.onceDate}T${current.onceTime}`,
-          current.scheduleTimezone,
-        );
+        const at =
+          getPublicationOnceSlot(current) ??
+          parsePublicationScheduleField(
+            `${current.onceDate}T${current.onceTime}`,
+            current.scheduleTimezone,
+          );
         return { ...current, timingMode: 'once', scheduledSlots: at ? [at] : [] };
       });
     } catch {
@@ -1456,6 +1448,7 @@ export function PublicationsPage({
               <Suspense fallback={null}>
                 <LazyBroadcastSchedulePlanner
                   preciseTime
+                  minimumLeadMs={PUBLICATION_MIN_SCHEDULE_DELAY_MS}
                   value={draft.scheduledSlots}
                   occupiedSlots={
                     calendarAvailabilityQuery.data?.slots.map((slot) => slot.scheduledAt) ?? []

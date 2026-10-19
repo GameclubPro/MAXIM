@@ -119,6 +119,7 @@ type BroadcastSchedulePlannerProps = {
   viewMode?: 'compose' | 'calendar';
   allowRecipe?: boolean;
   preciseTime?: boolean;
+  minimumLeadMs?: number;
 };
 
 export type BroadcastSchedulePlannerSelectionState = {
@@ -188,6 +189,7 @@ export function BroadcastSchedulePlanner({
   viewMode = 'compose',
   allowRecipe = true,
   preciseTime = false,
+  minimumLeadMs = 30_000,
 }: BroadcastSchedulePlannerProps) {
   const minuteStep = preciseTime ? 1 : 30;
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
@@ -248,8 +250,9 @@ export function BroadcastSchedulePlanner({
   }
   const selectedInstantSet = new Set(normalizedValue.map(getBroadcastSlotInstantKey));
   const pickedDaySet = new Set(pickedDayKeys);
-  const minimumTime = liveNowMs + 30_000;
-  const futureSlots = normalizedValue.filter((slot) => new Date(slot).getTime() >= minimumTime);
+  const minimumTime = liveNowMs + minimumLeadMs;
+  // FLAG: The lead window blocks new selections; keep saved imminent selections visible.
+  const futureSlots = normalizedValue.filter((slot) => new Date(slot).getTime() >= liveNowMs);
   const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
   const pickedDayLabel = formatCountLabel(pickedDayKeys.length, 'день', 'дня', 'дней');
   const pickedDaySummary = formatDaySummary(pickedDayKeys);
@@ -1074,7 +1077,9 @@ export function BroadcastSchedulePlanner({
       const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
       return shouldAdd
         ? sortAndUniqueBroadcastSlots([...currentSlots, slotIso])
-        : currentSlots.filter((slot) => slot !== slotIso);
+        : currentSlots.filter(
+            (slot) => getBroadcastSlotInstantKey(slot) !== getBroadcastSlotInstantKey(slotIso),
+          );
     });
     maxImpact(shouldAdd ? 'light' : 'soft');
   }
