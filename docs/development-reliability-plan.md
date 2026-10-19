@@ -104,6 +104,49 @@ checks. Read-only monitoring may continue independently. Finish the stage before
 runtime workstream unless a dependency or production incident requires it. Reuse a suitable clean
 checkout; never change a checkout while its validation, deployment or monitor wrapper is running.
 
+### Incident Delivery
+
+An active user-facing incident takes priority over optional refactoring. Record one next recovery
+result, the exact blocking gate, its owner and the next executable action in the existing private
+task record. Classify additional findings as either required for that action or follow-up work.
+Before another diagnostic, state which unresolved gate its result can change. Reuse the reviewed
+command, collector and evidence already available; introduce a new adapter only for a demonstrated
+gap in that gate. Do not restart planning merely because the context was compacted.
+
+Use the first bounded diagnostic pass to select a minimum safe recovery path and name its remaining
+gates. If it cannot establish a path, report the concrete missing evidence and the next bounded
+probe. At each completed stage, check whether the next action advances that recovery result.
+Elapsed time without a smaller scope, a resolved gate or a deployed correction requires narrowing
+the investigation and explaining the blocker, rather than expanding the plan. An observation of
+healthy infrastructure does not close a complaint about blocked chats or missing publications.
+
+Before a long validation or commit/push wrapper, verify the actual public command and its argument
+forwarding, existence and effective CI selection of new native suites, and fixture cleanup/order
+compatibility with the affected existing suites. Run the focused cases through those public entry
+points first. A proposed test list or a successful mocked case does not establish native coverage.
+After a failure, reproduce and fix its narrow cause before another broad attempt. Do not interrupt
+a valid broad run for unrelated improvements; interruption is warranted when its inputs, safety or
+required coverage are invalid. Preserve the actual exit and cleanup proof when it is interrupted.
+
+One observer owns each long operation or CI run. It records the latest successful sample, deadline
+and terminal outcome in the existing task record; other agents consume that evidence instead of
+starting duplicate polling or collectors. When waiting is the only release gate, continue only
+independent work that cannot invalidate the selected source or delay the ready release. Status
+updates should state new evidence, the remaining blocker and the next action; distinguish an
+estimate from a measured duration.
+
+Replace the current status when a stage finishes or the selected SHA changes. Move the completed
+chronology out of current fields, keeping its evidence links in a dated record. At handoff there
+must be one current stage, one selected revision and no stale RUNNING or old-head CI fields.
+
+Evaluate the next stage by time to the first verified recovery, first-pass validation, repeated
+failures of the same cause and diagnostics that resolved a named gate. Aim for one successful
+broad pass after focused validation and no repeat of a known failure. These are process targets,
+not permission to skip exact-SHA CI/CodeQL, native regressions, required scope authorization,
+deploy locks, rollback compatibility or unknown-effect fences. The
+[19 October review](development/agent-incident-throughput-review-2026-10-19.md) records the evidence
+behind these changes; its historical durations are not release estimates.
+
 `npm run check:docs` enforces this project's guidance budgets: 8 KiB for root entry notes,
 16 KiB per scoped entry and 24 KiB across an ancestor chain. These are repository maintenance
 limits, not a claim about Codex's configured context limit. Keep domain detail in linked references
