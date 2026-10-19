@@ -2969,7 +2969,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
             read({
               $queryRaw: jest
                 .fn()
-                .mockResolvedValueOnce([{ seq: 'off', bitmap: 'off', jit: 'off' }])
+                .mockResolvedValueOnce([{ seq: 'off', bitmap: 'off', sort: 'off', jit: 'off' }])
                 .mockResolvedValue([{ id: 'first' }, { id: 'second' }]),
             }),
         };

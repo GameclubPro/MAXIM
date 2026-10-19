@@ -22,7 +22,7 @@ describe('PublisherPublicationDispatchRunnerService', () => {
             .fn()
             .mockImplementation((query: Prisma.Sql) =>
               query.sql.includes('set_config(')
-                ? Promise.resolve([{ seq: 'off', bitmap: 'off', jit: 'off' }])
+                ? Promise.resolve([{ seq: 'off', bitmap: 'off', sort: 'off', jit: 'off' }])
                 : queryRaw(query),
             ),
         }),

@@ -1429,6 +1429,7 @@ for service in "${SERVICES_TO_BUILD[@]}"; do
     require_preloaded_target_image "$candidate_image_ref"
   else
     docker compose "${COMPOSE_FILES[@]}" build "$service"
+    verified_preloaded_target_image "$candidate_image_ref"
   fi
 done
 

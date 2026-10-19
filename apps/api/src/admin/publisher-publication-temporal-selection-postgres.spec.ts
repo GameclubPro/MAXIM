@@ -1231,21 +1231,25 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     });
     const settings = Prisma.sql`
       SELECT pg_backend_pid() AS pid, current_setting('enable_seqscan') AS seq,
-        current_setting('enable_bitmapscan') AS bitmap, current_setting('jit') AS jit
+        current_setting('enable_bitmapscan') AS bitmap, current_setting('enable_sort') AS sort,
+        current_setting('jit') AS jit
     `;
-    type Settings = { pid: number; seq: string; bitmap: string; jit: string };
+    type Settings = { pid: number; seq: string; bitmap: string; sort: string; jit: string };
     try {
       // FLAG: Use one disposable connection so a leaked session setting cannot hide
       // behind a different pooled connection. No production session is configured.
       await connection.$queryRaw(Prisma.sql`
         SELECT set_config('enable_seqscan', 'on', false),
-          set_config('enable_bitmapscan', 'on', false), set_config('jit', 'on', false)
+          set_config('enable_bitmapscan', 'on', false), set_config('enable_sort', 'on', false),
+          set_config('jit', 'on', false)
       `);
       const before = await connection.$queryRaw<Settings[]>(settings);
       const during = await withPublisherTemporalSelectionPlan(connection, (tx) =>
         tx.$queryRaw<Settings[]>(settings),
       );
-      expect(during).toEqual([{ pid: before[0]!.pid, seq: 'off', bitmap: 'off', jit: 'off' }]);
+      expect(during).toEqual([
+        { pid: before[0]!.pid, seq: 'off', bitmap: 'off', sort: 'off', jit: 'off' },
+      ]);
       expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
       await expect(
         withPublisherTemporalSelectionPlan(connection, async (tx) => {

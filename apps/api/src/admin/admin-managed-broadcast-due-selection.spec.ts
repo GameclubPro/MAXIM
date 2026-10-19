@@ -28,7 +28,7 @@ function selectionStore(queryRaw: jest.Mock): PublisherPublicationSelectionStore
           .fn()
           .mockImplementation((query: Prisma.Sql) =>
             query.sql.includes('set_config(')
-              ? Promise.resolve([{ seq: 'off', bitmap: 'off', jit: 'off' }])
+              ? Promise.resolve([{ seq: 'off', bitmap: 'off', sort: 'off', jit: 'off' }])
               : queryRaw(query),
           ),
       }),
@@ -237,7 +237,9 @@ describe('publication managed broadcast due selection', () => {
     expect(execution).toContain(
       'occurrence."content_revision_id" IS NOT DISTINCT FROM broadcast."publication_content_revision_id"',
     );
-    expect(execution.indexOf('publication."lifecycle"')).toBeLessThan(execution.indexOf('LIMIT'));
+    expect(execution.indexOf('publication."lifecycle"')).toBeLessThan(
+      execution.lastIndexOf('LIMIT'),
+    );
     expect(findMany).toHaveBeenCalledTimes(2);
     for (const [request] of findMany.mock.calls) {
       const where = request.where;

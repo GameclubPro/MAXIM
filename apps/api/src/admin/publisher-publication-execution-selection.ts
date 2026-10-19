@@ -13,6 +13,37 @@ function scheduleModesWhere(modes: readonly PublicationScheduleMode[]): Prisma.S
     : Prisma.sql`FALSE`;
 }
 
+export function buildPublisherExecutionParentJoins(): Prisma.Sql {
+  // FLAG: Preserve the due-broadcast stream before exact parent lookups. Without
+  // these barriers, stale statistics can reverse the joins and repeatedly scan
+  // the whole pending history while trying to avoid a recipient-wide sort.
+  // Each lookup is unique; the executor still owns final dispatch authority.
+  return Prisma.sql`
+    INNER JOIN LATERAL (
+      SELECT source."id", source."publication_id", source."schedule_id", source."dispatch_profile",
+        source."status", source."content_revision_id", source."schedule_revision", source."required_bot_id",
+        source."delivery_deadline_at", source."scheduled_at", source."retry_authorized_at",
+        source."retry_expires_at", source."dispatch_blocker_code", source."dispatch_blocked_at"
+      FROM "publication_occurrences" AS source
+      WHERE source."id" = broadcast."publication_occurrence_id"
+      LIMIT 1 OFFSET 0
+    ) AS occurrence ON TRUE
+    INNER JOIN LATERAL (
+      SELECT source."id", source."publication_id", source."mode", source."status", source."revision"
+      FROM "publication_schedules" AS source
+      WHERE source."id" = occurrence."schedule_id"
+      LIMIT 1 OFFSET 0
+    ) AS schedule ON TRUE
+    INNER JOIN LATERAL (
+      SELECT source."id", source."actor_user_id", source."audience_mode", source."dispatch_profile",
+        source."lifecycle", source."required_bot_id"
+      FROM "publications" AS source
+      WHERE source."id" = occurrence."publication_id"
+      LIMIT 1 OFFSET 0
+    ) AS publication ON TRUE
+  `;
+}
+
 export function buildPublisherCurrentExecutionScope(): Prisma.Sql {
   // FLAG: A stale content envelope only releases its lease at execution. Reject it before
   // LIMIT so it cannot indefinitely occupy the send budget; recovery keeps its own lanes.
@@ -66,10 +97,7 @@ export function buildPublisherExecutionDueQuery(options: {
   return Prisma.sql`
     SELECT broadcast."id"
     FROM "managed_broadcasts" AS broadcast
-    INNER JOIN "publication_occurrences" AS occurrence
-      ON occurrence."id" = broadcast."publication_occurrence_id"
-    INNER JOIN "publication_schedules" AS schedule ON schedule."id" = occurrence."schedule_id"
-    INNER JOIN "publications" AS publication ON publication."id" = occurrence."publication_id"
+    ${buildPublisherExecutionParentJoins()}
     WHERE broadcast."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
       AND broadcast."status" = 'ACTIVE'::"ManagedBroadcastStatus"
       AND broadcast."next_send_at" <= ${options.now}
@@ -101,10 +129,7 @@ export function buildPublisherPendingExecutionDeadlineQuery(options: {
   return Prisma.sql`
     SELECT broadcast."id", broadcast."next_send_at" AS "nextSendAt"
     FROM "managed_broadcasts" AS broadcast
-    INNER JOIN "publication_occurrences" AS occurrence
-      ON occurrence."id" = broadcast."publication_occurrence_id"
-    INNER JOIN "publication_schedules" AS schedule ON schedule."id" = occurrence."schedule_id"
-    INNER JOIN "publications" AS publication ON publication."id" = occurrence."publication_id"
+    ${buildPublisherExecutionParentJoins()}
     WHERE broadcast."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
       AND broadcast."status" = 'ACTIVE'::"ManagedBroadcastStatus"
       AND broadcast."next_send_at" IS NOT NULL AND broadcast."locked_at" IS NULL
