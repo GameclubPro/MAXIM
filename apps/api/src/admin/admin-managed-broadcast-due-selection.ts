@@ -523,6 +523,16 @@ export async function selectPublicationManagedBroadcastDueBatch(
               in: [ManagedBroadcastDeliveryStatus.PENDING, ManagedBroadcastDeliveryStatus.SENDING],
             },
           },
+          // FLAG: The runtime must wait for any fresh SEND owner. Exclude these parents
+          // before LIMIT so independent ready work can reach that same guarded executor.
+          ...(dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+            ? {
+                none: {
+                  status: ManagedBroadcastDeliveryStatus.SENDING,
+                  lockedAt: { gte: staleLockBefore },
+                },
+              }
+            : {}),
         },
       },
       orderBy,

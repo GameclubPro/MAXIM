@@ -230,6 +230,15 @@ export function buildPublisherTemporalExecutionDueQuery({
               ${ManagedBroadcastDeliveryStatus.SENDING}::"ManagedBroadcastDeliveryStatus"
             )
         )
+        -- FLAG: Match the runtime's broad fresh-SEND fence before the parent lookahead.
+        -- Classification after LIMIT cannot recover an independent ready 65th parent.
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "managed_broadcast_deliveries" AS fresh_delivery
+          WHERE fresh_delivery."broadcast_id" = broadcast."id"
+            AND fresh_delivery."status" = ${ManagedBroadcastDeliveryStatus.SENDING}::"ManagedBroadcastDeliveryStatus"
+            AND fresh_delivery."locked_at" >= ${staleLockBefore}
+        )
       ORDER BY broadcast."next_send_at" ASC, broadcast."created_at" ASC, broadcast."id" ASC
       LIMIT ${PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD}
     )

@@ -86,10 +86,14 @@ jobs:
         run: npm test --workspace @maxim/api -- 'message-duplicate|photo-duplicate-history.redis|rule-engine-media-cooldown.redis|traffic-protection.redis|publisher-dispatch-health.redis|chat-context-cache.redis|publisher-refresh-operation.redis|publisher-access-refresh.redis|commercial-ocr-admission.redis|marketplace-publisher-access.redis'
 
   postgres-races:
-    name: PostgreSQL Races
+    name: PostgreSQL Races (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # Include store setup, native fault/race suites and the final compatibility checks.
-    timeout-minutes: 30
+    # FLAG: Each shard owns its PostgreSQL/Redis services; race suites stay serial inside it.
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1/8, 2/8, 3/8, 4/8, 5/8, 6/8, 7/8, 8/8, compatibility]
     services:
       postgres:
         image: postgres:16
@@ -139,33 +143,50 @@ jobs:
       - name: Verify migrated database matches the schema
         run: npm run prisma:check:drift --workspace @maxim/api
       - name: Outcome cohort online migrations with native PostgreSQL
+        if: matrix.shard == 'compatibility'
         env:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: node --test --test-concurrency=1 infra/scripts/outcome-cohort-online.native.test.mjs infra/scripts/outcome-cohort-historical.native.test.mjs
       - name: Quarantine proof bounds with native PostgreSQL
+        if: matrix.shard == 'compatibility'
         env:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: node --test --test-concurrency=1 infra/scripts/webhook-quarantine-proof-audit.test.mjs infra/scripts/webhook-recovery-key-cohort-audit.test.mjs
-      - run: npm run test:postgres-races --workspace @maxim/api
+      - name: Native race shard
+        if: matrix.shard != 'compatibility'
+        run: npm run test:postgres-races --workspace @maxim/api -- -- --shard=${{ matrix.shard }} --json --outputFile=postgres-races.json
       - name: Check traffic policy revision and activation guards
+        if: matrix.shard == 'compatibility'
         env:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
         run: npm test --workspace @maxim/api -- traffic-protection.migration-integration.spec.ts
       - name: Participant report SQL, shared executor, journal and retention
+        if: matrix.shard == 'compatibility'
         env:
           TZ: UTC
         run: npm test --workspace @maxim/api -- 'moderation/reports/.*postgres'
       - name: Retention admission and receipt recovery with PostgreSQL
+        if: matrix.shard == 'compatibility'
         env:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
         run: npm run test:retention-storage --workspace @maxim/api
       - name: Conservative moderation rollup compatibility with PostgreSQL
+        if: matrix.shard == 'compatibility'
         env:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: npm test --workspace @maxim/api -- chat-moderation-rollup-postgres.spec.ts
+
+      - name: Save native shard result
+        if: always() && matrix.shard != 'compatibility'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postgres-races-${{ strategy.job-index }}-${{ github.sha }}
+          path: apps/api/postgres-races.json
+          if-no-files-found: warn
+          retention-days: 3
 
   commercial-benchmark:
     name: Commercial Benchmark

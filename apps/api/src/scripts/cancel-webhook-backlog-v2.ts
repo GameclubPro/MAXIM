@@ -554,9 +554,11 @@ for _, key in ipairs(KEYS) do
     end
     if size>262144 then return {0,'REDIS_OVERSIZE'} end
     bytes=bytes+size+string.len(key)+128
-    if bytes>1048576 then return {0,'REDIS_OVERSIZE'} end
   end
 end
+-- FLAG: An oversized aggregate is splittable, but every individual hash above must
+-- pass its original limits before any payload is returned for this ID page.
+if bytes>1048576 then return {2} end
 for _, key in ipairs(KEYS) do
   table.insert(reply,{key,redis.call('HGETALL',key),redis.call('EXISTS',key..':lock')})
 end
@@ -603,6 +605,35 @@ function decodeRedisReply(
   cost.queueBytes += Math.max(0, Buffer.byteLength(JSON.stringify(decoded)) - bytes);
   budget(cost, deadline);
   return decoded;
+}
+async function* readJobChunks(
+  redis: Redis,
+  queue: string,
+  ids: readonly string[],
+  cost: BacklogCancellationCostV2,
+  deadline: number,
+): AsyncGenerator<{ ids: readonly string[]; rows: RedisTextReply[] }> {
+  budget(cost, deadline);
+  const reply = decodeRedisReply(
+    await redis.callBuffer(
+      'EVAL',
+      readJobsLua,
+      ids.length,
+      ...ids.map((id) => `bull:${queue}:${id}`),
+    ),
+    cost,
+    deadline,
+  );
+  if (Array.isArray(reply) && reply.length === 1 && reply[0] === 2 && ids.length > 1) {
+    const middle = Math.ceil(ids.length / 2);
+    yield* readJobChunks(redis, queue, ids.slice(0, middle), cost, deadline);
+    yield* readJobChunks(redis, queue, ids.slice(middle), cost, deadline);
+    return;
+  }
+  if (!Array.isArray(reply) || reply[0] !== 1 || !Array.isArray(reply[1]))
+    fail(Array.isArray(reply) && reply[1] === 'REDIS_OVERSIZE' ? 'REDIS_OVERSIZE' : 'REDIS_SHAPE');
+  if (reply[1].length !== ids.length) fail('REDIS_SHAPE');
+  yield { ids, rows: reply[1] };
 }
 function parseObject(raw: string | undefined): Record<string, unknown> | null {
   if (raw === undefined) return null;
@@ -884,70 +915,55 @@ async function walkQueues(
           fail('REDIS_SHAPE');
         cost.queueJobs += ids.length;
         budget(cost, deadline);
-        const reply: unknown = decodeRedisReply(
-          await redis.callBuffer(
-            'EVAL',
-            readJobsLua,
-            ids.length,
-            ...ids.map((id) => `bull:${queue}:${id}`),
-          ),
-          cost,
-          deadline,
-        );
-        if (!Array.isArray(reply) || reply[0] !== 1 || !Array.isArray(reply[1])) {
-          fail(
-            Array.isArray(reply) && reply[1] === 'REDIS_OVERSIZE'
-              ? 'REDIS_OVERSIZE'
-              : 'REDIS_SHAPE',
-          );
-        }
         let removed = 0;
-        for (let index = 0; index < reply[1].length; index++) {
-          const item: unknown = reply[1][index];
-          if (!Array.isArray(item) || !Array.isArray(item[1]) || item[1].length % 2)
-            fail('REDIS_SHAPE');
-          if (!item[1].length) continue;
-          const hash = Object.create(null) as Record<string, string>;
-          for (let at = 0; at < item[1].length; at += 2) {
-            if (typeof item[1][at] !== 'string' || typeof item[1][at + 1] !== 'string')
+        for await (const chunk of readJobChunks(redis, queue, ids, cost, deadline)) {
+          for (let index = 0; index < chunk.rows.length; index++) {
+            const item: unknown = chunk.rows[index];
+            if (!Array.isArray(item) || !Array.isArray(item[1]) || item[1].length % 2)
               fail('REDIS_SHAPE');
-            hash[item[1][at]] = item[1][at + 1];
-          }
-          const job: RawJob = { queue, id: ids[index]!, hash, locked: item[2] === 1 };
-          const data = parseObject(hash.data);
-          const opts = parseObject(hash.opts);
-          if (
-            opts?.repeat ||
-            opts?.parent ||
-            job.hash.parentKey ||
-            job.hash.rjk ||
-            job.hash.repeatJobKey ||
-            (actionQueues.includes(queue) && protectedJob(data, opts))
-          ) {
-            kept.protectedJobs++;
-            continue;
-          }
-          if (data?.sendAutoDelete) {
-            const marker = object(data.sendAutoDelete);
+            if (!item[1].length) continue;
+            const hash = Object.create(null) as Record<string, string>;
+            for (let at = 0; at < item[1].length; at += 2) {
+              if (typeof item[1][at] !== 'string' || typeof item[1][at + 1] !== 'string')
+                fail('REDIS_SHAPE');
+              hash[item[1][at]] = item[1][at + 1];
+            }
+            const job: RawJob = { queue, id: chunk.ids[index]!, hash, locked: item[2] === 1 };
+            const data = parseObject(hash.data);
+            const opts = parseObject(hash.opts);
             if (
-              !marker ||
-              typeof marker.sourceChatId !== 'string' ||
-              typeof marker.sourceMessageId !== 'string' ||
-              !sources.has(
-                backlogCancellationDigestV2([marker.sourceChatId, marker.sourceMessageId]),
-              )
+              opts?.repeat ||
+              opts?.parent ||
+              job.hash.parentKey ||
+              job.hash.rjk ||
+              job.hash.repeatJobKey ||
+              (actionQueues.includes(queue) && protectedJob(data, opts))
             ) {
-              kept.unattributedJobs++;
+              kept.protectedJobs++;
               continue;
             }
-            deferredBytes += Buffer.byteLength(JSON.stringify(job));
-            if (
-              deferred.length >= limits.selectedChildren ||
-              selectedBytes + deferredBytes > 64 * 1024 * 1024
-            )
-              fail('BUDGET');
-            deferred.push(job);
-          } else if (await visit(job)) removed++;
+            if (data?.sendAutoDelete) {
+              const marker = object(data.sendAutoDelete);
+              if (
+                !marker ||
+                typeof marker.sourceChatId !== 'string' ||
+                typeof marker.sourceMessageId !== 'string' ||
+                !sources.has(
+                  backlogCancellationDigestV2([marker.sourceChatId, marker.sourceMessageId]),
+                )
+              ) {
+                kept.unattributedJobs++;
+                continue;
+              }
+              deferredBytes += Buffer.byteLength(JSON.stringify(job));
+              if (
+                deferred.length >= limits.selectedChildren ||
+                selectedBytes + deferredBytes > 64 * 1024 * 1024
+              )
+                fail('BUDGET');
+              deferred.push(job);
+            } else if (await visit(job)) removed++;
+          }
         }
         offset += ids.length - removed;
       }

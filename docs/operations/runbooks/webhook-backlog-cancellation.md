@@ -26,6 +26,12 @@ operation-child lookup index and deploy the new client to all fourteen API roles
 native auxiliaries, then obtain concrete stopped-fleet scope authorization before apply.
 Keep one primary recovery stage active.
 
+Queue inspection retains 100-ID pages and the existing 256 KiB per-job and 1 MiB
+reply ceilings. A page of individually valid large hashes is read in smaller
+chunks after metadata admission; it is not an oversized-job refusal. Individual
+oversize, malformed byte identities and incomplete evidence still refuse before
+payload inspection. Retained error fields remain part of the original snapshots.
+
 Create a private mode-0600 nomination with exactly `version: 2`, `id`, `cutoff`,
 `sourceSha`, `imageId`, and `rootIds`. The latter contains 1–128 sorted, unique receipt
 IDs. All v2 JSON uses recursively sorted object keys, UTF-8 and one final newline;
