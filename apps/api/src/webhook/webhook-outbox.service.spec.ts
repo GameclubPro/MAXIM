@@ -4606,10 +4606,11 @@ describe('WebhookOutboxService', () => {
         values: (query as SqlQuery).values ?? [],
       }),
     );
-    expect(queries).toHaveLength(10);
+    expect(queries).toHaveLength(11);
     const plannerSettings = queries.filter((query) => query.sql.startsWith('SET LOCAL'));
     expect(plannerSettings.map((query) => query.sql)).toEqual([
       'SET LOCAL enable_incremental_sort = off',
+      'SET LOCAL enable_bitmapscan = off',
     ]);
     const startExpiryRead = queries[0]!;
     expect(startExpiryRead.sql).toContain('candidate_ids AS MATERIALIZED');

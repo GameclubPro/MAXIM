@@ -3833,11 +3833,12 @@ export class WebhookOutboxService
     cutoff: Date,
   ): Promise<{ removed: number; scanned: number }> {
     const cursor = this.webhookRetentionCursors.get('failed');
-    // FLAG: A created-at-only index plus incremental sort can scan an entire tied
-    // timestamp group before LIMIT. Keep this one batch on the complete ordered index;
-    // the planner preference ends with the same transaction as the existing deletion.
-    const [, result] = await this.prisma.$transaction([
+    // FLAG: Incremental sort and bitmap scans can read an entire tied timestamp
+    // group before LIMIT. Keep this batch on the complete ordered index; both
+    // planner preferences end with the same transaction as the existing deletion.
+    const [, , result] = await this.prisma.$transaction([
       this.prisma.$executeRaw(Prisma.sql`SET LOCAL enable_incremental_sort = off`),
+      this.prisma.$executeRaw(Prisma.sql`SET LOCAL enable_bitmapscan = off`),
       this.prisma.$queryRaw<
         Array<{
           removed: number;
