@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Settings } from 'luxon';
 import { parsePublicationScheduleField } from '../src/features/publications/publication-schedule-fields';
 import {
   formatPublicationScheduleField,
@@ -120,6 +121,21 @@ test('publication schedule rejects malformed dates and DST gaps', () => {
   }
   assert.equal(formatPublicationScheduleField('invalid', 'UTC'), '');
   assert.equal(parsePublicationScheduleField('2026-09-08T09:00', 'Invalid/Zone'), null);
+});
+
+test('one-time DST overlap chooses the earlier instant regardless of the current season', () => {
+  const originalNow = Settings.now;
+  try {
+    for (const now of ['2026-07-01T00:00:00Z', '2026-12-01T00:00:00Z']) {
+      Settings.now = () => Date.parse(now);
+      assert.equal(
+        parsePublicationScheduleField('2030-10-27T02:30', 'Europe/Berlin'),
+        '2030-10-27T00:30:00.000Z',
+      );
+    }
+  } finally {
+    Settings.now = originalNow;
+  }
 });
 
 test('adding recurrence times skips duplicates and wraps around midnight', () => {

@@ -22,6 +22,7 @@ import {
   createEmptyPublicationDraft,
   createPublicationDuplicateDraft,
   createPublicationDraftFromDetails,
+  canPreservePublicationSchedule,
   getPublicationActionCapabilities,
   rebasePublicationDraft,
   publicationDraftNeedsVideoReselection,
@@ -538,5 +539,7 @@ export function usePublicationEditorSession({
     closeEditor,
     restoreCreateDraftAndClose,
     finishIsolatedPublication,
+    canPreservePublicationSchedule: (snapshot: PublicationDraft = draft) =>
+      canPreservePublicationSchedule(editorContext, isolatedDraftBaselineRef.current, snapshot),
   };
 }

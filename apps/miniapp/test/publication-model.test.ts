@@ -1326,7 +1326,7 @@ test('infers safe video MIME types when Android omits file.type', () => {
   assert.equal(inferPublicationVideoMimeType('clip.mp4', 'text/plain'), null);
 });
 
-test('drops past slots before opening a publication for editing', () => {
+test('filters new slots with the default margin and lets saved schedules retain imminent times', () => {
   const nowMs = Date.parse('2026-08-01T08:00:00.000Z');
   assert.deepEqual(
     filterFuturePublicationSlots(
@@ -1339,6 +1339,14 @@ test('drops past slots before opening a publication for editing', () => {
       nowMs,
     ),
     ['2026-08-01T08:30:00.000Z', '2026-08-02T08:30:00.000Z'],
+  );
+  assert.deepEqual(
+    filterFuturePublicationSlots(
+      ['2026-08-01T07:00:00.000Z', '2026-08-01T08:00:00.000Z', '2026-08-01T08:01:00.000Z'],
+      nowMs,
+      0,
+    ),
+    ['2026-08-01T08:00:00.000Z', '2026-08-01T08:01:00.000Z'],
   );
 });
 

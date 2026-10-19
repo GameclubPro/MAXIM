@@ -1186,6 +1186,22 @@ export function buildPublicationSchedule(
   };
 }
 
+export function canPreservePublicationSchedule(
+  context: PublicationEditorContext | null,
+  baseline: PublicationDraft | null,
+  draft: PublicationDraft,
+): boolean {
+  if (context?.kind !== 'edit' || context.editScope !== 'future' || !baseline) return false;
+  // FLAG: Content-only edits must preserve saved slots/deadlines, including dates hidden by the editor.
+  // Changing recipients requires schedule validation because the server rebuilds their deliveries.
+  const targetKeys = (value: PublicationDraft) => value.targets.map(getPublicationTargetKey).sort();
+  return (
+    JSON.stringify(targetKeys(baseline)) === JSON.stringify(targetKeys(draft)) &&
+    JSON.stringify(buildPublicationSchedule(baseline)) ===
+      JSON.stringify(buildPublicationSchedule(draft))
+  );
+}
+
 export function getPublicationExplicitSlotsLimitFeedback(
   draft: Pick<PublicationDraft, 'timingMode' | 'scheduleKind' | 'scheduledSlots'>,
 ): PublicationSaveFeedback | null {
@@ -1290,7 +1306,7 @@ export function createPublicationDraftFromDetails(
     schedule?.mode === 'once'
       ? [schedule.at]
       : schedule?.mode === 'slots'
-        ? filterFuturePublicationSlots(schedule.slots, nowMs)
+        ? filterFuturePublicationSlots(schedule.slots, nowMs, 0)
         : fallback.scheduledSlots;
   const recurrence =
     schedule?.mode === 'recurrence'
@@ -1343,8 +1359,9 @@ export function createPublicationDraftFromDetails(
 export function filterFuturePublicationSlots(
   slots: readonly string[],
   nowMs = Date.now(),
+  minDelayMs = PUBLICATION_MIN_SCHEDULE_DELAY_MS,
 ): string[] {
-  const minTime = nowMs + PUBLICATION_MIN_SCHEDULE_DELAY_MS;
+  const minTime = nowMs + minDelayMs;
   return sortAndUniqueBroadcastSlots([...slots]).filter((slot) => {
     const parsed = Date.parse(slot);
     return Number.isFinite(parsed) && parsed >= minTime;

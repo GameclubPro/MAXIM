@@ -62,6 +62,8 @@ export async function cancelPublicationDeliveryBeforeStoppedDispatch(
         schedule: { select: { id: true, revision: true, status: true, mode: true, rule: true } },
       },
     });
+    // FLAG: Read recurrence supersession on this transaction's connection. A calendar writer
+    // waiting on our lock may already occupy the only other Publisher pool connection.
     if (
       !occurrence ||
       occurrence.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
@@ -70,7 +72,7 @@ export async function cancelPublicationDeliveryBeforeStoppedDispatch(
       (occurrence.schedule.status !== PublicationScheduleStatus.ACTIVE &&
         occurrence.schedule.status !== PublicationScheduleStatus.ERROR) ||
       occurrence.schedule.revision !== occurrence.scheduleRevision ||
-      !(await isPublicationOccurrenceWindowClosed(prisma, occurrence)) ||
+      !(await isPublicationOccurrenceWindowClosed(tx, occurrence)) ||
       !(
         (occurrence.status === PublicationOccurrenceStatus.FAILED &&
           occurrence.dispatchBlockerCode === PUBLISHER_MISSED_WINDOW_BLOCKER_CODE) ||
