@@ -47,6 +47,52 @@ No report outcome authorizes bulk retry or recreating a failed publication as a 
 This command makes no MAX calls, runs no publication workers and changes no queue or
 application state. Use normal product authentication for any separately reviewed action.
 
+## Exact scheduled-minute investigation
+
+For a reported missing post, select one exact numeric actor, one negative chat ID and
+the first UTC minute. The scope is always that minute and the following minute:
+
+```bash
+./infra/scripts/vps-connect.sh postgres-audit publisher-slots ACTOR_ID NEGATIVE_CHAT_ID YYYY-MM-DDTHH:MM:00Z --explain
+./infra/scripts/vps-connect.sh postgres-audit publisher-slots ACTOR_ID NEGATIVE_CHAT_ID YYYY-MM-DDTHH:MM:00Z
+```
+
+First synchronize the reviewed exact green tooling revision through the normal deploy
+wrapper's `--plan` path, then review `postgres-audit-provision` preview and apply its
+metadata grants. This adds nineteen exact columns to the existing forty-three-column
+publication group. Older schemas retain zero additive grants; a partial group fails
+closed. Run the plain plan and report sequentially through the catalog. It retains the
+shared audit lock and existing read-only/session/wall/output limits. This tooling-only
+change requires no application recreation, migrations or queue changes.
+
+The selector checks all seven occurrence statuses, including SENT, PARTIAL and CANCELED.
+Each of fourteen literal status/minute index heads contributes at most 32 rows plus
+one truncation sentinel **before** actor and exact-target filters. Parent/schedule/access
+lookups use bounded primary-key probes; the target uses its exact unique key. Each
+matched occurrence contributes at most eight latest deliveries plus one sentinel,
+also **before** the requested target filter. Index definitions, key types, enum values,
+ordering, opclasses and collations are checked before execution. Plain `--explain`
+uses internal scope parameters so its plan does not expose actor/chat values.
+
+`source_complete=false` means more source rows existed than were inspected. A zero
+match then proves only that the capped source sample did not contain a match.
+`deliveries_complete=false` means the target may be outside the first eight deliveries;
+an empty `target_deliveries` list does not prove absence. `actor_candidates` retains
+bounded actor-owned slots whose saved target is missing, including DYNAMIC/all-audience
+intent. It is not proof of the actual resolved audience. A complete zero actor match
+cannot distinguish an unsaved request, draft without an occurrence, a different date,
+or a different actor. Such cases require authenticated product evidence.
+
+Rows retain lifecycle, schedule status (including ERROR), cancellation/blocker codes,
+revision agreement, saved deadline/retry/lock clocks, attempts and recorded-receipt
+presence. Unknown saved reasons become `other`; identifiers, tokens, content and raw
+errors are excluded. These are current saved metadata, not historical authority or
+execution traces. Execution envelopes and the action ledger are outside this selector;
+zero delivery rows cannot establish whether handoff or an envelope exists.
+`capabilities_and_activation_checked=false` and `client_visibility=not_observed` remain
+explicit: a receipt or SENT status does not prove the client saw a post. Neither the
+report nor its plan authorizes replay, cancellation, permission repair or another SEND.
+
 For a fresh Publisher identity and webhook-target check, use the built standalone probe:
 
 ```bash

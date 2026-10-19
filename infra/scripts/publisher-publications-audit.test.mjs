@@ -11,12 +11,62 @@ import {
   PUBLISHER_PUBLICATION_AUDIT_COLUMNS,
 } from './publisher-publications-audit.mjs';
 
-const fixture = readFileSync(
-  resolve(import.meta.dirname, 'test-fixtures/publisher-publications.sql'),
-  'utf8',
-);
+// FLAG: Model Prisma TIMESTAMP(3) and seed UTC clocks explicitly. The timezone
+// regression cases override this baseline after inserting their UTC wall clocks.
+const fixture =
+  "SET TimeZone = 'UTC';\n" +
+  readFileSync(
+    resolve(import.meta.dirname, 'test-fixtures/publisher-publications.sql'),
+    'utf8',
+  ).replaceAll('TIMESTAMPTZ', 'TIMESTAMP(3)');
 const query = buildPublisherPublicationsAuditSql();
 const readinessQuery = (sql) => sql.slice(0, sql.indexOf('\\gset'));
+
+test('Prisma UTC clocks preserve due selection, age, access and expiry across session timezones', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`
+    INSERT INTO publications VALUES ('private-p','private-actor','ACTIVE','SNAPSHOT','SELECTED','PUBLIK_V1','private-bot',NULL);
+    INSERT INTO publication_schedules VALUES ('private-s','ONCE','ACTIVE',1,'{}');
+    INSERT INTO publication_occurrences VALUES
+      ('private-due','private-p','private-s','SCHEDULED',(statement_timestamp() AT TIME ZONE 'UTC')-interval '2 minutes','PUBLIK_V1','private-bot',NULL,NULL),
+      ('private-future','private-p','private-s','SCHEDULED',(statement_timestamp() AT TIME ZONE 'UTC')+interval '2 minutes','PUBLIK_V1','private-bot',NULL,NULL);
+    INSERT INTO publication_targets VALUES ('private-p','private-chat','CHANNEL',0);
+    INSERT INTO chats VALUES ('private-chat','CHANNEL',NULL);
+    INSERT INTO publisher_entity_bindings(chat_id,publisher_bot_id,status,bot_access_state)
+      VALUES ('private-chat','private-bot','ACTIVE','CONFIRMED_ADMIN');
+    INSERT INTO managed_bot_chat_catalog VALUES ('private-bot','private-chat','ACTIVE','CHANNEL',NULL);
+    INSERT INTO managed_entity_access_edges(chat_id,user_id,bot_id,state,user_role,entity_type)
+      VALUES ('private-chat','private-actor','private-bot','GRANTED','ADMIN','CHANNEL');
+  `);
+  for (const zone of ['UTC', 'Asia/Tokyo', 'America/Los_Angeles']) {
+    await db.query("SELECT set_config('TimeZone',$1,false)", [zone]);
+    for (const [checkedOffset, quarantineOffset, expiryOffset, expected, unexpired] of [
+      ['1 minute', null, '1 minute', 'bot_access_unconfirmed', true],
+      ['-1 minute', null, '-1 minute', 'metadata_ready', false],
+      ['-2 days', '1 minute', '1 minute', 'route_quarantined', true],
+      ['-2 days', '-1 minute', '-1 minute', 'metadata_ready', false],
+    ]) {
+      await db.exec(`UPDATE publisher_entity_bindings SET
+        bot_access_checked_at=(statement_timestamp() AT TIME ZONE 'UTC')+interval '${checkedOffset}',
+        send_route_quarantined_until=${quarantineOffset ? `(statement_timestamp() AT TIME ZONE 'UTC')+interval '${quarantineOffset}'` : 'NULL'};
+        UPDATE managed_entity_access_edges SET expires_at=(statement_timestamp() AT TIME ZONE 'UTC')+interval '${expiryOffset}';`);
+      const result = (await db.query(query)).rows[0].json_build_object;
+      assert.equal(result.occurrences.length, 1, zone);
+      assert.equal(result.occurrences[0].sampled, 1, zone);
+      assert.ok(
+        result.occurrences[0].oldest_age_seconds >= 120 &&
+          result.occurrences[0].oldest_age_seconds <= 140,
+        JSON.stringify(result.occurrences),
+      );
+      assert.equal(result.target_reasons.length, 1, zone);
+      assert.equal(result.target_reasons[0].reason, expected, zone);
+      assert.equal(result.target_reasons[0].edge_unexpired, unexpired, zone);
+      assert.doesNotMatch(JSON.stringify(result), /private-/u);
+    }
+  }
+});
 
 test('publication audit classifies exact-bot access without exposing content or identities', async (t) => {
   const db = new PGlite();

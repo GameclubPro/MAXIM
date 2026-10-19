@@ -2641,6 +2641,45 @@ test('Publisher publication audit uses only fixed bounded SQL and an optional pl
   );
 });
 
+test('Publisher slot audit validates exact arguments and keeps fixed session limits and caps', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const args = [
+    'publisher-slots',
+    '111222333',
+    '-77700011122233',
+    '2026-10-19T21:29:00Z',
+    '--explain',
+  ];
+  const result = runAudit(data, args);
+  assert.equal(result.status, 0, result.stderr);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /publisher_slot_privileges_ready/u);
+  assert.match(sql, /present = 19/u);
+  assert.match(sql, /publisher_publication_audit_ready/u);
+  assert.match(sql, /publisher_slot_indexes_ready/u);
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\) WITH scope_params/u);
+  assert.equal(
+    (sql.match(/ORDER BY dispatch_profile,status,scheduled_at LIMIT 33/gu) ?? []).length,
+    14,
+  );
+  assert.match(sql, /ORDER BY created_at DESC,id DESC LIMIT 9/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /search_path=pg_catalog,public,pg_temp/u);
+  assert.doesNotMatch(sql, /EXPLAIN ANALYZE|raw_payload|publisher_dialog_context/u);
+  assert.equal(runConnect(data, ['postgres-audit', ...args]).status, 0);
+  for (const invalid of [
+    ['publisher-slots', '111222333', '-77700011122233', '2026-10-19T21:29:01Z'],
+    ['publisher-slots', '111222333', '77700011122233', '2026-10-19T21:29:00Z'],
+    ['publisher-slots', '111222333', '-77700011122233', '2026-10-19T21:29:00Z', '--apply'],
+    ['publisher-slots', '111222333', '-77700011122233'],
+  ]) {
+    assert.notEqual(runAudit(data, invalid).status, 0);
+    assert.notEqual(runConnect(data, ['postgres-audit', ...invalid]).status, 0);
+  }
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /AS publisher_slot_indexes_ready/u);
+});
+
 test('duplicate audit uses fixed windows and bounds every source before aggregation', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

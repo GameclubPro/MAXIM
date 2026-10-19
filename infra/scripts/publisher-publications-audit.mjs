@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { PUBLISHER_SLOT_AUDIT_COLUMNS } from './publisher-slot-audit.mjs';
 
 export const PUBLISHER_PUBLICATION_AUDIT_COLUMNS = {
   publications: [
@@ -45,10 +46,19 @@ export const PUBLISHER_PUBLICATION_AUDIT_COLUMNS = {
 };
 
 export function buildPublisherPublicationPrivilegesSql(requireAll = false) {
-  const allowed = Object.entries(PUBLISHER_PUBLICATION_AUDIT_COLUMNS)
+  const allowedColumns = Object.fromEntries(
+    Object.entries(PUBLISHER_PUBLICATION_AUDIT_COLUMNS).map(([table, columns]) => [
+      table,
+      [...columns, ...(PUBLISHER_SLOT_AUDIT_COLUMNS[table] ?? [])],
+    ]),
+  );
+  const allowed = Object.entries(allowedColumns)
     .flatMap(([table, columns]) => columns.map((column) => `('${table}', '${column}')`))
     .join(',\n');
-  return `WITH allowed(table_name, column_name) AS (VALUES ${allowed})
+  const required = Object.entries(PUBLISHER_PUBLICATION_AUDIT_COLUMNS)
+    .flatMap(([table, columns]) => columns.map((column) => `('${table}', '${column}')`))
+    .join(',');
+  return `WITH allowed(table_name, column_name) AS (VALUES ${allowed}), required(table_name, column_name) AS (VALUES ${required})
 SELECT NOT EXISTS (
   SELECT 1 FROM pg_class relation
   JOIN pg_namespace ns ON ns.oid = relation.relnamespace
@@ -59,7 +69,7 @@ SELECT NOT EXISTS (
     AND NOT EXISTS (SELECT 1 FROM allowed
       WHERE table_name = relation.relname AND column_name = attribute.attname)
 ) AND (${requireAll ? 'true' : 'false'} = false OR NOT EXISTS (
-  SELECT 1 FROM allowed
+  SELECT 1 FROM required allowed
   LEFT JOIN pg_class relation ON relation.oid = to_regclass('public.' || allowed.table_name)
   LEFT JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
     AND attribute.attname = allowed.column_name AND NOT attribute.attisdropped
@@ -115,7 +125,7 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
       required_bot_id, dispatch_blocker_code
     FROM publication_occurrences
     WHERE dispatch_profile = 'PUBLIK_V1'::"PublicationDispatchProfile"
-      AND status = statuses.status AND scheduled_at <= statement_timestamp()
+      AND status = statuses.status AND scheduled_at <= (statement_timestamp() AT TIME ZONE 'UTC')
     ORDER BY scheduled_at ASC
     LIMIT 33
   ) sample
@@ -168,20 +178,25 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
       WHEN chat.entity_type IS DISTINCT FROM t.entity_type THEN 'chat_type_mismatch'
       WHEN b.bot_access_state::text NOT IN ('CONFIRMED_ADMIN', 'CONFIRMED_OWNER')
         THEN 'bot_not_admin'
-      WHEN b.bot_access_checked_at IS NULL OR b.bot_access_checked_at > statement_timestamp()
+      WHEN b.bot_access_checked_at IS NULL OR b.bot_access_checked_at > (statement_timestamp() AT TIME ZONE 'UTC')
         THEN 'bot_access_unconfirmed'
-      WHEN b.send_route_quarantined_until > statement_timestamp() THEN 'route_quarantined'
+      WHEN b.send_route_quarantined_until > (statement_timestamp() AT TIME ZONE 'UTC') THEN 'route_quarantined'
       ELSE 'metadata_ready'
     END AS reason,
     CASE WHEN e.denied_reason IN (
       'publisher_user_not_admin', 'publisher_user_access_unavailable', 'publisher_actor_is_bot',
       'publisher_actor_type_unverified', 'publisher_bot_not_admin', 'publisher_candidate_pending'
     ) THEN e.denied_reason WHEN e.denied_reason IS NULL THEN 'none' ELSE 'other' END AS denial,
-    e.expires_at > statement_timestamp() AS edge_unexpired
+    e.expires_at > (statement_timestamp() AT TIME ZONE 'UTC') AS edge_unexpired
   FROM target_sample t
   LEFT JOIN publisher_entity_bindings b ON b.chat_id = t.target_chat_id
   LEFT JOIN managed_entity_publication_policies policy ON policy.chat_id = t.target_chat_id
-  LEFT JOIN managed_bot_chat_catalog c ON c.bot_id = t.required_bot_id AND c.chat_id = t.target_chat_id
+  LEFT JOIN LATERAL (
+    SELECT chat_id,status,entity_type FROM managed_bot_chat_catalog
+    WHERE (bot_id,chat_id)>=(t.required_bot_id,t.target_chat_id)
+      AND (bot_id,chat_id)<=(t.required_bot_id,t.target_chat_id)
+    ORDER BY bot_id,chat_id LIMIT 1 OFFSET 0
+  ) c ON true
   LEFT JOIN managed_entity_access_edges e ON e.chat_id = t.target_chat_id
     AND e.user_id = t.actor_user_id AND e.bot_id = t.required_bot_id
   LEFT JOIN chats chat ON chat.id = t.target_chat_id
@@ -199,7 +214,7 @@ export function buildPublisherPublicationsAuditSql(explain = false) {
   ) ranked WHERE delivery_rank <= 8
 ), occurrence_counts AS (
   SELECT status, least(count(*), 32) AS sampled, count(*) > 32 AS saturated,
-    max(statement_timestamp() - scheduled_at) AS oldest_age
+    max((statement_timestamp() AT TIME ZONE 'UTC') - scheduled_at) AS oldest_age
   FROM occurrence_candidates GROUP BY status
 ), blocker_counts AS (
   SELECT status AS occurrence_status,

@@ -44,6 +44,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
+  ./infra/scripts/vps-postgres-audit.sh publisher-slots <actor> <chat> <UTC-minute> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-access-census [--explain]
   ./infra/scripts/vps-postgres-audit.sh storage [--explain]
   ./infra/scripts/vps-postgres-audit.sh multibot-preparation [--explain]
@@ -100,6 +101,7 @@ MESSAGE_WINDOW_FROM=''
 WEBHOOK_COHORT_ARGS=()
 RECOVERY_KEY_COHORT_ARGS=()
 SOURCE_ENVELOPE_OWNER=''
+PUBLISHER_SLOT_ARGS=()
 case "$AUDIT_MODE" in
   chat-message-window)
     if [[ $# -lt 3 || $# -gt 4 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
@@ -142,6 +144,10 @@ case "$AUDIT_MODE" in
       exit 2
     fi
     RULES_CLEANUP_EXPLAIN="${2:-}"
+    ;;
+  publisher-slots)
+    PUBLISHER_SLOT_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/publisher-slot-audit.mjs" "${PUBLISHER_SLOT_ARGS[@]}" >/dev/null || exit 2
     ;;
   webhook-source-envelope)
     if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "$3" != '--explain' ) ]]; then usage; exit 2; fi
@@ -203,7 +209,7 @@ esac
 
 # FLAG: This report attests public relations. Pin resolution before the shared
 # privilege admission as well as the report, including pg_temp last explicitly.
-if [[ "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' ]]; then
+if [[ "$AUDIT_MODE" == 'publisher-slots' || "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' ]]; then
   POSTGRES_AUDIT_OPTIONS+=' -c search_path=pg_catalog,public,pg_temp'
 fi
 
@@ -2351,10 +2357,13 @@ emit_legacy_default_webhook_audit() {
 emit_sql() {
   emit_prelude
   local publication_privilege_args=(--privileges)
-  if [[ "$AUDIT_MODE" == 'publisher-publications' ]]; then
+  if [[ "$AUDIT_MODE" == 'publisher-publications' || "$AUDIT_MODE" == 'publisher-slots' ]]; then
     publication_privilege_args+=(--require-all)
   fi
   node "$ROOT_DIR/infra/scripts/publisher-publications-audit.mjs" "${publication_privilege_args[@]}"
+  local slot_privilege_args=(--privileges)
+  if [[ "$AUDIT_MODE" == 'publisher-slots' ]]; then slot_privilege_args+=(--require-all); fi
+  node "$ROOT_DIR/infra/scripts/publisher-slot-audit.mjs" "${slot_privilege_args[@]}"
   local commercial_privilege_args=(--privileges)
   if [[ "$AUDIT_MODE" == 'commercial-quality' ]]; then
     commercial_privilege_args+=(--require-all)
@@ -2368,6 +2377,9 @@ emit_sql() {
   if [[ "$AUDIT_MODE" == 'webhook-quarantine' ]]; then quarantine_privilege_args+=(--require-all); fi
   node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "${quarantine_privilege_args[@]}"
   case "$AUDIT_MODE" in
+    publisher-slots)
+      node "$ROOT_DIR/infra/scripts/publisher-slot-audit.mjs" "${PUBLISHER_SLOT_ARGS[@]}"
+      ;;
     webhook-source-envelope)
       local source_envelope_args=("$SOURCE_ENVELOPE_OWNER")
       if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then source_envelope_args+=("$RULES_CLEANUP_EXPLAIN"); fi

@@ -89,6 +89,7 @@ Commands:
   postgres-audit rules-cleanup <chat-id> [--explain]
   postgres-audit publisher-comments <chat-id> [--explain]
   postgres-audit publisher-publications [--explain]
+  postgres-audit publisher-slots <actor> <chat> <UTC-minute> [--explain]
   postgres-audit publisher-access-census [--explain]
   postgres-audit storage [--explain]
   postgres-audit multibot-preparation [--explain]
@@ -560,6 +561,12 @@ ERROR
 
 postgres_audit() {
   local mode="${1:-all}"
+
+  if [[ "$mode" == 'publisher-slots' ]]; then
+    node "$ROOT_DIR/infra/scripts/publisher-slot-audit.mjs" "${@:2}" >/dev/null || return 2
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
 
   if [[ "$mode" == 'chat-message-window' ]]; then
     if [[ $# -lt 3 || $# -gt 4 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
