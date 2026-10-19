@@ -234,6 +234,17 @@ still needs its own complete stock proof. Semantic issue codes must match their
 finite producer descriptors; unknown, malformed, global or mixed infrastructure
 issues refuse the whole plan. All failed proofs, costs, calls and original
 deadlines remain in force.
+The modern forward reader refines an already rejected linked-media guard as
+`source_forward_linked_media_` plus a fixed `array`, `count`, `item`, `mixed`,
+`other`, or `image|photo|video|audio|share|sticker` with `strict|unproved` suffix.
+`strict` reports only the existing validator for that passive family; it grants
+no forward eligibility. The original forward guard still decides admission,
+and forwarded audio/sticker remain refused by both explicit and pristine paths.
+No payload value or unknown discriminator enters the code. The planner accepts
+these exact codes only at `sql:selected-source` for diagnostic splitting and
+retains the historical coarse code. Every rejected singleton stays untouched;
+mixed infrastructure issues still refuse the entire plan. Older readers that
+do not recognize a new diagnostic code must fail closed, never infer eligibility.
 An online action page can disappear while workers consume the live queue. Only a
 sole exact `ACTION_PAGE_UNPROVED` issue on one of the four known action queues
 permits a fresh full admission of the identical selection, with at most three

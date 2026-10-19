@@ -415,6 +415,23 @@ const fixedLinkedShapeDenialCodes = [
   'source_forward_linked_text_invalid',
   'source_forward_linked_markup',
   'source_forward_linked_media',
+  'source_forward_linked_media_array',
+  'source_forward_linked_media_count',
+  'source_forward_linked_media_item',
+  'source_forward_linked_media_mixed',
+  'source_forward_linked_media_other',
+  'source_forward_linked_media_image_strict',
+  'source_forward_linked_media_image_unproved',
+  'source_forward_linked_media_photo_strict',
+  'source_forward_linked_media_photo_unproved',
+  'source_forward_linked_media_video_strict',
+  'source_forward_linked_media_video_unproved',
+  'source_forward_linked_media_audio_strict',
+  'source_forward_linked_media_audio_unproved',
+  'source_forward_linked_media_share_strict',
+  'source_forward_linked_media_share_unproved',
+  'source_forward_linked_media_sticker_strict',
+  'source_forward_linked_media_sticker_unproved',
   'source_forward_objects',
   'source_forward_link_object',
   'source_forward_sender_null',
@@ -562,7 +579,12 @@ for (const code of fixedLinkedShapeDenialCodes)
     assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
   });
 
-for (const code of ['source_forward_shape', 'source_forward_sender_null', 'source_reply_shape'])
+for (const code of [
+  'source_forward_shape',
+  'source_forward_sender_null',
+  'source_reply_shape',
+  'source_forward_linked_media_audio_strict',
+])
   for (const [name, change] of [
     [
       'global SQL budget',

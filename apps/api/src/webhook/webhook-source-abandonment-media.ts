@@ -17,6 +17,46 @@ function onlyKeys(value: Record<string, unknown>, keys: readonly string[]): bool
 
 export type SourceAbandonmentContentPurpose = 'SOURCE_ABANDONMENT' | 'PRISTINE_OPERATOR_DISCARD_V1';
 
+export type SourceAbandonmentLinkedMediaRefusal =
+  | 'array'
+  | 'count'
+  | 'item'
+  | 'mixed'
+  | 'other'
+  | `${'image' | 'photo' | 'video' | 'audio' | 'share' | 'sticker'}_${'strict' | 'unproved'}`;
+
+// FLAG: Diagnose only an already rejected linked-media guard. A strict passive
+// family shape does not admit that family to forwards or pristine settlement.
+// Bound the complete array before inspection; expose fixed codes, never values.
+export function inspectSourceAbandonmentLinkedMediaRefusal(
+  value: unknown,
+): SourceAbandonmentLinkedMediaRefusal {
+  if (!Array.isArray(value)) return 'array';
+  if (value.length === 0 || value.length > 10) return 'count';
+  const items = value.map(record);
+  if (items.some((item) => !item)) return 'item';
+  if (items.length !== 1)
+    return new Set(items.map((item) => item?.type)).size > 1 ? 'mixed' : 'count';
+  const item = items[0]!;
+  switch (item.type) {
+    case 'image':
+    case 'photo':
+      return `${item.type}_${isLegacyImageAttachment(item) ? 'strict' : 'unproved'}`;
+    case 'video':
+      return isLegacyDirectMedia(value) ? 'video_strict' : 'video_unproved';
+    case 'audio':
+      return isSourceAbandonmentDirectMedia(value, undefined) ? 'audio_strict' : 'audio_unproved';
+    case 'share':
+      return isSourceAbandonmentDirectMedia(value, undefined) ? 'share_strict' : 'share_unproved';
+    case 'sticker':
+      return isSourceAbandonmentLinkedMedia(value, 'reply', 'SOURCE_ABANDONMENT')
+        ? 'sticker_strict'
+        : 'sticker_unproved';
+    default:
+      return 'other';
+  }
+}
+
 // FLAG: A linked attachment is passive source content, never an additional held
 // message or actor. Only explicit source abandonment admits one strict reply audio;
 // automatic pristine discard keeps its v6 shapes. No mixtures, nested payloads,

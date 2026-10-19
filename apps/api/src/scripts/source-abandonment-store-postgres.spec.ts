@@ -1975,6 +1975,85 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     );
   });
 
+  it.each(['audio', 'sticker'] as const)(
+    'reports strict forwarded %s through native admission without changing uncertainty or source authority',
+    async (kind) => {
+      const original = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+      const raw = structuredClone(original.rawPayload) as Record<string, unknown>;
+      const message = raw.message as Record<string, unknown>;
+      message.link = {
+        type: 'forward',
+        chat_id: '-independent-linked-chat',
+        sender: { user_id: 'independent-linked-author', is_bot: false },
+        message: {
+          mid: 'independent-linked-message',
+          text: '',
+          attachments: [
+            kind === 'audio'
+              ? {
+                  type: 'audio',
+                  payload: { url: 'https://example.com/audio', token: 'opaque-audio', id: 42 },
+                }
+              : {
+                  type: 'sticker',
+                  payload: { url: 'https://example.com/sticker', code: 'opaque-sticker' },
+                  width: 256,
+                  height: 256,
+                },
+          ],
+        },
+      };
+      const update = new WebhookParser().parse(raw, { botId: original.botId! });
+      expect(buildWebhookSemanticEventKey(update)).toBe(original.semanticKey);
+      const before = await db.webhookEvent.update({
+        where: { id: ownerId },
+        data: {
+          rawPayload: raw as Prisma.InputJsonValue,
+          normalizedPayload: JSON.parse(JSON.stringify(update)),
+        },
+      });
+      const claims = await db.webhookExecutionClaim.findMany({
+        where: { webhookEventId: ownerId },
+      });
+      const redisKeys = await redis.dbsize();
+      const admission = await db.$transaction(
+        (tx) =>
+          collectSourceAbandonmentAdmission(tx, redis, {
+            version: 1,
+            operation: 'admission_preview',
+            selection,
+            publisherBotId,
+            sourceSha: liveRequest.binding.sourceSha,
+            imageId: liveRequest.binding.imageId,
+          }),
+        { timeout: 30_000 },
+      );
+      expect(admission).toMatchObject({
+        decision: 'DENY',
+        sourceCoverageComplete: false,
+        applied: false,
+        activationAuthorized: false,
+        stoppingAuthorized: false,
+        selectedOwners: [],
+      });
+      expect(admission.issues).toEqual(
+        expect.arrayContaining([
+          { code: `source_forward_linked_media_${kind}_strict`, descriptor: 'sql:selected-source' },
+          { code: 'source_content_unproved', descriptor: 'sql:selected-source' },
+          { code: 'selected_owner_proof_incomplete', descriptor: 'sql:selected-source' },
+        ]),
+      );
+      expect(await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } })).toEqual(before);
+      expect(
+        await db.webhookExecutionClaim.findMany({ where: { webhookEventId: ownerId } }),
+      ).toEqual(claims);
+      expect(
+        await db.webhookSourceAbandonment.count({ where: { ownerWebhookEventId: ownerId } }),
+      ).toBe(0);
+      expect(await redis.dbsize()).toBe(redisKeys);
+    },
+  );
+
   it.each([false, true])(
     'installs once and reconciles immutable source proofs through a read-only SQL connection (forward=%s)',
     async (forward) => {
