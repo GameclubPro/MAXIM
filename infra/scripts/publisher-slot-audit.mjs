@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 
 export const PUBLISHER_SLOT_AUDIT_COLUMNS = {
   publication_occurrences: [
+    'content_revision_id',
     'schedule_revision',
     'delivery_deadline_at',
     'dispatch_blocked_at',
@@ -12,6 +13,8 @@ export const PUBLISHER_SLOT_AUDIT_COLUMNS = {
   ],
   managed_broadcast_deliveries: [
     'id',
+    'broadcast_id',
+    'content_revision_id',
     'target_chat_id',
     'bot_id',
     'required_bot_id',
@@ -23,6 +26,17 @@ export const PUBLISHER_SLOT_AUDIT_COLUMNS = {
     'lock_token',
     'sent_at',
     'last_error_code',
+  ],
+  managed_broadcasts: [
+    'id',
+    'publication_occurrence_id',
+    'publication_content_revision_id',
+    'status',
+    'next_send_at',
+    'locked_at',
+    'lock_token',
+    'dispatch_profile',
+    'required_bot_id',
   ],
 };
 const statuses = ['SCHEDULED', 'IN_PROGRESS', 'SENT', 'PARTIAL', 'FAILED', 'AMBIGUOUS', 'CANCELED'];
@@ -72,7 +86,7 @@ export function buildPublisherSlotPrivilegesSql(requireAll = false) {
     SELECT count(*) FILTER (WHERE a.attnum IS NOT NULL AND has_column_privilege('maxim_audit',r.oid,a.attnum,'SELECT')) AS present
     FROM required LEFT JOIN pg_class r ON r.oid=to_regclass('public.'||required.table_name)
     LEFT JOIN pg_attribute a ON a.attrelid=r.oid AND a.attname=required.column_name AND NOT a.attisdropped
-  ) SELECT present ${requireAll ? '= 19' : 'IN (0,19)'} AS publisher_slot_privileges_ready FROM grants \\gset
+  ) SELECT present ${requireAll ? '= 31' : 'IN (0,31)'} AS publisher_slot_privileges_ready FROM grants \\gset
 \\if :publisher_slot_privileges_ready
 \\else
 \\echo MAXIM_PUBLISHER_SLOT_PRIVILEGES_UNAVAILABLE
@@ -92,6 +106,7 @@ export function buildPublisherSlotIndexSql() {
     ],
     ['publications_pkey', 'publications', ['id'], true, [0]],
     ['publication_schedules_pkey', 'publication_schedules', ['id'], true, [0]],
+    ['managed_broadcasts_pkey', 'managed_broadcasts', ['id'], true, [0]],
     [
       'publication_targets_publication_target_key',
       'publication_targets',
@@ -176,7 +191,7 @@ export function buildPublisherSlotAuditSql(actor, chat, minute, explain = false)
       statuses.map(
         (status) => `(SELECT ${slot} AS slot,
     id,publication_id,schedule_id,status,scheduled_at,required_bot_id,dispatch_blocker_code,
-    schedule_revision,delivery_deadline_at,dispatch_blocked_at,retry_authorized_at,retry_expires_at,created_at,updated_at
+    content_revision_id,schedule_revision,delivery_deadline_at,dispatch_blocked_at,retry_authorized_at,retry_expires_at,created_at,updated_at
     FROM public.publication_occurrences
     WHERE (dispatch_profile,status,scheduled_at)>=('PUBLIK_V1'::"PublicationDispatchProfile",${literal(status)}::"PublicationOccurrenceStatus",
       ${literal(new Date(start + slot * 60_000).toISOString())}::timestamptz AT TIME ZONE 'UTC')
@@ -219,28 +234,42 @@ export function buildPublisherSlotAuditSql(actor, chat, minute, explain = false)
       WHERE (bot_id,chat_id)>=(o.required_bot_id,${chatParam}) AND (bot_id,chat_id)<=(o.required_bot_id,${chatParam})
       ORDER BY bot_id,chat_id LIMIT 1 OFFSET 0) c ON true
     LEFT JOIN LATERAL (SELECT chat_id,state,user_role,entity_type FROM public.managed_entity_access_edges WHERE chat_id=${chatParam} AND user_id=${actorParam} AND bot_id=o.required_bot_id LIMIT 1 OFFSET 0) e ON true),
-  delivery_heads AS MATERIALIZED (SELECT o.id AS occurrence_id,o.required_bot_id AS occurrence_bot,d.* FROM scoped o CROSS JOIN LATERAL (
-    SELECT id,target_chat_id,status,attempt_count,remote_message_id,created_at,bot_id,required_bot_id,dispatch_profile,
+  delivery_heads AS MATERIALIZED (SELECT o.id AS occurrence_id,o.required_bot_id AS occurrence_bot,o.content_revision_id AS occurrence_content,d.* FROM scoped o CROSS JOIN LATERAL (
+    SELECT id,broadcast_id,content_revision_id,target_chat_id,status,attempt_count,remote_message_id,created_at,bot_id,required_bot_id,dispatch_profile,
       next_attempt_at,wait_reason,dispatch_blocker_code,locked_at,lock_token,sent_at,last_error_code
     FROM public.managed_broadcast_deliveries WHERE publication_occurrence_id=o.id ORDER BY created_at DESC,id DESC LIMIT 9) d WHERE o.has_saved_target),
   delivery_counts AS MATERIALIZED (SELECT occurrence_id,count(*)>8 AS truncated,least(count(*),8)::integer AS sampled FROM delivery_heads GROUP BY occurrence_id),
   delivery_sample AS MATERIALIZED (SELECT * FROM (SELECT *,row_number() OVER(PARTITION BY occurrence_id ORDER BY created_at DESC,id DESC) AS ordinal FROM delivery_heads) ranked WHERE ordinal<=8),
-  deliveries AS MATERIALIZED (SELECT occurrence_id,status,attempt_count,remote_message_id IS NOT NULL AS has_remote_id,sent_at,
-    created_at,next_attempt_at,locked_at,lock_token IS NOT NULL AS has_lock,
-    ${reason('dispatch_blocker_code')} AS blocker,${reason('last_error_code')} AS saved_reason,
+  deliveries AS MATERIALIZED (SELECT d.occurrence_id,d.status,d.attempt_count,d.remote_message_id IS NOT NULL AS has_remote_id,d.sent_at,
+    d.created_at,d.next_attempt_at,d.locked_at,d.lock_token IS NOT NULL AS has_lock,
+    ${reason('d.dispatch_blocker_code')} AS blocker,${reason('d.last_error_code')} AS saved_reason,
     CASE WHEN wait_reason IS NULL THEN 'none' WHEN wait_reason IN ('local_capacity','max_rate_limit','circuit_open') THEN wait_reason ELSE 'other' END AS waiting,
-    coalesce(bot_id IS NOT NULL AND bot_id=required_bot_id AND bot_id=occurrence_bot AND dispatch_profile='PUBLIK_V1',false) AS route_metadata_matches
-    FROM delivery_sample WHERE target_chat_id=${chatParam}),
+    coalesce(d.bot_id IS NOT NULL AND d.bot_id=d.required_bot_id AND d.bot_id=d.occurrence_bot AND d.dispatch_profile='PUBLIK_V1',false) AS route_metadata_matches,
+    b.id IS NOT NULL AS envelope_present,b.status AS envelope_status,b.next_send_at AS envelope_next_send_at,
+    b.locked_at AS envelope_locked_at,b.lock_token IS NOT NULL AS envelope_has_lock,
+    extract(epoch FROM ((statement_timestamp() AT TIME ZONE 'UTC')-b.locked_at)) AS envelope_lock_age_seconds,
+    coalesce(b.dispatch_profile='PUBLIK_V1',false) AS envelope_profile_matches,
+    coalesce(b.required_bot_id=d.occurrence_bot,false) AS envelope_bot_matches,
+    coalesce(b.publication_occurrence_id=d.occurrence_id,false) AS envelope_occurrence_matches,
+    coalesce(b.publication_content_revision_id=d.occurrence_content AND d.content_revision_id=d.occurrence_content,false) AS content_revision_matches
+    FROM delivery_sample d LEFT JOIN LATERAL (SELECT id,publication_occurrence_id,publication_content_revision_id,
+      status,next_send_at,locked_at,lock_token,dispatch_profile,required_bot_id
+      FROM public.managed_broadcasts WHERE id=d.broadcast_id LIMIT 1 OFFSET 0) b ON true
+    WHERE d.target_chat_id=${chatParam}),
   report AS (SELECT f.slot,f.status,${reason('f.dispatch_blocker_code')} AS blocker,f.lifecycle,f.mode,f.schedule_status,
     f.schedule_revision=f.current_revision AS current_schedule_revision,f.access_reason,f.scheduled_at,f.created_at,f.updated_at,
     f.delivery_deadline_at,f.dispatch_blocked_at,f.retry_authorized_at,f.retry_expires_at,
     coalesce(dc.truncated,false) AS deliveries_truncated,coalesce(dc.sampled,0) AS delivery_sampled,
     coalesce((SELECT json_agg(json_build_object('status',d.status,'attempt_count',d.attempt_count,'has_recorded_remote_id',d.has_remote_id,
       'sent_at',d.sent_at,'created_at',d.created_at,'next_attempt_at',d.next_attempt_at,'locked_at',d.locked_at,'has_lock',d.has_lock,
-      'blocker',d.blocker,'saved_reason',d.saved_reason,'waiting',d.waiting,'route_metadata_matches',d.route_metadata_matches))
+      'blocker',d.blocker,'saved_reason',d.saved_reason,'waiting',d.waiting,'route_metadata_matches',d.route_metadata_matches,
+      'envelope_present',d.envelope_present,'envelope_status',d.envelope_status,'envelope_next_send_at',d.envelope_next_send_at,
+      'envelope_locked_at',d.envelope_locked_at,'envelope_has_lock',d.envelope_has_lock,'envelope_lock_age_seconds',d.envelope_lock_age_seconds,
+      'envelope_profile_matches',d.envelope_profile_matches,'envelope_bot_matches',d.envelope_bot_matches,
+      'envelope_occurrence_matches',d.envelope_occurrence_matches,'content_revision_matches',d.content_revision_matches))
       FROM deliveries d WHERE d.occurrence_id=f.id),'[]'::json) AS target_deliveries
     FROM facts f LEFT JOIN delivery_counts dc ON dc.occurrence_id=f.id WHERE f.has_saved_target)
-  SELECT json_build_object('schema_version',1,'audit','publisher_slots','observed_at',statement_timestamp() AT TIME ZONE 'UTC',
+  SELECT json_build_object('schema_version',2,'audit','publisher_slots','observed_at',statement_timestamp() AT TIME ZONE 'UTC',
     'window_start',${literal(minute)},'window_minutes',2,'read_only',true,'readiness_scope','metadata_only','client_visibility','not_observed','capabilities_and_activation_checked',false,
     'occurrence_cap_per_status_minute',32,'delivery_cap_per_occurrence',8,
     'source_complete',NOT EXISTS(SELECT 1 FROM counts WHERE truncated),'deliveries_complete',NOT EXISTS(SELECT 1 FROM delivery_counts WHERE truncated),

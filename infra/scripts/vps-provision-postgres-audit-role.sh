@@ -134,7 +134,7 @@ BEGIN
         'moderation_delete_intent_reasons',
         'publications', 'publication_schedules', 'publication_occurrences',
         'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-        'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
+        'managed_broadcast_deliveries', 'managed_broadcasts', 'chats', 'commercial_review_samples', '_prisma_migrations',
         'webhook_execution_claims', 'max_action_ledger'
       )
     GROUP BY table_name
@@ -263,23 +263,27 @@ DO $publisher_slot_grants$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM (VALUES
-      ('publication_occurrences', ARRAY['schedule_revision', 'delivery_deadline_at',
+      ('publication_occurrences', ARRAY['content_revision_id', 'schedule_revision', 'delivery_deadline_at',
         'dispatch_blocked_at', 'retry_authorized_at', 'retry_expires_at', 'created_at', 'updated_at']),
-      ('managed_broadcast_deliveries', ARRAY['id', 'target_chat_id', 'bot_id', 'required_bot_id',
+      ('managed_broadcast_deliveries', ARRAY['id', 'broadcast_id', 'content_revision_id', 'target_chat_id', 'bot_id', 'required_bot_id',
         'dispatch_profile', 'next_attempt_at', 'wait_reason', 'dispatch_blocker_code',
-        'locked_at', 'lock_token', 'sent_at', 'last_error_code'])
+        'locked_at', 'lock_token', 'sent_at', 'last_error_code']),
+      ('managed_broadcasts', ARRAY['id', 'publication_occurrence_id', 'publication_content_revision_id',
+        'status', 'next_send_at', 'locked_at', 'lock_token', 'dispatch_profile', 'required_bot_id'])
     ) required(table_name, columns)
     CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
     LEFT JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public.' || required.table_name)
       AND attribute.attname = expected.column_name AND attribute.attnum > 0 AND NOT attribute.attisdropped
     WHERE attribute.attnum IS NULL
   ) THEN
-    GRANT SELECT (schedule_revision, delivery_deadline_at, dispatch_blocked_at,
+    GRANT SELECT (content_revision_id, schedule_revision, delivery_deadline_at, dispatch_blocked_at,
       retry_authorized_at, retry_expires_at, created_at, updated_at)
       ON TABLE public.publication_occurrences TO maxim_audit;
-    GRANT SELECT (id, target_chat_id, bot_id, required_bot_id, dispatch_profile, next_attempt_at,
+    GRANT SELECT (id, broadcast_id, content_revision_id, target_chat_id, bot_id, required_bot_id, dispatch_profile, next_attempt_at,
       wait_reason, dispatch_blocker_code, locked_at, lock_token, sent_at, last_error_code)
       ON TABLE public.managed_broadcast_deliveries TO maxim_audit;
+    GRANT SELECT (id, publication_occurrence_id, publication_content_revision_id, status, next_send_at,
+      locked_at, lock_token, dispatch_profile, required_bot_id) ON TABLE public.managed_broadcasts TO maxim_audit;
   END IF;
 END
 $publisher_slot_grants$;
@@ -675,26 +679,28 @@ BEGIN
     WHERE grantee = 'maxim_audit' AND table_schema = 'public' AND privilege_type = 'SELECT'
       AND table_name IN ('publications', 'publication_schedules', 'publication_occurrences',
         'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-        'managed_broadcast_deliveries', 'chats')
-  ) NOT IN (43, 62) OR (
+        'managed_broadcast_deliveries', 'managed_broadcasts', 'chats')
+  ) NOT IN (43, 74) OR (
     SELECT count(*) FROM (VALUES
-      ('publication_occurrences', ARRAY['schedule_revision', 'delivery_deadline_at',
+      ('publication_occurrences', ARRAY['content_revision_id', 'schedule_revision', 'delivery_deadline_at',
         'dispatch_blocked_at', 'retry_authorized_at', 'retry_expires_at', 'created_at', 'updated_at']),
-      ('managed_broadcast_deliveries', ARRAY['id', 'target_chat_id', 'bot_id', 'required_bot_id',
+      ('managed_broadcast_deliveries', ARRAY['id', 'broadcast_id', 'content_revision_id', 'target_chat_id', 'bot_id', 'required_bot_id',
         'dispatch_profile', 'next_attempt_at', 'wait_reason', 'dispatch_blocker_code',
-        'locked_at', 'lock_token', 'sent_at', 'last_error_code'])
+        'locked_at', 'lock_token', 'sent_at', 'last_error_code']),
+      ('managed_broadcasts', ARRAY['id', 'publication_occurrence_id', 'publication_content_revision_id',
+        'status', 'next_send_at', 'locked_at', 'lock_token', 'dispatch_profile', 'required_bot_id'])
     ) required(table_name, columns)
     CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
     JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public.' || required.table_name)
       AND attribute.attname = expected.column_name AND attribute.attnum > 0 AND NOT attribute.attisdropped
     WHERE has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
-  ) NOT IN (0, 19) OR EXISTS (
+  ) NOT IN (0, 31) OR EXISTS (
     SELECT 1 FROM pg_class relation
     JOIN pg_namespace ns ON ns.oid = relation.relnamespace
     JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
     WHERE ns.nspname = 'public' AND relation.relname IN (
       'publications', 'publication_schedules', 'publication_occurrences', 'publication_targets',
-      'managed_entity_access_edges', 'managed_bot_chat_catalog', 'managed_broadcast_deliveries', 'chats')
+      'managed_entity_access_edges', 'managed_bot_chat_catalog', 'managed_broadcast_deliveries', 'managed_broadcasts', 'chats')
       AND attribute.attnum > 0 AND NOT attribute.attisdropped
       AND has_column_privilege('maxim_audit', relation.oid, attribute.attnum, 'SELECT')
       AND NOT (
@@ -703,7 +709,7 @@ BEGIN
         OR (relation.relname = 'publication_schedules' AND attribute.attname IN ('id', 'mode', 'status', 'revision'))
         OR (relation.relname = 'publication_occurrences' AND attribute.attname IN
           ('id', 'publication_id', 'schedule_id', 'status', 'scheduled_at', 'dispatch_profile', 'required_bot_id', 'dispatch_blocker_code',
-           'schedule_revision', 'delivery_deadline_at', 'dispatch_blocked_at', 'retry_authorized_at', 'retry_expires_at', 'created_at', 'updated_at'))
+           'content_revision_id', 'schedule_revision', 'delivery_deadline_at', 'dispatch_blocked_at', 'retry_authorized_at', 'retry_expires_at', 'created_at', 'updated_at'))
         OR (relation.relname = 'publication_targets' AND attribute.attname IN
           ('publication_id', 'target_chat_id', 'entity_type', 'position'))
         OR (relation.relname = 'managed_entity_access_edges' AND attribute.attname IN
@@ -711,8 +717,11 @@ BEGIN
         OR (relation.relname = 'managed_bot_chat_catalog' AND attribute.attname IN ('bot_id', 'chat_id', 'status', 'entity_type'))
         OR (relation.relname = 'managed_broadcast_deliveries' AND attribute.attname IN
           ('publication_occurrence_id', 'created_at', 'status', 'attempt_count', 'remote_message_id',
-           'id', 'target_chat_id', 'bot_id', 'required_bot_id', 'dispatch_profile', 'next_attempt_at',
+           'id', 'broadcast_id', 'content_revision_id', 'target_chat_id', 'bot_id', 'required_bot_id', 'dispatch_profile', 'next_attempt_at',
            'wait_reason', 'dispatch_blocker_code', 'locked_at', 'lock_token', 'sent_at', 'last_error_code'))
+        OR (relation.relname = 'managed_broadcasts' AND attribute.attname IN
+          ('id', 'publication_occurrence_id', 'publication_content_revision_id', 'status', 'next_send_at',
+           'locked_at', 'lock_token', 'dispatch_profile', 'required_bot_id'))
         OR (relation.relname = 'chats' AND attribute.attname IN ('id', 'entity_type'))
       )
   ) THEN
@@ -753,7 +762,7 @@ BEGIN
               'chat_rules', 'managed_polls', 'chat_bot_memberships', 'webhook_dependency_quarantines',
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-              'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
+              'managed_broadcast_deliveries', 'managed_broadcasts', 'chats', 'commercial_review_samples', '_prisma_migrations',
               'webhook_execution_claims', 'max_action_ledger',
               'chat_settings',
               'moderation_delete_intents',

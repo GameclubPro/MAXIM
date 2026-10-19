@@ -59,7 +59,7 @@ the first UTC minute. The scope is always that minute and the following minute:
 
 First synchronize the reviewed exact green tooling revision through the normal deploy
 wrapper's `--plan` path, then review `postgres-audit-provision` preview and apply its
-metadata grants. This adds nineteen exact columns to the existing forty-three-column
+metadata grants. This adds thirty-one exact columns to the existing forty-three-column
 publication group. Older schemas retain zero additive grants; a partial group fails
 closed. Run the plain plan and report sequentially through the catalog. It retains the
 shared audit lock and existing read-only/session/wall/output limits. This tooling-only
@@ -73,6 +73,12 @@ matched occurrence contributes at most eight latest deliveries plus one sentinel
 also **before** the requested target filter. Index definitions, key types, enum values,
 ordering, opclasses and collations are checked before execution. Plain `--explain`
 uses internal scope parameters so its plan does not expose actor/chat values.
+
+Each sampled delivery probes only its saved broadcast primary key. Schema v2 exposes
+the envelope's status, next-send time, lock presence/time/age and exact occurrence,
+content revision, profile and bot match flags. The comparison IDs, content and lock
+tokens never leave SQL. A pending delivery without attempts or a blocker does not
+establish readiness: its envelope can be stopped, locked, not yet due or mismatched.
 
 `source_complete=false` means more source rows existed than were inspected. A zero
 match then proves only that the capped source sample did not contain a match.

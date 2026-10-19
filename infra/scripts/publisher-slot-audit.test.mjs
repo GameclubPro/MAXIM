@@ -38,10 +38,15 @@ const fixture =
     ADD COLUMN retry_authorized_at TIMESTAMP(3), ADD COLUMN retry_expires_at TIMESTAMP(3),
     ADD COLUMN created_at TIMESTAMP(3) DEFAULT now(), ADD COLUMN updated_at TIMESTAMP(3) DEFAULT now();
   ALTER TABLE managed_broadcast_deliveries ADD COLUMN target_chat_id TEXT,
+    ADD COLUMN broadcast_id TEXT, ADD COLUMN content_revision_id TEXT,
     ADD COLUMN bot_id TEXT, ADD COLUMN required_bot_id TEXT,
     ADD COLUMN dispatch_profile "PublicationDispatchProfile", ADD COLUMN next_attempt_at TIMESTAMP(3),
     ADD COLUMN wait_reason TEXT, ADD COLUMN dispatch_blocker_code TEXT, ADD COLUMN locked_at TIMESTAMP(3),
     ADD COLUMN lock_token TEXT, ADD COLUMN sent_at TIMESTAMP(3), ADD COLUMN last_error_code TEXT;
+  CREATE TABLE managed_broadcasts (id TEXT PRIMARY KEY, publication_occurrence_id TEXT,
+    publication_content_revision_id TEXT, status TEXT, next_send_at TIMESTAMP(3),
+    locked_at TIMESTAMP(3), lock_token TEXT, dispatch_profile "PublicationDispatchProfile",
+    required_bot_id TEXT, text TEXT);
 `;
 const readiness = (sql) => sql.split('\\gset')[0];
 const query = buildPublisherSlotAuditSql(actor, chat, minute);
@@ -81,6 +86,11 @@ async function seed(db) {
     VALUES ('private-delivery','private-o-1','2026-10-19T21:29:02','AMBIGUOUS',2,'private-remote','${chat}',
       'private-bot','private-bot','PUBLIK_V1','2026-10-19T21:31:00','max_rate_limit','PUBLISHER_AUTH_PAUSED',
       '2026-10-19T21:29:01','private-lock',NULL,'private-unknown-error');
+    UPDATE publication_occurrences SET content_revision_id='private-revision';
+    UPDATE managed_broadcast_deliveries SET broadcast_id='private-envelope',content_revision_id='private-revision';
+    INSERT INTO managed_broadcasts VALUES ('private-envelope','private-o-1','private-revision','ACTIVE',
+      '2026-10-19T21:31:00',(statement_timestamp() AT TIME ZONE 'UTC')-interval '2 minutes',
+      'private-envelope-lock','PUBLIK_V1','private-bot','private-content');
   `);
 }
 
@@ -189,6 +199,18 @@ test('fixed slots include every status, ERROR/cancellation causes and bounded ac
   assert.equal(delivery.saved_reason, 'other');
   assert.equal(delivery.blocker, 'PUBLISHER_AUTH_PAUSED');
   assert.equal(delivery.route_metadata_matches, true);
+  assert.equal(delivery.envelope_present, true);
+  assert.equal(delivery.envelope_status, 'ACTIVE');
+  assert.equal(delivery.envelope_next_send_at, '2026-10-19T21:31:00');
+  assert.equal(delivery.envelope_has_lock, true);
+  assert.ok(delivery.envelope_lock_age_seconds >= 120);
+  for (const key of [
+    'envelope_profile_matches',
+    'envelope_bot_matches',
+    'envelope_occurrence_matches',
+    'content_revision_matches',
+  ])
+    assert.equal(delivery[key], true);
   assert.doesNotMatch(
     JSON.stringify(result),
     new RegExp(`private-|${actor}|${chat}|publication_id|occurrence_id|lock_token`, 'u'),
@@ -208,6 +230,38 @@ test('fixed slots include every status, ERROR/cancellation causes and bounded ac
     "UPDATE managed_entity_access_edges SET state='GRANTED'; UPDATE publisher_entity_bindings SET bot_access_state=NULL;",
   );
   assert.equal((await report(db)).rows[0].access_reason, 'bot_not_admin');
+});
+
+test('bounded envelope metadata distinguishes missing parent, locks and exact content/bot mismatches', async (t) => {
+  const db = await setup(t);
+  await seed(db);
+  const delivery = async () =>
+    (await report(db)).rows.find((row) => row.status === 'SCHEDULED').target_deliveries[0];
+  await db.exec(`UPDATE managed_broadcasts SET status='FAILED',publication_content_revision_id='private-changed',
+    required_bot_id='private-wrong-bot',dispatch_profile='LEGACY_ROUTED',publication_occurrence_id='private-wrong-occurrence',
+    locked_at=NULL;`);
+  const mismatched = await delivery();
+  assert.equal(mismatched.envelope_status, 'FAILED');
+  assert.equal(mismatched.envelope_has_lock, true);
+  assert.equal(mismatched.envelope_lock_age_seconds, null);
+  for (const key of [
+    'envelope_profile_matches',
+    'envelope_bot_matches',
+    'envelope_occurrence_matches',
+    'content_revision_matches',
+  ])
+    assert.equal(mismatched[key], false);
+  await db.exec(
+    "UPDATE managed_broadcasts SET publication_content_revision_id='private-revision'; UPDATE managed_broadcast_deliveries SET content_revision_id='private-stale-delivery';",
+  );
+  assert.equal((await delivery()).content_revision_matches, false);
+  await db.exec('DELETE FROM managed_broadcasts;');
+  assert.equal((await delivery()).envelope_present, false);
+  assert.equal((await delivery()).envelope_status, null);
+  assert.doesNotMatch(
+    JSON.stringify(await report(db)),
+    new RegExp(`private-|${actor}|${chat}|content_revision_id|broadcast_id|lock_token`, 'u'),
+  );
 });
 
 test('source and delivery sentinels precede actor/target filtering and preserve incomplete zero matches', async (t) => {
@@ -268,6 +322,7 @@ test('slot grants are optional zero-or-complete, require base metadata and deny 
     'SELECT title FROM publications',
     'SELECT rule FROM publication_schedules',
     'SELECT last_error FROM managed_broadcast_deliveries',
+    'SELECT text FROM managed_broadcasts',
     "UPDATE publication_occurrences SET status='SENT'",
   ])
     await assert.rejects(db.query(sql), /permission denied/u);
@@ -309,7 +364,7 @@ test('actual provisioner grants only complete slot metadata and rejects partial 
     await db.query(`SELECT count(*)::integer AS count FROM information_schema.role_column_grants
     WHERE grantee='maxim_audit' AND table_schema='public' AND privilege_type='SELECT'`)
   ).rows[0].count;
-  assert.equal(counts, 62);
+  assert.equal(counts, 74);
   await db.exec('REVOKE SELECT(schedule_revision) ON publication_occurrences FROM maxim_audit;');
   await assert.rejects(db.exec(assertion), /publication metadata privileges are not exact/u);
   await db.exec(grants);
@@ -319,7 +374,7 @@ test('actual provisioner grants only complete slot metadata and rejects partial 
   for (const [table, fields] of Object.entries(PUBLISHER_SLOT_AUDIT_COLUMNS))
     await db.exec(`REVOKE SELECT(${fields.join(',')}) ON ${table} FROM maxim_audit;`);
   await db.exec('ALTER TABLE managed_broadcast_deliveries DROP COLUMN last_error_code;');
-  await db.exec(grants); // Partial old schema receives none of the nineteen grants.
+  await db.exec(grants); // Partial old schema receives none of the complete additive group.
   await db.exec(assertion);
   assert.equal(
     (await db.query(readiness(buildPublisherSlotPrivilegesSql()))).rows[0]
@@ -412,6 +467,15 @@ test(
       SELECT 'private-other-bot-'||n,'${chat}','ACTIVE','CHANNEL',NULL FROM generate_series(1,20000) n;
     INSERT INTO managed_entity_access_edges(chat_id,user_id,bot_id,state,user_role,entity_type)
       SELECT '${chat}','${actor}','private-other-bot-'||n,'GRANTED','ADMIN','CHANNEL' FROM generate_series(1,20000) n;
+    INSERT INTO managed_broadcasts(id,status) SELECT 'private-old-envelope-'||n,'ACTIVE' FROM generate_series(1,20000) n;
+    INSERT INTO managed_broadcasts(id,publication_occurrence_id,publication_content_revision_id,status,dispatch_profile,required_bot_id)
+      VALUES ('private-native-envelope','private-o-3','private-revision','ACTIVE','PUBLIK_V1','private-bot');
+    INSERT INTO managed_broadcast_deliveries(id,publication_occurrence_id,created_at,status,attempt_count,target_chat_id,
+      broadcast_id,content_revision_id,bot_id,required_bot_id,dispatch_profile)
+      VALUES ('private-native-present','private-o-3','2026-10-19T21:29:30','PENDING',0,'${chat}',
+        'private-native-envelope','private-revision','private-bot','private-bot','PUBLIK_V1'),
+      ('private-native-absent','private-o-3','2026-10-19T21:29:31','PENDING',0,'${chat}',
+        'private-native-missing-envelope','private-revision','private-bot','private-bot','PUBLIK_V1');
     INSERT INTO publications SELECT 'private-history-p-'||n,'999999999','ACTIVE','SNAPSHOT','SELECTED','PUBLIK_V1','private-bot',NULL FROM generate_series(1,50000) n;
     INSERT INTO publication_schedules SELECT 'private-history-s-'||n,'ONCE','ACTIVE',1,'{}' FROM generate_series(1,50000) n;
     INSERT INTO publication_occurrences(id,publication_id,schedule_id,status,scheduled_at,dispatch_profile,required_bot_id)
@@ -441,6 +505,20 @@ test(
     assert.equal(result.rows.find((row) => row.status === 'IN_PROGRESS').delivery_sampled, 8);
     assert.deepEqual(result.rows.find((row) => row.status === 'IN_PROGRESS').target_deliveries, []);
     assert.equal(result.rows.find((row) => row.slot === 1).scheduled_at, '2026-10-19T21:30:59');
+    const nativeEnvelopes = result.rows.find((row) => row.status === 'SENT').target_deliveries;
+    assert.equal(nativeEnvelopes.length, 2);
+    assert.equal(nativeEnvelopes.filter((row) => row.envelope_present).length, 1);
+    assert.equal(nativeEnvelopes.filter((row) => !row.envelope_present).length, 1);
+    for (const row of nativeEnvelopes.filter((delivery) => delivery.envelope_present)) {
+      for (const flag of [
+        'envelope_profile_matches',
+        'envelope_bot_matches',
+        'envelope_occurrence_matches',
+        'content_revision_matches',
+      ]) {
+        assert.equal(row[flag], true);
+      }
+    }
     const nativePlan = (await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`)).rows[0][
       'QUERY PLAN'
     ][0].Plan;
@@ -456,6 +534,27 @@ test(
       ['managed_entity_access_edges_pkey', 'managed_entity_access_edges_user_demand_idx'],
       ['chat_id', 'user_id', 'bot_id'],
       false,
+    );
+    const envelopePresent = assertBoundedMetadataProbe(
+      nativePlan,
+      'managed_broadcasts',
+      'managed_broadcasts_pkey',
+      ['id'],
+      false,
+    );
+    await db.exec("DELETE FROM managed_broadcasts WHERE id='private-native-envelope';");
+    const envelopeAbsent = assertBoundedMetadataProbe(
+      (await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`)).rows[0]['QUERY PLAN'][0]
+        .Plan,
+      'managed_broadcasts',
+      'managed_broadcasts_pkey',
+      ['id'],
+      false,
+    );
+    assert.ok(
+      (await report(db)).rows
+        .find((row) => row.status === 'SENT')
+        .target_deliveries.every((row) => !row.envelope_present),
     );
     const plainPlan = (await db.query(buildPublisherSlotAuditSql(actor, chat, minute, true)))
       .rows[0]['QUERY PLAN'];
@@ -547,7 +646,10 @@ test(
         node['Actual Rows'] + (node['Rows Removed by Filter'] ?? 0) <= cap,
         JSON.stringify(node),
       );
-      assert.ok(node['Actual Loops'] <= 448, JSON.stringify(node));
+      assert.ok(
+        node['Actual Loops'] <= (node['Relation Name'] === 'managed_broadcasts' ? 448 * 8 : 448),
+        JSON.stringify(node),
+      );
     }
     assert.ok(
       tables.some((node) => node['Index Name'] === 'publication_targets_publication_target_key'),
@@ -571,6 +673,8 @@ test(
         planIdentifiersExposed: false,
         catalogPresent,
         actorPresent,
+        envelopePresent,
+        envelopeAbsent,
         actorAbsent,
         catalogAbsent,
         generalCatalogPresent,

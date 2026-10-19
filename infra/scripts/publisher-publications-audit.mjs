@@ -47,9 +47,17 @@ export const PUBLISHER_PUBLICATION_AUDIT_COLUMNS = {
 
 export function buildPublisherPublicationPrivilegesSql(requireAll = false) {
   const allowedColumns = Object.fromEntries(
-    Object.entries(PUBLISHER_PUBLICATION_AUDIT_COLUMNS).map(([table, columns]) => [
+    [
+      ...new Set([
+        ...Object.keys(PUBLISHER_PUBLICATION_AUDIT_COLUMNS),
+        ...Object.keys(PUBLISHER_SLOT_AUDIT_COLUMNS),
+      ]),
+    ].map((table) => [
       table,
-      [...columns, ...(PUBLISHER_SLOT_AUDIT_COLUMNS[table] ?? [])],
+      [
+        ...(PUBLISHER_PUBLICATION_AUDIT_COLUMNS[table] ?? []),
+        ...(PUBLISHER_SLOT_AUDIT_COLUMNS[table] ?? []),
+      ],
     ]),
   );
   const allowed = Object.entries(allowedColumns)
