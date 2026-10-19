@@ -4,7 +4,6 @@ import {
   ManagedBroadcastStatus,
   PublicationDispatchProfile,
   PublicationLifecycle,
-  PublicationOccurrenceStatus,
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
