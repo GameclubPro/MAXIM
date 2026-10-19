@@ -56,7 +56,7 @@ describe('exact cancellation v2 contract', () => {
   it('rejects duplicate keys, noncanonical bytes and oversized inputs', () => {
     const canonical = backlogCancellationBytesV2(fixture.validNomination);
     expect(() =>
-      parseBacklogCancellationNominationV2(canonical.replace('{', '{"version":2,')),
+      parseBacklogCancellationNominationV2(`{"version":2,${canonical.slice(1)}`),
     ).toThrow();
     expect(() =>
       parseBacklogCancellationNominationV2(JSON.stringify(fixture.validNomination, null, 2)),
