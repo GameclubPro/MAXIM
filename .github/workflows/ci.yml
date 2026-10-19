@@ -401,6 +401,11 @@ jobs:
         env:
           IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
         run: bash infra/scripts/smoke-outcome-cohort-online-client-ci.sh "$IMAGE_REF"
+      - name: Verify exact v2 cancellation with native stores and same-generation restoration
+        if: matrix.component == 'api'
+        env:
+          IMAGE_REF: ${{ matrix.image_repository }}:${{ github.sha }}
+        run: bash infra/scripts/smoke-backlog-cancellation-v2-ci.sh "$IMAGE_REF"
       - name: Package immutable production image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

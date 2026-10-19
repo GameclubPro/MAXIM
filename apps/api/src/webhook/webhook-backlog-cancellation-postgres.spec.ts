@@ -4,6 +4,7 @@ import { Queue, type ConnectionOptions } from 'bullmq';
 import { Redis } from 'ioredis';
 import { Prisma, createPrismaClient } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { MaxActionJob } from '../max/max-client.service';
 import {
   backlogReceiptPageSql,
   backlogPendingReceiptPageSql,
@@ -497,7 +498,7 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
     }
   });
 
-  it('unblocks a fresh event in the same chat through the real outbox and moderation pipeline', async () => {
+  it('unblocks fresh same-chat moderation while retaining started unknown effects and confirmed receipts', async () => {
     let h: MultibotHarness | undefined;
     try {
       h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 2, mode: 'on' });
@@ -510,31 +511,129 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
         where: { chatId: chatId! },
       });
       const chat = await h.prisma.chat.findUniqueOrThrow({ where: { id: chatId! } });
+      const oldMessageId = randomUUID();
       const oldId = await h.ingest({
         chatId: chatId!,
-        messageId: randomUUID(),
+        messageId: oldMessageId,
         text: 'old',
         botId: h.bots[0]!.id,
+      });
+      await h.ingress.preparePersistedWebhookEvent(oldId);
+      const started = await h.canonical.prepareExecution(oldId, h.bots[0]!.id);
+      expect(started?.businessLeaseToken).toEqual(expect.any(String));
+      const source = { chatId: chatId!, messageId: oldMessageId, userId: 'fixture-user' };
+      const confirmedSend: MaxActionJob = {
+        actionType: 'SEND_MESSAGE',
+        chatId: chatId!,
+        botId: h.bots[0]!.id,
+        text: 'Confirmed fixture',
+        idempotencyKey: `cancel-confirmed-${randomUUID()}`,
+        attempt: 1,
+        createdAt: new Date().toISOString(),
+        ledgerContext: { moderationSource: source },
+      };
+      await h.ledger.recordStarted(confirmedSend);
+      await h.max.executeActionJob(confirmedSend);
+      const confirmedReceipt = await h.prisma.maxActionLedgerEntry.findUniqueOrThrow({
+        where: { jobId: confirmedSend.idempotencyKey },
+      });
+      expect(confirmedReceipt).toMatchObject({
+        status: 'SUCCEEDED',
+        remoteMessageId: expect.any(String),
+        dispatchBotId: h.bots[0]!.id,
+        completedAt: expect.any(Date),
+      });
+      const pendingSend: MaxActionJob = {
+        ...confirmedSend,
+        idempotencyKey: `cancel-pending-${randomUUID()}`,
+      };
+      await h.ledger.recordStarted(pendingSend);
+      await h.ledger.recordPrepared(pendingSend);
+      h.ambiguousNextMemberMutation();
+      await expect(
+        h.max.banMember(chatId!, 'fixture-user', {
+          immediate: true,
+          botId: h.bots[0]!.id,
+          ledgerContext: { moderationSource: source },
+        }),
+      ).rejects.toThrow('Ambiguous MAX BAN_MEMBER');
+      const unknownMember = await h.prisma.maxActionLedgerEntry.findFirstOrThrow({
+        where: { chatId: chatId!, actionType: 'BAN_MEMBER' },
+      });
+      expect(unknownMember).toMatchObject({
+        status: 'AMBIGUOUS',
+        ambiguous: true,
+        attemptCount: 1,
+      });
+      await h.canonical.failExecution(started!, {
+        errorMessage: 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:uncertain',
+        terminal: true,
       });
       await h.prisma.webhookEvent.update({
         where: { id: oldId },
         data: {
           createdAt: new Date(Date.now() - 120_000),
-          status: 'FAILED',
-          errorMessage: 'WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINED:uncertain',
         },
       });
+      const old = await h.prisma.webhookEvent.findUniqueOrThrow({ where: { id: oldId } });
+      const claim = await h.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: oldId, kind: 'EXECUTION' },
+      });
+      expect(claim).toMatchObject({
+        enforced: true,
+        status: 'READY',
+        businessStartedAt: expect.any(Date),
+        completedAt: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      });
+      const priorEffects = [...h.effects];
+      const handler = jest.spyOn(h.moderation, 'handleUpdate');
+      const freshMessageId = randomUUID();
       const freshId = await h.ingest({
         chatId: chatId!,
-        messageId: randomUUID(),
+        messageId: freshMessageId,
         text: 'Fresh fixture message that exceeds the configured message length',
         botId: h.bots[0]!.id,
       });
+      await expect(h.ingress.preparePersistedWebhookEvent(freshId)).resolves.toMatchObject({
+        canonical: true,
+        prepared: true,
+      });
+      await expect(h.canonical.prepareExecution(freshId, h.bots[0]!.id)).rejects.toMatchObject({
+        code: 'WEBHOOK_ORDERED_PREDECESSOR_PENDING',
+        webhookEventId: freshId,
+        predecessorWebhookEventId: oldId,
+      });
       const operation = request();
       await captureBacklogReceipts(db, operation);
+      expect(await db.$transaction((tx) => materializeBacklogCancellation(tx, oldId))).toBe(
+        'BLOCKED_UNKNOWN',
+      );
       await seal(operation.id);
       await projectBacklogReceipts(db, operation.id);
+      await projectBacklogReceipts(db, operation.id);
+      await h.moderation.processWebhookEvent(oldId);
+      await expect(h.max.executeActionJob(confirmedSend)).resolves.toMatchObject({
+        messageId: confirmedReceipt.remoteMessageId,
+        recoveredSendDispatch: { dispatchBotId: confirmedReceipt.dispatchBotId },
+      });
+      await expect(h.max.executeActionJob(pendingSend)).rejects.toThrow('Unverified legacy effect');
+      await expect(
+        h.max.kickMember(chatId!, 'fixture-user', {
+          immediate: true,
+          botId: h.bots[1]!.id,
+        }),
+      ).rejects.toThrow('Retained member action requires settlement');
+      expect(handler).not.toHaveBeenCalled();
+      expect(h.effects).toEqual(priorEffects);
+      expect(await db.webhookEvent.findUnique({ where: { id: oldId } })).toEqual({
+        ...old,
+        status: 'CANCELLED',
+      });
       await h.resume();
+      await h.drain();
+      await h.pumpWork();
       await h.drain();
       expect((await db.webhookEvent.findUniqueOrThrow({ where: { id: freshId } })).status).toBe(
         'PROCESSED',
@@ -548,7 +647,20 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
         primaryBotId: chat.primaryBotId,
         botId: chat.botId,
       });
-      expect(h.effects.some((effect) => effect.method === 'delete')).toBe(true);
+      expect(h.processedIds.filter((id) => id === freshId)).toHaveLength(1);
+      expect(handler.mock.calls.map(([update]) => update.message?.messageId)).toEqual([
+        freshMessageId,
+      ]);
+      expect(h.effects.slice(priorEffects.length)).toEqual([
+        expect.objectContaining({ method: 'delete', path: '/messages', messageId: freshMessageId }),
+      ]);
+      expect(await db.webhookExecutionClaim.findUnique({ where: { id: claim.id } })).toEqual(claim);
+      expect(await db.maxActionLedgerEntry.findUnique({ where: { id: unknownMember.id } })).toEqual(
+        unknownMember,
+      );
+      expect(
+        await db.maxActionLedgerEntry.findUnique({ where: { id: confirmedReceipt.id } }),
+      ).toEqual(confirmedReceipt);
       const original = await db.webhookEvent.findUniqueOrThrow({ where: { id: oldId } });
       const originalMessageId = (original.normalizedPayload as { message: { messageId: string } })
         .message.messageId;

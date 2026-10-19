@@ -2644,6 +2644,7 @@ model WebhookBacklogChild {
   originalSnapshot Json @map("original_snapshot")
   cancellation WebhookBacklogCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   @@id([kind, childKey])
+  @@index([cancellationId, kind, childKey], map: "webhook_backlog_children_operation_idx")
   @@map("webhook_backlog_children")
 }
 

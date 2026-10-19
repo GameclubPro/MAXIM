@@ -161,6 +161,10 @@ before editing it; copying these notes does not install a fix or prove the deplo
    tombstones apply to created/edited content; exact semantic cancellation covers every type.
    Fresh removal observations and new menu clicks cannot inherit an unrelated message-family
    cancellation. Verify the final READY/start transition as well as early admission.
+   Exact v2 recovery requires a separately hashed read-only nomination/preview, installed-client
+   identity and full stopped revalidation. Preserve the fixed observed scope and original
+   snapshots across interruption. Prove operation absence independently before an unwritten
+   abort restores the same fleet; a written operation retains its STOPPED exact-resume fence.
 7. **Resume exactly.** An interrupted cancellation retains its UUID, cutoff, source/image and
    journal. Resume the identical request. A new operation requires the previous one COMPLETE and
    its exact completed journal archived privately by the controller. Preserve lossless BullMQ
@@ -213,6 +217,7 @@ rows affected by a change; do not rerun unrelated suites for a documentation-onl
 | Executor readiness deadlines                | Immutable source/receipt bounds; missing title/join deadlines reconstructed; no-business expiry, late access without replay, independent-chat progress and retained execution fences | `webhook/webhook-execution-deadline.spec.ts`, `webhook/webhook-membership-readiness-fullpath.spec.ts`, `webhook/webhook-multibot-access-restoration-fullpath.spec.ts`, `webhook/webhook-multibot-fullpath.spec.ts` |
 | Bulk cancellation selection/snapshots       | Terminal FAILED history and tied timestamps remain bounded; Unicode snapshots survive; interruption resumes; uncertainty and publications survive; fresh same-chat work progresses   | `webhook/webhook-backlog-cancellation-postgres.spec.ts`                                                                                                                                                            |
 | Cancellation controller/journal             | Interrupted identity is immutable and a completed journal is archived before a new request                                                                                           | `infra/scripts/backlog-cancellation.test.mjs`                                                                                                                                                                      |
+| Exact cancellation v2                       | Read-only bounded preview, exact family/child attribution, immutable scope, interrupted capture/projection/retirement and same-generation unwritten abort                            | `scripts/cancel-webhook-backlog-v2-postgres.spec.ts`, `infra/scripts/backlog-cancellation-v2-host.test.mjs`, `infra/scripts/backlog-cancellation-routing.test.mjs`                                                 |
 
 For notice/handoff changes, run **both** the focused unit suite and the full-path native suite;
 name-matching only `required-subscription` misses the integration expectation that exposed this
@@ -229,6 +234,8 @@ For selection/admission or cancellation changes, choose the corresponding comman
 node scripts/agent/with-test-stores.mjs --migrate -- npm test --workspace @maxim/api -- 'webhook-outbox-postgres|webhook-fleet-admission-postgres|webhook-preparation-admission'
 node scripts/agent/with-test-stores.mjs --migrate -- npm test --workspace @maxim/api -- webhook-backlog-cancellation-postgres
 node --test infra/scripts/backlog-cancellation.test.mjs
+node scripts/agent/with-test-stores.mjs --migrate -- npm test --workspace @maxim/api -- cancel-webhook-backlog-v2
+node --test infra/scripts/backlog-cancellation-v2-host.test.mjs infra/scripts/backlog-cancellation-routing.test.mjs
 ```
 
 The PostgreSQL Races CI lane already includes the native suites above. Report actual passed/skipped
