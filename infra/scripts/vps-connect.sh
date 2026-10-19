@@ -57,6 +57,8 @@ Commands:
                               Discard an exact modern source without member-wide holds
   cancel-webhook-backlog <private-request.json>
                               Cancel pre-cutoff processing in one stopped-fleet operation
+  preview-webhook-backlog <private-nomination.json>
+                              Inspect exact old sources without stopping or changing work
   source-abandonment-corrective <private-envelope.json>
                               Continue reviewed recovery with an exact green controller
   preload-ci-image <component> [git-ref]
@@ -324,29 +326,73 @@ install_deploy_flock() {
   remote_exec "$(shell_quote_args bash -s -- "$1" "$target_sha")" <"$ROOT_DIR/infra/scripts/vps-install-deploy-flock.sh"
 }
 
+validate_backlog_request() {
+  node --input-type=module - "$ROOT_DIR" "$1" "$2" "$3" <<'NODE'
+import { constants, openSync, fstatSync, readSync, closeSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [root, path, sha, mode] = process.argv.slice(2);
+let fd;
+try {
+  if (!['preview', 'apply'].includes(mode)) throw new Error('Invalid mode');
+  const limit = mode === 'preview' ? 16384 : 4096;
+  fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.size < 1 || stat.size > limit)
+    throw new Error('Private bounded cancellation request required');
+  const buffer = Buffer.alloc(limit + 1);
+  let length = 0;
+  while (length < buffer.length) {
+    const count = readSync(fd, buffer, length, buffer.length - length, null);
+    if (!count) break;
+    length += count;
+  }
+  const after = fstatSync(fd);
+  if (length !== stat.size || length > limit || ['dev','ino','size','mode','nlink','mtimeMs','ctimeMs'].some(key => stat[key] !== after[key]))
+    throw new Error('Cancellation request changed');
+  const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, length));
+  const candidate = JSON.parse(raw);
+  let request;
+  if (candidate?.version === 2) {
+    const { parseNominationV2, parseApplyV2 } = await import(pathToFileURL(`${root}/infra/scripts/backlog-cancellation-v2-host.mjs`));
+    request = mode === 'preview' ? parseNominationV2(raw) : parseApplyV2(raw);
+  } else {
+    if (mode !== 'apply') throw new Error('Preview requires version 2');
+    const { parseBacklogCancellationRequest } = await import(pathToFileURL(`${root}/infra/scripts/backlog-cancellation-host.mjs`));
+    request = parseBacklogCancellationRequest(raw);
+  }
+  if (request.sourceSha !== sha)
+    throw new Error('Cancellation request must match local source');
+  // The caller retains these validated bounded bytes across the CI/network wait.
+  process.stdout.write(raw);
+} catch {
+  console.error('Private exact-source backlog request refused.');
+  process.exitCode = 2;
+} finally { if (fd !== undefined) closeSync(fd); }
+NODE
+}
+
 cancel_webhook_backlog() {
   if [[ $# != 1 || ! -f "$1" ]]; then
     echo 'Usage: cancel-webhook-backlog <private-request.json>' >&2
     return 2
   fi
-  local request_file="$1" target_sha
+  local request_file="$1" target_sha validated_request
   target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-  node --input-type=module - "$ROOT_DIR" "$request_file" "$target_sha" <<'NODE'
-import { constants, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-const [root, path, sha] = process.argv.slice(2);
-const { parseBacklogCancellationRequest } = await import(pathToFileURL(`${root}/infra/scripts/backlog-cancellation-host.mjs`));
-const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-try {
-  const stat = fstatSync(fd);
-  if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.size > 4096)
-    throw new Error('Private bounded cancellation request required');
-  if (parseBacklogCancellationRequest(readFileSync(fd, 'utf8')).sourceSha !== sha)
-    throw new Error('Cancellation request must match local source');
-} finally { closeSync(fd); }
-NODE
+  validated_request="$(validate_backlog_request "$request_file" "$target_sha" apply)"
   node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
-  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-backlog-cancellation.sh)" <"$request_file"
+  printf '%s\n' "$validated_request" | remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-backlog-cancellation.sh)"
+}
+
+preview_webhook_backlog() {
+  if [[ $# != 1 || ! -f "$1" ]]; then
+    echo 'Usage: preview-webhook-backlog <private-nomination.json>' >&2
+    return 2
+  fi
+  local request_file="$1" target_sha validated_request
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  validated_request="$(validate_backlog_request "$request_file" "$target_sha" preview)"
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+  printf '%s\n' "$validated_request" | remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-backlog-cancellation.sh --preview)"
 }
 
 legacy_cold_recovery() {
@@ -1647,6 +1693,9 @@ case "$command" in
     ;;
   cancel-webhook-backlog)
     cancel_webhook_backlog "$@"
+    ;;
+  preview-webhook-backlog)
+    preview_webhook_backlog "$@"
     ;;
   legacy-cold-recovery)
     legacy_cold_recovery "$@"

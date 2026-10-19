@@ -85,3 +85,53 @@ test('a new request archives completed evidence while every interrupted identity
     rmSync(directory, { recursive: true });
   }
 });
+
+test('scoped journals retain the ordinary mutation fence through apply and unwritten abort', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-cancel-scoped-journal-'));
+  const scopedRequest = { ...request, version: 2, previewSha256: 'c'.repeat(64) };
+  const binding = {
+    version: 1,
+    request: scopedRequest,
+    nominationSha256: 'd'.repeat(64),
+    previewSha256: scopedRequest.previewSha256,
+    bindings: { runtimeDigest: 'e'.repeat(64), clientSha256: 'f'.repeat(64) },
+  };
+  try {
+    for (const phase of ['PREPARED', 'STOPPED', 'APPLIED']) {
+      writeBacklogCancellation(directory, { ...binding, phase });
+      assert.throws(() => assertNoActiveBacklogCancellation(directory), /Active backlog/);
+      assert.throws(
+        () => assertNoActiveBacklogCancellation(directory, 'foreign'),
+        /Active backlog/,
+      );
+      assertNoActiveBacklogCancellation(directory, scopedRequest.id);
+      assert.throws(
+        () =>
+          readBacklogCancellationForRequest(directory, {
+            ...scopedRequest,
+            cutoff: '2026-10-09T00:00:00.000Z',
+          }),
+        /immutable/,
+      );
+    }
+    for (const outcome of ['APPLIED', 'ABORTED_UNWRITTEN']) {
+      writeBacklogCancellation(directory, { ...binding, phase: 'COMPLETE', outcome });
+      assertNoActiveBacklogCancellation(directory);
+      assert.equal(readBacklogCancellation(directory).outcome, outcome);
+    }
+    for (const invalid of [
+      { ...binding, phase: 'COMPLETE' },
+      { ...binding, phase: 'COMPLETE', outcome: 'SUCCESS' },
+      { ...binding, phase: 'COMPLETE', outcome: 'APPLIED', abortPending: true },
+      { ...binding, phase: 'STOPPED', previewSha256: '0'.repeat(64) },
+      { ...binding, phase: 'STOPPED', request: { ...scopedRequest, version: 3 } },
+      { ...binding, phase: 'STOPPED', bindings: { runtimeDigest: 'e'.repeat(64) } },
+      { ...binding, phase: 'COMPLETE', outcome: 'APPLIED', version: 2 },
+    ]) {
+      writeBacklogCancellation(directory, invalid);
+      assert.throws(() => assertNoActiveBacklogCancellation(directory), /Invalid.*journal/);
+    }
+  } finally {
+    rmSync(directory, { recursive: true });
+  }
+});

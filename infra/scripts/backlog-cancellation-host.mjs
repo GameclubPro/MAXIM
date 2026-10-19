@@ -6,6 +6,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -23,6 +24,12 @@ import {
   readBacklogCancellationForRequest,
   writeBacklogCancellation,
 } from './backlog-cancellation-journal.mjs';
+import {
+  parseNominationV2,
+  parseApplyV2,
+  runPreviewHostV2,
+  runApplyHostV2,
+} from './backlog-cancellation-v2-host.mjs';
 
 const directory = '/var/lib/maxim-deploy';
 const execute = (args, options = {}) =>
@@ -33,6 +40,20 @@ const execute = (args, options = {}) =>
     stdio: ['ignore', 'pipe', 'pipe'],
     ...options,
   }).trim();
+
+export function readBacklogCancellationInput(fd = 0) {
+  const bytes = Buffer.alloc(16 * 1024 + 1);
+  let length = 0;
+  while (length < bytes.length) {
+    const count = readSync(fd, bytes, length, bytes.length - length, null);
+    if (!count) break;
+    length += count;
+  }
+  if (!length || length === bytes.length) throw new Error('Cancellation input exceeds its bound');
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+    bytes.subarray(0, length),
+  );
+}
 export function parseBacklogCancellationRequest(raw) {
   if (Buffer.byteLength(raw) > 4096) throw new Error('Cancellation request too large');
   const request = JSON.parse(raw);
@@ -50,6 +71,8 @@ export function parseBacklogCancellationRequest(raw) {
 }
 
 export async function runBacklogCancellationHost(request, pendingOnly = false) {
+  // FLAG: The legacy continuation captures global history and cannot accept an exact v2 scope.
+  if (request?.version === 2) throw new Error('Version 2 requires the scoped controller');
   assertInheritedDeployLock();
   if (process.env.MAXIM_EXPECTED_DEPLOY_SHA !== request.sourceSha)
     throw new Error('Cancellation source mismatch');
@@ -188,14 +211,25 @@ export async function runBacklogCancellationHost(request, pendingOnly = false) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   try {
-    if (process.argv.length > 3 || (process.argv[2] && process.argv[2] !== '--resume-pending'))
+    const mode = process.argv[2];
+    if (process.argv.length > 3 || (mode && !['--resume-pending', '--preview'].includes(mode)))
       throw new Error('Invalid continuation arguments');
-    await runBacklogCancellationHost(
-      parseBacklogCancellationRequest(readFileSync(0).toString('utf8')),
-      process.argv[2] === '--resume-pending',
-    );
-  } catch (error) {
-    console.error(error.message);
+    const raw = readBacklogCancellationInput();
+    if (mode === '--preview') {
+      const result = await runPreviewHostV2(parseNominationV2(raw));
+      process.exitCode = result.exitCode;
+    } else if (JSON.parse(raw)?.version === 2) {
+      if (mode === '--resume-pending')
+        throw new Error('Scoped cancellation cannot resume global work');
+      const result = await runApplyHostV2(parseApplyV2(raw));
+      process.exitCode = result.exitCode;
+    } else
+      await runBacklogCancellationHost(
+        parseBacklogCancellationRequest(raw),
+        mode === '--resume-pending',
+      );
+  } catch {
+    console.error('Cancellation refused or incomplete; preserve the exact operation.');
     process.exitCode = 1;
   }
 }

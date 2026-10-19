@@ -64,6 +64,25 @@ test('requires native quarantine isolation and delayed Redis reply coverage befo
   assert.match(api, /npm test --workspace @maxim\/api -- 'message-duplicate\|/u);
 });
 
+test('native race coverage cannot silently skip its required stores or blocking lane', () => {
+  const pkg = JSON.parse(readFileSync(resolve(root, 'apps/api/package.json'), 'utf8'));
+  assert.ok(
+    pkg.scripts['test:postgres-races:unlocked'].startsWith(
+      'node ../../scripts/require-postgres-race-env.mjs && ',
+    ),
+  );
+  const postgres = jobBody('postgres-races', 'commercial-benchmark');
+  assert.match(
+    postgres,
+    /CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL: postgresql:\/\/[^\s]+@127\.0\.0\.1:5432\//u,
+  );
+  assert.match(postgres, /MAXIM_TEST_REDIS_URL: redis:\/\/127\.0\.0\.1:6379/u);
+  assert.match(postgres, /run: npm run test:postgres-races --workspace @maxim\/api/u);
+  assert.doesNotMatch(postgres, /continue-on-error|if:/u);
+  const required = workflow.slice(workflow.indexOf('  required:'));
+  assert.match(required, /postgres-races/u);
+});
+
 test('native race lane lists existing literal test paths without shell operators', () => {
   const pkg = JSON.parse(readFileSync(resolve(root, 'apps/api/package.json'), 'utf8'));
   const command = pkg.scripts['test:postgres-races:unlocked'];
@@ -79,7 +98,9 @@ test('native race lane lists existing literal test paths without shell operators
     'src/max/max-fixed-moderator-assignment-postgres.spec.ts',
     'src/max/max-fixed-moderator-preservation-postgres.spec.ts',
     'src/webhook/webhook-multibot-fixed-fullpath.spec.ts',
+    'src/scripts/cancel-webhook-backlog-v2-postgres.spec.ts',
+    'src/scripts/cancel-webhook-backlog-v2-history-postgres.spec.ts',
   ]) {
-    assert.ok(paths.includes(path), `Missing fixed moderator regression: ${path}`);
+    assert.ok(paths.includes(path), `Missing critical native regression: ${path}`);
   }
 });
