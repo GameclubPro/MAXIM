@@ -48,7 +48,7 @@ Commands:
   exec <command...>           Run a command in the remote repo
   deploy [branch] [services|--plan|--auto|--full]
                               Run or plan a manifest-aware production deploy
-  finalize-release-recovery [branch] [--runtime-sha <sha>]
+  finalize-release-recovery [branch] [--runtime-sha <sha>] [--api-only]
                               Prove an exact runtime and finalize its interrupted manifest
   install-deploy-flock <old-sha>  Install reviewed lock tooling under both protocols
   legacy-cold-recovery <private-request.json>
@@ -1174,22 +1174,35 @@ finalize_release_recovery() {
   local branch="main"
   local expected_sha
   local runtime_sha=""
+  local api_only=0
   local remote_command
+  local finalizer_args=()
 
-  if [[ "$#" -gt 0 && "$1" != "--runtime-sha" ]]; then
+  if [[ "$#" -gt 0 && "$1" != --* ]]; then
     branch="$1"
     shift
   fi
-  if [[ "$#" -eq 2 && "$1" == "--runtime-sha" ]]; then
-    runtime_sha="$2"
-    if [[ ! "$runtime_sha" =~ ^[0-9a-f]{40}$ ]]; then
-      echo "Recovery finalization requires an exact runtime Git SHA." >&2
-      exit 2
-    fi
-  elif [[ "$#" -ne 0 ]]; then
-    echo "Usage: $0 finalize-release-recovery [branch] [--runtime-sha <sha>]" >&2
-    exit 2
-  fi
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --runtime-sha)
+        if [[ "$#" -lt 2 || -n "$runtime_sha" || ! "$2" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "Recovery finalization requires one exact runtime Git SHA." >&2
+          exit 2
+        fi
+        runtime_sha="$2"
+        shift 2
+        ;;
+      --api-only)
+        [[ "$api_only" -eq 0 ]] || { echo "Duplicate API-only recovery option." >&2; exit 2; }
+        api_only=1
+        shift
+        ;;
+      *)
+        echo "Usage: $0 finalize-release-recovery [branch] [--runtime-sha <sha>] [--api-only]" >&2
+        exit 2
+        ;;
+    esac
+  done
   if ! expected_sha="$(git rev-parse --verify --end-of-options "${branch}^{commit}" 2>/dev/null)"; then
     echo "Cannot resolve local recovery branch to an exact commit: $branch" >&2
     exit 2
@@ -1209,7 +1222,11 @@ finalize_release_recovery() {
     node scripts/ci/assert-green.mjs "$runtime_sha" || return
   fi
 
-  remote_command="$(shell_quote_args ./infra/scripts/vps-finalize-release-recovery.sh "$branch")"
+  finalizer_args=(./infra/scripts/vps-finalize-release-recovery.sh "$branch")
+  if [[ "$api_only" -eq 1 ]]; then
+    finalizer_args+=(--api-only)
+  fi
+  remote_command="$(shell_quote_args "${finalizer_args[@]}")"
   remote_command="MAXIM_FINALIZER_RUNTIME_SHA=$(printf '%q' "$runtime_sha") $remote_command"
   remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$expected_sha") $remote_command"
   if [[ "$branch" != "main" && "${MAXIM_ALLOW_NON_MAIN_DEPLOY:-0}" == "1" ]]; then

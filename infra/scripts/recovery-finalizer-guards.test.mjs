@@ -1,14 +1,24 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import {
+  beginReleaseTransition,
+  buildReleaseManifest,
+  commitReleaseManifest,
+} from './release-manifest.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const finalizerPath = resolve(root, 'infra/scripts/vps-finalize-release-recovery.sh');
 
 function read(path) {
   return readFileSync(resolve(root, path), 'utf8');
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function functionBlock(script, name) {
@@ -65,12 +75,12 @@ test('finalizer binds every active component to the target ref and re-proves str
   const commit = functionBlock(finalizer, 'commit_recovered_release');
   const main = functionBlock(finalizer, 'main');
 
-  assert.match(finalizer, /api-shared\) printf 'maxim-api:%s' "\$EXPECTED_RUNTIME_SHA"/u);
+  assert.match(finalizer, /api-shared\) printf 'maxim-api:%s' "\$component_source"/u);
   assert.match(
     finalizer,
-    /miniapp-major-static\) printf 'maxim-miniapp-major:%s' "\$EXPECTED_RUNTIME_SHA"/u,
+    /miniapp-major-static\) printf 'maxim-miniapp-major:%s' "\$component_source"/u,
   );
-  assert.match(finalizer, /admin-static\) printf 'maxim-admin:%s' "\$EXPECTED_RUNTIME_SHA"/u);
+  assert.match(finalizer, /admin-static\) printf 'maxim-admin:%s' "\$component_source"/u);
   assert.match(runtime, /\{\{\.Config\.Image\}\}.*\{\{\.Image\}\}/u);
   assert.match(runtime, /"\$image_ref" == "\$expected_ref"/u);
   assert.match(runtime, /"\$image_id" == "\$expected_id"/u);
@@ -99,7 +109,10 @@ test('finalizer binds every active component to the target ref and re-proves str
   );
 
   assert.match(commit, /for component in api-shared miniapp-major-static admin-static/u);
-  assert.match(commit, /\$\{component\}\|\$\{EXPECTED_RUNTIME_SHA\}\|/u);
+  assert.match(
+    commit,
+    /\$\{component\}\|\$\{COMPONENT_SOURCE_SHA\[\$component\]:-\$EXPECTED_RUNTIME_SHA\}\|/u,
+  );
   assert.match(commit, /--current-manifest-file "\$RECOVERY_BASE_MANIFEST"/u);
   assert.match(commit, /--migrations-file "\$MIGRATIONS_FILE"/u);
   assert.match(commit, /release_manifest archive-transition/u);
@@ -119,7 +132,10 @@ test('finalizer binds every active component to the target ref and re-proves str
       main.indexOf('commit_recovered_release'),
   );
   assert.match(main, /"\$runtime_after" == "\$runtime_before"/u);
-  assert.match(main, /acquire_deploy_lock\n\s+trap finalizer_cleanup EXIT/u);
+  assert.match(
+    main,
+    /acquire_deploy_lock(?: \|\| return(?: 1)?)?\n\s+trap finalizer_cleanup EXIT/u,
+  );
 });
 
 test('migration snapshot is bounded, read-only, validated, and owner-only', () => {
@@ -235,14 +251,20 @@ finalize_release_recovery "$@"`,
   assert.match(result.stdout, new RegExp(`MAXIM_FINALIZER_RUNTIME_SHA=${runtime}`, 'u'));
   assert.equal(result.stdout.trim().split('\n').length, 1);
   for (const rejected of [controller, runtime]) {
-    const failed = run(['codex/controller', '--runtime-sha', runtime], rejected);
-    assert.notEqual(failed.status, 0);
-    assert.equal(failed.stdout, '');
+    for (const apiOnly of [[], ['--api-only']]) {
+      const failed = run(['codex/controller', '--runtime-sha', runtime, ...apiOnly], rejected);
+      assert.notEqual(failed.status, 0);
+      assert.equal(failed.stdout, '');
+    }
   }
   for (const args of [
     ['codex/controller', '--runtime-sha', ''],
     ['codex/controller', '--runtime-sha', 'main'],
     ['codex/controller', '--runtime-sha', runtime, '--extra'],
+    ['--api-only', '--api-only'],
+    ['codex/controller', '--runtime-sha', runtime, '--runtime-sha', runtime],
+    ['--api-only', '--runtime-sha'],
+    ['--api-only', '--runtime-sha', 'main'],
   ]) {
     const invalid = run(args);
     assert.notEqual(invalid.status, 0);
@@ -256,6 +278,25 @@ finalize_release_recovery "$@"`,
   const defaultBranch = run(['--runtime-sha', runtime]);
   assert.equal(defaultBranch.status, 0, defaultBranch.stderr);
   assert.match(defaultBranch.stdout, /vps-finalize-release-recovery\.sh main/u);
+  for (const args of [
+    ['codex/controller', '--runtime-sha', runtime, '--api-only'],
+    ['codex/controller', '--api-only', '--runtime-sha', runtime],
+    ['--api-only', '--runtime-sha', runtime],
+  ]) {
+    const apiOnly = run(args);
+    assert.equal(apiOnly.status, 0, apiOnly.stderr);
+    assert.equal(apiOnly.stderr, `ci=${controller}\nci=${runtime}\n`);
+    assert.match(
+      apiOnly.stdout,
+      /vps-finalize-release-recovery\.sh (?:codex\/controller|main) --api-only/u,
+    );
+    assert.match(apiOnly.stdout, new RegExp(`MAXIM_FINALIZER_RUNTIME_SHA=${runtime}`, 'u'));
+    assert.equal(apiOnly.stdout.trim().split('\n').length, 1);
+  }
+  const apiOnlyDefault = run(['--api-only']);
+  assert.equal(apiOnlyDefault.status, 0, apiOnlyDefault.stderr);
+  assert.equal(apiOnlyDefault.stderr, `ci=${controller}\n`);
+  assert.match(apiOnlyDefault.stdout, /vps-finalize-release-recovery\.sh main --api-only/u);
 });
 
 test('split finalization writes the captured runtime identity and rechecks compatibility before commit', () => {
@@ -296,8 +337,368 @@ release_manifest() { printf 'manifest=%s\\n' "$*" >&2; }
   }
 });
 
-test('main proves journal, runtime, released queues, smokes, and stability before commit', () => {
+test('API-only finalization records inherited static sources, refs and image IDs truthfully', () => {
+  const runtime = '76dcefb09dc51355bed98847595d47654cde3905';
+  const statics = 'd'.repeat(40);
+  const identities = [
+    ['api-shared', runtime, 'maxim-api', '1'.repeat(64)],
+    ['miniapp-major-static', statics, 'maxim-miniapp-major', '2'.repeat(64)],
+    ['admin-static', statics, 'maxim-admin', '3'.repeat(64)],
+  ];
+  const body = `
+API_ONLY_RECOVERY=1
+EXPECTED_RUNTIME_SHA=${shellQuote(runtime)}
+RECOVERY_BASE_MANIFEST=/private/current.invalid-deploy-20261019T000000Z-123.json
+MIGRATIONS_FILE=/private/migrations.txt
+maxim_require_ordinary_effect_authority() { :; }
+verify_synchronized_checkout() { :; }
+verify_controller_runtime_compatibility() { :; }
+${identities
+  .map(
+    ([
+      component,
+      source,
+      image,
+      id,
+    ]) => `COMPONENT_SOURCE_SHA[${shellQuote(component)}]=${shellQuote(source)}
+COMPONENT_IMAGE_REF[${shellQuote(component)}]=${shellQuote(`${image}:${source}`)}
+COMPONENT_IMAGE_ID[${shellQuote(component)}]=${shellQuote(`sha256:${id}`)}`,
+  )
+  .join('\n')}
+release_manifest() { printf 'manifest=%s\\n' "$*" >&2; }
+`;
+  const valid = runSourced(`${body}\nif commit_recovered_release; then :; else exit "$?"; fi`);
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.match(valid.stderr, new RegExp(`--target-sha ${runtime}`, 'u'));
+  for (const [component, source, image, id] of identities) {
+    assert.ok(
+      valid.stderr.includes(`--component ${component}|${source}|${image}:${source}|sha256:${id}`),
+    );
+  }
+  assert.doesNotMatch(
+    valid.stderr,
+    new RegExp(`(?:miniapp-major-static|admin-static)\\|${runtime}\\|`, 'u'),
+  );
+  assert.match(valid.stdout, /Release recovery finalized without runtime recreation/u);
+  for (const failed of ['commit', 'archive-transition']) {
+    const invalid = runSourced(`${body}
+release_manifest() { [[ "$1" != ${shellQuote(failed)} ]]; }
+if commit_recovered_release; then printf '%s\\n' COMMIT_ACCEPTED; else exit "$?"; fi`);
+    assert.notEqual(invalid.status, 0, failed);
+    assert.doesNotMatch(invalid.stdout, /COMMIT_ACCEPTED|Release recovery finalized/u, failed);
+  }
+});
+
+test('API-only journal gates reject invalid, wrong-kind, replaced and changed transition evidence', (t) => {
+  const makeJournal = (kind = 'deploy') => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'maxim-finalizer-journal-'));
+    t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+    const source = 'd'.repeat(40);
+    const manifest = buildReleaseManifest({
+      releaseId: 'fixture-release',
+      targetSha: source,
+      components: [
+        ['api-shared', 'maxim-api'],
+        ['miniapp-major-static', 'maxim-miniapp-major'],
+        ['admin-static', 'maxim-admin'],
+      ].map(([id, image]) => ({
+        id,
+        sourceSha: source,
+        imageRef: `${image}:${source}`,
+        imageId: `sha256:${'2'.repeat(64)}`,
+      })),
+    });
+    commitReleaseManifest({ stateDir, manifest });
+    const path = beginReleaseTransition({
+      stateDir,
+      kind,
+      now: new Date('2026-10-19T00:00:00Z'),
+      pid: 123,
+    });
+    return { stateDir, path };
+  };
+  const setup = (stateDir) => `
+API_ONLY_RECOVERY=1
+RELEASE_STATE_DIR=${shellQuote(stateDir)}
+`;
+  const valid = makeJournal();
+  const accepted = runSourced(`${setup(valid.stateDir)}
+if resolve_recovery_base_manifest && verify_recovery_base_unchanged; then
+  printf '%s\\n' JOURNAL_ACCEPTED
+else
+  exit "$?"
+fi`);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(accepted.stdout, 'JOURNAL_ACCEPTED\n');
+  const invalid = makeJournal();
+  writeFileSync(invalid.path, '{invalid');
+  const wrongKind = makeJournal('runtime-rollback');
+  for (const fixture of [invalid, wrongKind]) {
+    const result = runSourced(`${setup(fixture.stateDir)}
+if resolve_recovery_base_manifest; then printf '%s\\n' JOURNAL_ACCEPTED; else exit "$?"; fi`);
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stdout, /JOURNAL_ACCEPTED/u);
+  }
+  for (const mutation of [
+    `printf ' ' >>"$RECOVERY_BASE_MANIFEST"`,
+    `mv -- "$RECOVERY_BASE_MANIFEST" "$RELEASE_STATE_DIR/current.invalid-deploy-20261019T000001Z-123.json"`,
+    `cp -- "$RECOVERY_BASE_MANIFEST" "$RELEASE_STATE_DIR/current.invalid-deploy-20261019T000001Z-123.json"`,
+    `cp -- "$RECOVERY_BASE_MANIFEST" "$RELEASE_STATE_DIR/current.json"`,
+  ]) {
+    const fixture = makeJournal();
+    const result = runSourced(`${setup(fixture.stateDir)}
+resolve_recovery_base_manifest
+${mutation}
+if verify_recovery_base_unchanged; then printf '%s\\n' JOURNAL_ACCEPTED; else exit "$?"; fi`);
+    assert.notEqual(result.status, 0, mutation);
+    assert.doesNotMatch(result.stdout, /JOURNAL_ACCEPTED/u);
+  }
+});
+
+test('inherited static inputs use real Git history and the shared fail-closed classifier', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-finalizer-static-inputs-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const git = (...args) =>
+    execFileSync('git', args, {
+      cwd: directory,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Finalizer Fixture',
+        GIT_AUTHOR_EMAIL: 'finalizer@example.invalid',
+        GIT_COMMITTER_NAME: 'Finalizer Fixture',
+        GIT_COMMITTER_EMAIL: 'finalizer@example.invalid',
+      },
+    }).trim();
+  const write = (path, text) => {
+    mkdirSync(dirname(join(directory, path)), { recursive: true });
+    writeFileSync(join(directory, path), text);
+  };
+  git('init', '-q');
+  for (const path of [
+    'apps/api/src/runtime.ts',
+    'apps/miniapp/src/main.tsx',
+    'apps/admin/src/main.tsx',
+    'packages/contracts/src/index.ts',
+    'docs/guide.md',
+    'package.json',
+    'package-lock.json',
+    'tsconfig.base.json',
+    '.dockerignore',
+  ])
+    write(path, `original ${path}\n`);
+  git('add', '--all');
+  git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture baseline');
+  const baseline = git('rev-parse', 'HEAD');
+  const cases = [
+    {
+      name: 'API and documentation only',
+      paths: ['apps/api/src/runtime.ts', 'docs/guide.md'],
+      accepts: [true, true],
+    },
+    {
+      name: 'shared contracts',
+      paths: ['packages/contracts/src/index.ts'],
+      accepts: [false, false],
+    },
+    { name: 'package manifest', paths: ['package.json'], accepts: [false, false] },
+    { name: 'package lock', paths: ['package-lock.json'], accepts: [false, false] },
+    { name: 'root build configuration', paths: ['tsconfig.base.json'], accepts: [false, false] },
+    { name: 'Docker input configuration', paths: ['.dockerignore'], accepts: [false, false] },
+    {
+      name: 'unknown deployment input',
+      paths: ['unmapped/new-input.bin'],
+      accepts: [false, false],
+    },
+    {
+      name: 'miniapp renamed into documentation',
+      move: ['apps/miniapp/src/main.tsx', 'docs/old-miniapp.md'],
+      accepts: [false, true],
+    },
+    {
+      name: 'documentation renamed into admin',
+      move: ['docs/guide.md', 'apps/admin/src/new.tsx'],
+      accepts: [true, false],
+    },
+    { name: 'miniapp deletion', remove: 'apps/miniapp/src/main.tsx', accepts: [false, true] },
+    { name: 'admin deletion', remove: 'apps/admin/src/main.tsx', accepts: [true, false] },
+  ];
+  for (const scenario of cases) {
+    git('switch', '--detach', '--quiet', baseline);
+    for (const path of scenario.paths ?? []) write(path, `changed ${scenario.name}\n`);
+    if (scenario.move) git('mv', ...scenario.move);
+    if (scenario.remove) git('rm', scenario.remove);
+    git('add', '--all');
+    git('-c', 'commit.gpgsign=false', 'commit', '-qm', scenario.name);
+    const target = git('rev-parse', 'HEAD');
+    for (const [index, component] of ['miniapp-major-static', 'admin-static'].entries()) {
+      const result = runSourced(`
+cd ${shellQuote(directory)}
+EXPECTED_RUNTIME_SHA=${shellQuote(target)}
+release_deploy_lock() { :; }
+trap finalizer_cleanup EXIT
+if require_unchanged_static_inputs ${shellQuote(component)} ${shellQuote(baseline)}; then
+  printf '%s\\n' INPUTS_ACCEPTED
+else
+  exit "$?"
+fi`);
+      if (scenario.accepts[index]) {
+        assert.equal(result.status, 0, `${scenario.name}/${component}: ${result.stderr}`);
+        assert.equal(result.stdout, 'INPUTS_ACCEPTED\n');
+      } else {
+        assert.notEqual(result.status, 0, `${scenario.name}/${component}`);
+        assert.doesNotMatch(result.stdout, /INPUTS_ACCEPTED/u);
+      }
+    }
+  }
+});
+
+test('image inspection refuses invalid identities inside assignments and conditional calls', () => {
+  const source = 'd'.repeat(40);
+  const imageId = `sha256:${'2'.repeat(64)}`;
+  const ref = `maxim-miniapp-major:${source}`;
+  const command = `inspect_target_image miniapp-major-static ${shellQuote(ref)}`;
+  const setup = `
+API_ONLY_RECOVERY=1
+COMPONENT_SOURCE_SHA[miniapp-major-static]=${shellQuote(source)}
+`;
+  const valid = runSourced(`${setup}
+timeout() { printf '%s\\n' ${shellQuote(`${imageId}|${source}|true`)}; }
+value="$(${command})"
+printf '%s\\n' "$value"`);
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.equal(valid.stdout, `${imageId}\n`);
+  for (const response of [
+    `invalid-id|${source}|true`,
+    `${imageId}|${'e'.repeat(40)}|true`,
+    `${imageId}||true`,
+    `${imageId}|${source}|false`,
+    `${imageId}|${source}|true|extra`,
+    null,
+  ]) {
+    const timeout =
+      response === null
+        ? 'timeout() { return 41; }'
+        : `timeout() { printf '%s\\n' ${shellQuote(response)}; }`;
+    for (const invocation of [
+      `value="$(${command})"\nprintf '%s\\n' IMAGE_ACCEPTED`,
+      `if value="$(${command})"; then printf '%s\\n' IMAGE_ACCEPTED; else exit "$?"; fi`,
+    ]) {
+      const invalid = runSourced(`${setup}\n${timeout}\n${invocation}`);
+      assert.notEqual(invalid.status, 0, String(response));
+      assert.doesNotMatch(invalid.stdout, /IMAGE_ACCEPTED/u);
+    }
+  }
+});
+
+test('ordinary target resolution keeps all components at the target without inherited readers', () => {
+  const runtime = 'b'.repeat(40);
+  const imageId = `sha256:${'1'.repeat(64)}`;
   const result = runSourced(`
+EXPECTED_RUNTIME_SHA=${shellQuote(runtime)}
+resolve_inherited_static_component() { printf '%s\\n' UNEXPECTED_INHERITANCE; return 41; }
+timeout() { printf '%s\\n' ${shellQuote(`${imageId}|${runtime}|true`)}; }
+if resolve_target_images; then :; else exit "$?"; fi
+for component in api-shared miniapp-major-static admin-static; do
+  printf '%s|%s|%s|%s\\n' "$component" "\${COMPONENT_SOURCE_SHA[$component]}" "\${COMPONENT_IMAGE_REF[$component]}" "\${COMPONENT_IMAGE_ID[$component]}"
+done`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /UNEXPECTED_INHERITANCE/u);
+  for (const [component, image] of [
+    ['api-shared', 'maxim-api'],
+    ['miniapp-major-static', 'maxim-miniapp-major'],
+    ['admin-static', 'maxim-admin'],
+  ])
+    assert.ok(result.stdout.includes(`${component}|${runtime}|${image}:${runtime}|${imageId}`));
+});
+
+test('API-only image resolution propagates missing inheritance and journal image disagreement', () => {
+  const runtime = 'b'.repeat(40);
+  const staticSource = 'd'.repeat(40);
+  const imageId = `sha256:${'2'.repeat(64)}`;
+  for (const inheritance of [
+    'return 41',
+    `COMPONENT_SOURCE_SHA["$1"]=${shellQuote(staticSource)}; INHERITED_STATIC_IMAGE_ID["$1"]=${shellQuote(`sha256:${'3'.repeat(64)}`)}`,
+  ]) {
+    const result = runSourced(`
+API_ONLY_RECOVERY=1
+EXPECTED_RUNTIME_SHA=${shellQuote(runtime)}
+resolve_inherited_static_component() { ${inheritance}; }
+timeout() {
+  if [[ "$*" == *maxim-api:* ]]; then
+    printf '%s\\n' ${shellQuote(`${imageId}|${runtime}|true`)}
+  else
+    printf '%s\\n' ${shellQuote(`${imageId}|${staticSource}|true`)}
+  fi
+}
+if resolve_target_images; then printf '%s\\n' RESOLUTION_ACCEPTED; else exit "$?"; fi`);
+    assert.notEqual(result.status, 0, inheritance);
+    assert.doesNotMatch(result.stdout, /RESOLUTION_ACCEPTED/u);
+  }
+});
+
+test('runtime inspection refuses wrong refs and IDs inside assignment and conditional contexts', () => {
+  const container = '4'.repeat(64);
+  const source = 'd'.repeat(40);
+  const imageId = `sha256:${'2'.repeat(64)}`;
+  const ref = `maxim-miniapp-major:${source}`;
+  const fields = [container, 'true', 'running', ref, imageId, '0', '2026-10-19T00:00:00Z'];
+  const command = `inspect_service_runtime miniapp-major-static ${shellQuote(ref)} ${shellQuote(imageId)}`;
+  const mock = (values) => `
+timeout() {
+  if [[ "$*" == *' ps -a -q '* ]]; then
+    printf '%s\\n' ${shellQuote(container)}
+  else
+    printf '%s\\n' ${shellQuote(values.join('|'))}
+  fi
+}`;
+  const valid = runSourced(`${mock(fields)}\nvalue="$(${command})"\nprintf '%s\\n' "$value"`);
+  assert.equal(valid.status, 0, valid.stderr);
+  assert.equal(valid.stdout, `miniapp-major-static|${container}|0|2026-10-19T00:00:00Z\n`);
+  for (const [index, value] of [
+    [0, 'invalid-container'],
+    [1, 'false'],
+    [2, 'exited'],
+    [3, `maxim-miniapp-major:${'e'.repeat(40)}`],
+    [4, `sha256:${'5'.repeat(64)}`],
+    [5, 'invalid-restarts'],
+    [6, ''],
+  ]) {
+    const invalidFields = fields.with(index, value);
+    for (const invocation of [
+      `value="$(${command})"\nprintf '%s\\n' RUNTIME_ACCEPTED`,
+      `if value="$(${command})"; then printf '%s\\n' RUNTIME_ACCEPTED; else exit "$?"; fi`,
+    ]) {
+      const invalid = runSourced(`${mock(invalidFields)}\n${invocation}`);
+      assert.notEqual(invalid.status, 0, `${index}/${value}`);
+      assert.doesNotMatch(invalid.stdout, /RUNTIME_ACCEPTED/u);
+    }
+  }
+});
+
+test('runtime snapshot propagates a failed earlier service instead of later successful checks', () => {
+  const result = runSourced(`
+MAXIM_PRODUCTION_API_SERVICES=(api-admin api-ingress)
+TARGET_HAS_OCR_NATIVE_SANDBOX=0
+MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX=0
+COMPONENT_IMAGE_REF[api-shared]=maxim-api:fixture
+COMPONENT_IMAGE_ID[api-shared]=fixture-api-id
+COMPONENT_IMAGE_REF[miniapp-major-static]=maxim-miniapp-major:fixture
+COMPONENT_IMAGE_ID[miniapp-major-static]=fixture-miniapp-id
+COMPONENT_IMAGE_REF[admin-static]=maxim-admin:fixture
+COMPONENT_IMAGE_ID[admin-static]=fixture-admin-id
+inspect_service_runtime() { [[ "$1" != api-admin ]]; }
+maxim_topology_require_ocr_native_sandbox_absent() { :; }
+maxim_topology_verify_photo_native_sandbox_for_image() { :; }
+verify_no_unreviewed_running_api_containers() { :; }
+if value="$(verify_runtime_snapshot)"; then printf '%s\\n' SNAPSHOT_ACCEPTED; else exit "$?"; fi`);
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stdout, /SNAPSHOT_ACCEPTED/u);
+});
+
+test('main proves journal, runtime, released queues, smokes, and stability before commit', () => {
+  const body = `
 validate_finalizer_environment() { printf '%s\\n' validate >&2; }
 maxim_require_ordinary_effect_authority() { return 0; }
 acquire_deploy_lock() { printf '%s\\n' lock >&2; }
@@ -314,11 +715,8 @@ verify_target_images_unchanged() { printf '%s\\n' image-recheck >&2; }
 capture_applied_migrations() { printf '%s\\n' migrations >&2; }
 verify_recovery_base_unchanged() { printf '%s\\n' journal-recheck >&2; }
 commit_recovered_release() { printf '%s\\n' commit >&2; }
-main main
-`);
-
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.stderr.trim().split('\n'), [
+`;
+  const expected = [
     'validate',
     'lock',
     'checkout',
@@ -336,11 +734,24 @@ main main
     'queues',
     'journal-recheck',
     'commit',
-  ]);
+  ];
+  for (const invocation of [
+    'main main',
+    'if main main; then :; else exit "$?"; fi',
+    'main main --api-only\n[[ "$API_ONLY_RECOVERY" -eq 1 ]]',
+    'if main main --api-only; then [[ "$API_ONLY_RECOVERY" -eq 1 ]]; else exit "$?"; fi',
+  ]) {
+    const result = runSourced(`${body}\n${invocation}`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stderr.trim().split('\n'), expected);
+  }
 });
 
 test('main fails closed before manifest commit when any proof boundary fails', () => {
   for (const failingFunction of [
+    'validate_finalizer_environment',
+    'acquire_deploy_lock',
+    'maxim_require_ordinary_effect_authority',
     'verify_synchronized_checkout',
     'verify_controller_runtime_compatibility',
     'resolve_recovery_base_manifest',
@@ -349,13 +760,19 @@ test('main fails closed before manifest commit when any proof boundary fails', (
     'verify_runtime_snapshot',
     'assert_webhook_queue_fence_released',
     'run_strict_finalizer_smokes',
+    'wait_for_runtime_stability',
     'verify_target_images_unchanged',
     'capture_applied_migrations',
     'verify_recovery_base_unchanged',
   ]) {
-    const result = runSourced(`
+    for (const invocation of [
+      'main main',
+      'if main main --api-only; then printf MAIN_ACCEPTED; else exit "$?"; fi',
+    ]) {
+      const result = runSourced(`
 validate_finalizer_environment() { :; }
 acquire_deploy_lock() { :; }
+maxim_require_ordinary_effect_authority() { :; }
 verify_synchronized_checkout() { :; }
 verify_controller_runtime_compatibility() { :; }
 resolve_recovery_base_manifest() { :; }
@@ -370,11 +787,12 @@ capture_applied_migrations() { :; }
 verify_recovery_base_unchanged() { :; }
 commit_recovered_release() { printf '%s\\n' COMMIT_REACHED; }
 ${failingFunction}() { return 41; }
-main main
+${invocation}
 `);
 
-    assert.notEqual(result.status, 0, failingFunction);
-    assert.doesNotMatch(result.stdout, /COMMIT_REACHED/u, failingFunction);
+      assert.notEqual(result.status, 0, `${failingFunction}/${invocation}`);
+      assert.doesNotMatch(result.stdout, /COMMIT_REACHED|MAIN_ACCEPTED/u, failingFunction);
+    }
   }
 });
 

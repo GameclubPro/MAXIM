@@ -3,9 +3,10 @@ import { isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const RECOVERY_FINALIZER_SPLIT_RUNTIME_SHA = 'a8044f45716a64f305b54a88048de1d6960a086c';
+export const RECOVERY_FINALIZER_API_ONLY_RUNTIME_SHA = '76dcefb09dc51355bed98847595d47654cde3905';
 
 const fullSha = /^[0-9a-f]{40}$/u;
-const permittedControllerChanges = new Set([
+const legacyPermittedControllerChanges = new Set([
   'docs/operations/runbooks/webhook-source-abandonment.md',
   'infra/AGENTS.md',
   'infra/scripts/legacy-cold-client.mjs',
@@ -28,12 +29,25 @@ const permittedControllerChanges = new Set([
   'infra/scripts/vps-finalize-release-recovery.sh',
   'infra/scripts/vps-connect.sh',
 ]);
+const apiOnlyPermittedControllerChanges = new Set([
+  'docs/development/production-operations-reference.md',
+  'infra/scripts/recovery-finalizer-identity.mjs',
+  'infra/scripts/recovery-finalizer-identity.test.mjs',
+  'infra/scripts/recovery-finalizer-guards.test.mjs',
+  'infra/scripts/vps-finalize-release-recovery.sh',
+  'infra/scripts/vps-connect.sh',
+]);
+const permittedControllerChangesByRuntime = new Map([
+  [RECOVERY_FINALIZER_SPLIT_RUNTIME_SHA, legacyPermittedControllerChanges],
+  [RECOVERY_FINALIZER_API_ONLY_RUNTIME_SHA, apiOnlyPermittedControllerChanges],
+]);
 
 function requireFact(value, code) {
   if (!value) throw new Error(code);
 }
 
-// FLAG: A newer host reader may finalize only this reviewed unchanged runtime.
+// FLAG: A newer host reader may finalize only these reviewed unchanged runtimes.
+// Each runtime retains its own finite controller allowlist; allowances do not transfer.
 // Image identity, CI, terminal journals and strict smokes remain separate checks;
 // this allowance never changes an image revision or a recorded runtime source.
 export function assertRecoveryFinalizerIdentity({
@@ -56,8 +70,9 @@ export function assertRecoveryFinalizerIdentity({
       typeof run === 'function',
     'recovery_finalizer_repository_required',
   );
+  const permittedControllerChanges = permittedControllerChangesByRuntime.get(runtimeSha);
   requireFact(
-    controllerSha === runtimeSha || runtimeSha === RECOVERY_FINALIZER_SPLIT_RUNTIME_SHA,
+    controllerSha === runtimeSha || permittedControllerChanges !== undefined,
     'recovery_finalizer_split_runtime_refused',
   );
   const gitEnvironment = { ...process.env };
