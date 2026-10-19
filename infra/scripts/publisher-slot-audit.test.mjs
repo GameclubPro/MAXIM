@@ -14,6 +14,7 @@ import {
 } from './publisher-slot-audit.mjs';
 import {
   buildPublisherPublicationPrivilegesSql,
+  buildPublisherPublicationsAuditSql,
   PUBLISHER_PUBLICATION_AUDIT_COLUMNS,
 } from './publisher-publications-audit.mjs';
 
@@ -82,6 +83,74 @@ async function seed(db) {
       '2026-10-19T21:29:01','private-lock',NULL,'private-unknown-error');
   `);
 }
+
+async function assertUtcMetadataClocks(db) {
+  const originalZone = (await db.query("SELECT current_setting('TimeZone') AS zone")).rows[0].zone;
+  const cases = [
+    ['1 minute', null, 'bot_access_unconfirmed'],
+    ['-1 minute', null, 'metadata_ready'],
+    ['-2 days', '1 minute', 'route_quarantined'],
+    ['-2 days', '-1 minute', 'metadata_ready'],
+  ];
+  try {
+    for (const zone of ['UTC', 'Asia/Tokyo', 'America/Los_Angeles']) {
+      await db.query("SELECT set_config('TimeZone',$1,false)", [zone]);
+      for (const [checkedOffset, quarantineOffset, expected] of cases) {
+        await db.exec(`UPDATE publisher_entity_bindings SET
+          bot_access_checked_at=(statement_timestamp() AT TIME ZONE 'UTC')+interval '${checkedOffset}',
+          send_route_quarantined_until=${quarantineOffset ? `(statement_timestamp() AT TIME ZONE 'UTC')+interval '${quarantineOffset}'` : 'NULL'};`);
+        const result = await report(db);
+        assert.equal(result.matched_occurrences, 8, zone);
+        assert.deepEqual(
+          [...new Set(result.rows.map((row) => row.access_reason))],
+          [expected],
+          zone,
+        );
+        assert.equal(result.rows.find((row) => row.slot === 1).scheduled_at, '2026-10-19T21:30:59');
+      }
+    }
+  } finally {
+    await db.query("SELECT set_config('TimeZone',$1,false)", [originalZone]);
+    await db.exec(
+      "UPDATE publisher_entity_bindings SET bot_access_checked_at='2026-01-01',send_route_quarantined_until=NULL;",
+    );
+  }
+}
+
+function assertBoundedMetadataProbe(plan, table, index, keys, tuple = true) {
+  const matches = [];
+  const visit = (node, parent) => {
+    if (node['Relation Name'] === table) matches.push({ node, parent });
+    for (const childNode of node.Plans ?? []) visit(childNode, node);
+  };
+  visit(plan);
+  assert.equal(matches.length, 1, table);
+  const { node, parent } = matches[0];
+  assert.equal(node['Node Type'], 'Index Scan', JSON.stringify(node));
+  assert.ok([index].flat().includes(node['Index Name']), JSON.stringify(node));
+  assert.equal(parent['Node Type'], 'Limit', JSON.stringify(parent));
+  if (tuple) {
+    const keyPattern = `ROW\\(${keys.join(', ')}\\)`;
+    assert.match(node['Index Cond'], new RegExp(`${keyPattern} >= ROW\\(`, 'u'));
+    assert.match(node['Index Cond'], new RegExp(`${keyPattern} <= ROW\\(`, 'u'));
+  } else {
+    for (const key of keys) assert.match(node['Index Cond'], new RegExp(`\\b${key} = `, 'u'));
+  }
+  assert.equal(node.Filter, undefined, JSON.stringify(node));
+  assert.equal(node['Rows Removed by Filter'] ?? 0, 0, JSON.stringify(node));
+  assert.equal(node['Rows Removed by Index Recheck'] ?? 0, 0, JSON.stringify(node));
+  assert.ok(node['Actual Loops'] > 0, JSON.stringify(node));
+  assert.ok(node['Actual Rows'] <= 1, JSON.stringify(node));
+  const buffers = (node['Shared Hit Blocks'] ?? 0) + (node['Shared Read Blocks'] ?? 0);
+  assert.ok(buffers <= 8 * Math.max(1, node['Actual Loops']), JSON.stringify(node));
+  return { loops: node['Actual Loops'], rowsPerProbe: node['Actual Rows'], buffers };
+}
+
+test('UTC slot and Prisma metadata clocks stay equivalent across session timezones', async (t) => {
+  const db = await setup(t);
+  await seed(db);
+  await assertUtcMetadataClocks(db);
+});
 
 test('fixed slots include every status, ERROR/cancellation causes and bounded actor candidates without identities', async (t) => {
   const db = await setup(t);
@@ -333,9 +402,16 @@ test(
     assert.match((await db.query('SELECT version()')).rows[0].version, /^PostgreSQL 16/u);
     await db.exec(fixture);
     await seed(db);
+    await assertUtcMetadataClocks(db);
     await db.exec(`
     CREATE INDEX publication_occurrences_status_scheduled_idx ON publication_occurrences(status,scheduled_at);
     CREATE INDEX publication_occurrences_dispatch_created_idx ON publication_occurrences(dispatch_profile,status,created_at,id);
+    CREATE INDEX managed_bot_chat_catalog_chat_status_idx ON managed_bot_chat_catalog(chat_id,status);
+    CREATE INDEX managed_entity_access_edges_user_demand_idx ON managed_entity_access_edges(user_id,chat_id,bot_id);
+    INSERT INTO managed_bot_chat_catalog(bot_id,chat_id,status,entity_type,title)
+      SELECT 'private-other-bot-'||n,'${chat}','ACTIVE','CHANNEL',NULL FROM generate_series(1,20000) n;
+    INSERT INTO managed_entity_access_edges(chat_id,user_id,bot_id,state,user_role,entity_type)
+      SELECT '${chat}','${actor}','private-other-bot-'||n,'GRANTED','ADMIN','CHANNEL' FROM generate_series(1,20000) n;
     INSERT INTO publications SELECT 'private-history-p-'||n,'999999999','ACTIVE','SNAPSHOT','SELECTED','PUBLIK_V1','private-bot',NULL FROM generate_series(1,50000) n;
     INSERT INTO publication_schedules SELECT 'private-history-s-'||n,'ONCE','ACTIVE',1,'{}' FROM generate_series(1,50000) n;
     INSERT INTO publication_occurrences(id,publication_id,schedule_id,status,scheduled_at,dispatch_profile,required_bot_id)
@@ -368,6 +444,19 @@ test(
     const nativePlan = (await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`)).rows[0][
       'QUERY PLAN'
     ][0].Plan;
+    const catalogPresent = assertBoundedMetadataProbe(
+      nativePlan,
+      'managed_bot_chat_catalog',
+      'managed_bot_chat_catalog_pkey',
+      ['bot_id', 'chat_id'],
+    );
+    const actorPresent = assertBoundedMetadataProbe(
+      nativePlan,
+      'managed_entity_access_edges',
+      ['managed_entity_access_edges_pkey', 'managed_entity_access_edges_user_demand_idx'],
+      ['chat_id', 'user_id', 'bot_id'],
+      false,
+    );
     const plainPlan = (await db.query(buildPublisherSlotAuditSql(actor, chat, minute, true)))
       .rows[0]['QUERY PLAN'];
     assert.doesNotMatch(JSON.stringify(plainPlan), new RegExp(`${actor}|${chat}`, 'u'));
@@ -384,6 +473,61 @@ test(
         (node) => node['Node Type'] === 'Index Scan' || node['Node Type'] === 'Index Only Scan',
       ),
     );
+    await db.exec(`INSERT INTO chats VALUES ('${chat}','CHANNEL',NULL);
+      UPDATE publication_occurrences SET scheduled_at='2026-01-01' WHERE id='private-o-1';`);
+    const generalQuery = buildPublisherPublicationsAuditSql();
+    const generalCatalogPresent = assertBoundedMetadataProbe(
+      (await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${generalQuery}`)).rows[0][
+        'QUERY PLAN'
+      ][0].Plan,
+      'managed_bot_chat_catalog',
+      'managed_bot_chat_catalog_pkey',
+      ['bot_id', 'chat_id'],
+    );
+    assert.ok(
+      (await db.query(generalQuery)).rows[0].json_build_object.target_reasons.some(
+        (row) => row.reason === 'metadata_ready',
+      ),
+    );
+    await db.exec(`DELETE FROM managed_bot_chat_catalog WHERE bot_id='private-bot';`);
+    const absentQuery = buildPublisherSlotAuditSql(actor, chat, minute);
+    const catalogAbsent = assertBoundedMetadataProbe(
+      (await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${absentQuery}`)).rows[0][
+        'QUERY PLAN'
+      ][0].Plan,
+      'managed_bot_chat_catalog',
+      'managed_bot_chat_catalog_pkey',
+      ['bot_id', 'chat_id'],
+    );
+    assert.ok(
+      (await report(db)).rows.every((row) => row.access_reason === 'catalog_missing_or_inactive'),
+    );
+    const generalCatalogAbsent = assertBoundedMetadataProbe(
+      (await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${generalQuery}`)).rows[0][
+        'QUERY PLAN'
+      ][0].Plan,
+      'managed_bot_chat_catalog',
+      'managed_bot_chat_catalog_pkey',
+      ['bot_id', 'chat_id'],
+    );
+    const generalMissingReasons = (await db.query(generalQuery)).rows[0].json_build_object
+      .target_reasons;
+    assert.ok(generalMissingReasons.some((row) => row.reason === 'catalog_missing_or_inactive'));
+    assert.ok(generalMissingReasons.every((row) => row.reason !== 'metadata_ready'));
+    await db.exec(`INSERT INTO managed_bot_chat_catalog VALUES ('private-bot','${chat}','ACTIVE','CHANNEL',NULL);
+      DELETE FROM managed_entity_access_edges WHERE chat_id='${chat}' AND user_id='${actor}' AND bot_id='private-bot';`);
+    const actorAbsent = assertBoundedMetadataProbe(
+      (await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${absentQuery}`)).rows[0][
+        'QUERY PLAN'
+      ][0].Plan,
+      'managed_entity_access_edges',
+      ['managed_entity_access_edges_pkey', 'managed_entity_access_edges_user_demand_idx'],
+      ['chat_id', 'user_id', 'bot_id'],
+      false,
+    );
+    const missingActorRows = (await report(db)).rows;
+    assert.ok(missingActorRows.length > 0);
+    assert.ok(missingActorRows.every((row) => row.access_reason === 'actor_edge_missing'));
     const source = tables.filter((node) => node['Relation Name'] === 'publication_occurrences');
     assert.equal(source.length, 14);
     for (const node of source) {
@@ -425,6 +569,12 @@ test(
         sourceComplete: result.source_complete,
         deliveriesComplete: result.deliveries_complete,
         planIdentifiersExposed: false,
+        catalogPresent,
+        actorPresent,
+        actorAbsent,
+        catalogAbsent,
+        generalCatalogPresent,
+        generalCatalogAbsent,
       }),
     );
   },

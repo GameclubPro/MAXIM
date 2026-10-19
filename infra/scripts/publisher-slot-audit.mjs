@@ -188,6 +188,8 @@ export function buildPublisherSlotAuditSql(actor, chat, minute, explain = false)
     .join('\nUNION ALL\n');
   const actorParam = '(SELECT actor FROM scope_params)';
   const chatParam = '(SELECT chat FROM scope_params)';
+  // FLAG: Both catalog tuple bounds and their matching order keep a competing chat/status
+  // index from filtering other bots before LIMIT. Compare saved Prisma clocks as UTC timestamps.
   const query = `WITH scope_params AS MATERIALIZED (SELECT ${literal(actor)}::text AS actor,${literal(chat)}::text AS chat), heads AS MATERIALIZED (${heads}), counts AS MATERIALIZED (
     SELECT slot,status,least(count(*),32)::integer AS sampled,count(*)>32 AS truncated FROM heads GROUP BY slot,status
   ), samples AS MATERIALIZED (SELECT * FROM (SELECT *,row_number() OVER(PARTITION BY slot,status ORDER BY scheduled_at) AS ordinal FROM heads) ranked WHERE ordinal<=32),
@@ -208,12 +210,14 @@ export function buildPublisherSlotAuditSql(actor, chat, minute, explain = false)
       WHEN e.user_role IS NULL OR e.user_role::text NOT IN ('ADMIN','OWNER') THEN 'actor_not_admin'
       WHEN e.entity_type IS DISTINCT FROM o.entity_type THEN 'actor_edge_type_mismatch'
       WHEN b.bot_access_state IS NULL OR b.bot_access_state::text NOT IN ('CONFIRMED_ADMIN','CONFIRMED_OWNER') THEN 'bot_not_admin'
-      WHEN b.bot_access_checked_at IS NULL OR b.bot_access_checked_at>statement_timestamp() THEN 'bot_access_unconfirmed'
-      WHEN b.send_route_quarantined_until>statement_timestamp() THEN 'route_quarantined' ELSE 'metadata_ready' END AS access_reason
+      WHEN b.bot_access_checked_at IS NULL OR b.bot_access_checked_at>(statement_timestamp() AT TIME ZONE 'UTC') THEN 'bot_access_unconfirmed'
+      WHEN b.send_route_quarantined_until>(statement_timestamp() AT TIME ZONE 'UTC') THEN 'route_quarantined' ELSE 'metadata_ready' END AS access_reason
     FROM scoped o LEFT JOIN LATERAL (SELECT mode,status,revision FROM public.publication_schedules WHERE id=o.schedule_id LIMIT 1 OFFSET 0) s ON true
     LEFT JOIN LATERAL (SELECT publisher_bot_id,status,bot_access_state,bot_access_checked_at,send_route_quarantined_until FROM public.publisher_entity_bindings WHERE chat_id=${chatParam} LIMIT 1 OFFSET 0) b ON true
     LEFT JOIN LATERAL (SELECT publik_enabled FROM public.managed_entity_publication_policies WHERE chat_id=${chatParam} LIMIT 1 OFFSET 0) policy ON true
-    LEFT JOIN LATERAL (SELECT status,entity_type FROM public.managed_bot_chat_catalog WHERE bot_id=o.required_bot_id AND chat_id=${chatParam} LIMIT 1 OFFSET 0) c ON true
+    LEFT JOIN LATERAL (SELECT status,entity_type FROM public.managed_bot_chat_catalog
+      WHERE (bot_id,chat_id)>=(o.required_bot_id,${chatParam}) AND (bot_id,chat_id)<=(o.required_bot_id,${chatParam})
+      ORDER BY bot_id,chat_id LIMIT 1 OFFSET 0) c ON true
     LEFT JOIN LATERAL (SELECT chat_id,state,user_role,entity_type FROM public.managed_entity_access_edges WHERE chat_id=${chatParam} AND user_id=${actorParam} AND bot_id=o.required_bot_id LIMIT 1 OFFSET 0) e ON true),
   delivery_heads AS MATERIALIZED (SELECT o.id AS occurrence_id,o.required_bot_id AS occurrence_bot,d.* FROM scoped o CROSS JOIN LATERAL (
     SELECT id,target_chat_id,status,attempt_count,remote_message_id,created_at,bot_id,required_bot_id,dispatch_profile,
