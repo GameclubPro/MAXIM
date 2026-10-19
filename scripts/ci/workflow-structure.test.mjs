@@ -3,6 +3,8 @@ import { readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
 
+import { parse } from 'yaml';
+
 const root = resolve(import.meta.dirname, '../..');
 const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
 
@@ -78,7 +80,7 @@ test('native race coverage cannot silently skip its required stores or blocking 
   );
   assert.match(postgres, /MAXIM_TEST_REDIS_URL: redis:\/\/127\.0\.0\.1:6379/u);
   assert.match(postgres, /run: npm run test:postgres-races --workspace @maxim\/api/u);
-  assert.doesNotMatch(postgres, /continue-on-error|if:/u);
+  assert.doesNotMatch(postgres, /continue-on-error/u);
   const required = workflow.slice(workflow.indexOf('  required:'));
   assert.match(required, /postgres-races/u);
 });
@@ -103,4 +105,54 @@ test('native race lane lists existing literal test paths without shell operators
   ]) {
     assert.ok(paths.includes(path), `Missing critical native regression: ${path}`);
   }
+});
+
+test('isolates every native shard and keeps all compatibility checks blocking', () => {
+  const jobs = parse(workflow).jobs;
+  const postgres = jobs['postgres-races'];
+  const shards = Array.from({ length: 8 }, (_, index) => `${index + 1}/8`);
+  assert.deepEqual(postgres.strategy.matrix.shard, [...shards, 'compatibility']);
+  assert.equal(postgres.strategy['fail-fast'], false);
+  assert.equal(postgres['timeout-minutes'], 10);
+  assert.ok(postgres.services.postgres);
+  assert.ok(postgres.services.redis);
+  assert.equal(postgres.needs, undefined, 'Shards must run independently');
+  const native = postgres.steps.find((step) => step.name === 'Native race shard');
+  assert.equal(native.if, "matrix.shard != 'compatibility'");
+  assert.equal(
+    native.run,
+    'npm run test:postgres-races --workspace @maxim/api -- -- --shard=${{ matrix.shard }} --json --outputFile=postgres-races.json',
+  );
+  const compatibility = postgres.steps.filter(
+    (step) => step.if === "matrix.shard == 'compatibility'",
+  );
+  assert.deepEqual(
+    compatibility.map((step) => step.name),
+    [
+      'Outcome cohort online migrations with native PostgreSQL',
+      'Quarantine proof bounds with native PostgreSQL',
+      'Check traffic policy revision and activation guards',
+      'Participant report SQL, shared executor, journal and retention',
+      'Retention admission and receipt recovery with PostgreSQL',
+      'Conservative moderation rollup compatibility with PostgreSQL',
+    ],
+  );
+  for (const step of postgres.steps) {
+    assert.equal(step['continue-on-error'], undefined);
+    if (step.if) {
+      assert.ok(
+        [
+          "matrix.shard == 'compatibility'",
+          "matrix.shard != 'compatibility'",
+          "always() && matrix.shard != 'compatibility'",
+        ].includes(step.if),
+        `Unexpected native coverage condition: ${step.if}`,
+      );
+    }
+  }
+  assert.ok(jobs.required.needs.includes('postgres-races'));
+  assert.match(jobs.required.steps[0].env.POSTGRES_RESULT, /needs\.postgres-races\.result/u);
+  const report = postgres.steps.find((step) => step.name === 'Save native shard result');
+  assert.equal(report.if, "always() && matrix.shard != 'compatibility'");
+  assert.equal(report.with.path, 'apps/api/postgres-races.json');
 });

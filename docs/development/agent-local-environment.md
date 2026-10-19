@@ -49,6 +49,21 @@ If the browser launch reports missing OS libraries, use the supported Playwright
 installer with administrator access. Existing compatible system libraries need no reinstall.
 Keep WSL projects, node_modules and temporary databases on the Linux filesystem for I/O efficiency.
 
+## Native CI partitioning
+
+The blocking PostgreSQL Races lane runs eight native Jest shards and one compatibility group.
+Every matrix job owns independent PostgreSQL/Redis services; suites remain serial within a shard.
+The public explicit test list is unchanged. `Required` waits for the entire matrix, and failure in
+one shard does not cancel the others. Native JSON reports are retained even after test failure.
+Each job has a ten-minute budget; queue time and the other CI lanes are separate from that budget.
+Compare observed durations before changing shard count. This is not a ten-minute full-release guarantee.
+
+To inspect one shard without executing tests, pass options through both npm boundaries:
+
+```bash
+node scripts/agent/with-test-stores.mjs -- npm run test:postgres-races --workspace @maxim/api -- -- --shard=1/8 --listTests --json
+```
+
 ## Disposable real-store validation without Docker
 
 ```bash
