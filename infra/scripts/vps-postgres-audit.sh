@@ -501,7 +501,7 @@ SELECT CASE
               'chat_rules', 'managed_polls', 'chat_bot_memberships', 'webhook_dependency_quarantines',
               'publications', 'publication_schedules', 'publication_occurrences',
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
-              'managed_broadcast_deliveries', 'chats', 'commercial_review_samples', '_prisma_migrations',
+              'managed_broadcast_deliveries', 'managed_broadcasts', 'chats', 'commercial_review_samples', '_prisma_migrations',
               'webhook_execution_claims', 'max_action_ledger',
                 'chat_settings',
                 'moderation_delete_intents',

@@ -2655,7 +2655,7 @@ test('Publisher slot audit validates exact arguments and keeps fixed session lim
   assert.equal(result.status, 0, result.stderr);
   const sql = readFileSync(data.sql, 'utf8');
   assert.match(sql, /publisher_slot_privileges_ready/u);
-  assert.match(sql, /present = 19/u);
+  assert.match(sql, /present = 31/u);
   assert.match(sql, /publisher_publication_audit_ready/u);
   assert.match(sql, /publisher_slot_indexes_ready/u);
   assert.match(sql, /EXPLAIN \(FORMAT JSON\) WITH scope_params/u);
