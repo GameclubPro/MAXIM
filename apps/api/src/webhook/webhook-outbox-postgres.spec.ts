@@ -1741,7 +1741,10 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       await expect(
         prisma.$transaction(
           async (tx) => {
-            if (phase === 'failed') await tx.$executeRaw`SET LOCAL enable_incremental_sort = off`;
+            if (phase === 'failed') {
+              await tx.$executeRaw`SET LOCAL enable_incremental_sort = off`;
+              await tx.$executeRaw`SET LOCAL enable_bitmapscan = off`;
+            }
             plan = await tx.$queryRaw(
               Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${captured}`,
             );
