@@ -483,7 +483,10 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
           ${now}::timestamp - interval '1 day' + n * interval '1 millisecond', ${now}
         FROM generate_series(1, ${parents + retained}::integer) AS n
       `);
-      await db.$executeRaw(Prisma.sql`
+      // FLAG: Keep the same full fixture, but bound each synthetic recipient insert.
+      // CI shares CPU with other jobs; seed timeouts must not replace query-plan checks.
+      for (let first = 1; first <= parents + retained; first += 2_000) {
+        await db.$executeRaw(Prisma.sql`
         INSERT INTO "managed_broadcast_deliveries" (
           "id", "broadcast_id", "occurrence_index", "target_chat_id", "publication_occurrence_id",
           "content_revision_id", "dispatch_profile", "required_bot_id", "dialog_bot_id",
@@ -500,8 +503,9 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
           CASE WHEN n <= ${parents} THEN NULL::text ELSE ${prefix} || '-receipt-' || n::text END,
           CASE WHEN n <= ${parents} THEN NULL::timestamp ELSE statement_timestamp()::timestamp(3) END,
           ${now}
-        FROM generate_series(1, ${parents + retained}::integer) AS n
+        FROM generate_series(${first}::integer, ${Math.min(first + 1_999, parents + retained)}::integer) AS n
       `);
+      }
       const ready = await envelope(-1_000);
       const options = {
         now,

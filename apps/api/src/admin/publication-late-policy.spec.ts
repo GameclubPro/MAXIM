@@ -1,8 +1,79 @@
+import {
+  DEFAULT_PUBLICATION_LATE_POLICY,
+  type PublicationScheduleInput,
+} from '@maxim/contracts/publication';
 import { PublicationScheduleMode } from '../prisma/prisma-client';
 import {
   isPublicationScheduledWindowExpired,
   isPublicationOccurrenceWindowClosed,
+  withPreservedPublicationLatePolicy,
 } from './publication-late-policy';
+
+describe('Publication late policy on schedule updates', () => {
+  const schedule = {
+    mode: 'once',
+    timezone: 'UTC',
+    at: '2026-10-20T09:00:00Z',
+    replaceConflicts: false,
+  } satisfies PublicationScheduleInput;
+  const strictPolicy = { mode: 'strict', maxDelayMinutes: 5, catchUp: 'all' } as const;
+
+  it.each([
+    { mode: 'now', timezone: 'UTC' },
+    { ...schedule, latePolicy: strictPolicy },
+  ] satisfies PublicationScheduleInput[])(
+    'keeps the explicit $mode input without comparing the previous schedule',
+    (input) => {
+      const compare = jest.fn(() => true);
+      expect(withPreservedPublicationLatePolicy(input, schedule, true, compare)).toBe(input);
+      expect(compare).not.toHaveBeenCalled();
+    },
+  );
+
+  it('defaults a new schedule without comparing absent history', () => {
+    const compare = jest.fn(() => true);
+    expect(withPreservedPublicationLatePolicy(schedule, null, false, compare)).toEqual({
+      ...schedule,
+      latePolicy: DEFAULT_PUBLICATION_LATE_POLICY,
+    });
+    expect(compare).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    'retains unchanged explicit policy with legacy preservation %s',
+    (legacy) => {
+      const previous = { ...schedule, latePolicy: strictPolicy };
+      const compare = jest.fn(() => true);
+      expect(withPreservedPublicationLatePolicy(schedule, previous, legacy, compare)).toEqual({
+        ...schedule,
+        latePolicy: strictPolicy,
+      });
+      expect(compare).toHaveBeenCalledTimes(1);
+      expect(compare).toHaveBeenCalledWith(previous, schedule);
+    },
+  );
+
+  it('keeps the historical omitted policy on an unchanged accepted schedule', () => {
+    expect(withPreservedPublicationLatePolicy(schedule, schedule, true, () => true)).toBe(schedule);
+  });
+
+  it('defaults the omitted policy on an unchanged draft', () => {
+    expect(withPreservedPublicationLatePolicy(schedule, schedule, false, () => true)).toEqual({
+      ...schedule,
+      latePolicy: DEFAULT_PUBLICATION_LATE_POLICY,
+    });
+  });
+
+  it.each([schedule, { ...schedule, latePolicy: strictPolicy }])(
+    'defaults a replacement schedule instead of inheriting its old policy',
+    (previous) => {
+      expect(withPreservedPublicationLatePolicy(schedule, previous, true, () => false)).toEqual({
+        ...schedule,
+        latePolicy: DEFAULT_PUBLICATION_LATE_POLICY,
+      });
+    },
+  );
+});
 
 describe('Publication scheduled late policy', () => {
   const now = new Date('2026-09-30T09:00:00Z');

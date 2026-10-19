@@ -2,6 +2,7 @@ import {
   readPublicationLatePolicy,
   snapshotPublicationDeliveryDeadline,
   withDefaultPublicationLatePolicy,
+  withPreservedPublicationLatePolicy,
   resolvePublicationRecurrenceFrom,
 } from './publication-late-policy';
 import {
@@ -851,11 +852,12 @@ export class PublicationService {
         ? existingSchedule
         : request.schedule === null
           ? null
-          : this.normalizeUpdatedSchedule(
-              request.schedule,
+          : withPreservedPublicationLatePolicy(
+              this.normalizeSchedule(request.schedule, now),
               previousSchedulePolicy,
-              now,
               existingSchedule !== null,
+              (previous, schedule) =>
+                this.arePublicationSchedulesEquivalent(previous, schedule, true),
             );
     const desiredIntent =
       request.intent ?? (existing.lifecycle === PublicationLifecycle.DRAFT ? 'draft' : 'publish');
@@ -3029,25 +3031,6 @@ export class PublicationService {
     now: Date,
   ): PublicationScheduleInput {
     return normalizePublicationSchedule(schedule, now, PUBLICATION_PAST_GRACE_MS);
-  }
-
-  private normalizeUpdatedSchedule(
-    input: PublicationScheduleInput,
-    previous: PublicationScheduleInput | null,
-    now: Date,
-    preserveLegacyPolicy: boolean,
-  ): PublicationScheduleInput {
-    const schedule = this.normalizeSchedule(input, now);
-    if (schedule.mode === 'now' || schedule.latePolicy !== undefined) return schedule;
-    // FLAG: A replacement schedule is new intent and receives the current default. An omitted
-    // policy on an unchanged saved schedule must preserve its original deadline semantics.
-    // A draft has no accepted delivery deadline: retain its explicit policy, otherwise default.
-    if (previous && this.arePublicationSchedulesEquivalent(previous, schedule, true)) {
-      if (previous.mode !== 'now' && previous.latePolicy !== undefined)
-        return { ...schedule, latePolicy: previous.latePolicy };
-      if (preserveLegacyPolicy) return schedule;
-    }
-    return withDefaultPublicationLatePolicy(schedule);
   }
 
   private expandInitialSchedule(schedule: PublicationScheduleInput, now: Date): Date[] {

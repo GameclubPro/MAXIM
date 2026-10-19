@@ -142,6 +142,27 @@ export function withDefaultPublicationLatePolicy(
     : { ...schedule, latePolicy: schedule.latePolicy ?? DEFAULT_PUBLICATION_LATE_POLICY };
 }
 
+export function withPreservedPublicationLatePolicy(
+  schedule: PublicationScheduleInput,
+  previous: PublicationScheduleInput | null,
+  preserveLegacyPolicy: boolean,
+  areEquivalent: (
+    previous: PublicationScheduleInput,
+    schedule: PublicationScheduleInput,
+  ) => boolean,
+): PublicationScheduleInput {
+  if (schedule.mode === 'now' || schedule.latePolicy !== undefined) return schedule;
+  // FLAG: A replacement schedule is new intent and receives the current default. An omitted
+  // policy on an unchanged saved schedule must preserve its original deadline semantics.
+  // A draft has no accepted delivery deadline: retain its explicit policy, otherwise default.
+  if (previous && areEquivalent(previous, schedule)) {
+    if (previous.mode !== 'now' && previous.latePolicy !== undefined)
+      return { ...schedule, latePolicy: previous.latePolicy };
+    if (preserveLegacyPolicy) return schedule;
+  }
+  return withDefaultPublicationLatePolicy(schedule);
+}
+
 export function resolvePublicationRecurrenceFrom(
   rule: PublicationScheduleInput,
   schedule: { lastMaterializedAt?: Date | null; createdAt?: Date },
