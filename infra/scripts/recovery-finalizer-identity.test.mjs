@@ -6,12 +6,25 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import {
   assertRecoveryFinalizerIdentity,
+  RECOVERY_FINALIZER_API_ONLY_RUNTIME_SHA,
   RECOVERY_FINALIZER_SPLIT_RUNTIME_SHA,
 } from './recovery-finalizer-identity.mjs';
 
 const controllerSha = 'c'.repeat(40);
 const repositoryRoot = '/reviewed/maxim';
 const cli = resolve(import.meta.dirname, 'recovery-finalizer-identity.mjs');
+const apiOnlyControllerPaths = [
+  'docs/development/production-operations-reference.md',
+  'infra/scripts/recovery-finalizer-identity.mjs',
+  'infra/scripts/recovery-finalizer-identity.test.mjs',
+  'infra/scripts/recovery-finalizer-guards.test.mjs',
+  'infra/scripts/vps-finalize-release-recovery.sh',
+  'infra/scripts/vps-connect.sh',
+];
+const splitRuntimes = [
+  RECOVERY_FINALIZER_SPLIT_RUNTIME_SHA,
+  RECOVERY_FINALIZER_API_ONLY_RUNTIME_SHA,
+];
 
 function fixture(overrides = {}) {
   const state = {
@@ -19,10 +32,12 @@ function fixture(overrides = {}) {
     head: controllerSha,
     status: '',
     changes:
-      'infra/scripts/source-abandonment-session-journal.mjs\0' +
-      'infra/scripts/recovery-finalizer-identity.mjs\0' +
-      'infra/scripts/vps-finalize-release-recovery.sh\0' +
-      'docs/operations/runbooks/webhook-source-abandonment.md\0',
+      overrides.runtimeSha === RECOVERY_FINALIZER_API_ONLY_RUNTIME_SHA
+        ? `${apiOnlyControllerPaths.join('\0')}\0`
+        : 'infra/scripts/source-abandonment-session-journal.mjs\0' +
+          'infra/scripts/recovery-finalizer-identity.mjs\0' +
+          'infra/scripts/vps-finalize-release-recovery.sh\0' +
+          'docs/operations/runbooks/webhook-source-abandonment.md\0',
     failAt: null,
     calls: [],
   };
@@ -42,7 +57,14 @@ function fixture(overrides = {}) {
     assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
     assert.equal(options.timeout, 30_000);
     assert.equal(options.maxBuffer, 1024 * 1024);
-    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'])
+    for (const key of [
+      'GIT_DIR',
+      'GIT_WORK_TREE',
+      'GIT_COMMON_DIR',
+      'GIT_INDEX_FILE',
+      'GIT_OBJECT_DIRECTORY',
+      'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    ])
       assert.equal(Object.hasOwn(options.env, key), false);
     if (args[0] === state.failAt) throw new Error('secret stderr and private path');
     if (args[0] === 'rev-parse')
@@ -90,6 +112,40 @@ test('a reviewed descendant controller accepts only the fixed a804 runtime and f
   assert.equal(h.state.calls.filter((args) => args[0] === 'merge-base').length, 1);
 });
 
+test('the fixed 76d runtime accepts only its reviewed finalization controller paths', () => {
+  assert.equal(RECOVERY_FINALIZER_API_ONLY_RUNTIME_SHA, '76dcefb09dc51355bed98847595d47654cde3905');
+  const h = fixture({ runtimeSha: RECOVERY_FINALIZER_API_ONLY_RUNTIME_SHA });
+  assert.equal(h.check(), true);
+  assert.equal(h.state.calls.filter((args) => args[0] === 'merge-base').length, 1);
+  for (const path of apiOnlyControllerPaths) {
+    h.state.changes = `${path}\0`;
+    assert.equal(h.check(), true, path);
+  }
+});
+
+for (const path of [
+  'docs/operations/runbooks/webhook-source-abandonment.md',
+  'infra/AGENTS.md',
+  'infra/scripts/legacy-cold-client.mjs',
+  'infra/scripts/source-abandonment-session-journal.mjs',
+  'infra/scripts/webhook-frozen-ordered-anchor-inventory-reader.mjs',
+]) {
+  test(`the 76d runtime never inherits the a804 controller exception: ${path}`, () => {
+    const h = fixture({ runtimeSha: RECOVERY_FINALIZER_API_ONLY_RUNTIME_SHA });
+    h.state.changes = `${path}\0`;
+    assert.throws(h.check, /recovery_finalizer_runtime_dependency_changed/u);
+    const legacy = fixture();
+    legacy.state.changes = `${path}\0`;
+    assert.equal(legacy.check(), true);
+  });
+}
+
+test('the a804 runtime does not inherit the 76d documentation exception', () => {
+  const h = fixture();
+  h.state.changes = 'docs/development/production-operations-reference.md\0';
+  assert.throws(h.check, /recovery_finalizer_runtime_dependency_changed/u);
+});
+
 test('ordinary same-SHA finalization still permits any clean exact release without split checks', () => {
   const h = fixture({ runtimeSha: controllerSha });
   h.state.failAt = 'merge-base';
@@ -131,24 +187,14 @@ for (const root of ['relative/path', '', null, '/bad\0root']) {
   });
 }
 
-test('another Git root or controller HEAD cannot satisfy the selected checkout', () => {
-  const h = fixture();
-  h.state.root = '/another/checkout';
-  assert.throws(h.check, /recovery_finalizer_repository_changed/u);
-  h.state.root = repositoryRoot;
-  h.state.head = 'b'.repeat(40);
-  assert.throws(h.check, /recovery_finalizer_controller_changed/u);
-  assert.equal(
-    h.state.calls.some((args) => args[0] === 'merge-base'),
-    false,
-  );
-});
-
-for (const status of [' M tracked\0', 'M  staged\0', '?? untracked\0', ' m submodule\0']) {
-  test(`refuses a dirty checkout before proving ancestry: ${JSON.stringify(status)}`, () => {
-    const h = fixture();
-    h.state.status = status;
-    assert.throws(h.check, /recovery_finalizer_dirty_checkout/u);
+for (const runtimeSha of splitRuntimes) {
+  test(`another Git root or controller HEAD cannot satisfy ${runtimeSha}`, () => {
+    const h = fixture({ runtimeSha });
+    h.state.root = '/another/checkout';
+    assert.throws(h.check, /recovery_finalizer_repository_changed/u);
+    h.state.root = repositoryRoot;
+    h.state.head = 'b'.repeat(40);
+    assert.throws(h.check, /recovery_finalizer_controller_changed/u);
     assert.equal(
       h.state.calls.some((args) => args[0] === 'merge-base'),
       false,
@@ -156,15 +202,31 @@ for (const status of [' M tracked\0', 'M  staged\0', '?? untracked\0', ' m submo
   });
 }
 
+for (const status of [' M tracked\0', 'M  staged\0', '?? untracked\0', ' m submodule\0']) {
+  for (const runtimeSha of splitRuntimes) {
+    test(`refuses a dirty ${runtimeSha} checkout before ancestry: ${JSON.stringify(status)}`, () => {
+      const h = fixture({ runtimeSha });
+      h.state.status = status;
+      assert.throws(h.check, /recovery_finalizer_dirty_checkout/u);
+      assert.equal(
+        h.state.calls.some((args) => args[0] === 'merge-base'),
+        false,
+      );
+    });
+  }
+}
+
 for (const path of [
   'apps/api/src/main.ts',
   'apps/api/Dockerfile',
   'apps/miniapp/src/main.tsx',
+  'apps/admin/src/main.tsx',
   'packages/contracts/src/index.ts',
   'package.json',
   'package-lock.json',
   'config/change-impact.json',
   'infra/docker-compose.yml',
+  'infra/scripts/lib/deploy-lock.sh',
   'infra/scripts/lib/deploy-topology.sh',
   'infra/scripts/lib/legacy-cold-maintenance.sh',
   'infra/scripts/legacy-cold-journal.mjs',
@@ -173,45 +235,74 @@ for (const path of [
   'docs/arbitrary.md',
   'infra/scripts/source-abandonment-session-journal.mjs\ninfra/AGENTS.md',
 ]) {
-  test(`refuses a runtime or unreviewed dependency path: ${JSON.stringify(path)}`, () => {
-    const h = fixture();
-    h.state.changes = `${path}\0`;
-    assert.throws(h.check, /recovery_finalizer_runtime_dependency_changed/u);
+  for (const runtimeSha of splitRuntimes) {
+    test(`refuses a runtime or unreviewed ${runtimeSha} dependency: ${JSON.stringify(path)}`, () => {
+      const h = fixture({ runtimeSha });
+      h.state.changes = `${path}\0`;
+      assert.throws(h.check, /recovery_finalizer_runtime_dependency_changed/u);
+    });
+  }
+}
+
+for (const runtimeSha of splitRuntimes) {
+  test(`renames cannot hide a forbidden source or destination for ${runtimeSha}`, () => {
+    const h = fixture({ runtimeSha });
+    const allowed = 'infra/scripts/recovery-finalizer-identity.mjs';
+    const forbidden = 'apps/api/src/main.ts';
+    for (const paths of [
+      [allowed, forbidden],
+      [forbidden, allowed],
+    ]) {
+      h.state.changes = `${paths.join('\0')}\0`;
+      assert.throws(h.check, /recovery_finalizer_runtime_dependency_changed/u);
+    }
   });
 }
 
-test('renames cannot hide either a forbidden source or a forbidden destination', () => {
-  const h = fixture();
-  const allowed = 'infra/scripts/recovery-finalizer-identity.mjs';
-  const forbidden = 'apps/api/src/main.ts';
-  for (const paths of [
-    [allowed, forbidden],
-    [forbidden, allowed],
-  ]) {
-    h.state.changes = `${paths.join('\0')}\0`;
-    assert.throws(h.check, /recovery_finalizer_runtime_dependency_changed/u);
-  }
-});
-
 for (const changes of [
-  'infra/AGENTS.md',
-  'infra/AGENTS.md\0\0',
-  Buffer.from('infra/AGENTS.md\0'),
+  'infra/scripts/recovery-finalizer-identity.mjs',
+  'infra/scripts/recovery-finalizer-identity.mjs\0\0',
+  Buffer.from('infra/scripts/recovery-finalizer-identity.mjs\0'),
 ]) {
-  test(`malformed Git output fails closed: ${JSON.stringify(changes)}`, () => {
-    const h = fixture();
-    h.state.changes = changes;
-    assert.throws(h.check, /recovery_finalizer_(runtime_dependency_changed|git_output_refused)/u);
-  });
+  for (const runtimeSha of splitRuntimes) {
+    test(`malformed Git output fails closed for ${runtimeSha}: ${JSON.stringify(changes)}`, () => {
+      const h = fixture({ runtimeSha });
+      h.state.changes = changes;
+      assert.throws(h.check, /recovery_finalizer_(runtime_dependency_changed|git_output_refused)/u);
+    });
+  }
 }
 
 for (const command of ['rev-parse', 'status', 'merge-base', 'diff']) {
-  test(`failed or timed-out ${command} never forwards private Git diagnostics`, () => {
-    const h = fixture();
-    h.state.failAt = command;
-    assert.throws(h.check, { message: 'recovery_finalizer_git_failed' });
-  });
+  for (const runtimeSha of splitRuntimes) {
+    test(`failed or timed-out ${command} hides private diagnostics for ${runtimeSha}`, () => {
+      const h = fixture({ runtimeSha });
+      h.state.failAt = command;
+      assert.throws(h.check, { message: 'recovery_finalizer_git_failed' });
+    });
+  }
 }
+
+test('Git environment overrides cannot redirect either reviewed runtime checkout', () => {
+  const keys = [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_COMMON_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ];
+  const original = keys.map((key) => [key, process.env[key]]);
+  try {
+    for (const key of keys) process.env[key] = '/unreviewed/git-state';
+    for (const runtimeSha of splitRuntimes) assert.equal(fixture({ runtimeSha }).check(), true);
+  } finally {
+    for (const [key, value] of original) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
 
 test('real Git and CLI preserve same-SHA behavior, ignored env files, and refuse local changes', (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-finalizer-identity-'));
