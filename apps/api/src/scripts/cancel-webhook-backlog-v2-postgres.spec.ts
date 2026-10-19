@@ -1026,6 +1026,188 @@ native('exact cancellation v2 with native PostgreSQL and Redis', () => {
     }
   });
 
+  it('splits legal large hashes without losing selected offsets, locks or unrelated evidence', async () => {
+    const [row] = await root(),
+      n = nomination([row!]),
+      queue = 'moderation-actions',
+      prefix = `aggregate-${randomUUID()}`,
+      ids = Array.from({ length: 101 }, (_, index) => `${prefix}-${index}`),
+      selectedIndexes = new Set([0, 51, 99, 100]),
+      failedReason = 'retained-error:'.padEnd(105 * 1024, 'e'),
+      before = new Map<string, Record<string, string>>();
+    for (const [index, id] of ids.entries()) {
+      await job(
+        queue,
+        action(row!, {
+          idempotencyKey: id,
+          ...(selectedIndexes.has(index)
+            ? {}
+            : { chatId: '-unrelated-fixture', ledgerContext: undefined }),
+        }),
+        id,
+      );
+      await redis.hset(`bull:${queue}:${id}`, 'failedReason', failedReason);
+      before.set(id, await redis.hgetall(`bull:${queue}:${id}`));
+    }
+    const lockedId = ids[51]!;
+    await redis.set(`bull:${queue}:${lockedId}:lock`, 'fixture-owner', 'PX', 120000);
+    const waitBefore = await redis.lrange(`bull:${queue}:wait`, 0, -1),
+      selectedIds = new Set([...selectedIndexes].map((index) => ids[index]!)),
+      payloadSizes: number[] = [],
+      splitKeyCounts: number[] = [],
+      original = redis.callBuffer.bind(redis),
+      spy = jest.spyOn(redis, 'callBuffer').mockImplementation((async (
+        ...args: Parameters<Redis['callBuffer']>
+      ) => {
+        const reply: unknown = await original(...args);
+        if (String(args[1]).includes('HGETALL') && Array.isArray(reply)) {
+          if (reply[0] === 2) splitKeyCounts.push(Number(args[2]));
+          if (reply[0] === 1) {
+            const bytes = (value: unknown): number =>
+              Buffer.isBuffer(value)
+                ? value.length
+                : Array.isArray(value)
+                  ? value.reduce((sum: number, part: unknown) => sum + bytes(part), 0)
+                  : 0;
+            payloadSizes.push(bytes(reply));
+          }
+        }
+        return reply;
+      }) as Redis['callBuffer']);
+    try {
+      const p = await preview(n);
+      expect(p.cost.queueJobs).toBe(101);
+      expect(p.children.map((child) => child.childKey).sort()).toEqual(
+        [...selectedIndexes].map((index) => ids[index]!).sort(),
+      );
+      expect(p.retained.unattributedJobs).toBe(97);
+      expect(p.retained.lockedJobs).toBe(1);
+      const result = await applyTargetedBacklogCancellation(
+        db,
+        redis,
+        n,
+        applyRequest(n, p),
+        p,
+        bindings,
+      );
+      expect(result.issues).toEqual([]);
+      expect(result.outcome).toBe('APPLIED');
+      expect(result.counts.children).toBe(4);
+      expect(result.counts.removed).toBe(3);
+      expect(result.counts.retainedLocked).toBe(1);
+      const retainedIds = waitBefore.filter((id) => !selectedIds.has(id) || id === lockedId);
+      expect(await redis.lrange(`bull:${queue}:wait`, 0, -1)).toEqual(retainedIds);
+      for (const id of retainedIds)
+        expect(await redis.hgetall(`bull:${queue}:${id}`)).toEqual(before.get(id));
+      expect(await redis.get(`bull:${queue}:${lockedId}:lock`)).toBe('fixture-owner');
+      const saved = await db.webhookBacklogChild.findMany({
+        where: { cancellationId: n.id, kind: 'MAX_ACTION' },
+      });
+      expect(saved).toHaveLength(4);
+      for (const child of saved) {
+        const envelope = child.originalSnapshot as { jsonUtf8Base64: string },
+          captured = JSON.parse(
+            Buffer.from(envelope.jsonUtf8Base64, 'base64').toString('utf8'),
+          ) as {
+            hash: Record<string, string>;
+          };
+        expect(captured.hash).toEqual(before.get(child.childKey));
+      }
+      expect(splitKeyCounts).toContain(100);
+      expect(payloadSizes.length).toBeGreaterThan(1);
+      expect(Math.max(...payloadSizes)).toBeLessThanOrEqual(1024 * 1024);
+      recordNativeEvidence({
+        kind: 'V2_NATIVE_ADAPTIVE_HASH_REPLY',
+        jobs: ids.length,
+        selected: saved.length,
+        retained: retainedIds.length,
+        splitReplies: splitKeyCounts.length,
+        maxPayloadBytes: Math.max(...payloadSizes),
+        previewCost: p.cost,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each([0, 1])(
+    'keeps the individual 256KiB hash boundary with %i excess bytes',
+    async (excess) => {
+      const [row] = await root(),
+        n = nomination([row!]),
+        id = await job('moderation-actions', action(row!)),
+        key = `bull:moderation-actions:${id}`,
+        hash = await redis.hgetall(key),
+        size = Object.entries(hash).reduce(
+          (sum, [field, value]) => sum + Buffer.byteLength(field) + Buffer.byteLength(value) + 16,
+          0,
+        ),
+        field = 'failedReason',
+        value = 'x'.repeat(256 * 1024 - size - Buffer.byteLength(field) - 16 + excess);
+      await redis.hset(key, field, value);
+      const original = redis.callBuffer.bind(redis),
+        payloadReplies: unknown[] = [],
+        spy = jest.spyOn(redis, 'callBuffer').mockImplementation((async (
+          ...args: Parameters<Redis['callBuffer']>
+        ) => {
+          const reply: unknown = await original(...args);
+          if (String(args[1]).includes('HGETALL')) payloadReplies.push(reply);
+          return reply;
+        }) as Redis['callBuffer']);
+      try {
+        const p = await previewTargetedBacklogCancellation(db, redis, n, bindings);
+        expect(p.decision).toBe(excess ? 'DENY' : 'READY');
+        expect(p.issues).toEqual(excess ? [{ code: 'REDIS_OVERSIZE' }] : []);
+        if (excess) {
+          expect(payloadReplies).toEqual([[0, Buffer.from('REDIS_OVERSIZE')]]);
+          expect(p.cost.queueBytes).toBeLessThan(1024);
+          expect(
+            (await proveTargetedBacklogCancellationAbsent(db, applyRequest(n, p))).operationAbsent,
+          ).toBe(true);
+        }
+        expect(await redis.hgetall(key)).toEqual({ ...hash, [field]: value });
+        expect((await db.webhookEvent.findUniqueOrThrow({ where: { id: row!.id } })).status).toBe(
+          'FAILED',
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it('checks a whole oversized aggregate before fetching any individually invalid hash payload', async () => {
+    const [row] = await root(),
+      n = nomination([row!]),
+      queue = 'moderation',
+      oversizedId = await job(queue, { webhookEventId: row!.id });
+    await redis.hset(`bull:${queue}:${oversizedId}`, 'failedReason', 'x'.repeat(256 * 1024));
+    for (let index = 0; index < 12; index++) {
+      const id = await job(queue, { webhookEventId: row!.id });
+      await redis.hset(`bull:${queue}:${id}`, 'failedReason', 'x'.repeat(100 * 1024));
+    }
+    expect((await redis.lrange(`bull:${queue}:wait`, 0, -1)).at(-1)).toBe(oversizedId);
+    const original = redis.callBuffer.bind(redis),
+      payloadReplies: unknown[] = [],
+      spy = jest.spyOn(redis, 'callBuffer').mockImplementation((async (
+        ...args: Parameters<Redis['callBuffer']>
+      ) => {
+        const reply: unknown = await original(...args);
+        if (String(args[1]).includes('HGETALL')) payloadReplies.push(reply);
+        return reply;
+      }) as Redis['callBuffer']);
+    try {
+      const p = await previewTargetedBacklogCancellation(db, redis, n, bindings);
+      expect(p.decision).toBe('DENY');
+      expect(p.issues).toEqual([{ code: 'REDIS_OVERSIZE' }]);
+      expect(p.cost.queueJobs).toBe(13);
+      expect(p.cost.queueBytes).toBeLessThan(2048);
+      expect(payloadReplies).toEqual([[0, Buffer.from('REDIS_OVERSIZE')]]);
+      expect(await redis.llen(`bull:${queue}:wait`)).toBe(13);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('refuses an invalid UTF-8 queue ID without reading or removing its replacement-character shadow', async () => {
     const [row] = await root(),
       n = nomination([row!]),

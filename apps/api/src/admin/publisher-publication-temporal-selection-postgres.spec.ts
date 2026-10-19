@@ -428,6 +428,64 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       expect(await selected(mode)).toEqual([{ id: bucket < Number(mode) ? ready.id : waiting.id }]);
   });
 
+  it.each([
+    { mode: 'ONCE' as const, rollout: 'off' as const, heads: 25, limit: 25 },
+    { mode: 'NOW' as const, rollout: 'off' as const, heads: 10, limit: 10 },
+    { mode: 'NOW' as const, rollout: 'test' as const, heads: 10, limit: 10 },
+    { mode: 'NOW' as const, rollout: '100' as const, heads: 64, limit: 10 },
+  ])(
+    'selects ready $mode work beyond $heads fresh SEND owners with rollout $rollout',
+    async ({ mode, rollout, heads, limit }) => {
+      const waitingIds: string[] = [];
+      for (let index = 0; index < heads; index += 1) {
+        if (index > 0) await createPublication();
+        if (mode === 'ONCE')
+          await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode } });
+        const waiting = await envelope(-120_000 + index, {
+          delivery: {
+            status: 'SENDING',
+            attemptCount: 1,
+            lockedAt: new Date(now.getTime() - 30_000),
+            lockToken: `synthetic-fresh-owner-${index}`,
+          },
+        });
+        waitingIds.push(waiting.id);
+      }
+      await createPublication();
+      if (mode === 'ONCE')
+        await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode } });
+      const ready = await envelope(-1_000);
+      const freshBefore = await db.managedBroadcastDelivery.findMany({
+        where: { broadcastId: { in: waitingIds } },
+        orderBy: { id: 'asc' },
+      });
+
+      const result = await selectPublicationManagedBroadcastDueBatch(
+        db,
+        [mode],
+        limit,
+        'PUBLIK_V1',
+        rollout,
+      );
+
+      // FLAG: A waiting owner's receipt and lease remain untouched. Excluding it before
+      // LIMIT gives a different accepted publication a turn; it never replays the owner.
+      expect(result.dueRows[0]).toEqual({ id: ready.id });
+      expect(
+        await db.managedBroadcastDelivery.findMany({
+          where: { broadcastId: { in: waitingIds } },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(freshBefore);
+      if (mode === 'NOW' && rollout === '100') {
+        const candidates = await withPublisherTemporalSelectionPlan(db, (tx) =>
+          tx.$queryRaw<PublisherTemporalCandidate[]>(query(rollout)),
+        );
+        expect(candidates).toEqual([{ id: ready.id, state: 'enrolled_kept' }]);
+      }
+    },
+  );
+
   it('does not count a changed decision when a future candidate follows an already filled portion', async () => {
     const ready = await envelope(-60_000);
     await envelope(-1_000, {
@@ -519,10 +577,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
   it('recomputes verification overlap for each decision when a receipt appears after classification', async () => {
     const waiting = await envelope(-60_000, {
       delivery: {
-        status: 'SENDING',
-        attemptCount: 1,
-        lockedAt: new Date(now.getTime() - 120_000),
-        lockToken: 'synthetic-temporal-concurrent-owner',
+        nextAttemptAt: new Date(now.getTime() + 60_000),
       },
     });
     const ready = await envelope(-1_000);
@@ -931,7 +986,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     );
   });
 
-  it('preserves future lease/blocker clocks and leftover verification markers for compatible recovery', async () => {
+  it('defers future SEND owners while preserving other future clocks and verification recovery', async () => {
     const future = new Date(now.getTime() + 60_000);
     const overrides: DeliveryOverrides[] = [
       { status: 'SENDING', attemptCount: 1, lockedAt: future, lockToken: 'future-lease' },
@@ -956,7 +1011,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     });
     const ready = await envelope(-1_000);
     expect(await selected('100', 20)).toEqual(
-      [...compatible, occurrenceFuture, ready].map(({ id }) => ({ id })),
+      [...compatible.slice(1), occurrenceFuture, ready].map(({ id }) => ({ id })),
     );
   });
 
@@ -1066,13 +1121,17 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     }
   });
 
-  it.each(['initial', 'stale'] as const)(
-    'bounds added temporal probes with 50,000 delivery rows and reports the unchanged existence-query cost separately (%s statistics)',
-    async (statistics) => {
+  it.each([
+    { statistics: 'initial', audience: 10_000 },
+    { statistics: 'initial', audience: 50_000 },
+    { statistics: 'stale', audience: 50_000 },
+  ] as const)(
+    'bounds temporal probes with $audience delivery rows and reports execution-query cost ($statistics statistics)',
+    async ({ statistics, audience }) => {
       // FLAG: The scalar cap must reject this large envelope before publication-target proof.
-      // Its publication projection intentionally stays small; this is not a full 50k runtime
-      // or materialization benchmark. Both the delivery history and saved JSON contain 50k.
-      const large = await envelope(-60_000, { savedTargets: targets(50_000), deliveryCount: 0 });
+      // Its publication projection intentionally stays small; this is not a full runtime
+      // or materialization benchmark. The delivery history and saved JSON have equal size.
+      const large = await envelope(-60_000, { savedTargets: targets(audience), deliveryCount: 0 });
       if (statistics === 'stale') {
         // FLAG: Keep a realistic all-distinct parent estimate after retired rows disappear.
         // The incoming 50k audience must remain bounded before auto-ANALYZE catches up.
@@ -1110,7 +1169,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
         'PUBLIK_V1', ${botId}, ${deliveryRoute.dialogBotId},
         ${JSON.stringify(deliveryRoute.publisherDialogContext)}::jsonb, 0,
         ${new Date(now.getTime() + 60_000)}, ${now}
-      FROM generate_series(0, 49999) AS n
+      FROM generate_series(0, ${audience - 1}::integer) AS n
     `);
       const saturatedPlan = await explain(query('100'));
       console.info('Publisher temporal saturated key-page plan', JSON.stringify(saturatedPlan));
@@ -1123,7 +1182,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
         expect(node['Actual Loops']).toBe(0);
       const ready = await envelope(-1_000);
       expect(await db.managedBroadcastDelivery.count({ where: { broadcastId: large.id } })).toBe(
-        50_000,
+        audience,
       );
       expect(await selected()).toEqual([{ id: large.id }]);
 
@@ -1168,6 +1227,8 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       console.info(
         'Publisher temporal local plan evidence',
         JSON.stringify({
+          audience,
+          statistics,
           old: summarize(oldPlan),
           beforeAnalyze: summarize(beforeAnalyze),
           afterAnalyze: summarize(afterAnalyze),

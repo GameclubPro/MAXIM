@@ -309,6 +309,32 @@ describe('publication managed broadcast due selection', () => {
     expect(findMany).toHaveBeenCalledTimes(3);
   });
 
+  it.each([PublicationDispatchProfile.PUBLIK_V1, PublicationDispatchProfile.LEGACY_ROUTED])(
+    'keeps fresh SEND exclusion only in the PUBLIK execution lane (%s)',
+    async (profile) => {
+      const findMany = jest.fn().mockResolvedValue([]);
+      await selectPublicationManagedBroadcastDueBatch(
+        { managedBroadcast: { findMany } } as never,
+        [PublicationScheduleMode.ONCE],
+        25,
+        profile,
+      );
+      const [execution, verification, fallback] = findMany.mock.calls.map(([request]) => request);
+      expect(execution.where.deliveries.none).toEqual(
+        profile === PublicationDispatchProfile.PUBLIK_V1
+          ? {
+              status: ManagedBroadcastDeliveryStatus.SENDING,
+              lockedAt: { gte: expect.any(Date) },
+            }
+          : undefined,
+      );
+      expect(verification.where.deliveries.none).toBeUndefined();
+      expect(fallback.where.AND[1].OR[0].deliveries.none).toBeUndefined();
+      expect(execution.take).toBe(25);
+      expect(findMany).toHaveBeenCalledTimes(3);
+    },
+  );
+
   it('uses the whole batch for verification when no send is due', async () => {
     const verificationRows = [{ id: 'verify-1' }, { id: 'verify-2' }, { id: 'verify-3' }];
     const findMany = jest
