@@ -19,7 +19,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
 const native = databaseUrl ? describe : describe.skip;
 const migration = '20261005020000_add_multibot_order_fences';
 const sourceShapes = ['plain', 'image', 'photo', 'video', 'share', 'forward', 'reply'] as const;
-type SourceShape = (typeof sourceShapes)[number];
+type SourceShape = (typeof sourceShapes)[number] | 'reply-audio';
 
 native('pristine operator-discard owner native PostgreSQL', () => {
   jest.setTimeout(30_000);
@@ -100,13 +100,29 @@ native('pristine operator-discard owner native PostgreSQL', () => {
           },
         ],
       });
-    if (shape === 'forward' || shape === 'reply')
+    if (shape === 'forward' || shape === 'reply' || shape === 'reply-audio')
       Object.assign(raw.message, {
         link: {
-          type: shape,
+          type: shape === 'forward' ? 'forward' : 'reply',
           chat_id: '-linked-fixture',
           sender: { user_id: 'linked-person', is_bot: false },
-          message: { mid: 'linked-message', text: 'ordinary linked text', attachments: [photo] },
+          message: {
+            mid: 'linked-message',
+            text: 'ordinary linked text',
+            attachments:
+              shape === 'reply-audio'
+                ? [
+                    {
+                      type: 'audio',
+                      payload: {
+                        url: 'https://example.org/audio',
+                        token: 'fixture-audio',
+                        id: 2 ** 60,
+                      },
+                    },
+                  ]
+                : [photo],
+          },
         },
       });
     const update = new WebhookParser().parse(raw, { botId: 'fixture-bot' });
@@ -236,6 +252,66 @@ native('pristine operator-discard owner native PostgreSQL', () => {
       rawPayload: late.rawPayload,
     });
   });
+
+  it.each(['owner', 'family', 'late-family'] as const)(
+    'refuses linked reply audio in the actual pristine %s path without changing retained state',
+    async (target) => {
+      const f = await fixture(target === 'owner' ? 'reply-audio' : 'reply');
+      let receiptId = f.owner.id;
+      if (target !== 'owner') {
+        if (target === 'late-family') expect(await settle(f)).toBe(true);
+        const raw = structuredClone(f.raw);
+        Object.assign(raw.message, {
+          link: {
+            type: 'reply',
+            chat_id: '-linked-fixture',
+            sender: { user_id: 'linked-person', is_bot: false },
+            message: {
+              mid: 'linked-message',
+              text: 'ordinary linked text',
+              attachments: [
+                {
+                  type: 'audio',
+                  payload: {
+                    url: 'https://example.org/audio',
+                    token: 'fixture-audio',
+                    id: 2 ** 60,
+                  },
+                },
+              ],
+            },
+          },
+        });
+        const update = new WebhookParser().parse(raw, { botId: 'fixture-bot' });
+        expect(buildWebhookSemanticEventKey(update)).toBe(f.semanticKey);
+        const fields = { rawPayload: raw, normalizedPayload: JSON.parse(JSON.stringify(update)) };
+        if (target === 'family')
+          await db.webhookEvent.update({ where: { id: f.observation.id }, data: fields });
+        else receiptId = (await f.create(500, fields)).id;
+        expect(
+          inspectSourceAbandonmentSource(
+            await db.webhookEvent.findUniqueOrThrow({
+              where: { id: target === 'family' ? f.observation.id : receiptId },
+            }),
+          ),
+        ).not.toBeNull();
+      } else expect(inspectSourceAbandonmentSource(f.owner)).not.toBeNull();
+      const before = await db.webhookEvent.findMany({
+        where: { id: { in: receiptIds } },
+        orderBy: { id: 'asc' },
+      });
+      expect(await settle(f, receiptId)).toBe(false);
+      expect(
+        await db.webhookEvent.findMany({
+          where: { id: { in: receiptIds } },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(before);
+      expect(
+        await db.webhookExecutionClaim.findUniqueOrThrow({ where: { id: f.claim.id } }),
+      ).toEqual(f.claim);
+    },
+  );
 
   it.each(
     [

@@ -2,9 +2,15 @@ import type { WebhookEvent } from '../prisma/prisma-client';
 import {
   inspectLegacyPostSealTextSource,
   inspectLegacyRecoverySource,
+  inspectPristineOperatorDiscardSource,
   inspectSourceAbandonmentPostSealSource,
   inspectSourceAbandonmentSource,
 } from './webhook-legacy-source';
+import {
+  inspectLegacyForwardText,
+  inspectSourceAbandonmentForwardText,
+  type SourceAbandonmentForwardShapeRefusal,
+} from './webhook-legacy-forward-source';
 import { WebhookParser } from './webhook.parser';
 import {
   SOURCE_ABANDONMENT_SOURCE_CLOSURE,
@@ -63,7 +69,252 @@ function fixture(shape: Shape) {
   return { at, raw, message, body, share, link, linkedBody, owner };
 }
 
-function linkedAttachment(kind: 'video' | 'share' | 'sticker'): Record<string, unknown> {
+function forwardRefusalFixture() {
+  const owner = fixture('forward').owner();
+  const update = owner.normalizedPayload as unknown as Record<string, unknown>;
+  const raw = update.raw as Record<string, unknown>;
+  const message = raw.message as Record<string, unknown>;
+  const body = message.body as Record<string, unknown>;
+  const link = message.link as Record<string, unknown>;
+  const linkedBody = link.message as Record<string, unknown>;
+  const sender = link.sender as Record<string, unknown>;
+  const normalized = update.message as Record<string, unknown>;
+  return {
+    owner,
+    update,
+    raw,
+    message,
+    body,
+    link,
+    linkedBody,
+    sender,
+    normalized,
+  };
+}
+
+type ForwardRefusalCase = readonly [
+  SourceAbandonmentForwardShapeRefusal,
+  (f: ReturnType<typeof forwardRefusalFixture>) => void,
+];
+const forwardShapeRefusalCases: readonly ForwardRefusalCase[] = [
+  [
+    'source_forward_objects',
+    (f) => {
+      f.update.raw = null;
+    },
+  ],
+  [
+    'source_forward_direct_object',
+    (f) => {
+      f.message.body = null;
+    },
+  ],
+  [
+    'source_forward_direct_keys',
+    (f) => {
+      f.body.private_unexpected_key = 'private-value';
+    },
+  ],
+  [
+    'source_forward_direct_mid',
+    (f) => {
+      f.body.mid = [];
+    },
+  ],
+  [
+    'source_forward_direct_seq',
+    (f) => {
+      f.body.seq = [];
+    },
+  ],
+  [
+    'source_forward_direct_text_absent',
+    (f) => {
+      delete f.body.text;
+    },
+  ],
+  [
+    'source_forward_direct_text_null',
+    (f) => {
+      f.body.text = null;
+    },
+  ],
+  [
+    'source_forward_direct_text_invalid',
+    (f) => {
+      f.body.text = { private: 'value' };
+    },
+  ],
+  [
+    'source_forward_direct_markup',
+    (f) => {
+      f.body.markup = [{ type: 'private-markup' }];
+    },
+  ],
+  [
+    'source_forward_direct_media',
+    (f) => {
+      f.body.attachments = [{ type: 'private-media' }];
+    },
+  ],
+  [
+    'source_forward_link_object',
+    (f) => {
+      f.message.link = null;
+    },
+  ],
+  [
+    'source_forward_linked_object',
+    (f) => {
+      f.link.message = null;
+    },
+  ],
+  [
+    'source_forward_linked_keys',
+    (f) => {
+      f.linkedBody.private_unexpected_key = 'private-value';
+    },
+  ],
+  [
+    'source_forward_linked_mid',
+    (f) => {
+      f.linkedBody.mid = [];
+    },
+  ],
+  [
+    'source_forward_linked_seq',
+    (f) => {
+      f.linkedBody.seq = [];
+    },
+  ],
+  [
+    'source_forward_linked_text_absent',
+    (f) => {
+      delete f.linkedBody.text;
+    },
+  ],
+  [
+    'source_forward_linked_text_null',
+    (f) => {
+      f.linkedBody.text = null;
+    },
+  ],
+  [
+    'source_forward_linked_text_invalid',
+    (f) => {
+      f.linkedBody.text = { private: 'value' };
+    },
+  ],
+  [
+    'source_forward_linked_markup',
+    (f) => {
+      f.linkedBody.markup = [{ type: 'private-markup' }];
+    },
+  ],
+  [
+    'source_forward_linked_media',
+    (f) => {
+      f.linkedBody.attachments = [{ type: 'private-media' }];
+    },
+  ],
+  [
+    'source_forward_sender_null',
+    (f) => {
+      f.link.sender = null;
+    },
+  ],
+  [
+    'source_forward_sender_shape',
+    (f) => {
+      f.link.sender = ['private-sender'];
+    },
+  ],
+  [
+    'source_forward_message_keys',
+    (f) => {
+      f.message.private_unexpected_key = 'private-value';
+    },
+  ],
+  [
+    'source_forward_link_keys',
+    (f) => {
+      f.link.private_unexpected_key = 'private-value';
+    },
+  ],
+  [
+    'source_forward_link_type',
+    (f) => {
+      f.link.type = 'private-link';
+    },
+  ],
+  [
+    'source_forward_chat_absent',
+    (f) => {
+      delete f.link.chat_id;
+    },
+  ],
+  [
+    'source_forward_chat_null',
+    (f) => {
+      f.link.chat_id = null;
+    },
+  ],
+  [
+    'source_forward_chat_identity',
+    (f) => {
+      f.link.chat_id = { private: 'chat' };
+    },
+  ],
+  [
+    'source_forward_sender_identity',
+    (f) => {
+      f.sender.user_id = [];
+    },
+  ],
+  [
+    'source_forward_sender_keys',
+    (f) => {
+      f.sender.private_unexpected_key = 'private-value';
+    },
+  ],
+  [
+    'source_forward_sender_bot',
+    (f) => {
+      f.sender.is_bot = 'private-value';
+    },
+  ],
+  [
+    'source_forward_sender_metadata',
+    (f) => {
+      f.sender.name = ['private-name'];
+    },
+  ],
+  [
+    'source_forward_sender_activity',
+    (f) => {
+      f.sender.last_activity_time = 'private-time';
+    },
+  ],
+  [
+    'source_forward_normalized_text',
+    (f) => {
+      f.normalized.text = null;
+    },
+  ],
+  [
+    'source_forward_bot_type',
+    (f) => {
+      f.update.botId = null;
+    },
+  ],
+];
+
+function linkedAttachment(kind: 'video' | 'share' | 'sticker' | 'audio'): Record<string, unknown> {
+  if (kind === 'audio')
+    return {
+      type: 'audio',
+      payload: { url: 'https://example.com/audio', token: 'opaque-audio', id: 2 ** 60 },
+    };
   if (kind === 'video')
     return {
       type: 'video',
@@ -94,6 +345,7 @@ const linkedMediaCases = [
   ['reply', 'video'],
   ['forward', 'share'],
   ['reply', 'sticker'],
+  ['reply', 'audio'],
 ] as const;
 
 describe('modern source content profile', () => {
@@ -116,6 +368,9 @@ describe('modern source content profile', () => {
       };
       expect(inspectSourceAbandonmentSource(owner)).toEqual(expected);
       expect(inspectSourceAbandonmentPostSealSource(owner)).toEqual(expected);
+      expect(inspectPristineOperatorDiscardSource(owner)).toEqual(
+        kind === 'audio' ? null : expected,
+      );
       expect(inspectLegacyRecoverySource(owner)).toBeNull();
       expect(inspectLegacyPostSealTextSource(owner)).toBeNull();
       expect(owner).toEqual(before);
@@ -178,6 +433,76 @@ describe('modern source content profile', () => {
     },
   );
 
+  it.each<Shape>(['plain', 'share', 'reply', 'forward'])(
+    'retains the v6 pristine human profile for %s without changing source evidence',
+    (shape) => {
+      const f = fixture(shape);
+      const owner = f.owner();
+      const before = structuredClone(owner);
+      expect(inspectPristineOperatorDiscardSource(owner)).toEqual(
+        inspectSourceAbandonmentSource(owner),
+      );
+      expect(owner).toEqual(before);
+      f.raw.update_type = 'message_edited';
+      expect(inspectPristineOperatorDiscardSource(f.owner())).toEqual(
+        inspectSourceAbandonmentSource(f.owner()),
+      );
+      f.body.text = 'особое';
+      delete f.body.markup;
+      expect(
+        inspectPristineOperatorDiscardSource(f.owner(), { adminBanCommandName: 'особое' }),
+      ).toBeNull();
+    },
+  );
+
+  it('keeps direct audio in the v6 pristine profile but refuses the new linked reply audio', () => {
+    const f = fixture('plain');
+    f.body.attachments = [linkedAttachment('audio')];
+    expect(inspectPristineOperatorDiscardSource(f.owner())).not.toBeNull();
+    expect(inspectPristineOperatorDiscardSource(f.owner())).toEqual(
+      inspectSourceAbandonmentSource(f.owner()),
+    );
+    delete f.body.attachments;
+    f.message.link = f.link;
+    f.linkedBody.attachments = [linkedAttachment('audio')];
+    const owner = f.owner();
+    expect(inspectSourceAbandonmentSource(owner)).not.toBeNull();
+    expect(inspectSourceAbandonmentPostSealSource(owner)).not.toBeNull();
+    expect(inspectPristineOperatorDiscardSource(owner)).toBeNull();
+  });
+
+  it.each([
+    'missing-token',
+    'null-token',
+    'long-token',
+    'bad-id',
+    'credentials',
+    'transcription',
+    'unknown-payload',
+    'null-text',
+    'missing-sender',
+    'missing-chat',
+  ])('refuses unproved linked reply audio metadata: %s', (fault) => {
+    const f = fixture('reply');
+    const audio = linkedAttachment('audio');
+    const payload = audio.payload as Record<string, unknown>;
+    f.linkedBody.attachments = [audio];
+    if (fault === 'missing-token') delete payload.token;
+    if (fault === 'null-token') payload.token = null;
+    if (fault === 'long-token') payload.token = 'x'.repeat(32769);
+    if (fault === 'bad-id') payload.id = 'inferred-source';
+    if (fault === 'credentials') payload.url = 'https://user:pass@example.com/audio';
+    if (fault === 'transcription') audio.transcription = 'ordinary text';
+    if (fault === 'unknown-payload') payload.duration = 1;
+    if (fault === 'null-text') f.linkedBody.text = null;
+    if (fault === 'missing-sender') delete f.link.sender;
+    if (fault === 'missing-chat') delete f.link.chat_id;
+    const owner = f.owner();
+    expect(inspectSourceAbandonmentSource(owner)).toBeNull();
+    expect(inspectSourceAbandonmentPostSealSource(owner)).toBeNull();
+    expect(inspectPristineOperatorDiscardSource(owner)).toBeNull();
+  });
+
   it.each([
     'code-missing',
     'code-object',
@@ -205,7 +530,6 @@ describe('modern source content profile', () => {
     ['forward', 'sticker'],
     ['reply', 'share'],
     ['forward', 'audio'],
-    ['reply', 'audio'],
   ] as const)('keeps unreviewed %s %s shapes outside this finite profile', (shape, kind) => {
     const f = fixture(shape);
     f.linkedBody.attachments = [
@@ -360,6 +684,53 @@ describe('modern source content profile', () => {
     f.body.text = '';
     f.link.type = 'reply';
     expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
+  });
+
+  it.each(forwardShapeRefusalCases)(
+    'reports only the modern deciding fixed code %s while retaining the legacy refusal',
+    (code, change) => {
+      const f = forwardRefusalFixture();
+      change(f);
+      const before = structuredClone(f.update);
+      expect(inspectSourceAbandonmentForwardText(f.update)).toBe(code);
+      expect(inspectLegacyForwardText(f.update)).toBe('source_forward_shape');
+      expect(f.update).toEqual(before);
+      expect(code).not.toMatch(/private|value|unexpected/u);
+    },
+  );
+
+  it('retains the original forward guard priority when multiple fields fail', () => {
+    const f = forwardRefusalFixture();
+    f.body.text = null;
+    f.link.sender = null;
+    delete f.link.chat_id;
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_direct_text_null');
+    f.body.text = 'Ordinary text';
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_sender_null');
+    delete f.link.sender;
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_chat_absent');
+    f.linkedBody.attachments = [{ type: 'private-media' }];
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_linked_media');
+  });
+
+  it('keeps an omitted modern linked sender eligible without inventing an absent-sender refusal', () => {
+    const f = forwardRefusalFixture();
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBeNull();
+    expect(inspectLegacyForwardText(f.update)).toBeNull();
+    delete f.link.sender;
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBeNull();
+    expect(inspectLegacyForwardText(f.update)).toBe('source_forward_shape');
+  });
+
+  it('propagates only one fixed deciding code through the existing source callback', () => {
+    const f = forwardRefusalFixture();
+    f.link.sender = 'private-refusal-payload-99900012345678';
+    const before = structuredClone(f.owner);
+    const reasons: string[] = [];
+    expect(inspectSourceAbandonmentSource(f.owner, (code) => reasons.push(code))).toBeNull();
+    expect(reasons).toEqual(['source_forward_sender_shape']);
+    expect(JSON.stringify(reasons)).not.toMatch(/private|99900012345678|raw|value/u);
+    expect(f.owner).toEqual(before);
   });
 
   it.each([0, 1, 10])(
@@ -650,6 +1021,29 @@ describe('modern source content profile', () => {
     if (fault === 'share-mix') f.body.attachments = [video, f.share];
     expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
     expect(inspectSourceAbandonmentPostSealSource(f.owner())).toBeNull();
+  });
+
+  it('binds reply audio to closure7 while preserving the separate v6 pristine policy', () => {
+    const sourceSha = 'a'.repeat(40);
+    const imageId = `sha256:${'b'.repeat(64)}`;
+    const { pristineOperatorDiscard, ...withoutPristine } = SOURCE_ABANDONMENT_SOURCE_CLOSURE;
+    const oldClosure = {
+      ...withoutPristine,
+      version: 6,
+      reply: {
+        ...withoutPristine.reply,
+        content:
+          'parser-proved-nonempty-outer-text-and-flat-quoted-text-with-zero-through-ten-images-or-one-video-or-one-official-sticker',
+      },
+    };
+    expect(SOURCE_ABANDONMENT_SOURCE_CLOSURE.version).toBe(7);
+    expect(pristineOperatorDiscard.purpose).toBe('PRISTINE_OPERATOR_DISCARD_V1');
+    expect(pristineOperatorDiscard.content).toBe(
+      'unchanged-v6-human-profile-with-linked-reply-audio-refused',
+    );
+    expect(sourceAbandonmentSourceClosureDigest(sourceSha, imageId)).not.toBe(
+      sourceAbandonmentDigest({ sourceSha, imageId, closure: oldClosure }),
+    );
   });
 
   it('binds the added direct media profile to a new source closure digest', () => {

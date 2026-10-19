@@ -10,7 +10,7 @@ import {
   legacyOrderReleasedSql,
   legacyUpdateHeldSql,
 } from '../webhook/webhook-legacy-hold.service';
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional, type OnModuleDestroy } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import { randomUUID } from 'node:crypto';
 
@@ -48,6 +48,9 @@ import {
 export { WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX } from '../webhook/webhook-timeout-quarantine';
 
 const WEBHOOK_CANONICAL_BUSINESS_LEASE_MS = 5 * 60_000;
+const WEBHOOK_FINISH_MAX_ATTEMPTS = 2;
+const WEBHOOK_FINISH_TRANSACTION_MAX_WAIT_MS = 2_000;
+const WEBHOOK_FINISH_TRANSACTION_TIMEOUT_MS = 5_000;
 // FLAG: Timeout persistence must tolerate a short database stall while remaining below the
 // 60-second quarantine heartbeat and far below the lease and hard-settlement watchdog.
 const WEBHOOK_TIMEOUT_PERSISTENCE_TRANSACTION_MAX_WAIT_MS = 10_000;
@@ -99,6 +102,38 @@ type OrderedWebhookPredecessor = {
 };
 
 export class WebhookTimeoutSettlementCasLostError extends Error {}
+
+export class WebhookFinishPersistenceError extends Error {
+  constructor(
+    readonly outcome: 'authority_changed' | 'storage_unavailable',
+    readonly phase: 'checkpoint' | 'settlement',
+    cause: unknown,
+  ) {
+    super(`Returned webhook handler remains fenced: ${outcome} during ${phase}`, { cause });
+    this.name = 'WebhookFinishPersistenceError';
+  }
+}
+
+class WebhookFinishAuthorityChangedError extends Error {}
+
+type StartedWebhookOwner = Readonly<{
+  claimId: string;
+  semanticKey: string;
+  webhookEventId: string;
+  executionBotId: string | null;
+  preparedAt: Date;
+  businessStartedAt: Date;
+  leaseToken: string;
+  leaseExpiresAt: Date;
+  commandResult: unknown;
+  commandResultIsSqlNull: boolean;
+}>;
+
+type AwaitedWebhookFinish = Readonly<{
+  owner: StartedWebhookOwner;
+  source: WebhookEvent;
+  finishedAt: Date;
+}>;
 
 const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER = `${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}:`;
 const WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_MARKER_LENGTH_SQL = Prisma.raw(
@@ -158,8 +193,22 @@ export type WebhookShadowMirrorSettlementContext = {
 export type WebhookShadowMirrorSettlementResult = 'settled' | 'retry' | 'invalid';
 
 @Injectable()
-export class WebhookCanonicalExecutionService {
+export class WebhookCanonicalExecutionService implements OnModuleDestroy {
   private readonly logger = new Logger(WebhookCanonicalExecutionService.name);
+  private finishPersistenceClosed = false;
+  private static readonly startedOwners = new WeakMap<
+    WebhookCanonicalExecutionContext,
+    StartedWebhookOwner
+  >();
+  private static readonly startedSources = new WeakMap<
+    WebhookCanonicalExecutionContext,
+    WebhookEvent
+  >();
+  private static readonly awaitedFinishes = new WeakMap<
+    WebhookCanonicalExecutionContext,
+    AwaitedWebhookFinish
+  >();
+  private static readonly finishAttempts = new WeakMap<WebhookCanonicalExecutionContext, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -167,6 +216,12 @@ export class WebhookCanonicalExecutionService {
     @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {}
+
+  onModuleDestroy(): void {
+    // FLAG: Graceful worker drain owns active finalization. A forced teardown must not
+    // start another database attempt after this service has stopped.
+    this.finishPersistenceClosed = true;
+  }
 
   async prepareExecution(
     webhookEventId: string,
@@ -697,9 +752,18 @@ export class WebhookCanonicalExecutionService {
 
     if (businessLeaseToken) {
       let started: 'transitioned' | 'expired' | 'deferred';
+      let startedOwner: StartedWebhookOwner | undefined;
+      const captureStartedOwner = (owner: StartedWebhookOwner) => {
+        startedOwner = owner;
+      };
       try {
         started = preparedProof
-          ? await this.adoptPreparedExecutor(context, executionClaim!, preparedProof)
+          ? await this.adoptPreparedExecutor(
+              context,
+              executionClaim!,
+              preparedProof,
+              captureStartedOwner,
+            )
           : await this.prisma.$transaction((tx) =>
               WebhookCanonicalExecutionService.transitionLiveUnstartedOwnerWithClient(tx, {
                 claimId: executionClaim!.id!,
@@ -728,6 +792,7 @@ export class WebhookCanonicalExecutionService {
                 enforced: true,
                 phase: 'start',
                 checkFreshHeldCommand: context.freshHeldCommand,
+                captureStartedOwner,
               }),
             );
       } catch (error: unknown) {
@@ -748,6 +813,14 @@ export class WebhookCanonicalExecutionService {
         await this.releaseBusinessLease(context);
         throw new WebhookPreparationDeferredError('Canonical business-start fence changed', 1_000);
       }
+      if (!startedOwner) throw new Error('Canonical business-start snapshot unavailable');
+      // FLAG: Publish original SQL authority only after the enclosing start transaction commits.
+      // Its lease expiry is an absolute persistence bound, never a renewed execution deadline.
+      WebhookCanonicalExecutionService.startedOwners.set(context, Object.freeze(startedOwner));
+      WebhookCanonicalExecutionService.startedSources.set(
+        context,
+        structuredClone(context.webhookEvent),
+      );
     }
     if (preparedObservationOnly) {
       // FLAG: Only membership removals finished all local work in preparation. Message
@@ -774,6 +847,7 @@ export class WebhookCanonicalExecutionService {
       phase: 'ready' | 'start';
       checkFreshHeldCommand?: boolean;
       route?: { chatId: string; proof: MaxExecutionRouteProof };
+      captureStartedOwner?: (owner: StartedWebhookOwner) => void;
     },
   ): Promise<'transitioned' | 'expired' | 'deferred'> {
     // FLAG: Acquire both row locks before reading the database clock. A WHERE evaluated before
@@ -824,7 +898,7 @@ export class WebhookCanonicalExecutionService {
           AND claim."command_result" IS NULL AND event."semantic_key" = ${params.semanticKey}`
       : Prisma.empty;
     const ready = params.phase === 'ready';
-    const changed = await client.$executeRaw(Prisma.sql`
+    const changed = await client.$queryRaw<StartedWebhookOwner[]>(Prisma.sql`
       WITH instant AS MATERIALIZED (SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now")
       UPDATE "webhook_execution_claims" AS claim
       SET "execution_bot_id" = ${params.executionBotId},
@@ -846,7 +920,7 @@ export class WebhookCanonicalExecutionService {
         AND claim."completed_at" IS NULL AND claim."business_started_at" IS NULL
         AND claim."lease_token" = ${params.leaseToken}
         AND claim."lease_expires_at" > instant."now"
-        AND (${ready} OR claim."enforced")
+        AND (${ready} OR (claim."enforced" AND claim."prepared_at" IS NOT NULL))
         AND event."status" NOT IN ('PROCESSED', 'DUPLICATE', 'NO_REPLAY_HELD', 'CANCELLED', 'QUARANTINED')
         AND event."timeout_quarantine_expires_at" IS NULL
         AND COALESCE(event."error_message", '') NOT LIKE ${`${WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX}%`}
@@ -862,8 +936,16 @@ export class WebhookCanonicalExecutionService {
         AND (NOT COALESCE(claim."command_result" @> ${waitingMarker}::jsonb, false)
              OR event."execution_deadline_at" > instant."now")
         ${executionBotFence} ${routeFence} ${receiptFence} ${observationFence}
+      RETURNING claim."id" AS "claimId", claim."semantic_key" AS "semanticKey",
+        claim."webhook_event_id" AS "webhookEventId", claim."execution_bot_id" AS "executionBotId",
+        claim."prepared_at" AS "preparedAt", claim."business_started_at" AS "businessStartedAt",
+        claim."lease_token" AS "leaseToken", claim."lease_expires_at" AS "leaseExpiresAt",
+        claim."command_result" AS "commandResult", (claim."command_result" IS NULL) AS "commandResultIsSqlNull"
     `);
-    if (changed === 1) return 'transitioned';
+    if (changed.length === 1) {
+      if (!ready) params.captureStartedOwner?.(changed[0]!);
+      return 'transitioned';
+    }
     return (await WebhookCanonicalExecutionService.tryExpireUnstartedOwnerWithClient(
       client,
       params,
@@ -986,6 +1068,7 @@ export class WebhookCanonicalExecutionService {
     context: WebhookCanonicalExecutionContext,
     claim: WebhookExecutionClaimRecord,
     accepted: MaxExecutionRouteProof,
+    captureStartedOwner: (owner: StartedWebhookOwner) => void,
   ): Promise<'transitioned' | 'expired' | 'deferred'> {
     const chatId = context.update.message!.chatId;
     return this.prisma.$transaction(async (tx) => {
@@ -1052,6 +1135,7 @@ export class WebhookCanonicalExecutionService {
           phase: 'start',
           checkFreshHeldCommand: context.freshHeldCommand,
           route: { chatId, proof: accepted },
+          captureStartedOwner,
         },
       );
       if (changed !== 'transitioned') return changed;
@@ -1082,28 +1166,82 @@ export class WebhookCanonicalExecutionService {
   async completeExecution(context: WebhookCanonicalExecutionContext): Promise<void> {
     // FLAG: Call only after the awaited handler or prepared local observation completes. Persist
     // that exact fact before receipt settlement, so a crash here never reruns the engine.
-    await this.markExecutionHandlerFinished(context);
+    if (!context.businessLeaseToken) return this.completeExecutionOnce(context);
+    this.observeAwaitedFinish(context);
+    for (let attempt = 0; attempt < WEBHOOK_FINISH_MAX_ATTEMPTS; attempt += 1) {
+      WebhookCanonicalExecutionService.finishAttempts.set(context, attempt);
+      let phase: 'checkpoint' | 'settlement' = 'checkpoint';
+      try {
+        await this.markExecutionHandlerFinished(context);
+        phase = 'settlement';
+        await this.completeExecutionOnce(context, true);
+        return;
+      } catch (cause: unknown) {
+        if (cause instanceof WebhookFinishAuthorityChangedError)
+          throw new WebhookFinishPersistenceError('authority_changed', phase, cause);
+        const finish = WebhookCanonicalExecutionService.awaitedFinishes.get(context)!;
+        if (
+          attempt + 1 >= WEBHOOK_FINISH_MAX_ATTEMPTS ||
+          this.finishPersistenceClosed ||
+          Date.now() >= finish.owner.leaseExpiresAt.getTime() ||
+          !this.isRetryableFinishStorageError(cause)
+        )
+          throw new WebhookFinishPersistenceError('storage_unavailable', phase, cause);
+        // FLAG: Retry only this retained handler's database finalization. The next checkpoint
+        // locks and rereads original authority first, including after an ambiguous COMMIT.
+      }
+    }
+  }
+
+  private async completeExecutionOnce(
+    context: WebhookCanonicalExecutionContext,
+    checkpointAlreadySaved = false,
+  ): Promise<void> {
+    if (!checkpointAlreadySaved) await this.markExecutionHandlerFinished(context);
     if (context.businessLeaseToken) {
-      await this.prisma.$transaction(async (tx) => {
-        const claim = await tx.webhookExecutionClaim.findFirst({
-          where: { webhookEventId: context.webhookEvent.id, kind: 'EXECUTION' },
+      await this.finishTransaction(context, async (tx) => {
+        const finish = WebhookCanonicalExecutionService.awaitedFinishes.get(context)!;
+        const claim = await tx.webhookExecutionClaim.findUnique({
+          where: { id: finish.owner.claimId },
         });
-        const journal = claim ? this.finishedExecutionJournal(context.webhookEvent, claim) : null;
-        if (!claim || !journal)
-          throw new WebhookPreparationDeferredError('Completed handler journal unavailable', 1_000);
+        const journal = claim ? this.finishedExecutionJournal(finish.source, claim) : null;
+        if (!claim || !journal || !this.matchesOriginalFinishOwner(claim, finish))
+          throw new WebhookFinishAuthorityChangedError('Completed handler journal unavailable');
         if (
           claim.status === 'COMPLETED' &&
           claim.leaseToken === null &&
           claim.leaseExpiresAt === null
-        )
-          return;
-        if (claim.status !== 'READY' || claim.leaseToken !== context.businessLeaseToken)
-          throw new WebhookPreparationDeferredError('Handler completion lease changed', 1_000);
+        ) {
+          const settled = await tx.webhookEvent.findFirst({
+            where: {
+              id: finish.source.id,
+              status: WebhookStatus.PROCESSED,
+              processedAt: new Date(journal.finishedAt as string),
+              normalizedPayload: {
+                equals: finish.source.normalizedPayload as Prisma.InputJsonValue,
+              },
+              executionDeadlineAt: finish.source.executionDeadlineAt,
+              errorMessage: null,
+              queueName: null,
+              nextEnqueueAt: null,
+              timeoutQuarantineExpiresAt: null,
+            },
+            select: { id: true },
+          });
+          if (
+            settled &&
+            claim.completedAt?.getTime() === new Date(journal.finishedAt as string).getTime()
+          )
+            return;
+          throw new WebhookFinishAuthorityChangedError('Completed handler receipt proof changed');
+        }
+        if (claim.status !== 'READY' || claim.leaseToken !== finish.owner.leaseToken)
+          throw new WebhookFinishAuthorityChangedError('Handler completion lease changed');
         const completed = await tx.webhookExecutionClaim.updateMany({
           where: {
             id: claim.id,
             kind: 'EXECUTION',
-            webhookEventId: context.webhookEvent.id,
+            webhookEventId: finish.source.id,
             status: 'READY',
             enforced: true,
             leaseToken: context.businessLeaseToken,
@@ -1124,7 +1262,7 @@ export class WebhookCanonicalExecutionService {
             where: {
               id: claim.id,
               kind: 'EXECUTION',
-              webhookEventId: context.webhookEvent.id,
+              webhookEventId: finish.source.id,
               semanticKey: claim.semanticKey,
               enforced: true,
               executionBotId: claim.executionBotId,
@@ -1137,11 +1275,11 @@ export class WebhookCanonicalExecutionService {
               commandResult: { equals: journal as Prisma.InputJsonValue },
               webhookEvent: {
                 is: {
-                  id: context.webhookEvent.id,
+                  id: finish.source.id,
                   status: WebhookStatus.PROCESSED,
                   processedAt: new Date(journal.finishedAt as string),
                   normalizedPayload: {
-                    equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+                    equals: finish.source.normalizedPayload as Prisma.InputJsonValue,
                   },
                   errorMessage: null,
                   queueName: null,
@@ -1153,16 +1291,20 @@ export class WebhookCanonicalExecutionService {
             select: { id: true },
           });
           if (recovered) return;
-          throw new WebhookPreparationDeferredError('Handler completion claim changed', 1_000);
+          throw new WebhookFinishAuthorityChangedError('Handler completion claim changed');
         }
         const settled = await tx.webhookEvent.updateMany({
           where: {
-            id: context.webhookEvent.id,
-            status: context.webhookEvent.status,
+            id: finish.source.id,
+            status: finish.source.status,
             normalizedPayload: {
-              equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+              equals: finish.source.normalizedPayload as Prisma.InputJsonValue,
             },
-            errorMessage: context.webhookEvent.errorMessage,
+            errorMessage: finish.source.errorMessage,
+            executionDeadlineAt: finish.source.executionDeadlineAt,
+            processedAt: finish.source.processedAt,
+            // FLAG: Delayed-job reconciliation may change scheduling after business starts.
+            // The original owner and receipt authority, not nextEnqueueAt, fence this finish.
             timeoutQuarantineExpiresAt: null,
           },
           data: {
@@ -1174,7 +1316,7 @@ export class WebhookCanonicalExecutionService {
           },
         });
         if (settled.count !== 1)
-          throw new WebhookPreparationDeferredError('Handler completion receipt changed', 1_000);
+          throw new WebhookFinishAuthorityChangedError('Handler completion receipt changed');
       });
       return;
     }
@@ -1216,28 +1358,28 @@ export class WebhookCanonicalExecutionService {
     context: WebhookCanonicalExecutionContext,
   ): Promise<void> {
     if (!context.businessLeaseToken) return;
-    await this.prisma.$transaction(async (tx) => {
-      const claim = await tx.webhookExecutionClaim.findFirst({
-        where: { webhookEventId: context.webhookEvent.id, kind: 'EXECUTION' },
+    const finish = this.observeAwaitedFinish(context);
+    await this.finishTransaction(context, async (tx) => {
+      await this.lockOriginalFinishOwner(tx, finish);
+      const claim = await tx.webhookExecutionClaim.findUnique({
+        where: { id: finish.owner.claimId },
       });
       if (
         claim &&
-        this.finishedExecutionJournal(context.webhookEvent, claim) &&
-        claim.executionBotId === context.activeBotId
+        this.matchesOriginalFinishOwner(claim, finish) &&
+        this.finishedExecutionJournal(finish.source, claim)
       )
         return;
       if (
         !claim ||
+        !this.matchesOriginalFinishOwner(claim, finish) ||
         claim.status !== 'READY' ||
         !claim.enforced ||
         claim.leaseToken !== context.businessLeaseToken ||
         !claim.businessStartedAt ||
         claim.executionBotId !== context.activeBotId
       )
-        throw new WebhookPreparationDeferredError(
-          'Handler-finished execution lease changed',
-          1_000,
-        );
+        throw new WebhookFinishAuthorityChangedError('Handler-finished execution lease changed');
       const journal = {
         kind: 'EXECUTION_FINISHED',
         authorityVersion: MULTIBOT_EXECUTION_AUTHORITY_VERSION,
@@ -1245,39 +1387,150 @@ export class WebhookCanonicalExecutionService {
         semanticKey: claim.semanticKey,
         executionBotId: claim.executionBotId,
         businessStartedAt: claim.businessStartedAt.toISOString(),
-        finishedAt: new Date().toISOString(),
+        finishedAt: finish.finishedAt.toISOString(),
       };
       const recorded = await tx.webhookExecutionClaim.updateMany({
         where: {
           id: claim.id,
           kind: 'EXECUTION',
-          webhookEventId: context.webhookEvent.id,
+          webhookEventId: finish.source.id,
           status: 'READY',
           enforced: true,
           leaseToken: context.businessLeaseToken,
           businessStartedAt: claim.businessStartedAt,
           executionBotId: claim.executionBotId,
+          preparedAt: finish.owner.preparedAt,
+          commandResult: {
+            equals: finish.owner.commandResultIsSqlNull
+              ? Prisma.DbNull
+              : finish.owner.commandResult === null
+                ? Prisma.JsonNull
+                : (finish.owner.commandResult as Prisma.InputJsonValue),
+          },
         },
         data: { commandResult: journal },
       });
       if (recorded.count !== 1)
-        throw new WebhookPreparationDeferredError('Handler-finished journal changed', 1_000);
+        throw new WebhookFinishAuthorityChangedError('Handler-finished journal changed');
       // FLAG: A rejected receipt proof rolls this checkpoint back in the same transaction.
       const receipt = await tx.webhookEvent.updateMany({
         where: {
-          id: context.webhookEvent.id,
+          id: finish.source.id,
           normalizedPayload: {
-            equals: context.webhookEvent.normalizedPayload as Prisma.InputJsonValue,
+            equals: finish.source.normalizedPayload as Prisma.InputJsonValue,
           },
-          status: context.webhookEvent.status,
-          errorMessage: context.webhookEvent.errorMessage,
+          status: finish.source.status,
+          errorMessage: finish.source.errorMessage,
+          executionDeadlineAt: finish.source.executionDeadlineAt,
+          processedAt: finish.source.processedAt,
+          // FLAG: A crossed outbox scheduling write does not revoke a returned handler.
+          // Keep status/source/deadline/processed/quarantine and original owner checks.
           timeoutQuarantineExpiresAt: null,
         },
-        data: { status: context.webhookEvent.status },
+        data: { status: finish.source.status },
       });
       if (receipt.count !== 1)
-        throw new WebhookPreparationDeferredError('Handler-finished source receipt changed', 1_000);
+        throw new WebhookFinishAuthorityChangedError('Handler-finished source receipt changed');
     });
+  }
+
+  private observeAwaitedFinish(context: WebhookCanonicalExecutionContext): AwaitedWebhookFinish {
+    const retained = WebhookCanonicalExecutionService.awaitedFinishes.get(context);
+    if (retained) return retained;
+    const owner = WebhookCanonicalExecutionService.startedOwners.get(context);
+    if (
+      !owner ||
+      owner.webhookEventId !== context.webhookEvent.id ||
+      owner.executionBotId !== context.activeBotId ||
+      owner.leaseToken !== context.businessLeaseToken
+    )
+      throw new WebhookFinishPersistenceError(
+        'authority_changed',
+        'checkpoint',
+        new Error('Original started owner snapshot unavailable'),
+      );
+    const finish = Object.freeze({
+      owner,
+      source: WebhookCanonicalExecutionService.startedSources.get(context)!,
+      finishedAt: new Date(),
+    });
+    WebhookCanonicalExecutionService.awaitedFinishes.set(context, finish);
+    return finish;
+  }
+
+  private matchesOriginalFinishOwner(
+    claim: WebhookExecutionClaimRecord,
+    finish: AwaitedWebhookFinish,
+  ): boolean {
+    const owner = finish.owner;
+    return (
+      claim.id === owner.claimId &&
+      claim.kind === 'EXECUTION' &&
+      claim.enforced === true &&
+      claim.webhookEventId === owner.webhookEventId &&
+      claim.semanticKey === owner.semanticKey &&
+      claim.executionBotId === owner.executionBotId &&
+      claim.preparedAt?.getTime() === owner.preparedAt.getTime() &&
+      claim.businessStartedAt?.getTime() === owner.businessStartedAt.getTime()
+    );
+  }
+
+  private async lockOriginalFinishOwner(
+    tx: Prisma.TransactionClient,
+    finish: AwaitedWebhookFinish,
+  ): Promise<void> {
+    // FLAG: Serialize ambiguous COMMIT reconciliation on the original claim before its receipt.
+    // Never overwrite a committed finished checkpoint or infer rollback from a lost acknowledgement.
+    await tx.$queryRaw(
+      Prisma.sql`SELECT id FROM webhook_execution_claims WHERE id = ${finish.owner.claimId} FOR UPDATE`,
+    );
+    await tx.$queryRaw(
+      Prisma.sql`SELECT id FROM webhook_events WHERE id = ${finish.owner.webhookEventId} FOR UPDATE`,
+    );
+  }
+
+  private async finishTransaction<T>(
+    context: WebhookCanonicalExecutionContext,
+    callback: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    if (this.finishPersistenceClosed) throw new Error('Webhook finish persistence is closing');
+    const finish = WebhookCanonicalExecutionService.awaitedFinishes.get(context)!;
+    // FLAG: The original lease bounds only the additional DB-only attempt. The existing first
+    // finalization of a positively returned handler does not acquire a new age/expiry fence.
+    const retry = (WebhookCanonicalExecutionService.finishAttempts.get(context) ?? 0) > 0;
+    const remaining = retry ? finish.owner.leaseExpiresAt.getTime() - Date.now() : Infinity;
+    if (remaining < 2)
+      throw new WebhookFinishAuthorityChangedError('Original finish persistence lease expired');
+    const maxWait = Math.min(WEBHOOK_FINISH_TRANSACTION_MAX_WAIT_MS, Math.floor(remaining / 2));
+    const timeout = Math.min(WEBHOOK_FINISH_TRANSACTION_TIMEOUT_MS, remaining - maxWait);
+    return this.prisma.$transaction(callback, { maxWait, timeout });
+  }
+
+  private isRetryableFinishStorageError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const failure = error as {
+      code?: unknown;
+      meta?: { code?: unknown; driverAdapterError?: { cause?: { originalCode?: unknown } } };
+      cause?: unknown;
+    };
+    if (
+      [
+        'P1001',
+        'P1002',
+        'P1008',
+        'P1017',
+        'P2024',
+        'P2028',
+        'P2034',
+        'ECONNRESET',
+        'EPIPE',
+        'ETIMEDOUT',
+      ].includes(String(failure.code))
+    )
+      return true;
+    const sqlState = failure.meta?.code ?? failure.meta?.driverAdapterError?.cause?.originalCode;
+    if (['55P03', '57014', '40001', '40P01', '08006'].includes(String(sqlState))) return true;
+    return failure.cause !== error && this.isRetryableFinishStorageError(failure.cause);
   }
 
   private async tryRecoverFinishedExecution(

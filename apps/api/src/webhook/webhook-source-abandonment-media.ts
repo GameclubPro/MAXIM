@@ -15,12 +15,16 @@ function onlyKeys(value: Record<string, unknown>, keys: readonly string[]): bool
   return Object.keys(value).every((key) => keys.includes(key));
 }
 
+export type SourceAbandonmentContentPurpose = 'SOURCE_ABANDONMENT' | 'PRISTINE_OPERATOR_DISCARD_V1';
+
 // FLAG: A linked attachment is passive source content, never an additional held
-// message or actor. Keep the observed finite families separate: no mixtures,
-// linked audio, nested payloads, downloads or inferred missing attachment data.
+// message or actor. Only explicit source abandonment admits one strict reply audio;
+// automatic pristine discard keeps its v6 shapes. No mixtures, nested payloads,
+// downloads or inferred missing attachment data are permitted.
 export function isSourceAbandonmentLinkedMedia(
   value: unknown,
   relation: 'forward' | 'reply',
+  purpose: SourceAbandonmentContentPurpose,
 ): boolean {
   if (value === undefined) return true;
   if (!Array.isArray(value) || value.length > 10) return false;
@@ -28,6 +32,8 @@ export function isSourceAbandonmentLinkedMedia(
   if (value.length !== 1) return false;
   const item = record(value[0]);
   if (item?.type === 'video') return isLegacyDirectMedia(value);
+  if (relation === 'reply' && item?.type === 'audio')
+    return purpose === 'SOURCE_ABANDONMENT' && isSourceAbandonmentDirectMedia(value, undefined);
   if (relation === 'forward' && item?.type === 'share')
     return isSourceAbandonmentDirectMedia(value, undefined);
   if (relation !== 'reply' || item?.type !== 'sticker') return false;

@@ -90,3 +90,31 @@ test('rollback retains direct media recognition in the modern owner and late mir
     /lacks permanent.*webhook-source-abandonment-media\.ts/u,
   );
 });
+
+test('rollback retains explicit-only strict linked reply audio admission', () => {
+  assert.throws(
+    () =>
+      assertSourceAbandonmentSource('a'.repeat(40), (path) =>
+        path.endsWith('webhook-source-abandonment-media.ts')
+          ? read(path).replace("purpose === 'SOURCE_ABANDONMENT' && ", '')
+          : read(path),
+      ),
+    /lacks permanent.*webhook-source-abandonment-media\.ts/u,
+  );
+});
+for (const target of ['owner', 'event']) {
+  test(`rollback retains the v6 pristine reader for ${target}`, () => {
+    assert.throws(
+      () =>
+        assertSourceAbandonmentSource('a'.repeat(40), (path) =>
+          path.endsWith('webhook-pristine-discard.ts')
+            ? read(path).replace(
+                `inspectPristineOperatorDiscardSource(${target}, settings ?? undefined)`,
+                `inspectSourceAbandonmentSource(${target}, undefined, settings ?? undefined)`,
+              )
+            : read(path),
+        ),
+      /lacks permanent.*webhook-pristine-discard\.ts/u,
+    );
+  });
+}

@@ -1,3 +1,6 @@
+import { performance } from 'node:perf_hooks';
+import { createRequire } from 'node:module';
+import * as sourceStoreRuntime from './source-abandonment-store';
 import { buildMaxActionIdempotencyKey } from '../max/max-action-idempotency';
 import { MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS } from '../max/managed-handshake-confirmation';
 import { createHash, randomUUID } from 'node:crypto';
@@ -530,6 +533,332 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
     } finally {
       await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: { in: addedIds } } });
       await db.webhookEvent.deleteMany({ where: { id: { in: addedIds } } });
+    }
+  });
+
+  it('runs seven-owner seven-chat positive stock batches with independent seals and advisory SQL phase timings', async () => {
+    const baseOwner = await db.webhookEvent.findUniqueOrThrow({ where: { id: ownerId } });
+    const baseClaim = await db.webhookExecutionClaim.findFirstOrThrow({
+      where: { webhookEventId: ownerId, kind: 'EXECUTION' },
+    });
+    const selectedIds = [ownerId];
+    const addedChatIds: string[] = [];
+    const addedReceiptIds: string[] = [];
+    try {
+      for (let index = 0; index < 7; index++) {
+        let sourceOwner = baseOwner;
+        if (index > 0) {
+          const id = randomUUID();
+          const selectedChatId = `-source-batch-${randomUUID()}`;
+          addedChatIds.push(selectedChatId);
+          await db.chat.create({
+            data: { id: selectedChatId, title: 'Native seven-chat batch', entityType: 'CHAT' },
+          });
+          await db.chatSettings.create({ data: { chatId: selectedChatId } });
+          // FLAG: The base fixture owns representative same-chat history in every
+          // competing chat-prefix index. Give each added chat the same distribution;
+          // an empty new chat can otherwise choose a chat-only seek plus post-filter.
+          const history = Array.from({ length: 512 }, (_, historyIndex) => ({
+            chatId: selectedChatId,
+            userId: 'unrelated-history-user',
+            messageId: `seven-chat-unrelated-history-${historyIndex}`,
+          }));
+          await db.moderationEvent.createMany({
+            data: history.map((row) => ({
+              ...row,
+              eventType: 'MESSAGE' as const,
+              ruleCode: 'NATIVE_HISTORY',
+              action: 'NONE' as const,
+            })),
+          });
+          await db.moderationViolationMessageClaim.createMany({
+            data: history.map((row, historyIndex) => ({
+              ...row,
+              dedupeKey: `seven-chat-history-${id}-${historyIndex}`,
+              ruleCode: 'NATIVE_HISTORY',
+              updateType: 'message_created',
+            })),
+          });
+          await db.spammerObservation.createMany({
+            data: history.map((row, historyIndex) => ({
+              ...row,
+              source: 'NATIVE_HISTORY',
+              score: 0,
+              reason: 'Unrelated native seven-chat fixture',
+              evidenceHash: sourceAbandonmentDigest(`seven-chat-history-${id}-${historyIndex}`),
+              expiresAt: new Date(baseOwner.createdAt.getTime() + 86_400_000),
+            })),
+          });
+          await db.moderationDeleteIntent.createMany({
+            data: history.map((row, historyIndex) => ({
+              id: `seven-chat-history-${id}-${historyIndex}`,
+              chatId: row.chatId,
+              messageId: row.messageId,
+              status: 'SUCCEEDED' as const,
+              executeAt: new Date(baseOwner.createdAt.getTime() - 2000),
+              retryUntilAt: new Date(baseOwner.createdAt.getTime() - 1000),
+              completedAt: new Date(baseOwner.createdAt.getTime() - 1000),
+            })),
+          });
+          const raw = structuredClone(baseOwner.rawPayload) as {
+            update_id: string;
+            message: { recipient: { chat_id: string }; body: { mid: string } };
+          };
+          raw.update_id = id;
+          raw.message.recipient.chat_id = selectedChatId;
+          raw.message.body.mid = `seven-owner-source-${id}`;
+          const update = new WebhookParser().parse(raw, { botId: baseOwner.botId! });
+          sourceOwner = await db.webhookEvent.create({
+            data: {
+              id,
+              botId: baseOwner.botId,
+              dedupKey: id,
+              semanticKey: buildWebhookSemanticEventKey(update),
+              rawPayload: raw,
+              normalizedPayload: JSON.parse(JSON.stringify(update)),
+              status: 'FAILED',
+              errorMessage: baseOwner.errorMessage,
+              executionDeadlineAt: baseOwner.executionDeadlineAt,
+              createdAt: baseOwner.createdAt,
+            },
+          });
+          selectedIds.push(id);
+          addedReceiptIds.push(id);
+          await db.webhookExecutionClaim.create({
+            data: {
+              kind: 'EXECUTION',
+              semanticKey: sourceOwner.semanticKey!,
+              webhookEventId: id,
+              enforced: true,
+              executionBotId: baseOwner.botId,
+              status: 'READY',
+              createdAt: baseClaim.createdAt,
+              preparedAt: baseClaim.preparedAt,
+              businessStartedAt: baseClaim.businessStartedAt,
+            },
+          });
+        }
+        const mirrors = [randomUUID(), randomUUID()];
+        addedReceiptIds.push(...mirrors);
+        await db.webhookEvent.createMany({
+          data: mirrors.map((id) => ({
+            id,
+            botId: sourceOwner.botId,
+            dedupKey: id,
+            semanticKey: sourceOwner.semanticKey,
+            rawPayload: sourceOwner.rawPayload as Prisma.InputJsonValue,
+            normalizedPayload: sourceOwner.normalizedPayload as Prisma.InputJsonValue,
+            status: 'RECEIVED' as const,
+          })),
+        });
+      }
+      await db.$executeRaw`ANALYZE moderation_events`;
+      await db.$executeRaw`ANALYZE moderation_violation_message_claims`;
+      await db.$executeRaw`ANALYZE spammer_observations`;
+      await db.$executeRaw`ANALYZE moderation_delete_intents`;
+      selection = { ...selection, ownerWebhookEventIds: selectedIds };
+      liveRequest = { ...liveRequest, selection };
+      const ownersBefore = await db.webhookEvent.findMany({
+        where: { id: { in: selectedIds } },
+        orderBy: { id: 'asc' },
+      });
+      const claimsBefore = await db.webhookExecutionClaim.findMany({
+        where: { webhookEventId: { in: selectedIds } },
+        orderBy: { id: 'asc' },
+      });
+      const { request, bytes } = await storeFixture();
+      type StoreResult = Awaited<ReturnType<typeof executeSourceAbandonmentStore>>;
+      type Phase = 'install' | 'materialize' | 'readback';
+      type BatchOutput = {
+        results: Array<{ result: StoreResult; pages?: StoreResult[] }>;
+      };
+      type Dependencies = {
+        stock: typeof sourceStoreRuntime;
+        env: NodeJS.ProcessEnv;
+        readInventory(index: number): Buffer;
+        createPrismaClient(
+          url: string,
+          config: Parameters<typeof createPrismaClient>[1],
+        ): Pick<PrismaClient, '$transaction' | '$disconnect'>;
+      };
+      const loadBatch = createRequire(__filename);
+      const batch = loadBatch(
+        resolve(__dirname, '../../../../infra/scripts/source-abandonment-session-store-batch.cjs'),
+      ) as {
+        STORE_BATCH_LIMITS: { phaseMs: Record<Phase, number> };
+        runSourceAbandonmentStoreBatch(
+          input: unknown,
+          dependencies: Dependencies,
+        ): Promise<BatchOutput>;
+      };
+      const operations: Array<Parameters<typeof executeSourceAbandonmentStore>[1]['operation']> =
+        [];
+      const poolModes: boolean[] = [];
+      let disconnectedPools = 0;
+      const timings: Array<{ phase: string; elapsedMs: number; stockCalls: number }> = [];
+      const dependencies: Dependencies = {
+        stock: {
+          ...sourceStoreRuntime,
+          executeSourceAbandonmentStore: async (
+            ...args: Parameters<typeof executeSourceAbandonmentStore>
+          ) => {
+            operations.push(args[1].operation);
+            return executeSourceAbandonmentStore(...args);
+          },
+        },
+        env: {
+          DATABASE_URL: databaseUrl,
+          MAXIM_SOURCE_ABANDONMENT_OFFLINE: '1',
+          MAXIM_SOURCE_ABANDONMENT_PROTOCOL: 'source-abandonment-v1',
+          APP_SERVICE_NAME: 'source-abandonment-store',
+          APP_SOURCE_SHA: request.binding.sourceSha,
+          MAXIM_SOURCE_ABANDONMENT_IMAGE_ID: request.binding.imageId,
+          TZ: 'UTC',
+        },
+        readInventory(index) {
+          expect(index).toBe(0);
+          return bytes;
+        },
+        createPrismaClient(url, config) {
+          expect(url).toBe(databaseUrl);
+          expect(config?.max).toBe(1);
+          poolModes.push(config?.options?.includes('default_transaction_read_only=on') === true);
+          const pool = createPrismaClient(url, config);
+          return {
+            $transaction: pool.$transaction.bind(pool),
+            async $disconnect() {
+              try {
+                await pool.$disconnect();
+              } finally {
+                disconnectedPools++;
+              }
+            },
+          };
+        },
+      };
+      const invoke = async (phase: Phase, label: string) => {
+        dependencies.env.MAXIM_SOURCE_ABANDONMENT_STORE_MODE =
+          phase === 'readback' ? 'readback' : 'writer';
+        const operationCount = operations.length;
+        const started = performance.now();
+        const output = await batch.runSourceAbandonmentStoreBatch(
+          {
+            version: 1,
+            kind: 'source_abandonment_session_store_batch',
+            phase,
+            deadlineAtMs: Date.now() + batch.STORE_BATCH_LIMITS.phaseMs[phase],
+            items: [{ inventoryIndex: 0, request: { ...request, operation: 'readback' } }],
+          },
+          dependencies,
+        );
+        timings.push({
+          phase: label,
+          elapsedMs: performance.now() - started,
+          stockCalls: operations.length - operationCount,
+        });
+        expect(output.results).toHaveLength(1);
+        expect(disconnectedPools).toBe(poolModes.length);
+        return output.results[0]!;
+      };
+      expect((await invoke('readback', 'absent')).result).toMatchObject({ state: 'ABSENT' });
+      expect((await invoke('install', 'install')).result).toMatchObject({
+        state: 'SEALED',
+        requiredChats: 7,
+        completeChats: 0,
+      });
+      expect((await invoke('readback', 'installed_seal')).result).toMatchObject({
+        state: 'SEALED',
+        requiredChats: 7,
+        completeChats: 0,
+      });
+      const materialized = await invoke('materialize', 'materialize');
+      expect(materialized.pages).toHaveLength(7);
+      expect(materialized.pages?.map((page) => ('page' in page ? page.page : null))).toEqual(
+        Array.from({ length: 7 }, () => ({
+          complete: true,
+          scanned: 2,
+          applied: 2,
+          blocked: false,
+        })),
+      );
+      for (const label of ['materialized_seal', 'final_readback_1', 'final_readback_2']) {
+        expect((await invoke('readback', label)).result).toMatchObject({
+          state: 'MATERIALIZED',
+          requiredChats: 7,
+          completeChats: 7,
+        });
+      }
+      expect(operations).toEqual([
+        'readback',
+        'certificate_create',
+        'install',
+        'readback',
+        ...Array.from({ length: 7 }, () => 'materialize'),
+        'readback',
+        'readback',
+        'readback',
+      ]);
+      expect(poolModes).toEqual([true, false, true, false, true, true, true]);
+      expect(disconnectedPools).toBe(7);
+      expect(
+        await db.webhookExecutionClaim.findMany({
+          where: { webhookEventId: { in: selectedIds } },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(claimsBefore);
+      expect(
+        await db.webhookEvent.findMany({
+          where: { id: { in: selectedIds } },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(
+        ownersBefore.map((owner) => ({
+          ...owner,
+          sourceDispositionId: expect.any(String),
+          sourceDispositionReceiptId: owner.id,
+        })),
+      );
+      expect(
+        await db.webhookEvent.count({
+          where: {
+            id: { in: addedReceiptIds.filter((id) => !selectedIds.includes(id)) },
+            status: 'NO_REPLAY_HELD',
+            sourceDispositionId: { not: null },
+          },
+        }),
+      ).toBe(14);
+      expect(
+        await db.webhookEvent.count({
+          where: { id: { in: historyWebhookIds }, sourceDispositionId: null, status: 'FAILED' },
+        }),
+      ).toBe(512);
+      const historyScope = { chatId: { in: addedChatIds } };
+      expect(await db.moderationEvent.count({ where: historyScope })).toBe(6 * 512);
+      expect(await db.moderationViolationMessageClaim.count({ where: historyScope })).toBe(6 * 512);
+      expect(await db.spammerObservation.count({ where: historyScope })).toBe(6 * 512);
+      expect(
+        await db.moderationDeleteIntent.count({ where: { ...historyScope, status: 'SUCCEEDED' } }),
+      ).toBe(6 * 512);
+      // FLAG: SQL lifecycle timings are advisory local observations; no CPU/cgroup,
+      // Docker/process startup, production latency or accepted downtime is measured.
+      process.stdout.write(
+        `${JSON.stringify({ native: true, audit: 'positive_seven_chat_stock_batch', selectedOwners: 7, selectedChats: 7, sourceMirrors: 14, materializationPages: 7, materializedReceipts: 14, stockCalls: operations.length, poolOpens: poolModes.length, poolDisconnects: disconnectedPools, independentFinalReadbackPools: 2, timings })}\n`,
+      );
+    } finally {
+      for (const id of selectedIds.slice(1)) {
+        if (
+          !(await db.webhookSourceAbandonment.findUnique({ where: { ownerWebhookEventId: id } }))
+        ) {
+          await db.webhookExecutionClaim.deleteMany({ where: { webhookEventId: id } });
+        }
+      }
+      await db.webhookEvent.deleteMany({
+        where: { id: { in: addedReceiptIds }, sourceDispositionId: null },
+      });
+      await db.spammerObservation.deleteMany({ where: { chatId: { in: addedChatIds } } });
+      // FLAG: Immutable positive holds/proofs remain for disposable-store teardown.
+      // Added chats cascade only their unrelated history; no held source has a chat FK.
+      await db.chat.deleteMany({ where: { id: { in: addedChatIds } } });
     }
   });
 

@@ -4,6 +4,7 @@ import { WebhookPreparationDeferredError } from '../common/webhook-preparation-d
 import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manager.service';
 import { BackgroundWebhookProcessor, ModerationService } from './moderation.service';
 import { createUpdate } from './moderation.service.spec-support';
+import { WebhookFinishPersistenceError } from './webhook-canonical-execution.service';
 import {
   deferWebhookPreparationJob,
   WebhookPreparationRetryError,
@@ -123,6 +124,42 @@ describe('webhook preparation queue retry', () => {
     await expect(f.service.processWebhookEvent('event-a')).rejects.toBe(error);
     expect(f.handler).not.toHaveBeenCalled();
     expect(f.canonical.failExecution).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    (['static', 'dynamic'] as const).flatMap((kind) =>
+      (['completion', 'prepared observation'] as const).map((stage) => ({ kind, stage })),
+    ),
+  )(
+    'retains $kind positive finish failures at $stage without releasing authority or delaying preparation',
+    async ({ kind, stage }) => {
+      const f = fixture();
+      const error = new WebhookFinishPersistenceError(
+        'storage_unavailable',
+        'checkpoint',
+        new Error('Database unavailable'),
+      );
+      if (stage === 'completion') f.canonical.completeExecution.mockRejectedValue(error);
+      else f.canonical.prepareExecution.mockRejectedValue(error);
+      const job = { id: 'event-a', data: { webhookEventId: 'event-a' }, moveToDelayed: jest.fn() };
+      await expect(processor(kind, f.service)(job, 'owned-token')).rejects.toBe(error);
+      expect(f.canonical.failExecution).not.toHaveBeenCalled();
+      expect(job.moveToDelayed).not.toHaveBeenCalled();
+      expect(f.handler).toHaveBeenCalledTimes(stage === 'completion' ? 1 : 0);
+    },
+  );
+
+  it('keeps a handler-thrown finish-shaped error on the ordinary failure path', async () => {
+    const f = fixture();
+    const error = new WebhookFinishPersistenceError(
+      'storage_unavailable',
+      'checkpoint',
+      new Error('Handler error'),
+    );
+    f.handler.mockRejectedValue(error);
+    await expect(f.service.processWebhookEvent('event-a')).rejects.toBe(error);
+    expect(f.canonical.failExecution).toHaveBeenCalledTimes(1);
+    expect(f.canonical.completeExecution).not.toHaveBeenCalled();
   });
 
   it.each(['missing-token', 'foreign-receipt', 'redis-failure'] as const)(

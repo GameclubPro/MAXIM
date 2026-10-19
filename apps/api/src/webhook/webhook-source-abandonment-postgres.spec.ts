@@ -6,6 +6,11 @@ import { QueueMetricsService } from '../system/queue-metrics.service';
 import { buildWebhookOperationalLagQuery } from '../system/webhook-operational-lag';
 import { canonical, legacySnapshotDigest } from './webhook-legacy-source';
 import { WebhookParser } from './webhook.parser';
+import {
+  SOURCE_ABANDONMENT_SOURCE_CLOSURE,
+  sourceAbandonmentSourceClosureDigest,
+} from '../scripts/source-abandonment-source-closure';
+import { sourceAbandonmentDigest } from '../scripts/source-abandonment-live-protocol';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import {
   SOURCE_ABANDONMENT_OPERATION,
@@ -368,7 +373,7 @@ native('exact-source modern abandonment preserves journals and independent moder
 
   async function fixture(
     forwardPhotos?: number,
-    content?: 'share' | 'reply' | 'image' | 'video' | 'forward-without-sender',
+    content?: 'share' | 'reply' | 'reply-audio' | 'image' | 'video' | 'forward-without-sender',
   ) {
     h = await createMultibotHarness({
       databaseUrl,
@@ -474,7 +479,7 @@ native('exact-source modern abandonment preserves journals and independent moder
         ],
       });
     }
-    if (content === 'reply') {
+    if (content === 'reply' || content === 'reply-audio') {
       raw.message.link = {
         type: 'reply',
         chat_id: independentChatId!,
@@ -488,6 +493,16 @@ native('exact-source modern abandonment preserves journals and independent moder
         },
       };
     }
+    if (content === 'reply-audio')
+      Object.assign(raw.message.link!.message, {
+        text: 'Quoted audio caption',
+        attachments: [
+          {
+            type: 'audio',
+            payload: { url: 'https://example.com/audio', token: 'fixture-audio', id: 2 ** 60 },
+          },
+        ],
+      });
     const ownerId = await storeRaw(h, raw);
     await h.ingress.preparePersistedWebhookEvent(ownerId);
     const started = await h.canonical.prepareExecution(ownerId, h.bots[0]!.id);
@@ -598,14 +613,15 @@ native('exact-source modern abandonment preserves journals and independent moder
     `);
   }
 
-  async function install(f: Awaited<ReturnType<typeof fixture>>, sealNow = true) {
+  async function install(
+    f: Awaited<ReturnType<typeof fixture>>,
+    sealNow = true,
+    sourceClosureSha256 = legacySnapshotDigest({ fixture: 'exact-source-runtime' }),
+  ) {
     const certificateId = randomUUID();
     const sourceId = randomUUID();
     const sourceSha = 'a'.repeat(40);
     const imageId = `sha256:${'b'.repeat(64)}`;
-    const sourceClosureSha256 = legacySnapshotDigest({
-      fixture: 'exact-source-runtime',
-    });
     const descendantsSha256 = legacySnapshotDigest({ intent: f.intent });
     const attestation = {
       operation: SOURCE_ABANDONMENT_OPERATION,
@@ -909,7 +925,7 @@ native('exact-source modern abandonment preserves journals and independent moder
     },
   );
 
-  it.each(['share', 'reply', 'image', 'video', 'forward-without-sender'] as const)(
+  it.each(['share', 'reply', 'reply-audio', 'image', 'video', 'forward-without-sender'] as const)(
     'holds the exact modern %s source and edited mirrors while a distinct same-user message progresses',
     async (content) => {
       const f = await fixture(undefined, content);
@@ -931,9 +947,10 @@ native('exact-source modern abandonment preserves journals and independent moder
       edited.update_type = 'message_edited';
       edited.timestamp = Date.now();
       const editId = await storeRaw(s, edited, s.bots[2]!.id);
-      await runReceipts(s, [editId, nextId]);
+      const lateIds = content === 'reply-audio' ? [await storeRaw(s, f.raw, s.bots[3]!.id)] : [];
+      await runReceipts(s, [editId, nextId, ...lateIds]);
       await s.pause();
-      for (const id of [mirrorId, editId])
+      for (const id of [mirrorId, editId, ...lateIds])
         expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
           status: 'NO_REPLAY_HELD',
           sourceDispositionReceiptId: id,
@@ -951,10 +968,14 @@ native('exact-source modern abandonment preserves journals and independent moder
       ]);
       expect(await s.legacyHolds.isMemberHeld(f.chatId, 'fixture-user')).toBe(false);
       expect(await s.legacyHolds.isGlobalUserHeld('fixture-user')).toBe(false);
-      if (content === 'reply' || content === 'forward-without-sender') {
+      if (
+        content === 'reply' ||
+        content === 'reply-audio' ||
+        content === 'forward-without-sender'
+      ) {
         const link = f.raw.message.link!;
         expect(await s.legacyHolds.isMessageHeld(link.chat_id, link.message.mid)).toBe(false);
-        if (content === 'reply') {
+        if (content === 'reply' || content === 'reply-audio') {
           expect(await s.legacyHolds.isMemberHeld(link.chat_id, link.sender.user_id)).toBe(false);
           expect(await s.legacyHolds.isGlobalUserHeld(link.sender.user_id)).toBe(false);
         } else expect(link).not.toHaveProperty('sender');
@@ -963,6 +984,69 @@ native('exact-source modern abandonment preserves journals and independent moder
       expect(s.failures).toEqual([]);
     },
   );
+
+  it('retains installed v1 certificate and opaque v6 closure semantics for old reply receipts', async () => {
+    const f = await fixture(undefined, 'reply');
+    const { s } = f;
+    const { pristineOperatorDiscard, ...v6Base } = SOURCE_ABANDONMENT_SOURCE_CLOSURE;
+    expect(pristineOperatorDiscard.purpose).toBe('PRISTINE_OPERATOR_DISCARD_V1');
+    const closure = {
+      ...v6Base,
+      version: 6,
+      reply: {
+        ...v6Base.reply,
+        content:
+          'parser-proved-nonempty-outer-text-and-flat-quoted-text-with-zero-through-ten-images-or-one-video-or-one-official-sticker',
+      },
+    };
+    const sourceSha = 'a'.repeat(40);
+    const imageId = `sha256:${'b'.repeat(64)}`;
+    const v6Digest = sourceAbandonmentDigest({ sourceSha, imageId, closure });
+    expect(sourceAbandonmentSourceClosureDigest(sourceSha, imageId)).not.toBe(v6Digest);
+    const installed = await install(f, true, v6Digest);
+    const certificate = await s.prisma.webhookSourceAbandonmentCertificate.findUniqueOrThrow({
+      where: { id: installed.certificateId },
+    });
+    expect(certificate).toMatchObject({ operationVersion: 1, sourceClosureSha256: v6Digest });
+    expect(await materialize(s, f.ownerId)).toBe('APPLIED_WITH_PROOF');
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    for (const edit of [false, true]) {
+      const raw = structuredClone(f.raw);
+      if (edit) {
+        raw.update_type = 'message_edited';
+        raw.timestamp = Date.now();
+      }
+      // FLAG: Ingress installs the proof in its receipt transaction. Choose its empty-raw
+      // sampling branch before that proof; never rewrite digest-bound evidence afterward.
+      const sampling = jest.spyOn(Math, 'random').mockReturnValue(1);
+      let id: string;
+      try {
+        id = await storeRaw(s, raw, s.bots[edit ? 2 : 1]!.id);
+      } finally {
+        sampling.mockRestore();
+      }
+      const ingested = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+      expect(ingested).toMatchObject({
+        status: 'NO_REPLAY_HELD',
+        sourceDispositionId: expect.any(String),
+        sourceDispositionReceiptId: id,
+        rawPayload: {},
+        processedAt: null,
+      });
+      expect(await materialize(s, id)).toBe('ALREADY_APPLIED_SAME_PROOF');
+      await s.moderation.processWebhookEvent(id);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(ingested);
+    }
+    expect(
+      await s.prisma.webhookSourceAbandonmentCertificate.findUniqueOrThrow({
+        where: { id: installed.certificateId },
+      }),
+    ).toEqual(certificate);
+    expect(handler).not.toHaveBeenCalled();
+    expect(s.effects).toEqual([]);
+    await assertHistory(f);
+    expect(s.failures).toEqual([]);
+  });
 
   it('refuses unsupported owner shapes and never projects malformed exact-source mirrors', async () => {
     const f = await fixture(2);

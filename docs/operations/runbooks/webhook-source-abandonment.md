@@ -14,11 +14,13 @@ payload against the real webhook parser and reject default or configured command
 The human profile supports plain text, up to ten strict direct image/photo/video
 attachments, one direct audio attachment, or one official SHARE preview. Flat
 forwards and replies may contain linked text, up to ten images, or one video;
-a forward may contain one SHARE preview and a reply may contain one sticker.
+a forward may contain one SHARE preview and a reply may contain one sticker or one
+strict passive audio attachment. Linked reply audio is limited to explicit source
+abandonment and reuses the direct audio metadata validator.
 An absent linked sender is allowed only for a forward; supplied sender metadata
 remains validated. Initial human message edits retain the same exact identity and
-clock checks. A reply requires nonempty outer text and no direct attachments.
-Nested links, linked audio, mixed preview/media and unknown metadata are refused.
+clock checks. A reply requires outer text as a string and no direct attachments.
+Nested links, forwarded audio, mixed preview/media and unknown metadata are refused.
 
 Bounded formatting, credential-free HTTPS links and numeric user mentions are
 passive metadata with offsets in the original UTF-16 text. Identical linked
@@ -49,14 +51,19 @@ Receipts of both profiles accept ingress's empty-object raw sampling sentinel on
 while the original `normalizedPayload.raw` still passes every source/parser check.
 Nonempty retained raw copies must match it; null, arrays and mismatched data refuse.
 Initial channel owners still require a retained original under the SQL seal guard.
-Source closure version 6 binds these receipt rules, and rollback must retain both
-readers. Existing owner claims, receipt keys and raw evidence are never rewritten.
+Source closure version 7 also binds strict passive linked reply audio and the
+separate v6 pristine content policy. Rollback must retain the actual purpose guard
+and both pristine owner/family readers. Historical installed v1 certificates keep
+their opaque closure digests; existing owner claims, receipt keys and raw evidence
+are never rewritten.
 Legacy member/global-user holds are independent. Unsupported sources, independent
 unfinished edited claims and unattributed actionable continuations are refused.
 
-The automatic `PRISTINE_OPERATOR_DISCARD_V1` path accepts the strict human source
-profile only for an expired, enforced, prepared owner that has never started and
-has no lease, completion or command result. It requires the complete bounded
+The automatic `PRISTINE_OPERATOR_DISCARD_V1` path keeps the v6 human content
+profile through `inspectPristineOperatorDiscardSource`; linked reply audio remains
+refused for both the owner and every family receipt. It applies only for an expired,
+enforced, prepared owner that has never started and has no lease, completion or
+command result. It requires the complete bounded
 receipt family, a prior dormant observation, later scrubbed operator-discard
 witnesses, exact claim ownership, current command checks and no existing hold.
 The business-start fence prevents moderation and media handlers from running

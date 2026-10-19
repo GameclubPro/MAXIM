@@ -211,7 +211,7 @@ export function inspectChannelAuthorlessSource(
     const linkedUpdate = { ...update, raw: { ...raw, message: linkedMessage } };
     const error =
       record(message.link)?.type === 'reply'
-        ? inspectSourceAbandonmentReplyText(linkedUpdate, settings)
+        ? inspectSourceAbandonmentReplyText(linkedUpdate, 'SOURCE_ABANDONMENT', settings)
         : inspectSourceAbandonmentForwardText(linkedUpdate, settings);
     if (error) return refuse('channel_source_link_unproved');
   }

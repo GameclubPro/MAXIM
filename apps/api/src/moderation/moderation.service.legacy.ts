@@ -618,6 +618,7 @@ import {
 } from '../integrations/karavan-storefront/karavan-storefront-relay.service';
 import {
   WebhookCanonicalExecutionService,
+  WebhookFinishPersistenceError,
   type WebhookCanonicalExecutionContext,
   type WebhookTimeoutQuarantineLease,
 } from './webhook-canonical-execution.service';
@@ -1467,6 +1468,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         error,
         this.readWebhookHotPathProfileSnapshot(hotPathProfile)?.latestStage,
       );
+      // FLAG: A returned handler with unresolved database finalization must retain its exact
+      // owner lease and replay fence; this is neither handler failure nor preparation retry.
+      if (failureStage === 'completion' && error instanceof WebhookFinishPersistenceError)
+        throw error;
       await recordGroupCommandNoticeRecovery(this.prisma, execution, error);
       await this.commercialOcrEnqueueService?.suppressPendingBatch(commercialOcrPendingActivations);
       if (!this.isWebhookHotPathTimeoutError(error)) {

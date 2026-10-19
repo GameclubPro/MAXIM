@@ -1,8 +1,11 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { ConfigService } from '@nestjs/config';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
+import type { WebhookCanonicalExecutionService } from '../moderation/webhook-canonical-execution.service';
 import {
   ChatEntityType,
+  type Prisma,
+  type WebhookExecutionClaim,
   WebhookExecutionClaimStatus,
   WebhookStatus,
 } from '../prisma/prisma-client';
@@ -29,6 +32,34 @@ const productionClaimModel = (
   WebhookService.prototype as unknown as { getWebhookExecutionClaimModel: () => object | null }
 ).getWebhookExecutionClaimModel;
 type FixtureRow = Record<string, unknown>;
+type SemanticFixtureSql = {
+  readonly strings: Readonly<Prisma.Sql['strings']>;
+  readonly values: Readonly<Prisma.Sql['values']>;
+};
+type CanonicalStartedOwner = Parameters<
+  NonNullable<
+    Parameters<
+      typeof WebhookCanonicalExecutionService.transitionLiveUnstartedOwnerWithClient
+    >[1]['captureStartedOwner']
+  >
+>[0];
+type CanonicalTransitionOwnerFixture = Pick<
+  WebhookExecutionClaim,
+  | 'semanticKey'
+  | 'webhookEventId'
+  | 'executionBotId'
+  | 'preparedAt'
+  | 'businessStartedAt'
+  | 'leaseToken'
+  | 'leaseExpiresAt'
+  | 'commandResult'
+>;
+// FLAG: The same SQL also returns READY preparation, whose business lease fields are null.
+type CanonicalTransitionSnapshotFixture = Omit<
+  CanonicalStartedOwner,
+  keyof CanonicalTransitionOwnerFixture
+> &
+  CanonicalTransitionOwnerFixture;
 type SemanticClaimModel = {
   createMany: jest.Mock;
   findUnique: jest.Mock;
@@ -298,13 +329,41 @@ function coherentSemanticClaims(service: object) {
       return result;
     },
   );
-  const adaptQueryRaw = (queryRaw?: jest.Mock) =>
+  const adaptQueryRaw = (
+    queryRaw?: jest.Mock,
+    mutateRaw?: (query: SemanticFixtureSql) => Promise<number>,
+  ) =>
     jest.fn(async (...args: unknown[]) => {
       const query = args[0] as {
         strings?: readonly string[];
+        values?: readonly unknown[];
         join?: (separator: string) => string;
       };
       const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
+      if (sql.includes('RETURNING claim."id" AS "claimId"')) {
+        if (!mutateRaw || !query.strings || !query.values)
+          throw new Error('Canonical transition requires its transaction fixture');
+        const statement = query as SemanticFixtureSql;
+        if ((await mutateRaw(statement)) !== 1) return [];
+        const id = String(
+          statement.values[statement.strings.findIndex((part) => part.includes('claim."id" = '))],
+        );
+        const owner = claimRows.get(id) as CanonicalTransitionOwnerFixture | undefined;
+        if (!owner) throw new Error('Canonical transition lost its persisted fixture owner');
+        const snapshot: CanonicalTransitionSnapshotFixture = {
+          claimId: id,
+          semanticKey: owner.semanticKey,
+          webhookEventId: owner.webhookEventId,
+          executionBotId: owner.executionBotId,
+          preparedAt: owner.preparedAt,
+          businessStartedAt: owner.businessStartedAt,
+          leaseToken: owner.leaseToken,
+          leaseExpiresAt: owner.leaseExpiresAt,
+          commandResult: owner.commandResult,
+          commandResultIsSqlNull: owner.commandResult === null,
+        };
+        return [snapshot];
+      }
       if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
       if (sql.includes('SELECT claim.id, claim.webhook_event_id AS "ownerId"')) return [];
       // Receipt admission uses its own lock before domain membership projection.
@@ -336,7 +395,6 @@ function coherentSemanticClaims(service: object) {
     client.webhookEvent ??= prisma.webhookEvent;
     client.webhookExecutionClaim ??= model;
     client.chat ??= { createMany: jest.fn().mockResolvedValue({ count: 0 }) };
-    client.$queryRaw = adaptQueryRaw(client.$queryRaw);
     const executeRaw = client.$executeRaw;
     client.$executeRaw = jest.fn(
       async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
@@ -453,6 +511,10 @@ function coherentSemanticClaims(service: object) {
         );
         return 1;
       },
+    );
+    client.$queryRaw = adaptQueryRaw(
+      client.$queryRaw,
+      async (query) => await client.$executeRaw!(query),
     );
     return client;
   };

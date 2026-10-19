@@ -3,7 +3,10 @@ import {
   type AdminForwardedCommandSettings,
 } from '../moderation/admin-forwarded-command.util';
 import { isSourceAbandonmentMarkup } from './webhook-source-abandonment-markup';
-import { isSourceAbandonmentLinkedMedia } from './webhook-source-abandonment-media';
+import {
+  isSourceAbandonmentLinkedMedia,
+  type SourceAbandonmentContentPurpose,
+} from './webhook-source-abandonment-media';
 export {
   isSourceAbandonmentLinkedMedia,
   isSourceAbandonmentDirectMedia,
@@ -33,7 +36,11 @@ function identity(value: unknown): boolean {
     : typeof value === 'string' && value.length > 0 && value === value.trim();
 }
 
-function body(value: unknown, linked: boolean): Record<string, unknown> | null {
+function body(
+  value: unknown,
+  linked: boolean,
+  purpose: SourceAbandonmentContentPurpose,
+): Record<string, unknown> | null {
   const item = record(value);
   return item &&
     onlyKeys(item, ['mid', 'seq', 'text', 'attachments', 'markup']) &&
@@ -42,7 +49,7 @@ function body(value: unknown, linked: boolean): Record<string, unknown> | null {
     typeof item.text === 'string' &&
     isSourceAbandonmentMarkup(item.markup, item.text) &&
     (linked
-      ? isSourceAbandonmentLinkedMedia(item.attachments, 'reply')
+      ? isSourceAbandonmentLinkedMedia(item.attachments, 'reply', purpose)
       : item.attachments === undefined ||
         (Array.isArray(item.attachments) && item.attachments.length === 0))
     ? item
@@ -54,14 +61,15 @@ function body(value: unknown, linked: boolean): Record<string, unknown> | null {
 // visible source photos, and a linked sender/message never gains hold authority.
 export function inspectSourceAbandonmentReplyText(
   update: Record<string, unknown>,
+  purpose: SourceAbandonmentContentPurpose,
   settings?: AdminForwardedCommandSettings,
 ): SourceAbandonmentReplyRefusal | null {
   const raw = record(update.raw);
   const message = record(raw?.message);
   const normalized = record(update.message);
-  const direct = body(message?.body, false);
+  const direct = body(message?.body, false, purpose);
   const link = record(message?.link);
-  const linked = body(link?.message, true);
+  const linked = body(link?.message, true, purpose);
   const sender = record(link?.sender);
   if (
     !message ||

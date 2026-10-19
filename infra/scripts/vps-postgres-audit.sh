@@ -29,6 +29,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh [queue|activity|duplicate|publication-schema|storage|all]
   ./infra/scripts/vps-postgres-audit.sh queue [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-cohort [--short] [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-recovery-key-cohort <UTC-second> <private-chat-ID-CSV> [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-workload [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-order-candidates
   ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
@@ -97,6 +98,7 @@ DUPLICATE_EXPLAIN=''
 DUPLICATE_STATUS=''
 MESSAGE_WINDOW_FROM=''
 WEBHOOK_COHORT_ARGS=()
+RECOVERY_KEY_COHORT_ARGS=()
 SOURCE_ENVELOPE_OWNER=''
 case "$AUDIT_MODE" in
   chat-message-window)
@@ -125,6 +127,10 @@ case "$AUDIT_MODE" in
       exit 2
     fi
     DUPLICATE_EXPLAIN="${1:-}"
+    ;;
+  webhook-recovery-key-cohort)
+    RECOVERY_KEY_COHORT_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/webhook-recovery-key-cohort-audit.mjs" "${RECOVERY_KEY_COHORT_ARGS[@]}" >/dev/null || exit 2
     ;;
   webhook-cohort)
     WEBHOOK_COHORT_ARGS=("${@:2}")
@@ -197,7 +203,7 @@ esac
 
 # FLAG: This report attests public relations. Pin resolution before the shared
 # privilege admission as well as the report, including pg_temp last explicitly.
-if [[ "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' ]]; then
+if [[ "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' ]]; then
   POSTGRES_AUDIT_OPTIONS+=' -c search_path=pg_catalog,public,pg_temp'
 fi
 
@@ -2399,6 +2405,9 @@ emit_sql() {
     webhook-cohort)
       node "$ROOT_DIR/infra/scripts/webhook-cohort-audit.mjs" "${WEBHOOK_COHORT_ARGS[@]}"
       ;;
+    webhook-recovery-key-cohort)
+      node "$ROOT_DIR/infra/scripts/webhook-recovery-key-cohort-audit.mjs" "${RECOVERY_KEY_COHORT_ARGS[@]}"
+      ;;
     chat-message-window)
       local message_window_args=("$RULES_CLEANUP_CHAT_ID" "$MESSAGE_WINDOW_FROM")
       if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
@@ -2528,7 +2537,7 @@ prepare_audit_sql() {
     echo "Generated PostgreSQL audit input is invalid." >&2
     return 1
   fi
-  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-quarantine-proof" || "$AUDIT_MODE" == "webhook-source-envelope" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+  if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-quarantine-proof" || "$AUDIT_MODE" == "webhook-source-envelope" || "$AUDIT_MODE" == "webhook-recovery-key-cohort" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
     AUDIT_STDERR_FILE="$(mktemp "$temp_root/maxim-postgres-audit-stderr.XXXXXXXX")" || {
       echo "Could not create the private PostgreSQL audit diagnostics file." >&2
       return 1
@@ -2638,7 +2647,7 @@ trap 'exit 143' TERM
 
 prepare_audit_sql
 AUDIT_BACKEND_MAY_EXIST=1
-if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-quarantine-proof" || "$AUDIT_MODE" == "webhook-source-envelope" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
+if [[ "$AUDIT_MODE" == "legacy-default-webhook-jobs" || "$AUDIT_MODE" == "webhook-quarantine-proof" || "$AUDIT_MODE" == "webhook-source-envelope" || "$AUDIT_MODE" == "webhook-recovery-key-cohort" || ( "$AUDIT_MODE" == "webhook-owner-proof" || "$AUDIT_MODE" == "webhook-source-proof" || "$AUDIT_MODE" == "webhook-retry-proof" || "$AUDIT_MODE" == "webhook-queued-proof" ) || ( "$AUDIT_MODE" == "delete-retry-heads" || "$AUDIT_MODE" == "chat-message-window" || "$AUDIT_MODE" == "moderation-outcomes" || "$AUDIT_MODE" == "webhook-cohort" || "$AUDIT_MODE" == "webhook-workload" ) || ( "$AUDIT_MODE" == "legacy-order-candidates" || "$AUDIT_MODE" == "legacy-order-window" || "$AUDIT_MODE" == "legacy-semantic-mirrors" ) ]]; then
   timeout --signal=TERM --kill-after=2s \
     "$AUDIT_WALL_TIMEOUT_SEC" "${psql_command[@]}" <"$AUDIT_SQL_FILE" \
     2>"$AUDIT_STDERR_FILE" &
@@ -2655,6 +2664,8 @@ AUDIT_PROCESS_PID=''
 
 if [[ "$status" -eq 124 ]]; then
   echo "Bounded PostgreSQL audit exceeded ${AUDIT_WALL_TIMEOUT_SEC}s and was terminated." >&2
+elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-recovery-key-cohort" ]]; then
+  echo "Bounded webhook recovery key cohort audit failed closed (recovery_key_cohort_unavailable)." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-source-envelope" ]]; then
   echo "Bounded webhook source envelope audit failed closed (source_envelope_unavailable)." >&2
 elif [[ "$status" -ne 0 && "$AUDIT_MODE" == "webhook-quarantine-proof" ]]; then

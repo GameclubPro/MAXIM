@@ -26,6 +26,7 @@ import {
 import { buildWebhookSemanticEventKey } from '../webhook/webhook-semantic-event-key';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
 import { WebhookPreparationRetryError } from './webhook-preparation-retry';
+import { WebhookFinishPersistenceError } from './webhook-canonical-execution.service';
 
 describe('ModerationService', () => {
   it.each(['unexpected', 'preparation', 'ordering'] as const)(
@@ -436,10 +437,10 @@ describe('ModerationService', () => {
           },
         ),
       },
-      $queryRaw: jest.fn().mockResolvedValue([]),
-      $executeRaw: jest.fn(
+      $queryRaw: jest.fn(
         async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
           const sql = query.strings.join('?');
+          if (!sql.includes('RETURNING claim."id" AS "claimId"')) return [];
           expect(sql).toContain('"business_started_at" = instant."now"');
           const valueAfter = (fragment: string) =>
             query.values[query.strings.findIndex((part) => part.includes(fragment))];
@@ -456,9 +457,9 @@ describe('ModerationService', () => {
             claim.completedAt !== null ||
             valueAfter('event."execution_deadline_at" IS NOT DISTINCT FROM ') !== null
           )
-            return 0;
+            return [];
           claim.businessStartedAt = new Date();
-          return 1;
+          return [{ ...claim, claimId: claim.id, commandResultIsSqlNull: true }];
         },
       ),
       $transaction: jest.fn(),
@@ -472,13 +473,21 @@ describe('ModerationService', () => {
     expect(first?.businessLeaseToken).toEqual(expect.any(String));
     expect(claim.leaseToken).toBe(first?.businessLeaseToken);
     expect(claim.businessStartedAt).toEqual(expect.any(Date));
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(
+      prisma.$queryRaw.mock.calls.filter(([query]) =>
+        query.strings.join(' ').includes('RETURNING claim."id" AS "claimId"'),
+      ),
+    ).toHaveLength(1);
     expect(buildWebhookSemanticEventKey(receipt.normalizedPayload)).toBeNull();
     expect(receipt.semanticKey).toBeNull();
     await expect(service.prepareExecution('event-fallback-lease-1', null)).rejects.toThrow(
       'Canonical business already running',
     );
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(
+      prisma.$queryRaw.mock.calls.filter(([query]) =>
+        query.strings.join(' ').includes('RETURNING claim."id" AS "claimId"'),
+      ),
+    ).toHaveLength(1);
     expect(prisma.webhookExecutionClaim.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.webhookExecutionClaim.findFirst).toHaveBeenCalledTimes(2);
     expect(prisma.webhookExecutionClaim.findUnique).not.toHaveBeenCalled();
@@ -2039,19 +2048,16 @@ describe('ModerationService', () => {
     );
     jest.spyOn(service, 'handleUpdate').mockResolvedValue(undefined);
 
-    await expect(service.processWebhookEvent('event-canonical-lease-lost-1')).rejects.toThrow(
-      'Handler completion claim changed',
+    await expect(service.processWebhookEvent('event-canonical-lease-lost-1')).rejects.toMatchObject(
+      {
+        outcome: 'authority_changed',
+        phase: 'settlement',
+      } satisfies Partial<WebhookFinishPersistenceError>,
     );
 
     expect(webhookUpdate.mock.calls.filter(([args]) => args.data.status === 'FAILED')).toHaveLength(
-      1,
+      0,
     );
-    expect(webhookUpdate).toHaveBeenCalledWith({
-      where: expect.objectContaining({ id: 'event-canonical-lease-lost-1' }),
-      data: expect.objectContaining({
-        status: 'FAILED',
-      }),
-    });
     expect(webhookUpdate).not.toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'PROCESSED' }),
