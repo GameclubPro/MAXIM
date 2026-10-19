@@ -598,7 +598,7 @@ for (const code of [
       'Redis refusal',
       (value) =>
         value.issues.push({
-          code: 'ACTION_PAGE_UNPROVED',
+          code: 'REDIS_STORE_OR_SOURCE_REFUSED',
           descriptor: 'redis:max-actions-background',
         }),
     ],
@@ -717,7 +717,7 @@ for (const [name, change] of [
     'Redis error',
     (value) =>
       value.issues.push({
-        code: 'ACTION_PAGE_UNPROVED',
+        code: 'REDIS_STORE_OR_SOURCE_REFUSED',
         descriptor: 'redis:max-actions-background',
       }),
   ],
@@ -863,6 +863,264 @@ for (const descriptor of [
     assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
   });
 
+function dynamicActionDenial(
+  value,
+  {
+    code = 'ACTION_MULTIPLE_STATES',
+    descriptor = 'redis:max-actions-background',
+    semantic = true,
+    reversed = false,
+  } = {},
+) {
+  const issues = [
+    { code, descriptor },
+    ...(semantic
+      ? [
+          { code: 'selected_owner_proof_incomplete', descriptor: 'sql:selected-source' },
+          { code: 'source_chat_type', descriptor: 'sql:selected-source' },
+          { code: 'source_content_unproved', descriptor: 'sql:selected-source' },
+          { code: 'source_candidate_unproved', descriptor: 'sql:webhook_events' },
+        ]
+      : []),
+  ];
+  return {
+    ...value,
+    decision: 'DENY',
+    sourceCoverageComplete: false,
+    issues: reversed ? issues.reverse() : issues,
+  };
+}
+
+for (const code of ['ACTION_PAGE_UNPROVED', 'ACTION_MULTIPLE_STATES'])
+  for (const descriptor of [
+    'redis:moderation-actions',
+    'redis:max-actions-critical',
+    'redis:max-actions-interactive',
+    'redis:max-actions-background',
+  ])
+    for (const reversed of [false, true])
+      test(`known compound ${code} ${descriptor} reversed=${reversed} retries identical full admission`, async (t) => {
+        let attempts = 0;
+        const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+          assert.equal(
+            h.proofs.length,
+            attempts,
+            'failed proof is retained before next collector call',
+          );
+          attempts++;
+          if (attempts === 3) return value;
+          return {
+            ...dynamicActionDenial(value, { code, descriptor, reversed }),
+            cost: {
+              pages: 10 + attempts,
+              rows: 2 + attempts,
+              probes: 20 + attempts,
+              bytes: 300 + attempts,
+            },
+          };
+        });
+        const result = await planSourceAbandonmentSessionChildren(h.options);
+        assert.equal(result.feasible, true);
+        assert.equal(result.admissionCalls, 3);
+        assert.equal(h.peak(), 1);
+        assert.deepEqual(h.calls, Array(3).fill(h.calls[0]));
+        assert.deepEqual(
+          h.proofs.map((p) => p.decision),
+          ['DENY', 'DENY', 'READY_FOR_COLD_REVIEW'],
+        );
+        assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+        for (const key of ['pages', 'rows', 'probes', 'bytes'])
+          assert.equal(
+            result.admissionCost[key],
+            h.proofs.reduce((sum, p) => sum + p.cost[key], 0),
+          );
+        assert.deepEqual(
+          result.children.flatMap((p) => p.authorities),
+          h.options.enumeration.authorities,
+        );
+        assert.equal(result.children[0].admissionDigest, proofDigest(h.proofs[2]));
+        assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+      });
+
+for (const semantic of [false, true])
+  test(`third repeated state observation semantic=${semantic} stops without a fourth call or exclusion`, async (t) => {
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) =>
+      dynamicActionDenial(value, { semantic }),
+    );
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.feasible, false);
+    assert.equal(result.reason, 'global_admission_refused');
+    assert.equal(h.calls.length, 3);
+    assert.deepEqual(h.calls, Array(3).fill(h.calls[0]));
+    assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+    assert.deepEqual(result.children, []);
+    assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+  });
+
+test('compound denial cannot split or reject an owner until a fresh sole semantic denial', async (t) => {
+  let attempts = 0;
+  const enumeration = writeWalk(t, [row(1), row(2)]).read();
+  const deniedOwner = enumeration.authorities[0].ownerId;
+  const sole = (value) => ({
+    ...value,
+    decision: 'DENY',
+    sourceCoverageComplete: false,
+    issues: [{ code: 'source_content_unproved', descriptor: 'sql:selected-source' }],
+  });
+  const h = planner(enumeration, (value, input) => {
+    attempts++;
+    if (attempts === 1) return dynamicActionDenial(value);
+    if (
+      input.selection.ownerWebhookEventIds.length === 2 ||
+      input.selection.ownerWebhookEventIds[0] === deniedOwner
+    )
+      return sole(value);
+    return value;
+  });
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  assert.deepEqual(
+    h.calls.map((p) => p.selection.ownerWebhookEventIds.length),
+    [2, 2, 1, 1],
+  );
+  assert.deepEqual(h.calls[0], h.calls[1]);
+  assert.equal(result.feasible, true);
+  assert.deepEqual(result.excludedCounts, { rejected: 1, unresolved: 0 });
+  assert.equal(result.children.length, 1);
+  assert.equal(result.children[0].admissionDigest, proofDigest(h.proofs[3]));
+  assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+});
+
+for (const [name, change] of [
+  [
+    'unknown infrastructure code',
+    (v) => {
+      v.issues[0].code = 'REDIS_STORE_OR_SOURCE_REFUSED';
+    },
+  ],
+  [
+    'unknown action descriptor',
+    (v) => {
+      v.issues[0].descriptor = 'redis:publisher-actions';
+    },
+  ],
+  [
+    'observation queue descriptor',
+    (v) => {
+      v.issues[0].descriptor = 'redis:global-spammer-denorm';
+    },
+  ],
+  [
+    'extra issue property',
+    (v) => {
+      v.issues[0].extra = true;
+    },
+  ],
+  [
+    'second dynamic issue',
+    (v) => {
+      v.issues.push({ code: 'ACTION_PAGE_UNPROVED', descriptor: 'redis:max-actions-critical' });
+    },
+  ],
+  [
+    'duplicate dynamic issue',
+    (v) => {
+      v.issues.push({ ...v.issues[0] });
+    },
+  ],
+  [
+    'duplicate semantic issue',
+    (v) => {
+      v.issues.push({ ...v.issues[1] });
+    },
+  ],
+  [
+    'unknown semantic code',
+    (v) => {
+      v.issues.push({ code: 'source_unknown', descriptor: 'sql:selected-source' });
+    },
+  ],
+  [
+    'wrong semantic descriptor',
+    (v) => {
+      v.issues[2].descriptor = 'sql:source-family';
+    },
+  ],
+  [
+    'SQL budget issue',
+    (v) => {
+      v.issues.push({ code: 'sql_budget_exceeded', descriptor: 'sql:max_action_ledger' });
+    },
+  ],
+  [
+    'global inventory issue',
+    (v) => {
+      v.issues.push({ code: 'inventory_store_or_budget_refused', descriptor: 'inventory' });
+    },
+  ],
+  [
+    'no semantic primary',
+    (v) => {
+      v.issues = v.issues.filter((p) => p.code !== 'source_content_unproved');
+    },
+  ],
+  [
+    'null issue',
+    (v) => {
+      v.issues.push(null);
+    },
+  ],
+])
+  test(`compound retry refuses ${name} immediately without splitting`, async (t) => {
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+      const denied = dynamicActionDenial(value);
+      change(denied);
+      return denied;
+    });
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.reason, 'global_admission_refused');
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+    assert.deepEqual(result.children, []);
+    assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+  });
+
+for (const limit of ['calls', 'deadline'])
+  test(`compound retry respects original ${limit} ceiling and retains charged DENY`, async (t) => {
+    let time = 1000;
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+      if (limit === 'deadline') time = 60000;
+      return dynamicActionDenial(value);
+    });
+    const result = await planSourceAbandonmentSessionChildren({
+      ...h.options,
+      now: () => time,
+      maximumAdmissionCalls: limit === 'calls' ? 1 : 480,
+    });
+    assert.equal(result.reason, 'admission_budget');
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+    assert.deepEqual(result.admissionCost, h.proofs[0].cost);
+    assert.deepEqual(result.children, []);
+  });
+
+for (const field of ['selection', 'registry', 'source', 'publisher', 'READY authority'])
+  test(`compound retry rejects changed ${field} before any child authority`, async (t) => {
+    let attempts = 0;
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+      attempts++;
+      if (attempts === 1) return dynamicActionDenial(value);
+      if (field === 'selection') value.selectionSha256 = 'e'.repeat(64);
+      if (field === 'registry') value.registrySha256 = 'e'.repeat(64);
+      if (field === 'source') value.sourceSha = 'e'.repeat(40);
+      if (field === 'publisher') value.publisherCatalogSha256 = 'e'.repeat(64);
+      if (field === 'READY authority') value.selectedOwners[0].claimId = 'changed';
+      return value;
+    });
+    await assert.rejects(planSourceAbandonmentSessionChildren(h.options));
+    assert.equal(h.calls.length, 2);
+    assert.equal(h.proofs[0].decision, 'DENY');
+  });
+
 test('third action-page failure refuses the whole plan without a fourth call or exclusion', async (t) => {
   const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => actionPageDenial(value));
   const result = await planSourceAbandonmentSessionChildren(h.options);
@@ -886,9 +1144,9 @@ for (const [name, change] of [
     },
   ],
   [
-    'mixed semantic issue',
+    'semantic issue without a selected-source primary',
     (value) => {
-      value.issues.push({ code: 'source_content_unproved', descriptor: 'sql:selected-source' });
+      value.issues.push({ code: 'source_candidate_unproved', descriptor: 'sql:webhook_events' });
     },
   ],
   [
