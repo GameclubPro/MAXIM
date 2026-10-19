@@ -1,4 +1,5 @@
 import {
+  Prisma,
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
   PublicationDispatchProfile,
@@ -18,6 +19,22 @@ import {
   hasPublicationDeliveryAutomatedVerificationState,
   PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
 } from './publication-delivery-verification-state';
+import type { PublisherPublicationSelectionStore } from './publisher-publication-temporal-selection';
+
+function selectionStore(queryRaw: jest.Mock): PublisherPublicationSelectionStore {
+  return {
+    $transaction: async (read) =>
+      read({
+        $queryRaw: jest
+          .fn()
+          .mockImplementation((query: Prisma.Sql) =>
+            query.sql.includes('set_config(')
+              ? Promise.resolve([{ seq: 'off', bitmap: 'off', jit: 'off' }])
+              : queryRaw(query),
+          ),
+      }),
+  };
+}
 
 describe('publication managed broadcast due selection', () => {
   it('selects only the exact active PUBLIK NOW execution for a wake', async () => {
@@ -77,99 +94,43 @@ describe('publication managed broadcast due selection', () => {
     }
   });
 
-  it('selects the nearest executable PUBLIK deadline without fresh in-flight siblings', async () => {
+  it('selects the nearest current PUBLIK deadline without fresh in-flight siblings', async () => {
     const now = new Date('2026-09-04T10:00:00.000Z');
     const nextSendAt = new Date('2026-09-04T10:30:00.000Z');
-    const findFirst = jest.fn().mockResolvedValue({ id: 'broadcast-next', nextSendAt });
-
+    const $queryRaw = jest.fn().mockResolvedValue([{ id: 'broadcast-next', nextSendAt }]);
     const result = await selectNextPendingPublisherPublicationDeadline(
-      {
-        managedBroadcast: { findFirst },
-      } as never,
+      selectionStore($queryRaw),
       now,
     );
 
     expect(result).toEqual({ id: 'broadcast-next', nextSendAt });
-    expect(findFirst).toHaveBeenCalledWith({
-      where: {
-        dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-        status: ManagedBroadcastStatus.ACTIVE,
-        nextSendAt: { not: null },
-        lockedAt: null,
-        publicationOccurrence: {
-          is: {
-            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-            status: {
-              in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
-            },
-            publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
-            schedule: {
-              is: {
-                status: PublicationScheduleStatus.ACTIVE,
-                mode: {
-                  in: [
-                    PublicationScheduleMode.ONCE,
-                    PublicationScheduleMode.SLOTS,
-                    PublicationScheduleMode.RECURRENCE,
-                    PublicationScheduleMode.NOW,
-                  ],
-                },
-              },
-            },
-          },
-        },
-        deliveries: {
-          some: {
-            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-            OR: [
-              {
-                status: ManagedBroadcastDeliveryStatus.PENDING,
-                dispatchBlockerCode: null,
-                OR: [
-                  { lastErrorCode: null },
-                  {
-                    lastErrorCode: {
-                      not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
-                    },
-                  },
-                ],
-              },
-              {
-                status: ManagedBroadcastDeliveryStatus.PENDING,
-                dispatchBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
-                dispatchBlockedAt: { lte: new Date('2026-09-04T09:59:00.000Z') },
-                OR: [
-                  { lastErrorCode: null },
-                  { lastErrorCode: { not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } },
-                ],
-              },
-              {
-                status: ManagedBroadcastDeliveryStatus.SENDING,
-                OR: [
-                  { lockedAt: null },
-                  { lockedAt: { lt: new Date('2026-09-04T09:55:00.000Z') } },
-                ],
-              },
-            ],
-          },
-          none: {
-            status: ManagedBroadcastDeliveryStatus.SENDING,
-            lockedAt: { gte: new Date('2026-09-04T09:55:00.000Z') },
-          },
-        },
-      },
-      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
-      select: { id: true, nextSendAt: true },
-    });
+    const query = $queryRaw.mock.calls[0]![0];
+    expect(query.sql).toContain('broadcast."locked_at" IS NULL');
+    expect(query.sql).toContain('occurrence."schedule_revision" = schedule."revision"');
+    expect(query.sql).toContain(
+      'occurrence."content_revision_id" IS NOT DISTINCT FROM broadcast."publication_content_revision_id"',
+    );
+    expect(query.sql).toContain('pending_delivery."dispatch_blocked_at" <= ?');
+    expect(query.sql).toContain('pending_delivery."last_error_code" IS DISTINCT FROM ?');
+    expect(query.sql).toContain('fresh_delivery."locked_at" >= ?');
+    expect(query.sql).toContain('LIMIT 1');
+    expect(query.values).toEqual([
+      'ONCE',
+      'SLOTS',
+      'RECURRENCE',
+      'NOW',
+      PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE,
+      'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+      new Date('2026-09-04T09:59:00.000Z'),
+      new Date('2026-09-04T09:55:00.000Z'),
+      new Date('2026-09-04T09:55:00.000Z'),
+    ]);
   });
 
   it('returns no exact deadline wakeup when no executable pending envelope exists', async () => {
-    const findFirst = jest.fn().mockResolvedValue(null);
-
+    const $queryRaw = jest.fn().mockResolvedValue([]);
     await expect(
-      selectNextPendingPublisherPublicationDeadline({
-        managedBroadcast: { findFirst },
-      } as never),
+      selectNextPendingPublisherPublicationDeadline(selectionStore($queryRaw)),
     ).resolves.toBeNull();
   });
 
@@ -261,21 +222,30 @@ describe('publication managed broadcast due selection', () => {
 
   it('scopes every publisher due lane to PUBLIK_V1 envelopes', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
+    const $queryRaw = jest.fn().mockResolvedValue([]);
 
     await selectPublicationManagedBroadcastDueBatch(
-      { managedBroadcast: { findMany } } as never,
+      { managedBroadcast: { findMany }, $queryRaw, ...selectionStore($queryRaw) } as never,
       [PublicationScheduleMode.NOW],
       10,
       PublicationDispatchProfile.PUBLIK_V1,
     );
 
-    expect(findMany).toHaveBeenCalledTimes(3);
+    expect($queryRaw).toHaveBeenCalledTimes(1);
+    const execution = $queryRaw.mock.calls[0]![0].sql;
+    expect(execution).toContain('broadcast."dispatch_profile" = \'PUBLIK_V1\'');
+    expect(execution).toContain('occurrence."schedule_revision" = schedule."revision"');
+    expect(execution).toContain(
+      'occurrence."content_revision_id" IS NOT DISTINCT FROM broadcast."publication_content_revision_id"',
+    );
+    expect(execution.indexOf('publication."lifecycle"')).toBeLessThan(execution.indexOf('LIMIT'));
+    expect(findMany).toHaveBeenCalledTimes(2);
     for (const [request] of findMany.mock.calls) {
       const where = request.where;
       const profile = where.dispatchProfile ?? where.AND?.[0]?.dispatchProfile;
       expect(profile).toBe(PublicationDispatchProfile.PUBLIK_V1);
     }
-    const verification = findMany.mock.calls[1][0].where.deliveries.some;
+    const verification = findMany.mock.calls[0][0].where.deliveries.some;
     expect(verification.sentAt.lte).toBeInstanceOf(Date);
     expect(verification.AND[1].OR).toEqual([
       { remoteMessageVerificationNextAt: null },
@@ -288,50 +258,59 @@ describe('publication managed broadcast due selection', () => {
     const executionRows = new Promise<Array<{ id: string }>>((resolve) => {
       resolveExecution = resolve;
     });
-    const findMany = jest
-      .fn()
-      .mockReturnValueOnce(executionRows)
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    let enteredExecution!: () => void;
+    const executionEntered = new Promise<void>((resolve) => {
+      enteredExecution = resolve;
+    });
+    const $queryRaw = jest.fn(() => {
+      enteredExecution();
+      return executionRows;
+    });
+    const findMany = jest.fn().mockResolvedValue([]);
 
     const selection = selectPublicationManagedBroadcastDueBatch(
-      { managedBroadcast: { findMany } } as never,
+      { managedBroadcast: { findMany }, $queryRaw, ...selectionStore($queryRaw) } as never,
       [PublicationScheduleMode.NOW],
       10,
       PublicationDispatchProfile.PUBLIK_V1,
     );
-    await Promise.resolve();
+    await executionEntered;
 
-    expect(findMany).toHaveBeenCalledTimes(1);
+    expect($queryRaw).toHaveBeenCalledTimes(1);
+    expect(findMany).not.toHaveBeenCalled();
     resolveExecution([]);
     await selection;
 
-    expect(findMany).toHaveBeenCalledTimes(3);
+    expect(findMany).toHaveBeenCalledTimes(2);
   });
 
   it.each([PublicationDispatchProfile.PUBLIK_V1, PublicationDispatchProfile.LEGACY_ROUTED])(
     'keeps fresh SEND exclusion only in the PUBLIK execution lane (%s)',
     async (profile) => {
       const findMany = jest.fn().mockResolvedValue([]);
+      const $queryRaw = jest.fn().mockResolvedValue([]);
       await selectPublicationManagedBroadcastDueBatch(
-        { managedBroadcast: { findMany } } as never,
+        { managedBroadcast: { findMany }, $queryRaw, ...selectionStore($queryRaw) } as never,
         [PublicationScheduleMode.ONCE],
         25,
         profile,
       );
-      const [execution, verification, fallback] = findMany.mock.calls.map(([request]) => request);
-      expect(execution.where.deliveries.none).toEqual(
-        profile === PublicationDispatchProfile.PUBLIK_V1
-          ? {
-              status: ManagedBroadcastDeliveryStatus.SENDING,
-              lockedAt: { gte: expect.any(Date) },
-            }
-          : undefined,
-      );
+      const publisher = profile === PublicationDispatchProfile.PUBLIK_V1;
+      const requests = findMany.mock.calls.map(([request]) => request);
+      const [verification, fallback] = publisher ? requests : requests.slice(1);
+      if (publisher) {
+        const execution = $queryRaw.mock.calls[0]![0];
+        expect(execution.sql).toContain('fresh_delivery."status" = \'SENDING\'');
+        expect(execution.sql).toContain('fresh_delivery."locked_at" >= ?');
+        expect(execution.values.at(-1)).toBe(25);
+      } else {
+        expect($queryRaw).not.toHaveBeenCalled();
+        expect(requests[0].where.deliveries.none).toBeUndefined();
+        expect(requests[0].take).toBe(25);
+      }
       expect(verification.where.deliveries.none).toBeUndefined();
       expect(fallback.where.AND[1].OR[0].deliveries.none).toBeUndefined();
-      expect(execution.take).toBe(25);
-      expect(findMany).toHaveBeenCalledTimes(3);
+      expect(findMany).toHaveBeenCalledTimes(publisher ? 2 : 3);
     },
   );
 

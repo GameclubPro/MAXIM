@@ -1,13 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { Prisma, PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
 import { MANAGED_BROADCAST_LOCK_STALE_MS } from './admin.service.support';
-import { selectPublicationManagedBroadcastDueBatch } from './admin-managed-broadcast-due-selection';
+import {
+  selectNextPendingPublisherPublicationDeadline,
+  selectPublicationManagedBroadcastDueBatch,
+} from './admin-managed-broadcast-due-selection';
+import {
+  buildPublisherExecutionDueQuery,
+  buildPublisherPendingExecutionDeadlineQuery,
+} from './publisher-publication-execution-selection';
 import {
   buildPublisherTemporalEnrollment,
   type PublisherTemporalSelectionRollout,
 } from './publisher-publication-temporal-enrollment';
 import {
   buildPublisherTemporalExecutionDueQuery,
+  withPublisherPublicationSelectionPlan,
   withPublisherTemporalSelectionPlan,
   type PublisherTemporalCandidate,
 } from './publisher-publication-temporal-selection';
@@ -65,6 +74,19 @@ function descendants(root: PlanNode): PlanNode[] {
   };
   visit(root);
   return nodes;
+}
+
+function expectExecutionRecipientBounds(plan: Explained, currentParents: number): void {
+  for (const node of planNodes(plan).filter(
+    (item) => item['Relation Name'] === 'managed_broadcast_deliveries',
+  )) {
+    const examined =
+      ((node['Actual Rows'] ?? 0) + (node['Rows Removed by Filter'] ?? 0)) *
+      (node['Actual Loops'] ?? 0);
+    expect(examined).toBeLessThanOrEqual(currentParents);
+    expect(node['Actual Loops']).toBeLessThanOrEqual(currentParents);
+    if (node['Actual Rows']! > 0) expect(node['Node Type']).toMatch(/^Index (Only )?Scan$/);
+  }
 }
 
 postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
@@ -428,6 +450,120 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       expect(await selected(mode)).toEqual([{ id: bucket < Number(mode) ? ready.id : waiting.id }]);
   });
 
+  it.each([10_000, 50_000])(
+    'bounds delivery probes behind %i stale execution parents and retained terminal history',
+    async (parents) => {
+      const prefix = `execution-parent-${randomUUID()}`;
+      const retained = Math.floor(parents / 10);
+      const previousContent = await db.publicationContentRevision.create({
+        data: { publicationId, revision: 2, text: 'Retained mismatched envelope' },
+      });
+      // FLAG: This fixture stresses parent selection, not a large audience under one parent.
+      // Each retained or stale envelope has one immutable recipient; all rows are test-owned.
+      await db.$executeRaw(Prisma.sql`
+        INSERT INTO "publication_occurrences" (
+          "id", "publication_id", "schedule_id", "content_revision_id", "schedule_revision",
+          "scheduled_at", "status", "dispatch_profile", "required_bot_id", "delivery_deadline_at", "updated_at"
+        )
+        SELECT ${prefix} || '-occurrence-' || n::text, ${publicationId}, ${scheduleId},
+          ${contentRevisionId}, 1, ${now}::timestamp - interval '1 day' + n * interval '1 millisecond',
+          CASE WHEN n <= ${parents} THEN 'SCHEDULED'::"PublicationOccurrenceStatus" ELSE 'SENT'::"PublicationOccurrenceStatus" END,
+          'PUBLIK_V1', ${botId}, ${new Date(now.getTime() + 86_400_000)}, ${now}
+        FROM generate_series(1, ${parents + retained}::integer) AS n
+      `);
+      await db.$executeRaw(Prisma.sql`
+        INSERT INTO "managed_broadcasts" (
+          "id", "source_chat_id", "actor_user_id", "target_chat_ids", "buttons", "status",
+          "publication_occurrence_id", "publication_content_revision_id", "dispatch_profile", "required_bot_id", "next_send_at", "updated_at"
+        )
+        SELECT ${prefix} || '-broadcast-' || n::text, ${sourceChatId}, ${sourceChatId},
+          ${JSON.stringify([sourceChatId])}::jsonb, '[]'::jsonb,
+          CASE WHEN n <= ${parents} THEN 'ACTIVE'::"ManagedBroadcastStatus" ELSE 'COMPLETED'::"ManagedBroadcastStatus" END,
+          ${prefix} || '-occurrence-' || n::text, ${previousContent.id}, 'PUBLIK_V1', ${botId},
+          ${now}::timestamp - interval '1 day' + n * interval '1 millisecond', ${now}
+        FROM generate_series(1, ${parents + retained}::integer) AS n
+      `);
+      await db.$executeRaw(Prisma.sql`
+        INSERT INTO "managed_broadcast_deliveries" (
+          "id", "broadcast_id", "occurrence_index", "target_chat_id", "publication_occurrence_id",
+          "content_revision_id", "dispatch_profile", "required_bot_id", "dialog_bot_id",
+          "publisher_dialog_context", "publication_policy_revision", "status", "attempt_count",
+          "bot_id", "remote_message_id", "sent_at", "updated_at"
+        )
+        SELECT ${prefix} || '-delivery-' || n::text, ${prefix} || '-broadcast-' || n::text,
+          1, ${sourceChatId}, ${prefix} || '-occurrence-' || n::text, ${previousContent.id},
+          'PUBLIK_V1', ${botId}, ${deliveryRoute.dialogBotId},
+          ${JSON.stringify(deliveryRoute.publisherDialogContext)}::jsonb, ${deliveryRoute.publicationPolicyRevision},
+          CASE WHEN n <= ${parents} THEN 'PENDING'::"ManagedBroadcastDeliveryStatus" ELSE 'SENT'::"ManagedBroadcastDeliveryStatus" END,
+          CASE WHEN n <= ${parents} THEN 0 ELSE 1 END,
+          CASE WHEN n <= ${parents} THEN NULL::text ELSE ${botId} END,
+          CASE WHEN n <= ${parents} THEN NULL::text ELSE ${prefix} || '-receipt-' || n::text END,
+          CASE WHEN n <= ${parents} THEN NULL::timestamp ELSE statement_timestamp()::timestamp(3) END,
+          ${now}
+        FROM generate_series(1, ${parents + retained}::integer) AS n
+      `);
+      const ready = await envelope(-1_000);
+      const options = {
+        now,
+        staleLockBefore: new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS),
+        scheduleModes: ['NOW'] as const,
+      };
+      const execution = buildPublisherExecutionDueQuery({ ...options, limit: 25 });
+      const wake = buildPublisherPendingExecutionDeadlineQuery(options);
+      const executionStarted = performance.now();
+      const executionRows = await withPublisherPublicationSelectionPlan(db, (tx) =>
+        tx.$queryRaw(execution),
+      );
+      const executionWallMs = performance.now() - executionStarted;
+      expect(executionRows).toEqual([{ id: ready.id }]);
+      const wakeStarted = performance.now();
+      const wakeRows = await withPublisherPublicationSelectionPlan(db, (tx) => tx.$queryRaw(wake));
+      const wakeWallMs = performance.now() - wakeStarted;
+      expect(wakeRows).toEqual([{ id: ready.id, nextSendAt: new Date(now.getTime() - 1_000) }]);
+      const summarize = (plan: Explained) => ({
+        durationMs: plan[0]!['QUERY PLAN'][0]!['Execution Time'],
+        nodes: planNodes(plan)
+          .filter((node) => node['Relation Name'])
+          .map((node) => ({
+            relation: node['Relation Name'],
+            alias: node.Alias,
+            type: node['Node Type'],
+            index: node['Index Name'],
+            rows: node['Actual Rows'],
+            loops: node['Actual Loops'],
+            filtered: node['Rows Removed by Filter'] ?? 0,
+            buffers: (node['Shared Hit Blocks'] ?? 0) + (node['Shared Read Blocks'] ?? 0),
+          })),
+      });
+      for (const statistics of ['initial', 'analyzed'] as const) {
+        if (statistics === 'analyzed')
+          for (const table of [
+            'managed_broadcasts',
+            'publication_occurrences',
+            'managed_broadcast_deliveries',
+          ])
+            await db.$executeRawUnsafe(`ANALYZE ${table}`);
+        const executionPlan = await explain(execution);
+        const wakePlan = await explain(wake);
+        console.info(
+          'Publisher many-parent selection plans',
+          JSON.stringify({
+            parents,
+            retained,
+            statistics,
+            wrapperWallMs: { execution: executionWallMs, wake: wakeWallMs },
+            execution: summarize(executionPlan),
+            wake: summarize(wakePlan),
+          }),
+        );
+        for (const plan of [executionPlan, wakePlan]) {
+          expect(plan[0]!['QUERY PLAN'][0]!.Plan['Actual Rows']).toBe(1);
+          expectExecutionRecipientBounds(plan, 1);
+        }
+      }
+    },
+  );
+
   it.each([
     { mode: 'ONCE' as const, rollout: 'off' as const, heads: 25, limit: 25 },
     { mode: 'NOW' as const, rollout: 'off' as const, heads: 10, limit: 10 },
@@ -615,6 +751,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
 
     const selectionClient: Parameters<typeof selectPublicationManagedBroadcastDueBatch>[0] = {
       managedBroadcast: db.managedBroadcast,
+      $queryRaw: db.$queryRaw.bind(db),
       $transaction: receiptAfterClassification.$transaction.bind(receiptAfterClassification),
     };
     const result = await selectPublicationManagedBroadcastDueBatch(
@@ -1088,6 +1225,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
   });
 
   it('restores planner settings on the same connection after success and rollback', async () => {
+    expect(withPublisherPublicationSelectionPlan).toBe(withPublisherTemporalSelectionPlan);
     const connection = new PrismaClient({
       adapter: createPrismaAdapter(databaseUrl, { max: 1, statement_timeout: 10_000 }),
     });
@@ -1128,6 +1266,20 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
   ] as const)(
     'bounds temporal probes with $audience delivery rows and reports execution-query cost ($statistics statistics)',
     async ({ statistics, audience }) => {
+      const summarize = (plan: Explained) => ({
+        durationMs: plan[0]!['QUERY PLAN'][0]!['Execution Time'],
+        deliveryScans: planNodes(plan)
+          .filter((node) => node['Relation Name'] === 'managed_broadcast_deliveries')
+          .map((node) => ({
+            alias: node.Alias,
+            type: node['Node Type'],
+            index: node['Index Name'],
+            rows: node['Actual Rows'],
+            loops: node['Actual Loops'],
+            filtered: node['Rows Removed by Filter'] ?? 0,
+            buffers: (node['Shared Hit Blocks'] ?? 0) + (node['Shared Read Blocks'] ?? 0),
+          })),
+      });
       // FLAG: The scalar cap must reject this large envelope before publication-target proof.
       // Its publication projection intentionally stays small; this is not a full runtime
       // or materialization benchmark. The delivery history and saved JSON have equal size.
@@ -1187,19 +1339,49 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       expect(await selected()).toEqual([{ id: large.id }]);
 
       queries.length = 0;
+      const dueStarted = performance.now();
       expect(
         (await selectPublicationManagedBroadcastDueBatch(db, ['NOW'], 1, 'PUBLIK_V1', 'off'))
           .dueRows,
       ).toEqual([{ id: large.id }]);
+      const dueSelectionWallMs = performance.now() - dueStarted;
       const oldSelection = queries.find(
-        (event) => /^SELECT\b/.test(event.query) && event.query.includes('"managed_broadcasts"'),
+        (event) =>
+          /^SELECT\b/.test(event.query.trimStart()) && event.query.includes('"managed_broadcasts"'),
       );
       expect(oldSelection).toBeDefined();
-      const parameters: unknown[] = JSON.parse(oldSelection!.params);
-      const oldPlan = await db.$queryRawUnsafe<Explained>(
-        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${oldSelection!.query}`,
-        ...parameters,
+      const oldPlan = await explain(
+        buildPublisherExecutionDueQuery({
+          now,
+          staleLockBefore: new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS),
+          scheduleModes: ['NOW'],
+          limit: 1,
+        }),
       );
+      const wakeQuery = buildPublisherPendingExecutionDeadlineQuery({
+        now,
+        staleLockBefore: new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS),
+        scheduleModes: ['NOW'],
+      });
+      const wakeStarted = performance.now();
+      expect((await selectNextPendingPublisherPublicationDeadline(db, now, ['NOW']))?.id).toBe(
+        large.id,
+      );
+      const wakeSelectionWallMs = performance.now() - wakeStarted;
+      const explainWake = () => explain(wakeQuery);
+      const wakeBeforeAnalyze = await explainWake();
+      console.info(
+        'Publisher current-audience execution and wake plans',
+        JSON.stringify({
+          audience,
+          statistics,
+          wrapperWallMs: { dueSelection: dueSelectionWallMs, wake: wakeSelectionWallMs },
+          execution: summarize(oldPlan),
+          wake: summarize(wakeBeforeAnalyze),
+        }),
+      );
+      expectExecutionRecipientBounds(oldPlan, 2);
+      expectExecutionRecipientBounds(wakeBeforeAnalyze, 2);
       const beforeAnalyze = await explain(query('100'));
       console.info(
         'Publisher temporal local plans before assertions',
@@ -1208,28 +1390,23 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       expectTemporalBounds(beforeAnalyze, 65, true);
       await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
       const afterAnalyze = await explain(query('100'));
+      const wakeAfterAnalyze = await explainWake();
+      console.info(
+        'Publisher current-audience wake after ANALYZE',
+        JSON.stringify({ audience, statistics, wake: summarize(wakeAfterAnalyze) }),
+      );
+      expectExecutionRecipientBounds(wakeAfterAnalyze, 2);
       console.info('Publisher temporal local plan after ANALYZE', JSON.stringify(afterAnalyze));
       expectTemporalBounds(afterAnalyze, 65, true);
       expect(await selected('100', 2)).toEqual([{ id: large.id }, { id: ready.id }]);
-      const summarize = (plan: Explained) => ({
-        durationMs: plan[0]!['QUERY PLAN'][0]!['Execution Time'],
-        deliveryScans: planNodes(plan)
-          .filter((node) => node['Relation Name'] === 'managed_broadcast_deliveries')
-          .map((node) => ({
-            alias: node.Alias,
-            index: node['Index Name'],
-            rows: node['Actual Rows'],
-            loops: node['Actual Loops'],
-            filtered: node['Rows Removed by Filter'] ?? 0,
-            buffers: (node['Shared Hit Blocks'] ?? 0) + (node['Shared Read Blocks'] ?? 0),
-          })),
-      });
       console.info(
         'Publisher temporal local plan evidence',
         JSON.stringify({
           audience,
           statistics,
           old: summarize(oldPlan),
+          wakeBeforeAnalyze: summarize(wakeBeforeAnalyze),
+          wakeAfterAnalyze: summarize(wakeAfterAnalyze),
           beforeAnalyze: summarize(beforeAnalyze),
           afterAnalyze: summarize(afterAnalyze),
         }),

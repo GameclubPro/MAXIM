@@ -13,6 +13,7 @@ export {
 } from './safety-desk-publication-delivery-cohort.js';
 export {
   safetyDeskPublicationDeliveryEvidenceResponseSchema,
+  safetyDeskPublicationDeliveryContextSchema,
   safetyDeskPublicationDeliveryStatusSchema,
   safetyDeskPublicationDeliveryReceiptSchema,
   safetyDeskPublicationDeliveryVerificationSchema,

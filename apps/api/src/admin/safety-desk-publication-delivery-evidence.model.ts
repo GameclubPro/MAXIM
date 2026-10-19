@@ -8,6 +8,10 @@ import type {
   ManagedBroadcastDeliveryStatus,
   PublicationDispatchProfile,
   MaxActionLedgerEntry,
+  ManagedBroadcast,
+  Publication,
+  PublicationOccurrence,
+  PublicationSchedule,
 } from '../prisma/prisma-client';
 import { hasPublicationDeliveryAutomatedVerificationState } from './publication-delivery-verification-state';
 import {
@@ -81,6 +85,22 @@ export type PublicationDeliveryEvidenceRow = Pick<
   contentPublicationId: string | null;
   contentCreatedAt: Date | null;
   observedAt: Date;
+  contextRecorded?: boolean;
+  broadcastStatus?: ManagedBroadcast['status'] | null;
+  broadcastLockedAt?: Date | null;
+  broadcastHasLockToken?: boolean | null;
+  occurrenceStatus?: PublicationOccurrence['status'] | null;
+  occurrenceScheduleId?: string | null;
+  occurrenceScheduleRevision?: number | null;
+  parentPublicationId?: string | null;
+  publicationLifecycle?: Publication['lifecycle'] | null;
+  publicationCreatedAt?: Date | null;
+  parentScheduleId?: string | null;
+  schedulePublicationId?: string | null;
+  currentScheduleRevision?: number | null;
+  scheduleMode?: PublicationSchedule['mode'] | null;
+  scheduleStatus?: PublicationSchedule['status'] | null;
+  scheduleCreatedAt?: Date | null;
 };
 export type PublicationDeliveryLedgerRow = Pick<
   MaxActionLedgerEntry,
@@ -313,6 +333,7 @@ export function projectPublicationSavedDelivery(
   const recipientBlocker = blocker(row.dispatchBlockerCode),
     parentBlocker = blocker(row.parentBlockerCode);
   if (recipientBlocker) reasons.add(recipientBlocker);
+  if (parentBlocker) reasons.add(parentBlocker);
   if (row.lockedAt !== null || row.hasLockToken)
     reasons.add(
       !within(row.lockedAt, new Date(0), row.observedAt) || !row.hasLockToken
@@ -365,6 +386,80 @@ export function projectPublicationSavedDelivery(
         deletion: row.deleteStatus,
         nextAt: iso(row.postActionsNextAt),
       },
+    },
+  };
+}
+export function projectPublicationDeliveryContext(
+  row: PublicationDeliveryEvidenceRow,
+): Evidence['context'] {
+  if (row.contextRecorded !== true) return undefined;
+  const revision = (value: number | null | undefined): number | null =>
+    Number.isSafeInteger(value) && value! > 0 ? value! : null;
+  const savedRevision = revision(row.occurrenceScheduleRevision),
+    currentRevision = revision(row.currentScheduleRevision);
+  let scheduleBinding: NonNullable<Evidence['context']>['scheduleBinding'] = 'not_recorded';
+  const binding = projectPublicationDeliveryBinding(row);
+  if (binding === 'invalid_evidence') scheduleBinding = 'invalid_evidence';
+  else if (
+    binding === 'exact' &&
+    row.parentPublicationId !== null &&
+    row.parentPublicationId !== undefined &&
+    row.parentScheduleId !== null &&
+    row.parentScheduleId !== undefined
+  ) {
+    const parentFactsValid =
+      [
+        row.parentPublicationId,
+        row.occurrenceScheduleId,
+        row.parentScheduleId,
+        row.schedulePublicationId,
+      ].every(identity) &&
+      row.parentPublicationId === row.publicationId &&
+      row.parentScheduleId === row.occurrenceScheduleId &&
+      row.schedulePublicationId === row.publicationId &&
+      finiteDate(row.occurrenceCreatedAt) &&
+      within(row.publicationCreatedAt, new Date(0), row.occurrenceCreatedAt) &&
+      within(row.scheduleCreatedAt, new Date(0), row.occurrenceCreatedAt) &&
+      finiteDate(row.scheduledAt) &&
+      savedRevision !== null &&
+      currentRevision !== null &&
+      ['NOW', 'ONCE', 'SLOTS', 'RECURRENCE'].includes(row.scheduleMode ?? '');
+    scheduleBinding = !parentFactsValid
+      ? 'invalid_evidence'
+      : savedRevision === currentRevision
+        ? 'exact'
+        : 'revision_changed';
+  }
+  // FLAG: These facts explain retained work; they never authorize dispatch or renew its clocks.
+  const noLease = row.broadcastLockedAt === null && row.broadcastHasLockToken === false;
+  const leaseValid =
+    row.parentBroadcastId !== null &&
+    row.broadcastHasLockToken === true &&
+    finiteDate(row.broadcastCreatedAt) &&
+    within(row.broadcastLockedAt, row.broadcastCreatedAt!, row.observedAt);
+  return {
+    scheduleBinding,
+    scheduleMode: scheduleBinding === 'exact' ? row.scheduleMode! : 'UNKNOWN',
+    scheduledAt: iso(row.scheduledAt),
+    deliveryDeadlineAt: iso(row.deliveryDeadlineAt),
+    retryAuthorizedAt: iso(row.retryAuthorizedAt),
+    retryExpiresAt: iso(row.retryExpiresAt),
+    occurrenceScheduleRevision: savedRevision,
+    currentScheduleRevision: currentRevision,
+    broadcastStatus: row.broadcastStatus ?? null,
+    occurrenceStatus: row.occurrenceStatus ?? null,
+    publicationLifecycle: row.publicationLifecycle ?? null,
+    scheduleStatus: row.scheduleStatus ?? null,
+    broadcastLease: {
+      state: noLease
+        ? 'none'
+        : !leaseValid
+          ? 'invalid_evidence'
+          : row.broadcastLockedAt!.getTime() >=
+              row.observedAt.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS
+            ? 'active'
+            : 'stale',
+      lockedAt: iso(row.broadcastLockedAt),
     },
   };
 }
@@ -498,6 +593,7 @@ export function projectPublicationDeliveryEvidence(
     effectiveStatus: row.effectiveStatus,
     acceptedAt: row.createdAt.toISOString(),
     completionTimingEvidence: 'not_recorded',
+    ...(row.contextRecorded === true ? { context: projectPublicationDeliveryContext(row) } : {}),
     ...saved,
     action,
     clientVisibility: 'not_observed',

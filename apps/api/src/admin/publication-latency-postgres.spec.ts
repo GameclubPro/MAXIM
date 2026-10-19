@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, createPrismaAdapter, type Prisma } from '../prisma/prisma-client';
 import { dispatchScheduledPublicationOccurrences } from './publication-occurrence-dispatcher';
+import { ensureManagedBroadcastPublicationExecutionActive } from './publication-execution-recovery';
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 import {
   selectNextPendingPublisherPublicationDeadline,
@@ -109,7 +110,7 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
         targetChatIds: [chatId],
         buttons: [],
         publicationOccurrenceId: id,
-        ...(originalDeliveryDeadlineAt ? { publicationContentRevisionId: contentRevisionId } : {}),
+        publicationContentRevisionId: contentRevisionId,
         dispatchProfile: 'PUBLIK_V1',
         requiredBotId: 'publisher-test',
         nextSendAt: new Date(now.getTime() + offsetMs),
@@ -122,7 +123,7 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
             dialogBotId: 'dialog-test',
             publisherDialogContext: { version: 1, dialogBotId: 'dialog-test', buttons: [] },
             publicationOccurrenceId: id,
-            ...(originalDeliveryDeadlineAt ? { contentRevisionId } : {}),
+            contentRevisionId,
             publicationPolicyRevision: 0,
             ...(delivery.dispatchBlockerCode ? { dispatchBlockedAt: now } : {}),
             ...delivery,
@@ -343,6 +344,78 @@ postgres('Publication latency and fairness on PostgreSQL', () => {
 
     expect(batch.dueRows).toEqual([{ id: mixed.id }]);
   });
+
+  it.each(['ONCE', 'SLOTS', 'RECURRENCE', 'NOW'] as const)(
+    'keeps a current %s execution ahead of stale content envelopes before the parent limit',
+    async (mode) => {
+      const prefix = randomUUID();
+      const deadlineAt = new Date(now.getTime() + 86_400_000);
+      await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode } });
+      const olderRevision = await db.publicationContentRevision.create({
+        data: { publicationId, revision: 2, text: 'Retained execution revision' },
+      });
+      const staleCount = mode === 'NOW' ? 64 : 25;
+      const staleIds: string[] = [];
+      for (let index = 0; index < staleCount; index += 1) {
+        const stale = await envelope(`${prefix}-stale-${index}`, -600_000 + index, {}, deadlineAt);
+        await db.managedBroadcast.update({
+          where: { id: stale.id },
+          data: { publicationContentRevisionId: olderRevision.id },
+        });
+        staleIds.push(stale.id);
+      }
+      const ready = await envelope(`${prefix}-ready`, -1_000, {}, deadlineAt);
+      // FLAG: The guarded executor releases a mismatched envelope without rewriting its
+      // immutable content or another owner's delivery. Selection must make progress around it.
+      const staleRow = await db.managedBroadcast.update({
+        where: { id: staleIds[0]! },
+        data: { lockedAt: now, lockToken: 'stale-content-owner' },
+      });
+      expect(
+        await ensureManagedBroadcastPublicationExecutionActive({
+          prisma: db as never,
+          row: staleRow,
+          occurrenceIndex: 1,
+        }),
+      ).toBe(false);
+      expect(await db.managedBroadcast.findUnique({ where: { id: staleRow.id } })).toMatchObject({
+        status: 'ACTIVE',
+        lockedAt: null,
+        lockToken: null,
+        nextSendAt: staleRow.nextSendAt,
+        publicationContentRevisionId: olderRevision.id,
+      });
+      expect(await selectNextPendingPublisherPublicationDeadline(db, now, [mode])).toEqual({
+        id: ready.id,
+        nextSendAt: ready.nextSendAt,
+      });
+
+      for (const rollout of mode === 'NOW' ? (['off', '100'] as const) : (['off'] as const)) {
+        const batch = await selectPublicationManagedBroadcastDueBatch(
+          db,
+          [mode],
+          25,
+          'PUBLIK_V1',
+          rollout,
+        );
+        expect(batch.dueRows[0]).toEqual({ id: ready.id });
+        // Stale immutable envelopes remain discoverable by the existing bounded recovery
+        // fallback; excluding them from send priority never invents completion or a replay.
+        expect(batch.dueRows.slice(1).some((row) => staleIds.includes(row.id))).toBe(true);
+      }
+      const futureAt = new Date(now.getTime() + 600_000);
+      await db.managedBroadcast.update({ where: { id: ready.id }, data: { nextSendAt: futureAt } });
+      expect(await selectNextPendingPublisherPublicationDeadline(db, now, [mode])).toEqual({
+        id: ready.id,
+        nextSendAt: futureAt,
+      });
+      await db.publicationSchedule.update({
+        where: { id: scheduleId },
+        data: { revision: { increment: 1 } },
+      });
+      expect(await selectNextPendingPublisherPublicationDeadline(db, now, [mode])).toBeNull();
+    },
+  );
 
   it('wakes pending NOW work while excluding blocked and fresh in-flight deliveries', async () => {
     const prefix = randomUUID();

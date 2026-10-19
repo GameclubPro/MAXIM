@@ -14,6 +14,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 import {
   buildPublisherTemporalExecutionDueQuery,
   PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD,
+  withPublisherPublicationSelectionPlan,
   withPublisherTemporalSelectionPlan,
   type PublisherTemporalCandidate,
   type PublisherTemporalSelectionObservation,
@@ -26,9 +27,9 @@ import {
 import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from '../max/max-send-route-health';
 import { buildManagedBroadcastAutoRetryableFailureWhere } from './admin-managed-broadcast-reconciliation';
 import {
-  PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
-  PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS,
-} from './publication-dispatch-issue';
+  buildPublisherExecutionDueQuery,
+  buildPublisherPendingExecutionDeadlineQuery,
+} from './publisher-publication-execution-selection';
 import {
   buildPublicationDeliveryAutomatedVerificationWhere,
   buildPublicationDeliveryUnenrolledVerificationWhere,
@@ -177,7 +178,7 @@ export type PendingPublisherPublicationDeadline = {
 };
 
 export async function selectNextPendingPublisherPublicationDeadline(
-  prisma: Pick<PrismaService, 'managedBroadcast'>,
+  prisma: PublisherTemporalSelectionStore,
   now = new Date(),
   scheduleModes: readonly PublicationScheduleMode[] = [
     PublicationScheduleMode.ONCE,
@@ -191,65 +192,15 @@ export async function selectNextPendingPublisherPublicationDeadline(
   // elapsed actor-readiness retry joins unblocked work: dispatch still rechecks authority
   // before claiming/sending and renews a refused target's 60-second delay. Other blockers,
   // route quarantine and verification-only work stay on the recovery poll.
-  const row = await prisma.managedBroadcast.findFirst({
-    where: {
-      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-      status: ManagedBroadcastStatus.ACTIVE,
-      nextSendAt: { not: null },
-      lockedAt: null,
-      publicationOccurrence: {
-        is: {
-          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          status: {
-            in: [PublicationOccurrenceStatus.SCHEDULED, PublicationOccurrenceStatus.IN_PROGRESS],
-          },
-          publication: { is: { lifecycle: PublicationLifecycle.ACTIVE } },
-          schedule: {
-            is: {
-              status: PublicationScheduleStatus.ACTIVE,
-              mode: { in: [...scheduleModes] },
-            },
-          },
-        },
-      },
-      deliveries: {
-        some: {
-          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
-          OR: [
-            {
-              status: ManagedBroadcastDeliveryStatus.PENDING,
-              dispatchBlockerCode: null,
-              OR: [
-                { lastErrorCode: null },
-                { lastErrorCode: { not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } },
-              ],
-            },
-            {
-              status: ManagedBroadcastDeliveryStatus.PENDING,
-              dispatchBlockerCode: PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
-              dispatchBlockedAt: {
-                lte: new Date(now.getTime() - PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS),
-              },
-              OR: [
-                { lastErrorCode: null },
-                { lastErrorCode: { not: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } },
-              ],
-            },
-            {
-              status: ManagedBroadcastDeliveryStatus.SENDING,
-              OR: [{ lockedAt: null }, { lockedAt: { lt: staleDeliveryLockBefore } }],
-            },
-          ],
-        },
-        none: {
-          status: ManagedBroadcastDeliveryStatus.SENDING,
-          lockedAt: { gte: staleDeliveryLockBefore },
-        },
-      },
-    },
-    orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
-    select: { id: true, nextSendAt: true },
-  });
+  const [row] = await withPublisherPublicationSelectionPlan(prisma, (tx) =>
+    tx.$queryRaw<PendingPublisherPublicationDeadline[]>(
+      buildPublisherPendingExecutionDeadlineQuery({
+        now,
+        staleLockBefore: staleDeliveryLockBefore,
+        scheduleModes,
+      }),
+    ),
+  );
 
   return row?.nextSendAt ? { id: row.id, nextSendAt: row.nextSendAt } : null;
 }
@@ -409,7 +360,7 @@ function comparePublicationDueRows(
 }
 
 export async function selectPublicationManagedBroadcastDueBatch(
-  prisma: Pick<PrismaService, 'managedBroadcast'> & PublisherTemporalSelectionStore,
+  prisma: Pick<PrismaService, 'managedBroadcast' | '$queryRaw'> & PublisherTemporalSelectionStore,
   scheduleModes: readonly PublicationScheduleMode[],
   limit: number,
   dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED,
@@ -513,6 +464,18 @@ export async function selectPublicationManagedBroadcastDueBatch(
         .slice(0, boundedLimit)
         .map(({ id }) => ({ id }));
     }
+    if (dispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
+      return withPublisherPublicationSelectionPlan(prisma, (tx) =>
+        tx.$queryRaw<DueManagedBroadcastRow[]>(
+          buildPublisherExecutionDueQuery({
+            now,
+            staleLockBefore,
+            scheduleModes,
+            limit: boundedLimit,
+          }),
+        ),
+      );
+    }
     return prisma.managedBroadcast.findMany({
       where: {
         ...baseWhere,
@@ -523,16 +486,6 @@ export async function selectPublicationManagedBroadcastDueBatch(
               in: [ManagedBroadcastDeliveryStatus.PENDING, ManagedBroadcastDeliveryStatus.SENDING],
             },
           },
-          // FLAG: The runtime must wait for any fresh SEND owner. Exclude these parents
-          // before LIMIT so independent ready work can reach that same guarded executor.
-          ...(dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-            ? {
-                none: {
-                  status: ManagedBroadcastDeliveryStatus.SENDING,
-                  lockedAt: { gte: staleLockBefore },
-                },
-              }
-            : {}),
         },
       },
       orderBy,

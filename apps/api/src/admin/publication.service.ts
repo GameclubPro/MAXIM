@@ -841,12 +841,22 @@ export class PublicationService {
       existing.schedule && existing.schedule.status !== PublicationScheduleStatus.DRAFT
         ? publicationScheduleInputSchema.parse(existing.schedule.rule)
         : null;
+    const previousSchedulePolicy =
+      existingSchedule ??
+      (existing.schedule?.status === PublicationScheduleStatus.DRAFT
+        ? (publicationScheduleInputSchema.safeParse(existing.schedule.rule).data ?? null)
+        : null);
     const schedule =
       request.schedule === undefined
         ? existingSchedule
         : request.schedule === null
           ? null
-          : this.normalizeSchedule(request.schedule, now);
+          : this.normalizeUpdatedSchedule(
+              request.schedule,
+              previousSchedulePolicy,
+              now,
+              existingSchedule !== null,
+            );
     const desiredIntent =
       request.intent ?? (existing.lifecycle === PublicationLifecycle.DRAFT ? 'draft' : 'publish');
     if (desiredIntent === 'publish' && !schedule) {
@@ -2944,17 +2954,21 @@ export class PublicationService {
   private arePublicationSchedulesEquivalent(
     left: PublicationScheduleInput | null,
     right: PublicationScheduleInput | null,
+    ignoreLatePolicy = false,
   ): boolean {
     if (left === null || right === null) {
       return left === right;
     }
     return (
-      this.stableStringify(this.canonicalizePublicationSchedule(left)) ===
-      this.stableStringify(this.canonicalizePublicationSchedule(right))
+      this.stableStringify(this.canonicalizePublicationSchedule(left, ignoreLatePolicy)) ===
+      this.stableStringify(this.canonicalizePublicationSchedule(right, ignoreLatePolicy))
     );
   }
 
-  private canonicalizePublicationSchedule(schedule: PublicationScheduleInput): unknown {
+  private canonicalizePublicationSchedule(
+    schedule: PublicationScheduleInput,
+    ignoreLatePolicy = false,
+  ): unknown {
     if (schedule.mode === 'now') {
       return { mode: schedule.mode, timezone: schedule.timezone };
     }
@@ -2962,7 +2976,9 @@ export class PublicationService {
       return {
         mode: schedule.mode,
         timezone: schedule.timezone,
-        ...('latePolicy' in schedule ? { latePolicy: schedule.latePolicy } : {}),
+        ...(!ignoreLatePolicy && 'latePolicy' in schedule
+          ? { latePolicy: schedule.latePolicy }
+          : {}),
         at: new Date(schedule.at).toISOString(),
       };
     }
@@ -2970,7 +2986,9 @@ export class PublicationService {
       return {
         mode: schedule.mode,
         timezone: schedule.timezone,
-        ...('latePolicy' in schedule ? { latePolicy: schedule.latePolicy } : {}),
+        ...(!ignoreLatePolicy && 'latePolicy' in schedule
+          ? { latePolicy: schedule.latePolicy }
+          : {}),
         slots: [...new Set(schedule.slots.map((slot) => new Date(slot).getTime()))]
           .sort((left, right) => left - right)
           .map((slot) => new Date(slot).toISOString()),
@@ -2979,7 +2997,7 @@ export class PublicationService {
     return {
       mode: schedule.mode,
       timezone: schedule.timezone,
-      ...('latePolicy' in schedule ? { latePolicy: schedule.latePolicy } : {}),
+      ...(!ignoreLatePolicy && 'latePolicy' in schedule ? { latePolicy: schedule.latePolicy } : {}),
       frequency: schedule.frequency,
       interval: schedule.interval,
       weekdays: schedule.frequency === 'weekly' ? [...schedule.weekdays].sort((a, b) => a - b) : [],
@@ -3011,6 +3029,25 @@ export class PublicationService {
     now: Date,
   ): PublicationScheduleInput {
     return normalizePublicationSchedule(schedule, now, PUBLICATION_PAST_GRACE_MS);
+  }
+
+  private normalizeUpdatedSchedule(
+    input: PublicationScheduleInput,
+    previous: PublicationScheduleInput | null,
+    now: Date,
+    preserveLegacyPolicy: boolean,
+  ): PublicationScheduleInput {
+    const schedule = this.normalizeSchedule(input, now);
+    if (schedule.mode === 'now' || schedule.latePolicy !== undefined) return schedule;
+    // FLAG: A replacement schedule is new intent and receives the current default. An omitted
+    // policy on an unchanged saved schedule must preserve its original deadline semantics.
+    // A draft has no accepted delivery deadline: retain its explicit policy, otherwise default.
+    if (previous && this.arePublicationSchedulesEquivalent(previous, schedule, true)) {
+      if (previous.mode !== 'now' && previous.latePolicy !== undefined)
+        return { ...schedule, latePolicy: previous.latePolicy };
+      if (preserveLegacyPolicy) return schedule;
+    }
+    return withDefaultPublicationLatePolicy(schedule);
   }
 
   private expandInitialSchedule(schedule: PublicationScheduleInput, now: Date): Date[] {

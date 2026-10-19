@@ -1,4 +1,6 @@
 import { PublisherPublicationDispatchRunnerService } from './publisher-publication-dispatch-runner.service';
+import type { Prisma } from '../prisma/prisma-client';
+import type { PublisherPublicationSelectionStore } from './publisher-publication-temporal-selection';
 
 describe('PublisherPublicationDispatchRunnerService', () => {
   const originalRole = process.env.APP_ROLE;
@@ -8,15 +10,29 @@ describe('PublisherPublicationDispatchRunnerService', () => {
   const createPrisma = (
     findFirst = jest.fn().mockResolvedValue(null),
     findImmediate = jest.fn().mockResolvedValue(null),
-  ) => ({
-    managedBroadcast: {
-      findFirst: jest.fn((args) => {
-        const modes = args.where.publicationOccurrence.is.schedule.is.mode.in;
-        return modes.length === 1 && modes[0] === 'NOW' ? findImmediate(args) : findFirst(args);
-      }),
-    },
-    publicationSchedule: { findUnique: jest.fn().mockResolvedValue({ mode: 'ONCE' }) },
-  });
+  ) => {
+    const queryRaw = jest.fn(async (query: Prisma.Sql) => {
+      const row = await (query.values.includes('NOW') ? findImmediate(query) : findFirst(query));
+      return row ? [row] : [];
+    });
+    const store: PublisherPublicationSelectionStore = {
+      $transaction: async (read) =>
+        read({
+          $queryRaw: jest
+            .fn()
+            .mockImplementation((query: Prisma.Sql) =>
+              query.sql.includes('set_config(')
+                ? Promise.resolve([{ seq: 'off', bitmap: 'off', jit: 'off' }])
+                : queryRaw(query),
+            ),
+        }),
+    };
+    return {
+      ...store,
+      $queryRaw: queryRaw,
+      publicationSchedule: { findUnique: jest.fn().mockResolvedValue({ mode: 'ONCE' }) },
+    };
+  };
 
   afterEach(() => {
     process.env.APP_ROLE = originalRole;

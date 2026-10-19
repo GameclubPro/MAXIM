@@ -13,7 +13,11 @@ import {
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
-import { MAX_PUBLICATION_EXPLICIT_SLOTS } from '@maxim/contracts/publication';
+import {
+  DEFAULT_PUBLICATION_LATE_POLICY,
+  MAX_PUBLICATION_EXPLICIT_SLOTS,
+  type PublicationScheduleInput,
+} from '@maxim/contracts/publication';
 import { ConfigService } from '@nestjs/config';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { PublicationOccurrenceRollupNoopRollout } from './publication-occurrence-rollup-noop';
@@ -2293,6 +2297,250 @@ describe('PublicationService', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  describe('scheduled update late policy', () => {
+    const now = new Date('2026-07-10T09:00:00.000Z');
+    const legacyRule: PublicationScheduleInput = {
+      mode: 'once',
+      timezone: 'UTC',
+      at: '2026-07-10T09:30:00.000Z',
+      replaceConflicts: false,
+    };
+    const schedules: PublicationScheduleInput[] = [
+      { ...legacyRule, at: '2026-07-10T10:00:00.000Z' },
+      {
+        mode: 'slots',
+        timezone: 'UTC',
+        slots: ['2026-07-10T10:00:00.000Z', '2026-07-11T10:00:00.000Z'],
+        replaceConflicts: false,
+      },
+      {
+        mode: 'recurrence',
+        timezone: 'UTC',
+        frequency: 'daily',
+        interval: 1,
+        weekdays: [],
+        times: ['10:00'],
+        startsAt: '2026-07-10T09:00:00.000Z',
+        endsAt: null,
+        maxOccurrences: 2,
+        replaceConflicts: false,
+      },
+    ];
+
+    function fixture(
+      previous: PublicationScheduleInput | null,
+      scheduleStatus: PublicationScheduleStatus = PublicationScheduleStatus.ACTIVE,
+    ) {
+      const tx = {
+        ...createPublicationUpdateTransaction(),
+        managedBroadcastCalendarReservation: { findMany: jest.fn().mockResolvedValue([]) },
+      };
+      tx.publicationOccurrence.findMany.mockResolvedValue([]);
+      tx.publicationSchedule.create.mockResolvedValue({ id: 'policy-schedule', revision: 1 });
+      tx.publicationSchedule.update.mockResolvedValue({ id: 'policy-schedule' });
+      const result = createService({
+        publicationMutationRecord: { findUnique: jest.fn().mockResolvedValue(null) },
+        publicationOccurrence: { findMany: jest.fn().mockResolvedValue([]) },
+        publication: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'policy-publication',
+            actorUserId: 'user-1',
+            version: 2,
+            lifecycle:
+              previous && scheduleStatus !== PublicationScheduleStatus.DRAFT
+                ? PublicationLifecycle.ACTIVE
+                : PublicationLifecycle.DRAFT,
+            title: 'Scheduled post',
+            audienceSelection: PublicationAudienceSelection.SELECTED,
+            audienceMode: PublicationAudienceMode.SNAPSHOT,
+            canonicalContentRevisionId: 'policy-content',
+            canonicalContentRevision: { id: 'policy-content' },
+            dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+            requiredBotId: 'publisher-bot',
+            targets: [{ targetChatId: 'chat-1', entityType: ChatEntityType.CHAT, position: 0 }],
+            schedule: previous
+              ? {
+                  id: 'policy-schedule',
+                  revision: 1,
+                  status: scheduleStatus,
+                  rule: previous,
+                }
+              : null,
+          }),
+        },
+        $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
+      });
+      jest.spyOn(result.service, 'get').mockResolvedValue({ id: 'policy-publication' } as never);
+      return { ...result, tx };
+    }
+
+    beforeEach(() => jest.useFakeTimers().setSystemTime(now));
+    afterEach(() => jest.useRealTimers());
+
+    it.each(
+      schedules.flatMap((schedule) =>
+        [
+          { previous: null, source: 'draft activation', status: PublicationScheduleStatus.DRAFT },
+          {
+            previous: legacyRule,
+            source: 'saved draft activation',
+            status: PublicationScheduleStatus.DRAFT,
+          },
+          {
+            previous: legacyRule,
+            source: 'replacement',
+            status: PublicationScheduleStatus.ACTIVE,
+          },
+        ].map((entry) => ({
+          mode: schedule.mode,
+          schedule,
+          ...entry,
+        })),
+      ),
+    )('defaults $mode $source to a durable 24-hour recovery window', async (entry) => {
+      const { service, tx } = fixture(entry.previous, entry.status);
+      await service.update(
+        'policy-publication',
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'schedule-policy-default-001',
+          expectedRevision: 2,
+          intent: 'publish',
+          schedule: entry.schedule,
+        },
+      );
+      const persist = entry.previous
+        ? tx.publicationSchedule.update
+        : tx.publicationSchedule.create;
+      expect(persist).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            rule: expect.objectContaining({ latePolicy: DEFAULT_PUBLICATION_LATE_POLICY }),
+          }),
+        }),
+      );
+      const [write] = tx.publicationOccurrence.createMany.mock.calls[0] as [
+        { data: Array<{ scheduledAt: Date; deliveryDeadlineAt: Date }> },
+      ];
+      expect(write.data.length).toBeGreaterThan(0);
+      for (const occurrence of write.data) {
+        expect(occurrence.deliveryDeadlineAt.getTime() - occurrence.scheduledAt.getTime()).toBe(
+          24 * 60 * 60_000,
+        );
+      }
+    });
+
+    it.each([
+      ['legacy', legacyRule],
+      ['modern', { ...legacyRule, latePolicy: DEFAULT_PUBLICATION_LATE_POLICY }],
+    ] as const)(
+      'preserves the saved %s policy when the unchanged request omits it',
+      async (_name, previous) => {
+        const { service, tx } = fixture(previous);
+        await service.update(
+          'policy-publication',
+          { userId: 'user-1', username: null, displayName: null },
+          {
+            requestId: 'schedule-policy-preserve-001',
+            expectedRevision: 2,
+            intent: 'publish',
+            title: 'Updated title',
+            schedule: legacyRule,
+          },
+        );
+        expect(tx.publicationSchedule.update).not.toHaveBeenCalled();
+        expect(tx.publicationSchedule.create).not.toHaveBeenCalled();
+        expect(tx.publicationOccurrence.createMany).not.toHaveBeenCalled();
+        expect(tx.publicationOccurrence.updateMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it('honors an explicitly supplied policy while activating a draft', async () => {
+      const { service, tx } = fixture(null);
+      const policy = { mode: 'strict', maxDelayMinutes: 30, catchUp: 'all' } as const;
+      await service.update(
+        'policy-publication',
+        { userId: 'user-1', username: null, displayName: null },
+        {
+          requestId: 'schedule-policy-explicit-001',
+          expectedRevision: 2,
+          intent: 'publish',
+          schedule: { ...legacyRule, latePolicy: policy },
+        },
+      );
+      expect(tx.publicationSchedule.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            rule: expect.objectContaining({ latePolicy: policy }),
+          }),
+        }),
+      );
+      expect(tx.publicationOccurrence.createMany).toHaveBeenCalledWith({
+        data: [
+          expect.objectContaining({
+            scheduledAt: new Date(legacyRule.at),
+            deliveryDeadlineAt: new Date('2026-07-10T10:00:00.000Z'),
+          }),
+        ],
+        skipDuplicates: true,
+      });
+    });
+
+    it.each([
+      {
+        name: 'strict',
+        savedPolicy: { mode: 'strict', maxDelayMinutes: 30, catchUp: 'all' },
+        expectedPolicy: { mode: 'strict', maxDelayMinutes: 30, catchUp: 'all' },
+      },
+      {
+        name: 'modern',
+        savedPolicy: DEFAULT_PUBLICATION_LATE_POLICY,
+        expectedPolicy: DEFAULT_PUBLICATION_LATE_POLICY,
+      },
+      {
+        name: 'legacy default',
+        savedPolicy: undefined,
+        expectedPolicy: DEFAULT_PUBLICATION_LATE_POLICY,
+      },
+    ] as const)(
+      'applies the saved draft $name policy when its activation request omits it',
+      async ({ savedPolicy, expectedPolicy }) => {
+        const { service, tx } = fixture(
+          { ...legacyRule, ...(savedPolicy ? { latePolicy: savedPolicy } : {}) },
+          PublicationScheduleStatus.DRAFT,
+        );
+        await service.update(
+          'policy-publication',
+          { userId: 'user-1', username: null, displayName: null },
+          {
+            requestId: 'schedule-policy-saved-draft-001',
+            expectedRevision: 2,
+            intent: 'publish',
+            schedule: legacyRule,
+          },
+        );
+        expect(tx.publicationSchedule.update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              status: PublicationScheduleStatus.ACTIVE,
+              rule: expect.objectContaining({ latePolicy: expectedPolicy }),
+            }),
+          }),
+        );
+        expect(tx.publicationOccurrence.createMany).toHaveBeenCalledWith({
+          data: [
+            expect.objectContaining({
+              deliveryDeadlineAt: new Date(
+                new Date(legacyRule.at).getTime() + expectedPolicy.maxDelayMinutes * 60_000,
+              ),
+            }),
+          ],
+          skipDuplicates: true,
+        });
+      },
+    );
   });
 
   it('keeps the schedule and execution linkage when an active publication becomes a draft', async () => {
