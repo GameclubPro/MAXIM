@@ -9,7 +9,9 @@ type TemporalPlannerStore = Parameters<typeof withPublisherTemporalSelectionPlan
 type TemporalPlannerRead = Parameters<typeof withPublisherTemporalSelectionPlan>[1];
 type TemporalPlannerClient = Parameters<TemporalPlannerRead>[0];
 
-function temporalPlannerStore(settings: unknown = [{ seq: 'off', bitmap: 'off', jit: 'off' }]) {
+function temporalPlannerStore(
+  settings: unknown = [{ seq: 'off', bitmap: 'off', sort: 'off', jit: 'off' }],
+) {
   const queryRaw = jest.fn().mockResolvedValueOnce(settings).mockResolvedValue([]);
   const transaction = jest.fn();
   const prisma: TemporalPlannerStore = {
@@ -75,9 +77,16 @@ describe('managed broadcast capability boundary', () => {
 
   it.each([
     { reason: 'missing readback', settings: [] },
-    { reason: 'enabled sequential scans', settings: [{ seq: 'on', bitmap: 'off', jit: 'off' }] },
-    { reason: 'enabled bitmap scans', settings: [{ seq: 'off', bitmap: 'on', jit: 'off' }] },
-    { reason: 'enabled JIT', settings: [{ seq: 'off', bitmap: 'off', jit: 'on' }] },
+    {
+      reason: 'enabled sequential scans',
+      settings: [{ seq: 'on', bitmap: 'off', sort: 'off', jit: 'off' }],
+    },
+    {
+      reason: 'enabled bitmap scans',
+      settings: [{ seq: 'off', bitmap: 'on', sort: 'off', jit: 'off' }],
+    },
+    { reason: 'enabled sorts', settings: [{ seq: 'off', bitmap: 'off', sort: 'on', jit: 'off' }] },
+    { reason: 'enabled JIT', settings: [{ seq: 'off', bitmap: 'off', sort: 'off', jit: 'on' }] },
   ])('refuses temporal classification after $reason', async ({ settings }) => {
     const planner = temporalPlannerStore(settings);
     const read = jest.fn(async (_tx: TemporalPlannerClient) => []);

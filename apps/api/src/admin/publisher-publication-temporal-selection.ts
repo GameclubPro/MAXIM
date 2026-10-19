@@ -16,6 +16,7 @@ import {
 import {
   buildPublisherCurrentExecutionScope,
   buildPublisherExecutionDeliveryPredicate,
+  buildPublisherExecutionParentJoins,
 } from './publisher-publication-execution-selection';
 
 export const PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD = 64;
@@ -71,18 +72,22 @@ export function withPublisherPublicationSelectionPlan<T>(
 ): Promise<T> {
   return prisma.$transaction(
     async (tx) => {
-      // FLAG: A bitmap can read the entire audience before LIMIT. Keep this planner
+      // FLAG: A bitmap or status-index sort can read the entire audience before LIMIT. Keep this planner
       // policy inside each selection transaction; commit and rollback restore the
       // pooled connection. Native plans must still prove the covering index bound.
-      const settings = await tx.$queryRaw<Array<{ seq: string; bitmap: string; jit: string }>>(
+      const settings = await tx.$queryRaw<
+        Array<{ seq: string; bitmap: string; sort: string; jit: string }>
+      >(
         Prisma.sql`SELECT set_config('enable_seqscan', 'off', true) AS seq,
         set_config('enable_bitmapscan', 'off', true) AS bitmap,
+        set_config('enable_sort', 'off', true) AS sort,
         set_config('jit', 'off', true) AS jit`,
       );
       if (
         settings.length !== 1 ||
         settings[0]!.seq !== 'off' ||
         settings[0]!.bitmap !== 'off' ||
+        settings[0]!.sort !== 'off' ||
         settings[0]!.jit !== 'off'
       )
         throw new Error('Publisher temporal selection planner policy was not applied');
@@ -221,12 +226,7 @@ export function buildPublisherTemporalExecutionDueQuery({
     WITH raw_execution_candidates AS MATERIALIZED (
       SELECT broadcast."id", broadcast."next_send_at", broadcast."created_at"
       FROM "managed_broadcasts" AS broadcast
-      INNER JOIN "publication_occurrences" AS occurrence
-        ON occurrence."id" = broadcast."publication_occurrence_id"
-      INNER JOIN "publication_schedules" AS schedule
-        ON schedule."id" = occurrence."schedule_id"
-      INNER JOIN "publications" AS publication
-        ON publication."id" = occurrence."publication_id"
+      ${buildPublisherExecutionParentJoins()}
       WHERE broadcast."dispatch_profile" = ${PublicationDispatchProfile.PUBLIK_V1}::"PublicationDispatchProfile"
         AND broadcast."status" = ${ManagedBroadcastStatus.ACTIVE}::"ManagedBroadcastStatus"
         AND broadcast."next_send_at" <= ${now}

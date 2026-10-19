@@ -791,6 +791,7 @@ services:
       dockerfile: apps/miniapp/Dockerfile
       labels:
         com.maxim.release-protected: 'true'
+        org.opencontainers.image.revision: ${MAXIM_EXPECTED_DEPLOY_SHA:-local}
       args:
         VITE_APP_CANONICAL_URL: https://maxim.play-team.ru/app/
     restart: unless-stopped
@@ -805,6 +806,7 @@ services:
       dockerfile: apps/miniapp/Dockerfile
       labels:
         com.maxim.release-protected: 'true'
+        org.opencontainers.image.revision: ${MAXIM_EXPECTED_DEPLOY_SHA:-local}
       args:
         VITE_APP_CANONICAL_URL: https://major-maksimov.ru/app/
         VITE_API_BASE: https://major-maksimov.ru/api/v1
@@ -820,6 +822,7 @@ services:
       dockerfile: apps/admin/Dockerfile
       labels:
         com.maxim.release-protected: 'true'
+        org.opencontainers.image.revision: ${MAXIM_EXPECTED_DEPLOY_SHA:-local}
       args:
         ADMIN_BASE_PATH: /
         VITE_PUBLIC_BASE_PATH: /

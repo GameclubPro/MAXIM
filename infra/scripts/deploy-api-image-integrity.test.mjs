@@ -91,6 +91,104 @@ maxim_topology_build_shared_api_image infra-scale
   assert.match(compatibility.stdout, /infra-scale-api-ingress:latest/u);
 });
 
+function runStaticImageBuild({ service, labels, imageExists = false }) {
+  const deploy = read('infra/scripts/vps-pull-build-up.sh');
+  const verificationStart = deploy.indexOf('verified_preloaded_target_image() {\n');
+  const verificationEnd = deploy.indexOf('\n}\n', verificationStart) + 2;
+  const buildStart = deploy.indexOf('for service in "${SERVICES_TO_BUILD[@]}"; do\n');
+  const buildEnd = deploy.indexOf('\nensure_compose_env\n', buildStart);
+  assert.ok(verificationStart >= 0 && verificationEnd > verificationStart);
+  assert.ok(buildStart >= 0 && buildEnd > buildStart);
+
+  return spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -euo pipefail
+${deploy.slice(verificationStart, verificationEnd)}
+TARGET_SHA="$EXPECTED_REVISION"
+SERVICES_TO_BUILD=("$STATIC_SERVICE")
+COMPOSE_FILES=()
+REUSE_PRELOADED_TARGET_IMAGES_ONLY=0
+MAXIM_MINIAPP_LEGACY_IMAGE="maxim-miniapp-legacy:$TARGET_SHA"
+MAXIM_MINIAPP_MAJOR_IMAGE="maxim-miniapp-major:$TARGET_SHA"
+MAXIM_ADMIN_IMAGE="maxim-admin:$TARGET_SHA"
+image_exists="$IMAGE_EXISTS"
+docker() {
+  if [[ "$1" == "image" && "$2" == "inspect" ]]; then
+    [[ "$image_exists" == 1 ]] || return 1
+    [[ "$3" != "--format" ]] || printf '%s\\n' "$IMAGE_LABELS"
+    return 0
+  fi
+  if [[ "$1" == "compose" && "$2" == "build" && "$3" == "$STATIC_SERVICE" ]]; then
+    printf 'static-build\\n' >&2
+    image_exists=1
+    return 0
+  fi
+  return 97
+}
+${deploy.slice(buildStart, buildEnd)}
+printf 'static-image-accepted\\n'
+`,
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        EXPECTED_REVISION: fullSha,
+        STATIC_SERVICE: service,
+        IMAGE_LABELS: labels,
+        IMAGE_EXISTS: imageExists ? '1' : '0',
+      },
+    },
+  );
+}
+
+test('host-built static images require the exact protected revision before rollout', () => {
+  const compose = read('infra/docker-compose.yml');
+  for (const service of ['miniapp-static', 'miniapp-major-static', 'admin-static']) {
+    const serviceStart = compose.indexOf(`\n  ${service}:\n`);
+    const serviceEnd = compose.indexOf('\n    restart:', serviceStart);
+    assert.ok(serviceStart >= 0 && serviceEnd > serviceStart);
+    assert.match(
+      compose.slice(serviceStart, serviceEnd),
+      /org\.opencontainers\.image\.revision: \$\{MAXIM_EXPECTED_DEPLOY_SHA:-local\}/u,
+    );
+    const valid = runStaticImageBuild({ service, labels: `${fullSha}|true` });
+    assert.equal(valid.status, 0, valid.stderr);
+    assert.match(valid.stderr, /static-build/u);
+    assert.match(valid.stdout, /static-image-accepted/u);
+
+    for (const labels of ['|true', `${'b'.repeat(40)}|true`, `${fullSha}|false`]) {
+      const invalid = runStaticImageBuild({ service, labels });
+      assert.equal(invalid.status, 1, invalid.stderr);
+      assert.match(invalid.stderr, /static-build/u);
+      assert.match(invalid.stderr, /unverified release labels/u);
+      assert.doesNotMatch(invalid.stdout, /static-image-accepted/u);
+    }
+  }
+});
+
+test('existing static images retain exact-label reuse and immutable overwrite refusal', () => {
+  for (const service of ['miniapp-static', 'miniapp-major-static', 'admin-static']) {
+    for (const valid of [true, false]) {
+      const result = runStaticImageBuild({
+        service,
+        labels: valid ? `${fullSha}|true` : '|true',
+        imageExists: true,
+      });
+      assert.equal(result.status, valid ? 0 : 1, result.stderr);
+      assert.doesNotMatch(result.stderr, /static-build/u);
+      if (valid) {
+        assert.match(result.stdout, /Reusing existing immutable static image/u);
+      } else {
+        assert.match(result.stderr, /Refusing to reuse or overwrite/u);
+        assert.doesNotMatch(result.stdout, /static-image-accepted/u);
+      }
+    }
+  }
+});
+
 function withGitFixture(callback) {
   const fixture = mkdtempSync(join(tmpdir(), 'maxim-api-build-inputs-'));
   try {
