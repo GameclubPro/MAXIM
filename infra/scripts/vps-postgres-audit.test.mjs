@@ -786,6 +786,56 @@ test('source envelope requires one exact opaque receipt, preserves audit bounds 
   assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'webhook_source_envelope'/u);
 });
 
+test('recovery key cohort keeps private scope CSV bounded, opt-in and fail closed through both wrappers', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const mode = 'webhook-recovery-key-cohort';
+  const from = '2026-10-18T22:40:00Z';
+  const scopes = '-101,-202';
+  for (const options of [[], ['--explain']]) {
+    const result = runAudit(data, [mode, from, scopes, ...options]);
+    assert.equal(result.status, 0, result.stderr);
+    const sql = readFileSync(data.sql, 'utf8');
+    assert.match(sql, /BEGIN READ ONLY/u);
+    assert.match(sql, /recovery_key_cohort_statuses_ready/u);
+    assert.match(sql, /quarantine_audit_privileges_ready/u);
+    assert.match(sql, /owner_proof_privileges_ready/u);
+    assert.match(sql, /quarantine_proof_indexes_ready/u);
+    assert.match(sql, /'audit','webhook_recovery_key_cohort'/u);
+    assert.match(sql, /'execution_progress','UNPROVED'/u);
+    assert.match(sql, /LIMIT 513/u);
+    assert.match(sql, /pg_column_compression\(semantic_key\)/u);
+    assert.doesNotMatch(sql, /EXPLAIN ANALYZE|FROM max_action_ledger/u);
+    assert.equal(sql.includes('EXPLAIN (FORMAT JSON)'), options.length > 0);
+    assert.match(readFileSync(data.dockerArgs, 'utf8'), /search_path=pg_catalog,public,pg_temp/u);
+    assert.equal(runConnect(data, ['postgres-audit', mode, from, scopes, ...options]).status, 0);
+  }
+  for (const args of [
+    [],
+    [from],
+    [from, ''],
+    [from, '-0'],
+    [from, '-101,-101'],
+    [from, '-101, -202'],
+    [from, "-1'); SELECT 1; --"],
+    [from, Array.from({ length: 129 }, (_, i) => `-${i + 1}`).join(',')],
+    ['2026-02-30T00:00:00Z', scopes],
+    ['2026-10-18T22:40:00.000Z', scopes],
+    [from, scopes, '--apply'],
+    [from, scopes, '--explain', 'extra'],
+  ]) {
+    assert.equal(runAudit(data, [mode, ...args]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', mode, ...args]).status, 2);
+  }
+  const failed = runAudit(data, [mode, from, scopes], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /recovery_key_cohort_unavailable/u);
+  assert.doesNotMatch(failed.stdout + failed.stderr, /fixture-event-0001|ERROR near|-101|-202/u);
+  assert.match(readFileSync(data.cleanupArgs, 'utf8'), /pg_terminate_backend/u);
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit','webhook_recovery_key_cohort'/u);
+});
+
 test('storage audit is opt-in, uses the bounded audit role, and rejects operator SQL', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
@@ -3699,7 +3749,11 @@ test('global audit flock rejects an overlapping diagnostic before Docker', async
   await once(holder, 'exit');
 });
 
-for (const modeArgs of [['queue'], ['webhook-quarantine-proof', '2026-10-15T01:37:00Z']]) {
+for (const modeArgs of [
+  ['queue'],
+  ['webhook-quarantine-proof', '2026-10-15T01:37:00Z'],
+  ['webhook-recovery-key-cohort', '2026-10-18T22:40:00Z', '-101,-202'],
+]) {
   test(`wall timeout cleans the exact ${modeArgs[0]} backend`, (t) => {
     const data = fixture();
     t.after(() => rmSync(data.directory, { force: true, recursive: true }));

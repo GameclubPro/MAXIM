@@ -282,6 +282,30 @@ function withCanonicalWebhookFixture(prisma: CanonicalWebhookPrismaFixture) {
       values?: readonly unknown[];
     };
     const sql = query?.strings?.join(' ') ?? query?.join?.(' ') ?? '';
+    if (sql.includes('RETURNING claim."id" AS "claimId"')) {
+      const changed = await mutateRaw(
+        query as { strings: readonly string[]; values: readonly unknown[] },
+      );
+      if (changed !== 1) return [];
+      const id = String(
+        query.values?.[query.strings!.findIndex((part) => part.includes('claim."id" = '))],
+      );
+      const owner = { ...claims.get(id), ...claimWrites.get(id) };
+      return [
+        {
+          claimId: id,
+          semanticKey: owner.semanticKey,
+          webhookEventId: owner.webhookEventId,
+          executionBotId: owner.executionBotId,
+          preparedAt: owner.preparedAt,
+          businessStartedAt: owner.businessStartedAt,
+          leaseToken: owner.leaseToken,
+          leaseExpiresAt: owner.leaseExpiresAt,
+          commandResult: owner.commandResult,
+          commandResultIsSqlNull: owner.commandResult === null,
+        },
+      ];
+    }
     if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
     if (sql.includes('SELECT claim.id, claim.webhook_event_id AS "ownerId"')) return [];
     if (sql.includes('FROM "webhook_events" AS "prior"')) {
@@ -301,88 +325,87 @@ function withCanonicalWebhookFixture(prisma: CanonicalWebhookPrismaFixture) {
     return queryRaw ? queryRaw(...args) : [];
   });
   const executeRaw = prisma.$executeRaw;
-  prisma.$executeRaw = jest.fn(
-    async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
-      const sql = query.strings.join('?');
-      const valueAfter = (fragment: string) =>
-        query.values[query.strings.findIndex((part) => part.includes(fragment))];
-      const id = String(valueAfter('claim."id" = '));
-      const eventId = String(valueAfter('event."id" = '));
-      const claim = { ...claims.get(id), ...claimWrites.get(id) };
-      const event = { ...receipts.get(eventId), ...receiptWrites.get(eventId) };
-      const now = new Date();
-      const expiry = sql.includes('SET "status" = \'COMPLETED\', "prepared_at" = COALESCE');
-      const transition =
-        sql.includes('SET "execution_bot_id" = ') && sql.includes('"business_started_at" = ');
-      if (!expiry && !transition) throw new Error('Unknown canonical fixture SQL mutation');
-      const ready = sql.includes('"business_started_at" = NULL');
-      const deadline = valueAfter(
-        expiry
-          ? 'event."execution_deadline_at" = '
-          : 'event."execution_deadline_at" IS NOT DISTINCT FROM ',
-      );
-      const waitingMarker = valueAfter('claim."command_result" @> ');
-      const waiting = typeof waitingMarker === 'string' ? (JSON.parse(waitingMarker) as Row) : null;
-      const result = claim.commandResult as Row | null;
-      const matchesWaiting =
-        waiting !== null &&
-        result !== null &&
-        result !== undefined &&
-        Object.entries(waiting).every(([key, value]) => result[key] === value);
-      const sameDeadline =
-        event.executionDeadlineAt instanceof Date && deadline instanceof Date
-          ? event.executionDeadlineAt.getTime() === deadline.getTime()
-          : event.executionDeadlineAt === deadline;
-      if (
-        claim.kind !== 'EXECUTION' ||
-        claim.semanticKey !== valueAfter('claim."semantic_key" = ') ||
-        claim.webhookEventId !== eventId ||
-        claim.status !== valueAfter('claim."status"::text = ') ||
-        claim.businessStartedAt !== null ||
-        claim.completedAt !== null ||
-        claim.leaseToken !== valueAfter('claim."lease_token" = ') ||
-        !(claim.leaseExpiresAt instanceof Date) ||
-        claim.leaseExpiresAt.getTime() <= now.getTime() ||
-        (!ready && !claim.enforced) ||
-        ['PROCESSED', 'DUPLICATE'].includes(String(event.status)) ||
-        event.timeoutQuarantineExpiresAt !== null ||
-        String(event.errorMessage ?? '').startsWith(WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX) ||
-        String(event.errorMessage ?? '')
-          .toLowerCase()
-          .includes('ambiguous') ||
-        !sameDeadline ||
-        (expiry &&
-          (!matchesWaiting || !(deadline instanceof Date) || deadline.getTime() > now.getTime())) ||
-        (!expiry &&
-          matchesWaiting &&
-          (!(deadline instanceof Date) || deadline.getTime() <= now.getTime()))
-      )
-        return 0;
-      const changed = (await executeRaw?.(query)) ?? 1;
-      if (changed !== 1) return changed;
-      claimWrites.set(id, {
-        ...claimWrites.get(id),
-        ...(expiry
-          ? {
-              status: 'COMPLETED',
-              preparedAt: claim.preparedAt ?? now,
-              completedAt: now,
-              leaseToken: null,
-              leaseExpiresAt: null,
-            }
-          : {
-              executionBotId: valueAfter('SET "execution_bot_id" = '),
-              enforced: Boolean(claim.enforced || valueAfter('"enforced" = claim."enforced" OR ')),
-              status: 'READY',
-              preparedAt: ready ? now : claim.preparedAt,
-              businessStartedAt: ready ? null : now,
-              leaseToken: ready ? null : claim.leaseToken,
-              leaseExpiresAt: ready ? null : claim.leaseExpiresAt,
-            }),
-      });
-      return 1;
-    },
-  );
+  const mutateRaw = async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
+    const sql = query.strings.join('?');
+    const valueAfter = (fragment: string) =>
+      query.values[query.strings.findIndex((part) => part.includes(fragment))];
+    const id = String(valueAfter('claim."id" = '));
+    const eventId = String(valueAfter('event."id" = '));
+    const claim = { ...claims.get(id), ...claimWrites.get(id) };
+    const event = { ...receipts.get(eventId), ...receiptWrites.get(eventId) };
+    const now = new Date();
+    const expiry = sql.includes('SET "status" = \'COMPLETED\', "prepared_at" = COALESCE');
+    const transition =
+      sql.includes('SET "execution_bot_id" = ') && sql.includes('"business_started_at" = ');
+    if (!expiry && !transition) throw new Error('Unknown canonical fixture SQL mutation');
+    const ready = sql.includes('"business_started_at" = NULL');
+    const deadline = valueAfter(
+      expiry
+        ? 'event."execution_deadline_at" = '
+        : 'event."execution_deadline_at" IS NOT DISTINCT FROM ',
+    );
+    const waitingMarker = valueAfter('claim."command_result" @> ');
+    const waiting = typeof waitingMarker === 'string' ? (JSON.parse(waitingMarker) as Row) : null;
+    const result = claim.commandResult as Row | null;
+    const matchesWaiting =
+      waiting !== null &&
+      result !== null &&
+      result !== undefined &&
+      Object.entries(waiting).every(([key, value]) => result[key] === value);
+    const sameDeadline =
+      event.executionDeadlineAt instanceof Date && deadline instanceof Date
+        ? event.executionDeadlineAt.getTime() === deadline.getTime()
+        : event.executionDeadlineAt === deadline;
+    if (
+      claim.kind !== 'EXECUTION' ||
+      claim.semanticKey !== valueAfter('claim."semantic_key" = ') ||
+      claim.webhookEventId !== eventId ||
+      claim.status !== valueAfter('claim."status"::text = ') ||
+      claim.businessStartedAt !== null ||
+      claim.completedAt !== null ||
+      claim.leaseToken !== valueAfter('claim."lease_token" = ') ||
+      !(claim.leaseExpiresAt instanceof Date) ||
+      claim.leaseExpiresAt.getTime() <= now.getTime() ||
+      (!ready && !claim.enforced) ||
+      ['PROCESSED', 'DUPLICATE'].includes(String(event.status)) ||
+      event.timeoutQuarantineExpiresAt !== null ||
+      String(event.errorMessage ?? '').startsWith(WEBHOOK_HOT_PATH_TIMEOUT_QUARANTINE_PREFIX) ||
+      String(event.errorMessage ?? '')
+        .toLowerCase()
+        .includes('ambiguous') ||
+      !sameDeadline ||
+      (expiry &&
+        (!matchesWaiting || !(deadline instanceof Date) || deadline.getTime() > now.getTime())) ||
+      (!expiry &&
+        matchesWaiting &&
+        (!(deadline instanceof Date) || deadline.getTime() <= now.getTime()))
+    )
+      return 0;
+    const changed = (await executeRaw?.(query)) ?? 1;
+    if (changed !== 1) return changed;
+    claimWrites.set(id, {
+      ...claimWrites.get(id),
+      ...(expiry
+        ? {
+            status: 'COMPLETED',
+            preparedAt: claim.preparedAt ?? now,
+            completedAt: now,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          }
+        : {
+            executionBotId: valueAfter('SET "execution_bot_id" = '),
+            enforced: Boolean(claim.enforced || valueAfter('"enforced" = claim."enforced" OR ')),
+            status: 'READY',
+            preparedAt: ready ? now : claim.preparedAt,
+            businessStartedAt: ready ? null : now,
+            leaseToken: ready ? null : claim.leaseToken,
+            leaseExpiresAt: ready ? null : claim.leaseExpiresAt,
+          }),
+    });
+    return 1;
+  };
+  prisma.$executeRaw = jest.fn(mutateRaw);
   prisma.$transaction ??= jest.fn(async (operation) => operation(prisma));
   return prisma;
 }

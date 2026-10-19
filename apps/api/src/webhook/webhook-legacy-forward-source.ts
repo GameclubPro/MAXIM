@@ -16,11 +16,41 @@ import {
 import { WebhookParser } from './webhook.parser';
 import { extractVisiblePhotoMessageContent } from '../moderation/photo-duplicate/photo-attachment-extractor';
 
+type ForwardBodyRefusal =
+  | 'object'
+  | 'keys'
+  | 'mid'
+  | 'seq'
+  | 'text_absent'
+  | 'text_null'
+  | 'text_invalid'
+  | 'markup'
+  | 'media';
+export type SourceAbandonmentForwardShapeRefusal =
+  | `source_forward_${'direct' | 'linked'}_${ForwardBodyRefusal}`
+  | 'source_forward_objects'
+  | 'source_forward_link_object'
+  | 'source_forward_sender_null'
+  | 'source_forward_sender_shape'
+  | 'source_forward_message_keys'
+  | 'source_forward_link_keys'
+  | 'source_forward_link_type'
+  | 'source_forward_chat_absent'
+  | 'source_forward_chat_null'
+  | 'source_forward_chat_identity'
+  | 'source_forward_sender_identity'
+  | 'source_forward_sender_keys'
+  | 'source_forward_sender_bot'
+  | 'source_forward_sender_metadata'
+  | 'source_forward_sender_activity'
+  | 'source_forward_normalized_text'
+  | 'source_forward_bot_type';
 export type LegacyForwardRefusal =
   | 'source_forward_shape'
   | 'source_forward_text'
   | 'source_forward_command'
-  | 'source_forward_media';
+  | 'source_forward_media'
+  | SourceAbandonmentForwardShapeRefusal;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -40,15 +70,25 @@ function body(
   allowImages = false,
   markup?: (body: Record<string, unknown>) => boolean,
   media?: (attachments: unknown) => boolean,
+  onRefusal?: (reason: ForwardBodyRefusal) => void,
 ): Record<string, unknown> | null {
+  const refuse = (reason: ForwardBodyRefusal): null => {
+    onRefusal?.(reason);
+    return null;
+  };
   const item = record(value);
-  return item &&
-    onlyKeys(item, ['mid', 'seq', 'text', 'attachments', ...(markup ? ['markup'] : [])]) &&
-    identity(item.mid) &&
-    isLegacyOpaqueSequence(item.seq) &&
-    typeof item.text === 'string' &&
-    (!markup || markup(item)) &&
-    (media
+  if (!item) return refuse('object');
+  if (!onlyKeys(item, ['mid', 'seq', 'text', 'attachments', ...(markup ? ['markup'] : [])]))
+    return refuse('keys');
+  if (!identity(item.mid)) return refuse('mid');
+  if (!isLegacyOpaqueSequence(item.seq)) return refuse('seq');
+  if (typeof item.text !== 'string')
+    return refuse(
+      item.text === undefined ? 'text_absent' : item.text === null ? 'text_null' : 'text_invalid',
+    );
+  if (markup && !markup(item)) return refuse('markup');
+  if (
+    !(media
       ? media(item.attachments)
       : item.attachments === undefined ||
         (Array.isArray(item.attachments) &&
@@ -56,8 +96,9 @@ function body(
             (allowImages &&
               item.attachments.length <= 10 &&
               item.attachments.every(isLegacyImageAttachment)))))
-    ? item
-    : null;
+  )
+    return refuse('media');
+  return item;
 }
 
 // FLAG: Forward metadata is content provenance, never an additional held person
@@ -89,57 +130,91 @@ function inspectForwardText(
   const message = record(raw?.message);
   const normalized = record(update.message);
   const modern = profile === 'source-abandonment';
+  let directRefusal: ForwardBodyRefusal = 'object';
+  let linkedRefusal: ForwardBodyRefusal = 'object';
   const direct = body(
     message?.body,
     false,
     modern ? (item) => isSourceAbandonmentOuterMarkup(item, message?.link) : undefined,
+    undefined,
+    (reason) => {
+      directRefusal = reason;
+    },
   );
   const link = record(message?.link);
   const linked = body(
     link?.message,
     true,
     modern ? (item) => isSourceAbandonmentMarkup(item.markup, item.text) : undefined,
-    modern ? (attachments) => isSourceAbandonmentLinkedMedia(attachments, 'forward') : undefined,
+    modern
+      ? (attachments) =>
+          isSourceAbandonmentLinkedMedia(attachments, 'forward', 'SOURCE_ABANDONMENT')
+      : undefined,
+    (reason) => {
+      linkedRefusal = reason;
+    },
   );
   const sender = record(link?.sender);
   const omittedSender = profile === 'source-abandonment' && link?.sender === undefined;
-  if (
-    !raw ||
-    !message ||
-    !normalized ||
-    !direct ||
-    !link ||
-    !linked ||
-    (!sender && !omittedSender) ||
-    !onlyKeys(message, ['sender', 'recipient', 'timestamp', 'body', 'link']) ||
-    !onlyKeys(link, ['type', 'sender', 'chat_id', 'message']) ||
-    link.type !== 'forward' ||
-    !identity(link.chat_id) ||
-    (sender &&
-      (!identity(sender.user_id) ||
-        !onlyKeys(sender, [
-          'user_id',
-          'name',
-          'first_name',
-          'last_name',
-          'username',
-          'is_bot',
-          'avatar_url',
-          'last_activity_time',
-        ]) ||
-        typeof sender.is_bot !== 'boolean' ||
-        ['name', 'first_name', 'last_name', 'username', 'avatar_url'].some(
-          (key) =>
-            sender[key] !== undefined && sender[key] !== null && typeof sender[key] !== 'string',
-        ) ||
-        (sender.last_activity_time !== undefined &&
-          sender.last_activity_time !== null &&
-          (typeof sender.last_activity_time !== 'number' ||
-            !Number.isSafeInteger(sender.last_activity_time))))) ||
-    typeof normalized.text !== 'string' ||
-    typeof update.botId !== 'string'
-  )
-    return 'source_forward_shape';
+  // FLAG: Refine only the deciding refusal, never the admitted source shapes.
+  // Legacy keeps its coarse contract; modern diagnostics expose fixed codes only,
+  // in the original guard order, without raw keys, values, identities or text.
+  const shape = (reason: SourceAbandonmentForwardShapeRefusal): LegacyForwardRefusal =>
+    modern ? reason : 'source_forward_shape';
+  if (!raw || !message || !normalized) return shape('source_forward_objects');
+  if (!direct) return shape(`source_forward_direct_${directRefusal}`);
+  if (!link) return shape('source_forward_link_object');
+  if (!linked) return shape(`source_forward_linked_${linkedRefusal}`);
+  if (!sender && !omittedSender)
+    return shape(
+      link.sender === null ? 'source_forward_sender_null' : 'source_forward_sender_shape',
+    );
+  if (!onlyKeys(message, ['sender', 'recipient', 'timestamp', 'body', 'link']))
+    return shape('source_forward_message_keys');
+  if (!onlyKeys(link, ['type', 'sender', 'chat_id', 'message']))
+    return shape('source_forward_link_keys');
+  if (link.type !== 'forward') return shape('source_forward_link_type');
+  if (!identity(link.chat_id))
+    return shape(
+      link.chat_id === undefined
+        ? 'source_forward_chat_absent'
+        : link.chat_id === null
+          ? 'source_forward_chat_null'
+          : 'source_forward_chat_identity',
+    );
+  if (sender) {
+    if (!identity(sender.user_id)) return shape('source_forward_sender_identity');
+    if (
+      !onlyKeys(sender, [
+        'user_id',
+        'name',
+        'first_name',
+        'last_name',
+        'username',
+        'is_bot',
+        'avatar_url',
+        'last_activity_time',
+      ])
+    )
+      return shape('source_forward_sender_keys');
+    if (typeof sender.is_bot !== 'boolean') return shape('source_forward_sender_bot');
+    if (
+      ['name', 'first_name', 'last_name', 'username', 'avatar_url'].some(
+        (key) =>
+          sender[key] !== undefined && sender[key] !== null && typeof sender[key] !== 'string',
+      )
+    )
+      return shape('source_forward_sender_metadata');
+    if (
+      sender.last_activity_time !== undefined &&
+      sender.last_activity_time !== null &&
+      (typeof sender.last_activity_time !== 'number' ||
+        !Number.isSafeInteger(sender.last_activity_time))
+    )
+      return shape('source_forward_sender_activity');
+  }
+  if (typeof normalized.text !== 'string') return shape('source_forward_normalized_text');
+  if (typeof update.botId !== 'string') return shape('source_forward_bot_type');
 
   if (
     Array.isArray(linked.attachments) &&

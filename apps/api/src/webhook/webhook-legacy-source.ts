@@ -6,6 +6,7 @@ import {
   type AdminForwardedCommandSettings,
 } from '../moderation/admin-forwarded-command.util';
 import { isSourceAbandonmentOuterMarkup } from './webhook-source-abandonment-markup';
+import type { SourceAbandonmentContentPurpose } from './webhook-source-abandonment-media';
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
 import { isLegacyDirectMedia, isLegacyPassiveMarkup } from './webhook-legacy-direct-source';
 import {
@@ -123,12 +124,30 @@ export function inspectSourceAbandonmentPostSealSource(
   return inspectLegacyTextSource(owner, true, undefined, settings, 'source-abandonment');
 }
 
+// FLAG: Automatic pristine settlement retains the v6 human content policy even
+// when explicit source abandonment gains a new passive reply shape. The same
+// original parser, command, clock and identity checks remain mandatory.
+export function inspectPristineOperatorDiscardSource(
+  owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
+  settings?: AdminForwardedCommandSettings,
+): LegacyRecoverySource | null {
+  return inspectLegacyTextSource(
+    owner,
+    false,
+    undefined,
+    settings,
+    'source-abandonment',
+    'PRISTINE_OPERATOR_DISCARD_V1',
+  );
+}
+
 function inspectLegacyTextSource(
   owner: Pick<WebhookEvent, 'botId' | 'createdAt' | 'normalizedPayload' | 'rawPayload'>,
   postSealForward: boolean,
   onRefusal?: (reason: LegacyRecoverySourceRefusal) => void,
   settings?: AdminForwardedCommandSettings,
   profile: 'legacy' | 'source-abandonment' = 'legacy',
+  purpose: SourceAbandonmentContentPurpose = 'SOURCE_ABANDONMENT',
 ): LegacyRecoverySource | null {
   // FLAG: Emit one fixed code from the deciding guard. Never expose raw keys,
   // source text, identities or exception details through refusal diagnostics.
@@ -155,7 +174,10 @@ function inspectLegacyTextSource(
   // replay and does not relax the ingress/cutoff clocks for initial installation.
   if (
     (update.type !== 'message_created' &&
-      !((postSealForward || profile === 'source-abandonment') && update.type === 'message_edited')) ||
+      !(
+        (postSealForward || profile === 'source-abandonment') &&
+        update.type === 'message_edited'
+      )) ||
     raw.update_type !== update.type
   )
     return refuse('source_event_kind');
@@ -212,7 +234,7 @@ function inspectLegacyTextSource(
   if (message.link !== undefined) {
     const forwardRefusal =
       profile === 'source-abandonment' && record(message.link)?.type === 'reply'
-        ? inspectSourceAbandonmentReplyText(update, settings)
+        ? inspectSourceAbandonmentReplyText(update, purpose, settings)
         : profile === 'source-abandonment'
           ? inspectSourceAbandonmentForwardText(update, settings)
           : inspectLegacyForwardText(update, settings);

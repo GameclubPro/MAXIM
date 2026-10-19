@@ -394,6 +394,239 @@ test('DENY group splits to individuals without losing the supported subset', asy
   assert.equal(h.peak(), 1);
 });
 
+const fixedLinkedShapeDenialCodes = [
+  'source_forward_shape',
+  'source_reply_shape',
+  'source_forward_direct_object',
+  'source_forward_direct_keys',
+  'source_forward_direct_mid',
+  'source_forward_direct_seq',
+  'source_forward_direct_text_absent',
+  'source_forward_direct_text_null',
+  'source_forward_direct_text_invalid',
+  'source_forward_direct_markup',
+  'source_forward_direct_media',
+  'source_forward_linked_object',
+  'source_forward_linked_keys',
+  'source_forward_linked_mid',
+  'source_forward_linked_seq',
+  'source_forward_linked_text_absent',
+  'source_forward_linked_text_null',
+  'source_forward_linked_text_invalid',
+  'source_forward_linked_markup',
+  'source_forward_linked_media',
+  'source_forward_objects',
+  'source_forward_link_object',
+  'source_forward_sender_null',
+  'source_forward_sender_shape',
+  'source_forward_message_keys',
+  'source_forward_link_keys',
+  'source_forward_link_type',
+  'source_forward_chat_absent',
+  'source_forward_chat_null',
+  'source_forward_chat_identity',
+  'source_forward_sender_identity',
+  'source_forward_sender_keys',
+  'source_forward_sender_bot',
+  'source_forward_sender_metadata',
+  'source_forward_sender_activity',
+  'source_forward_normalized_text',
+  'source_forward_bot_type',
+];
+function linkedShapeDenial(value, code) {
+  return {
+    ...value,
+    decision: 'DENY',
+    sourceCoverageComplete: false,
+    issues: [
+      { code, descriptor: 'sql:selected-source' },
+      { code: 'source_content_unproved', descriptor: 'sql:selected-source' },
+      { code: 'source_candidate_unproved', descriptor: 'sql:webhook_events' },
+      {
+        code: 'selected_owner_proof_incomplete',
+        descriptor: 'sql:selected-source',
+      },
+    ],
+  };
+}
+
+for (const code of fixedLinkedShapeDenialCodes)
+  test(`${code} splits diagnostic accounting without admitting the refused owner`, async (t) => {
+    const rows = [row(1), row(2), row(3)];
+    const rejectedOwner = rows[1].claim.ownerId;
+    const h = planner(writeWalk(t, [...rows, unresolvedRow(4)]).read(), (value, input) =>
+      input.selection.ownerWebhookEventIds.includes(rejectedOwner)
+        ? linkedShapeDenial(value, code)
+        : value,
+    );
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.feasible, true);
+    assert.equal(result.reason, null);
+    assert.equal(result.nominatedOwners, 3);
+    assert.deepEqual(result.excludedCounts, { rejected: 1, unresolved: 1 });
+    assert.deepEqual(
+      result.children.flatMap((child) => child.authorities.map((entry) => entry.ownerId)).sort(),
+      [rows[0].claim.ownerId, rows[2].claim.ownerId].sort(),
+    );
+    assert.ok(
+      h.proofs.some(
+        (proof, index) =>
+          h.calls[index].selection.ownerWebhookEventIds.length === 1 &&
+          h.calls[index].selection.ownerWebhookEventIds[0] === rejectedOwner &&
+          proof.decision === 'DENY' &&
+          proof.sourceCoverageComplete === false &&
+          proof.issues[0].code === code,
+      ),
+    );
+    assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+    for (const child of result.children) {
+      const proof = h.proofs.find((value) => proofDigest(value) === child.admissionDigest);
+      assert.equal(proof.decision, 'READY_FOR_COLD_REVIEW');
+      assert.equal(proof.sourceCoverageComplete, true);
+    }
+    for (const key of ['pages', 'rows', 'probes', 'bytes'])
+      assert.equal(
+        result.admissionCost[key],
+        h.proofs.reduce((sum, proof) => sum + proof.cost[key], 0),
+      );
+    assert.equal(h.peak(), 1);
+  });
+
+test('mixed fixed forward and reply refusals account for all 97 synthetic owners without expanding eligibility', async (t) => {
+  const rows = Array.from({ length: 97 }, (_, index) => row(index + 1));
+  const refusals = new Map([
+    [rows[2].claim.ownerId, 'source_forward_shape'],
+    [rows[10].claim.ownerId, 'source_forward_sender_null'],
+    [rows[27].claim.ownerId, 'source_forward_chat_absent'],
+    [rows[44].claim.ownerId, 'source_forward_linked_text_null'],
+    [rows[61].claim.ownerId, 'source_forward_linked_media'],
+    [rows[78].claim.ownerId, 'source_reply_shape'],
+    [rows[95].claim.ownerId, 'source_forward_link_keys'],
+  ]);
+  const h = planner(writeWalk(t, [...rows, unresolvedRow(98)]).read(), (value, input) => {
+    const rejected = input.selection.ownerWebhookEventIds.find((id) => refusals.has(id));
+    return rejected ? linkedShapeDenial(value, refusals.get(rejected)) : value;
+  });
+  const result = await planSourceAbandonmentSessionChildren(h.options);
+  const supported = result.children.flatMap((child) =>
+    child.authorities.map((entry) => entry.ownerId),
+  );
+  assert.equal(result.feasible, true);
+  assert.equal(result.nominatedOwners, 97);
+  assert.deepEqual(result.excludedCounts, { rejected: 7, unresolved: 1 });
+  assert.deepEqual(
+    supported.sort(),
+    rows
+      .map((entry) => entry.claim.ownerId)
+      .filter((id) => !refusals.has(id))
+      .sort(),
+  );
+  assert.equal(new Set(supported).size + result.excludedCounts.rejected, 97);
+  for (const [ownerId, code] of refusals)
+    assert.ok(
+      h.proofs.some(
+        (proof, index) =>
+          h.calls[index].selection.ownerWebhookEventIds.length === 1 &&
+          h.calls[index].selection.ownerWebhookEventIds[0] === ownerId &&
+          proof.decision === 'DENY' &&
+          proof.issues[0].code === code,
+      ),
+    );
+  for (const child of result.children)
+    assert.equal(
+      h.proofs.find((proof) => proofDigest(proof) === child.admissionDigest).decision,
+      'READY_FOR_COLD_REVIEW',
+    );
+  assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+  for (const key of ['pages', 'rows', 'probes', 'bytes'])
+    assert.equal(
+      result.admissionCost[key],
+      h.proofs.reduce((sum, proof) => sum + proof.cost[key], 0),
+    );
+  assert.ok(result.admissionCalls <= SOURCE_ABANDONMENT_SESSION_LIMITS.admissionCalls);
+  assert.equal(h.peak(), 1);
+});
+
+for (const code of fixedLinkedShapeDenialCodes)
+  test(`${code} from another producer remains a global denial`, async (t) => {
+    const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+      const denied = linkedShapeDenial(value, code);
+      denied.issues[0].descriptor = 'sql:source-family';
+      return denied;
+    });
+    const result = await planSourceAbandonmentSessionChildren(h.options);
+    assert.equal(result.reason, 'global_admission_refused');
+    assert.equal(result.admissionCalls, 1);
+    assert.deepEqual(result.children, []);
+    assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+    assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+  });
+
+for (const code of ['source_forward_shape', 'source_forward_sender_null', 'source_reply_shape'])
+  for (const [name, change] of [
+    [
+      'global SQL budget',
+      (value) =>
+        value.issues.push({
+          code: 'sql_budget_exceeded',
+          descriptor: 'sql:inventory',
+        }),
+    ],
+    [
+      'Redis refusal',
+      (value) =>
+        value.issues.push({
+          code: 'ACTION_PAGE_UNPROVED',
+          descriptor: 'redis:max-actions-background',
+        }),
+    ],
+    [
+      'unknown issue',
+      (value) =>
+        value.issues.push({
+          code: 'source_forward_unreviewed',
+          descriptor: 'sql:selected-source',
+        }),
+    ],
+    [
+      'unknown candidate descriptor',
+      (value) => {
+        value.issues[2].descriptor = 'sql:unknown';
+      },
+    ],
+    [
+      'extra issue property',
+      (value) => {
+        value.issues[0].privateValue = 'private';
+      },
+    ],
+    [
+      'missing content summary',
+      (value) => {
+        value.issues.splice(1, 1);
+      },
+    ],
+    [
+      'null issue',
+      (value) => {
+        value.issues[0] = null;
+      },
+    ],
+  ])
+    test(`${code} mixed with ${name} never splits or drops owners`, async (t) => {
+      const h = planner(writeWalk(t, [row(1), row(2)]).read(), (value) => {
+        const denied = linkedShapeDenial(value, code);
+        change(denied);
+        return denied;
+      });
+      const result = await planSourceAbandonmentSessionChildren(h.options);
+      assert.equal(result.reason, 'global_admission_refused');
+      assert.equal(result.admissionCalls, 1);
+      assert.deepEqual(result.children, []);
+      assert.deepEqual(result.excludedCounts, { rejected: 0, unresolved: 0 });
+      assert.deepEqual(result.admissionProofs, h.proofs.map(proofDigest));
+    });
+
 function chatTypeDenial(value) {
   return {
     ...value,

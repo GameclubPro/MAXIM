@@ -4,7 +4,7 @@ import { sourceAbandonmentDigest } from './source-abandonment-live-protocol';
 // It never grants participant immunity or proves earlier remote outcomes. Every
 // producer below must retain a final exact-source check when regenerating work.
 export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
-  version: 6,
+  version: 7,
   source:
     'validated-human-chat-or-explicit-authorless-channel-exact-original-message-created-or-edited',
   directMedia: {
@@ -46,9 +46,14 @@ export const SOURCE_ABANDONMENT_SOURCE_CLOSURE = Object.freeze({
   reply: {
     validator: 'inspectSourceAbandonmentReplyText',
     content:
-      'parser-proved-nonempty-outer-text-and-flat-quoted-text-with-zero-through-ten-images-or-one-video-or-one-official-sticker',
+      'parser-proved-outer-string-text-and-flat-quoted-string-text-with-zero-through-ten-images-or-one-video-or-one-official-sticker-or-one-strict-passive-audio-only-for-explicit-source-abandonment',
     scope: 'outer-recipient-chat-body-mid-sender-user-only',
     linkedIdentity: 'quoted-metadata-never-held-message-person-or-mutation-target',
+  },
+  pristineOperatorDiscard: {
+    validator: 'inspectPristineOperatorDiscardSource',
+    purpose: 'PRISTINE_OPERATOR_DISCARD_V1',
+    content: 'unchanged-v6-human-profile-with-linked-reply-audio-refused',
   },
   excluded: [
     'commands-and-configured-triggers',

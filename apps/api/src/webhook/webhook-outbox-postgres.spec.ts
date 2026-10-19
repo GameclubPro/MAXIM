@@ -1,7 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import { WebhookService } from './webhook.service';
 import { WebhookPreparationDeferredError } from '../common/webhook-preparation-deferred.error';
-import { WebhookCanonicalExecutionService } from '../moderation/webhook-canonical-execution.service';
+import {
+  WebhookCanonicalExecutionService,
+  WebhookFinishPersistenceError,
+} from '../moderation/webhook-canonical-execution.service';
 import { WebhookOrderedPredecessorPendingError } from '../moderation/webhook-ordered-predecessor-fence';
 import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
 import { holdUnverifiedLegacyExecution } from './webhook-legacy-authority';
@@ -1234,8 +1237,12 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       ).toMatchObject({ kind: 'EXECUTION_FINISHED' });
       if (proofState === 'exact') expect(completion).toEqual({ error: null });
       else {
-        expect(completion.error).toBeInstanceOf(WebhookPreparationDeferredError);
-        expect((completion.error as Error).message).toBe('Handler completion claim changed');
+        expect(completion.error).toBeInstanceOf(WebhookFinishPersistenceError);
+        expect(completion.error).toMatchObject({
+          outcome: 'authority_changed',
+          phase: 'settlement',
+          cause: { message: 'Handler completion claim changed' },
+        });
       }
     },
   );

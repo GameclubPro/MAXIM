@@ -6,7 +6,7 @@ import { DORMANT_BOT_OBSERVATION_MARKER } from './webhook-dormant-observation';
 import { hasWebhookReplayFence } from './webhook-execution-deadline';
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
 import { legacyUpdateHeldSql } from './webhook-legacy-hold.service';
-import { inspectSourceAbandonmentSource } from './webhook-legacy-source';
+import { inspectPristineOperatorDiscardSource } from './webhook-legacy-source';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { WEBHOOK_HOT_PATH_TIMEOUT_TERMINAL_QUARANTINE_PREFIX } from './webhook-timeout-quarantine';
 
@@ -182,10 +182,10 @@ export async function settlePristineOperatorDiscard(
       const settings = await tx.chatSettings.findUnique({
         where: { chatId: input.update.message?.chatId ?? '' },
       });
-      // FLAG: Use the strict modern source profile for text, media and linked messages.
+      // FLAG: Preserve the v6 pristine content policy for the owner and every receipt.
       // Enforced pristine claims cannot enter moderation/OCR before the business-start CAS;
       // preparation metadata and independent ingress retention remain untouched by settlement.
-      const source = inspectSourceAbandonmentSource(owner, undefined, settings ?? undefined);
+      const source = inspectPristineOperatorDiscardSource(owner, settings ?? undefined);
       if (
         !source ||
         source.sourceAt <= clock.cutoff ||
@@ -246,7 +246,7 @@ export async function settlePristineOperatorDiscard(
       let observations = 0;
       for (const event of family) {
         if (discards.some((row) => row.id === event.id)) continue;
-        const provenance = inspectSourceAbandonmentSource(event, undefined, settings ?? undefined);
+        const provenance = inspectPristineOperatorDiscardSource(event, settings ?? undefined);
         if (
           !provenance ||
           provenance.chatId !== source.chatId ||

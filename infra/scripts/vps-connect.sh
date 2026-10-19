@@ -78,6 +78,7 @@ Commands:
   postgres-audit delete-retry-heads [--explain]
   postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]
   postgres-audit webhook-cohort [--short] [--explain]
+  postgres-audit webhook-recovery-key-cohort <UTC-second> <private-chat-ID-CSV> [--explain]
   postgres-audit webhook-workload [--explain]
   postgres-audit duplicate [--status <STATUS>] [--explain]
   postgres-audit poll-publication <poll-id> [--explain]
@@ -534,6 +535,12 @@ postgres_audit() {
       echo 'Usage: postgres-audit duplicate --status <STATUS> [--explain]' >&2
       exit 2
     fi
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
+
+  if [[ "$mode" == 'webhook-recovery-key-cohort' ]]; then
+    node "$ROOT_DIR/infra/scripts/webhook-recovery-key-cohort-audit.mjs" "${@:2}" >/dev/null || return 2
     remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
     return
   fi
