@@ -46,13 +46,17 @@ integration('Bounded Publisher delivery evidence on native PostgreSQL', () => {
       CREATE TABLE managed_broadcast_deliveries (LIKE public.managed_broadcast_deliveries INCLUDING DEFAULTS);
       ALTER TABLE managed_broadcast_deliveries ADD PRIMARY KEY(id);
       CREATE INDEX managed_broadcast_deliveries_dispatch_status_created_id_idx ON managed_broadcast_deliveries(dispatch_profile,status,created_at,id);
-      CREATE TABLE managed_broadcasts (id text PRIMARY KEY,publication_occurrence_id text,dispatch_profile "PublicationDispatchProfile",required_bot_id text,created_at timestamp(3));
-      CREATE TABLE publication_occurrences (id text PRIMARY KEY,publication_id text,required_bot_id text,dispatch_profile "PublicationDispatchProfile",created_at timestamp(3),scheduled_at timestamp(3),delivery_deadline_at timestamp(3),retry_authorized_at timestamp(3),retry_expires_at timestamp(3),dispatch_blocker_code text,dispatch_blocked_at timestamp(3));
+      CREATE TABLE managed_broadcasts (id text PRIMARY KEY,publication_occurrence_id text,dispatch_profile "PublicationDispatchProfile",required_bot_id text,created_at timestamp(3),status text DEFAULT 'ACTIVE',locked_at timestamp(3),lock_token text);
+      CREATE TABLE publication_occurrences (id text PRIMARY KEY,publication_id text,required_bot_id text,dispatch_profile "PublicationDispatchProfile",created_at timestamp(3),scheduled_at timestamp(3),delivery_deadline_at timestamp(3),retry_authorized_at timestamp(3),retry_expires_at timestamp(3),dispatch_blocker_code text,dispatch_blocked_at timestamp(3),status text DEFAULT 'IN_PROGRESS',schedule_id text DEFAULT 'schedule',schedule_revision integer DEFAULT 1);
+      CREATE TABLE publications (id text PRIMARY KEY,lifecycle text,created_at timestamp(3));
+      CREATE TABLE publication_schedules (id text PRIMARY KEY,publication_id text,revision integer,mode text,status text,created_at timestamp(3));
       CREATE TABLE publication_content_revisions (id text PRIMARY KEY,publication_id text,created_at timestamp(3));
       CREATE TABLE max_action_ledger (LIKE public.max_action_ledger INCLUDING DEFAULTS);
       CREATE UNIQUE INDEX max_action_ledger_job_id_key ON max_action_ledger(job_id);
       INSERT INTO managed_broadcasts VALUES ('broadcast','occurrence','PUBLIK_V1','publisher',now()-interval '2 days');
       INSERT INTO publication_occurrences VALUES ('occurrence','publication','publisher','PUBLIK_V1',now()-interval '2 days',now()-interval '2 days',now()+interval '1 day',NULL,NULL,NULL,NULL);
+      INSERT INTO publications VALUES ('publication','ACTIVE',now()-interval '2 days');
+      INSERT INTO publication_schedules VALUES ('schedule','publication',1,'ONCE','ACTIVE',now()-interval '2 days');
       INSERT INTO publication_content_revisions VALUES ('content','publication',now()-interval '2 days');`);
   });
   afterEach(async () => {
@@ -79,6 +83,60 @@ integration('Bounded Publisher delivery evidence on native PostgreSQL', () => {
       await query<PublicationDeliveryCohortRow>(buildPublicationDeliveryCohortQuery(schema)),
     );
   }
+  it('links original schedule clocks and stopped parents without changing recipient disposition', async () => {
+    await insert('stopped');
+    await client.query(`UPDATE managed_broadcasts SET status='CANCELED',locked_at=now()-interval '10 seconds',lock_token='private-owner';
+      UPDATE publication_occurrences SET status='CANCELED',dispatch_blocker_code='PUBLISHER_RUNTIME_UNAVAILABLE';
+      UPDATE publications SET lifecycle='CANCELED'; UPDATE publication_schedules SET status='CANCELED';`);
+    const read = async () => {
+      const [row] = await query<PublicationDeliveryEvidenceRow>(
+        buildPublicationDeliveryEvidenceQuery('stopped', schema),
+      );
+      return projectPublicationDeliveryEvidence(row!, []);
+    };
+    const first = await read();
+    expect(first).toMatchObject({
+      storedStatus: 'PENDING',
+      context: {
+        scheduleBinding: 'exact',
+        scheduleMode: 'ONCE',
+        broadcastStatus: 'CANCELED',
+        occurrenceStatus: 'CANCELED',
+        publicationLifecycle: 'CANCELED',
+        scheduleStatus: 'CANCELED',
+        occurrenceScheduleRevision: 1,
+        currentScheduleRevision: 1,
+        broadcastLease: { state: 'active' },
+      },
+      waiting: { parentBlocker: 'publisher_unavailable', reasons: ['publisher_unavailable'] },
+      recipient: { state: 'missing' },
+      automaticRetryAllowed: false,
+    });
+    expect(first.context?.scheduledAt).not.toBeNull();
+    expect(first.context?.deliveryDeadlineAt).not.toBeNull();
+    await client.query("UPDATE publication_schedules SET revision=2,mode='RECURRENCE'");
+    expect((await read()).context).toMatchObject({
+      scheduleBinding: 'revision_changed',
+      scheduleMode: 'UNKNOWN',
+    });
+    await client.query("UPDATE publication_schedules SET publication_id='other'");
+    expect((await read()).context).toMatchObject({
+      scheduleBinding: 'invalid_evidence',
+      scheduleMode: 'UNKNOWN',
+    });
+    expect(JSON.stringify(first)).not.toContain('private-');
+  });
+  it('requires exact publication and schedule lookup indexes only for individual context', async () => {
+    await client.query(
+      'ALTER TABLE publication_schedules DROP CONSTRAINT publication_schedules_pkey',
+    );
+    expect(await query(buildPublicationDeliveryIndexesQuery(false, schema))).toEqual([
+      { ready: false },
+    ]);
+    expect(await query(buildPublicationDeliveryIndexesQuery(true, schema))).toEqual([
+      { ready: true },
+    ]);
+  });
   it('includes six stored statuses and legacy-derived unknown after bounded selection', async () => {
     for (const status of ['PENDING', 'SENDING', 'SENT', 'FAILED', 'AMBIGUOUS', 'CANCELED'])
       await insert(status, status);
@@ -168,13 +226,16 @@ integration('Bounded Publisher delivery evidence on native PostgreSQL', () => {
       INSERT INTO publication_content_revisions
       SELECT 'parent-content-'||n,'parent-publication-'||n,now()-interval '2 days'
       FROM generate_series(1,100064) n;
+      INSERT INTO publications SELECT 'parent-publication-'||n,'ACTIVE',now()-interval '2 days' FROM generate_series(1,100064) n;
+      INSERT INTO publication_schedules SELECT 'parent-schedule-'||n,'parent-publication-'||n,1,'ONCE','ACTIVE',now()-interval '2 days' FROM generate_series(1,100064) n;
+      UPDATE publication_occurrences SET schedule_id='parent-schedule-'||substring(id from length('parent-occurrence-')+1) WHERE id LIKE 'parent-occurrence-%';
       INSERT INTO managed_broadcast_deliveries(id,broadcast_id,occurrence_index,target_chat_id,dispatch_profile,required_bot_id,publication_occurrence_id,content_revision_id,status,attempt_count,created_at,updated_at)
       SELECT 'retained-delivery-'||lpad(n::text,6,'0'),'parent-broadcast-'||(1+n%64),1,'private-'||n,'PUBLIK_V1','publisher','parent-occurrence-'||(1+n%64),'parent-content-'||(1+n%64),'PENDING',2,now()-interval '60 seconds',now()
       FROM generate_series(1,512) n;
       INSERT INTO max_action_ledger(id,job_id,action_type,chat_id,source_tag,created_at,updated_at)
       SELECT 'retained-ledger-'||n,'unrelated-key-'||n,'SEND_MESSAGE','private-1','managed_broadcast',now()-interval '30 days',now()
       FROM generate_series(1,100000) n;
-      ANALYZE managed_broadcast_deliveries; ANALYZE managed_broadcasts; ANALYZE publication_occurrences; ANALYZE publication_content_revisions; ANALYZE max_action_ledger;
+      ANALYZE managed_broadcast_deliveries; ANALYZE managed_broadcasts; ANALYZE publication_occurrences; ANALYZE publication_content_revisions; ANALYZE publications; ANALYZE publication_schedules; ANALYZE max_action_ledger;
       SET statement_timeout='2000ms';`);
     const parentTables = [
       'managed_broadcasts',
@@ -224,7 +285,12 @@ integration('Bounded Publisher delivery evidence on native PostgreSQL', () => {
       exactKeys,
     );
     const evidencePlan = await explain(evidence);
-    for (const table of ['managed_broadcast_deliveries', ...parentTables]) {
+    for (const table of [
+      'managed_broadcast_deliveries',
+      ...parentTables,
+      'publications',
+      'publication_schedules',
+    ]) {
       const scans = evidencePlan.filter((node) => node['Relation Name'] === table);
       expect(scans).toHaveLength(1);
       expect(scans[0]).toMatchObject({

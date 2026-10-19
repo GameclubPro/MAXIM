@@ -4,6 +4,7 @@ import {
   safetyDeskPublicationDeliveryStatusSchema,
   safetyDeskPublicationDeliveryWaitReasonSchema,
   safetyDeskPublicationDeliveryEvidenceResponseSchema,
+  safetyDeskPublicationDeliveryContextSchema,
 } from '../src/safety-desk-publication-delivery-evidence.js';
 function cohort() {
   return {
@@ -89,5 +90,47 @@ describe('Closed materialized recipient evidence contracts', () => {
         'sentAt',
       ).success,
     ).toBe(false);
+  });
+  it('keeps parent context optional and refuses unproven original schedule modes', () => {
+    expect(
+      safetyDeskPublicationDeliveryEvidenceResponseSchema.shape.context.safeParse(undefined)
+        .success,
+    ).toBe(true);
+    const context = {
+      scheduleBinding: 'exact',
+      scheduleMode: 'ONCE',
+      scheduledAt: '2026-10-17T00:00:00.000Z',
+      deliveryDeadlineAt: '2026-10-18T00:00:00.000Z',
+      retryAuthorizedAt: null,
+      retryExpiresAt: null,
+      occurrenceScheduleRevision: 1,
+      currentScheduleRevision: 1,
+      broadcastStatus: 'CANCELED',
+      occurrenceStatus: 'CANCELED',
+      publicationLifecycle: 'CANCELED',
+      scheduleStatus: 'CANCELED',
+      broadcastLease: { state: 'none', lockedAt: null },
+    };
+    expect(safetyDeskPublicationDeliveryContextSchema.safeParse(context).success).toBe(true);
+    expect(
+      safetyDeskPublicationDeliveryContextSchema.safeParse({
+        ...context,
+        scheduleBinding: 'revision_changed',
+      }).success,
+    ).toBe(false);
+    expect(
+      safetyDeskPublicationDeliveryContextSchema.safeParse({
+        ...context,
+        currentScheduleRevision: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      safetyDeskPublicationDeliveryContextSchema.safeParse({
+        ...context,
+        scheduleBinding: 'revision_changed',
+        scheduleMode: 'UNKNOWN',
+        currentScheduleRevision: 2,
+      }).success,
+    ).toBe(true);
   });
 });

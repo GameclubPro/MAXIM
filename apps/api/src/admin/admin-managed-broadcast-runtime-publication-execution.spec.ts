@@ -32,6 +32,7 @@ import {
 } from '../max/max-action-pre-dispatch-guard';
 import { MaxApiInternalRateLimitError, type MaxPublishedMessage } from '../max/max-client.service';
 import type { MaxRoutedPublicationService } from '../max/max-routed-publication.service';
+import type { PublisherPublicationSelectionStore } from './publisher-publication-temporal-selection';
 
 const AUTOMATED_VERIFICATION_DUE_AT = new Date('2026-07-25T08:00:15.000Z');
 
@@ -2963,9 +2964,20 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     async (lane) => {
       jest.useFakeTimers().setSystemTime(new Date('2026-09-27T10:00:00Z'));
       try {
+        const selectionStore: PublisherPublicationSelectionStore = {
+          $transaction: async (read) =>
+            read({
+              $queryRaw: jest
+                .fn()
+                .mockResolvedValueOnce([{ seq: 'off', bitmap: 'off', jit: 'off' }])
+                .mockResolvedValue([{ id: 'first' }, { id: 'second' }]),
+            }),
+        };
         const runtime = new AdminManagedBroadcastRuntime(
           {
             prisma: {
+              ...selectionStore,
+              $queryRaw: jest.fn().mockResolvedValue([{ id: 'first' }, { id: 'second' }]),
               managedBroadcast: {
                 findMany: jest.fn().mockResolvedValue([{ id: 'first' }, { id: 'second' }]),
               },

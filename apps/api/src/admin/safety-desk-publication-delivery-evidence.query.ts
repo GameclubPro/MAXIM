@@ -25,6 +25,11 @@ export function buildPublicationDeliveryIndexesQuery(
         ]
       : ['max_action_ledger_job_id_key', 'max_action_ledger', ['job_id'], true],
   );
+  if (!cohort)
+    required.push(
+      ['publications_pkey', 'publications', ['id'], true],
+      ['publication_schedules_pkey', 'publication_schedules', ['id'], true],
+    );
   deliverySchema(schema);
   return Prisma.sql`WITH required(index_name,table_name,columns,unique_index) AS (VALUES ${Prisma.join(required.map(([index, table, columns, unique]) => Prisma.sql`(${index},${table},ARRAY[${Prisma.join(columns)}]::text[],${unique}::boolean)`))})
     SELECT bool_and(EXISTS(SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am am ON am.oid=c.relam
@@ -105,34 +110,61 @@ export function deliveryScalarProjection(): Prisma.Sql {
     (delivery.remote_message_verification_last_error IS NOT NULL) AS "hasVerificationError",
     ${buildEffectivePublicationDeliveryStatusSql()} AS "effectiveStatus"`;
 }
-export function deliveryParentsCte(schema = 'public'): Prisma.Sql {
+export function deliveryParentsCte(schema = 'public', context = false): Prisma.Sql {
   const ns = deliverySchema(schema);
   return Prisma.sql`broadcast_ids AS MATERIALIZED (SELECT DISTINCT "broadcastId" AS id FROM details),
     broadcasts AS MATERIALIZED (SELECT parent.* FROM broadcast_ids CROSS JOIN LATERAL (
-      SELECT id,publication_occurrence_id,dispatch_profile,required_bot_id,created_at FROM ${ns}.managed_broadcasts WHERE id=broadcast_ids.id OFFSET 0) parent),
+      SELECT id,publication_occurrence_id,dispatch_profile,required_bot_id,created_at
+        ${context ? Prisma.sql`,status,locked_at,lock_token IS NOT NULL AS has_lock_token` : Prisma.empty}
+      FROM ${ns}.managed_broadcasts WHERE id=broadcast_ids.id OFFSET 0) parent),
     occurrence_ids AS MATERIALIZED (SELECT DISTINCT "publicationOccurrenceId" AS id FROM details WHERE "publicationOccurrenceId" IS NOT NULL),
     occurrences AS MATERIALIZED (SELECT parent.* FROM occurrence_ids CROSS JOIN LATERAL (
       SELECT id,publication_id,required_bot_id,dispatch_profile,created_at,scheduled_at,delivery_deadline_at,retry_authorized_at,retry_expires_at,
+        ${context ? Prisma.sql`status,schedule_id,schedule_revision,` : Prisma.empty}
         left(dispatch_blocker_code,129) AS dispatch_blocker_code,dispatch_blocked_at FROM ${ns}.publication_occurrences WHERE id=occurrence_ids.id OFFSET 0) parent),
     content_ids AS MATERIALIZED (SELECT DISTINCT "contentRevisionId" AS id FROM details WHERE "contentRevisionId" IS NOT NULL),
     contents AS MATERIALIZED (SELECT parent.* FROM content_ids CROSS JOIN LATERAL (
-      SELECT id,publication_id,created_at FROM ${ns}.publication_content_revisions WHERE id=content_ids.id OFFSET 0) parent)`;
+      SELECT id,publication_id,created_at FROM ${ns}.publication_content_revisions WHERE id=content_ids.id OFFSET 0) parent)
+    ${
+      context
+        ? Prisma.sql`,publication_ids AS MATERIALIZED (SELECT DISTINCT publication_id AS id FROM occurrences),
+      publications AS MATERIALIZED (SELECT parent.* FROM publication_ids CROSS JOIN LATERAL (
+        SELECT id,lifecycle,created_at FROM ${ns}.publications WHERE id=publication_ids.id OFFSET 0) parent),
+      schedule_ids AS MATERIALIZED (SELECT DISTINCT schedule_id AS id FROM occurrences),
+      schedules AS MATERIALIZED (SELECT parent.* FROM schedule_ids CROSS JOIN LATERAL (
+        SELECT id,publication_id,revision,mode,status,created_at FROM ${ns}.publication_schedules WHERE id=schedule_ids.id OFFSET 0) parent)`
+        : Prisma.empty
+    }`;
 }
-export function deliveryParentsProjection(): Prisma.Sql {
+export function deliveryParentsProjection(context = false): Prisma.Sql {
   return Prisma.sql`broadcasts.id AS "parentBroadcastId", broadcasts.publication_occurrence_id AS "broadcastOccurrenceId", broadcasts.dispatch_profile AS "broadcastProfile", broadcasts.required_bot_id AS "broadcastRequiredBotId", broadcasts.created_at AS "broadcastCreatedAt",
     occurrences.id AS "parentOccurrenceId", occurrences.publication_id AS "publicationId", occurrences.required_bot_id AS "occurrenceRequiredBotId", occurrences.dispatch_profile AS "occurrenceProfile", occurrences.created_at AS "occurrenceCreatedAt", occurrences.scheduled_at AS "scheduledAt", occurrences.delivery_deadline_at AS "deliveryDeadlineAt", occurrences.retry_authorized_at AS "retryAuthorizedAt", occurrences.retry_expires_at AS "retryExpiresAt", occurrences.dispatch_blocker_code AS "parentBlockerCode", occurrences.dispatch_blocked_at AS "parentBlockedAt",
-    contents.id AS "parentContentRevisionId", contents.publication_id AS "contentPublicationId", contents.created_at AS "contentCreatedAt"`;
+    contents.id AS "parentContentRevisionId", contents.publication_id AS "contentPublicationId", contents.created_at AS "contentCreatedAt"
+    ${
+      context
+        ? Prisma.sql`,true AS "contextRecorded",broadcasts.status AS "broadcastStatus",broadcasts.locked_at AS "broadcastLockedAt",broadcasts.has_lock_token AS "broadcastHasLockToken",
+      occurrences.status AS "occurrenceStatus",occurrences.schedule_id AS "occurrenceScheduleId",occurrences.schedule_revision AS "occurrenceScheduleRevision",
+      publications.id AS "parentPublicationId",publications.lifecycle AS "publicationLifecycle",publications.created_at AS "publicationCreatedAt",
+      schedules.id AS "parentScheduleId",schedules.publication_id AS "schedulePublicationId",schedules.revision AS "currentScheduleRevision",schedules.mode AS "scheduleMode",schedules.status AS "scheduleStatus",schedules.created_at AS "scheduleCreatedAt"`
+        : Prisma.empty
+    }`;
 }
-export function deliveryParentsJoin(): Prisma.Sql {
+export function deliveryParentsJoin(context = false): Prisma.Sql {
   return Prisma.sql`LEFT JOIN broadcasts ON broadcasts.id=details."broadcastId"
     LEFT JOIN occurrences ON occurrences.id=details."publicationOccurrenceId"
-    LEFT JOIN contents ON contents.id=details."contentRevisionId"`;
+    LEFT JOIN contents ON contents.id=details."contentRevisionId"
+    ${
+      context
+        ? Prisma.sql`LEFT JOIN publications ON publications.id=occurrences.publication_id
+      LEFT JOIN schedules ON schedules.id=occurrences.schedule_id`
+        : Prisma.empty
+    }`;
 }
 export function buildPublicationDeliveryEvidenceQuery(id: string, schema = 'public'): Prisma.Sql {
   const ns = deliverySchema(schema);
-  return Prisma.sql`WITH details AS MATERIALIZED (SELECT ${deliveryScalarProjection()} FROM ${ns}.managed_broadcast_deliveries delivery WHERE delivery.id=${id} AND delivery.dispatch_profile='PUBLIK_V1'), ${deliveryParentsCte(schema)}
-    SELECT details.*, ${deliveryParentsProjection()}, (statement_timestamp() AT TIME ZONE 'UTC')::timestamp(3) AS "observedAt"
-    FROM details ${deliveryParentsJoin()}`;
+  return Prisma.sql`WITH details AS MATERIALIZED (SELECT ${deliveryScalarProjection()} FROM ${ns}.managed_broadcast_deliveries delivery WHERE delivery.id=${id} AND delivery.dispatch_profile='PUBLIK_V1'), ${deliveryParentsCte(schema, true)}
+    SELECT details.*, ${deliveryParentsProjection(true)}, (statement_timestamp() AT TIME ZONE 'UTC')::timestamp(3) AS "observedAt"
+    FROM details ${deliveryParentsJoin(true)}`;
 }
 export function buildPublicationDeliveryLedgerQuery(
   keys: readonly string[],

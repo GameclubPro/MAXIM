@@ -3,9 +3,32 @@ import {
   projectPublicationSavedDelivery,
   publicationDeliveryEvidenceKeys,
   type PublicationDeliveryLedgerRow,
+  type PublicationDeliveryEvidenceRow,
 } from './safety-desk-publication-delivery-evidence.model';
 
 import { deliveryFixture } from './safety-desk-publication-delivery-test-fixture';
+function contextFixture(patch: Partial<PublicationDeliveryEvidenceRow> = {}) {
+  const row = deliveryFixture();
+  return deliveryFixture({
+    contextRecorded: true,
+    broadcastStatus: 'ACTIVE',
+    broadcastLockedAt: null,
+    broadcastHasLockToken: false,
+    occurrenceStatus: 'IN_PROGRESS',
+    occurrenceScheduleId: 'schedule',
+    occurrenceScheduleRevision: 1,
+    parentPublicationId: 'publication',
+    publicationLifecycle: 'ACTIVE',
+    publicationCreatedAt: row.createdAt,
+    parentScheduleId: 'schedule',
+    schedulePublicationId: 'publication',
+    currentScheduleRevision: 1,
+    scheduleMode: 'ONCE',
+    scheduleStatus: 'ACTIVE',
+    scheduleCreatedAt: row.createdAt,
+    ...patch,
+  });
+}
 function ledger(
   row = deliveryFixture(),
   patch: Partial<PublicationDeliveryLedgerRow> = {},
@@ -32,6 +55,88 @@ function ledger(
   };
 }
 describe('Saved Publisher recipient evidence', () => {
+  it('includes parent-only wait reasons and deduplicates matching recipient blockers', () => {
+    const row = deliveryFixture({
+      status: 'PENDING',
+      effectiveStatus: 'PENDING',
+      remoteMessageId: null,
+      sentAt: null,
+      parentBlockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
+    });
+    expect(projectPublicationSavedDelivery(row).waiting.reasons).toContain('actor_access_required');
+    const matching = projectPublicationSavedDelivery({
+      ...row,
+      dispatchBlockerCode: row.parentBlockerCode,
+    }).waiting.reasons;
+    expect(matching.filter((reason) => reason === 'actor_access_required')).toHaveLength(1);
+    expect(
+      projectPublicationSavedDelivery({ ...row, dispatchBlockerCode: 'bot_not_admin' }).waiting
+        .reasons,
+    ).toEqual(expect.arrayContaining(['actor_access_required', 'target_setup_required']));
+  });
+  it('exposes original timing and stopped parents without manufacturing completion or retry', () => {
+    const row = contextFixture({
+      status: 'PENDING',
+      effectiveStatus: 'PENDING',
+      remoteMessageId: null,
+      sentAt: null,
+      broadcastStatus: 'CANCELED',
+      occurrenceStatus: 'CANCELED',
+      publicationLifecycle: 'CANCELED',
+      scheduleStatus: 'CANCELED',
+    });
+    expect(projectPublicationDeliveryEvidence(row, [])).toMatchObject({
+      storedStatus: 'PENDING',
+      context: {
+        scheduleBinding: 'exact',
+        scheduleMode: 'ONCE',
+        scheduledAt: row.scheduledAt!.toISOString(),
+        deliveryDeadlineAt: row.deliveryDeadlineAt!.toISOString(),
+        broadcastStatus: 'CANCELED',
+        occurrenceStatus: 'CANCELED',
+        publicationLifecycle: 'CANCELED',
+        scheduleStatus: 'CANCELED',
+        broadcastLease: { state: 'none', lockedAt: null },
+      },
+      recipient: { state: 'missing' },
+      automaticRetryAllowed: false,
+    });
+  });
+  it.each([
+    [{ currentScheduleRevision: 2 }, 'revision_changed'],
+    [{ schedulePublicationId: 'other' }, 'invalid_evidence'],
+    [{ parentScheduleId: null }, 'not_recorded'],
+    [{ scheduleCreatedAt: new Date('2027-01-01') }, 'invalid_evidence'],
+    [{ occurrenceScheduleRevision: 0 }, 'invalid_evidence'],
+  ] as const)(
+    'never attributes current mode to unproven schedule facts %j',
+    (patch, scheduleBinding) => {
+      const result = projectPublicationDeliveryEvidence(contextFixture(patch), []);
+      expect(result.context).toMatchObject({ scheduleBinding, scheduleMode: 'UNKNOWN' });
+      expect(result.automaticRetryAllowed).toBe(false);
+    },
+  );
+  it('keeps old diagnostic responses compatible and distinguishes parent lease states', () => {
+    expect(projectPublicationDeliveryEvidence(deliveryFixture(), [])).not.toHaveProperty('context');
+    const row = contextFixture();
+    for (const [lockedAt, hasToken, state] of [
+      [row.observedAt, true, 'active'],
+      [row.createdAt, true, 'stale'],
+      [row.observedAt, false, 'invalid_evidence'],
+      [new Date('2027-01-01'), true, 'invalid_evidence'],
+    ] as const) {
+      expect(
+        projectPublicationDeliveryEvidence(
+          {
+            ...row,
+            broadcastLockedAt: lockedAt,
+            broadcastHasLockToken: hasToken,
+          },
+          [],
+        ).context?.broadcastLease.state,
+      ).toBe(state);
+    }
+  });
   it('keeps action receipt, saved send clock, verification and client visibility separate', () => {
     const row = deliveryFixture(),
       result = projectPublicationDeliveryEvidence(row, [ledger(row)]);

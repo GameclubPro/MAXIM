@@ -50,21 +50,26 @@ describe('managed broadcast capability boundary', () => {
     'passes the explicit %s selection policy to the Publisher runtime',
     async (rollout) => {
       const findMany = jest.fn().mockResolvedValue([]);
+      const executionQuery = jest.fn().mockResolvedValue([]);
       const planner = temporalPlannerStore();
       const context = createAdminManagedBroadcastRuntimeContext({
         ...dependencies(),
         publisherTemporalSelectionRollout: rollout,
-        prisma: { managedBroadcast: { findMany }, ...planner.prisma } as never,
+        prisma: {
+          managedBroadcast: { findMany },
+          $queryRaw: executionQuery,
+          ...planner.prisma,
+        } as never,
       });
       const runtime = new AdminManagedBroadcastRuntime(context, 'PUBLIK_V1');
 
       await runtime.processDueImmediatePublicationBroadcasts();
 
-      expect(planner.transaction).toHaveBeenCalledTimes(rollout === 'off' ? 0 : 1);
-      if (rollout !== 'off')
-        expect(planner.transaction).toHaveBeenCalledWith(expect.any(Function), { maxWait: 45_000 });
-      expect(planner.queryRaw).toHaveBeenCalledTimes(rollout === 'off' ? 0 : 2);
-      expect(findMany).toHaveBeenCalledTimes(rollout === 'off' ? 3 : 2);
+      expect(planner.transaction).toHaveBeenCalledTimes(1);
+      expect(planner.transaction).toHaveBeenCalledWith(expect.any(Function), { maxWait: 45_000 });
+      expect(planner.queryRaw).toHaveBeenCalledTimes(2);
+      expect(executionQuery).not.toHaveBeenCalled();
+      expect(findMany).toHaveBeenCalledTimes(2);
     },
   );
 

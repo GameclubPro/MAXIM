@@ -49,6 +49,46 @@ export const safetyDeskPublicationDeliveryWaitReasonSchema = z.enum([
   'unspecified_pending',
 ]);
 const timestamp = z.string().datetime().nullable();
+export const safetyDeskPublicationDeliveryContextSchema = z
+  .object({
+    scheduleBinding: z.enum(['exact', 'revision_changed', 'not_recorded', 'invalid_evidence']),
+    scheduleMode: z.enum(['NOW', 'ONCE', 'SLOTS', 'RECURRENCE', 'UNKNOWN']),
+    scheduledAt: timestamp,
+    deliveryDeadlineAt: timestamp,
+    retryAuthorizedAt: timestamp,
+    retryExpiresAt: timestamp,
+    occurrenceScheduleRevision: z.number().int().positive().nullable(),
+    currentScheduleRevision: z.number().int().positive().nullable(),
+    broadcastStatus: z.enum(['ACTIVE', 'PARTIAL', 'FAILED', 'COMPLETED', 'CANCELED']).nullable(),
+    occurrenceStatus: z
+      .enum(['SCHEDULED', 'IN_PROGRESS', 'SENT', 'PARTIAL', 'FAILED', 'AMBIGUOUS', 'CANCELED'])
+      .nullable(),
+    publicationLifecycle: z
+      .enum(['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELED', 'ERROR'])
+      .nullable(),
+    scheduleStatus: z
+      .enum(['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELED', 'ERROR'])
+      .nullable(),
+    broadcastLease: z.object({
+      state: z.enum(['none', 'active', 'stale', 'invalid_evidence']),
+      lockedAt: timestamp,
+    }),
+  })
+  .superRefine((value, ctx) => {
+    // FLAG: Current schedule metadata proves the original mode only at its saved revision.
+    if ((value.scheduleBinding === 'exact') !== (value.scheduleMode !== 'UNKNOWN'))
+      ctx.addIssue({ code: 'custom', path: ['scheduleMode'], message: 'Unproven schedule mode' });
+    if (
+      value.scheduleBinding === 'exact' &&
+      (value.occurrenceScheduleRevision === null ||
+        value.occurrenceScheduleRevision !== value.currentScheduleRevision)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        path: ['scheduleBinding'],
+        message: 'Schedule revision differs',
+      });
+  });
 export const safetyDeskPublicationDeliveryWaitingSchema = z.object({
   reasons: z.array(safetyDeskPublicationDeliveryWaitReasonSchema).max(24),
   reasonsOverlap: z.literal(true),
@@ -87,6 +127,7 @@ export const safetyDeskPublicationDeliveryEvidenceResponseSchema = z.object({
   effectiveStatus: safetyDeskPublicationDeliveryStatusSchema,
   acceptedAt: z.string().datetime(),
   completionTimingEvidence: z.literal('not_recorded'),
+  context: safetyDeskPublicationDeliveryContextSchema.optional(),
   binding: z.enum(['exact', 'not_recorded', 'invalid_evidence']),
   action: z.object({
     keyBasis: z.enum(['current', 'legacy', 'unavailable']),

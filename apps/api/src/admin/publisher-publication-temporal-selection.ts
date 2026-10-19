@@ -13,6 +13,10 @@ import {
   PUBLISHER_EXPLICIT_RETRY_CODE,
   PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS,
 } from './publication-dispatch-issue';
+import {
+  buildPublisherCurrentExecutionScope,
+  buildPublisherExecutionDeliveryPredicate,
+} from './publisher-publication-execution-selection';
 
 export const PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD = 64;
 const PUBLISHER_TEMPORAL_DELIVERY_LIMIT = 64;
@@ -52,21 +56,23 @@ export type PublisherTemporalExecutionDueQueryOptions = {
   enrollment: Prisma.Sql;
 };
 
-export type PublisherTemporalSelectionStore = {
+export type PublisherPublicationSelectionStore = {
   $transaction<T>(
     read: (tx: Pick<Prisma.TransactionClient, '$queryRaw'>) => Promise<T>,
     options?: Pick<NonNullable<Prisma.PrismaClientOptions['transactionOptions']>, 'maxWait'>,
   ): Promise<T>;
 };
 
-export function withPublisherTemporalSelectionPlan<T>(
-  prisma: PublisherTemporalSelectionStore,
+export type PublisherTemporalSelectionStore = PublisherPublicationSelectionStore;
+
+export function withPublisherPublicationSelectionPlan<T>(
+  prisma: PublisherPublicationSelectionStore,
   read: (tx: Pick<Prisma.TransactionClient, '$queryRaw'>) => Promise<T>,
 ): Promise<T> {
   return prisma.$transaction(
     async (tx) => {
       // FLAG: A bitmap can read the entire audience before LIMIT. Keep this planner
-      // policy inside the classifier's transaction; commit and rollback restore the
+      // policy inside each selection transaction; commit and rollback restore the
       // pooled connection. Native plans must still prove the covering index bound.
       const settings = await tx.$queryRaw<Array<{ seq: string; bitmap: string; jit: string }>>(
         Prisma.sql`SELECT set_config('enable_seqscan', 'off', true) AS seq,
@@ -85,6 +91,8 @@ export function withPublisherTemporalSelectionPlan<T>(
     { maxWait: PUBLISHER_TEMPORAL_SELECTION_MAX_WAIT_MS },
   );
 }
+
+export const withPublisherTemporalSelectionPlan = withPublisherPublicationSelectionPlan;
 
 export function buildPublisherTemporalExecutionDueQuery({
   now,
@@ -201,7 +209,8 @@ export function buildPublisherTemporalExecutionDueQuery({
   // FLAG: Page the existing execution candidates before temporal/cohort/audience probes.
   // This is a fixed head lookahead, not traversal: waiting work beyond the first 64 keeps
   // the existing fallback behavior. No cursor changes compatible publication ordering.
-  // The old PENDING/SENDING existence probe still requires native retained-history plans.
+  // CASE defers correlated LIMIT/OFFSET probes until all current-parent joins. Native
+  // retained-history plans verify both indexed row bounds and actual probe loops.
   // FLAG: A covering occurrence-prefix index supplies only occurrence_index before the
   // 65th-row sentinel gate. Do not add target/id fields or target ordering here: those
   // can force a full scan or sort. A complete page proves the entire parent has at most
@@ -216,29 +225,19 @@ export function buildPublisherTemporalExecutionDueQuery({
         ON occurrence."id" = broadcast."publication_occurrence_id"
       INNER JOIN "publication_schedules" AS schedule
         ON schedule."id" = occurrence."schedule_id"
+      INNER JOIN "publications" AS publication
+        ON publication."id" = occurrence."publication_id"
       WHERE broadcast."dispatch_profile" = ${PublicationDispatchProfile.PUBLIK_V1}::"PublicationDispatchProfile"
         AND broadcast."status" = ${ManagedBroadcastStatus.ACTIVE}::"ManagedBroadcastStatus"
         AND broadcast."next_send_at" <= ${now}
         AND (broadcast."locked_at" IS NULL OR broadcast."locked_at" < ${staleLockBefore})
         AND ${scheduleModeWhere}
-        AND EXISTS (
-          SELECT 1
-          FROM "managed_broadcast_deliveries" AS execution_delivery
-          WHERE execution_delivery."broadcast_id" = broadcast."id"
-            AND execution_delivery."status" IN (
-              ${ManagedBroadcastDeliveryStatus.PENDING}::"ManagedBroadcastDeliveryStatus",
-              ${ManagedBroadcastDeliveryStatus.SENDING}::"ManagedBroadcastDeliveryStatus"
-            )
-        )
-        -- FLAG: Match the runtime's broad fresh-SEND fence before the parent lookahead.
-        -- Classification after LIMIT cannot recover an independent ready 65th parent.
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "managed_broadcast_deliveries" AS fresh_delivery
-          WHERE fresh_delivery."broadcast_id" = broadcast."id"
-            AND fresh_delivery."status" = ${ManagedBroadcastDeliveryStatus.SENDING}::"ManagedBroadcastDeliveryStatus"
-            AND fresh_delivery."locked_at" >= ${staleLockBefore}
-        )
+        AND ${buildPublisherCurrentExecutionScope()}
+        -- FLAG: The shared predicate retains the runtime's broad fresh-SEND fence
+        -- before the lookahead; a ready 65th parent cannot be recovered afterwards.
+        AND CASE WHEN (${buildPublisherCurrentExecutionScope()}) THEN (
+          ${buildPublisherExecutionDeliveryPredicate(staleLockBefore)}
+        ) ELSE FALSE END
       ORDER BY broadcast."next_send_at" ASC, broadcast."created_at" ASC, broadcast."id" ASC
       LIMIT ${PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD}
     )
