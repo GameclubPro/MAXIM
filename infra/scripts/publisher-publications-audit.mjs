@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { PUBLISHER_SLOT_AUDIT_COLUMNS } from './publisher-slot-audit.mjs';
 
 export const PUBLISHER_PUBLICATION_AUDIT_COLUMNS = {
   publications: [
@@ -45,10 +46,19 @@ export const PUBLISHER_PUBLICATION_AUDIT_COLUMNS = {
 };
 
 export function buildPublisherPublicationPrivilegesSql(requireAll = false) {
-  const allowed = Object.entries(PUBLISHER_PUBLICATION_AUDIT_COLUMNS)
+  const allowedColumns = Object.fromEntries(
+    Object.entries(PUBLISHER_PUBLICATION_AUDIT_COLUMNS).map(([table, columns]) => [
+      table,
+      [...columns, ...(PUBLISHER_SLOT_AUDIT_COLUMNS[table] ?? [])],
+    ]),
+  );
+  const allowed = Object.entries(allowedColumns)
     .flatMap(([table, columns]) => columns.map((column) => `('${table}', '${column}')`))
     .join(',\n');
-  return `WITH allowed(table_name, column_name) AS (VALUES ${allowed})
+  const required = Object.entries(PUBLISHER_PUBLICATION_AUDIT_COLUMNS)
+    .flatMap(([table, columns]) => columns.map((column) => `('${table}', '${column}')`))
+    .join(',');
+  return `WITH allowed(table_name, column_name) AS (VALUES ${allowed}), required(table_name, column_name) AS (VALUES ${required})
 SELECT NOT EXISTS (
   SELECT 1 FROM pg_class relation
   JOIN pg_namespace ns ON ns.oid = relation.relnamespace
@@ -59,7 +69,7 @@ SELECT NOT EXISTS (
     AND NOT EXISTS (SELECT 1 FROM allowed
       WHERE table_name = relation.relname AND column_name = attribute.attname)
 ) AND (${requireAll ? 'true' : 'false'} = false OR NOT EXISTS (
-  SELECT 1 FROM allowed
+  SELECT 1 FROM required allowed
   LEFT JOIN pg_class relation ON relation.oid = to_regclass('public.' || allowed.table_name)
   LEFT JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
     AND attribute.attname = allowed.column_name AND NOT attribute.attisdropped

@@ -29,6 +29,8 @@ local Docker-socket access under the production pg_hba rules, with:
   - ten rules-publication metadata columns; no rules text, media, links, or settings
   - seventeen Publisher binding/comment metadata columns
   - forty-three publication/access metadata columns; IDs are join-only and never report output
+  - nineteen additive scheduled-slot metadata columns when the complete group exists;
+    recipient IDs and lock tokens are join/check-only and never report output
   - eight commercial-review metadata columns only; no evidence, captions or user/message IDs
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported
   - 25 owner-proof columns across execution claims and action ledger; source keys,
@@ -255,6 +257,32 @@ GRANT SELECT (chat_id, user_id, bot_id, state, user_role, entity_type, checked_a
 GRANT SELECT (bot_id, chat_id, status, entity_type) ON TABLE public.managed_bot_chat_catalog TO maxim_audit;
 GRANT SELECT (publication_occurrence_id, created_at, status, attempt_count, remote_message_id)
   ON TABLE public.managed_broadcast_deliveries TO maxim_audit;
+-- FLAG: Older schemas keep zero slot access. Grant only the complete metadata group;
+-- lock tokens and recipient identifiers are comparison-only, never report output.
+DO $publisher_slot_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES
+      ('publication_occurrences', ARRAY['schedule_revision', 'delivery_deadline_at',
+        'dispatch_blocked_at', 'retry_authorized_at', 'retry_expires_at', 'created_at', 'updated_at']),
+      ('managed_broadcast_deliveries', ARRAY['id', 'target_chat_id', 'bot_id', 'required_bot_id',
+        'dispatch_profile', 'next_attempt_at', 'wait_reason', 'dispatch_blocker_code',
+        'locked_at', 'lock_token', 'sent_at', 'last_error_code'])
+    ) required(table_name, columns)
+    CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public.' || required.table_name)
+      AND attribute.attname = expected.column_name AND attribute.attnum > 0 AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (schedule_revision, delivery_deadline_at, dispatch_blocked_at,
+      retry_authorized_at, retry_expires_at, created_at, updated_at)
+      ON TABLE public.publication_occurrences TO maxim_audit;
+    GRANT SELECT (id, target_chat_id, bot_id, required_bot_id, dispatch_profile, next_attempt_at,
+      wait_reason, dispatch_blocker_code, locked_at, lock_token, sent_at, last_error_code)
+      ON TABLE public.managed_broadcast_deliveries TO maxim_audit;
+  END IF;
+END
+$publisher_slot_grants$;
 GRANT SELECT (id, entity_type) ON TABLE public.chats TO maxim_audit;
 -- FLAG: Existing catalogs remain compatible before the additive review migration. The new
 -- mode requires all eight columns; no partial grant or evidence/text access is permitted.
@@ -642,13 +670,25 @@ BEGIN
     RAISE EXCEPTION 'maxim_audit Publisher metadata privileges are not exact';
   END IF;
 
-  IF 43 <> (
+  IF (
     SELECT count(*) FROM information_schema.role_column_grants
     WHERE grantee = 'maxim_audit' AND table_schema = 'public' AND privilege_type = 'SELECT'
       AND table_name IN ('publications', 'publication_schedules', 'publication_occurrences',
         'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
         'managed_broadcast_deliveries', 'chats')
-  ) OR EXISTS (
+  ) NOT IN (43, 62) OR (
+    SELECT count(*) FROM (VALUES
+      ('publication_occurrences', ARRAY['schedule_revision', 'delivery_deadline_at',
+        'dispatch_blocked_at', 'retry_authorized_at', 'retry_expires_at', 'created_at', 'updated_at']),
+      ('managed_broadcast_deliveries', ARRAY['id', 'target_chat_id', 'bot_id', 'required_bot_id',
+        'dispatch_profile', 'next_attempt_at', 'wait_reason', 'dispatch_blocker_code',
+        'locked_at', 'lock_token', 'sent_at', 'last_error_code'])
+    ) required(table_name, columns)
+    CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
+    JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public.' || required.table_name)
+      AND attribute.attname = expected.column_name AND attribute.attnum > 0 AND NOT attribute.attisdropped
+    WHERE has_column_privilege('maxim_audit', attribute.attrelid, attribute.attnum, 'SELECT')
+  ) NOT IN (0, 19) OR EXISTS (
     SELECT 1 FROM pg_class relation
     JOIN pg_namespace ns ON ns.oid = relation.relnamespace
     JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
@@ -662,14 +702,17 @@ BEGIN
           ('id', 'actor_user_id', 'lifecycle', 'audience_mode', 'audience_selection', 'dispatch_profile', 'required_bot_id'))
         OR (relation.relname = 'publication_schedules' AND attribute.attname IN ('id', 'mode', 'status', 'revision'))
         OR (relation.relname = 'publication_occurrences' AND attribute.attname IN
-          ('id', 'publication_id', 'schedule_id', 'status', 'scheduled_at', 'dispatch_profile', 'required_bot_id', 'dispatch_blocker_code'))
+          ('id', 'publication_id', 'schedule_id', 'status', 'scheduled_at', 'dispatch_profile', 'required_bot_id', 'dispatch_blocker_code',
+           'schedule_revision', 'delivery_deadline_at', 'dispatch_blocked_at', 'retry_authorized_at', 'retry_expires_at', 'created_at', 'updated_at'))
         OR (relation.relname = 'publication_targets' AND attribute.attname IN
           ('publication_id', 'target_chat_id', 'entity_type', 'position'))
         OR (relation.relname = 'managed_entity_access_edges' AND attribute.attname IN
           ('chat_id', 'user_id', 'bot_id', 'state', 'user_role', 'entity_type', 'checked_at', 'expires_at', 'denied_reason'))
         OR (relation.relname = 'managed_bot_chat_catalog' AND attribute.attname IN ('bot_id', 'chat_id', 'status', 'entity_type'))
         OR (relation.relname = 'managed_broadcast_deliveries' AND attribute.attname IN
-          ('publication_occurrence_id', 'created_at', 'status', 'attempt_count', 'remote_message_id'))
+          ('publication_occurrence_id', 'created_at', 'status', 'attempt_count', 'remote_message_id',
+           'id', 'target_chat_id', 'bot_id', 'required_bot_id', 'dispatch_profile', 'next_attempt_at',
+           'wait_reason', 'dispatch_blocker_code', 'locked_at', 'lock_token', 'sent_at', 'last_error_code'))
         OR (relation.relname = 'chats' AND attribute.attname IN ('id', 'entity_type'))
       )
   ) THEN
