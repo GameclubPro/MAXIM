@@ -3,6 +3,24 @@ import {
   createAdminManagedBroadcastRuntimeContext,
   type AdminManagedBroadcastRuntimeContext,
 } from './admin-managed-broadcast-runtime-context';
+import { withPublisherTemporalSelectionPlan } from './publisher-publication-temporal-selection';
+
+type TemporalPlannerStore = Parameters<typeof withPublisherTemporalSelectionPlan>[0];
+type TemporalPlannerRead = Parameters<typeof withPublisherTemporalSelectionPlan>[1];
+type TemporalPlannerClient = Parameters<TemporalPlannerRead>[0];
+
+function temporalPlannerStore(settings: unknown = [{ seq: 'off', bitmap: 'off', jit: 'off' }]) {
+  const queryRaw = jest.fn().mockResolvedValueOnce(settings).mockResolvedValue([]);
+  const transaction = jest.fn();
+  const prisma: TemporalPlannerStore = {
+    $transaction: async (read, options) => {
+      transaction(read, options);
+      const tx: TemporalPlannerClient = { $queryRaw: queryRaw };
+      return read(tx);
+    },
+  };
+  return { prisma, queryRaw, transaction };
+}
 
 function dependencies(): AdminManagedBroadcastRuntimeContext {
   return {
@@ -32,20 +50,54 @@ describe('managed broadcast capability boundary', () => {
     'passes the explicit %s selection policy to the Publisher runtime',
     async (rollout) => {
       const findMany = jest.fn().mockResolvedValue([]);
-      const queryRaw = jest.fn().mockResolvedValue([]);
+      const planner = temporalPlannerStore();
       const context = createAdminManagedBroadcastRuntimeContext({
         ...dependencies(),
         publisherTemporalSelectionRollout: rollout,
-        prisma: { managedBroadcast: { findMany }, $queryRaw: queryRaw } as never,
+        prisma: { managedBroadcast: { findMany }, ...planner.prisma } as never,
       });
       const runtime = new AdminManagedBroadcastRuntime(context, 'PUBLIK_V1');
 
       await runtime.processDueImmediatePublicationBroadcasts();
 
-      expect(queryRaw).toHaveBeenCalledTimes(rollout === 'off' ? 0 : 1);
+      expect(planner.transaction).toHaveBeenCalledTimes(rollout === 'off' ? 0 : 1);
+      if (rollout !== 'off')
+        expect(planner.transaction).toHaveBeenCalledWith(expect.any(Function), { maxWait: 45_000 });
+      expect(planner.queryRaw).toHaveBeenCalledTimes(rollout === 'off' ? 0 : 2);
       expect(findMany).toHaveBeenCalledTimes(rollout === 'off' ? 3 : 2);
     },
   );
+
+  it.each([
+    { reason: 'missing readback', settings: [] },
+    { reason: 'enabled sequential scans', settings: [{ seq: 'on', bitmap: 'off', jit: 'off' }] },
+    { reason: 'enabled bitmap scans', settings: [{ seq: 'off', bitmap: 'on', jit: 'off' }] },
+    { reason: 'enabled JIT', settings: [{ seq: 'off', bitmap: 'off', jit: 'on' }] },
+  ])('refuses temporal classification after $reason', async ({ settings }) => {
+    const planner = temporalPlannerStore(settings);
+    const read = jest.fn(async (_tx: TemporalPlannerClient) => []);
+
+    await expect(withPublisherTemporalSelectionPlan(planner.prisma, read)).rejects.toThrow(
+      'Publisher temporal selection planner policy was not applied',
+    );
+
+    expect(planner.transaction).toHaveBeenCalledTimes(1);
+    expect(planner.queryRaw).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('propagates the classifier failure without retrying its transaction', async () => {
+    const planner = temporalPlannerStore();
+    const failure = new Error('classifier read failed');
+    const read = jest.fn(async (_tx: TemporalPlannerClient) => {
+      throw failure;
+    });
+
+    await expect(withPublisherTemporalSelectionPlan(planner.prisma, read)).rejects.toBe(failure);
+
+    expect(planner.transaction).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
 
   it('keeps throttle state per runtime and shares the interval across pressure sources', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-10-03T10:00:00Z'));

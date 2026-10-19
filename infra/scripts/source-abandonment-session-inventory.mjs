@@ -277,6 +277,23 @@ const denialDescriptors = new Map([
     'source_forward_linked_text_invalid',
     'source_forward_linked_markup',
     'source_forward_linked_media',
+    'source_forward_linked_media_array',
+    'source_forward_linked_media_count',
+    'source_forward_linked_media_item',
+    'source_forward_linked_media_mixed',
+    'source_forward_linked_media_other',
+    'source_forward_linked_media_image_strict',
+    'source_forward_linked_media_image_unproved',
+    'source_forward_linked_media_photo_strict',
+    'source_forward_linked_media_photo_unproved',
+    'source_forward_linked_media_video_strict',
+    'source_forward_linked_media_video_unproved',
+    'source_forward_linked_media_audio_strict',
+    'source_forward_linked_media_audio_unproved',
+    'source_forward_linked_media_share_strict',
+    'source_forward_linked_media_share_unproved',
+    'source_forward_linked_media_sticker_strict',
+    'source_forward_linked_media_sticker_unproved',
     'source_forward_objects',
     'source_forward_link_object',
     'source_forward_sender_null',
@@ -361,17 +378,37 @@ const freshActionPageDescriptors = new Set([
   'redis:max-actions-interactive',
   'redis:max-actions-background',
 ]);
+const freshActionObservationCodes = new Set(['ACTION_PAGE_UNPROVED', 'ACTION_MULTIPLE_STATES']);
 function freshActionPageRefusal(value) {
-  const issue = value.issues?.[0];
+  if (!Array.isArray(value.issues) || value.issues.length === 0) return false;
+  const semanticIssues = [],
+    seen = new Set();
+  let dynamicIssues = 0;
+  for (const issue of value.issues) {
+    if (
+      issue === null ||
+      typeof issue !== 'object' ||
+      Array.isArray(issue) ||
+      Object.keys(issue).sort().join(',') !== 'code,descriptor' ||
+      typeof issue.code !== 'string' ||
+      typeof issue.descriptor !== 'string'
+    )
+      return false;
+    const identity = JSON.stringify([issue.code, issue.descriptor]);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    if (
+      freshActionObservationCodes.has(issue.code) &&
+      freshActionPageDescriptors.has(issue.descriptor)
+    )
+      dynamicIssues++;
+    else semanticIssues.push(issue);
+  }
+  // FLAG: A mixed DENY may only trigger a fresh full read of the identical selection.
+  // Never split, exclude or admit from it; unknown/global/budget mixtures stay refused.
   return (
-    Array.isArray(value.issues) &&
-    value.issues.length === 1 &&
-    issue !== null &&
-    typeof issue === 'object' &&
-    !Array.isArray(issue) &&
-    Object.keys(issue).sort().join(',') === 'code,descriptor' &&
-    issue.code === 'ACTION_PAGE_UNPROVED' &&
-    freshActionPageDescriptors.has(issue.descriptor)
+    dynamicIssues === 1 &&
+    (semanticIssues.length === 0 || splittable({ ...value, issues: semanticIssues }))
   );
 }
 
@@ -510,9 +547,9 @@ export async function planSourceAbandonmentSessionChildren({
     }
     if (admission.decision === 'DENY') {
       fact(admission.sourceCoverageComplete === false, 'session_inventory_admission_unproved');
-      // FLAG: A failed action-page proof grants no authority. Retain and charge
-      // it before a fresh stock admission of the same selection; recursive calls
-      // share the three-attempt ceiling and never turn a denial into an exclusion.
+      // FLAG: A failed live action observation grants no authority. Retain and charge
+      // it before a fresh full admission of the same selection, including a recognized
+      // semantic mixture. The shared three-attempt ceiling never turns DENY into exclusion.
       if (freshActionPageRefusal(admission)) {
         if (selectionAttempts.get(selectionKey) >= 3) {
           reason = 'global_admission_refused';

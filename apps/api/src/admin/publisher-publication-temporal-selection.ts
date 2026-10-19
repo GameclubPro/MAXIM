@@ -16,6 +16,10 @@ import {
 
 export const PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD = 64;
 const PUBLISHER_TEMPORAL_DELIVERY_LIMIT = 64;
+// FLAG: The controlled Publisher deployment permits two 20s pool-admission
+// attempts. Reserve 5s for BEGIN without changing those pool/retry limits or the
+// callback timeout. Reassess this cap if that deployment's pool budget changes.
+const PUBLISHER_TEMPORAL_SELECTION_MAX_WAIT_MS = 45_000;
 
 export type PublisherTemporalCandidate = {
   id: string;
@@ -47,6 +51,40 @@ export type PublisherTemporalExecutionDueQueryOptions = {
   // retain their original table aliases. JSON safety/size checks belong to this predicate.
   enrollment: Prisma.Sql;
 };
+
+export type PublisherTemporalSelectionStore = {
+  $transaction<T>(
+    read: (tx: Pick<Prisma.TransactionClient, '$queryRaw'>) => Promise<T>,
+    options?: Pick<NonNullable<Prisma.PrismaClientOptions['transactionOptions']>, 'maxWait'>,
+  ): Promise<T>;
+};
+
+export function withPublisherTemporalSelectionPlan<T>(
+  prisma: PublisherTemporalSelectionStore,
+  read: (tx: Pick<Prisma.TransactionClient, '$queryRaw'>) => Promise<T>,
+): Promise<T> {
+  return prisma.$transaction(
+    async (tx) => {
+      // FLAG: A bitmap can read the entire audience before LIMIT. Keep this planner
+      // policy inside the classifier's transaction; commit and rollback restore the
+      // pooled connection. Native plans must still prove the covering index bound.
+      const settings = await tx.$queryRaw<Array<{ seq: string; bitmap: string; jit: string }>>(
+        Prisma.sql`SELECT set_config('enable_seqscan', 'off', true) AS seq,
+        set_config('enable_bitmapscan', 'off', true) AS bitmap,
+        set_config('jit', 'off', true) AS jit`,
+      );
+      if (
+        settings.length !== 1 ||
+        settings[0]!.seq !== 'off' ||
+        settings[0]!.bitmap !== 'off' ||
+        settings[0]!.jit !== 'off'
+      )
+        throw new Error('Publisher temporal selection planner policy was not applied');
+      return read(tx);
+    },
+    { maxWait: PUBLISHER_TEMPORAL_SELECTION_MAX_WAIT_MS },
+  );
+}
 
 export function buildPublisherTemporalExecutionDueQuery({
   now,

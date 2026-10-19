@@ -14,8 +14,10 @@ import type { PrismaService } from '../prisma/prisma.service';
 import {
   buildPublisherTemporalExecutionDueQuery,
   PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD,
+  withPublisherTemporalSelectionPlan,
   type PublisherTemporalCandidate,
   type PublisherTemporalSelectionObservation,
+  type PublisherTemporalSelectionStore,
 } from './publisher-publication-temporal-selection';
 import {
   buildPublisherTemporalEnrollment,
@@ -407,7 +409,7 @@ function comparePublicationDueRows(
 }
 
 export async function selectPublicationManagedBroadcastDueBatch(
-  prisma: Pick<PrismaService, 'managedBroadcast' | '$queryRaw'>,
+  prisma: Pick<PrismaService, 'managedBroadcast'> & PublisherTemporalSelectionStore,
   scheduleModes: readonly PublicationScheduleMode[],
   limit: number,
   dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.LEGACY_ROUTED,
@@ -494,13 +496,15 @@ export async function selectPublicationManagedBroadcastDueBatch(
       boundedLimit <= PUBLISHER_TEMPORAL_PARENT_LOOKAHEAD &&
       scheduleModes.includes(PublicationScheduleMode.NOW)
     ) {
-      const candidates = await prisma.$queryRaw<PublisherTemporalCandidate[]>(
-        buildPublisherTemporalExecutionDueQuery({
-          now,
-          staleLockBefore,
-          scheduleModes,
-          enrollment: buildPublisherTemporalEnrollment(temporalRollout),
-        }),
+      const candidates = await withPublisherTemporalSelectionPlan(prisma, (tx) =>
+        tx.$queryRaw<PublisherTemporalCandidate[]>(
+          buildPublisherTemporalExecutionDueQuery({
+            now,
+            staleLockBefore,
+            scheduleModes,
+            enrollment: buildPublisherTemporalEnrollment(temporalRollout),
+          }),
+        ),
       );
       temporalCandidates.push(...candidates);
       temporalSelectionUsed = true;

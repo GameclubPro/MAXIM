@@ -8,6 +8,7 @@ import {
 } from './publisher-publication-temporal-enrollment';
 import {
   buildPublisherTemporalExecutionDueQuery,
+  withPublisherTemporalSelectionPlan,
   type PublisherTemporalCandidate,
 } from './publisher-publication-temporal-selection';
 
@@ -306,14 +307,20 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     limit = 1,
     enrollment?: Prisma.Sql,
   ) =>
-    (await db.$queryRaw<PublisherTemporalCandidate[]>(query(rollout, enrollment)))
+    (
+      await withPublisherTemporalSelectionPlan(db, (tx) =>
+        tx.$queryRaw<PublisherTemporalCandidate[]>(query(rollout, enrollment)),
+      )
+    )
       .filter((row) => row.state !== 'excluded_waiting')
       .slice(0, limit)
       .map(({ id }) => ({ id }));
 
   async function explain(sql: Prisma.Sql): Promise<Explained> {
     // FLAG: The connection is restricted to a disposable local race_test database above.
-    return db.$queryRaw<Explained>(Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`);
+    return withPublisherTemporalSelectionPlan(db, (tx) =>
+      tx.$queryRaw<Explained>(Prisma.sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`),
+    );
   }
 
   function expectTemporalBounds(plan: Explained, maximumRows: number, requireIndex = false): void {
@@ -526,6 +533,15 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       query: {
         $queryRaw: async ({ args, query }) => {
           const result = await query(args);
+          const statement: unknown = Array.isArray(args) ? args[0] : args;
+          if (
+            !statement ||
+            typeof statement !== 'object' ||
+            !('sql' in statement) ||
+            typeof statement.sql !== 'string' ||
+            !statement.sql.includes('raw_execution_candidates')
+          )
+            return result;
           await db.managedBroadcastDelivery.updateMany({
             where: { broadcastId: waiting.id },
             data: {
@@ -544,7 +560,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
 
     const selectionClient: Parameters<typeof selectPublicationManagedBroadcastDueBatch>[0] = {
       managedBroadcast: db.managedBroadcast,
-      $queryRaw: receiptAfterClassification.$queryRaw.bind(receiptAfterClassification),
+      $transaction: receiptAfterClassification.$transaction.bind(receiptAfterClassification),
     };
     const result = await selectPublicationManagedBroadcastDueBatch(
       selectionClient,
@@ -831,7 +847,9 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
         },
       });
       expect(
-        await db.$queryRaw<PublisherTemporalCandidate[]>(query('100', Prisma.sql`TRUE`)),
+        await withPublisherTemporalSelectionPlan(db, (tx) =>
+          tx.$queryRaw<PublisherTemporalCandidate[]>(query('100', Prisma.sql`TRUE`)),
+        ),
       ).toEqual([{ id: waiting.id, state: 'refused' }]);
       const plan = await explain(query('100', Prisma.sql`TRUE`));
       for (const node of planNodes(plan).filter(
@@ -965,12 +983,122 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       expect(node['Actual Rows']).toBeLessThanOrEqual(64);
   });
 
-  it('bounds added temporal probes with 50,000 delivery rows and reports the unchanged existence-query cost separately', async () => {
-    // FLAG: The scalar cap must reject this large envelope before publication-target proof.
-    // Its publication projection intentionally stays small; this is not a full 50k runtime
-    // or materialization benchmark. Both the delivery history and saved JSON contain 50k.
-    const large = await envelope(-60_000, { savedTargets: targets(50_000), deliveryCount: 0 });
-    await db.$executeRaw(Prisma.sql`
+  it('preserves admission after a busy pool waits longer than the interactive default', async () => {
+    const connection = new PrismaClient({
+      adapter: createPrismaAdapter(databaseUrl, {
+        max: 1,
+        connectionTimeoutMillis: 5_000,
+        statement_timeout: 10_000,
+      }),
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let acquired!: () => void;
+    let acquireFailed!: (error: unknown) => void;
+    const occupied = new Promise<void>((resolve, reject) => {
+      acquired = resolve;
+      acquireFailed = reject;
+    });
+    const blocker = connection.$transaction(
+      async (tx) => {
+        await tx.$queryRaw(Prisma.sql`SELECT 1`);
+        acquired();
+        await held;
+      },
+      { timeout: 10_000 },
+    );
+    void blocker.catch(acquireFailed);
+    try {
+      // FLAG: The first real SQL proves the only connection is occupied. Release
+      // it after Prisma's old 2s admission limit, inside the actual pool's 5s wait.
+      await occupied;
+      const selection = withPublisherTemporalSelectionPlan(connection, (tx) =>
+        tx.$queryRaw<Array<{ value: number }>>(Prisma.sql`SELECT 1 AS value`),
+      );
+      const outcome = selection.then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 2_300));
+      release();
+      await blocker;
+      expect(await outcome).toEqual({ value: [{ value: 1 }], error: null });
+    } finally {
+      release();
+      await blocker.catch(() => undefined);
+      await connection.$disconnect();
+    }
+  });
+
+  it('restores planner settings on the same connection after success and rollback', async () => {
+    const connection = new PrismaClient({
+      adapter: createPrismaAdapter(databaseUrl, { max: 1, statement_timeout: 10_000 }),
+    });
+    const settings = Prisma.sql`
+      SELECT pg_backend_pid() AS pid, current_setting('enable_seqscan') AS seq,
+        current_setting('enable_bitmapscan') AS bitmap, current_setting('jit') AS jit
+    `;
+    type Settings = { pid: number; seq: string; bitmap: string; jit: string };
+    try {
+      // FLAG: Use one disposable connection so a leaked session setting cannot hide
+      // behind a different pooled connection. No production session is configured.
+      await connection.$queryRaw(Prisma.sql`
+        SELECT set_config('enable_seqscan', 'on', false),
+          set_config('enable_bitmapscan', 'on', false), set_config('jit', 'on', false)
+      `);
+      const before = await connection.$queryRaw<Settings[]>(settings);
+      const during = await withPublisherTemporalSelectionPlan(connection, (tx) =>
+        tx.$queryRaw<Settings[]>(settings),
+      );
+      expect(during).toEqual([{ pid: before[0]!.pid, seq: 'off', bitmap: 'off', jit: 'off' }]);
+      expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
+      await expect(
+        withPublisherTemporalSelectionPlan(connection, async (tx) => {
+          expect(await tx.$queryRaw<Settings[]>(settings)).toEqual(during);
+          throw new Error('synthetic temporal read failure');
+        }),
+      ).rejects.toThrow('synthetic temporal read failure');
+      expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
+    } finally {
+      await connection.$disconnect();
+    }
+  });
+
+  it.each(['initial', 'stale'] as const)(
+    'bounds added temporal probes with 50,000 delivery rows and reports the unchanged existence-query cost separately (%s statistics)',
+    async (statistics) => {
+      // FLAG: The scalar cap must reject this large envelope before publication-target proof.
+      // Its publication projection intentionally stays small; this is not a full 50k runtime
+      // or materialization benchmark. Both the delivery history and saved JSON contain 50k.
+      const large = await envelope(-60_000, { savedTargets: targets(50_000), deliveryCount: 0 });
+      if (statistics === 'stale') {
+        // FLAG: Keep a realistic all-distinct parent estimate after retired rows disappear.
+        // The incoming 50k audience must remain bounded before auto-ANALYZE catches up.
+        // All fixture parents belong to this test's chat and cascade away on cleanup.
+        const retiredPrefix = `${large.id}-retired-`;
+        await db.$executeRaw(Prisma.sql`
+        INSERT INTO "managed_broadcasts" (
+          "id", "source_chat_id", "actor_user_id", "target_chat_ids", "buttons", "status", "updated_at"
+        )
+        SELECT ${retiredPrefix} || n::text, ${sourceChatId}, ${sourceChatId},
+          '[]'::jsonb, '[]'::jsonb, 'COMPLETED', ${now}
+        FROM generate_series(1, 2048) AS n
+      `);
+        await db.$executeRaw(Prisma.sql`
+        INSERT INTO "managed_broadcast_deliveries" (
+          "id", "broadcast_id", "occurrence_index", "target_chat_id", "updated_at"
+        )
+        SELECT ${retiredPrefix} || n::text, ${retiredPrefix} || n::text, 1, ${sourceChatId}, ${now}
+        FROM generate_series(1, 2048) AS n
+      `);
+        await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+        await db.managedBroadcast.deleteMany({
+          where: { sourceChatId, id: { startsWith: retiredPrefix } },
+        });
+      }
+      await db.$executeRaw(Prisma.sql`
       INSERT INTO "managed_broadcast_deliveries" (
         "id", "broadcast_id", "occurrence_index", "target_chat_id",
         "publication_occurrence_id", "content_revision_id", "dispatch_profile", "required_bot_id",
@@ -984,65 +1112,67 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
         ${new Date(now.getTime() + 60_000)}, ${now}
       FROM generate_series(0, 49999) AS n
     `);
-    const saturatedPlan = await explain(query('100'));
-    console.info('Publisher temporal saturated key-page plan', JSON.stringify(saturatedPlan));
-    expectTemporalBounds(saturatedPlan, 65, true);
-    for (const node of planNodes(saturatedPlan).filter(
-      (node) =>
-        node['Subplan Name'] === 'CTE temporal_delivery_page' ||
-        (node.Alias === 'delivery' && node['Relation Name'] === 'managed_broadcast_deliveries'),
-    ))
-      expect(node['Actual Loops']).toBe(0);
-    const ready = await envelope(-1_000);
-    expect(await db.managedBroadcastDelivery.count({ where: { broadcastId: large.id } })).toBe(
-      50_000,
-    );
-    expect(await selected()).toEqual([{ id: large.id }]);
+      const saturatedPlan = await explain(query('100'));
+      console.info('Publisher temporal saturated key-page plan', JSON.stringify(saturatedPlan));
+      expectTemporalBounds(saturatedPlan, 65, true);
+      for (const node of planNodes(saturatedPlan).filter(
+        (node) =>
+          node['Subplan Name'] === 'CTE temporal_delivery_page' ||
+          (node.Alias === 'delivery' && node['Relation Name'] === 'managed_broadcast_deliveries'),
+      ))
+        expect(node['Actual Loops']).toBe(0);
+      const ready = await envelope(-1_000);
+      expect(await db.managedBroadcastDelivery.count({ where: { broadcastId: large.id } })).toBe(
+        50_000,
+      );
+      expect(await selected()).toEqual([{ id: large.id }]);
 
-    queries.length = 0;
-    expect(
-      (await selectPublicationManagedBroadcastDueBatch(db, ['NOW'], 1, 'PUBLIK_V1', 'off')).dueRows,
-    ).toEqual([{ id: large.id }]);
-    const oldSelection = queries.find(
-      (event) => /^SELECT\b/.test(event.query) && event.query.includes('"managed_broadcasts"'),
-    );
-    expect(oldSelection).toBeDefined();
-    const parameters: unknown[] = JSON.parse(oldSelection!.params);
-    const oldPlan = await db.$queryRawUnsafe<Explained>(
-      `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${oldSelection!.query}`,
-      ...parameters,
-    );
-    const beforeAnalyze = await explain(query('100'));
-    console.info(
-      'Publisher temporal local plans before assertions',
-      JSON.stringify({ old: oldPlan, beforeAnalyze }),
-    );
-    expectTemporalBounds(beforeAnalyze, 65, true);
-    await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
-    const afterAnalyze = await explain(query('100'));
-    console.info('Publisher temporal local plan after ANALYZE', JSON.stringify(afterAnalyze));
-    expectTemporalBounds(afterAnalyze, 65, true);
-    expect(await selected('100', 2)).toEqual([{ id: large.id }, { id: ready.id }]);
-    const summarize = (plan: Explained) => ({
-      durationMs: plan[0]!['QUERY PLAN'][0]!['Execution Time'],
-      deliveryScans: planNodes(plan)
-        .filter((node) => node['Relation Name'] === 'managed_broadcast_deliveries')
-        .map((node) => ({
-          alias: node.Alias,
-          index: node['Index Name'],
-          rows: node['Actual Rows'],
-          loops: node['Actual Loops'],
-          filtered: node['Rows Removed by Filter'] ?? 0,
-          buffers: (node['Shared Hit Blocks'] ?? 0) + (node['Shared Read Blocks'] ?? 0),
-        })),
-    });
-    console.info(
-      'Publisher temporal local plan evidence',
-      JSON.stringify({
-        old: summarize(oldPlan),
-        beforeAnalyze: summarize(beforeAnalyze),
-        afterAnalyze: summarize(afterAnalyze),
-      }),
-    );
-  });
+      queries.length = 0;
+      expect(
+        (await selectPublicationManagedBroadcastDueBatch(db, ['NOW'], 1, 'PUBLIK_V1', 'off'))
+          .dueRows,
+      ).toEqual([{ id: large.id }]);
+      const oldSelection = queries.find(
+        (event) => /^SELECT\b/.test(event.query) && event.query.includes('"managed_broadcasts"'),
+      );
+      expect(oldSelection).toBeDefined();
+      const parameters: unknown[] = JSON.parse(oldSelection!.params);
+      const oldPlan = await db.$queryRawUnsafe<Explained>(
+        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${oldSelection!.query}`,
+        ...parameters,
+      );
+      const beforeAnalyze = await explain(query('100'));
+      console.info(
+        'Publisher temporal local plans before assertions',
+        JSON.stringify({ old: oldPlan, beforeAnalyze }),
+      );
+      expectTemporalBounds(beforeAnalyze, 65, true);
+      await db.$executeRawUnsafe('ANALYZE managed_broadcast_deliveries');
+      const afterAnalyze = await explain(query('100'));
+      console.info('Publisher temporal local plan after ANALYZE', JSON.stringify(afterAnalyze));
+      expectTemporalBounds(afterAnalyze, 65, true);
+      expect(await selected('100', 2)).toEqual([{ id: large.id }, { id: ready.id }]);
+      const summarize = (plan: Explained) => ({
+        durationMs: plan[0]!['QUERY PLAN'][0]!['Execution Time'],
+        deliveryScans: planNodes(plan)
+          .filter((node) => node['Relation Name'] === 'managed_broadcast_deliveries')
+          .map((node) => ({
+            alias: node.Alias,
+            index: node['Index Name'],
+            rows: node['Actual Rows'],
+            loops: node['Actual Loops'],
+            filtered: node['Rows Removed by Filter'] ?? 0,
+            buffers: (node['Shared Hit Blocks'] ?? 0) + (node['Shared Read Blocks'] ?? 0),
+          })),
+      });
+      console.info(
+        'Publisher temporal local plan evidence',
+        JSON.stringify({
+          old: summarize(oldPlan),
+          beforeAnalyze: summarize(beforeAnalyze),
+          afterAnalyze: summarize(afterAnalyze),
+        }),
+      );
+    },
+  );
 });

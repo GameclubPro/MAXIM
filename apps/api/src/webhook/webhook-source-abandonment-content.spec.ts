@@ -13,6 +13,10 @@ import {
 } from './webhook-legacy-forward-source';
 import { WebhookParser } from './webhook.parser';
 import {
+  inspectSourceAbandonmentLinkedMediaRefusal,
+  type SourceAbandonmentLinkedMediaRefusal,
+} from './webhook-source-abandonment-media';
+import {
   SOURCE_ABANDONMENT_SOURCE_CLOSURE,
   sourceAbandonmentSourceClosureDigest,
 } from '../scripts/source-abandonment-source-closure';
@@ -212,7 +216,7 @@ const forwardShapeRefusalCases: readonly ForwardRefusalCase[] = [
     },
   ],
   [
-    'source_forward_linked_media',
+    'source_forward_linked_media_other',
     (f) => {
       f.linkedBody.attachments = [{ type: 'private-media' }];
     },
@@ -348,7 +352,89 @@ const linkedMediaCases = [
   ['reply', 'audio'],
 ] as const;
 
+const forwardMediaRefusalCases: ReadonlyArray<
+  readonly [SourceAbandonmentLinkedMediaRefusal, () => unknown]
+> = [
+  ['array', () => null],
+  ['count', () => Array.from({ length: 11 }, () => linkedAttachment('audio'))],
+  ['count', () => [linkedAttachment('audio'), linkedAttachment('audio')]],
+  ['item', () => [null]],
+  ['mixed', () => [linkedAttachment('video'), linkedAttachment('audio')]],
+  ['other', () => [{ type: 'private-media-99900012345678', private_key: 'private-value' }]],
+  ['other', () => [{ type: 'file', payload: { url: 'https://example.com/file' } }]],
+  ['image_unproved', () => [{ type: 'image', payload: { photo_id: {} } }]],
+  ['photo_unproved', () => [{ type: 'photo', payload: { photo_id: {} } }]],
+  ['video_unproved', () => [{ type: 'video', payload: { url: 'http://example.com/video' } }]],
+  ['audio_strict', () => [linkedAttachment('audio')]],
+  ['audio_unproved', () => [{ type: 'audio', payload: { url: 'https://example.com/audio' } }]],
+  ['share_unproved', () => [{ type: 'share', payload: { url: 'https://user:pass@example.com' } }]],
+  ['sticker_strict', () => [linkedAttachment('sticker')]],
+  [
+    'sticker_unproved',
+    () => [{ type: 'sticker', payload: { url: 'https://example.com/sticker' } }],
+  ],
+];
+
 describe('modern source content profile', () => {
+  it.each(forwardMediaRefusalCases)(
+    'refines rejected forward media as %s without admitting or mutating the source',
+    (reason, attachments) => {
+      const f = forwardRefusalFixture();
+      f.linkedBody.attachments = attachments();
+      const before = structuredClone(f.owner);
+      const code = `source_forward_linked_media_${reason}`;
+      expect(inspectSourceAbandonmentForwardText(f.update)).toBe(code);
+      expect(inspectLegacyForwardText(f.update)).toBe('source_forward_shape');
+      const reasons: string[] = [];
+      expect(inspectSourceAbandonmentSource(f.owner, (value) => reasons.push(value))).toBeNull();
+      expect(reasons).toEqual([code]);
+      expect(inspectSourceAbandonmentPostSealSource(f.owner)).toBeNull();
+      expect(inspectPristineOperatorDiscardSource(f.owner)).toBeNull();
+      expect(f.owner).toEqual(before);
+      expect(JSON.stringify(reasons)).not.toMatch(/private|99900012345678|example|user:pass/u);
+    },
+  );
+
+  it.each(['image', 'photo', 'video', 'audio', 'share', 'sticker'] as const)(
+    'uses the existing strict %s shape without granting new forward eligibility',
+    (kind) => {
+      const f = fixture('forward');
+      f.linkedBody.attachments = [
+        kind === 'image' || kind === 'photo'
+          ? { type: kind, payload: { photo_id: 'photo', url: 'https://example.com/image' } }
+          : linkedAttachment(kind),
+      ];
+      expect(inspectSourceAbandonmentLinkedMediaRefusal(f.linkedBody.attachments)).toBe(
+        `${kind}_strict`,
+      );
+      const owner = f.owner();
+      const update = owner.normalizedPayload as unknown as Record<string, unknown>;
+      const rejected = kind === 'audio' || kind === 'sticker';
+      expect(inspectSourceAbandonmentForwardText(update)).toBe(
+        rejected ? `source_forward_linked_media_${kind}_strict` : null,
+      );
+      expect(inspectSourceAbandonmentSource(owner) === null).toBe(rejected);
+      expect(inspectPristineOperatorDiscardSource(owner) === null).toBe(rejected);
+    },
+  );
+
+  it('does not inspect oversized media or replace an earlier deciding refusal', () => {
+    const f = forwardRefusalFixture();
+    const oversized = Array.from({ length: 11 }, () => ({
+      get type(): string {
+        throw new Error('Oversized media inspected');
+      },
+    }));
+    f.linkedBody.attachments = oversized;
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_linked_media_count');
+    f.linkedBody.attachments = [linkedAttachment('audio')];
+    f.body.text = null;
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_direct_text_null');
+    f.body.text = 'Ordinary text';
+    f.linkedBody.text = null;
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_linked_text_null');
+  });
+
   it.each(linkedMediaCases)(
     'accepts one %s %s while retaining only the original outer human source',
     (shape, kind) => {
@@ -710,7 +796,7 @@ describe('modern source content profile', () => {
     delete f.link.sender;
     expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_chat_absent');
     f.linkedBody.attachments = [{ type: 'private-media' }];
-    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_linked_media');
+    expect(inspectSourceAbandonmentForwardText(f.update)).toBe('source_forward_linked_media_other');
   });
 
   it('keeps an omitted modern linked sender eligible without inventing an absent-sender refusal', () => {

@@ -1,6 +1,10 @@
 import type { AdminForwardedCommandSettings } from '../moderation/admin-forwarded-command.util';
 import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
-import { isSourceAbandonmentLinkedMedia } from './webhook-source-abandonment-media';
+import {
+  inspectSourceAbandonmentLinkedMediaRefusal,
+  isSourceAbandonmentLinkedMedia,
+  type SourceAbandonmentLinkedMediaRefusal,
+} from './webhook-source-abandonment-media';
 import {
   isLegacyImageAttachment,
   isLegacyOpaqueSequence,
@@ -28,6 +32,7 @@ type ForwardBodyRefusal =
   | 'media';
 export type SourceAbandonmentForwardShapeRefusal =
   | `source_forward_${'direct' | 'linked'}_${ForwardBodyRefusal}`
+  | `source_forward_linked_media_${SourceAbandonmentLinkedMediaRefusal}`
   | 'source_forward_objects'
   | 'source_forward_link_object'
   | 'source_forward_sender_null'
@@ -164,7 +169,15 @@ function inspectForwardText(
   if (!raw || !message || !normalized) return shape('source_forward_objects');
   if (!direct) return shape(`source_forward_direct_${directRefusal}`);
   if (!link) return shape('source_forward_link_object');
-  if (!linked) return shape(`source_forward_linked_${linkedRefusal}`);
+  if (!linked) {
+    const linkedShape = (reason: ForwardBodyRefusal): SourceAbandonmentForwardShapeRefusal =>
+      modern && reason === 'media'
+        ? `source_forward_linked_media_${inspectSourceAbandonmentLinkedMediaRefusal(
+            record(link.message)?.attachments,
+          )}`
+        : `source_forward_linked_${reason}`;
+    return shape(linkedShape(linkedRefusal));
+  }
   if (!sender && !omittedSender)
     return shape(
       link.sender === null ? 'source_forward_sender_null' : 'source_forward_sender_shape',

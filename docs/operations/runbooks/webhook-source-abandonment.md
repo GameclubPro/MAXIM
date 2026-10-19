@@ -234,14 +234,30 @@ still needs its own complete stock proof. Semantic issue codes must match their
 finite producer descriptors; unknown, malformed, global or mixed infrastructure
 issues refuse the whole plan. All failed proofs, costs, calls and original
 deadlines remain in force.
-An online action page can disappear while workers consume the live queue. Only a
-sole exact `ACTION_PAGE_UNPROVED` issue on one of the four known action queues
-permits a fresh full admission of the identical selection, with at most three
-total attempts for that selection. Keep each failed proof, cost and call inside
-the original global call and online deadline budgets. The failed proof never
-becomes successful, and only a new complete stock proof can admit that selection.
-A repeated third refusal or any mixed, malformed or unknown issue stops the plan;
-it cannot exclude owners. Stopped collectors remain strict and do not retry.
+The modern forward reader refines an already rejected linked-media guard as
+`source_forward_linked_media_` plus a fixed `array`, `count`, `item`, `mixed`,
+`other`, or `image|photo|video|audio|share|sticker` with `strict|unproved` suffix.
+`strict` reports only the existing validator for that passive family; it grants
+no forward eligibility. The original forward guard still decides admission,
+and forwarded audio/sticker remain refused by both explicit and pristine paths.
+No payload value or unknown discriminator enters the code. The planner accepts
+these exact codes only at `sql:selected-source` for diagnostic splitting and
+retains the historical coarse code. Every rejected singleton stays untouched;
+mixed infrastructure issues still refuse the entire plan. Older readers that
+do not recognize a new diagnostic code must fail closed, never infer eligibility.
+An online action page can disappear while workers consume the live queue, or the
+same job can be observed again during sequential page/state traversal. Exactly one
+`ACTION_PAGE_UNPROVED` or `ACTION_MULTIPLE_STATES` issue on one of the four known
+action queues permits a fresh full admission of the identical selection, alone or
+combined solely with the recognized selected-source semantic issue set above.
+There are at most three total attempts per selection, inside the unchanged global
+call and online deadline budgets. Retain and charge every failed proof before
+retrying. A mixed DENY cannot split, exclude or admit any owner. Only a later fresh
+sole semantic denial can split; only a later complete stock proof can admit.
+A repeated third refusal, multiple dynamic issues, duplicates, malformed, unknown,
+global or budget mixtures stop the plan without excluding owners. A repeated job
+observation does not establish simultaneous membership or a duplicate effect.
+Stopped collectors remain strict and do not retry.
 The parent ceiling is 32 certificates of at most eight owners each, 480 admission
 calls and 2,048 proof files. A new manifest fixes its maintenance duration to the
 greater of 60 minutes and the reviewed `estimatedColdMs`, with a hard 90-minute
