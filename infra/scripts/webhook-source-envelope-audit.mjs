@@ -1,6 +1,29 @@
 import { pathToFileURL } from 'node:url';
 
 export const SOURCE_ENVELOPE_MAX_BYTES = 262144;
+export const SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES = 2880;
+export const SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES = 1028;
+export const SOURCE_ENVELOPE_COMPRESSION_POLICY = 'pg16_valid_storage_ratio_v1';
+export const SOURCE_ENVELOPE_COMPRESSION_ASSUMPTION = 'valid_postgresql_compressed_storage';
+
+// FLAG: These are sufficient decoded-binary-datum bounds for coherent PG16 storage,
+// not verification of a corrupted raw-size header. For the original table datum S,
+// U<=4+91*S (pglz), U<=4+255*S (standard LZ4 block). No value/JSON operation may
+// precede this CASE. Preserve the existing uncompressed physical-size path.
+const sourcePayloadBounded = `CASE
+  WHEN normalized_payload IS NULL THEN false
+  WHEN pg_column_compression(normalized_payload) IS NULL
+    THEN pg_column_size(normalized_payload) <= ${SOURCE_ENVELOPE_MAX_BYTES}
+  WHEN current_setting('server_version_num')::integer / 10000 <> 16 THEN false
+  WHEN pg_column_compression(normalized_payload) = 'pglz'
+    THEN pg_column_size(normalized_payload) <= ${SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES}
+  WHEN pg_column_compression(normalized_payload) = 'lz4'
+    THEN pg_column_size(normalized_payload) <= ${SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES}
+  ELSE false END`;
+const sourcePayloadStorage = `CASE WHEN normalized_payload IS NULL THEN 'absent'
+  WHEN pg_column_compression(normalized_payload) IS NULL THEN 'uncompressed'
+  WHEN pg_column_compression(normalized_payload) IN ('pglz','lz4')
+    THEN pg_column_compression(normalized_payload) ELSE 'other' END`;
 export const SOURCE_ENVELOPE_ATTACHMENT_CAP = 10;
 export const SOURCE_ENVELOPE_MARKUP_CAP = 32;
 const literal = (value) => `'${value.replaceAll("'", "''")}'`;
@@ -148,15 +171,16 @@ function bodyShape(value) {
 export function buildSourceEnvelopeAuditSql(ownerId, explain = false) {
   validateSourceEnvelopeOwner(ownerId);
   // FLAG: Fetch at most one exact PK. Inspect size/compression on the table value
-  // before materializing or applying JSON operators; compressed size cannot bound
-  // decoded work. No message text, URLs, arbitrary keys or linked identities leave SQL.
+  // before materializing or applying JSON operators. Only the pinned PG16 method
+  // bounds admit compressed storage; no source/effect/replay authority is inferred.
+  // No message text, URLs, arbitrary keys or linked identities leave SQL.
   const query = `WITH candidate AS MATERIALIZED (
     SELECT CASE WHEN normalized_payload IS NULL THEN 'absent'
+      WHEN ${sourcePayloadBounded} THEN 'bounded'
       WHEN pg_column_compression(normalized_payload) IS NOT NULL THEN 'compressed_not_inspected'
-      WHEN pg_column_size(normalized_payload) > ${SOURCE_ENVELOPE_MAX_BYTES} THEN 'oversized_not_inspected'
-      ELSE 'bounded' END AS payload_admission,
-      CASE WHEN pg_column_compression(normalized_payload) IS NULL
-        AND pg_column_size(normalized_payload) <= ${SOURCE_ENVELOPE_MAX_BYTES}
+      ELSE 'oversized_not_inspected' END AS payload_admission,
+      ${sourcePayloadStorage} AS payload_storage,
+      CASE WHEN ${sourcePayloadBounded}
         THEN normalized_payload ELSE NULL END AS normalized
     FROM public.webhook_events WHERE id = ${literal(ownerId)} LIMIT 1
   ), parts AS MATERIALIZED (
@@ -168,15 +192,21 @@ export function buildSourceEnvelopeAuditSql(ownerId, explain = false) {
       normalized#>'{raw,message,link,sender}' AS linked_sender
     FROM candidate
   ) SELECT jsonb_build_object(
-    'schema_version', 1, 'audit', 'webhook_source_envelope',
+    'schema_version', 2, 'audit', 'webhook_source_envelope',
     'authority', 'DIAGNOSTICS_ONLY', 'read_only', true,
     'replay_authorized', false, 'settlement_authorized', false, 'remote_effects_proven', false,
     'source_validation', 'not_evaluated', 'effect_completeness', 'unknown',
     'observed_at', statement_timestamp() AT TIME ZONE 'UTC',
     'receipt_sample_cap', 1, 'payload_max_bytes', ${SOURCE_ENVELOPE_MAX_BYTES},
+    'payload_bound_policy', '${SOURCE_ENVELOPE_COMPRESSION_POLICY}',
+    'payload_bound_assumption', '${SOURCE_ENVELOPE_COMPRESSION_ASSUMPTION}',
+    'compressed_payload_max_raw_bytes', ${SOURCE_ENVELOPE_MAX_BYTES},
+    'compressed_physical_caps', jsonb_build_object('pglz', ${SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES},
+      'lz4', ${SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES}),
     'attachment_sample_cap', ${SOURCE_ENVELOPE_ATTACHMENT_CAP}, 'markup_sample_cap', ${SOURCE_ENVELOPE_MARKUP_CAP},
     'found', EXISTS (SELECT 1 FROM candidate),
     'payload_admission', coalesce((SELECT payload_admission FROM candidate), 'missing_receipt'),
+    'payload_storage', coalesce((SELECT payload_storage FROM candidate), 'missing_receipt'),
     'shape', (SELECT CASE WHEN payload_admission = 'bounded' THEN jsonb_build_object(
       'normalized_kind', ${kind('normalized')}, 'raw_kind', ${kind('raw')},
       'message_kind', ${kind('message')}, 'normalized_message_kind', ${kind('normalized_message')},

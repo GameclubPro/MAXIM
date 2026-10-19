@@ -17,10 +17,31 @@ required. Run catalogs sequentially under the existing shared audit lock.
 
 The report attests the complete primary-key index and reads at most one
 `webhook_events` row. Before materializing JSON, it checks the original column's
-storage size and compression metadata. Only an uncompressed value of at most
-262,144 bytes is inspected. Missing receipts, SQL NULL, compressed or oversized
-values remain explicit; no JSON extraction or unpacking is used to decide that
-admission. A compressed small stored size does not bound decoded work.
+storage size and compression metadata on the original table datum. Schema v2
+retains the uncompressed physical-size ceiling of 262,144 bytes. On PostgreSQL 16
+it also admits pglz values of at most 2,880 physical bytes and LZ4 values of at most
+1,028 physical bytes. These conservative method-specific limits bound the decoded
+binary datum to 262,144 bytes; they do not raise the existing budget. Missing
+receipts, SQL NULL, larger compressed values, unknown compression methods and
+oversized values remain explicit. No JSON extraction or unpacking decides admission.
+
+The compressed path assumes coherent PostgreSQL-generated storage. For physical
+size S, the sufficient decoded-datum bounds are `4 + 91*S` for pglz and
+`4 + 255*S` for standard LZ4 blocks. PostgreSQL's inline and external physical
+sizes include the complete compressed stream. The format proofs follow the
+[PostgreSQL 16 pglz implementation](https://github.com/postgres/postgres/blob/8e928803020e5b5694cde58e4851fce64ef9d520/src/common/pg_lzcompress.c)
+and the [LZ4 block specification](https://github.com/lz4/lz4/blob/779b3556802f61774ed7f03a72023775ffe7795a/doc/lz4_Block_format.md).
+The decoder allocates from stored raw-size metadata before validating the stream;
+this SQL-only policy cannot independently validate a corrupted physical header.
+JSON input cannot directly choose that header. These limits also do not bound
+text serialization or every SQL temporary allocation. Keep all query/session limits.
+
+Schema v2 reports a finite `payload_storage`, the exact
+`pg16_valid_storage_ratio_v1` policy, its `valid_postgresql_compressed_storage`
+assumption, decoded ceiling and physical caps. Consumers must validate this version
+and the caps explicitly. A sufficiently small compressed value can now report
+`bounded`; larger values can remain uninspected even when their true decoded size
+would fit. Neither outcome grants source validation or recovery authority.
 
 Output contains fixed kinds, known type labels and structure booleans for the
 normalized event, original message, direct body, flat linked body, linked sender
@@ -54,10 +75,11 @@ status, or infer an outer source identity from forwarded content.
 Focused validation with PostgreSQL 16:
 
 ```bash
-node scripts/agent/with-test-stores.mjs -- node --test --test-concurrency=1 infra/scripts/webhook-source-envelope-audit.test.mjs infra/scripts/vps-postgres-audit.test.mjs
+node scripts/agent/with-test-stores.mjs -- node --test --test-concurrency=1 infra/scripts/webhook-source-envelope-audit.test.mjs infra/scripts/webhook-source-envelope-compression.test.mjs infra/scripts/vps-postgres-audit.test.mjs
 ```
 
 Fixtures cover retained history, exact indexed work, locked rows, malformed and
-nullable shapes, over-cap collections, compressed/oversized payloads, index drift,
+nullable shapes, over-cap collections, pglz/LZ4 inline and external TOAST, sufficient
+decoded bounds, conservatively refused compressed values, oversized payloads, index drift,
 limited column grants, privacy, wrapper argument rejection and private SQL errors.
 Timed execution plans are local-only; production supports plain EXPLAIN.
