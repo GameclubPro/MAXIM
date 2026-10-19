@@ -10,6 +10,8 @@
 - Keep one primary implementation/release stage active. Finish its checks and result before
   opening another runtime workstream, except for a prerequisite or urgent production incident.
   Independent read-only monitoring can continue.
+- During an incident, name the next user-visible recovery result and its blocking gate. Defer
+  unrelated refactoring and diagnostics; use the [incident delivery rules](docs/development-reliability-plan.md#incident-delivery).
 - Preserve dirty worktrees and unrelated changes. Reuse a suitable clean checkout when isolation
   is needed; stage only owned paths. Never change a checkout/index used by an active wrapper.
 - Continue authorized reversible work without repeated permission requests. Approval for one
@@ -86,6 +88,7 @@ Full release details: [development reliability](docs/development-reliability-pla
 
 - Track the current stage, checkout/SHA, next action, checks, log paths and unresolved gates in a
   small private task record outside Git. Retire stale entries and revalidate live state on resume.
+  Replace superseded status fields; keep completed history in a separate dated record.
 - Track long commands by identity, log, start/deadline and exit status. Collectors also need a
   heartbeat and last successful sample. Missing/stale samples are gaps; a launched process is not
   proof that work continues. See [execution discipline](docs/development-reliability-plan.md#long-running-agent-work).
