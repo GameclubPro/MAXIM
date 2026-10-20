@@ -15,11 +15,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
-import type {
-  ChatSummary,
-  ManagedEntitiesRefreshState,
-  ManagedEntityFavoriteType,
-} from '@maxim/contracts';
+import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import {
@@ -165,6 +161,25 @@ function preloadHomeEntitySheets() {
 const LazyHomeEntitySheets = lazy(preloadHomeEntitySheets);
 const LazyEntityPresentationLoader = lazy(() => import('../lib/entity-presentation-loader'));
 const LazyHomeModeratorBadge = lazy(() => import('./home-moderator-badge'));
+const LazyHomeListStatus = lazy(() =>
+  import('./home-list-status').catch(() => ({
+    default: () => (
+      <StatusState
+        tone="warning"
+        title="Не удалось загрузить состояние списка"
+        action={
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => window.location.reload()}
+          >
+            Обновить
+          </button>
+        }
+      />
+    ),
+  })),
+);
 
 async function recoverHomeEntityFavoritesRuntime(
   cause: unknown,
@@ -191,36 +206,6 @@ function shouldPrefetchFromPointerEvent(event: ReactPointerEvent<HTMLElement>): 
 
 function shouldPrefetchFromPressEvent(event: ReactPointerEvent<HTMLElement>): boolean {
   return event.pointerType !== 'mouse';
-}
-
-function formatRefreshProgress(refreshState: ManagedEntitiesRefreshState | null): string | null {
-  if (
-    typeof refreshState?.processedCandidates === 'number' &&
-    typeof refreshState.totalCandidates === 'number' &&
-    refreshState.totalCandidates >= refreshState.processedCandidates
-  ) {
-    return `${refreshState.processedCandidates} из ${refreshState.totalCandidates}`;
-  }
-  if (typeof refreshState?.progressPercent === 'number') {
-    return `${refreshState.progressPercent}%`;
-  }
-
-  return null;
-}
-
-function buildPendingSyncDescription(options: {
-  tab: ManagedTab;
-  refreshState: ManagedEntitiesRefreshState | null;
-  hasLoadedFromServer: boolean;
-}): string {
-  const entityPlural = options.tab === 'chat' ? 'чаты' : 'каналы';
-  const progress = formatRefreshProgress(options.refreshState);
-
-  if (progress) {
-    return `Проверено ${progress}.`;
-  }
-
-  return options.hasLoadedFromServer ? `Ищем новые ${entityPlural}.` : `Ищем ваши ${entityPlural}.`;
 }
 
 function buildHomeSyncStatus(options: {
@@ -1847,12 +1832,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
       buildFavoriteEntityKey(favoritePicker.entityType, favoritePicker.entity.id)
     : false;
   const hasAppliedFavoriteFilter = !categoryEditMode && favoriteFilter !== FAVORITE_FILTER_ALL;
-  const noResultsResetLabel =
-    hasSearchQuery && hasAppliedFavoriteFilter
-      ? 'Сбросить поиск и фильтр'
-      : hasSearchQuery
-        ? 'Очистить поиск'
-        : 'Сбросить фильтр';
 
   return (
     <div
@@ -2157,17 +2136,14 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
       ) : null}
 
       {isSyncPending && Array.isArray(activeEntities) && activeEntities.length === 0 ? (
-        <div className="chats-route-state">
-          <StatusState
-            tone="neutral"
-            title={`Ищем ${tabLabel.toLowerCase()}`}
-            description={buildPendingSyncDescription({
-              tab: activeTab,
-              refreshState,
-              hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-            })}
+        <Suspense fallback={null}>
+          <LazyHomeListStatus
+            kind="discovery"
+            tab={activeTab}
+            refreshState={refreshState}
+            hasLoadedFromServer={activeEntitiesState.hasLoadedFromServer}
           />
-        </div>
+        </Suspense>
       ) : null}
 
       {showEmptyState ? (
@@ -2196,26 +2172,20 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
       Array.isArray(activeEntities) &&
       activeEntities.length > 0 &&
       filteredEntities.length === 0 ? (
-        <div className="chats-route-state">
-          <StatusState
-            tone="neutral"
-            title={`${tabLabel} не найдены`}
-            action={
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => {
-                  setQuery('');
-                  if (hasAppliedFavoriteFilter) {
-                    setFavoriteFilter(FAVORITE_FILTER_ALL);
-                  }
-                }}
-              >
-                {noResultsResetLabel}
-              </button>
-            }
+        <Suspense fallback={null}>
+          <LazyHomeListStatus
+            kind="no-results"
+            tab={activeTab}
+            hasSearchQuery={hasSearchQuery}
+            hasAppliedFavoriteFilter={hasAppliedFavoriteFilter}
+            onReset={() => {
+              setQuery('');
+              if (hasAppliedFavoriteFilter) {
+                setFavoriteFilter(FAVORITE_FILTER_ALL);
+              }
+            }}
           />
-        </div>
+        </Suspense>
       ) : null}
 
       {!isLoading && !queryError && !showEmptyState && filteredEntities.length > 0 ? (

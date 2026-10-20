@@ -167,6 +167,12 @@ try {
 
       const search = page.locator('input[type="search"]');
       await search.fill('No matching entity');
+      await page.getByRole('heading', { name: 'Каналы не найдены', exact: true }).waitFor();
+      assert.equal(await rows.count(), 0);
+      const resetSearch = page
+        .locator('.chats-route-state')
+        .getByRole('button', { name: 'Очистить поиск', exact: true });
+      assert.equal(await resetSearch.isVisible(), true);
       await page.evaluate(() => {
         Object.defineProperty(window, 'visualViewport', {
           configurable: true,
@@ -177,7 +183,10 @@ try {
       await page.waitForFunction(
         () => getComputedStyle(document.querySelector('.bottom-nav')).opacity === '0',
       );
-      await search.fill('');
+      await resetSearch.click();
+      assert.equal(await search.inputValue(), '');
+      await settled('channel');
+      assert.deepEqual(await ids(), channels, 'reset search did not restore the channel rows');
       await search.blur();
       await page.evaluate(() => {
         delete window.visualViewport;
@@ -192,6 +201,62 @@ try {
       );
       await context.close();
     }
+  }
+  const failedChunkContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    colorScheme: 'light',
+  });
+  try {
+    await installNativeVisualModeInitScript(failedChunkContext);
+    await installMaxBridgeShimInitScript(
+      failedChunkContext,
+      { platform: 'ios' },
+      { colorScheme: 'light' },
+    );
+    const page = await failedChunkContext.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    const statusModule = /\/src\/pages\/home-list-status\.tsx(?:\?.*)?$/u;
+    let blockedStatusLoads = 0;
+    await page.route(statusModule, (route) => {
+      blockedStatusLoads += 1;
+      return route.abort('failed');
+    });
+    await page.goto(new URL('?preview=1&view=chat', base).href);
+    const rows = page.locator('.chat-card[data-entity-id]');
+    await rows.first().waitFor();
+    await page.getByText('Статус списка: Список обновлён', { exact: true }).waitFor();
+    const expectedRowCount = await rows.count();
+    const search = page.locator('input[type="search"]');
+    await search.fill('No matching entity');
+    const fallback = page.locator('.status-state').filter({
+      has: page.getByRole('heading', {
+        name: 'Не удалось загрузить состояние списка',
+        exact: true,
+      }),
+    });
+    await fallback.waitFor();
+    assert.ok(blockedStatusLoads > 0, 'The status module failure must be exercised');
+    assert.deepEqual(errors, []);
+    await page.unroute(statusModule);
+    await Promise.all([
+      page.waitForEvent('domcontentloaded'),
+      fallback.getByRole('button', { name: 'Обновить', exact: true }).click(),
+    ]);
+    await rows.first().waitFor();
+    await search.fill('No matching entity');
+    await page.getByRole('heading', { name: 'Чаты не найдены', exact: true }).waitFor();
+    await page
+      .locator('.chats-route-state')
+      .getByRole('button', { name: 'Очистить поиск', exact: true })
+      .click();
+    await rows.first().waitFor();
+    assert.equal(await rows.count(), expectedRowCount);
+    assert.equal(await search.inputValue(), '');
+    assert.deepEqual(errors, []);
+    console.log('PASS status module failure keeps reload available and recovers after reload');
+  } finally {
+    await failedChunkContext.close();
   }
   console.log(`Screenshots: ${output}`);
 } finally {
