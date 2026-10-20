@@ -76,7 +76,7 @@ Commands:
   postgres-audit [queue|activity|duplicate|publication-schema|storage|all]
   postgres-audit queue [--explain]
   postgres-audit legacy-order-candidates
-  postgres-audit moderation-outcomes [--explain]
+  postgres-audit moderation-outcomes [--bot <bot-id>] [--explain]
   postgres-audit delete-retry-heads [--explain]
   postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]
   postgres-audit webhook-cohort [--short] [--explain]
@@ -611,10 +611,16 @@ postgres_audit() {
     return
   fi
 
+  if [[ "$mode" == 'moderation-outcomes' ]]; then
+    node "$ROOT_DIR/infra/scripts/moderation-outcomes-audit.mjs" "${@:2}" >/dev/null || return 2
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
+
   if [[ "$mode" == 'webhook-workload' || "$mode" == 'delete-retry-heads' || "$mode" == 'queue' || "$mode" == 'publisher-publications' || "$mode" == 'publisher-access-census' ||
         "$mode" == 'storage' || "$mode" == 'commercial-quality' || "$mode" == 'duplicate' ||
         "$mode" == 'multibot-preparation' || "$mode" == 'webhook-owner-proof' || "$mode" == 'webhook-source-proof' || "$mode" == 'webhook-retry-proof' || "$mode" == 'webhook-queued-proof' || "$mode" == 'legacy-order-window' ||
-        "$mode" == 'moderation-outcomes' || "$mode" == 'legacy-semantic-mirrors' ]]; then
+        "$mode" == 'legacy-semantic-mirrors' ]]; then
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       echo "Usage: postgres-audit $mode [--explain]" >&2
       exit 2

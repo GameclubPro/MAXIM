@@ -35,7 +35,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh legacy-order-window [--explain]
   ./infra/scripts/vps-postgres-audit.sh legacy-semantic-mirrors [--explain]
   ./infra/scripts/vps-postgres-audit.sh delete-retry-heads [--explain]
-  ./infra/scripts/vps-postgres-audit.sh moderation-outcomes [--explain]
+  ./infra/scripts/vps-postgres-audit.sh moderation-outcomes [--bot <bot-id>] [--explain]
   ./infra/scripts/vps-postgres-audit.sh chat-message-window <chat-id> <UTC-minute> [--explain]
   ./infra/scripts/vps-postgres-audit.sh duplicate [--status <STATUS>] [--explain]
   ./infra/scripts/vps-postgres-audit.sh poll-publication <poll-id> [--explain]
@@ -103,6 +103,7 @@ WEBHOOK_COHORT_ARGS=()
 RECOVERY_KEY_COHORT_ARGS=()
 SOURCE_ENVELOPE_OWNER=''
 PUBLISHER_SLOT_ARGS=()
+MODERATION_OUTCOME_ARGS=()
 case "$AUDIT_MODE" in
   chat-message-window)
     if [[ $# -lt 3 || $# -gt 4 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
@@ -139,7 +140,11 @@ case "$AUDIT_MODE" in
     WEBHOOK_COHORT_ARGS=("${@:2}")
     node "$ROOT_DIR/infra/scripts/webhook-cohort-audit.mjs" "${WEBHOOK_COHORT_ARGS[@]}" >/dev/null || exit 2
     ;;
-  webhook-workload|delete-retry-heads|queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof|legacy-order-window|moderation-outcomes|legacy-semantic-mirrors)
+  moderation-outcomes)
+    MODERATION_OUTCOME_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/moderation-outcomes-audit.mjs" "${MODERATION_OUTCOME_ARGS[@]}" >/dev/null || exit 2
+    ;;
+  webhook-workload|delete-retry-heads|queue|publisher-publications|publisher-access-census|commercial-quality|storage|multibot-preparation|webhook-owner-proof|webhook-source-proof|webhook-retry-proof|webhook-queued-proof|legacy-order-window|legacy-semantic-mirrors)
     if [[ $# -gt 2 || ( $# -eq 2 && "$2" != '--explain' ) ]]; then
       usage
       exit 2
@@ -2436,11 +2441,7 @@ emit_sql() {
       node "$ROOT_DIR/infra/scripts/delete-retry-heads-audit.mjs" "${retry_head_args[@]}"
       ;;
     moderation-outcomes)
-      local outcome_args=()
-      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
-        outcome_args+=("$RULES_CLEANUP_EXPLAIN")
-      fi
-      node "$ROOT_DIR/infra/scripts/moderation-outcomes-audit.mjs" "${outcome_args[@]}"
+      node "$ROOT_DIR/infra/scripts/moderation-outcomes-audit.mjs" "${MODERATION_OUTCOME_ARGS[@]}"
       ;;
     activity)
       emit_activity_audit

@@ -5145,74 +5145,80 @@ describe('ModerationDeleteIntentService', () => {
     );
   });
 
-  it('completes acknowledged BOT_MESSAGE_AUTO_DELETE only after exact absence', async () => {
-    const pendingVerificationIntent = {
-      ...baseIntent,
-      attemptCount: 2,
-      messageAuthorKind: 'bot',
-      routingPolicy: 'origin_only',
-      botMessageAutoDeleteOnly: true,
-      remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
-      remoteDeleteSucceededBotId: 'bot-1',
-      leasedFromStatus: 'AMBIGUOUS',
-    };
-    const completedIntent = {
-      ...pendingVerificationIntent,
-      status: 'SUCCEEDED',
-      lastBotId: 'bot-1',
-      succeededBotId: 'bot-1',
-      absenceVerifiedAt: new Date(),
-      absenceVerifiedBotId: 'bot-1',
-      absenceVerificationCode: 'post_success_exact_absence',
-      leaseToken: null,
-      leaseExpiresAt: null,
-      leasedFromStatus: null,
-    };
-    const queryRaw = jest
-      .fn()
-      .mockResolvedValueOnce([pendingVerificationIntent])
-      .mockResolvedValueOnce([completedIntent]);
-    const txExecuteRaw = jest.fn().mockResolvedValue(1);
-    const transaction = jest.fn(
-      async (callback: (tx: { $executeRaw: jest.Mock }) => Promise<unknown>) =>
-        callback({ $executeRaw: txExecuteRaw }),
-    );
-    const deleteMessage = jest.fn();
-    const getExactMessagePresence = jest.fn().mockResolvedValue('absent');
-    const { service } = createService(
-      {},
-      {
-        $queryRaw: queryRaw,
-        $executeRaw: jest.fn().mockResolvedValue(1),
-        $transaction: transaction,
-      },
-      { deleteMessage, getExactMessagePresence },
-      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
-    );
+  it.each([false, true])(
+    'completes acknowledged BOT_MESSAGE_AUTO_DELETE only after exact absence (expired horizon: %s)',
+    async (expiredHorizon) => {
+      const pendingVerificationIntent = {
+        ...baseIntent,
+        attemptCount: 2,
+        retryUntilAt: new Date(Date.now() + (expiredHorizon ? -1_000 : 60_000)),
+        messageAuthorKind: 'bot',
+        routingPolicy: 'origin_only',
+        botMessageAutoDeleteOnly: true,
+        remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
+        remoteDeleteSucceededBotId: 'bot-1',
+        leasedFromStatus: 'AMBIGUOUS',
+      };
+      const completedIntent = {
+        ...pendingVerificationIntent,
+        status: 'SUCCEEDED',
+        lastBotId: 'bot-1',
+        succeededBotId: 'bot-1',
+        absenceVerifiedAt: new Date(),
+        absenceVerifiedBotId: 'bot-1',
+        absenceVerificationCode: 'post_success_exact_absence',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+      };
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([pendingVerificationIntent])
+        .mockResolvedValueOnce([completedIntent]);
+      const txExecuteRaw = jest.fn().mockResolvedValue(1);
+      const transaction = jest.fn(
+        async (callback: (tx: { $executeRaw: jest.Mock }) => Promise<unknown>) =>
+          callback({ $executeRaw: txExecuteRaw }),
+      );
+      const deleteMessage = jest.fn();
+      const getExactMessagePresence = jest.fn().mockResolvedValue('absent');
+      const { service } = createService(
+        {},
+        {
+          $queryRaw: queryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          $transaction: transaction,
+        },
+        { deleteMessage, getExactMessagePresence },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      );
 
-    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
-      kind: 'confirmed',
-      confirmed: true,
-      status: 'SUCCEEDED',
-      botId: 'bot-1',
-    });
-
-    expect(getExactMessagePresence).toHaveBeenCalledWith(
-      'chat-1',
-      'message-1',
-      expect.objectContaining({
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: 'confirmed',
+        confirmed: true,
+        status: 'SUCCEEDED',
         botId: 'bot-1',
-        bypassCache: true,
-        ignoreFailureMetricStatuses: [403, 404],
-      }),
-    );
-    expect(deleteMessage).not.toHaveBeenCalled();
-    const completionQuery = txExecuteRaw.mock.calls[0]?.[0] as
-      | { strings?: readonly string[]; values?: readonly unknown[] }
-      | undefined;
-    expect(completionQuery?.strings?.join('?') ?? '').toContain('"absence_verified_at" = COALESCE');
-    expect(completionQuery?.values).toContain('post_success_exact_absence');
-  });
+      });
+
+      expect(getExactMessagePresence).toHaveBeenCalledWith(
+        'chat-1',
+        'message-1',
+        expect.objectContaining({
+          botId: 'bot-1',
+          bypassCache: true,
+          ignoreFailureMetricStatuses: [403, 404],
+        }),
+      );
+      expect(deleteMessage).not.toHaveBeenCalled();
+      const completionQuery = txExecuteRaw.mock.calls[0]?.[0] as
+        | { strings?: readonly string[]; values?: readonly unknown[] }
+        | undefined;
+      expect(completionQuery?.strings?.join('?') ?? '').toContain(
+        '"absence_verified_at" = COALESCE',
+      );
+      expect(completionQuery?.values).toContain('post_success_exact_absence');
+    },
+  );
 
   it('clears an acknowledged auto-delete marker and retries when the exact message is present', async () => {
     const pendingVerificationIntent = {
@@ -5338,6 +5344,204 @@ describe('ModerationDeleteIntentService', () => {
     expect(executedSql).not.toContain('"remote_delete_succeeded_at" = NULL');
   });
 
+  it.each([
+    ['expired complete acknowledgement', {}, 3_600_000],
+    ['active horizon', { activeHorizon: true }, 300_000],
+    ['horizon expires after lock decision', { horizonCrossesWhilePersisting: true }, 300_000],
+    ['acknowledgement timestamp only', { remoteDeleteSucceededBotId: null }, 300_000],
+    ['acknowledgement bot only', { remoteDeleteSucceededAt: null }, 300_000],
+    ['blank acknowledgement bot', { remoteDeleteSucceededBotId: ' ' }, 300_000],
+    ['invalid acknowledgement timestamp', { invalidAcknowledgement: true }, 300_000],
+    ['future acknowledgement timestamp', { futureAcknowledgement: true }, 300_000],
+    ['invalid horizon', { invalidHorizon: true }, 300_000],
+    ['independent reason', { botMessageAutoDeleteOnly: false }, 300_000],
+    ['subscription reason', { requiredSubscriptionDeleteReason: true }, 300_000],
+    ['replacement cleanup', { replacementCleanup: true }, 300_000],
+    ['OCR reason', { commercialOcrDeleteReason: true }, 300_000],
+    ['longer remote retry hint', { requestedDelayMs: 7_200_000 }, 7_200_000],
+  ] as const)(
+    'preserves verification evidence and retry scope for %s',
+    async (_label, overrides, expectedDelayMs) => {
+      const now = new Date('2026-10-20T12:00:00.000Z');
+      jest.useFakeTimers().setSystemTime(now);
+      const options: {
+        activeHorizon?: boolean;
+        horizonCrossesWhilePersisting?: boolean;
+        requestedDelayMs?: number;
+        invalidAcknowledgement?: boolean;
+        futureAcknowledgement?: boolean;
+        invalidHorizon?: boolean;
+        remoteDeleteSucceededAt?: null;
+        remoteDeleteSucceededBotId?: string | null;
+        botMessageAutoDeleteOnly?: false;
+        requiredSubscriptionDeleteReason?: true;
+        replacementCleanup?: true;
+        commercialOcrDeleteReason?: true;
+      } = overrides;
+      const {
+        activeHorizon,
+        horizonCrossesWhilePersisting,
+        requestedDelayMs,
+        invalidAcknowledgement,
+        futureAcknowledgement,
+        invalidHorizon,
+        ...intentOverrides
+      } = options;
+      const intent = {
+        ...baseIntent,
+        attemptCount: 44,
+        messageAuthorKind: 'bot',
+        routingPolicy: 'origin_only',
+        botMessageAutoDeleteOnly: true,
+        remoteDeleteSucceededAt: new Date(
+          invalidAcknowledgement
+            ? Number.NaN
+            : now.getTime() + (futureAcknowledgement ? 1_000 : -60_000),
+        ),
+        remoteDeleteSucceededBotId: 'bot-1',
+        retryUntilAt: new Date(
+          invalidHorizon
+            ? Number.NaN
+            : now.getTime() + (horizonCrossesWhilePersisting ? 0 : activeHorizon ? 60_000 : -1_000),
+        ),
+        ...intentOverrides,
+      };
+      const nextAttemptAt = new Date(now.getTime() + expectedDelayMs);
+      const persisted = {
+        ...intent,
+        status: 'AMBIGUOUS',
+        nextAttemptAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const transaction = jest.fn(
+        async (
+          callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => Promise<unknown>,
+        ) =>
+          callback({
+            $queryRaw: jest
+              .fn()
+              .mockResolvedValueOnce([{ id: intent.id }])
+              .mockResolvedValueOnce([intent]),
+            $executeRaw: executeRaw,
+          }),
+      );
+      const { service } = createService(
+        {},
+        {
+          $executeRaw: executeRaw,
+          $queryRaw: jest.fn().mockResolvedValue([persisted]),
+          $transaction: transaction,
+        },
+      );
+
+      const clock = horizonCrossesWhilePersisting
+        ? jest
+            .spyOn(Date, 'now')
+            .mockReturnValueOnce(now.getTime() - 1)
+            .mockReturnValue(now.getTime())
+        : undefined;
+      try {
+        await expect(
+          (service as unknown as ServiceInternals).finishRetryableAttempt(intent, 'lease-1', {
+            status: 'WAITING_CAPABILITY',
+            statusCode: 404,
+            errorCode: 'predelete_presence_unknown',
+            message: 'Exact presence is unavailable',
+            retryDelayMs: requestedDelayMs ?? 300_000,
+          }),
+        ).resolves.toMatchObject({ status: 'AMBIGUOUS' });
+      } finally {
+        clock?.mockRestore();
+      }
+
+      const query = executeRaw.mock.calls[0]?.[0] as {
+        strings: readonly string[];
+        values: readonly unknown[];
+      };
+      expect(query.values).toContainEqual(nextAttemptAt);
+      expect(query.values).toContain('AMBIGUOUS');
+      const sql = query.strings.join('?');
+      expect(sql).not.toContain('"retry_until_at" =');
+      expect(sql).not.toContain('"remote_delete_succeeded_at" =');
+      expect(sql).not.toContain('"remote_delete_succeeded_bot_id" =');
+      expect(sql).not.toContain('"delete_dispatch_started_at" =');
+      expect(sql).not.toContain('"delete_dispatch_started_bot_id" =');
+      expect(transaction).toHaveBeenCalledTimes(
+        ['expired complete acknowledgement', 'longer remote retry hint'].includes(_label) ? 1 : 0,
+      );
+    },
+  );
+
+  it('backs off an expired acknowledged auto-delete after a generic 404 without confirming it', async () => {
+    const now = new Date('2026-10-20T12:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+    const intent = {
+      ...baseIntent,
+      attemptCount: 44,
+      messageAuthorKind: 'bot',
+      routingPolicy: 'origin_only',
+      botMessageAutoDeleteOnly: true,
+      remoteDeleteSucceededAt: new Date(now.getTime() - 86_400_000),
+      remoteDeleteSucceededBotId: 'bot-1',
+      retryUntilAt: new Date(now.getTime() - 1_000),
+      leaseExpiresAt: new Date(now.getTime() + 60_000),
+      leasedFromStatus: 'AMBIGUOUS',
+    };
+    const nextAttemptAt = new Date(now.getTime() + 3_600_000);
+    const persisted = {
+      ...intent,
+      status: 'AMBIGUOUS',
+      nextAttemptAt,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const deleteMessage = jest.fn();
+    const getExactMessagePresence = jest
+      .fn()
+      .mockRejectedValue({ response: { status: 404, data: { message: 'Not found' } } });
+    const transaction = jest.fn(
+      async (
+        callback: (tx: { $queryRaw: jest.Mock; $executeRaw: jest.Mock }) => Promise<unknown>,
+      ) =>
+        callback({
+          $queryRaw: jest
+            .fn()
+            .mockResolvedValueOnce([{ id: intent.id }])
+            .mockResolvedValueOnce([intent]),
+          $executeRaw: executeRaw,
+        }),
+    );
+    const { service } = createService(
+      {},
+      {
+        $executeRaw: executeRaw,
+        $queryRaw: jest.fn().mockResolvedValueOnce([intent]).mockResolvedValue([persisted]),
+        $transaction: transaction,
+      },
+      { deleteMessage, getExactMessagePresence },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+    );
+
+    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+      kind: 'ambiguous',
+      confirmed: false,
+      status: 'AMBIGUOUS',
+    });
+
+    expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).not.toHaveBeenCalled();
+    const retryQuery = executeRaw.mock.calls
+      .map(
+        (call: unknown[]) => call[0] as { strings: readonly string[]; values: readonly unknown[] },
+      )
+      .find((query) => query.strings.join('?').includes('"next_attempt_at" = CASE'));
+    expect(retryQuery?.values).toContainEqual(nextAttemptAt);
+    expect(retryQuery?.values).toContain('AMBIGUOUS');
+  });
+
   it('does not verify or retry auto-delete after losing its lease', async () => {
     const pendingVerificationIntent = {
       ...baseIntent,
@@ -5373,64 +5577,68 @@ describe('ModerationDeleteIntentService', () => {
     expect(deleteMessage).not.toHaveBeenCalled();
   });
 
-  it('uses a sixth auto-delete claim only to verify and never dispatches a sixth DELETE', async () => {
-    const pendingVerificationIntent = {
-      ...baseIntent,
-      attemptCount: 6,
-      messageAuthorKind: 'bot',
-      routingPolicy: 'origin_only',
-      botMessageAutoDeleteOnly: true,
-      remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
-      remoteDeleteSucceededBotId: 'bot-1',
-      leasedFromStatus: 'AMBIGUOUS',
-    };
-    const clearedIntent = {
-      ...pendingVerificationIntent,
-      remoteDeleteSucceededAt: null,
-      remoteDeleteSucceededBotId: null,
-    };
-    const terminalIntent = {
-      ...clearedIntent,
-      status: 'FAILED_TERMINAL',
-      lastErrorCode: 'bot_message_auto_delete_retry_limit_reached',
-      leaseToken: null,
-      leaseExpiresAt: null,
-      leasedFromStatus: null,
-    };
-    const rootQueryRaw = jest.fn().mockResolvedValueOnce([pendingVerificationIntent]);
-    const txQueryRaw = jest
-      .fn()
-      .mockResolvedValueOnce([{ id: 'intent-1' }])
-      .mockResolvedValueOnce([clearedIntent])
-      .mockResolvedValueOnce([terminalIntent]);
-    const transaction = jest.fn(async (callback: (tx: { $queryRaw: jest.Mock }) => unknown) =>
-      callback({ $queryRaw: txQueryRaw }),
-    );
-    const deleteMessage = jest.fn();
-    const getExactMessagePresence = jest.fn().mockResolvedValue('present');
-    const { service } = createService(
-      {},
-      {
-        $queryRaw: rootQueryRaw,
-        $executeRaw: jest.fn().mockResolvedValue(1),
-        $transaction: transaction,
-      },
-      { deleteMessage, getExactMessagePresence },
-      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
-    );
+  it.each([false, true])(
+    'uses a sixth auto-delete claim only to verify and never dispatches a sixth DELETE (expired horizon: %s)',
+    async (expiredHorizon) => {
+      const pendingVerificationIntent = {
+        ...baseIntent,
+        attemptCount: 6,
+        retryUntilAt: new Date(Date.now() + (expiredHorizon ? -1_000 : 60_000)),
+        messageAuthorKind: 'bot',
+        routingPolicy: 'origin_only',
+        botMessageAutoDeleteOnly: true,
+        remoteDeleteSucceededAt: new Date(Date.now() - 5_000),
+        remoteDeleteSucceededBotId: 'bot-1',
+        leasedFromStatus: 'AMBIGUOUS',
+      };
+      const clearedIntent = {
+        ...pendingVerificationIntent,
+        remoteDeleteSucceededAt: null,
+        remoteDeleteSucceededBotId: null,
+      };
+      const terminalIntent = {
+        ...clearedIntent,
+        status: 'FAILED_TERMINAL',
+        lastErrorCode: 'bot_message_auto_delete_retry_limit_reached',
+        leaseToken: null,
+        leaseExpiresAt: null,
+        leasedFromStatus: null,
+      };
+      const rootQueryRaw = jest.fn().mockResolvedValueOnce([pendingVerificationIntent]);
+      const txQueryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([{ id: 'intent-1' }])
+        .mockResolvedValueOnce([clearedIntent])
+        .mockResolvedValueOnce([terminalIntent]);
+      const transaction = jest.fn(async (callback: (tx: { $queryRaw: jest.Mock }) => unknown) =>
+        callback({ $queryRaw: txQueryRaw }),
+      );
+      const deleteMessage = jest.fn();
+      const getExactMessagePresence = jest.fn().mockResolvedValue('present');
+      const { service } = createService(
+        {},
+        {
+          $queryRaw: rootQueryRaw,
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          $transaction: transaction,
+        },
+        { deleteMessage, getExactMessagePresence },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
+      );
 
-    await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
-      kind: 'terminal',
-      confirmed: false,
-      status: 'FAILED_TERMINAL',
-    });
+      await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
+        kind: 'terminal',
+        confirmed: false,
+        status: 'FAILED_TERMINAL',
+      });
 
-    expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
-    expect(deleteMessage).not.toHaveBeenCalled();
-    expect(txQueryRaw.mock.calls[2]?.[0]?.values).toContain(
-      'bot_message_auto_delete_retry_limit_reached',
-    );
-  });
+      expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
+      expect(deleteMessage).not.toHaveBeenCalled();
+      expect(txQueryRaw.mock.calls[2]?.[0]?.values).toContain(
+        'bot_message_auto_delete_retry_limit_reached',
+      );
+    },
+  );
 
   it('does not dispatch auto-delete when the managed delivery guard cannot be read', async () => {
     const autoDeleteIntent = {

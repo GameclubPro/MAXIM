@@ -79,6 +79,25 @@ describe('privacy-safe message duplicate diagnostics', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
+  it('aggregates fixed scheduling causes while rejecting private reason and error dimensions', () => {
+    service.record('worker.defer_ordering');
+    service.record('worker.defer_ordering_not_head');
+    service.record('worker.wakeup_unavailable');
+    service.record('worker.wakeup_not_delayed');
+    service.record('worker.wakeup_lookup_missing');
+    service.record('worker.defer_ordering_private-chat' as MessageDuplicateMetricCounter);
+    service.record('worker.wakeup_private-error' as MessageDuplicateMetricCounter);
+    jest.advanceTimersByTime(30_000);
+    expect(log.mock.calls[0]?.[0].counters).toEqual({
+      'worker.defer_ordering': 1,
+      'worker.defer_ordering_not_head': 1,
+      'worker.wakeup_unavailable': 1,
+      'worker.wakeup_not_delayed': 1,
+      'worker.wakeup_lookup_missing': 1,
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private');
+  });
+
   it('does not propagate logging failure into moderation or shutdown', () => {
     log.mockImplementation(() => {
       throw new Error('logger unavailable');

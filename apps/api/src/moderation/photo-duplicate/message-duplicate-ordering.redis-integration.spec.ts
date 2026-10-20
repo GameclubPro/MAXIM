@@ -392,6 +392,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
         releaseHead();
         await withinBudget(headCompleted);
         expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_unavailable');
+        expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_not_delayed');
         expect(await follower!.getState()).toBe('active');
         releaseFollower();
         await withinBudget(followerCompleted);

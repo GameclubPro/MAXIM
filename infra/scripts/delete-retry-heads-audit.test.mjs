@@ -6,7 +6,8 @@ import { buildDeleteRetryHeadsAuditSql } from './delete-retry-heads-audit.mjs';
 const fixture = `CREATE TYPE "ModerationDeleteIntentStatus" AS ENUM ('PENDING','RETRYABLE','WAITING_CAPABILITY','AMBIGUOUS','IN_PROGRESS','SUCCEEDED','FAILED_TERMINAL');
 CREATE TABLE moderation_delete_intents (id text PRIMARY KEY, status "ModerationDeleteIntentStatus", next_attempt_at timestamp,
  execute_at timestamp, updated_at timestamp, attempt_count int, last_attempt_at timestamp, retry_until_at timestamp,
- delete_dispatch_started_at timestamp, remote_delete_succeeded_at timestamp, lease_expires_at timestamp, last_status_code int,
+ delete_dispatch_started_at timestamp, remote_delete_succeeded_at timestamp, remote_delete_succeeded_bot_id text,
+ lease_expires_at timestamp, last_status_code int,
  source_message_at timestamp, last_error_code text, last_error text);
 CREATE INDEX moderation_delete_intents_due_idx ON moderation_delete_intents(status,next_attempt_at,execute_at);
 CREATE INDEX moderation_delete_intents_retention_idx ON moderation_delete_intents(status,updated_at);
@@ -47,7 +48,7 @@ test('separates recent link failures and confirmed effects without exposing raw 
       ('private-link','r','LINK_BLOCKED_DELETE'),('private-denied','r','MUTE_ACTIVE_DELETE'),
       ('private-terminal','r','LINK_HISTORY_RECOVERY'),('private-succeeded','r','LINK_BLOCKED_DELETE');`);
   const r = (await db.query(buildDeleteRetryHeadsAuditSql())).rows[0].json_build_object;
-  assert.equal(r.schema_version, 2);
+  assert.equal(r.schema_version, 3);
   assert.equal(r.failure_classification_authority, 'saved_metadata_only');
   assert.equal(r.remote_effect_proven, false);
   const recent = r.rows.filter((row) => row.sample_kind === 'recent_update');
@@ -68,6 +69,7 @@ test('separates recent link failures and confirmed effects without exposing raw 
     recent.some((row) => row.status === 'FAILED_TERMINAL' && row.last_failure_family === 'other'),
   );
   assert.ok(recent.some((row) => row.status === 'SUCCEEDED' && row.remote_success_marker));
+  assert.ok(recent.some((row) => row.status === 'SUCCEEDED' && !row.remote_success_pair_complete));
   assert.ok(
     recent.some(
       (row) =>
@@ -76,6 +78,27 @@ test('separates recent link failures and confirmed effects without exposing raw 
     ),
   );
   assert.doesNotMatch(JSON.stringify(r), /private-|lookup returned|last_error/u);
+});
+test('distinguishes complete acknowledgement pairs without emitting bot identities', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(fixture);
+  await db.exec(`INSERT INTO moderation_delete_intents
+    (id,status,next_attempt_at,updated_at,remote_delete_succeeded_at,remote_delete_succeeded_bot_id)
+    VALUES
+      ('private-paired','AMBIGUOUS',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'private-bot'),
+      ('private-blank','AMBIGUOUS',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'  '),
+      ('private-future','AMBIGUOUS',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+interval '1 hour','private-bot'),
+      ('private-no-time','AMBIGUOUS',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,NULL,'private-bot');`);
+  const r = (await db.query(buildDeleteRetryHeadsAuditSql())).rows[0].json_build_object;
+  const rows = r.rows.filter(
+    (row) => row.sample_kind === 'recent_update' && row.status === 'AMBIGUOUS',
+  );
+  assert.equal(rows.length, 4);
+  assert.equal(rows.filter((row) => row.remote_success_pair_complete).length, 1);
+  assert.equal(rows.filter((row) => row.remote_success_marker).length, 3);
+  assert.equal(r.remote_effect_proven, false);
+  assert.doesNotMatch(JSON.stringify(r), /private-/u);
 });
 test(
   'native heads stay indexed with retained history and tied clocks',
