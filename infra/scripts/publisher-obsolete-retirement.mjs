@@ -830,6 +830,120 @@ const requiredIndexes = {
   managed_broadcast_occurrences_pkey: ['managed_broadcast_occurrences', ['id']],
 };
 
+const retirementFailureCodes = new Set([
+  'unknown_retirement_failure',
+  'retirement_database_error',
+  'unbounded_retirement_read_plan',
+  'missing_retirement_read_index',
+  'retirement_index_drift',
+  'retirement_deadline',
+  'invalid_retirement_request',
+  'invalid_source_status',
+  'invalid_stop_cursor',
+  'calendar_writer_busy',
+  'delivery_cas_failed',
+  'envelope_cas_failed',
+  'occurrence_cas_failed',
+  'stop_envelope_cas_failed',
+  'stop_occurrence_cas_failed',
+  'helper_process_failed',
+  'helper_invalid_output',
+  'helper_output_limit',
+  'helper_timeout',
+]);
+const retirementPgCodes = new Set([
+  '57014',
+  '55P03',
+  '40P01',
+  '40001',
+  '08000',
+  '08001',
+  '08003',
+  '08004',
+  '08006',
+  '08P01',
+  '53300',
+  '57P01',
+]);
+const retirementPlanNodes = new Set([
+  'Limit',
+  'Index Scan',
+  'Index Only Scan',
+  'Result',
+  'Sort',
+  'Incremental Sort',
+  'Seq Scan',
+  'Bitmap Heap Scan',
+  'Bitmap Index Scan',
+  'Gather',
+  'Gather Merge',
+  'Materialize',
+]);
+const retirementDiagnosticIndexes = new Set([
+  ...Object.keys(requiredIndexes),
+  'publication_occurrences_schedule_revision_idx',
+  'publication_occurrences_content_revision_idx',
+  'publication_occurrences_legacy_broadcast_idx',
+  'publication_occurrences_status_scheduled_idx',
+  'publication_occurrences_dispatch_status_scheduled_idx',
+  'publication_occurrences_dispatch_status_created_id_idx',
+  'publication_occurrences_blocked_dispatch_idx',
+  'publication_occurrences_publication_scheduled_id_idx',
+]);
+const retirementDiagnosticRelations = new Set(
+  Object.values(requiredIndexes).map(([table]) => table),
+);
+
+// FLAG: Diagnostics cross the container boundary. Never forward SQL, parameters,
+// identifiers, raw messages or PostgreSQL detail; both sides reapply this allowlist.
+export function sanitizeRetirementFailureDiagnostic(value) {
+  const code = retirementFailureCodes.has(value?.code) ? value.code : 'unknown_retirement_failure';
+  const result = { code };
+  if (retirementPgCodes.has(value?.pgcode)) result.pgcode = value.pgcode;
+  if (
+    [
+      'unbounded_retirement_read_plan',
+      'missing_retirement_read_index',
+      'retirement_index_drift',
+    ].includes(code)
+  ) {
+    if (/^[a-f0-9]{64}$/u.test(value?.shapeDigest ?? '')) result.shapeDigest = value.shapeDigest;
+    const observed = {};
+    if (retirementPlanNodes.has(value?.observed?.node)) observed.node = value.observed.node;
+    if (retirementDiagnosticIndexes.has(value?.observed?.index))
+      observed.index = value.observed.index;
+    if (retirementDiagnosticRelations.has(value?.observed?.relation))
+      observed.relation = value.observed.relation;
+    if (typeof value?.observed?.hasFilter === 'boolean')
+      observed.hasFilter = value.observed.hasFilter;
+    if (Object.keys(observed).length) result.observed = observed;
+  }
+  return result;
+}
+
+export function retirementFailureDiagnostic(error) {
+  let code = retirementFailureCodes.has(error?.message)
+    ? error.message
+    : 'unknown_retirement_failure';
+  let observed = error?.observed;
+  const driftPrefix = 'retirement_index_drift_';
+  if (typeof error?.message === 'string' && error.message.startsWith(driftPrefix)) {
+    const index = error.message.slice(driftPrefix.length);
+    if (Object.hasOwn(requiredIndexes, index)) {
+      code = 'retirement_index_drift';
+      observed = { index, relation: requiredIndexes[index][0] };
+    }
+  }
+  if (code === 'unknown_retirement_failure' && retirementPgCodes.has(error?.code))
+    code = 'retirement_database_error';
+  return sanitizeRetirementFailureDiagnostic({
+    code,
+    pgcode: error?.code,
+    shapeDigest: error?.shapeDigest,
+    observed,
+  });
+}
+
 export async function attestRetirementIndexes(db) {
   for (const [name, [table, columns]] of Object.entries(requiredIndexes)) {
     const row = (
@@ -896,21 +1010,23 @@ export async function inspectRetirementReadPlan(client, query, params) {
     'QUERY PLAN'
   ][0].Plan;
   const indexes = [];
+  const refusal = (node) =>
+    Object.assign(new Error('unbounded_retirement_read_plan'), {
+      observed: {
+        node: node['Node Type'],
+        index: node['Index Name'],
+        relation: node['Relation Name'],
+        hasFilter: Boolean(node.Filter),
+      },
+      shapeDigest: digest(text),
+    });
   const visit = (node) => {
     if (
       !['Limit', 'Index Scan', 'Index Only Scan', 'Result'].includes(node['Node Type']) ||
       node.Filter ||
       (node['Relation Name'] && !Object.hasOwn(requiredIndexes, node['Index Name']))
     )
-      throw Object.assign(new Error('unbounded_retirement_read_plan'), {
-        observed: {
-          node: node['Node Type'],
-          index: node['Index Name'],
-          relation: node['Relation Name'],
-          hasFilter: Boolean(node.Filter),
-        },
-        shapeDigest: digest(text),
-      });
+      throw refusal(node);
     if (node['Index Name']) indexes.push(node['Index Name']);
     for (const child of node.Plans ?? []) visit(child);
   };
@@ -919,9 +1035,10 @@ export async function inspectRetirementReadPlan(client, query, params) {
     !Number.isFinite(plan['Plan Rows']) ||
     plan['Plan Rows'] > 129
   )
-    throw new Error('unbounded_retirement_read_plan');
+    throw refusal(plan);
   visit(plan);
-  if (!indexes.length) throw new Error('missing_retirement_read_index');
+  if (!indexes.length)
+    throw Object.assign(new Error('missing_retirement_read_index'), { shapeDigest: digest(text) });
   return { shapeDigest: digest(text), indexes, estimatedRows: plan['Plan Rows'] };
 }
 
@@ -950,7 +1067,7 @@ export async function runContainerRetirement(request) {
     connectionTimeoutMillis: 3000,
     application_name: `maxim-publik-retirement-${randomUUID()}`,
     options:
-      '-c timezone=UTC -c statement_timeout=2000 -c lock_timeout=150 -c idle_in_transaction_session_timeout=5000 -c max_parallel_workers_per_gather=0 -c enable_seqscan=off -c enable_bitmapscan=off -c plan_cache_mode=force_custom_plan',
+      '-c timezone=UTC -c statement_timeout=2000 -c lock_timeout=150 -c idle_in_transaction_session_timeout=5000 -c max_parallel_workers_per_gather=0 -c enable_seqscan=off -c enable_bitmapscan=off -c enable_sort=off -c plan_cache_mode=force_custom_plan',
   });
   await client.connect();
   const readPlans = new Map();
