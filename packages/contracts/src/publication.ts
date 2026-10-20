@@ -576,6 +576,7 @@ export const publicationOccurrenceSummarySchema = z.object({
 export type PublicationOccurrenceSummary = z.infer<typeof publicationOccurrenceSummarySchema>;
 
 export const publicationSummarySchema = z.object({
+  access: z.object({ canManageAllTargets: z.boolean() }).optional(),
   requiresScheduleDecision: z.boolean().optional(),
   postPublish: publicationPostPublishSchema.optional(),
   id: z.string(),

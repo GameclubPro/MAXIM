@@ -177,6 +177,117 @@ describe('PublisherEntityBindingLifecycleService', () => {
     ).toBe(false);
   });
 
+  it.each(
+    [ChatBotAccessState.CONFIRMED_ADMIN, ChatBotAccessState.CONFIRMED_OWNER].flatMap(
+      (botAccessState) =>
+        [-1_000, 0, 1_000].map((proofOffsetMs) => ({
+          botAccessState,
+          proofOffsetMs,
+        })),
+    ),
+  )(
+    'keeps $botAccessState authority when bot_added follows proof by $proofOffsetMs ms',
+    async ({ botAccessState, proofOffsetMs }) => {
+      const eventAt = new Date('2026-10-19T10:00:00Z');
+      const botAccessCheckedAt = new Date(eventAt.getTime() + proofOffsetMs);
+      const binding = {
+        publisherBotId: 'publik_bot',
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState,
+        botAccessCheckedAt,
+        botAccessSource: 'publisher_targeted_user_access',
+        permissionsSnapshot: {
+          isAdmin: true,
+          isOwner: botAccessState === ChatBotAccessState.CONFIRMED_OWNER,
+          permissionsKnown: true,
+          permissions: ['write'],
+        },
+        lifecycleEventAt: new Date(eventAt.getTime() - 2_000),
+        lifecycleEventType: 'message_created',
+      };
+      const tx = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: '-100' }]),
+        chat: {
+          findUnique: jest.fn().mockResolvedValue({ id: '-100' }),
+          upsert: jest.fn(),
+        },
+        publisherEntityBinding: {
+          findUnique: jest.fn().mockResolvedValue(binding),
+          update: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+            Object.assign(binding, data);
+          }),
+        },
+        managedBotChatCatalog: {
+          findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHAT }),
+          upsert: jest.fn(),
+        },
+        managedEntityAccessEdge: { updateMany: jest.fn(), upsert: jest.fn() },
+      };
+      const refreshQueue = { enqueue: jest.fn() };
+      const service = new PublisherEntityBindingLifecycleService(
+        { $transaction: (callback: (client: typeof tx) => unknown) => callback(tx) } as never,
+        refreshQueue as never,
+        { get: () => 'publik_bot' } as never,
+        createBotRegistry() as never,
+      );
+      await expect(
+        service.observeWebhook({
+          updateId: 'retained-add',
+          botId: 'publik_bot',
+          type: 'bot_added',
+          eventTimestampSource: 'remote',
+          message: {
+            messageId: 'add-1',
+            chatId: '-100',
+            senderId: '202',
+            text: '',
+            createdAt: eventAt.toISOString(),
+          },
+          raw: {},
+        } as never),
+      ).resolves.toBe('applied');
+      expect(binding).toMatchObject({
+        botAccessState,
+        botAccessCheckedAt,
+        lifecycleEventAt: eventAt,
+        lifecycleEventType: 'bot_added',
+      });
+      expect(tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+      expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(refreshQueue.enqueue).not.toHaveBeenCalled();
+
+      await expect(
+        service.observeWebhook({
+          updateId: 'explicit-remove',
+          botId: 'publik_bot',
+          type: 'bot_removed',
+          eventTimestampSource: 'remote',
+          message: {
+            messageId: 'remove-1',
+            chatId: '-100',
+            senderId: '202',
+            text: '',
+            createdAt: new Date(eventAt.getTime() + 2_000).toISOString(),
+          },
+          raw: {},
+        } as never),
+      ).resolves.toBe('applied');
+      expect(binding).toMatchObject({
+        status: ChatBotMembershipStatus.REMOVED,
+        botAccessState: ChatBotAccessState.LOST,
+      });
+      expect(tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { chatId: '-100', botId: 'publik_bot' },
+          data: expect.objectContaining({
+            state: ManagedEntityAccessState.BOT_DENIED,
+            deniedReason: 'bot_removed',
+          }),
+        }),
+      );
+    },
+  );
+
   it('keeps publisher lifecycle outside ChatBotMembership and rejects an older removal', async () => {
     let binding: Record<string, unknown> | null = null;
     let chatExists = false;

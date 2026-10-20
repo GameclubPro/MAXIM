@@ -1,3 +1,8 @@
+import {
+  publicationAdminAccessWhere,
+  publicationAdminScope,
+  publicationAdminTargetWhere,
+} from './publication-admin-access';
 import { NotFoundException } from '@nestjs/common';
 import { PublicationDispatchProfile } from '../prisma/prisma-client';
 import { PublicationPublisherTargetRefreshService } from './publication-publisher-target-refresh.service';
@@ -25,11 +30,15 @@ describe('PublicationPublisherTargetRefreshService', () => {
     expect(findFirst).toHaveBeenCalledWith({
       where: {
         id: 'publication-1',
-        actorUserId: 'actor-1',
+        ...publicationAdminAccessWhere(
+          publicationAdminScope('actor-1'),
+          PublicationDispatchProfile.PUBLIK_V1,
+        ),
         dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
       },
       select: {
         targets: {
+          where: publicationAdminTargetWhere(publicationAdminScope('actor-1')),
           orderBy: { position: 'asc' },
           select: { targetChatId: true },
         },

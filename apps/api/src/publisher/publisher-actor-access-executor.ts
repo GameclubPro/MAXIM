@@ -40,7 +40,6 @@ export class PublisherActorAccessExecutor {
     outcome: PublisherAccessProbeOutcome;
   }> {
     let userAccess: MaxChatMemberAccess | null;
-    let terminalStatusCode: number | null = null;
     try {
       userAccess = await this.maxClient.getChatMemberAccess(params.chatId, params.userId, {
         botId: this.publisherBotId,
@@ -55,8 +54,8 @@ export class PublisherActorAccessExecutor {
       if (statusCode !== 403 && statusCode !== 404) {
         throw error;
       }
-      // FLAG: A member-endpoint 403/404 is not proof of lost admin rights. Confirm the
-      // exact user's absence through the same Publisher token; failed rosters stay unknown.
+      // FLAG: A member-endpoint 403/404 is not proof of lost admin rights. The exact
+      // roster may recover a positive grant, but absence cannot establish a user denial.
       const roster =
         params.botAccess.isAdmin || params.botAccess.isOwner
           ? await this.maxClient.getChatAdminAccesses(params.chatId, {
@@ -84,17 +83,15 @@ export class PublisherActorAccessExecutor {
           .replace(/^id(?=\d)/u, '');
       userAccess =
         roster.find((member) => identity(member.userId) === identity(params.userId)) ?? null;
-      terminalStatusCode = userAccess ? null : statusCode;
     }
     // FLAG: Absent role fields/empty member responses are not a revocation. Only exact
-    // non-admin evidence, a bot identity, or the validated roster absence above may deny.
+    // non-admin evidence or a bot identity may deny; roster absence remains unknown.
     if (
-      !terminalStatusCode &&
-      (!userAccess ||
-        (!userAccess.isAdmin &&
-          !userAccess.isOwner &&
-          userAccess.isBot !== true &&
-          userAccess.explicitNonPrivilegeEvidence !== true))
+      !userAccess ||
+      (!userAccess.isAdmin &&
+        !userAccess.isOwner &&
+        userAccess.isBot !== true &&
+        userAccess.explicitNonPrivilegeEvidence !== true)
     )
       throw new Error('MAX actor role evidence is incomplete');
     const checkedAt = params.probeStartedAt;
@@ -123,11 +120,9 @@ export class PublisherActorAccessExecutor {
     const deniedReason = granted
       ? null
       : botHasAdminAccess
-        ? terminalStatusCode
-          ? 'publisher_user_access_unavailable'
-          : userIsBot
-            ? 'publisher_actor_is_bot'
-            : 'publisher_user_not_admin'
+        ? userIsBot
+          ? 'publisher_actor_is_bot'
+          : 'publisher_user_not_admin'
         : 'publisher_bot_not_admin';
     const userRole = this.toAccessRole(userAccess);
     const botRole = this.toAccessRole(params.botAccess);
@@ -217,9 +212,9 @@ export class PublisherActorAccessExecutor {
                 : PUBLISHER_USER_ACCESS_DENIED_TTL_MS),
           ),
           deniedReason,
-          lastMaxErrorCode: terminalStatusCode ? `HTTP_${terminalStatusCode}` : null,
+          lastMaxErrorCode: null,
           lastMaxErrorMessage: null,
-          lastMaxStatusCode: terminalStatusCode,
+          lastMaxStatusCode: null,
           source: 'publisher_targeted_user_access',
           sourceVersion: params.candidateVersion,
         },
@@ -236,9 +231,9 @@ export class PublisherActorAccessExecutor {
                 : PUBLISHER_USER_ACCESS_DENIED_TTL_MS),
           ),
           deniedReason,
-          lastMaxErrorCode: terminalStatusCode ? `HTTP_${terminalStatusCode}` : null,
+          lastMaxErrorCode: null,
           lastMaxErrorMessage: null,
-          lastMaxStatusCode: terminalStatusCode,
+          lastMaxStatusCode: null,
           source: 'publisher_targeted_user_access',
           sourceVersion: params.candidateVersion,
         },

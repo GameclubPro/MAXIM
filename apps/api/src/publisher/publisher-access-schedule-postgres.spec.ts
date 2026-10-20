@@ -8,6 +8,7 @@ import { PublisherBindingRefreshSchedulerService } from './publisher-binding-ref
 import { syncPublisherAdminRoster } from './publisher-admin-roster';
 import { PublisherAccessRefreshEvidenceService } from './publisher-access-refresh-evidence.service';
 import { PublisherBotAccessExecutor } from './publisher-bot-access-executor';
+import { PublisherEntityBindingLifecycleService } from './publisher-entity-binding-lifecycle.service';
 import { Logger } from '@nestjs/common';
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL ?? '';
 const integration = databaseUrl ? describe : describe.skip;
@@ -534,6 +535,209 @@ integration('Publisher durable access schedule on PostgreSQL', () => {
     enqueue.mockClear();
     await scheduler().scan('startup');
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it.each(['empty', 'other-admin'])(
+    'keeps confirmed exact-user authority when the roster is %s',
+    async (kind) => {
+      const checkedAt = new Date(0);
+      const grant = await db.managedEntityAccessEdge.create({
+        data: {
+          chatId,
+          userId: 'retained-admin',
+          botId,
+          entityType: 'CHAT',
+          state: 'GRANTED',
+          userRole: 'OWNER',
+          botRole: 'ADMIN',
+          checkedAt,
+          expiresAt: new Date(1),
+          source: 'explicit_admin_confirmation',
+        },
+      });
+      const p = await proof();
+      expect(
+        await syncPublisherAdminRoster(p, {
+          ...roster(p),
+          members: kind === 'empty' ? [] : roster(p).members,
+        }),
+      ).toBe(true);
+      expect(
+        await db.managedEntityAccessEdge.findUniqueOrThrow({
+          where: { chatId_userId_botId: { chatId, userId: 'retained-admin', botId } },
+        }),
+      ).toEqual(grant);
+    },
+  );
+
+  it.each([403, 404])(
+    'does not revoke a retained grant from member HTTP %s and roster absence',
+    async (statusCode) => {
+      const grant = await db.managedEntityAccessEdge.create({
+        data: {
+          chatId,
+          userId: 'actor',
+          botId,
+          entityType: 'CHAT',
+          state: 'GRANTED',
+          userRole: 'ADMIN',
+          botRole: 'ADMIN',
+          checkedAt: new Date(0),
+          source: 'explicit_admin_confirmation',
+        },
+      });
+      const binding = await db.publisherEntityBinding.findUniqueOrThrow({ where: { chatId } });
+      const actor = new PublisherActorAccessExecutor(
+        db as never,
+        {
+          getChatMemberAccess: async () => {
+            throw Object.assign(new Error('member unavailable'), {
+              response: { status: statusCode },
+            });
+          },
+          getChatAdminAccesses: async () => [],
+        } as never,
+        botId,
+      );
+      await expect(
+        actor.execute({
+          chatId,
+          entityType: 'CHAT',
+          userId: 'actor',
+          candidateVersion: null,
+          botAccess: { ...adminAccess, userId: null },
+          probeStartedAt: new Date(),
+          committedBotAccessCheckedAt: binding.botAccessCheckedAt!,
+          committedBotAccessState: binding.botAccessState,
+          interactive: true,
+        }),
+      ).rejects.toThrow('MAX actor role evidence is incomplete');
+      expect(
+        await db.managedEntityAccessEdge.findUniqueOrThrow({
+          where: { chatId_userId_botId: { chatId, userId: 'actor', botId } },
+        }),
+      ).toEqual(grant);
+    },
+  );
+
+  it('revokes only the exact Publisher user after explicit non-admin evidence', async () => {
+    await db.managedEntityAccessEdge.createMany({
+      data: [botId, 'sibling-bot'].map((edgeBotId) => ({
+        chatId,
+        userId: 'actor',
+        botId: edgeBotId,
+        entityType: 'CHAT' as const,
+        state: 'GRANTED' as const,
+        userRole: 'ADMIN' as const,
+        botRole: 'ADMIN' as const,
+        checkedAt: new Date(0),
+        source: 'explicit_admin_confirmation',
+      })),
+    });
+    const binding = await db.publisherEntityBinding.findUniqueOrThrow({ where: { chatId } });
+    const actor = new PublisherActorAccessExecutor(
+      db as never,
+      {
+        getChatMemberAccess: async () => ({
+          userId: 'actor',
+          isBot: false,
+          isAdmin: false,
+          isOwner: false,
+          explicitNonPrivilegeEvidence: true,
+          permissions: [],
+        }),
+      } as never,
+      botId,
+    );
+    expect(
+      await actor.execute({
+        chatId,
+        entityType: 'CHAT',
+        userId: 'actor',
+        candidateVersion: null,
+        botAccess: { ...adminAccess, userId: null },
+        probeStartedAt: new Date(),
+        committedBotAccessCheckedAt: binding.botAccessCheckedAt!,
+        committedBotAccessState: binding.botAccessState,
+        interactive: true,
+      }),
+    ).toMatchObject({ committed: true, state: 'USER_DENIED', outcome: 'denied' });
+    expect(
+      await db.managedEntityAccessEdge.findUniqueOrThrow({
+        where: { chatId_userId_botId: { chatId, userId: 'actor', botId } },
+      }),
+    ).toMatchObject({ state: 'USER_DENIED', deniedReason: 'publisher_user_not_admin' });
+    expect(
+      await db.managedEntityAccessEdge.findUniqueOrThrow({
+        where: { chatId_userId_botId: { chatId, userId: 'actor', botId: 'sibling-bot' } },
+      }),
+    ).toMatchObject({ state: 'GRANTED' });
+  });
+
+  it('preserves bot and human grants across delayed bot_added, but honors trusted removal', async () => {
+    const eventAt = new Date(Date.now() - 2_000);
+    const previous = await db.publisherEntityBinding.update({
+      where: { chatId },
+      data: {
+        botAccessCheckedAt: new Date(eventAt.getTime() + 1_000),
+        lifecycleEventAt: new Date(eventAt.getTime() - 1_000),
+        lifecycleEventType: 'message_created',
+      },
+    });
+    const grant = await db.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        userId: 'actor',
+        botId,
+        entityType: 'CHAT',
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+        checkedAt: previous.botAccessCheckedAt!,
+        source: 'explicit_admin_confirmation',
+      },
+    });
+    const lifecycle = new PublisherEntityBindingLifecycleService(
+      db as never,
+      { enqueue } as never,
+      new ConfigService({ MAX_PUBLISHER_BOT_ID: botId }),
+      { isKnownBotUserId: () => false } as never,
+    );
+    const update = (type: string, at: Date) =>
+      ({
+        updateId: `${type}-fixture`,
+        botId,
+        type,
+        eventTimestampSource: 'remote',
+        message: {
+          messageId: `${type}-fixture`,
+          chatId,
+          senderId: 'actor',
+          text: '',
+          createdAt: at.toISOString(),
+        },
+        raw: {},
+      }) as never;
+    expect(await lifecycle.observeWebhook(update('bot_added', eventAt))).toBe('applied');
+    const saved = await db.publisherEntityBinding.findUniqueOrThrow({ where: { chatId } });
+    expect(saved.botAccessState).toBe(previous.botAccessState);
+    expect(saved.botAccessCheckedAt).toEqual(previous.botAccessCheckedAt);
+    expect(
+      await db.managedEntityAccessEdge.findUniqueOrThrow({
+        where: { chatId_userId_botId: { chatId, userId: 'actor', botId } },
+      }),
+    ).toEqual(grant);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(await lifecycle.observeWebhook(update('bot_removed', new Date()))).toBe('applied');
+    expect(await db.publisherEntityBinding.findUniqueOrThrow({ where: { chatId } })).toMatchObject({
+      status: 'REMOVED',
+      botAccessState: 'LOST',
+    });
+    expect(
+      await db.managedEntityAccessEdge.findUniqueOrThrow({
+        where: { chatId_userId_botId: { chatId, userId: 'actor', botId } },
+      }),
+    ).toMatchObject({ state: 'BOT_DENIED', deniedReason: 'bot_removed' });
   });
 
   it('rejects an old roster after a lifecycle revocation and leaves all grants absent', async () => {

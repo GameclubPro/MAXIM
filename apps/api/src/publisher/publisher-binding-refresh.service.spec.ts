@@ -1253,6 +1253,9 @@ describe('PublisherBindingRefreshService', () => {
 
   it('retries a superseded active roster handoff with the newer bot proof', async () => {
     const f = createHarness(adminAccess);
+    f.maxClient.getChatAdminAccesses.mockResolvedValue([
+      { ...adminAccess, userId: 'retained-admin', isBot: false, explicitPrivilegeEvidence: true },
+    ]);
     f.bindingState.botAccessCheckedAt = new Date(Date.now() - 1_000);
     f.prisma.managedBotChatCatalog.findUnique.mockResolvedValue({
       entityType: ChatEntityType.CHAT,
@@ -1278,7 +1281,16 @@ describe('PublisherBindingRefreshService', () => {
     );
     await f.service.refresh({ ...job, reason: 'connection_roster' }, { retrying: true });
     expect(f.maxClient.getChatAdminAccesses).toHaveBeenCalledTimes(2);
-    expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalled();
+    expect(f.tx.managedEntityAccessEdge.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({ userId: 'retained-admin', state: 'GRANTED' })],
+      }),
+    );
+    expect(f.tx.publisherEntityBinding.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ botAccessCheckedAt: f.bindingState.botAccessCheckedAt }),
+      }),
+    );
     expect(f.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
   });
 
@@ -2605,9 +2617,25 @@ describe('PublisherBindingRefreshService', () => {
     },
   );
 
-  it.each([403, 404])(
-    'terminalizes user-access HTTP %s only after a complete roster confirms absence',
-    async (statusCode) => {
+  it.each(
+    [403, 404].flatMap((statusCode) => [
+      { statusCode, roster: [] },
+      {
+        statusCode,
+        roster: [
+          {
+            userId: 'another-admin',
+            isBot: true,
+            isAdmin: true,
+            isOwner: false,
+            explicitPrivilegeEvidence: true,
+          },
+        ],
+      },
+    ]),
+  )(
+    'preserves user authority after member HTTP $statusCode and roster absence $roster',
+    async ({ statusCode, roster }) => {
       const { service, tx, edgeState, maxClient, bindingState } = createHarness({
         isAdmin: true,
         isOwner: false,
@@ -2617,10 +2645,12 @@ describe('PublisherBindingRefreshService', () => {
       const candidateVersion = `publisher-edge-${statusCode}`;
       edgeState.source = 'publisher_targeted_user_access';
       edgeState.sourceVersion = candidateVersion;
+      edgeState.deniedReason = null;
       const failure = Object.assign(new Error(`HTTP ${statusCode}`), {
         response: { status: statusCode },
       });
       maxClient.getChatMemberAccess.mockRejectedValueOnce(failure);
+      maxClient.getChatAdminAccesses.mockResolvedValue(roster as never);
 
       await expect(
         service.refresh({
@@ -2629,30 +2659,10 @@ describe('PublisherBindingRefreshService', () => {
           candidateVersion,
           reason: 'manual_recheck',
         }),
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow('MAX actor role evidence is incomplete');
 
-      expect(tx.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          create: expect.objectContaining({
-            state: ManagedEntityAccessState.USER_DENIED,
-            userRole: ManagedEntityAccessRole.UNKNOWN,
-            botRole: ManagedEntityAccessRole.ADMIN,
-            deniedReason: 'publisher_user_access_unavailable',
-            lastMaxErrorCode: `HTTP_${statusCode}`,
-            lastMaxErrorMessage: null,
-            lastMaxStatusCode: statusCode,
-          }),
-          update: expect.objectContaining({
-            state: ManagedEntityAccessState.USER_DENIED,
-            userRole: ManagedEntityAccessRole.UNKNOWN,
-            botRole: ManagedEntityAccessRole.ADMIN,
-            deniedReason: 'publisher_user_access_unavailable',
-            lastMaxErrorCode: `HTTP_${statusCode}`,
-            lastMaxErrorMessage: null,
-            lastMaxStatusCode: statusCode,
-          }),
-        }),
-      );
+      expect(tx.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(edgeState.deniedReason).toBeNull();
       expect(bindingState.botAccessState).toBe(ChatBotAccessState.CONFIRMED_ADMIN);
       expect(maxClient.getChatAdminAccesses).toHaveBeenCalledWith(
         'chat-1',

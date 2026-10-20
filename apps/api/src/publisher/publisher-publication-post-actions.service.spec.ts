@@ -44,7 +44,8 @@ function setup(overrides: Record<string, unknown> = {}) {
           status: 'ACTIVE',
           botAccessState: 'CONFIRMED_ADMIN',
           botAccessExpiresAt: new Date(NOW.getTime() + 900_000),
-          lifecycleEventAt: null,
+          lifecycleEventAt: null as Date | null,
+          sendRouteQuarantinedUntil: null as Date | null,
         },
       }),
     },
@@ -140,6 +141,51 @@ function setup(overrides: Record<string, unknown> = {}) {
 describe('Publisher publication post actions', () => {
   beforeEach(() => jest.useFakeTimers().setSystemTime(NOW));
   afterEach(() => jest.useRealTimers());
+
+  function entityFixture() {
+    return setup({
+      publicationOccurrence: {
+        publicationId: 'publication-1',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publik',
+        deliveryDeadlineAt: new Date(NOW.getTime() - 1),
+        retryAuthorizedAt: null,
+        retryExpiresAt: null,
+      },
+    });
+  }
+
+  it('pins an accepted entity post after its former author loses access and retains deletion', async () => {
+    const f = entityFixture();
+    f.prisma.managedEntityAccessEdge.findFirst.mockResolvedValue(null);
+    await f.service.processDue();
+    expect(f.row.pinStatus).toBe('DONE');
+    expect(f.max.pinMessage).toHaveBeenCalledTimes(1);
+    expect(f.prisma.managedEntityAccessEdge.findFirst).not.toHaveBeenCalled();
+    expect(f.readiness.requestActorAccessRefresh).not.toHaveBeenCalled();
+    expect(f.row.deleteStatus).toBe('PENDING');
+    jest.setSystemTime(new Date(NOW.getTime() + 3600_000));
+    await f.service.processDue();
+    expect(f.row.deleteStatus).toBe('DONE');
+  });
+
+  it.each(['bot', 'policy', 'lifecycle', 'quarantine'] as const)(
+    'retains the final entity %s guard for a pin',
+    async (change) => {
+      const f = entityFixture();
+      const chat = await f.prisma.chat.findUnique();
+      if (change === 'bot') chat.publisherBinding.botAccessState = 'LOST';
+      if (change === 'policy') chat.publicationPolicy.publikEnabled = false;
+      if (change === 'lifecycle')
+        chat.publisherBinding.lifecycleEventAt = new Date(NOW.getTime() + 1);
+      if (change === 'quarantine')
+        chat.publisherBinding.sendRouteQuarantinedUntil = new Date(NOW.getTime() + 60_000);
+      await f.service.processDue();
+      expect(f.row.pinStatus).toBe(change === 'quarantine' ? 'PENDING' : 'FAILED');
+      expect(f.row.pinAttemptCount).toBe(0);
+      expect(f.readiness.requestActorAccessRefresh).not.toHaveBeenCalled();
+    },
+  );
 
   it('requests authority refresh for a missing author edge without losing committed deletion', async () => {
     const f = setup();

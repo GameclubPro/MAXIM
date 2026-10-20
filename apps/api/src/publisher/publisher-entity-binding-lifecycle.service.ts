@@ -366,8 +366,8 @@ export class PublisherEntityBindingLifecycleService {
           },
         });
         await persistCatalog(kind === 'bot_removed' ? 'MISSING' : 'ACTIVE');
-        if (kind === 'bot_added' || kind === 'bot_removed') {
-          await invalidatePublisherUserAccess(kind);
+        if (kind === 'bot_removed') {
+          await invalidatePublisherUserAccess('bot_removed');
         }
         if (kind !== 'bot_removed') {
           await persistActorCandidate();
@@ -398,6 +398,20 @@ export class PublisherEntityBindingLifecycleService {
       }
 
       if (kind === 'bot_added') {
+        // FLAG: An add observation is not negative access evidence. Preserve confirmed
+        // exact-bot and human authority, including when delivery follows a newer probe.
+        // A preceding trusted removal remains latched by the activation guard above.
+        if (
+          current.publisherBotId === this.publisherBotId &&
+          current.status === ChatBotMembershipStatus.ACTIVE &&
+          (current.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+            current.botAccessState === ChatBotAccessState.CONFIRMED_OWNER)
+        ) {
+          await tx.publisherEntityBinding.update({ where: { chatId }, data: observation });
+          await persistCatalog('ACTIVE');
+          dormantPassiveObservation = true;
+          return 'applied' as const;
+        }
         await tx.publisherEntityBinding.update({
           where: { chatId },
           data: {
@@ -420,7 +434,6 @@ export class PublisherEntityBindingLifecycleService {
           },
         });
         await persistCatalog('ACTIVE');
-        await invalidatePublisherUserAccess('bot_added');
         await persistActorCandidate();
         return 'applied' as const;
       }

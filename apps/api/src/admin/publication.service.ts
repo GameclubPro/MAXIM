@@ -88,6 +88,11 @@ import {
   type ResolvedPublicationTarget,
 } from './publication-publisher-routing.service';
 import { publicationBackgroundAccess } from './publication-background-access';
+import {
+  publicationAdminAccessWhere,
+  publicationAdminScope,
+  publicationAdminTargetWhere,
+} from './publication-admin-access';
 import { readStoredPublicationButtons } from './publication-buttons';
 import {
   buildPublicationCalendarTargetPredicates,
@@ -258,13 +263,26 @@ export class PublicationService {
         parsed.data.entityType === 'channel'
           ? PublicationAudienceSelection.ALL_CHANNELS
           : PublicationAudienceSelection.ALL_CHATS;
-      filters.push({
-        OR: [
-          { audienceSelection: PublicationAudienceSelection.ALL_MANAGED },
-          { audienceSelection },
-          { targets: { some: { entityType } } },
-        ],
-      });
+      filters.push(
+        publisherBotId
+          ? {
+              targets: {
+                some: {
+                  entityType,
+                  ...publicationAdminTargetWhere(
+                    publicationAdminScope(user.userId, publisherBotId),
+                  ),
+                },
+              },
+            }
+          : {
+              OR: [
+                { audienceSelection: PublicationAudienceSelection.ALL_MANAGED },
+                { audienceSelection },
+                { targets: { some: { entityType } } },
+              ],
+            },
+      );
     }
     const usesCurrentRevisionFailedSelector =
       parsed.data.status === 'failed' &&
@@ -315,7 +333,10 @@ export class PublicationService {
     }
 
     const publicationWhere: Prisma.PublicationWhereInput = {
-      actorUserId: user.userId,
+      ...publicationAdminAccessWhere(
+        publicationAdminScope(user.userId, publisherBotId ?? undefined),
+        dispatchProfile,
+      ),
       ...(dispatchProfile ? { dispatchProfile } : {}),
       lifecycle: { in: lifecycle },
       ...(filters.length > 0 ? { AND: filters } : {}),
@@ -323,7 +344,8 @@ export class PublicationService {
     let failedPageIdentifiers: Array<{ id: string; updatedAt: Date }> = [];
     let rows: any[];
     const usesSqlPageSelector =
-      usesCurrentRevisionFailedSelector || Boolean(parsed.data.query && publisherBotId);
+      usesCurrentRevisionFailedSelector ||
+      Boolean(publisherBotId && (parsed.data.query || parsed.data.status === 'failed'));
     if (usesSqlPageSelector) {
       const pageParams = {
         actorUserId: user.userId,
@@ -352,7 +374,11 @@ export class PublicationService {
           },
           orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
           take: parsed.data.limit + 1,
-          include: this.publicationPresenterService.publicationSummaryInclude(),
+          include: this.publicationPresenterService.publicationSummaryInclude(
+            dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+              ? publicationAdminScope(user.userId, publisherBotId ?? undefined)
+              : undefined,
+          ),
         });
         const hydratedById = new Map(hydratedRows.map((row) => [row.id, row]));
         rows = failedPageIdentifiers.flatMap((row) => {
@@ -365,7 +391,11 @@ export class PublicationService {
         where: publicationWhere,
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         take: parsed.data.limit + 1,
-        include: this.publicationPresenterService.publicationSummaryInclude(),
+        include: this.publicationPresenterService.publicationSummaryInclude(
+          dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+            ? publicationAdminScope(user.userId, publisherBotId ?? undefined)
+            : undefined,
+        ),
       });
     }
 
@@ -557,6 +587,9 @@ export class PublicationService {
       publicationId,
       user.userId,
       dispatchProfile,
+      dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? this.publisherRouting.requireNewRoute().requiredBotId
+        : undefined,
     );
     if (!row || (dispatchProfile && row.dispatchProfile !== dispatchProfile)) {
       throw new NotFoundException('Публикация не найдена.');
@@ -589,6 +622,7 @@ export class PublicationService {
     const requestHash = this.hashMutationRequest(request);
     const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
     if (replay) {
+      await this.get(replay.publicationId, user, dispatchProfile);
       await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
         publicationId: replay.publicationId,
         mutationRequestId: request.requestId,
@@ -765,6 +799,7 @@ export class PublicationService {
     const requestHash = this.hashMutationRequest({ publicationId, ...request });
     const replay = await this.findMutationReplay(user.userId, request.requestId, requestHash);
     if (replay) {
+      await this.assertPublicationOwner(publicationId, user.userId, dispatchProfile);
       this.assertReplayPublication(replay.publicationId, publicationId);
       await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
         publicationId,
@@ -776,7 +811,7 @@ export class PublicationService {
     const existing = await this.prisma.publication.findFirst({
       where: {
         id: publicationId,
-        actorUserId: user.userId,
+        ...this.publicationAccessWhere(user.userId, dispatchProfile),
         ...(dispatchProfile ? { dispatchProfile } : {}),
       },
       include: {
@@ -897,6 +932,7 @@ export class PublicationService {
       await this.publicationContentService.assertPublisherCompatibleContent(
         preparedContent,
         user.userId,
+        publicationId,
       );
     }
     const nextVersion = existing.version + 1;
@@ -909,7 +945,7 @@ export class PublicationService {
         const updated = await tx.publication.updateMany({
           where: {
             id: publicationId,
-            actorUserId: user.userId,
+            ...this.publicationAccessWhere(user.userId, existing.dispatchProfile),
             dispatchProfile: existing.dispatchProfile,
             version: request.expectedRevision,
             lifecycle: existing.lifecycle,
@@ -1219,6 +1255,7 @@ export class PublicationService {
       publicationId,
       user.userId,
       dispatchProfile,
+      'read',
     );
     const parsed = listPublicationDeliveriesQuerySchema.safeParse(query);
     if (!parsed.success) {
@@ -1227,6 +1264,9 @@ export class PublicationService {
 
     const rows = await this.prisma.managedBroadcastDelivery.findMany({
       where: {
+        ...(publication.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+          ? { targetChatId: { in: publication.targets.map((target) => target.targetChatId) } }
+          : {}),
         publicationOccurrence: {
           is: {
             publicationId,
@@ -1300,6 +1340,7 @@ export class PublicationService {
     const requestHash = this.hashMutationRequest({ publicationId, occurrenceId, ...parsed.data });
     const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
     if (replay) {
+      await this.assertPublicationOwner(publicationId, user.userId, dispatchProfile);
       this.assertReplayPublication(replay.publicationId, publicationId);
       await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
         publicationId,
@@ -1465,7 +1506,7 @@ export class PublicationService {
         const activatedPublication = await tx.publication.updateMany({
           where: {
             id: publicationId,
-            actorUserId: user.userId,
+            ...this.publicationAccessWhere(user.userId, publication.dispatchProfile),
             dispatchProfile: publication.dispatchProfile,
             lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
             ...(contentMode === 'latest'
@@ -1669,30 +1710,43 @@ export class PublicationService {
       await wakeup.enqueueResolution(publicationId, occurrenceId, parsed.data.requestId);
       return this.get(publicationId, user, dispatchProfile);
     };
-    const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
-    if (replay) {
-      this.assertReplayPublication(replay.publicationId, publicationId);
-      return finishResolution();
-    }
     const publication = await this.assertPublicationOwner(
       publicationId,
       user.userId,
       dispatchProfile,
+      'read',
     );
-    await this.resolvePersistedPublicationTargets(
-      user,
-      publication.targets,
-      publication.dispatchProfile,
-    );
+    if (publication.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1) {
+      await this.resolvePersistedPublicationTargets(
+        user,
+        publication.targets,
+        publication.dispatchProfile,
+      );
+    }
     const delivery = await this.prisma.managedBroadcastDelivery.findFirst({
       where: {
         id: parsed.data.deliveryId,
+        ...(publication.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+          ? { targetChatId: { in: publication.targets.map((target) => target.targetChatId) } }
+          : {}),
         publicationOccurrenceId: occurrenceId,
         publicationOccurrence: { is: { publicationId } },
       },
     });
     if (!delivery) {
       throw new NotFoundException('Доставка не найдена.');
+    }
+    if (publication.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1) {
+      await this.resolvePersistedPublicationTargets(
+        user,
+        publication.targets.filter((target) => target.targetChatId === delivery.targetChatId),
+        publication.dispatchProfile,
+      );
+    }
+    const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
+    if (replay) {
+      this.assertReplayPublication(replay.publicationId, publicationId);
+      return finishResolution();
     }
     const manualReviewWhere = buildManualReviewDeliveryWhere(delivery);
     if (!manualReviewWhere) {
@@ -2676,6 +2730,7 @@ export class PublicationService {
     const requestHash = this.hashMutationRequest({ publicationId, action, ...parsed.data });
     const replay = await this.findMutationReplay(user.userId, parsed.data.requestId, requestHash);
     if (replay) {
+      await this.assertPublicationOwner(publicationId, user.userId, dispatchProfile);
       this.assertReplayPublication(replay.publicationId, publicationId);
       if (action === 'resume') {
         await this.publisherPublicationWakeupQueue.enqueueAfterCommittedMutation({
@@ -2735,7 +2790,7 @@ export class PublicationService {
         const updated = await tx.publication.updateMany({
           where: {
             id: publicationId,
-            actorUserId: user.userId,
+            ...this.publicationAccessWhere(user.userId, publication.dispatchProfile),
             dispatchProfile: publication.dispatchProfile,
             version: parsed.data.expectedRevision,
             lifecycle: publication.lifecycle,
@@ -3135,7 +3190,7 @@ export class PublicationService {
     if (!replaceConflicts) {
       this.throwPublicationCalendarConflict(conflicts, targets);
     }
-    this.assertPublicationOccurrenceReplacementSafe(conflicts.occurrences, targets, actorUserId);
+    this.assertPublicationOccurrenceReplacementSafe(conflicts.occurrences, targets);
   }
 
   private async reservePublicationCalendar(
@@ -3166,7 +3221,7 @@ export class PublicationService {
     if (!replaceConflicts) {
       this.throwPublicationCalendarConflict(conflicts, targets);
     }
-    this.assertPublicationOccurrenceReplacementSafe(conflicts.occurrences, targets, actorUserId);
+    this.assertPublicationOccurrenceReplacementSafe(conflicts.occurrences, targets);
 
     const publicationOccurrenceIds = conflicts.occurrences.map((occurrence) => occurrence.id);
     const publicationExecutionBroadcasts =
@@ -3257,14 +3312,9 @@ export class PublicationService {
   private assertPublicationOccurrenceReplacementSafe(
     occurrences: PublicationCalendarConflictOccurrence[],
     targets: ResolvedPublicationTarget[],
-    actorUserId: string,
   ): void {
-    if (occurrences.some((occurrence) => occurrence.publication.actorUserId !== actorUserId)) {
-      throw new ConflictException({
-        code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW',
-        message: 'Слот занят публикацией другого администратора. Выберите другое время.',
-      });
-    }
+    // FLAG: Every replacement target has current administrator authority. The complete
+    // conflicting audience must be included; its creator is retained as audit attribution.
     const replacementTargets = new Set(
       targets.map((target) => `${this.toPrismaEntityType(target.entityType)}:${target.chatId}`),
     );
@@ -3647,11 +3697,12 @@ export class PublicationService {
     publicationId: string,
     actorUserId: string,
     dispatchProfile?: PublicationDispatchProfile,
+    mode: 'read' | 'manage' = 'manage',
   ) {
     const publication = await this.prisma.publication.findFirst({
       where: {
         id: publicationId,
-        actorUserId,
+        ...this.publicationAccessWhere(actorUserId, dispatchProfile, mode),
         ...(dispatchProfile ? { dispatchProfile } : {}),
       },
       select: {
@@ -3662,6 +3713,16 @@ export class PublicationService {
         requiredBotId: true,
         canonicalContentRevisionId: true,
         targets: {
+          ...(dispatchProfile === PublicationDispatchProfile.PUBLIK_V1 && mode === 'read'
+            ? {
+                where: publicationAdminTargetWhere(
+                  publicationAdminScope(
+                    actorUserId,
+                    this.publisherRouting.requireNewRoute().requiredBotId,
+                  ),
+                ),
+              }
+            : {}),
           orderBy: { position: 'asc' },
           select: { targetChatId: true, entityType: true },
         },
@@ -3671,6 +3732,23 @@ export class PublicationService {
       throw new NotFoundException('Публикация не найдена.');
     }
     return publication;
+  }
+
+  private publicationAccessWhere(
+    actorUserId: string,
+    profile?: PublicationDispatchProfile,
+    mode: 'read' | 'manage' = 'manage',
+  ): Prisma.PublicationWhereInput {
+    return publicationAdminAccessWhere(
+      publicationAdminScope(
+        actorUserId,
+        profile === PublicationDispatchProfile.PUBLIK_V1
+          ? this.publisherRouting.requireNewRoute().requiredBotId
+          : undefined,
+      ),
+      profile,
+      mode,
+    );
   }
 
   private assertNewPublicationProfile(dispatchProfile: PublicationDispatchProfile): void {

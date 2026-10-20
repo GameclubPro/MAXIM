@@ -29,7 +29,7 @@ local Docker-socket access under the production pg_hba rules, with:
   - ten rules-publication metadata columns; no rules text, media, links, or settings
   - seventeen Publisher binding/comment metadata columns
   - forty-three publication/access metadata columns; IDs are join-only and never report output
-  - nineteen additive scheduled-slot metadata columns when the complete group exists;
+  - thirty-one additive scheduled-slot metadata columns when the complete group exists;
     recipient IDs and lock tokens are join/check-only and never report output
   - eight commercial-review metadata columns only; no evidence, captions or user/message IDs
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported

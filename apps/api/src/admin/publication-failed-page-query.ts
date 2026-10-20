@@ -7,6 +7,12 @@ import {
   PublicationLifecycle,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import {
+  publicationAdminScope,
+  publicationAdminReadSql,
+  publicationAdminTargetSql,
+  publicationAdminDeliverySql,
+} from './publication-admin-access';
 
 export type CurrentRevisionFailedPublicationPageParams = {
   actorUserId: string;
@@ -66,6 +72,13 @@ export async function selectPublicationSearchPage(
   ) {
     throw new Error('Publisher bot id is required for PUBLIK_V1 publication search');
   }
+  const scope =
+    params.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+      ? publicationAdminScope(params.actorUserId, publisherBotId)
+      : undefined;
+  const allTargetsAuthorized = scope
+    ? Prisma.sql`NOT EXISTS (SELECT 1 FROM "publication_targets" AS target WHERE target."publication_id" = publication."id" AND NOT ${publicationAdminTargetSql(scope)})`
+    : Prisma.sql`TRUE`;
   const targetSearchFilter =
     params.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
       ? Prisma.sql`
@@ -83,6 +96,7 @@ export async function selectPublicationSearchPage(
               OFFSET 0
             ) AS catalog_match ON TRUE
             WHERE target."publication_id" = publication."id"
+              AND ${scope ? publicationAdminTargetSql(scope) : Prisma.sql`TRUE`}
             OFFSET 0
           )
         `
@@ -120,8 +134,14 @@ export async function selectPublicationSearchPage(
     params.entityType === 'channel'
       ? PublicationAudienceSelection.ALL_CHANNELS
       : PublicationAudienceSelection.ALL_CHATS;
-  const entityFilter = entityType
-    ? Prisma.sql`
+  const entityFilter =
+    entityType && scope
+      ? Prisma.sql`AND EXISTS (SELECT 1 FROM "publication_targets" AS target
+        WHERE target."publication_id" = publication."id"
+          AND target."entity_type" = CAST(${entityType} AS "ChatEntityType")
+          AND ${publicationAdminTargetSql(scope)})`
+      : entityType
+        ? Prisma.sql`
         AND (
           publication."audience_selection" =
             'ALL_MANAGED'::"PublicationAudienceSelection"
@@ -136,7 +156,7 @@ export async function selectPublicationSearchPage(
           )
         )
       `
-    : Prisma.empty;
+        : Prisma.empty;
   const cursorUpdatedAt = params.cursor ? new Date(params.cursor.updatedAt) : null;
   const cursorFilter = params.cursor
     ? Prisma.sql`
@@ -170,7 +190,7 @@ export async function selectPublicationSearchPage(
   const statusFilter = currentRevisionFailure
     ? Prisma.sql`
       AND (
-        publication."lifecycle" = 'ERROR'::"PublicationLifecycle"
+        (publication."lifecycle" = 'ERROR'::"PublicationLifecycle" AND ${allTargetsAuthorized})
         OR EXISTS (
           SELECT 1
           FROM "publication_occurrences" AS occurrence
@@ -178,15 +198,16 @@ export async function selectPublicationSearchPage(
             AND occurrence."schedule_id" = schedule."id"
             AND occurrence."schedule_revision" = schedule."revision"
             AND (
-              occurrence."status" IN (
+              (occurrence."status" IN (
                 'FAILED'::"PublicationOccurrenceStatus",
                 'PARTIAL'::"PublicationOccurrenceStatus",
                 'AMBIGUOUS'::"PublicationOccurrenceStatus"
-              )
+              ) AND (${allTargetsAuthorized} OR NOT EXISTS (SELECT 1 FROM "managed_broadcast_deliveries" AS existing_delivery WHERE existing_delivery."publication_occurrence_id" = occurrence."id")))
               OR EXISTS (
                 SELECT 1
                 FROM "managed_broadcast_deliveries" AS delivery
                 WHERE delivery."publication_occurrence_id" = occurrence."id"
+                  ${publicationAdminDeliverySql(scope)}
                   AND delivery."status" IN (
                     'FAILED'::"ManagedBroadcastDeliveryStatus",
                     'AMBIGUOUS'::"ManagedBroadcastDeliveryStatus"
@@ -198,12 +219,13 @@ export async function selectPublicationSearchPage(
     : params.status === 'failed'
       ? Prisma.sql`
         AND (
-          publication."lifecycle" = 'ERROR'::"PublicationLifecycle"
+          (publication."lifecycle" = 'ERROR'::"PublicationLifecycle" AND ${allTargetsAuthorized})
           OR EXISTS (
             SELECT 1 FROM "publication_occurrences" AS occurrence
             INNER JOIN "managed_broadcast_deliveries" AS delivery
               ON delivery."publication_occurrence_id" = occurrence."id"
             WHERE occurrence."publication_id" = publication."id"
+              ${publicationAdminDeliverySql(scope)}
               AND delivery."status" IN (
                 'FAILED'::"ManagedBroadcastDeliveryStatus",
                 'AMBIGUOUS'::"ManagedBroadcastDeliveryStatus"
@@ -221,7 +243,8 @@ export async function selectPublicationSearchPage(
           )})`
         : Prisma.empty;
 
-  // FLAG: Filter actor-owned publications and the exact bot catalog inside one bounded page.
+  // FLAG: Filter exact Publisher administrator scope inside the page, including target search.
+  // An administrator of one recipient must not discover another recipient through filters.
   // Current failed pages retain schedule revision equality; never preload a catalog ID list.
   // FLAG: OFFSET 0 preserves correlation; LATERAL prevents scanning the catalog before targets.
   return prisma.$queryRaw<FailedPublicationPageIdentifier[]>(Prisma.sql`
@@ -231,7 +254,7 @@ export async function selectPublicationSearchPage(
     FROM "publications" AS publication
     LEFT JOIN "publication_schedules" AS schedule
       ON schedule."publication_id" = publication."id"
-    WHERE publication."actor_user_id" = ${params.actorUserId}
+    WHERE ${scope ? publicationAdminReadSql(scope) : Prisma.sql`publication."actor_user_id" = ${params.actorUserId}`}
       ${dispatchProfileFilter}
       AND ${lifecycleFilter}
       AND ${scheduleModeFilter}

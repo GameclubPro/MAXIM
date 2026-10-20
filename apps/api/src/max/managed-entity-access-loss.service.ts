@@ -484,7 +484,6 @@ export class ManagedEntityAccessLossService {
           userId: { in: persisted.affectedUserIds },
           botId: { in: activeBotIds },
           state: ManagedEntityAccessState.GRANTED,
-          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
         },
         select: { userId: true },
       });

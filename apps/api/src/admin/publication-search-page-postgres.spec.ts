@@ -41,6 +41,17 @@ postgres('Publisher publication read models on PostgreSQL', () => {
     await db.chat.createMany({
       data: unrelatedChatIds.map((id) => ({ id, title: 'Unrelated catalog target' })),
     });
+    await db.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        userId: actorUserId,
+        botId: publisherBotId,
+        entityType: 'CHAT',
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+      },
+    });
     await db.managedBotChatCatalog.createMany({
       data: [
         { botId: publisherBotId, chatId, title: 'Publisher target needle', entityType: 'CHAT' },
@@ -128,7 +139,7 @@ postgres('Publisher publication read models on PostgreSQL', () => {
       ...overrides,
     });
 
-  it('limits an actor-scoped search page before hydration despite thousands of catalog matches', async () => {
+  it('limits an administrator-scoped search page before hydration despite thousands of catalog matches', async () => {
     const first = await page();
     expect(first.map((row) => row.id)).toEqual([fallbackId]);
     const second = await page({

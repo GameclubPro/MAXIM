@@ -1090,7 +1090,13 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       ManagedBroadcastStatus.ACTIVE,
     ]);
     expect(actorAccess).toHaveBeenCalledTimes(1);
-    expect(actorAccess).toHaveBeenCalledWith(row, delivery, 'publisher-bot', 'admin-1');
+    expect(actorAccess).toHaveBeenCalledWith(row, delivery, 'publisher-bot', {
+      kind: 'publication',
+      occurrenceId: row.publicationOccurrenceId,
+      contentRevisionId: row.publicationContentRevisionId,
+      actorUserId: 'admin-1',
+      entityType: 'chat',
+    });
   });
 
   it.each(['P2024', 'P2028'])(
@@ -4033,6 +4039,24 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
             updateMany: deliveryUpdateMany,
           },
           managedEntityAccessEdge: { findMany: actorAccessFindMany },
+          publicationOccurrence: {
+            findUnique: jest.fn().mockResolvedValue({
+              contentRevisionId: row.publicationContentRevisionId,
+              dispatchProfile: 'PUBLIK_V1',
+              requiredBotId: 'publisher-bot',
+              status: 'IN_PROGRESS',
+              scheduleRevision: 1,
+              deliveryDeadlineAt: null,
+              retryAuthorizedAt: null,
+              retryExpiresAt: null,
+              publication: {
+                lifecycle: 'ACTIVE',
+                dispatchProfile: 'PUBLIK_V1',
+                requiredBotId: 'publisher-bot',
+              },
+              schedule: { status: 'ACTIVE', revision: 1 },
+            }),
+          },
         },
         maxRoutedPublicationService: { publish },
         publisherRuntimeBoundaryService: { assertDispatchEnabled: jest.fn() },

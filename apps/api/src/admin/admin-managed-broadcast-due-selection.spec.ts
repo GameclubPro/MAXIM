@@ -103,7 +103,7 @@ describe('publication managed broadcast due selection', () => {
     );
 
     expect(result).toEqual({ id: 'broadcast-next', nextSendAt });
-    const query = $queryRaw.mock.calls[0]![0];
+    const query = $queryRaw.mock.calls[0]![0] as Prisma.Sql;
     expect(query.sql).toContain('broadcast."locked_at" IS NULL');
     expect(query.sql).toContain('occurrence."schedule_revision" = schedule."revision"');
     expect(query.sql).toContain(
@@ -112,6 +112,13 @@ describe('publication managed broadcast due selection', () => {
     expect(query.sql).toContain('pending_delivery."dispatch_blocked_at" <= ?');
     expect(query.sql).toContain('pending_delivery."last_error_code" IS DISTINCT FROM ?');
     expect(query.sql).toContain('fresh_delivery."locked_at" >= ?');
+    expect(query.sql).toContain('WITH scheduled_delivery_keys AS MATERIALIZED');
+    expect(query.sql).toContain('WITH scheduled_delivery_page AS MATERIALIZED');
+    expect(query.sql).toContain('pg_column_compression(broadcast."target_chat_ids") IS NULL');
+    expect(query.sql).toContain('pg_column_size(broadcast."target_chat_ids") <= 16384');
+    expect(query.sql).toContain('isfinite(occurrence."delivery_deadline_at")');
+    expect(query.sql).toContain('waiting."next_attempt_at" > ?');
+    expect(query.sql).toContain('waiting."delivery_error_absent" = TRUE');
     expect(query.sql).toContain('LIMIT 1');
     expect(query.values).toEqual([
       'ONCE',
@@ -123,6 +130,19 @@ describe('publication managed broadcast due selection', () => {
       new Date('2026-09-04T09:59:00.000Z'),
       new Date('2026-09-04T09:55:00.000Z'),
       new Date('2026-09-04T09:55:00.000Z'),
+      now,
+      now,
+      now,
+      'PUBLISHER_EXPLICIT_RETRY',
+      now,
+      65,
+      64,
+      64,
+      64,
+      now,
+      now,
+      new Date('2026-09-04T09:59:00.000Z'),
+      now,
     ]);
   });
 

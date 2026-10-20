@@ -1,3 +1,4 @@
+import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import {
   decodePublicationListCursor,
   encodePublicationListCursor,
@@ -201,7 +202,10 @@ describe('Publication performance and pagination', () => {
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          actorUserId: 'user-1',
+          ...publicationAdminAccessWhere(
+            publicationAdminScope('user-1', 'publisher-bot'),
+            PublicationDispatchProfile.PUBLIK_V1,
+          ),
           dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         }),
       }),
@@ -250,7 +254,10 @@ describe('Publication performance and pagination', () => {
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          actorUserId: 'actor-1',
+          ...publicationAdminAccessWhere(
+            publicationAdminScope('actor-1', 'publisher-bot'),
+            PublicationDispatchProfile.PUBLIK_V1,
+          ),
           dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         }),
       }),
@@ -262,12 +269,17 @@ describe('Publication performance and pagination', () => {
     expect(issueSql).toContain('current_occurrence."hasExecutionDeliveries" = FALSE');
     expect(issueSql).toContain('publication."lifecycle" IN (');
     expect(issueSql).toContain('schedule."status" IN (');
-    expect(extractSqlValues(queryRaw.mock.calls[2]?.[0])).toEqual([
-      'publication-publik-1',
-      'publication-publik-2',
-      'actor-1',
-      PublicationDispatchProfile.PUBLIK_V1,
-    ]);
+    expect(extractSqlValues(queryRaw.mock.calls[2]?.[0])).toEqual(
+      expect.arrayContaining([
+        'publication-publik-1',
+        'publication-publik-2',
+        'actor-1',
+        'publisher-bot',
+        PublicationDispatchProfile.PUBLIK_V1,
+      ]),
+    );
+    expect(issueSql).toContain('access_edge."user_id" = ?');
+    expect(issueSql).toContain('access_edge."bot_id" = ?');
   });
 
   it('searches PUBLIK_V1 targets only through the exact active Publisher catalog', async () => {
@@ -302,7 +314,10 @@ describe('Publication performance and pagination', () => {
     );
     expect(catalogSearchValues.at(-1)).toBe(31);
     expect(publicationFindMany.mock.calls[0]?.[0].where).toMatchObject({
-      actorUserId: 'user-1',
+      ...publicationAdminAccessWhere(
+        publicationAdminScope('user-1', 'publisher-bot'),
+        PublicationDispatchProfile.PUBLIK_V1,
+      ),
       dispatchProfile: 'PUBLIK_V1',
       id: { in: ['publication-match'] },
     });
@@ -341,7 +356,10 @@ describe('Publication performance and pagination', () => {
       expect.objectContaining({
         where: {
           id: 'publication-publik',
-          actorUserId: 'actor-1',
+          ...publicationAdminAccessWhere(
+            publicationAdminScope('actor-1', 'publisher-bot'),
+            PublicationDispatchProfile.PUBLIK_V1,
+          ),
           dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         },
       }),
@@ -531,7 +549,7 @@ describe('Publication performance and pagination', () => {
     const selectorSql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
     expect(selectorSql).toContain('occurrence."schedule_revision" = schedule."revision"');
     expect(selectorSql).toContain(
-      'publication."lifecycle" = \'ERROR\'::"PublicationLifecycle" OR EXISTS',
+      '(publication."lifecycle" = \'ERROR\'::"PublicationLifecycle" AND TRUE) OR EXISTS',
     );
     expect(selectorSql).toContain(
       '\'FAILED\'::"PublicationOccurrenceStatus", \'PARTIAL\'::"PublicationOccurrenceStatus", \'AMBIGUOUS\'::"PublicationOccurrenceStatus"',

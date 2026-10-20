@@ -1,3 +1,4 @@
+import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import {
   MAX_PUBLICATION_DELETE_AFTER_MINUTES,
   type PublicationPostActionRequest,
@@ -92,7 +93,10 @@ export class PublicationPostActionCommandsService {
       throw new BadRequestException('Некорректные параметры действия.');
     const request = parsed.data;
     const publication = await this.prisma.publication.findFirst({
-      where: { id: publicationId, actorUserId: user.userId, dispatchProfile: 'PUBLIK_V1' },
+      where: {
+        id: publicationId,
+        ...publicationAdminAccessWhere(publicationAdminScope(user.userId), 'PUBLIK_V1'),
+      },
       select: { id: true, version: true, requiredBotId: true },
     });
     if (!publication) throw new NotFoundException('Публикация не найдена.');

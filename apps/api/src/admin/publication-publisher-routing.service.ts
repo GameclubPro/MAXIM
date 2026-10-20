@@ -13,10 +13,7 @@ import {
   PublicationOccurrenceStatus,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  PublisherActorAccessRequiredException,
-  PublisherSetupRequiredException,
-} from '../publisher/publisher-errors';
+import { PublisherSetupRequiredException } from '../publisher/publisher-errors';
 import {
   PublisherReadinessService,
   type PublisherReadyRoute,
@@ -31,7 +28,6 @@ import { ManagedEntitiesService } from './managed-entities.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 import { createPendingPublicationContext } from './publication-target-preparation';
 import { PublisherPolicyService } from './publisher-policy.service';
-import { PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE } from './publication-dispatch-issue';
 import { recordPublicationDispatchOutcome } from './publication-delivery-timing';
 import { readPublicationRetryAuthorizedAt } from './publication-late-policy';
 
@@ -205,33 +201,15 @@ export class PublicationPublisherRoutingService {
       entityType:
         target.entityType === ChatEntityType.CHANNEL ? ('channel' as const) : ('chat' as const),
     }));
-    // FLAG: The saved audience is intent, not current execution authority. Keep every
-    // target; exact actor/bot/policy guards run independently before each delivery.
-    if (publication.audienceMode === 'SNAPSHOT' || publication.audienceSelection === 'SELECTED') {
-      return targets.map((target) => ({
-        ...target,
-        title: target.chatId,
-        avatarUrl: null,
-        link: null,
-      }));
-    }
-    try {
-      return await this.resolveAudienceTargets(
-        { userId: publication.actorUserId, username: null, displayName: null },
-        { selection: publication.audienceSelection, mode: 'DYNAMIC', targets: [] },
-        PublicationDispatchProfile.PUBLIK_V1,
-      );
-    } catch (error: unknown) {
-      if (!(error instanceof PublisherActorAccessRequiredException)) throw error;
-      // FLAG: A missing cached recipient is not proof of permanent access loss. Preserve the
-      // scheduled intent while the exact Publisher-owned access is refreshed; never use Major scope.
-      await this.readiness.requestActorAccessRefresh(
-        targets.filter((target) => error.chatIds.includes(target.chatId)),
-        publication.actorUserId,
-        publication.requiredBotId ?? '',
-      );
-      throw new PublisherSetupRequiredException(error.chatIds, PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE);
-    }
+    // FLAG: The accepted recipients are the entity-owned scope, including old DYNAMIC
+    // schedules. A change of administrator must never expand it to their other chats.
+    // Current actor/bot/policy authority is checked independently at each final effect.
+    return targets.map((target) => ({
+      ...target,
+      title: target.chatId,
+      avatarUrl: null,
+      link: null,
+    }));
   }
 
   async assertTargetsReady(
