@@ -18,7 +18,9 @@ import {
 } from './publisher-obsolete-retirement.mjs';
 import {
   captureRetirementRuntime,
+  executeRetirementCommand,
   parseRetirementArgs,
+  probeRetirementAdminHealth,
 } from './publisher-obsolete-retirement-host.mjs';
 
 const fixture = readFileSync(
@@ -203,7 +205,7 @@ test('every saved first SEND ledger state refuses the whole occurrence', async (
   assert.equal(preview.report.refusals.ledger_evidence, 1);
 });
 
-test('host accepts only digest-nominated maintenance commands and exact runtime identities', () => {
+test('host accepts only digest-nominated maintenance commands', () => {
   assert.deepEqual(parseRetirementArgs([]), { action: 'preview' });
   assert.equal(
     parseRetirementArgs(['preview', '--after-digest', 'a'.repeat(64)]).afterDigest,
@@ -217,32 +219,30 @@ test('host accepts only digest-nominated maintenance commands and exact runtime 
     ['apply', '--reviewed-digest', '../private'],
   ])
     assert.throws(() => parseRetirementArgs(args));
+});
+
+function runtimeFixture(t) {
   const sha = 'c'.repeat(40),
     image = `sha256:${'a'.repeat(64)}`;
   const oldExpected = process.env.MAXIM_EXPECTED_DEPLOY_SHA;
   process.env.MAXIM_EXPECTED_DEPLOY_SHA = sha;
-  try {
-    const run = (command, args) => {
-      if (command === 'git') return args[0] === 'rev-parse' ? sha : '';
-      if (args[0] === 'compose') return (args.at(-1) === 'api-admin' ? 'a' : 'b').repeat(64);
-      if (args[0] === 'image')
-        return JSON.stringify([
-          {
-            Id: image,
-            Config: { Labels: { 'org.opencontainers.image.revision': 'd'.repeat(40) } },
-          },
-        ]);
-      const admin = args[1] === 'a'.repeat(64);
-      const service = admin ? 'api-admin' : 'api-publisher';
-      return JSON.stringify([
+  t.after(() => {
+    if (oldExpected === undefined) delete process.env.MAXIM_EXPECTED_DEPLOY_SHA;
+    else process.env.MAXIM_EXPECTED_DEPLOY_SHA = oldExpected;
+  });
+  const rows = new Map(
+    ['api-admin', 'api-publisher'].map((service) => {
+      const admin = service === 'api-admin';
+      return [
+        service,
         {
-          Id: args[1],
+          Id: (admin ? 'a' : 'b').repeat(64),
           Image: image,
           RestartCount: 0,
           State: {
             Running: true,
+            Status: 'running',
             StartedAt: '2026-10-19T00:00:00Z',
-            Health: { Status: 'healthy' },
           },
           Config: {
             Env: [
@@ -256,20 +256,196 @@ test('host accepts only digest-nominated maintenance commands and exact runtime 
             },
           },
         },
+      ];
+    }),
+  );
+  const context = {
+    rows,
+    calls: [],
+    proof: JSON.stringify({ live: true, ready: true }),
+    afterProbe: () => {},
+  };
+  context.run = (command, args, options) => {
+    context.calls.push({ command, args, options });
+    if (command === 'git') return args[0] === 'rev-parse' ? sha : '';
+    assert.equal(command, 'docker');
+    if (args[0] === 'compose') return rows.get(args.at(-1))?.Id ?? '';
+    if (args[0] === 'image')
+      return JSON.stringify([
+        {
+          Id: image,
+          Config: { Labels: { 'org.opencontainers.image.revision': 'd'.repeat(40) } },
+        },
       ]);
-    };
-    assert.equal(captureRetirementRuntime(run).runtimeSha, 'd'.repeat(40));
-    assert.throws(() =>
-      captureRetirementRuntime((command, args) =>
-        command === 'docker' && args[0] === 'inspect'
-          ? run(command, args).replace('healthy', 'unhealthy')
-          : run(command, args),
-      ),
-    );
-  } finally {
-    if (oldExpected === undefined) delete process.env.MAXIM_EXPECTED_DEPLOY_SHA;
-    else process.env.MAXIM_EXPECTED_DEPLOY_SHA = oldExpected;
+    if (args[0] === 'exec') {
+      assert.deepEqual(args.slice(0, 5), [
+        'exec',
+        'a'.repeat(64),
+        'node',
+        '--input-type=module',
+        '-e',
+      ]);
+      assert.equal(options.timeout, 10_000);
+      assert.equal(options.maxBuffer, 1024);
+      context.afterProbe();
+      return context.proof;
+    }
+    assert.equal(args[0], 'inspect');
+    const row = [...rows.values()].find((value) => value.Id === args[1]);
+    return JSON.stringify(row ? [row] : []);
+  };
+  return context;
+}
+
+test('host captures exact headless Publisher and admin generations without Docker Health', (t) => {
+  const context = runtimeFixture(t);
+  const result = captureRetirementRuntime(context.run);
+  assert.equal(result.runtimeSha, 'd'.repeat(40));
+  assert.equal(result.generations.length, 2);
+  assert.ok([...context.rows.values()].every((row) => !Object.hasOwn(row.State, 'Health')));
+  assert.equal(context.calls.filter((call) => call.args[0] === 'exec').length, 1);
+  assert.equal(context.calls.filter((call) => call.args[0] === 'inspect').length, 4);
+});
+
+test('host refuses missing roles, non-running generations and optional unhealthy Docker Health', (t) => {
+  const context = runtimeFixture(t);
+  for (const service of ['api-admin', 'api-publisher']) {
+    const original = structuredClone(context.rows.get(service));
+    context.rows.delete(service);
+    assert.throws(() => captureRetirementRuntime(context.run), /exact_running_roles_required/u);
+    context.rows.set(service, original);
+    for (const health of [null, {}, { Status: 'starting' }, { Status: 'unhealthy' }]) {
+      original.State.Health = health;
+      assert.throws(() => captureRetirementRuntime(context.run), /runtime_generation_unproved/u);
+    }
+    delete original.State.Health;
+    for (const status of ['paused', 'restarting', 'exited']) {
+      original.State.Status = status;
+      assert.throws(() => captureRetirementRuntime(context.run), /runtime_generation_unproved/u);
+    }
+    original.State.Status = 'running';
+    original.State.Running = false;
+    assert.throws(() => captureRetirementRuntime(context.run), /runtime_generation_unproved/u);
+    original.State.Running = true;
+    original.State.Health = { Status: 'healthy' };
+    assert.equal(captureRetirementRuntime(context.run).runtimeSha, 'd'.repeat(40));
+    delete original.State.Health;
   }
+});
+
+test('host refuses generation replacement or restart during exact admin health proof', (t) => {
+  const context = runtimeFixture(t);
+  for (const service of ['api-admin', 'api-publisher']) {
+    const original = structuredClone(context.rows.get(service));
+    for (const mutation of [
+      (row) => (row.Id = 'e'.repeat(64)),
+      (row) => (row.RestartCount += 1),
+      (row) => (row.State.StartedAt = '2026-10-20T00:00:00Z'),
+      (row) => (row.Image = `sha256:${'e'.repeat(64)}`),
+      (row) => (row.Config.Labels['com.docker.compose.project'] = 'foreign'),
+    ]) {
+      context.afterProbe = () => mutation(context.rows.get(service));
+      assert.throws(
+        () => captureRetirementRuntime(context.run),
+        /runtime_changed_during_health_probe|publisher_identity_unproved|runtime_generation_unproved/u,
+      );
+      context.rows.set(service, structuredClone(original));
+    }
+  }
+});
+
+test('host refuses missing health acknowledgement and sanitizes HTTP command failures', (t) => {
+  const context = runtimeFixture(t);
+  for (const proof of ['', '{}', '{"live":true}', '{"live":true,"ready":false}', 'null']) {
+    context.proof = proof;
+    assert.throws(() => captureRetirementRuntime(context.run), /^Error: runtime_health_unproved$/u);
+  }
+  context.afterProbe = () => {
+    throw new Error('private HTTP response and credentials must not escape');
+  };
+  assert.throws(() => captureRetirementRuntime(context.run), /^Error: runtime_health_unproved$/u);
+});
+
+test('host administrative health uses strict bounded local live and ready JSON contracts', async () => {
+  const calls = [];
+  const result = await probeRetirementAdminHealth(async (url, options) => {
+    calls.push(url);
+    assert.equal(options.redirect, 'error');
+    assert.equal(options.headers.accept, 'application/json');
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(options.signal.aborted, false);
+    return Response.json({ ok: true });
+  });
+  assert.deepEqual(result, { live: true, ready: true });
+  assert.deepEqual(calls, [
+    'http://127.0.0.1:3001/api/health/live',
+    'http://127.0.0.1:3001/api/health/ready',
+  ]);
+});
+
+test('host administrative health refuses failed HTTP, redirects, missing or malformed JSON and timeouts', async () => {
+  for (const endpoint of ['live', 'ready']) {
+    for (const response of [
+      () => Response.json({ ok: true }, { status: 503 }),
+      () => new Response(null, { status: 302, headers: { location: 'https://external.invalid' } }),
+      () => new Response(null, { status: 204 }),
+      () => Response.json({}),
+      () => Response.json({ ok: false }),
+      () => Response.json({ ok: 'true' }),
+      () => new Response('malformed'),
+      () => {
+        throw new TypeError('network or redirect unavailable');
+      },
+      () => {
+        throw new DOMException('request timeout', 'TimeoutError');
+      },
+    ])
+      await assert.rejects(
+        probeRetirementAdminHealth(async (url) =>
+          url.endsWith(`/${endpoint}`) ? response() : Response.json({ ok: true }),
+        ),
+      );
+  }
+});
+
+test('host administrative health bounds declared and streamed response bytes before JSON parsing', async () => {
+  await assert.rejects(
+    probeRetirementAdminHealth(async () =>
+      Response.json({ ok: true }, { headers: { 'content-length': String(256 * 1024 + 1) } }),
+    ),
+    /runtime_health_unproved/u,
+  );
+  let canceled = false;
+  await assert.rejects(
+    probeRetirementAdminHealth(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(256 * 1024));
+              controller.enqueue(new Uint8Array(1));
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+        ),
+    ),
+    /runtime_health_unproved/u,
+  );
+  assert.equal(canceled, true);
+});
+
+test('host command boundary pipes supplied helper source into a real child stdin', () => {
+  const source = 'process.stdout.write(JSON.stringify({ helperRan: true }));\n';
+  assert.equal(
+    executeRetirementCommand(process.execPath, ['--input-type=module', '-'], {
+      input: source,
+      timeout: 1000,
+      maxBuffer: 1024,
+    }),
+    '{"helperRan":true}',
+  );
 });
 
 const nativeUrl = process.env.MAXIM_TEST_POSTGRES_URL?.trim();
