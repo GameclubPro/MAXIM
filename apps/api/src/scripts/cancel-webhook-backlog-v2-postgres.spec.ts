@@ -462,30 +462,41 @@ native('exact cancellation v2 with native PostgreSQL and Redis', () => {
     });
     const before = await redisSnapshot();
     const commands: string[] = [];
-    const monitor = await redis.monitor();
-    monitor.on('monitor', (_time, args: string[]) => commands.push(args[0]!.toLowerCase()));
+    const healthcheck = redis.duplicate();
+    let monitor: Redis | undefined;
     let p: BacklogCancellationPreviewV2;
     try {
+      await healthcheck.ping();
+      monitor = await redis.monitor();
+      monitor.on('monitor', (_time, args: string[]) => commands.push(args[0]!.toLowerCase()));
+      // FLAG: MONITOR includes independent clients, including the CI Redis healthcheck.
+      await healthcheck.ping();
       p = await preview(n);
     } finally {
-      monitor.disconnect();
+      monitor?.removeAllListeners('monitor');
+      monitor?.disconnect();
+      await healthcheck.quit();
     }
     expect(commands.length).toBeGreaterThan(0);
+    expect(commands).toContain('ping');
+    expect(commands).toContain('eval');
     expect(
-      commands.every((command) =>
-        [
-          'eval',
-          'type',
-          'lrange',
-          'zrange',
-          'hlen',
-          'hkeys',
-          'hstrlen',
-          'hgetall',
-          'exists',
-        ].includes(command),
+      commands.filter(
+        (command) =>
+          ![
+            'ping',
+            'eval',
+            'type',
+            'lrange',
+            'zrange',
+            'hlen',
+            'hkeys',
+            'hstrlen',
+            'hgetall',
+            'exists',
+          ].includes(command),
       ),
-    ).toBe(true);
+    ).toEqual([]);
     expect(p.children.map((row) => row.jobId).sort()).toEqual(
       [selectedWebhook, selectedSend].sort(),
     );
