@@ -18,13 +18,13 @@ import { RETIREMENT_CUTOFF, retirementSnapshotDigest } from './publisher-obsolet
 const root = resolve(import.meta.dirname, '../..');
 const directory = '/var/lib/maxim-deploy/publisher-obsolete-retirement';
 const hash = /^[a-f0-9]{64}$/u;
-const execute = (command, args, options = {}) =>
+export const executeRetirementCommand = (command, args, options = {}) =>
   execFileSync(command, args, {
     cwd: root,
     encoding: 'utf8',
     timeout: 15_000,
     maxBuffer: 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [Object.hasOwn(options, 'input') ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     ...options,
   }).trim();
 
@@ -50,7 +50,47 @@ export function parseRetirementArgs(args) {
   );
 }
 
-export function captureRetirementRuntime(run = execute) {
+export async function probeRetirementAdminHealth(fetchImpl = fetch) {
+  const proof = {};
+  for (const endpoint of ['live', 'ready']) {
+    const response = await fetchImpl(`http://127.0.0.1:3001/api/health/${endpoint}`, {
+      signal: AbortSignal.timeout(3000),
+      redirect: 'error',
+      headers: { accept: 'application/json' },
+    });
+    const maxBytes = 256 * 1024;
+    const declaredBytes = Number(response.headers.get('content-length'));
+    if (
+      !response.ok ||
+      !response.body ||
+      (Number.isFinite(declaredBytes) && declaredBytes > maxBytes)
+    )
+      throw new Error('runtime_health_unproved');
+    const reader = response.body.getReader();
+    const chunks = [];
+    let receivedBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        receivedBytes += value.byteLength;
+        if (receivedBytes > maxBytes) {
+          await reader.cancel();
+          throw new Error('runtime_health_unproved');
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    if (JSON.parse(Buffer.concat(chunks, receivedBytes).toString('utf8'))?.ok !== true)
+      throw new Error('runtime_health_unproved');
+    proof[endpoint] = true;
+  }
+  return proof;
+}
+
+function captureRetirementRuntimeIdentity(run) {
   const sourceSha = run('git', ['rev-parse', 'HEAD']);
   if (
     !/^[a-f0-9]{40}$/u.test(sourceSha) ||
@@ -82,7 +122,8 @@ export function captureRetirementRuntime(run = execute) {
       rows.length !== 1 ||
       row?.Id !== id ||
       row.State?.Running !== true ||
-      row.State?.Health?.Status !== 'healthy' ||
+      row.State?.Status !== 'running' ||
+      (Object.hasOwn(row.State, 'Health') && row.State.Health?.Status !== 'healthy') ||
       row.Config?.Labels?.['com.docker.compose.project'] !== 'infra' ||
       row.Config?.Labels?.['com.docker.compose.service'] !== service ||
       !/^sha256:[a-f0-9]{64}$/u.test(row.Image ?? '') ||
@@ -129,6 +170,29 @@ export function captureRetirementRuntime(run = execute) {
   )
     throw new Error('immutable_runtime_image_required');
   return { sourceSha, runtimeSha, botId: publisher.publisher, generations };
+}
+
+export function captureRetirementRuntime(run = executeRetirementCommand) {
+  const before = captureRetirementRuntimeIdentity(run);
+  const admin = before.generations.find((row) => row.service === 'api-admin');
+  // FLAG: Publisher is headless; strict HTTP health belongs to this exact admin
+  // generation. Both roles must retain their complete image/restart identity.
+  const source = `(${probeRetirementAdminHealth.toString()})().then((proof) => process.stdout.write(JSON.stringify(proof))).catch(() => { process.stderr.write('Publisher administrative health unavailable.\\n'); process.exitCode=1; });`;
+  try {
+    const proof = JSON.parse(
+      run('docker', ['exec', admin.id, 'node', '--input-type=module', '-e', source], {
+        timeout: 10_000,
+        maxBuffer: 1024,
+      }),
+    );
+    if (proof?.live !== true || proof?.ready !== true) throw new Error('missing_health_proof');
+  } catch {
+    throw new Error('runtime_health_unproved');
+  }
+  const after = captureRetirementRuntimeIdentity(run);
+  if (JSON.stringify(before) !== JSON.stringify(after))
+    throw new Error('runtime_changed_during_health_probe');
+  return before;
 }
 
 function privateDirectory() {
@@ -233,7 +297,7 @@ export async function runRetirementHost(args) {
   let failed = false;
   try {
     output = JSON.parse(
-      execute(
+      executeRetirementCommand(
         'docker',
         [
           'exec',
