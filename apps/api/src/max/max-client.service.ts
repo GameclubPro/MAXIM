@@ -1,6 +1,7 @@
 import { performMaxHttpRequest } from './max-http-request';
 import {
   beginMaxHttpFailureRequest,
+  classifyMaxHttpFailureEndpoint,
   closeMaxHttpFailureOwner,
   consumeMaxHttpOutcome,
   createMaxHttpFailureOwner,
@@ -2149,11 +2150,17 @@ export class MaxClientService implements OnModuleDestroy {
 
       try {
         const data = await this.executeGlobalRequest(
-          () =>
-            this.request<Record<string, unknown>>('get', '/messages', {
-              params: { message_ids: batchMessageIds.join(',') },
-              ...(timeoutMs ? { timeout: timeoutMs } : {}),
-            }),
+          associatedMaxHttpOperation((owner) =>
+            this.request<Record<string, unknown>>(
+              'get',
+              '/messages',
+              {
+                params: { message_ids: batchMessageIds.join(',') },
+                ...(timeoutMs ? { timeout: timeoutMs } : {}),
+              },
+              owner,
+            ),
+          ),
           options,
         );
         const messages = Array.isArray(data.messages) ? data.messages : [];
@@ -2237,12 +2244,14 @@ export class MaxClientService implements OnModuleDestroy {
             try {
               const data = await this.executeChatRequest(
                 request.chatId,
-                () =>
+                associatedMaxHttpOperation((owner) =>
                   this.request<Record<string, unknown>>(
                     'get',
                     `/messages/${encodeURIComponent(request.messageId)}`,
                     { ...(timeoutMs ? { timeout: timeoutMs } : {}) },
+                    owner,
                   ),
+                ),
                 options,
               );
               const nestedMessage =
@@ -3339,10 +3348,16 @@ export class MaxClientService implements OnModuleDestroy {
 
     const data = await this.executeChatRequest(
       normalizedChatId,
-      async () =>
-        this.request<Record<string, unknown>>('get', `/chats/${normalizedChatId}`, {
-          ...(timeoutMs ? { timeout: timeoutMs } : {}),
-        }),
+      associatedMaxHttpOperation((owner) =>
+        this.request<Record<string, unknown>>(
+          'get',
+          `/chats/${normalizedChatId}`,
+          {
+            ...(timeoutMs ? { timeout: timeoutMs } : {}),
+          },
+          owner,
+        ),
+      ),
       options,
     );
     const link = this.parseChatLink(data);
@@ -3670,10 +3685,16 @@ export class MaxClientService implements OnModuleDestroy {
         : undefined;
     const data = await this.executeChatRequest(
       chatId,
-      async () =>
-        this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`, {
-          ...(timeoutMs ? { timeout: timeoutMs } : {}),
-        }),
+      associatedMaxHttpOperation((owner) =>
+        this.request<Record<string, unknown>>(
+          'get',
+          `/chats/${chatId}/members/me`,
+          {
+            ...(timeoutMs ? { timeout: timeoutMs } : {}),
+          },
+          owner,
+        ),
+      ),
       options,
     );
     return this.parseChatMemberAccess(data);
@@ -4321,13 +4342,19 @@ export class MaxClientService implements OnModuleDestroy {
     let data: Record<string, unknown>;
     try {
       data = await this.executeGlobalRequest(
-        () =>
-          this.request<Record<string, unknown>>('get', '/messages', {
-            params: {
-              message_ids: normalizedMessageId,
+        associatedMaxHttpOperation((owner) =>
+          this.request<Record<string, unknown>>(
+            'get',
+            '/messages',
+            {
+              params: {
+                message_ids: normalizedMessageId,
+              },
+              ...(timeoutMs ? { timeout: timeoutMs } : {}),
             },
-            ...(timeoutMs ? { timeout: timeoutMs } : {}),
-          }),
+            owner,
+          ),
+        ),
         requestOptions,
       );
     } catch (error: unknown) {
@@ -4364,12 +4391,14 @@ export class MaxClientService implements OnModuleDestroy {
     const timeoutMs = this.normalizeReadRequestOptions(requestOptions).timeoutMs;
 
     const data = await this.executeGlobalRequest(
-      () =>
+      associatedMaxHttpOperation((owner) =>
         this.request<Record<string, unknown>>(
           'get',
           `/messages/${encodeURIComponent(normalizedMessageId)}`,
           { ...(timeoutMs ? { timeout: timeoutMs } : {}) },
+          owner,
         ),
+      ),
       requestOptions,
     );
     const nestedMessage = this.asRecord(data?.message);
@@ -7082,7 +7111,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async executeGlobalRequest<T>(
-    operation: () => Promise<T>,
+    operation: MaxHttpOperation<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<T> {
     const normalizedOptions = this.normalizeReadRequestOptions(options);
@@ -8946,16 +8975,13 @@ export class MaxClientService implements OnModuleDestroy {
     const scope = this.mutationExecutionScope.getStore();
     // FLAG: Prepare only finite association facts before any final authority wait.
     // Overrides preserve Axios behavior and disable proof, never business execution.
+    const endpointKind = owner ? classifyMaxHttpFailureEndpoint(method, path) : null;
     const association = owner
       ? beginMaxHttpFailureRequest(
           owner,
           method === 'get' ? 'get' : 'delete',
-          path === '/messages' ? 'messages' : 'chat_members',
-          !('method' in config) &&
-            !('url' in config) &&
-            ((method === 'delete' && path === '/messages') ||
-              (method === 'delete' && /^\/chats\/[^/?#]+\/members$/u.test(path)) ||
-              (method === 'get' && /^\/chats\/[^/?#]+\/members\?user_ids=[^&#]+$/u.test(path))),
+          endpointKind ?? 'messages',
+          endpointKind !== null && !('method' in config) && !('url' in config),
         )
       : undefined;
     observeMaxSendAdmission(method, path);

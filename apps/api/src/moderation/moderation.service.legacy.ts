@@ -67,6 +67,7 @@ import {
   resolveModerationMuteDurationHours,
 } from './moderation-execution-guard-callbacks';
 import { isMaxMutationOutcomeAmbiguous } from '../max/max-mutation-outcome.util';
+import { resolveExplicitMembershipAccessDenial } from '../max/max-membership-access-error';
 import {
   ClosedChatMessageModerationService,
   type NightClosedChatMessage,
@@ -13560,6 +13561,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     actionStartedAt: Date;
     error: unknown;
   }): Promise<void> {
+    // FLAG: Target/capability rejection does not prove that the bot lost chat membership.
+    const accessDenial = resolveExplicitMembershipAccessDenial(params.error);
+    if (accessDenial !== 'chat.denied' && accessDenial !== 'chat.not.found') {
+      return;
+    }
     let detached = false;
     const operation = Promise.resolve().then(async () => {
       try {
@@ -13724,6 +13730,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     await Promise.all(
       botIds.map(async (botId) => {
         const probeStartedAt = new Date();
+        let accessProbeCompleted = false;
         try {
           const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
             botId,
@@ -13732,6 +13739,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             actionHealthLane: 'background',
             timeoutMs: MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS,
           });
+          accessProbeCompleted = true;
           const persisted = await this.persistModerationActionBotAccessSnapshot(
             chatId,
             botId,
@@ -13749,7 +13757,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             confirmedBotIds.add(botId);
           }
         } catch (error: unknown) {
-          if (this.isTerminalModerationActionPermissionError(error)) {
+          if (!accessProbeCompleted && resolveExplicitMembershipAccessDenial(error) !== null) {
             await this.persistModerationActionBotAccessSnapshot(
               chatId,
               botId,

@@ -50,6 +50,7 @@ import { WebhookPreparationDeferredError } from '../common/webhook-preparation-d
 import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-execution-owner-unavailable.error';
 import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
+import { resolveExplicitMembershipAccessDenial } from '../max/max-membership-access-error';
 import { MaxExecutionOwnerReadinessService } from '../max/max-execution-owner-readiness.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
@@ -3867,7 +3868,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
         options.allowMembershipRecovery === true,
       );
     } catch (error: unknown) {
-      if (this.isTerminalBotSelfAccessError(error)) {
+      if (resolveExplicitMembershipAccessDenial(error) !== null) {
         const result = await this.cacheBotSelfAccess(chatId, botId, null, checkedAt, false);
         if (this.readCachedBotSelfAccess(cacheKey) !== true) {
           this.botSelfAccessBackoffUntilMs.set(
@@ -4564,33 +4565,6 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
 
     return (error as { code?: string } | null)?.code === code;
-  }
-
-  private extractStatusCode(error: unknown): number | null {
-    const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
-    return typeof maybeStatus === 'number' ? maybeStatus : null;
-  }
-
-  private extractMaxErrorCode(error: unknown): string | null {
-    const maybeCode = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
-    return typeof maybeCode === 'string' && maybeCode.trim().length > 0
-      ? maybeCode.trim().toLowerCase()
-      : null;
-  }
-
-  private isTerminalBotSelfAccessError(error: unknown): boolean {
-    const status = this.extractStatusCode(error);
-    if (status === 403 || status === 404) {
-      return true;
-    }
-
-    const code = this.extractMaxErrorCode(error);
-    if (code === 'chat.denied' || code === 'chat.not.found') {
-      return true;
-    }
-
-    const message = this.extractErrorMessage(error);
-    return message.includes('bot is not a chat member') || message.includes('not accessible');
   }
 
   private sanitizeForJsonStorage(

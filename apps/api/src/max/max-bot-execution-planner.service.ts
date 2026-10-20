@@ -26,6 +26,7 @@ import {
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
+import { resolveExplicitMembershipAccessDenial } from './max-membership-access-error';
 import { canDiscoverChatsForBotState, canExecuteActionsForBotState } from './max-bot-state.util';
 import {
   membershipExplicitlyLacksAccess,
@@ -754,6 +755,7 @@ export class MaxBotExecutionPlannerService {
     }
 
     const probeStartedAt = new Date();
+    let accessProbeCompleted = false;
     try {
       const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         botId,
@@ -762,6 +764,7 @@ export class MaxBotExecutionPlannerService {
         timeoutMs: 1_500,
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
       });
+      accessProbeCompleted = true;
       const persisted = await this.maxBotLinkService.recordBotAccessProbe({
         chatId,
         botId,
@@ -804,8 +807,12 @@ export class MaxBotExecutionPlannerService {
         };
       }
 
-      if (this.isTerminalBotAccessError(error)) {
-        const lastErrorCode = this.resolveBotAccessErrorCode(error);
+      // FLAG: Unknown lookup failures preserve grants but supply no fresh epoch
+      // for an explicit primary/assist mutation.
+      const lastErrorCode = accessProbeCompleted
+        ? null
+        : resolveExplicitMembershipAccessDenial(error);
+      if (lastErrorCode) {
         const persisted = await this.maxBotLinkService.recordBotAccessProbe({
           chatId,
           botId,
@@ -919,34 +926,6 @@ export class MaxBotExecutionPlannerService {
     }
 
     return snapshot;
-  }
-
-  private isTerminalBotAccessError(error: unknown): boolean {
-    const status = (error as { response?: { status?: number } } | null)?.response?.status;
-    if (status === 403 || status === 404) {
-      return true;
-    }
-
-    const code = this.resolveBotAccessErrorCode(error);
-    return code === 'access.denied' || code === 'chat.denied' || code === 'chat.not.found';
-  }
-
-  private resolveBotAccessErrorCode(error: unknown): string | null {
-    const code = (error as { response?: { data?: { code?: unknown } } } | null)?.response?.data
-      ?.code;
-    if (typeof code === 'string' && code.trim().length > 0) {
-      return code.trim();
-    }
-
-    const status = (error as { response?: { status?: number } } | null)?.response?.status;
-    if (status === 403) {
-      return 'access.denied';
-    }
-    if (status === 404) {
-      return 'chat.not.found';
-    }
-
-    return null;
   }
 
   private isLocalManagedRefreshBackoffActive(botId: string, now = Date.now()): boolean {

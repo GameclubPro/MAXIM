@@ -1251,34 +1251,50 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
   });
 
-  it('does not clear allowlist or write denied visibility edges for ambiguous MAX 400 failures', async () => {
-    const { service, prisma, maxClient, maxBotRegistry, chatContextCache } = createService();
-    maxBotRegistry.getDiscoveryBots.mockReturnValue([{ id: 'bot-1', state: 'active' }]);
-    maxClient.getCurrentChatMemberAccess.mockRejectedValue(
-      Object.assign(new Error('Request failed with status code 400'), {
-        response: {
-          status: 400,
-          data: {},
+  it.each([
+    { status: 400, code: undefined },
+    { status: 401, code: 'chat.denied' },
+    { status: 403, code: undefined },
+    { status: 404, code: undefined },
+    { status: 404, code: 'user.not.found' },
+    { status: 503, code: 'chat.denied' },
+    { status: undefined, code: 'chat.not.found' },
+  ])(
+    'preserves bot grants and roster on ambiguous membership failure: %j',
+    async ({ status, code }) => {
+      const { service, prisma, maxClient, maxBotRegistry, maxBotLinkService, chatContextCache } =
+        createService();
+      maxBotRegistry.getDiscoveryBots.mockReturnValue([{ id: 'bot-1', state: 'active' }]);
+      const error = Object.assign(
+        new Error('bot is not a chat member; forbidden; chat not found'),
+        {
+          response: {
+            status,
+            data: { code, message: 'chat administrator required' },
+          },
         },
-      }),
-    );
+      );
+      maxClient.getCurrentChatMemberAccess.mockRejectedValue(error);
 
-    await expect(
-      service.processJob({
-        chatId: '-100-ambiguous-400',
-        botIds: ['bot-1'],
-        title: 'Ambiguous 400 chat',
-        entityType: 'chat',
-        source: 'admin_access_validation',
-      }),
-    ).rejects.toThrow('Request failed with status code 400');
+      await expect(
+        service.processJob({
+          chatId: '-100-ambiguous-400',
+          botIds: ['bot-1'],
+          title: 'Ambiguous 400 chat',
+          entityType: 'chat',
+          source: 'admin_access_validation',
+        }),
+      ).rejects.toBe(error);
 
-    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
-    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
-    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
-    expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
-    expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
-  });
+      expect(maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+      expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+      expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalled();
+      expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+      expect(chatContextCache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+      expect(prisma.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+    },
+  );
 
   it('backs off repeated terminal bot access failures before clearing allowlist again', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));

@@ -61,6 +61,8 @@ import type { PublisherStartJob } from '../publisher/publisher-start.queue';
 import type { Job } from 'bullmq';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation/moderation.service.support';
 import { ConfigService } from '@nestjs/config';
+import type { HttpService } from '@nestjs/axios';
+import { AxiosHeaders } from 'axios';
 import type { Logger } from '@nestjs/common';
 import type { ActionHealthService } from '../system/action-health.service';
 import type { MaxActionLedgerService } from './max-action-ledger.service';
@@ -10149,10 +10151,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
       sourceTag: 'Required Subscription Membership',
     };
 
-    await expect(service.getChatSnapshot('chat-private-1', requestOptions)).rejects.toBe(error);
-    await expect(service.getChatSnapshot('chat-private-2', requestOptions)).rejects.toBe(error);
+    await expect(service.getChatTitle('chat-private-1', requestOptions)).rejects.toBe(error);
+    await expect(service.getChatTitle('chat-private-2', requestOptions)).rejects.toBe(error);
     jest.advanceTimersByTime(29_999);
-    await expect(service.getChatSnapshot('chat-private-3', requestOptions)).rejects.toBe(error);
+    await expect(service.getChatTitle('chat-private-3', requestOptions)).rejects.toBe(error);
 
     expect(diagnostics.warn).toHaveBeenCalledTimes(1);
     expect(diagnostics.warn).toHaveBeenLastCalledWith(
@@ -10174,7 +10176,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     jest.advanceTimersByTime(1);
-    await expect(service.getChatSnapshot('chat-private-4', requestOptions)).rejects.toBe(error);
+    await expect(service.getChatTitle('chat-private-4', requestOptions)).rejects.toBe(error);
 
     expect(diagnostics.warn).toHaveBeenCalledTimes(2);
     expect(diagnostics.failure).toHaveBeenCalledTimes(4);
@@ -10210,7 +10212,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       const diagnostics = observeActionFailureDiagnostics(service);
       try {
         await expect(
-          service.getChatSnapshot('private-chat', {
+          service.getChatTitle('private-chat', {
             bypassCache: true,
             trafficClass: 'critical',
             actionHealthLane: 'critical',
@@ -10279,6 +10281,249 @@ describe('MaxClientService inline keyboard guardrails', () => {
         });
       return executeMemberJob(service);
     }
+
+    const readOptions = {
+      ...requestOptions,
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      bypassCache: true,
+    };
+    type AssociatedReadPath =
+      | 'message_row_list'
+      | 'message_row_direct'
+      | 'message_presence_list'
+      | 'message_presence_direct'
+      | 'current_bot_access'
+      | 'chat_snapshot';
+
+    function executeAssociatedRead(service: MaxClientService, path: AssociatedReadPath) {
+      if (path === 'current_bot_access')
+        return service.getCurrentChatMemberAccess('private-chat', readOptions);
+      if (path === 'chat_snapshot') return service.getChatSnapshot('private-chat', readOptions);
+      if (path.startsWith('message_presence'))
+        return service.getExactMessagePresence('private-chat', 'private-message', readOptions);
+      return service.getExactMessageRow('private-chat', 'private-message', readOptions);
+    }
+
+    function mockHttpRequest() {
+      return jest.fn<ReturnType<HttpService['request']>, Parameters<HttpService['request']>>();
+    }
+
+    function messageListResponse(
+      messages: readonly Record<string, unknown>[] = [],
+    ): ReturnType<HttpService['request']> {
+      return of({
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config: { headers: new AxiosHeaders() },
+        data: { messages },
+      });
+    }
+
+    it.each(
+      (
+        [
+          { path: 'message_row_list', endpointKind: 'messages' },
+          { path: 'message_row_direct', endpointKind: 'message' },
+          { path: 'message_presence_list', endpointKind: 'messages' },
+          { path: 'message_presence_direct', endpointKind: 'message' },
+          { path: 'current_bot_access', endpointKind: 'chat_member_self' },
+          { path: 'chat_snapshot', endpointKind: 'chat' },
+        ] satisfies { path: AssociatedReadPath; endpointKind: string }[]
+      ).flatMap((target) =>
+        (['synchronous', 'observable'] as const).map((mode) => ({ ...target, mode })),
+      ),
+    )(
+      'links $path $mode timeout to its exact GET without borrowing private error.config',
+      async ({ path, endpointKind, mode }) => {
+        const error = Object.freeze(
+          Object.assign(new Error('private-chat private-message private-token'), {
+            code: 'ECONNABORTED',
+            config: {
+              method: 'delete',
+              url: 'https://private.example/wrong-endpoint',
+              headers: { Authorization: 'private-token' },
+              data: 'private-body',
+            },
+          }),
+        );
+        const direct = path.endsWith('_direct');
+        const request = mockHttpRequest().mockImplementation(() => {
+          if (mode === 'synchronous') throw error;
+          return throwError(() => error);
+        });
+        if (direct) request.mockReturnValueOnce(messageListResponse());
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        try {
+          await expect(executeAssociatedRead(service, path)).rejects.toBe(error);
+          expect(request).toHaveBeenCalledTimes(direct ? 2 : 1);
+          expect(request.mock.calls.every(([config]) => config.method === 'get')).toBe(true);
+          expect(diagnostics.success).toHaveBeenCalledTimes(direct ? 1 : 0);
+          expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+          expect(diagnostics.failure).toHaveBeenCalledWith('critical', true, '777000_bot');
+          expect(diagnostics.warn).toHaveBeenCalledWith(
+            {
+              statusCode: null,
+              errorCode: 'econnaborted',
+              limitScope: null,
+              trafficClass: 'critical',
+              lane: 'critical',
+              sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+              botId: '777000_bot',
+              failureOrigin: 'unlinked',
+              isCritical: true,
+              requestAssociation: 'linked',
+              method: 'get',
+              endpointKind,
+              phase: 'adapter_rejection',
+              receivedStatusCode: null,
+            },
+            ACTION_FAILURE_WARNING,
+          );
+          expect(
+            diagnostics.quota.mock.calls.filter(([script]) =>
+              String(script).includes('MAX_API_CIRCUIT_FAILURE_V1'),
+            ),
+          ).toHaveLength(1);
+          expect(JSON.stringify(diagnostics.warn.mock.calls)).not.toMatch(
+            /private-(?:chat|message|token|body)|private\.example/,
+          );
+          expect(Object.getOwnPropertySymbols(error)).toEqual([]);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['message_row_direct', 'message_presence_direct'] as const)(
+      'keeps an ignored list404 separate from the %s timeout',
+      async (path) => {
+        const error = Object.freeze(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }));
+        const request = mockHttpRequest()
+          .mockReturnValueOnce(throwError(() => ({ response: { status: 404 } })))
+          .mockReturnValueOnce(throwError(() => error));
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        try {
+          const options = { ...readOptions, ignoreFailureMetricStatuses: [404] };
+          const result =
+            path === 'message_row_direct'
+              ? service.getExactMessageRow('private-chat', 'private-message', options)
+              : service.getExactMessagePresence('private-chat', 'private-message', options);
+          await expect(result).rejects.toBe(error);
+          expect(request).toHaveBeenCalledTimes(2);
+          expect(diagnostics.success).not.toHaveBeenCalled();
+          expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+          expect(diagnostics.warn).toHaveBeenCalledTimes(1);
+          expect(diagnostics.warn).toHaveBeenCalledWith(
+            expect.objectContaining({
+              requestAssociation: 'linked',
+              method: 'get',
+              endpointKind: 'message',
+              phase: 'adapter_rejection',
+              receivedStatusCode: null,
+            }),
+            ACTION_FAILURE_WARNING,
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('keeps batch and parallel direct-presence requests independently owned with one frozen error', async () => {
+      const error = Object.freeze(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }));
+      const requests = Array.from({ length: 51 }, (_, index) => ({
+        chatId: 'private-chat',
+        messageId: `private-message-${index}`,
+      }));
+      const directMessageIds = new Set(requests.slice(0, 4).map((item) => item.messageId));
+      const request = mockHttpRequest().mockImplementation((config) =>
+        config.url?.endsWith('/messages')
+          ? messageListResponse(
+              String(config.params?.message_ids ?? '')
+                .split(',')
+                .filter((messageId) => !directMessageIds.has(messageId))
+                .map((messageId) => ({
+                  body: { mid: messageId },
+                  recipient: { chat_id: 'private-chat' },
+                })),
+            )
+          : throwError(() => error),
+      );
+      const service = createService({ request });
+      const diagnostics = observeActionFailureDiagnostics(service);
+      try {
+        const results = await service.getExactMessagePresences(requests, readOptions);
+        expect(results).toHaveLength(51);
+        expect(
+          results.slice(0, 4).every((result) => 'error' in result && result.error === error),
+        ).toBe(true);
+        expect(
+          results.slice(4).every((result) => 'presence' in result && result.presence === 'present'),
+        ).toBe(true);
+        expect(request).toHaveBeenCalledTimes(6);
+        expect(diagnostics.success).toHaveBeenCalledTimes(2);
+        expect(diagnostics.failure).toHaveBeenCalledTimes(4);
+        expect(diagnostics.warn).toHaveBeenCalledTimes(1);
+        expect(diagnostics.warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            requestAssociation: 'linked',
+            method: 'get',
+            endpointKind: 'message',
+            phase: 'adapter_rejection',
+          }),
+          ACTION_FAILURE_WARNING,
+        );
+        expect(JSON.stringify(diagnostics.warn.mock.calls)).not.toContain('private');
+        expect(Object.getOwnPropertySymbols(error)).toEqual([]);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(['message_row_list', 'message_row_direct'] as const)(
+      'attributes a final-guard %s timeout only to GET and never dispatches DELETE',
+      async (path) => {
+        const error = Object.freeze(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }));
+        const request = mockHttpRequest().mockReturnValue(throwError(() => error));
+        const direct = path.endsWith('_direct');
+        if (direct) request.mockReturnValueOnce(messageListResponse());
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        const guard = jest.fn(async () => {
+          await executeAssociatedRead(service, path);
+        });
+        try {
+          await expect(
+            service.deleteMessage('private-chat', 'private-message', {
+              ...readOptions,
+              immediate: true,
+              beforeImmediateDeleteMutation: guard,
+            }),
+          ).rejects.toBe(error);
+          expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
+          expect(guard).toHaveBeenCalledTimes(1);
+          expect(request).toHaveBeenCalledTimes(direct ? 2 : 1);
+          expect(request.mock.calls.every(([config]) => config.method === 'get')).toBe(true);
+          expect(diagnostics.success).toHaveBeenCalledTimes(direct ? 1 : 0);
+          expect(diagnostics.failure).toHaveBeenCalledTimes(1);
+          expect(diagnostics.warn).toHaveBeenCalledTimes(1);
+          expect(diagnostics.warn).toHaveBeenCalledWith(
+            expect.objectContaining({
+              requestAssociation: 'linked',
+              method: 'get',
+              endpointKind: direct ? 'message' : 'messages',
+              phase: 'adapter_rejection',
+            }),
+            ACTION_FAILURE_WARNING,
+          );
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
 
     it.each([
       { path: 'targeted_get' as const, method: 'get', endpointKind: 'chat_members' },
@@ -10684,7 +10929,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         await expect(executeSelectedPath(service, 'targeted_get')).rejects.toBe(error);
         jest.advanceTimersByTime(30_000);
         await expect(
-          service.getChatSnapshot('private-chat', {
+          service.getChatTitle('private-chat', {
             ...requestOptions,
             bypassCache: true,
           }),

@@ -4382,12 +4382,62 @@ describe('WebhookService', () => {
     expect(routingState).toBe('READY');
   });
 
+  it.each([
+    { status: 401, code: 'chat.denied' },
+    { status: 403, code: undefined },
+    { status: 404, code: undefined },
+    { status: 404, code: 'user.not.found' },
+    { status: 503, code: 'chat.not.found' },
+    { status: undefined, code: 'chat.denied' },
+  ])(
+    'keeps an opaque self-access failure unknown without persisting denial: %j',
+    async ({ status, code }) => {
+      const maxClient: Pick<
+        import('../max/max-client.service').MaxClientService,
+        'getCurrentChatMemberAccess'
+      > = {
+        getCurrentChatMemberAccess: jest.fn().mockRejectedValue({
+          response: { status, data: { code, message: 'bot is not a chat member' } },
+          message: 'not accessible',
+        }),
+      };
+      const service = new WebhookService(
+        { webhookEvent: {} } as never,
+        { get: jest.fn() } as never,
+        maxBotLinkService as never,
+        undefined,
+        maxClient as never,
+      );
+      const selfAccess = service as unknown as {
+        getBotSelfModerationAccessState(
+          chatId: string,
+          botId: string,
+          options: { bypassCache: boolean },
+        ): Promise<boolean | null>;
+      };
+
+      await expect(
+        selfAccess.getBotSelfModerationAccessState('chat-opaque', 'bot-opaque', {
+          bypassCache: true,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        selfAccess.getBotSelfModerationAccessState('chat-opaque', 'bot-opaque', {
+          bypassCache: true,
+        }),
+      ).resolves.toBeNull();
+      expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+      expect(maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
+    },
+  );
+
   it('suppresses repeated route-gap probes after a terminal bot access denial', async () => {
     const chatId = '-100-live-probe-denied';
     const botId = 'id613002203036_4_bot';
     const maxClient = {
       getCurrentChatMemberAccess: jest.fn().mockRejectedValue({
-        response: { status: 403 },
+        response: { status: 403, data: { code: 'chat.denied' } },
         message: 'chat denied',
       }),
     };
@@ -4683,7 +4733,10 @@ describe('WebhookService', () => {
 
       jest.setSystemTime(newerEvidenceAt);
       (service as any).cacheBotSelfAccessState(cacheKey, true, newerEvidenceAt.getTime());
-      rejectProbe({ response: { status: 403 }, message: 'chat denied' });
+      rejectProbe({
+        response: { status: 403, data: { code: 'chat.denied' } },
+        message: 'chat denied',
+      });
 
       await expect(refresh).resolves.toBeNull();
       expect(maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith({

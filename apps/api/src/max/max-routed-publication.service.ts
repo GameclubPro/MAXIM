@@ -21,6 +21,7 @@ import {
 } from './max-send-route-sticky-probe';
 import { getAppRole, roleRunsPublisher } from '../runtime/app-role';
 import { isPublisherBotId } from '../publisher/publisher-bot-descriptor';
+import { resolveExplicitMembershipAccessDenial } from './max-membership-access-error';
 
 export type MaxRoutedPublicationRoutePurpose = 'send_message' | 'channel_poll';
 
@@ -382,6 +383,7 @@ export class MaxRoutedPublicationService {
       }
 
       const accessProbeStartedAt = new Date();
+      let accessProbeCompleted = false;
       try {
         const access = await this.maxClientService.getCurrentChatMemberAccess(chatId, {
           botId,
@@ -391,6 +393,7 @@ export class MaxRoutedPublicationService {
           sourceTag: request.sourceTag,
           ...(request.timeoutMs ? { timeoutMs: request.timeoutMs } : {}),
         });
+        accessProbeCompleted = true;
         const persisted = await this.maxBotLinkService.recordBotAccessProbe({
           chatId,
           botId,
@@ -407,7 +410,10 @@ export class MaxRoutedPublicationService {
           continue;
         }
       } catch (error: unknown) {
-        const lastErrorCode = this.resolveTerminalAccessLookupErrorCode(error);
+        // FLAG: Only the own-member lookup can prove denial; later writes cannot.
+        const lastErrorCode = accessProbeCompleted
+          ? null
+          : resolveExplicitMembershipAccessDenial(error);
         if (lastErrorCode) {
           try {
             await this.maxBotLinkService.recordBotAccessProbe({
@@ -489,24 +495,5 @@ export class MaxRoutedPublicationService {
         values.map((value) => (typeof value === 'string' ? value.trim() : '')).filter(Boolean),
       ),
     );
-  }
-
-  private resolveTerminalAccessLookupErrorCode(error: unknown): string | null {
-    const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
-    if (
-      typeof code === 'string' &&
-      ['access.denied', 'chat.denied', 'chat.not.found'].includes(code.trim())
-    ) {
-      return code.trim();
-    }
-
-    const status = (error as { response?: { status?: unknown } })?.response?.status;
-    if (status === 403) {
-      return 'access.denied';
-    }
-    if (status === 404) {
-      return 'chat.not.found';
-    }
-    return null;
   }
 }
