@@ -1,7 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { performance } from 'node:perf_hooks';
 import type { DeleteIntentLeaseCheck } from './moderation-delete-intent-lease';
-import { MaxApiInternalRateLimitError } from '../max/max-client.service';
+import { MaxApiInternalRateLimitError, type MaxClientService } from '../max/max-client.service';
 import {
   markMaxPreDispatchGuardRejected,
   MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
@@ -4565,6 +4565,70 @@ describe('ModerationDeleteIntentService', () => {
       'chat-1',
       expect.objectContaining({ botId: 'bot-9' }),
     );
+  });
+
+  it.each([
+    { status: 401, code: 'access.denied' },
+    { status: 403, code: undefined },
+    { status: 404, code: undefined },
+    { status: 404, code: 'user.not.found' },
+    { status: 503, code: 'chat.denied' },
+  ])(
+    'preserves grants and leaves a delete route unresolved after an ambiguous probe: %j',
+    async ({ status, code }) => {
+      const route = unconfirmedDeleteRoute(['bot-1']);
+      const getCurrentChatMemberAccess = jest
+        .fn<
+          ReturnType<MaxClientService['getCurrentChatMemberAccess']>,
+          Parameters<MaxClientService['getCurrentChatMemberAccess']>
+        >()
+        .mockRejectedValue({ response: { status, data: { code } }, message: 'chat not found' });
+      const { service, maxBotLink, maxClient } = createService(
+        {},
+        {},
+        { getCurrentChatMemberAccess },
+        { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(route) },
+      );
+
+      await expect(
+        (service as unknown as ServiceInternals).resolveDeleteRouteWithRefresh(
+          baseIntent,
+          ownedHeartbeat,
+        ),
+      ).resolves.toEqual(route);
+
+      expect(getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+      expect(maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { status: 403, code: 'access.denied' },
+    { status: 404, code: 'chat.not.found' },
+  ])('retains confirmed exact-bot denial from a membership probe: %j', async ({ status, code }) => {
+    const route = unconfirmedDeleteRoute(['bot-1']);
+    const { service, maxBotLink } = createService(
+      {},
+      {},
+      {
+        getCurrentChatMemberAccess: jest
+          .fn()
+          .mockRejectedValue({ response: { status, data: { code } } }),
+      },
+      { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(route) },
+    );
+    await (service as unknown as ServiceInternals).resolveDeleteRouteWithRefresh(
+      baseIntent,
+      ownedHeartbeat,
+    );
+    expect(maxBotLink.recordBotAccessProbe).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botId: 'bot-1',
+      access: null,
+      source: 'moderation_delete_intent_probe_denied',
+      checkedAt: expect.any(Date),
+    });
   });
 
   it('respects the negative-proof cooldown boundary and never trusts a future timestamp', async () => {

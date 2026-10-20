@@ -1,5 +1,10 @@
 import { ConfigService } from '@nestjs/config';
+import { HttpService } from '@nestjs/axios';
+import axios, { AxiosHeaders, type AxiosAdapter } from 'axios';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { MaxApiInternalRateLimitError, MaxClientService } from '../max/max-client.service';
+import { MaxBotContextService } from '../max/max-bot-context.service';
+import type { ActionHealthService } from '../system/action-health.service';
 import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
 import {
@@ -16,16 +21,60 @@ import {
 import { markMaxMessageSendAttempted } from '../max/max-mutation-outcome.util';
 
 async function exactLookupFailure(data: Record<string, unknown>): Promise<unknown> {
-  const request = jest.fn().mockResolvedValueOnce({ messages: [] }).mockResolvedValueOnce(data);
+  const responses = [{ messages: [] }, data];
+  const request = jest.fn<ReturnType<AxiosAdapter>, Parameters<AxiosAdapter>>(async (config) => ({
+    status: 200,
+    statusText: 'OK',
+    headers: new AxiosHeaders(),
+    config,
+    data: responses.shift(),
+  }));
+  const bot: ReturnType<MaxClientService['resolveBot']> = {
+    id: 'fixture-bot',
+    label: 'Fixture',
+    characterName: 'Fixture',
+    speechPersona: 'neutral',
+    token: 'synthetic-no-network-token',
+    tokenValidationSecrets: [],
+    webhookSecretPath: 'synthetic-fixture',
+    webhookHeaderSecret: 'synthetic-fixture',
+    webhookHeaderSecrets: [],
+    webhookUrl: null,
+    maskedWebhookUrl: null,
+    contactId: null,
+    state: 'active',
+    ownershipWeight: 1,
+    visibleInAdmin: false,
+    isDefault: true,
+  };
+  const resolveBot: MaxClientService['resolveBot'] = () => bot;
+  const acquireCircuitPermit: MaxClientService['acquireCircuitPermit'] = async () => ({
+    halfOpenProbeToken: null,
+  });
+  const reserveRateLimitSlot: MaxClientService['reserveRateLimitSlot'] = async () => undefined;
+  const mutationExecutionScope: MaxClientService['mutationExecutionScope'] =
+    new AsyncLocalStorage();
+  const actionHealthService: Pick<ActionHealthService, 'recordSuccessForLane'> = {
+    recordSuccessForLane: jest.fn(),
+  };
+  // FLAG: Keep descriptor ownership, HTTP outcomes and exact lookup validation real.
+  // Only synthetic Axios responses and unrelated bot/quota/circuit dependencies vary.
   const client: MaxClientService = Object.assign(Object.create(MaxClientService.prototype), {
-    normalizeReadRequestOptions: () => ({}),
-    executeGlobalRequest: (operation: () => Promise<unknown>) => operation(),
-    request,
+    baseUrl: 'https://exact-lookup-fixture.invalid',
+    httpService: new HttpService(axios.create({ adapter: request })),
+    botContext: new MaxBotContextService(),
+    actionHealthService,
+    mutationExecutionScope,
+    resolveBot,
+    acquireCircuitPermit,
+    reserveRateLimitSlot,
   });
   try {
     await client.getExactMessageRow('-123', 'm1');
   } catch (error) {
-    expect(request.mock.calls.map(([method, path]) => [method, path])).toEqual([
+    expect(
+      request.mock.calls.map(([config]) => [config.method, new URL(config.url!).pathname]),
+    ).toEqual([
       ['get', '/messages'],
       ['get', '/messages/m1'],
     ]);

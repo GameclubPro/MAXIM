@@ -1,5 +1,6 @@
 import {
   beginMaxHttpFailureRequest,
+  classifyMaxHttpFailureEndpoint,
   closeMaxHttpFailureOwner,
   consumeMaxHttpOutcome,
   createMaxHttpFailureOwner,
@@ -8,6 +9,7 @@ import {
   maxHttpValueOutcome,
   readMaxHttpFailureAssociation,
   type MaxHttpFailureOwner,
+  type MaxHttpFailureFacts,
 } from './max-http-failure-association';
 import { performMaxHttpRequest } from './max-http-request';
 import { wasMaxMessageSendAttempted } from './max-mutation-outcome.util';
@@ -18,6 +20,74 @@ function request(owner: MaxHttpFailureOwner, eligible = true) {
 
 describe('Explicit MAX HTTP failure ownership', () => {
   const failure = Object.freeze(new Error('private reused error'));
+
+  it.each<[string, string, MaxHttpFailureFacts['endpointKind'] | null]>([
+    ['get', '/messages', 'messages'],
+    ['get', '/messages/private-message', 'message'],
+    ['get', '/chats/private-chat/members?user_ids=private-user', 'chat_members'],
+    ['get', '/chats/private-chat/members/me', 'chat_member_self'],
+    ['get', '/chats/private-chat', 'chat'],
+    ['delete', '/messages', 'messages'],
+    ['delete', '/chats/private-chat/members', 'chat_members'],
+    ['post', '/messages', null],
+    ['delete', '/messages/private-message', null],
+    ['get', '/messages/private-message?token=private-token', null],
+    ['get', '/messages/private-message/nested', null],
+    ['get', '/chats/private-chat/members', null],
+    ['get', '/chats/private-chat/members/me#private-fragment', null],
+    ['get', '/chats/private-chat?private=1', null],
+    ['get', '/chats', null],
+  ])('classifies only an exact local HTTP family for %s %s', (method, path, endpointKind) => {
+    expect(classifyMaxHttpFailureEndpoint(method, path)).toBe(endpointKind);
+  });
+
+  it.each<MaxHttpFailureFacts['endpointKind']>([
+    'messages',
+    'message',
+    'chat_members',
+    'chat_member_self',
+    'chat',
+  ])(
+    'retains invocation-owned GET %s facts without retaining its error metadata',
+    (endpointKind) => {
+      const owner = createMaxHttpFailureOwner();
+      const result = consumeMaxHttpOutcome(
+        owner,
+        maxHttpFailureOutcome(
+          beginMaxHttpFailureRequest(owner, 'get', endpointKind),
+          failure,
+          'adapter_rejection',
+          null,
+        ),
+      );
+      if (result.kind !== 'failure') throw new Error('Expected failure');
+      expect(result.error).toBe(failure);
+      expect(readMaxHttpFailureAssociation(result.association)).toStrictEqual({
+        method: 'get',
+        endpointKind,
+        phase: 'adapter_rejection',
+        receivedStatusCode: null,
+      });
+    },
+  );
+
+  it.each<MaxHttpFailureFacts['endpointKind']>(['message', 'chat_member_self', 'chat'])(
+    'rejects unsupported DELETE %s facts without changing the error',
+    (endpointKind) => {
+      const owner = createMaxHttpFailureOwner();
+      expect(
+        consumeMaxHttpOutcome(
+          owner,
+          maxHttpFailureOutcome(
+            beginMaxHttpFailureRequest(owner, 'delete', endpointKind),
+            failure,
+            'adapter_rejection',
+            null,
+          ),
+        ),
+      ).toStrictEqual({ kind: 'failure', error: failure, association: null });
+    },
+  );
 
   it.each([undefined, null, false, 0, '', { kind: 'failure', error: 'business value' }])(
     'preserves raw and mapped successful business value %j',

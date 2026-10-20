@@ -219,7 +219,7 @@ native('exact cancellation v2 retained-history PostgreSQL plans', () => {
         index: 'webhook_backlog_children_operation_idx',
         relation: 'webhook_backlog_children',
         rows: 0,
-        sql: Prisma.sql`SELECT kind,child_key AS "childKey",octet_length(original_snapshot::text) AS size FROM webhook_backlog_children WHERE cancellation_id=${n.id} ORDER BY kind,child_key LIMIT 4097`,
+        sql: Prisma.sql`SELECT kind,child_key AS "childKey",octet_length(original_snapshot::text) AS size FROM webhook_backlog_children WHERE cancellation_id>=${n.id} AND cancellation_id<=${n.id} ORDER BY cancellation_id,kind,child_key LIMIT 4097`,
       },
     ];
     const evidence: Array<Record<string, unknown>> = [];

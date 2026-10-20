@@ -104,6 +104,11 @@ export type SimulatedMaxEffect = {
   body?: unknown;
   params?: Record<string, unknown>;
 };
+type SimulatedOwnMemberProbe =
+  | 'unavailable'
+  | 'permissions_unknown'
+  | 'not_found'
+  | { status: 403 | 404; code?: string };
 
 // FLAG: This fixture accepts only disposable local stores and never opens a MAX socket.
 // Its HTTP adapter supplies MAX responses; SQL, Redis, BullMQ, rule and mutation services run normally.
@@ -295,10 +300,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
   const channelIds = new Set<string>();
   const deniedBots = new Set<string>();
   const rateLimitedDeleteBots = new Set<string>();
-  const ownMemberProbeOverrides = new Map<
-    string,
-    'unavailable' | 'permissions_unknown' | 'not_found'
-  >();
+  const ownMemberProbeOverrides = new Map<string, SimulatedOwnMemberProbe>();
   const botPermissions = new Map(
     bots.map((bot) => [bot.id, ['read_all_messages', 'write', 'add_remove_members']]),
   );
@@ -364,6 +366,13 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
           let data: unknown;
           if (method === 'get' && path.endsWith('/members/me')) {
             const override = ownMemberProbeOverrides.get(bot.id);
+            if (typeof override === 'object')
+              throw Object.assign(new Error('Simulated own-member lookup HTTP failure'), {
+                response: {
+                  status: override.status,
+                  data: override.code ? { code: override.code } : {},
+                },
+              });
             if (override === 'unavailable')
               throw Object.assign(new Error('Simulated own-member lookup unavailable'), {
                 response: { status: 503, data: { code: 'fixture.lookup.unavailable' } },
@@ -1221,10 +1230,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
       if (enabled) rateLimitedDeleteBots.add(botId);
       else rateLimitedDeleteBots.delete(botId);
     },
-    setOwnMemberProbe: (
-      botId: string,
-      result: 'unavailable' | 'permissions_unknown' | 'not_found' | null,
-    ) => {
+    setOwnMemberProbe: (botId: string, result: SimulatedOwnMemberProbe | null) => {
       if (result === null) ownMemberProbeOverrides.delete(botId);
       else ownMemberProbeOverrides.set(botId, result);
     },

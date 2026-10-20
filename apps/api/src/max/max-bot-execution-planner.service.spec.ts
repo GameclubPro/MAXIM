@@ -5,6 +5,7 @@ import {
   ChatBotMembershipStatus,
 } from '../prisma/prisma-client';
 import { MaxBotExecutionPlannerService } from './max-bot-execution-planner.service';
+import type { MaxBotLinkService } from './max-bot-link.service';
 
 type MutableChat = {
   id: string;
@@ -231,14 +232,7 @@ function createFixture() {
         source,
         checkedAt,
         lastErrorCode,
-      }: {
-        chatId: string;
-        botId: string;
-        access: { isAdmin: boolean; isOwner: boolean; permissions?: readonly string[] } | null;
-        source: string;
-        checkedAt: Date;
-        lastErrorCode?: string | null;
-      }) => {
+      }: Parameters<MaxBotLinkService['recordBotAccessProbe']>[0]) => {
         const membership = memberships.find(
           (item) =>
             item.chatId === chatId &&
@@ -1020,19 +1014,63 @@ describe('MaxBotExecutionPlannerService', () => {
     ).toEqual([]);
   });
 
-  it('does not promote a bot from a stale admin snapshot after a terminal access error', async () => {
+  it.each([401, 403, 404])(
+    'preserves a stale admin grant but refuses promotion after opaque HTTP %s',
+    async (status) => {
+      const fixture = createFixture();
+      const membership = fixture.memberships.find(
+        (membership) => membership.botId === 'id613002203036_4_bot',
+      )!;
+      membership.botAccessState = ChatBotAccessState.CONFIRMED_ADMIN;
+      membership.botAccessSource = 'explicit_start';
+      membership.permissionsSnapshot = {
+        checkedAt: '2026-05-14T08:00:00.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write', 'delete'],
+      };
+      const original = structuredClone(membership);
+      fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
+        Object.assign(new Error('chat denied; bot is not a chat member'), {
+          response: { status },
+        }),
+      );
+
+      await expect(
+        fixture.service.setPrimaryBot({
+          chatId: 'chat-1',
+          entityType: 'chat',
+          botId: 'id613002203036_4_bot',
+        }),
+      ).rejects.toThrow('Доступ бота изменился во время проверки');
+
+      expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
+      expect(fixture.maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(fixture.maxBotLinkService.selectChatPrimaryBot).not.toHaveBeenCalled();
+      expect(
+        fixture.managedEntityAccessLossService.recordIfManagedEntityAccessLost,
+      ).not.toHaveBeenCalled();
+      expect(membership).toEqual(original);
+    },
+  );
+
+  it('preserves a grant when its successful own-member probe cannot be persisted', async () => {
     const fixture = createFixture();
-    fixture.memberships.find(
+    const membership = fixture.memberships.find(
       (membership) => membership.botId === 'id613002203036_4_bot',
-    )!.permissionsSnapshot = {
+    )!;
+    membership.botAccessState = ChatBotAccessState.CONFIRMED_ADMIN;
+    membership.botAccessSource = 'explicit_start';
+    membership.permissionsSnapshot = {
       checkedAt: '2026-05-14T08:00:00.000Z',
       isAdmin: true,
       isOwner: false,
       permissions: ['write', 'delete'],
     };
-    fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
-      Object.assign(new Error('Request failed with status code 403'), {
-        response: { status: 403 },
+    const original = structuredClone(membership);
+    fixture.maxBotLinkService.recordBotAccessProbe.mockRejectedValueOnce(
+      Object.assign(new Error('write failed'), {
+        response: { status: 403, data: { code: 'chat.denied' } },
       }),
     );
 
@@ -1042,18 +1080,19 @@ describe('MaxBotExecutionPlannerService', () => {
         entityType: 'chat',
         botId: 'id613002203036_4_bot',
       }),
-    ).rejects.toThrow('подтверждёнными admin/owner');
+    ).rejects.toThrow('Доступ бота изменился во время проверки');
 
-    expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledTimes(1);
     expect(fixture.maxBotLinkService.recordBotAccessProbe).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: 'chat-1',
-        botId: 'id613002203036_4_bot',
-        access: null,
-        source: 'execution_planner_primary',
-        lastErrorCode: 'access.denied',
-      }),
+      expect.objectContaining({ access: expect.objectContaining({ isAdmin: true }) }),
     );
+    expect(
+      fixture.managedEntityAccessLossService.recordIfManagedEntityAccessLost,
+    ).not.toHaveBeenCalled();
+    expect(fixture.maxBotLinkService.selectChatPrimaryBot).not.toHaveBeenCalled();
+    expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
+    expect(membership).toEqual(original);
   });
 
   it('records denied access when assist enablement hits a terminal access error', async () => {

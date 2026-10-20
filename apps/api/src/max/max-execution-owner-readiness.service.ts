@@ -8,6 +8,7 @@ import { MaxBotLinkService } from './max-bot-link.service';
 import { normalizeMembershipAccessSnapshot } from './max-bot-access-policy.util';
 import { isMajorManagedEntityActivationRequired } from './managed-entity-activation.util';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
+import { resolveExplicitMembershipAccessDenial } from './max-membership-access-error';
 import {
   executionRouteProof,
   hasExecutionCapability,
@@ -227,6 +228,7 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
           (params.force && botId === routeTarget)
         ) {
           const checkedAt = new Date();
+          let membershipLookupPending = true;
           try {
             const access = await this.maxClient.getCurrentChatMemberAccess(params.chatId, {
               botId,
@@ -237,6 +239,7 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
               sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
               ignoreFailureMetricStatuses: [403, 404],
             });
+            membershipLookupPending = false;
             let channelReadVerified = false;
             if (
               state.entityType === ChatEntityType.CHANNEL &&
@@ -267,14 +270,19 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
             if (!accepted)
               throw new WebhookPreparationDeferredError('Execution access probe superseded', 1_000);
           } catch (error: unknown) {
-            const status = this.errorStatus(error);
-            if (status === 403 || status === 404) {
+            // FLAG: Only the exact own-member lookup may prove membership denial.
+            // Channel reads and persistence failures cannot erase that role.
+            const lastErrorCode = membershipLookupPending
+              ? resolveExplicitMembershipAccessDenial(error)
+              : null;
+            if (lastErrorCode) {
               const accepted = await this.maxBotLink.recordBotAccessProbe({
                 chatId: params.chatId,
                 botId,
                 access: null,
                 source: PROBE_SOURCE,
                 checkedAt,
+                lastErrorCode,
                 allowMembershipRecovery: false,
               });
               if (!accepted)
@@ -424,11 +432,5 @@ export class MaxExecutionOwnerReadinessService implements OnModuleDestroy {
     } catch {
       /* Diagnostic sinks cannot change execution behavior. */
     }
-  }
-
-  private errorStatus(error: unknown): number | null {
-    const candidate = error as { status?: unknown; response?: { status?: unknown } } | null;
-    const status = candidate?.response?.status ?? candidate?.status;
-    return typeof status === 'number' ? status : null;
   }
 }

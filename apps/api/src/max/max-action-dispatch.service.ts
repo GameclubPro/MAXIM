@@ -42,6 +42,7 @@ import {
 } from './max-routed-mutation-rollout.util';
 import { readMaxSendAutoDeleteVerificationDiagnostic } from './max-send-auto-delete-verification-error';
 import { parseMaxFutureNightStickyRouteProbe } from './max-send-route-sticky-probe';
+import { resolveExplicitMembershipAccessDenial } from './max-membership-access-error';
 
 type TerminalManagedEntityOutcome =
   | {
@@ -830,7 +831,9 @@ export class MaxActionDispatchService {
         timeoutMs: job.timeoutMs,
       });
     } catch (error: unknown) {
-      lastErrorCode = this.resolveTerminalAccessLookupErrorCode(error);
+      // FLAG: Opaque member lookup errors abort this preflight without erasing
+      // the persisted grant or fabricating a new denial epoch.
+      lastErrorCode = resolveExplicitMembershipAccessDenial(error);
       if (!lastErrorCode) {
         throw error;
       }
@@ -1249,24 +1252,5 @@ export class MaxActionDispatchService {
   private extractStatusCode(error: unknown): number | null {
     const statusCode = (error as { response?: { status?: unknown } })?.response?.status;
     return typeof statusCode === 'number' && Number.isInteger(statusCode) ? statusCode : null;
-  }
-
-  private resolveTerminalAccessLookupErrorCode(error: unknown): string | null {
-    const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
-    if (
-      typeof code === 'string' &&
-      ['access.denied', 'chat.denied', 'chat.not.found'].includes(code.trim())
-    ) {
-      return code.trim();
-    }
-
-    const statusCode = this.extractStatusCode(error);
-    if (statusCode === 403) {
-      return 'access.denied';
-    }
-    if (statusCode === 404) {
-      return 'chat.not.found';
-    }
-    return null;
   }
 }

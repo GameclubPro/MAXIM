@@ -233,10 +233,20 @@ async function indexed(
   for (const row of rows) observeSql(cost, `receipt:${row.id}`, deadline);
   return rows;
 }
-function operationChildrenSql(operation: string): Prisma.Sql {
-  return Prisma.sql`SELECT kind,child_key AS "childKey",octet_length(original_snapshot::text) AS size
-    FROM webhook_backlog_children WHERE cancellation_id=${operation}
-    ORDER BY kind,child_key LIMIT ${limits.selectedChildren + 1}`;
+function operationChildrenSql(
+  operation: string,
+  projection: 'size' | 'snapshot' = 'size',
+): Prisma.Sql {
+  const selected =
+    projection === 'size'
+      ? Prisma.sql`octet_length(original_snapshot::text) AS size`
+      : Prisma.sql`original_snapshot AS "originalSnapshot"`;
+  // FLAG: Equal closed-range bounds retain the leading sort key; equality lets PostgreSQL
+  // drop it and prefer a filtered primary-key scan after a dominant operation is analyzed.
+  return Prisma.sql`SELECT kind,child_key AS "childKey",${selected}
+    FROM webhook_backlog_children
+    WHERE cancellation_id>=${operation} AND cancellation_id<=${operation}
+    ORDER BY cancellation_id,kind,child_key LIMIT ${limits.selectedChildren + 1}`;
 }
 async function requireOperationIndex(
   tx: Prisma.TransactionClient,
@@ -1095,9 +1105,7 @@ async function capturedChildren(
         fail('BUDGET');
       return query<{ kind: string; childKey: string; originalSnapshot: Prisma.JsonValue }>(
         tx,
-        Prisma.sql`
-      SELECT kind,child_key AS "childKey",original_snapshot AS "originalSnapshot" FROM webhook_backlog_children
-      WHERE cancellation_id=${operation} ORDER BY kind,child_key LIMIT ${limits.selectedChildren + 1}`,
+        operationChildrenSql(operation, 'snapshot'),
         cost,
         deadline,
       );

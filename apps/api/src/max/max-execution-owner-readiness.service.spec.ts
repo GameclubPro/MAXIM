@@ -6,10 +6,7 @@ import {
 } from '../prisma/prisma-client';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-execution-owner-unavailable.error';
-import {
-  buildBotAccessSnapshotPersistence,
-  type BotAccessSnapshotInput,
-} from './bot-access-snapshot.util';
+import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxClientService } from './max-client.service';
 import { MaxExecutionOwnerReadinessService } from './max-execution-owner-readiness.service';
@@ -42,13 +39,7 @@ function fixture(count: number) {
         executionRouteProof(state, params.botId, params.purpose),
     ),
     recordBotAccessProbe: jest.fn(
-      async (params: {
-        botId: string;
-        access: BotAccessSnapshotInput;
-        source: string;
-        checkedAt: Date;
-        channelReadVerified?: boolean;
-      }) => {
+      async (params: Parameters<MaxBotLinkService['recordBotAccessProbe']>[0]) => {
         const candidate = state.candidates.find((membership) => membership.botId === params.botId)!;
         Object.assign(
           candidate,
@@ -56,6 +47,7 @@ function fixture(count: number) {
             source: params.source,
             now: params.checkedAt,
             channelReadVerified: params.channelReadVerified,
+            lastErrorCode: params.lastErrorCode,
           }),
         );
         return true;
@@ -297,6 +289,98 @@ describe('MaxExecutionOwnerReadinessService', () => {
     expect(f.links.recordBotAccessProbe).not.toHaveBeenCalled();
     expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
     expect(f.locks.releaseLock).toHaveBeenCalledWith(expect.any(String), 'probe-token');
+  });
+
+  it.each([401, 403, 404])(
+    'preserves a confirmed owner grant and assignment after an opaque own-member HTTP %s',
+    async (status) => {
+      const f = fixture(2);
+      const original = structuredClone(f.state);
+      f.max.getCurrentChatMemberAccess.mockRejectedValueOnce({
+        response: { status, data: { message: 'chat not found; forbidden' } },
+      });
+      await expect(f.service.ensureReady({ chatId: '-100', force: true })).rejects.toBeInstanceOf(
+        WebhookExecutionOwnerUnavailableError,
+      );
+      expect(f.state).toEqual(original);
+      expect(f.links.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+      expect(f.locks.releaseLock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['access.denied', 'chat.denied', 'chat.not.found'])(
+    'persists explicit own-member denial %s while retaining a fixed moderator',
+    async (code) => {
+      const f = fixture(2);
+      f.state.fixedModeratorBotId = 'bot-00';
+      f.max.getCurrentChatMemberAccess.mockRejectedValueOnce({
+        response: { status: 404, data: { code } },
+      });
+      expect(await f.service.ensureReady({ chatId: '-100', force: true })).toBeNull();
+      expect(f.state.candidates[0]).toMatchObject({
+        botAccessState: ChatBotAccessState.DENIED,
+        botAccessLastErrorCode: code,
+      });
+      expect(f.links.recordBotAccessProbe).toHaveBeenCalledWith(
+        expect.objectContaining({ access: null, lastErrorCode: code }),
+      );
+      expect(f.state.fixedModeratorBotId).toBe('bot-00');
+      expect(f.state.primaryBotId).toBe('bot-00');
+      expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { status: 401, code: undefined },
+    { status: 403, code: undefined },
+    { status: 404, code: undefined },
+    { status: 403, code: 'access.denied' },
+    { status: 403, code: 'chat.denied' },
+    { status: 404, code: 'chat.not.found' },
+  ])(
+    'preserves channel membership when a separate exact channel read fails: %j',
+    async ({ status, code }) => {
+      const f = fixture(2);
+      f.state.entityType = ChatEntityType.CHANNEL;
+      f.state.candidates[0]!.permissionsSnapshot = {
+        ...ADMIN,
+        permissions: ['write', 'delete_message'],
+      };
+      f.max.getCurrentChatMemberAccess.mockResolvedValue({
+        ...ADMIN,
+        permissions: ['write', 'delete_message'],
+      });
+      f.max.getChatSnapshot.mockRejectedValueOnce({
+        response: { status, data: { code, message: 'not accessible' } },
+      });
+      const original = structuredClone(f.state);
+      await expect(f.service.ensureReady({ chatId: '-100' })).rejects.toBeInstanceOf(
+        WebhookExecutionOwnerUnavailableError,
+      );
+      expect(f.max.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+      expect(f.max.getChatSnapshot).toHaveBeenCalledTimes(1);
+      expect(f.links.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+      expect(f.state).toEqual(original);
+    },
+  );
+
+  it('does not reinterpret a rejected positive persistence as a negative membership probe', async () => {
+    const f = fixture(1);
+    const original = structuredClone(f.state);
+    f.links.recordBotAccessProbe.mockRejectedValueOnce({
+      response: { status: 403, data: { code: 'chat.denied' } },
+    });
+    await expect(f.service.ensureReady({ chatId: '-100', force: true })).rejects.toBeInstanceOf(
+      WebhookExecutionOwnerUnavailableError,
+    );
+    expect(f.links.recordBotAccessProbe).toHaveBeenCalledTimes(1);
+    expect(f.links.recordBotAccessProbe).toHaveBeenCalledWith(
+      expect.objectContaining({ access: ADMIN }),
+    );
+    expect(f.links.selectChatPrimaryBot).not.toHaveBeenCalled();
+    expect(f.state).toEqual(original);
   });
 
   it('keeps an admin owner fenced when a successful lookup omits its permissions', async () => {

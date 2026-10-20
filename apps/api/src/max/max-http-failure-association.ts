@@ -5,7 +5,7 @@ const associationBrand = Symbol('max-http-failure-association');
 
 export type MaxHttpFailureFacts = Readonly<{
   method: 'get' | 'delete';
-  endpointKind: 'messages' | 'chat_members';
+  endpointKind: 'messages' | 'message' | 'chat_members' | 'chat_member_self' | 'chat';
   phase: 'adapter_rejection' | 'response_rejection' | 'domain_validation';
   receivedStatusCode: number | null;
 }>;
@@ -37,6 +37,36 @@ export type ConsumedMaxHttpOutcome<T> =
       association: MaxHttpFailureAssociation | null;
     }>;
 
+function isSupportedTarget(method: unknown, endpointKind: unknown): boolean {
+  return (
+    (method === 'get' &&
+      (endpointKind === 'messages' ||
+        endpointKind === 'message' ||
+        endpointKind === 'chat_members' ||
+        endpointKind === 'chat_member_self' ||
+        endpointKind === 'chat')) ||
+    (method === 'delete' && (endpointKind === 'messages' || endpointKind === 'chat_members'))
+  );
+}
+
+export function classifyMaxHttpFailureEndpoint(
+  method: string,
+  path: string,
+): MaxHttpFailureFacts['endpointKind'] | null {
+  if (method === 'delete') {
+    if (path === '/messages') return 'messages';
+    if (/^\/chats\/[^/?#]+\/members$/u.test(path)) return 'chat_members';
+  }
+  if (method === 'get') {
+    if (path === '/messages') return 'messages';
+    if (/^\/messages\/[^/?#]+$/u.test(path)) return 'message';
+    if (/^\/chats\/[^/?#]+\/members\?user_ids=[^&#]+$/u.test(path)) return 'chat_members';
+    if (/^\/chats\/[^/?#]+\/members\/me$/u.test(path)) return 'chat_member_self';
+    if (/^\/chats\/[^/?#]+$/u.test(path)) return 'chat';
+  }
+  return null;
+}
+
 export function createMaxHttpFailureOwner(): MaxHttpFailureOwner {
   return { [ownerBrand]: { active: true, consumed: false, starts: 0 } };
 }
@@ -66,11 +96,7 @@ export function beginMaxHttpFailureRequest(
         owner: state,
         method,
         endpointKind,
-        eligible:
-          eligible &&
-          ((method === 'get' && endpointKind === 'chat_members') ||
-            (method === 'delete' &&
-              (endpointKind === 'messages' || endpointKind === 'chat_members'))),
+        eligible: eligible && isSupportedTarget(method, endpointKind),
       },
     };
   } catch {
@@ -132,10 +158,7 @@ function readOutcomeProof(outcome: OutcomeProof): ResponseProof | null {
     const { receivedStatusCode, phase } = proof;
     if (
       !owner ||
-      !(
-        (method === 'get' && endpointKind === 'chat_members') ||
-        (method === 'delete' && (endpointKind === 'messages' || endpointKind === 'chat_members'))
-      ) ||
+      !isSupportedTarget(method, endpointKind) ||
       !(
         receivedStatusCode === null ||
         (typeof receivedStatusCode === 'number' && Number.isFinite(receivedStatusCode))
@@ -215,10 +238,7 @@ export function readMaxHttpFailureAssociation(
     if (association?.[associationBrand] !== true) return null;
     const { method, endpointKind, phase, receivedStatusCode } = association;
     if (
-      !(
-        (method === 'get' && endpointKind === 'chat_members') ||
-        (method === 'delete' && (endpointKind === 'messages' || endpointKind === 'chat_members'))
-      ) ||
+      !isSupportedTarget(method, endpointKind) ||
       !['adapter_rejection', 'response_rejection', 'domain_validation'].includes(phase) ||
       !(
         receivedStatusCode === null ||

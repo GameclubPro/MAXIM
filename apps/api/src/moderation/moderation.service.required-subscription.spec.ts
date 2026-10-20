@@ -1,4 +1,7 @@
 import { ChannelPostDemandRuntime } from './channel-post-demand-runtime';
+import type { MaxBotLinkService } from '../max/max-bot-link.service';
+import type { MaxClientService } from '../max/max-client.service';
+import type { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import {
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   ChatEntityType,
@@ -319,6 +322,196 @@ describe('ModerationService', () => {
         expect(prisma.chatBotMembership.updateMany).not.toHaveBeenCalled();
         expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
       });
+
+      it.each<{ status: number; code?: string; denied: boolean }>([
+        { status: 401, denied: false },
+        { status: 403, denied: false },
+        { status: 404, denied: false },
+        { status: 401, code: 'access.denied', denied: false },
+        { status: 404, code: 'message.not.found', denied: false },
+        { status: 404, code: 'user.not.found', denied: false },
+        { status: 404, code: 'member.not.found', denied: false },
+        { status: 403, code: 'access.denied', denied: true },
+        { status: 403, code: 'chat.denied', denied: true },
+        { status: 404, code: 'chat.not.found', denied: true },
+      ])(
+        'requires explicit own-member denial for HTTP $status / $code',
+        async ({ status, code, denied }) => {
+          const prisma = {
+            chat: {
+              findUnique: jest.fn().mockResolvedValue({
+                entityType: ChatEntityType.CHAT,
+                botMemberships: [{ botId: 'id613002203036_4_bot', status: 'ACTIVE' }],
+              }),
+            },
+          };
+          const getCurrentChatMemberAccess: jest.MockedFunction<
+            MaxClientService['getCurrentChatMemberAccess']
+          > = jest
+            .fn()
+            .mockRejectedValue(
+              createMaxApiError(status, 'chat denied; bot is not a chat member', code),
+            );
+          const recordBotAccessProbe: jest.MockedFunction<
+            MaxBotLinkService['recordBotAccessProbe']
+          > = jest.fn().mockResolvedValue(true);
+          const maxBotLinkService = {
+            resolveBotIdsForModerationAction: jest.fn().mockResolvedValue([]),
+            recordBotAccessProbe,
+            getResolvedBotSync: jest.fn((botId?: string | null) => ({
+              id: botId ?? 'id613002203036_bot',
+            })),
+          };
+          const operation = jest.fn().mockResolvedValue(undefined);
+          const service = createRequiredSubscriptionService(
+            prisma as never,
+            {} as never,
+            {} as never,
+            { getCurrentChatMemberAccess } as never,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            maxBotLinkService as never,
+          );
+
+          await expect(
+            (service as any).executeModerationActionWithFallback({
+              chatId: 'chat-1',
+              action: 'moderate_member',
+              userId: 'user-1',
+              operation,
+            }),
+          ).resolves.toBe(false);
+
+          expect(getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+          expect(operation).not.toHaveBeenCalled();
+          if (denied) {
+            expect(recordBotAccessProbe).toHaveBeenCalledTimes(1);
+            expect(recordBotAccessProbe).toHaveBeenCalledWith(
+              expect.objectContaining({
+                chatId: 'chat-1',
+                botId: 'id613002203036_4_bot',
+                access: null,
+                source: 'moderation_action_moderate_member',
+                allowMembershipRecovery: false,
+              }),
+            );
+          } else {
+            expect(recordBotAccessProbe).not.toHaveBeenCalled();
+          }
+        },
+      );
+
+      it.each<{ status: number; code?: string; denied: boolean }>([
+        { status: 403, denied: false },
+        { status: 403, code: 'user.not.found', denied: false },
+        { status: 404, code: 'user.not.found', denied: false },
+        { status: 403, code: 'member.not.found', denied: false },
+        { status: 404, code: 'member.not.found', denied: false },
+        { status: 404, code: 'message.not.found', denied: false },
+        { status: 403, code: 'access.denied', denied: false },
+        { status: 403, code: 'chat.denied', denied: true },
+        { status: 404, code: 'chat.not.found', denied: true },
+      ])(
+        'preserves baseline membership after target mutation HTTP $status / $code unless chat denial is explicit',
+        async ({ status, code, denied }) => {
+          const originalAccess = {
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['read_all_messages', 'write', 'add_remove_members'],
+          };
+          let storedAccess: Parameters<MaxBotLinkService['recordBotAccessProbe']>[0]['access'] =
+            originalAccess;
+          const recordBotAccessProbe: jest.MockedFunction<
+            MaxBotLinkService['recordBotAccessProbe']
+          > = jest.fn(
+            async ({ access }: Parameters<MaxBotLinkService['recordBotAccessProbe']>[0]) => {
+              storedAccess = access;
+              return true;
+            },
+          );
+          const recordIfManagedEntityAccessLost: jest.MockedFunction<
+            ManagedEntityAccessLossService['recordIfManagedEntityAccessLost']
+          > = jest.fn().mockResolvedValue(null);
+          const maxBotLinkService = {
+            resolveBotIdsForModerationAction: jest
+              .fn()
+              .mockResolvedValue(['id613002203036_bot', 'id613002203036_4_bot']),
+            recordBotAccessProbe,
+            getResolvedBotSync: jest.fn((botId?: string | null) => ({
+              id: botId ?? 'id613002203036_bot',
+            })),
+          };
+          const mutationError = createMaxApiError(
+            status,
+            'chat denied; bot is not a chat member',
+            code,
+          );
+          const operation = jest
+            .fn()
+            .mockRejectedValueOnce(mutationError)
+            .mockResolvedValueOnce(undefined);
+          const service = createRequiredSubscriptionService(
+            {} as never,
+            {} as never,
+            {} as never,
+            {} as never,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            maxBotLinkService as never,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { recordIfManagedEntityAccessLost } as never,
+          );
+
+          await expect(
+            (service as any).executeModerationActionWithFallback({
+              chatId: 'chat-1',
+              action: 'moderate_member',
+              userId: 'user-1',
+              operation,
+            }),
+          ).resolves.toBe(true);
+
+          expect(operation.mock.calls).toEqual([['id613002203036_bot'], ['id613002203036_4_bot']]);
+          await expect(
+            (service as any).isModerationActionBotBackoffActive(
+              'chat-1',
+              'moderate_member',
+              'id613002203036_bot',
+            ),
+          ).resolves.toBe(true);
+          await expect(
+            (service as any).isModerationActionBotBackoffActive(
+              'chat-1',
+              'moderate_member',
+              'id613002203036_4_bot',
+            ),
+          ).resolves.toBe(false);
+          if (denied) {
+            expect(recordIfManagedEntityAccessLost).toHaveBeenCalledTimes(1);
+            expect(recordBotAccessProbe).toHaveBeenCalledTimes(1);
+            expect(storedAccess).toBeNull();
+          } else {
+            expect(recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+            expect(recordBotAccessProbe).not.toHaveBeenCalled();
+            expect(storedAccess).toBe(originalAccess);
+          }
+        },
+      );
 
       it('requires read-all plus MAX write permission for refreshed chat delete access', async () => {
         const prisma = {

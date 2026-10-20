@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { WebhookExecutionOwnerUnavailableError } from '../common/webhook-execution-owner-unavailable.error';
 import {
   createMultibotHarness,
   activateHarnessBotByExplicitStart,
@@ -142,6 +143,189 @@ describeStores('native multibot absent rights webhook and independently stale ro
       expect(engine).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each([
+    { label: 'bare 403', response: { status: 403 } },
+    { label: 'bare 404', response: { status: 404 } },
+    { label: 'missing user', response: { status: 404, code: 'user.not.found' } },
+    { label: 'opaque gateway code', response: { status: 403, code: 'fixture.gateway.failure' } },
+  ] as const)(
+    'preserves the positive SQL grant and fixed assignment through $label own-member failure',
+    async ({ response }) => {
+      h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 2, mode: 'on' });
+      const s = h;
+      await s.pause();
+      await s.deleteQueue.pause();
+      const [chatId] = await s.seedCatalog(1);
+      const botId = s.bots[0]!.id;
+      await s.prisma.chat.update({
+        where: { id: chatId },
+        data: { fixedModeratorBotId: botId, routingVersion: { increment: 1 } },
+      });
+      await s.cache.invalidate(chatId!);
+      const membership = () =>
+        s.prisma.chatBotMembership.findUniqueOrThrow({
+          where: { chatId_botId: { chatId: chatId!, botId } },
+          select: {
+            status: true,
+            role: true,
+            botAccessState: true,
+            botAccessCheckedAt: true,
+            botAccessExpiresAt: true,
+            botAccessSource: true,
+            botAccessLastErrorCode: true,
+            permissionsSnapshot: true,
+            permissionsHash: true,
+            lifecycleEventAt: true,
+            lifecycleEventType: true,
+          },
+        });
+      const assignment = () =>
+        s.prisma.chat.findUniqueOrThrow({
+          where: { id: chatId },
+          select: {
+            botId: true,
+            primaryBotId: true,
+            fixedModeratorBotId: true,
+            routingVersion: true,
+            routingState: true,
+          },
+        });
+      const beforeMembership = await membership();
+      const beforeAssignment = await assignment();
+      s.denyBot(botId);
+      s.setOwnMemberProbe(botId, response);
+
+      await expect(
+        s.readiness.ensureReady({ chatId: chatId!, preferredBotId: botId, force: true }),
+      ).rejects.toBeInstanceOf(WebhookExecutionOwnerUnavailableError);
+      expect(await membership()).toEqual(beforeMembership);
+      expect(await assignment()).toEqual(beforeAssignment);
+
+      const messageId = `opaque-own-membership-${randomUUID()}`;
+      const receipt = await s.ingest({
+        chatId: chatId!,
+        messageId,
+        botId,
+        text: 'An opaque own-member failure cannot erase this fixed moderator grant',
+      });
+      await s.ingress.preparePersistedWebhookEvent(receipt);
+      const engine = jest.spyOn(s.moderation, 'handleUpdate');
+      const requestsBeforeAction = s.requests.length;
+      await s.moderation.processWebhookEvent(receipt);
+      await s.moderation.processWebhookEvent(receipt);
+      const pending = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+      });
+      expect(pending).toMatchObject({
+        status: 'RETRYABLE',
+        deleteDispatchStartedAt: null,
+        deleteDispatchStartedBotId: null,
+        remoteDeleteSucceededAt: null,
+      });
+      expect(await membership()).toEqual(beforeMembership);
+      expect(await assignment()).toEqual(beforeAssignment);
+      expect(s.effects).toEqual([]);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+      expect(engine).toHaveBeenCalledTimes(1);
+      const actionRequests = s.requests.slice(requestsBeforeAction);
+      expect(
+        actionRequests
+          .filter((request) => request.path.endsWith('/members/me'))
+          .map((request) => request.botId),
+      ).toEqual([botId]);
+      expect(
+        actionRequests
+          .filter((request) => request.method === 'delete')
+          .map((request) => request.botId),
+      ).toEqual([]);
+      expect(
+        await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt } }),
+      ).toMatchObject({
+        status: 'PROCESSED',
+      });
+
+      // FLAG: Recovery continues only the committed DELETE; an opaque response must
+      // not manufacture dormant activation or require replaying the original handler.
+      s.setOwnMemberProbe(botId, null);
+      s.allowBot(botId);
+      await s.prisma.moderationDeleteIntent.update({
+        where: { id: pending.id },
+        data: { nextAttemptAt: new Date(Date.now() - 1) },
+      });
+      expect(await s.intents.attemptIntent(pending.id)).toMatchObject({ kind: 'confirmed' });
+      await s.ruleFollowups.sweep();
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === messageId),
+      ).toMatchObject([{ botId }]);
+      expect(await assignment()).toEqual(beforeAssignment);
+      expect(
+        await s.prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id: pending.id } }),
+      ).toMatchObject({ status: 'SUCCEEDED', retryUntilAt: pending.retryUntilAt });
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(1);
+      expect(await s.prisma.violation.count({ where: { chatId } })).toBe(1);
+      expect(engine).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('persists explicit own-member denial through the real writer without replacing a fixed bot', async () => {
+    h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 2, mode: 'on' });
+    const s = h;
+    await s.pause();
+    await s.deleteQueue.pause();
+    const [chatId] = await s.seedCatalog(1);
+    const botId = s.bots[0]!.id;
+    await s.prisma.chat.update({
+      where: { id: chatId },
+      data: { fixedModeratorBotId: botId, routingVersion: { increment: 1 } },
+    });
+    await s.cache.invalidate(chatId!);
+    const before = await s.prisma.chatBotMembership.findUniqueOrThrow({
+      where: { chatId_botId: { chatId: chatId!, botId } },
+    });
+    const messageId = `explicit-own-member-denial-${randomUUID()}`;
+    const receipt = await s.ingest({
+      chatId: chatId!,
+      botId,
+      messageId,
+      text: 'A confirmed own-member denial blocks only this assigned moderator',
+    });
+    await s.ingress.preparePersistedWebhookEvent(receipt);
+    s.denyBot(botId);
+    s.setOwnMemberProbe(botId, { status: 403, code: 'chat.denied' });
+    await s.moderation.processWebhookEvent(receipt);
+
+    const denied = await s.prisma.chatBotMembership.findUniqueOrThrow({
+      where: { chatId_botId: { chatId: chatId!, botId } },
+    });
+    expect(denied).toMatchObject({
+      status: 'ACTIVE',
+      botAccessState: 'DENIED',
+      botAccessSource: 'moderation_delete_intent_probe_denied',
+    });
+    expect(denied.botAccessCheckedAt!.getTime()).toBeGreaterThanOrEqual(
+      before.botAccessCheckedAt!.getTime(),
+    );
+    expect(await s.prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toMatchObject({
+      botId: null,
+      primaryBotId: null,
+      fixedModeratorBotId: botId,
+      routingState: 'NO_ELIGIBLE_BOT',
+    });
+    expect(await s.links.getFreshChatBotExecutionProof({ chatId: chatId!, botId })).toBeNull();
+    expect(
+      await s.prisma.chatBotMembership.findUniqueOrThrow({
+        where: { chatId_botId: { chatId: chatId!, botId: s.bots[1]!.id } },
+      }),
+    ).toMatchObject({ botAccessState: 'CONFIRMED_ADMIN' });
+    expect(s.effects).toEqual([]);
+    expect(await s.prisma.violation.count({ where: { chatId } })).toBe(0);
+    expect(
+      await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+      }),
+    ).toMatchObject({ status: 'WAITING_CAPABILITY', remoteDeleteSucceededAt: null });
+  });
 
   it('action-only recovery reaches the ninth reserve through bounded probe passes', async () => {
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 9 });

@@ -44,6 +44,7 @@ import {
 import { MaxBotLinkService, type MaxDeleteMessageBotRoute } from '../max/max-bot-link.service';
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
 import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
+import { resolveExplicitMembershipAccessDenial } from '../max/max-membership-access-error';
 import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
 import {
   isMaxApiCircuitOpenError,
@@ -7637,6 +7638,7 @@ export class ModerationDeleteIntentService {
     canRead?: () => Promise<boolean>,
   ): Promise<'refreshed' | 'denied' | 'unknown'> {
     let accessProbeStartedAt: Date | null = null;
+    let membershipLookupPending = false;
     try {
       await this.assertLeaseForExternalCall(heartbeat);
       if (canRead && !(await canRead())) return 'unknown';
@@ -7651,6 +7653,7 @@ export class ModerationDeleteIntentService {
       )
         return 'denied';
       accessProbeStartedAt = new Date();
+      membershipLookupPending = true;
       const access = await this.maxClient.getCurrentChatMemberAccess(intent.chatId, {
         botId,
         bypassCache: true,
@@ -7662,6 +7665,7 @@ export class ModerationDeleteIntentService {
         timeoutMs: this.deleteTimeoutMs,
         ignoreFailureMetricStatuses: [403, 404],
       });
+      membershipLookupPending = false;
       const persisted = await this.maxBotLinkService.recordBotAccessProbe({
         chatId: intent.chatId,
         botId,
@@ -7677,8 +7681,7 @@ export class ModerationDeleteIntentService {
       if (error instanceof ModerationDeleteIntentLeaseLostError) {
         throw error;
       }
-      const details = this.describeError(error, 'delete_access_probe_failed');
-      if (details.statusCode === 401 || details.statusCode === 403 || details.statusCode === 404) {
+      if (membershipLookupPending && resolveExplicitMembershipAccessDenial(error) !== null) {
         if (!accessProbeStartedAt) {
           return 'unknown';
         }

@@ -15,6 +15,7 @@ import {
   MAX_SEND_AUTO_DELETE_CONFIRMATION_KINDS,
   MAX_SEND_AUTO_DELETE_MARKER_VERSION,
   MaxApiCircuitOpenError,
+  type MaxClientService,
   type MaxActionJob,
   type MaxActionLedgerContext,
 } from './max-client.service';
@@ -24,6 +25,7 @@ import {
   MaxMediaUploadValidationError,
 } from './max-media-upload-validation';
 import { createMaxSendAutoDeleteVerificationError } from './max-send-auto-delete-verification-error';
+import type { MaxBotLinkService } from './max-bot-link.service';
 
 const FUTURE_NIGHT_SCHEDULE_FINGERPRINT = buildNightModeTransitionScheduleFingerprint({
   nightModeEnabled: true,
@@ -1761,10 +1763,67 @@ describe('MaxActionDispatchService', () => {
     );
   });
 
+  it.each([401, 403, 404])(
+    'aborts an opaque own-member HTTP %s before dispatch without revoking the grant',
+    async (status) => {
+      const lookupFailure = createMaxApiError(status, 'chat not found; forbidden');
+      const getCurrentChatMemberAccess: jest.MockedFunction<
+        MaxClientService['getCurrentChatMemberAccess']
+      > = jest.fn().mockRejectedValue(lookupFailure);
+      const recordBotAccessProbe: jest.MockedFunction<MaxBotLinkService['recordBotAccessProbe']> =
+        jest.fn();
+      const maxClient = {
+        getCurrentChatMemberAccess,
+        executeActionJob: jest.fn(),
+      };
+      const maxBotLinkService = {
+        resolveBotRoute: jest.fn().mockResolvedValue({
+          purpose: 'send_message',
+          chatId: 'chat-lookup-unknown',
+          primaryBotId: 'bot-1',
+          botId: 'bot-1',
+          candidateBotIds: ['bot-1'],
+          reason: 'primary_confirmed',
+        }),
+        getExecutableBotById: jest.fn((botId: string) => ({ id: botId })),
+        isBotAccessSnapshotStale: jest.fn().mockResolvedValue(true),
+        recordBotAccessProbe,
+      };
+      const managedEntityAccessLossService = {
+        recordIfManagedEntityAccessLost: jest.fn(),
+      };
+      const service = new MaxActionDispatchService(
+        maxClient as never,
+        managedEntityAccessLossService as never,
+        undefined,
+        maxBotLinkService as never,
+        {
+          get: jest.fn((key: string) => (key === 'MAX_ROUTED_MUTATIONS_MODE' ? 'on' : undefined)),
+        } as never,
+      );
+      await expect(
+        service.execute({
+          actionType: 'SEND_MESSAGE',
+          chatId: 'chat-lookup-unknown',
+          botId: 'bot-1',
+          candidateBotIds: ['bot-1'],
+          routing: { purpose: 'send_message', primaryBotId: 'bot-1' },
+          text: 'hello',
+          attempt: 1,
+          idempotencyKey: 'logical-send-lookup-unknown',
+          createdAt: '2026-08-20T10:00:00.000Z',
+        }),
+      ).rejects.toBe(lookupFailure);
+      expect(maxBotLinkService.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).not.toHaveBeenCalled();
+      expect(maxClient.executeActionJob).not.toHaveBeenCalled();
+    },
+  );
+
   it('persists a terminal access lookup failure and dispatches through the surviving route', async () => {
     const accessProbeStartedAt = new Date('2026-08-20T10:10:00.000Z');
     jest.useFakeTimers().setSystemTime(accessProbeStartedAt);
-    const lookupFailure = createMaxApiError(404, 'chat not found');
+    const lookupFailure = createMaxApiError(404, 'chat not found', 'chat.not.found');
     const maxClient = {
       getCurrentChatMemberAccess: jest.fn().mockRejectedValue(lookupFailure),
       executeActionJob: jest.fn().mockResolvedValue(undefined),

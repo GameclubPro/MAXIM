@@ -20,6 +20,7 @@ import { NightModeTransitionSchedulerService } from '../moderation/night-mode-tr
 import { PrismaService } from '../prisma/prisma.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService, type MaxBotChat } from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
+import { resolveExplicitMembershipAccessDenial } from './max-membership-access-error';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { canDiscoverChatsForBotState } from './max-bot-state.util';
 import { ManagedEntityActivationRequiredError } from './managed-entity-activation.util';
@@ -541,7 +542,7 @@ export class MaxChatAdminRosterSyncService {
           this.markTerminalBotBackoff(normalized.chatId, botId);
           continue;
         }
-        if (this.isChatAccessDeniedError(error)) {
+        if (resolveExplicitMembershipAccessDenial(error) !== null) {
           if (!accessProbeStartedAt) {
             recoverableError ??= error;
             continue;
@@ -2128,36 +2129,6 @@ export class MaxChatAdminRosterSyncService {
         'Failed to reconcile night mode jobs after confirmed MAX access',
       );
     }
-  }
-
-  private isChatAccessDeniedError(error: unknown): boolean {
-    const status = (error as { response?: { status?: number } } | null)?.response?.status;
-    const code = (error as { response?: { data?: { code?: unknown } } } | null)?.response?.data
-      ?.code;
-    const normalizedCode = typeof code === 'string' ? code.trim().toLowerCase() : null;
-    const message = (error as { response?: { data?: { message?: unknown } } } | null)?.response
-      ?.data?.message;
-    const normalizedMessage =
-      typeof message === 'string'
-        ? message.trim().toLowerCase()
-        : error instanceof Error
-          ? error.message.trim().toLowerCase()
-          : String(error).trim().toLowerCase();
-
-    if (normalizedCode === 'chat.denied' || normalizedCode === 'chat.not.found') {
-      return true;
-    }
-
-    if (status !== 400 && status !== 403 && status !== 404) {
-      return false;
-    }
-
-    return (
-      normalizedMessage.includes('chat administrator') ||
-      normalizedMessage.includes('bot is not a chat member') ||
-      normalizedMessage.includes('chat not found') ||
-      normalizedMessage.includes('forbidden')
-    );
   }
 
   private async markManagedRefreshSourceBackoff(
