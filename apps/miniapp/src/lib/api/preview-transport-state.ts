@@ -1084,6 +1084,58 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   state.publicationDeliveries = publicationFixtures.deliveries;
 
   const publicationWindowState = new URLSearchParams(search).get('publicationWindow');
+  if (
+    publicationWindowState === 'stopped-pending' ||
+    publicationWindowState === 'stopped-sending' ||
+    publicationWindowState === 'stopped-ambiguous'
+  ) {
+    const publication = state.publications.find(
+      (item) => item.id === 'publication-access-required',
+    );
+    const occurrence = publication?.occurrences[0];
+    const target = publication?.targetPreviews[0];
+    if (publication && occurrence && target) {
+      const status =
+        publicationWindowState === 'stopped-pending'
+          ? 'PENDING'
+          : publicationWindowState === 'stopped-sending'
+            ? 'SENDING'
+            : 'AMBIGUOUS';
+      const pending = status === 'AMBIGUOUS' ? 0 : 1;
+      const stats = {
+        total: 1,
+        pending,
+        sent: 0,
+        failed: 0,
+        ambiguous: status === 'AMBIGUOUS' ? 1 : 0,
+        canceled: 0,
+      };
+      publication.dispatchIssue = null;
+      occurrence.dispatchIssue = null;
+      occurrence.dispatchBlockedSince = null;
+      occurrence.dispatchCheckedAt = null;
+      occurrence.status = 'CANCELED';
+      occurrence.canRetry = false;
+      occurrence.delivery = stats;
+      publication.delivery = stats;
+      publication.actionableDelivery = { ...stats, dispatchPending: 0 };
+      state.publicationDeliveries.push({
+        id: `${occurrence.id}-${publicationWindowState}`,
+        occurrenceId: occurrence.id,
+        target,
+        status,
+        dispatchStopped: true,
+        attemptCount: 1,
+        remoteMessageId: null,
+        lastError: null,
+        sentAt: null,
+        waitReason: 'max_rate_limit',
+        firstDeferredAt: now.toISOString(),
+        nextAttemptAt: new Date(now.getTime() + 30_000).toISOString(),
+        deadlineAt: addDays(now, 1).toISOString(),
+      });
+    }
+  }
   if (publicationWindowState === 'capacity') {
     const publication = state.publications.find(
       (item) => item.id === 'publication-access-required',

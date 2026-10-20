@@ -34,7 +34,10 @@ import {
   type PreparedPublicationContentRevision,
   PublicationContentService,
 } from './publication-content.service';
-import { PublicationPresenterService } from './publication-presenter.service';
+import {
+  PUBLICATION_DELIVERY_PRESENTATION_INCLUDE,
+  PublicationPresenterService,
+} from './publication-presenter.service';
 import {
   LEGACY_PUBLICATION_EXECUTION_IMMUTABLE_CODE,
   PublicationPublisherRoutingService,
@@ -3866,6 +3869,146 @@ describe('PublicationService', () => {
     ).rejects.toThrow('Сохранённое видео больше недоступно.');
   });
 
+  it('presents stopped dispatch without changing delivery evidence or sent post-actions', async () => {
+    const future = new Date('2026-11-01T12:00:00.000Z');
+    type PresentationRow = Prisma.ManagedBroadcastDeliveryGetPayload<{
+      include: typeof PUBLICATION_DELIVERY_PRESENTATION_INCLUDE;
+    }>;
+    const parents: Pick<
+      PresentationRow,
+      'broadcast' | 'publicationOccurrence' | 'contentRevision'
+    > = {
+      broadcast: { entityType: ChatEntityType.CHAT, status: ManagedBroadcastStatus.ACTIVE },
+      publicationOccurrence: {
+        id: 'occurrence-1',
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        deliveryDeadlineAt: future,
+        retryExpiresAt: null,
+        publication: { canonicalContentRevisionId: 'content-1' },
+      },
+      contentRevision: { id: 'content-1', revision: 1, postPublish: null },
+    };
+    type DeliveryEvidenceRow = Pick<
+      PresentationRow,
+      | keyof typeof parents
+      | 'id'
+      | 'targetChatId'
+      | 'status'
+      | 'attemptCount'
+      | 'remoteMessageId'
+      | 'sentAt'
+      | 'lastError'
+      | 'nextAttemptAt'
+      | 'waitReason'
+      | 'firstDeferredAt'
+      | 'pinStatus'
+      | 'deleteStatus'
+      | 'deleteAt'
+    >;
+    const delivery = (
+      id: string,
+      status: ManagedBroadcastDeliveryStatus,
+      occurrenceStatus: PublicationOccurrenceStatus,
+      broadcastStatus: ManagedBroadcastStatus = ManagedBroadcastStatus.ACTIVE,
+    ): DeliveryEvidenceRow => ({
+      ...parents,
+      id,
+      targetChatId: 'chat-1',
+      status,
+      broadcast: { ...parents.broadcast, status: broadcastStatus },
+      publicationOccurrence: { ...parents.publicationOccurrence!, status: occurrenceStatus },
+      attemptCount: 2,
+      remoteMessageId: status === ManagedBroadcastDeliveryStatus.SENT ? 'confirmed-message' : null,
+      sentAt:
+        status === ManagedBroadcastDeliveryStatus.SENT ? new Date('2026-10-20T12:00:00Z') : null,
+      lastError: 'Retained evidence',
+      nextAttemptAt: future,
+      waitReason: 'local_capacity',
+      firstDeferredAt: new Date('2026-10-20T11:00:00Z'),
+      pinStatus: 'DONE',
+      deleteStatus: 'PENDING',
+      deleteAt: future,
+    });
+    const rows = [
+      delivery(
+        'stopped-pending',
+        ManagedBroadcastDeliveryStatus.PENDING,
+        PublicationOccurrenceStatus.CANCELED,
+      ),
+      delivery(
+        'stopped-envelope',
+        ManagedBroadcastDeliveryStatus.PENDING,
+        PublicationOccurrenceStatus.SENT,
+        ManagedBroadcastStatus.CANCELED,
+      ),
+      delivery(
+        'stopped-sending',
+        ManagedBroadcastDeliveryStatus.SENDING,
+        PublicationOccurrenceStatus.IN_PROGRESS,
+        ManagedBroadcastStatus.CANCELED,
+      ),
+      delivery(
+        'stopped-ambiguous',
+        ManagedBroadcastDeliveryStatus.AMBIGUOUS,
+        PublicationOccurrenceStatus.CANCELED,
+      ),
+      delivery(
+        'active-pending',
+        ManagedBroadcastDeliveryStatus.PENDING,
+        PublicationOccurrenceStatus.SCHEDULED,
+      ),
+      delivery(
+        'stopped-sent',
+        ManagedBroadcastDeliveryStatus.SENT,
+        PublicationOccurrenceStatus.SENT,
+        ManagedBroadcastStatus.CANCELED,
+      ),
+    ];
+    const { service } = createService({
+      publication: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'publication-1',
+          version: 1,
+          lifecycle: PublicationLifecycle.ACTIVE,
+        }),
+      },
+      managedBroadcastDelivery: { findMany: jest.fn().mockResolvedValue(rows) },
+      chat: { findMany: jest.fn().mockResolvedValue([{ id: 'chat-1', title: 'Чат' }]) },
+    });
+
+    const page = await service.listDeliveries('publication-1', { userId: 'user-1' } as never, {});
+    expect(
+      page.items.map(({ id, status, dispatchStopped }) => ({ id, status, dispatchStopped })),
+    ).toEqual([
+      { id: 'stopped-pending', status: 'PENDING', dispatchStopped: true },
+      { id: 'stopped-envelope', status: 'PENDING', dispatchStopped: true },
+      { id: 'stopped-sending', status: 'SENDING', dispatchStopped: true },
+      { id: 'stopped-ambiguous', status: 'AMBIGUOUS', dispatchStopped: true },
+      { id: 'active-pending', status: 'PENDING', dispatchStopped: false },
+      { id: 'stopped-sent', status: 'SENT', dispatchStopped: true },
+    ]);
+    expect(
+      page.items.every((item) => item.attemptCount === 2 && item.lastError === 'Retained evidence'),
+    ).toBe(true);
+    expect(page.items[0]).toMatchObject({
+      nextAttemptAt: future.toISOString(),
+      waitReason: 'local_capacity',
+      firstDeferredAt: '2026-10-20T11:00:00.000Z',
+      deadlineAt: future.toISOString(),
+      remoteMessageId: null,
+    });
+    expect(page.items[5]).toMatchObject({
+      remoteMessageId: 'confirmed-message',
+      sentAt: '2026-10-20T12:00:00.000Z',
+      postActions: {
+        pinStatus: 'DONE',
+        deleteStatus: 'PENDING',
+        deleteAt: future.toISOString(),
+        allowedActions: ['reschedule_delete', 'cancel_delete'],
+      },
+    });
+  });
+
   it('aggregates grouped delivery counts without expanding them into rows', async () => {
     const { presenter } = createService({
       $queryRaw: jest.fn().mockResolvedValue([
@@ -3966,6 +4109,7 @@ describe('PublicationService', () => {
       actionableDeliveryStats: {
         total: 0,
         pending: 0,
+        dispatchPending: 0,
         sent: 0,
         failed: 0,
         ambiguous: 0,

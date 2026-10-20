@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { NotFoundException } from '@nestjs/common';
-import { PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
+import { PrismaClient, createPrismaAdapter, type Prisma } from '../prisma/prisma-client';
 import { DEFAULT_MAX_PUBLISHER_BOT_ID } from '../publisher/publisher-bot-descriptor';
 import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import { PublicationContentService } from './publication-content.service';
@@ -21,6 +21,22 @@ postgres('entity administrators share Publisher publications on PostgreSQL', () 
   const chatId = `${prefix}-chat`;
   const privateChatId = `${prefix}-private`;
   const scope = publicationAdminScope(admin.userId, botId);
+  const deliveryRoute = {
+    dispatchProfile: 'PUBLIK_V1',
+    requiredBotId: botId,
+    dialogBotId: botId,
+    publicationPolicyRevision: 1,
+    publisherDialogContext: { version: 1, dialogBotId: botId, buttons: [], reference: null },
+  } satisfies Required<
+    Pick<
+      Prisma.ManagedBroadcastDeliveryCreateManyInput,
+      | 'dispatchProfile'
+      | 'requiredBotId'
+      | 'dialogBotId'
+      | 'publicationPolicyRevision'
+      | 'publisherDialogContext'
+    >
+  >;
   const publications: string[] = [];
   let db: PrismaClient;
   let singleId: string;
@@ -173,13 +189,6 @@ postgres('entity administrators share Publisher publications on PostgreSQL', () 
         publicationContentRevisionId: occurrence.contentRevisionId,
       },
     });
-    const deliveryRoute = {
-      dispatchProfile: 'PUBLIK_V1' as const,
-      requiredBotId: botId,
-      dialogBotId: botId,
-      publicationPolicyRevision: 1,
-      publisherDialogContext: { version: 1, dialogBotId: botId, buttons: [], reference: null },
-    };
     await db.managedBroadcastDelivery.createMany({
       data: [
         {
@@ -304,6 +313,132 @@ postgres('entity administrators share Publisher publications on PostgreSQL', () 
       [singleId, multiId].sort(),
     );
   });
+
+  it.each([
+    { occurrenceStatus: 'CANCELED', broadcastStatus: 'ACTIVE', stopped: true },
+    { occurrenceStatus: 'SENT', broadcastStatus: 'CANCELED', stopped: true },
+    { occurrenceStatus: 'SCHEDULED', broadcastStatus: 'ACTIVE', stopped: false },
+  ] as const)(
+    'preserves pending evidence with occurrence $occurrenceStatus and envelope $broadcastStatus',
+    async ({ occurrenceStatus, broadcastStatus, stopped }) => {
+      const scheduledAt = new Date(Date.now() + 60 * 60_000);
+      const publication = await db.publication.create({
+        data: {
+          actorUserId: creator,
+          requestId: randomUUID(),
+          dispatchProfile: 'PUBLIK_V1',
+          requiredBotId: botId,
+          lifecycle: 'ACTIVE',
+          targets: {
+            create: [chatId, privateChatId].map((targetChatId, position) => ({
+              targetChatId,
+              position,
+              entityType: 'CHAT' as const,
+            })),
+          },
+          schedule: {
+            create: {
+              mode: 'ONCE',
+              status: 'ACTIVE',
+              rule: { mode: 'once', timezone: 'UTC', at: scheduledAt.toISOString() },
+            },
+          },
+          contentRevisions: { create: { revision: 1, text: 'Retained delivery evidence' } },
+        },
+        include: { schedule: true, contentRevisions: true },
+      });
+      publications.push(publication.id);
+      const contentRevisionId = publication.contentRevisions[0]!.id;
+      await db.publication.update({
+        where: { id: publication.id },
+        data: { canonicalContentRevisionId: contentRevisionId },
+      });
+      const occurrence = await db.publicationOccurrence.create({
+        data: {
+          publicationId: publication.id,
+          scheduleId: publication.schedule!.id,
+          scheduleRevision: publication.schedule!.revision,
+          contentRevisionId,
+          scheduledAt,
+          status: occurrenceStatus,
+          dispatchProfile: 'PUBLIK_V1',
+          requiredBotId: botId,
+        },
+      });
+      const broadcast = await db.managedBroadcast.create({
+        data: {
+          sourceChatId: chatId,
+          actorUserId: creator,
+          targetChatIds: [chatId, privateChatId],
+          buttons: [],
+          status: broadcastStatus,
+          dispatchProfile: 'PUBLIK_V1',
+          requiredBotId: botId,
+          publicationOccurrenceId: occurrence.id,
+          publicationContentRevisionId: contentRevisionId,
+        },
+      });
+      await db.managedBroadcastDelivery.createMany({
+        data: [chatId, privateChatId].map((targetChatId) => ({
+          broadcastId: broadcast.id,
+          occurrenceIndex: 1,
+          targetChatId,
+          status: 'PENDING' as const,
+          publicationOccurrenceId: occurrence.id,
+          contentRevisionId,
+          ...deliveryRoute,
+          nextAttemptAt: scheduledAt,
+          waitReason: 'local_capacity',
+        })),
+      });
+
+      const details = await service.get(publication.id, admin, 'PUBLIK_V1');
+      expect(details.delivery).toMatchObject({ total: 1, pending: 1 });
+      expect(details.delivery).not.toHaveProperty('dispatchPending');
+      expect(details.actionableDelivery).toMatchObject({
+        total: 1,
+        pending: 1,
+        dispatchPending: stopped ? 0 : 1,
+      });
+      const deliveries = await service.listDeliveries(publication.id, admin, {}, 'PUBLIK_V1');
+      expect(deliveries.items).toEqual([
+        expect.objectContaining({
+          target: expect.objectContaining({ chatId }),
+          status: 'PENDING',
+          dispatchStopped: stopped,
+          attemptCount: 0,
+          remoteMessageId: null,
+          nextAttemptAt: scheduledAt.toISOString(),
+          waitReason: 'local_capacity',
+        }),
+      ]);
+      const allTargets = await presenter.loadActionableDeliveryStatsByPublicationIds([
+        publication.id,
+      ]);
+      expect(allTargets.get(publication.id)).toMatchObject({
+        pending: 2,
+        dispatchPending: stopped ? 0 : 2,
+      });
+
+      if (!stopped) {
+        await db.publicationSchedule.update({
+          where: { id: publication.schedule!.id },
+          data: { revision: { increment: 1 } },
+        });
+        const afterRevisionChange = await presenter.loadActionableDeliveryStatsByPublicationIds(
+          [publication.id],
+          scope,
+        );
+        expect(afterRevisionChange.get(publication.id)).toMatchObject({
+          pending: 0,
+          dispatchPending: 0,
+        });
+        expect(await presenter.loadDeliveryStats(publication.id, scope)).toMatchObject({
+          pending: 1,
+        });
+      }
+    },
+  );
 
   it('shares only linked publication media and allows safe reuse without changing its owner', async () => {
     expect(

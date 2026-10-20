@@ -1,13 +1,20 @@
 import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import {
   ChatEntityType,
+  ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
   PublicationDispatchProfile,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
-import { PublicationPresenterService } from './publication-presenter.service';
+import type { PrismaService } from '../prisma/prisma.service';
+import {
+  isPublicationDeliveryDispatchStopped,
+  PublicationPresenterService,
+  type PublicationActionableDeliveryStatsRow,
+} from './publication-presenter.service';
 
 const EMPTY_DELIVERY = {
   total: 0,
@@ -28,6 +35,95 @@ function extractSqlValues(query: unknown): readonly unknown[] {
 }
 
 describe('PublicationPresenterService', () => {
+  it.each([
+    [PublicationOccurrenceStatus.CANCELED, ManagedBroadcastStatus.ACTIVE, true],
+    [PublicationOccurrenceStatus.SENT, ManagedBroadcastStatus.CANCELED, true],
+    [PublicationOccurrenceStatus.IN_PROGRESS, ManagedBroadcastStatus.CANCELED, true],
+    [PublicationOccurrenceStatus.CANCELED, ManagedBroadcastStatus.CANCELED, true],
+    [PublicationOccurrenceStatus.SCHEDULED, ManagedBroadcastStatus.ACTIVE, false],
+    [PublicationOccurrenceStatus.SENT, ManagedBroadcastStatus.COMPLETED, false],
+    [PublicationOccurrenceStatus.FAILED, ManagedBroadcastStatus.FAILED, false],
+    [null, ManagedBroadcastStatus.CANCELED, true],
+    [null, ManagedBroadcastStatus.ACTIVE, false],
+  ] as const)(
+    'derives stopped dispatch from exact occurrence %s and envelope %s',
+    (occurrenceStatus, broadcastStatus, expected) => {
+      expect(
+        isPublicationDeliveryDispatchStopped({
+          publicationOccurrence: occurrenceStatus === null ? null : { status: occurrenceStatus },
+          broadcast: { status: broadcastStatus },
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it('counts actionable dispatch separately while preserving raw pending history and admin scope', async () => {
+    const grouped = [
+      {
+        publicationId: 'publication-current',
+        status: ManagedBroadcastDeliveryStatus.PENDING,
+        count: 5n,
+        dispatchPending: 2n,
+      },
+      {
+        publicationId: 'publication-current',
+        status: ManagedBroadcastDeliveryStatus.SENDING,
+        count: 3n,
+        dispatchPending: 1n,
+      },
+      {
+        publicationId: 'publication-current',
+        status: ManagedBroadcastDeliveryStatus.SENT,
+        count: 2n,
+        dispatchPending: 0n,
+      },
+    ] satisfies PublicationActionableDeliveryStatsRow[];
+    const queryRaw: jest.MockedFunction<PrismaService['$queryRaw']> = jest.fn();
+    queryRaw
+      .mockResolvedValueOnce(grouped)
+      .mockResolvedValueOnce(grouped.map(({ status, count }) => ({ status, count })));
+    const presenter = new PublicationPresenterService({ $queryRaw: queryRaw } as never);
+    const scope = publicationAdminScope('admin-1', 'publisher-1');
+
+    const actionable = await presenter.loadActionableDeliveryStatsByPublicationIds(
+      ['publication-current', 'publication-empty', 'publication-current'],
+      scope,
+    );
+    expect(actionable.get('publication-current')).toEqual({
+      ...EMPTY_DELIVERY,
+      total: 10,
+      pending: 8,
+      sent: 2,
+      dispatchPending: 3,
+    });
+    expect(actionable.get('publication-empty')).toEqual({ ...EMPTY_DELIVERY, dispatchPending: 0 });
+    const history = await presenter.loadDeliveryStats('publication-current', scope);
+    expect(history).toEqual({ ...EMPTY_DELIVERY, total: 10, pending: 8, sent: 2 });
+    expect(history).not.toHaveProperty('dispatchPending');
+    expect(
+      presenter.buildDeliveryStats([{ status: ManagedBroadcastDeliveryStatus.PENDING }]),
+    ).not.toHaveProperty('dispatchPending');
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    const sql = extractSqlText(queryRaw.mock.calls[0]?.[0]);
+    expect(sql).toContain('INNER JOIN "managed_broadcasts" AS broadcast');
+    expect(sql).toContain('broadcast."id" = delivery."broadcast_id"');
+    expect(sql).toContain('COUNT(*) FILTER (');
+    expect(sql).toContain('occurrence."status" <> \'CANCELED\'::"PublicationOccurrenceStatus"');
+    expect(sql).toContain('broadcast."status" <> \'CANCELED\'::"ManagedBroadcastStatus"');
+    expect(sql).toContain('schedule."revision" = occurrence."schedule_revision"');
+    expect(sql).toContain('target."target_chat_id" = delivery."target_chat_id"');
+    expect(sql).toContain('access_edge."bot_id" = ?');
+    expect(extractSqlValues(queryRaw.mock.calls[0]?.[0])).toEqual(
+      expect.arrayContaining([
+        'publication-current',
+        'publication-empty',
+        'admin-1',
+        'publisher-1',
+      ]),
+    );
+    expect(extractSqlText(queryRaw.mock.calls[1]?.[0])).not.toContain('"dispatchPending"');
+  });
+
   it('uses only the exact active Publisher catalog for PUBLIK_V1 target presentation', async () => {
     const catalogFindMany = jest.fn().mockResolvedValue([
       {

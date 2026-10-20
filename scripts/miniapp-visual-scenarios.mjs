@@ -519,6 +519,13 @@ const baseScenarios = [
         features: ['publisher', 'publications'],
       },
     ],
+    ...['pending', 'sending', 'ambiguous'].map((status) => [
+      `publications-publisher-stopped-${status}`,
+      {
+        searchParams: { profile: 'publisher', publicationWindow: `stopped-${status}` },
+        features: ['publisher', 'publications'],
+      },
+    ]),
     [
       'publications-publisher-access-required',
       { searchParams: { profile: 'publisher' }, features: ['publisher', 'publications'] },

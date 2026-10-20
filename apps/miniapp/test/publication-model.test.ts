@@ -14,6 +14,7 @@ import {
   filterFuturePublicationSlots,
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
+  getPublicationDispatchPendingCount,
   getPublicationDetailsPollingInterval,
   getPublicationDispatchIssuePresentation,
   getPublicationExplicitSlotsLimitFeedback,
@@ -43,6 +44,7 @@ import {
   shouldPersistPublicationDraft,
   toPublicationTarget,
 } from '../src/features/publications/publication-model';
+import { getPublicationDeliveryPresentation } from '../src/features/publications/publication-delivery-presentation';
 import {
   formatPublicationSchedule,
   getLifecycleTone,
@@ -744,6 +746,77 @@ test('polls publication lists only while delivery or an active schedule can chan
     ),
     5_000,
   );
+});
+
+test('stopped dispatch uses authoritative zero while legacy counts keep polling', () => {
+  const delivery = { total: 2, pending: 2, sent: 0, failed: 0, ambiguous: 0, canceled: 0 };
+  const stopped = { ...delivery, dispatchPending: 0 };
+  const publication = {
+    lifecycle: 'ACTIVE' as const,
+    dispatchIssue: null,
+    delivery,
+    actionableDelivery: stopped,
+    schedule: { mode: 'once' as const, status: 'ACTIVE' as const, nextOccurrenceAt: null },
+  };
+  assert.equal(getPublicationDispatchPendingCount(delivery), 2);
+  assert.equal(getPublicationDispatchPendingCount(stopped), 0);
+  assert.equal(shouldPollPublicationDeliveries(publication, stopped), false);
+  assert.equal(getPublicationDetailsPollingInterval(publication, stopped), 30_000);
+  assert.equal(getPublicationListPollingInterval('current', [publication]), false);
+  assert.equal(getPublicationListPollingInterval('schedules', [publication]), false);
+  assert.equal(shouldPollPublicationDeliveries(publication, delivery), true);
+  assert.equal(getPublicationDetailsPollingInterval(publication, delivery), 5_000);
+  assert.equal(
+    getPublicationListPollingInterval('current', [
+      { ...publication, actionableDelivery: delivery },
+    ]),
+    5_000,
+  );
+  assert.equal(
+    getPublicationListPollingInterval('current', [
+      publication,
+      { ...publication, actionableDelivery: { ...stopped, dispatchPending: 1 } },
+    ]),
+    5_000,
+  );
+});
+
+test('stopped delivery copy preserves uncertainty and suppresses future send promises', () => {
+  assert.deepEqual(
+    getPublicationDeliveryPresentation({ status: 'PENDING', dispatchStopped: true }),
+    {
+      label: 'Отправка остановлена',
+      showPendingTiming: false,
+      stopNotice: null,
+    },
+  );
+  assert.deepEqual(
+    getPublicationDeliveryPresentation({ status: 'SENDING', dispatchStopped: true }),
+    {
+      label: 'Результат начатой попытки уточняется',
+      showPendingTiming: false,
+      stopNotice: 'Дальнейшая отправка остановлена',
+    },
+  );
+  assert.equal(
+    getPublicationDeliveryPresentation({ status: 'AMBIGUOUS', dispatchStopped: true }).label,
+    'Нужно проверить',
+  );
+  assert.equal(
+    getPublicationDeliveryPresentation({ status: 'AMBIGUOUS', dispatchStopped: true }).stopNotice,
+    'Дальнейшая отправка остановлена',
+  );
+  assert.equal(
+    getPublicationDeliveryPresentation({ status: 'SENT', dispatchStopped: true }).label,
+    'Опубликовано',
+  );
+  for (const dispatchStopped of [false, undefined]) {
+    assert.deepEqual(getPublicationDeliveryPresentation({ status: 'PENDING', dispatchStopped }), {
+      label: 'В очереди',
+      showPendingTiming: true,
+      stopNotice: null,
+    });
+  }
 });
 
 test('keeps mixed Publisher delivery rows fresh while an issue is unresolved', () => {

@@ -134,3 +134,23 @@ test('keeps polling cached delivery rows until their terminal state is fetched',
   );
   assert.equal(shouldPollPublicationDeliveryPages(true, undefined), true);
 });
+
+test('stopped cached attempts stop dispatch polling without hiding active or unknown siblings', () => {
+  const stopped = [
+    { status: 'PENDING', dispatchStopped: true },
+    { status: 'SENDING', dispatchStopped: true },
+    { status: 'AMBIGUOUS', dispatchStopped: true },
+  ];
+  assert.equal(shouldPollPublicationDeliveryPages(false, [{ items: stopped }]), false);
+  assert.equal(shouldPollPublicationDeliveryPages(true, [{ items: stopped }]), true);
+  for (const dispatchStopped of [false, undefined]) {
+    for (const status of ['PENDING', 'SENDING']) {
+      assert.equal(
+        shouldPollPublicationDeliveryPages(false, [
+          { items: [...stopped, { status, dispatchStopped }] },
+        ]),
+        true,
+      );
+    }
+  }
+});

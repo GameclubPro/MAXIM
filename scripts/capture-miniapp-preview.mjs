@@ -1715,6 +1715,41 @@ const scenarioBehaviors = [
       await details.locator('.publication-deliveries').scrollIntoViewIfNeeded();
     },
   },
+  ...[
+    ['pending', 'Отправка остановлена'],
+    ['sending', 'Результат начатой попытки уточняется'],
+    ['ambiguous', 'Нужно проверить'],
+  ].map(([status, label]) => ({
+    name: `publications-publisher-stopped-${status}`,
+    beforeShot: async (page) => {
+      await page
+        .locator(
+          '[data-publication-id="publication-access-required"] .publication-feed-card__surface',
+        )
+        .click();
+      const details = page.getByRole('dialog', { name: 'Объявление для канала' });
+      const deliveries = details.locator('.publication-deliveries');
+      await deliveries.getByText(label, { exact: true }).waitFor({ state: 'visible' });
+      const text = await deliveries.innerText();
+      if (/Пост остаётся в очереди|Следующая попытка не раньше|пост актуален до/.test(text)) {
+        throw new Error('Stopped publication still promises a future dispatch.');
+      }
+      if (status !== 'pending') {
+        await deliveries
+          .getByText('Дальнейшая отправка остановлена', { exact: true })
+          .waitFor({ state: 'visible' });
+      }
+      if (status === 'ambiguous') {
+        await details
+          .getByRole('button', { name: /Подтвердить публикацию в/u })
+          .waitFor({ state: 'visible' });
+        await details
+          .getByRole('button', { name: /Отметить неотправленной для/u })
+          .waitFor({ state: 'visible' });
+      }
+      await deliveries.scrollIntoViewIfNeeded();
+    },
+  })),
   {
     name: 'publications-publisher-access-required',
     beforeShot: async (page) => {
@@ -5478,6 +5513,17 @@ function resolveScreenshotLocator(page) {
 }
 
 async function installDeterministicExternalScripts(context) {
+  await context.route(
+    /^https:\/\/major-maksimov\.ru\/app\/(favicon|apple-touch-icon)\.png(?:\?.*)?$/u,
+    async (route) => {
+      const name = new URL(route.request().url()).pathname.split('/').at(-1);
+      await route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        body: await readFile(path.join(ROOT_DIR, 'apps/miniapp/public', name)),
+      });
+    },
+  );
   await context.route(/https:\/\/st\.max\.ru\/js\/max-web-app\.js(?:\?.*)?$/u, async (route) => {
     await route.fulfill({
       status: 200,

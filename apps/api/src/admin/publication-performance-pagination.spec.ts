@@ -6,14 +6,21 @@ import {
 } from '@maxim/contracts/publication';
 import { ConfigService } from '@nestjs/config';
 import {
+  ChatEntityType,
   ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
+  Prisma,
   PublicationDispatchProfile,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
   PublicationScheduleMode,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
-import { PublicationPresenterService } from './publication-presenter.service';
+import {
+  PUBLICATION_DELIVERY_PRESENTATION_INCLUDE,
+  PublicationPresenterService,
+  type PublicationActionableDeliveryStatsRow,
+} from './publication-presenter.service';
 import { PublicationService } from './publication.service';
 import {
   LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR,
@@ -28,6 +35,26 @@ const EMPTY_DELIVERY_STATS: PublicationDeliveryStats = {
   ambiguous: 0,
   canceled: 0,
 };
+
+type PublicationDeliveryPageRow = Pick<
+  Prisma.ManagedBroadcastDeliveryGetPayload<{
+    include: typeof PUBLICATION_DELIVERY_PRESENTATION_INCLUDE;
+  }>,
+  | 'id'
+  | 'targetChatId'
+  | 'status'
+  | 'attemptCount'
+  | 'remoteMessageId'
+  | 'lastError'
+  | 'sentAt'
+  | 'createdAt'
+  | 'nextAttemptAt'
+  | 'waitReason'
+  | 'firstDeferredAt'
+  | 'broadcast'
+  | 'contentRevision'
+  | 'publicationOccurrence'
+>;
 
 function extractSqlText(query: unknown): string {
   const strings = (query as { strings?: readonly string[] } | null)?.strings;
@@ -101,8 +128,9 @@ describe('Publication performance and pagination', () => {
           publicationId: 'publication-2',
           status: ManagedBroadcastDeliveryStatus.SENT,
           count: 3n,
+          dispatchPending: 0n,
         },
-      ]);
+      ] satisfies PublicationActionableDeliveryStatsRow[]);
     const prisma = {
       publication: { findMany: jest.fn().mockResolvedValue(rows) },
       managedBroadcastDelivery: { groupBy },
@@ -122,8 +150,8 @@ describe('Publication performance and pagination', () => {
       { ...EMPTY_DELIVERY_STATS, total: 2, failed: 2 },
     ]);
     expect(result.items.map((item) => item.actionableDelivery)).toEqual([
-      { ...EMPTY_DELIVERY_STATS, total: 3, sent: 3 },
-      EMPTY_DELIVERY_STATS,
+      { ...EMPTY_DELIVERY_STATS, total: 3, sent: 3, dispatchPending: 0 },
+      { ...EMPTY_DELIVERY_STATS, dispatchPending: 0 },
     ]);
   });
 
@@ -664,7 +692,7 @@ describe('Publication performance and pagination', () => {
       targetChatId: string,
       contentRevisionId = 'content-current',
       contentRevision = 2,
-    ) => ({
+    ): PublicationDeliveryPageRow => ({
       id,
       targetChatId,
       status: ManagedBroadcastDeliveryStatus.PENDING,
@@ -673,10 +701,16 @@ describe('Publication performance and pagination', () => {
       lastError: null,
       sentAt: null,
       createdAt: new Date('2026-07-10T09:00:00.000Z'),
-      broadcast: { entityType: 'CHAT' },
-      contentRevision: { id: contentRevisionId, revision: contentRevision },
+      nextAttemptAt: null,
+      waitReason: null,
+      firstDeferredAt: null,
+      broadcast: { entityType: ChatEntityType.CHAT, status: ManagedBroadcastStatus.ACTIVE },
+      contentRevision: { id: contentRevisionId, revision: contentRevision, postPublish: null },
       publicationOccurrence: {
         id: 'occurrence-1',
+        status: PublicationOccurrenceStatus.IN_PROGRESS,
+        deliveryDeadlineAt: null,
+        retryExpiresAt: null,
         publication: { canonicalContentRevisionId: 'content-current' },
       },
     });
@@ -737,6 +771,7 @@ describe('Publication performance and pagination', () => {
     const firstPage = await service.listDeliveries('publication-1', user, query);
 
     expect(firstPage.items.map((item) => item.id)).toEqual(['delivery-3', 'delivery-2']);
+    expect(firstPage.items.map((item) => item.dispatchStopped)).toEqual([false, false]);
     expect(
       firstPage.items.map(({ contentRevision, usesLatestContent }) => ({
         contentRevision,
@@ -759,11 +794,12 @@ describe('Publication performance and pagination', () => {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: 3,
         include: {
-          broadcast: { select: { entityType: true } },
+          broadcast: { select: { entityType: true, status: true } },
           contentRevision: { select: { id: true, revision: true, postPublish: true } },
           publicationOccurrence: {
             select: {
               id: true,
+              status: true,
               deliveryDeadlineAt: true,
               retryExpiresAt: true,
               publication: { select: { canonicalContentRevisionId: true } },

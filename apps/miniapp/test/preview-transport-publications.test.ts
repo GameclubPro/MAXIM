@@ -238,6 +238,38 @@ test('publisher preview exposes and clears the access-required publication state
   assert.equal(after.occurrences[0]?.dispatchIssue, null);
 });
 
+for (const [window, status] of [
+  ['stopped-pending', 'PENDING'],
+  ['stopped-sending', 'SENDING'],
+  ['stopped-ambiguous', 'AMBIGUOUS'],
+] as const) {
+  test(`publisher preview preserves stopped ${status} evidence and raw counters`, async () => {
+    const api = createPreviewApiTransport({
+      search: `?profile=publisher&publicationWindow=${window}`,
+    });
+    for (let refresh = 0; refresh < 2; refresh += 1) {
+      const publication = await getPublication(api, 'publication-access-required');
+      const deliveries = await listPublicationDeliveries(api, publication.id, { limit: 100 });
+      assert.equal(publication.lifecycle, 'ACTIVE');
+      assert.equal(publication.dispatchIssue, null);
+      assert.equal(publication.occurrences[0]?.status, 'CANCELED');
+      assert.equal(publication.occurrences[0]?.canRetry, false);
+      assert.equal(publication.delivery.total, 1);
+      assert.equal(publication.delivery.pending, status === 'AMBIGUOUS' ? 0 : 1);
+      assert.equal(publication.delivery.ambiguous, status === 'AMBIGUOUS' ? 1 : 0);
+      assert.equal(publication.delivery.dispatchPending, undefined);
+      assert.equal(publication.actionableDelivery?.dispatchPending, 0);
+      assert.equal(deliveries.items.length, 1);
+      assert.equal(deliveries.items[0]?.status, status);
+      assert.equal(deliveries.items[0]?.dispatchStopped, true);
+      assert.equal(deliveries.items[0]?.attemptCount, 1);
+      assert.equal(deliveries.items[0]?.waitReason, 'max_rate_limit');
+      assert.ok(deliveries.items[0]?.nextAttemptAt);
+      assert.ok(deliveries.items[0]?.deadlineAt);
+    }
+  });
+}
+
 test('preview legacy publications support bound cursors, filters, and history', async () => {
   const api = createPreviewApiTransport();
   const active = await listLegacyPublications(api, { view: 'active', limit: 30 });
