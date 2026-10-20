@@ -1,6 +1,6 @@
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Optional } from '@nestjs/common';
-import { DelayedError, UnrecoverableError, type Job, type Queue } from 'bullmq';
+import { DelayedError, ErrorCode, UnrecoverableError, type Job, type Queue } from 'bullmq';
 import { z } from 'zod';
 import { ModerationExecutionService } from '../moderation-execution.service';
 import { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
@@ -9,6 +9,7 @@ import { MessageDuplicateMediaDeferredError } from './message-duplicate-media.se
 import {
   MessageDuplicateMetricsService,
   recordDuplicatePhase,
+  type MessageDuplicateMetricCounter,
 } from './message-duplicate-metrics.service';
 import type {
   PhotoDuplicateOrderingNextTurn,
@@ -23,6 +24,16 @@ import {
 
 const TERMINAL_CLEANUP_RETRY_MS = 30_000;
 const TERMINAL_CLEANUP_RECOVERY_MS = 24 * 60 * 60_000;
+const ORDERING_DEFER_COUNTERS = {
+  not_head: 'worker.defer_ordering_not_head',
+  busy: 'worker.defer_ordering_busy',
+  scheduled: 'worker.defer_ordering_scheduled',
+  deadline: 'worker.defer_ordering_deadline',
+  expired: 'worker.defer_ordering_expired',
+} as const satisfies Record<
+  Extract<PhotoDuplicateOrderingRunResult<unknown>, { kind: 'defer' }>['reason'],
+  MessageDuplicateMetricCounter
+>;
 
 export const messageDuplicateJobSchema = z
   .object({
@@ -172,6 +183,7 @@ export class MessageDuplicateProcessor extends WorkerHost {
         return;
       }
       this.metrics?.record('worker.defer_ordering');
+      this.metrics?.record(ORDERING_DEFER_COUNTERS[result.reason]);
       if (result.reason === 'expired') {
         await this.reconcileCleanup(job, data, identity, 'terminated', token);
         this.metrics?.record('worker.expired');
@@ -209,6 +221,7 @@ export class MessageDuplicateProcessor extends WorkerHost {
       throw error;
     }
     if (postponeKind === 'ordering') {
+      let wakeupStage: 'recheck' | 'change_delay' = 'recheck';
       try {
         // FLAG: Recheck after the job becomes delayed. A preceding completion before this point
         // cannot changeDelay an active follower; after this point its normal promotion can succeed.
@@ -217,12 +230,14 @@ export class MessageDuplicateProcessor extends WorkerHost {
           nextEligibleAtMs,
           'ordering',
         );
-        if (effectiveNextEligibleAtMs < nextEligibleAtMs)
+        if (effectiveNextEligibleAtMs < nextEligibleAtMs) {
+          wakeupStage = 'change_delay';
           await job.changeDelay(Math.max(0, effectiveNextEligibleAtMs - Date.now()));
-      } catch {
+        }
+      } catch (error) {
         // FLAG: Scheduling already committed. Preserve its bounded retry if promotion races
         // activation or Redis is unavailable; never retry an already delayed job as a failure.
-        this.metrics?.record('worker.wakeup_unavailable');
+        this.recordWakeupUnavailable(wakeupStage, error);
       }
     }
     throw new DelayedError();
@@ -275,13 +290,38 @@ export class MessageDuplicateProcessor extends WorkerHost {
 
   private async promoteNext(next: PhotoDuplicateOrderingNextTurn | undefined): Promise<void> {
     if (!next || !this.queue) return;
+    let wakeupStage: 'lookup' | 'change_delay' = 'lookup';
     try {
       const job = await this.queue.getJob(next.jobId);
-      if (job) await job.changeDelay(Math.max(0, next.nextEligibleAtMs - Date.now()));
-    } catch {
+      if (job) {
+        wakeupStage = 'change_delay';
+        await job.changeDelay(Math.max(0, next.nextEligibleAtMs - Date.now()));
+      } else this.metrics?.record('worker.wakeup_lookup_missing');
+    } catch (error) {
       // FLAG: A completed order must stay committed if the bounded wakeup races an active job.
       // Its existing delay and lease recovery remain the fallback after a lost promotion.
-      this.metrics?.record('worker.wakeup_unavailable');
+      this.recordWakeupUnavailable(wakeupStage, error);
+    }
+  }
+
+  private recordWakeupUnavailable(
+    stage: 'recheck' | 'lookup' | 'change_delay',
+    error: unknown,
+  ): void {
+    this.metrics?.record('worker.wakeup_unavailable');
+    if (stage === 'recheck') this.metrics?.record('worker.wakeup_recheck_unavailable');
+    else if (stage === 'lookup') this.metrics?.record('worker.wakeup_lookup_unavailable');
+    else {
+      // FLAG: BullMQ's numeric code proves only the failed delayed-state operation;
+      // never infer active/completed state or log the error's private job identity.
+      const code = error instanceof Error && 'code' in error ? error.code : undefined;
+      this.metrics?.record(
+        code === ErrorCode.JobNotInState
+          ? 'worker.wakeup_not_delayed'
+          : code === ErrorCode.JobNotExist
+            ? 'worker.wakeup_missing_job'
+            : 'worker.wakeup_change_delay_unavailable',
+      );
     }
   }
 }

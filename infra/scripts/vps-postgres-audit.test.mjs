@@ -2835,6 +2835,61 @@ test('duplicate explain plans only the fixed intent query and forwards no operat
   }
 });
 
+test('moderation outcomes per-bot selection preserves the bounded envelope and validates before transport', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  const botId = 'private-moderator_bot';
+  for (const explain of [[], ['--explain']]) {
+    const args = ['moderation-outcomes', '--bot', botId, ...explain];
+    const result = runAudit(data, args);
+    assert.equal(result.status, 0, result.stderr);
+    const sql = readFileSync(data.sql, 'utf8');
+    assert.match(sql, /BEGIN READ ONLY/u);
+    assert.match(sql, /moderation_events_bot_id_created_at_idx/u);
+    assert.match(
+      sql,
+      explain.length > 0
+        ? /AND bot_id = ANY\(ARRAY\[\$1\]::text\[\]\)/u
+        : /AND bot_id = ANY\(ARRAY\['private-moderator_bot'\]::text\[\]\)/u,
+    );
+    assert.match(sql, /ORDER BY bot_id, created_at DESC LIMIT 513/u);
+    assert.match(sql, /ORDER BY created_at DESC LIMIT 512/u);
+    assert.match(sql, /'bot_scope', 'ONE_REQUESTED_BOT'/u);
+    assert.match(sql, /'bot_chat_coverage_proven', false/u);
+    assert.equal([...sql.matchAll(/private-moderator_bot/gu)].length, 1);
+    assert.equal(/EXPLAIN \(FORMAT JSON\)/u.test(sql), explain.length > 0);
+    assert.doesNotMatch(sql, /EXPLAIN ANALYZE/u);
+    assert.equal(runConnect(data, ['postgres-audit', ...args]).status, 0);
+    assert.match(readFileSync(data.sshArgs, 'utf8'), /--bot\\ private-moderator_bot/u);
+  }
+  const failed = runAudit(data, ['moderation-outcomes', '--bot', botId], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /Bounded moderation outcomes audit failed closed/u);
+  assert.doesNotMatch(
+    `${failed.stdout}${failed.stderr}`,
+    /private-moderator_bot|fixture-event|ERROR near/u,
+  );
+  for (const extra of [
+    ['--bot'],
+    ['--bot', ''],
+    ['--bot', '--explain'],
+    ['--bot', "private-bot' OR true --"],
+    ['--bot', 'private-bot\n'],
+    ['--bot', 'x'.repeat(129)],
+    ['--bot', '$(touch /tmp/private-audit-probe)'],
+    ['--bot', 'private-bot', '--bot', 'other'],
+    ['--explain', '--bot', 'private-bot'],
+    ['--bot', 'private-bot', '--apply'],
+  ]) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['moderation-outcomes', ...extra]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'moderation-outcomes', ...extra]).status, 2);
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+});
+
 test('duplicate status pages reject arbitrary input and expose only the measured status', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

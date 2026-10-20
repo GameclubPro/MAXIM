@@ -1,4 +1,4 @@
-import { DelayedError, UnrecoverableError } from 'bullmq';
+import { DelayedError, ErrorCode, Scripts, UnrecoverableError, type Job, type Queue } from 'bullmq';
 import {
   MessageDuplicateEnqueueService,
   MessageDuplicateOrderingStore,
@@ -6,6 +6,28 @@ import {
 } from './message-duplicate.queue';
 import { MessageDuplicateProcessor } from './message-duplicate.processor';
 import { MessageDuplicateMediaDeferredError } from './message-duplicate-media.service';
+import type { MessageDuplicateMetricsService } from './message-duplicate-metrics.service';
+import type { PhotoDuplicateOrderingRunResult } from '../photo-duplicate/photo-duplicate-ordering.store';
+
+function processorMetrics(): jest.Mocked<Pick<MessageDuplicateMetricsService, 'record'>> {
+  return { record: jest.fn() };
+}
+
+function diagnosticProcessor(
+  ordering: jest.Mocked<Pick<MessageDuplicateOrderingStore, 'runInOrder'>> &
+    Partial<jest.Mocked<Pick<MessageDuplicateOrderingStore, 'postpone' | 'abandon'>>>,
+  metrics: jest.Mocked<Pick<MessageDuplicateMetricsService, 'record'>>,
+  queue?: jest.Mocked<Pick<Queue<MessageDuplicateJob>, 'getJob'>>,
+): MessageDuplicateProcessor {
+  // FLAG: The constructor accepts concrete classes with private state; these paths use only
+  // the checked public methods above, so keep the class boundary explicit here.
+  return new MessageDuplicateProcessor(
+    {} as never,
+    ordering as unknown as MessageDuplicateOrderingStore,
+    metrics as unknown as MessageDuplicateMetricsService,
+    queue as unknown as Queue<MessageDuplicateJob> | undefined,
+  );
+}
 
 function jobData(): MessageDuplicateJob {
   const now = new Date().toISOString();
@@ -40,7 +62,10 @@ function admission() {
   };
 }
 function postponeMock() {
-  return jest.fn(async (_identity: unknown, nextEligibleAtMs: number) => nextEligibleAtMs);
+  return jest.fn<
+    ReturnType<MessageDuplicateOrderingStore['postpone']>,
+    Parameters<MessageDuplicateOrderingStore['postpone']>
+  >(async (_identity, nextEligibleAtMs) => nextEligibleAtMs);
 }
 function workerJob(data: MessageDuplicateJob, attemptsMade = 0) {
   const job = {
@@ -282,6 +307,46 @@ describe('message duplicate queue', () => {
     ).rejects.toBeInstanceOf(UnrecoverableError);
   });
 
+  it.each([
+    ['not_head', 'worker.defer_ordering_not_head'],
+    ['busy', 'worker.defer_ordering_busy'],
+    ['scheduled', 'worker.defer_ordering_scheduled'],
+    ['deadline', 'worker.defer_ordering_deadline'],
+    ['expired', 'worker.defer_ordering_expired'],
+  ] as const)(
+    'distinguishes ordering deferral %s without changing its outcome',
+    async (reason, counter) => {
+      const nextEligibleAtMs = Date.now() + 30_000;
+      const result = {
+        kind: 'defer',
+        reason,
+        nextEligibleAtMs,
+      } satisfies PhotoDuplicateOrderingRunResult<unknown>;
+      const ordering: jest.Mocked<
+        Pick<MessageDuplicateOrderingStore, 'runInOrder' | 'postpone' | 'abandon'>
+      > = {
+        runInOrder: jest.fn().mockResolvedValue(result),
+        postpone: postponeMock(),
+        abandon: jest.fn(),
+      };
+      const metrics = processorMetrics();
+      const processor = diagnosticProcessor(ordering, metrics);
+      const job = workerJob(jobData());
+      if (reason === 'expired') {
+        await expect(processor.process(job as never, 'token')).resolves.toBeUndefined();
+        expect(ordering.abandon).toHaveBeenCalledTimes(1);
+        expect(job.moveToDelayed).not.toHaveBeenCalled();
+        expect(metrics.record).toHaveBeenCalledWith('worker.expired');
+      } else {
+        await expect(processor.process(job as never, 'token')).rejects.toBeInstanceOf(DelayedError);
+        expect(job.moveToDelayed).toHaveBeenCalledWith(nextEligibleAtMs, 'token');
+        expect(ordering.abandon).not.toHaveBeenCalled();
+      }
+      expect(metrics.record).toHaveBeenCalledWith('worker.defer_ordering');
+      expect(metrics.record).toHaveBeenCalledWith(counter);
+    },
+  );
+
   it('uses the promoted head wakeup before expiring an inherited wait', async () => {
     const now = Date.now();
     const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
@@ -316,9 +381,7 @@ describe('message duplicate queue', () => {
         reason: 'not_head',
         nextEligibleAtMs,
       }),
-      postpone: postponeMock()
-        .mockResolvedValueOnce(nextEligibleAtMs)
-        .mockResolvedValueOnce(now),
+      postpone: postponeMock().mockResolvedValueOnce(nextEligibleAtMs).mockResolvedValueOnce(now),
       abandon: jest.fn(),
     };
     const job = { ...workerJob(jobData()), changeDelay: jest.fn() };
@@ -358,6 +421,36 @@ describe('message duplicate queue', () => {
     expect(ordering.abandon).not.toHaveBeenCalled();
     expect(intents.releaseTerminatedMessageDuplicateAction).not.toHaveBeenCalled();
     expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_unavailable');
+    expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_recheck_unavailable');
+  });
+
+  it('classifies a real BullMQ delayed-state error after the post-delay promotion', async () => {
+    const nextEligibleAtMs = Date.now() + 30_000;
+    const ordering: jest.Mocked<
+      Pick<MessageDuplicateOrderingStore, 'runInOrder' | 'postpone' | 'abandon'>
+    > = {
+      runInOrder: jest
+        .fn()
+        .mockResolvedValue({ kind: 'defer', reason: 'not_head', nextEligibleAtMs }),
+      postpone: postponeMock()
+        .mockResolvedValueOnce(nextEligibleAtMs)
+        .mockResolvedValueOnce(Date.now()),
+      abandon: jest.fn(),
+    };
+    const metrics = processorMetrics();
+    const error = Scripts.prototype.finishedErrors({
+      code: ErrorCode.JobNotInState,
+      jobId: 'private-job',
+      command: 'changeDelay',
+      state: 'delayed',
+    });
+    const job = { ...workerJob(jobData()), changeDelay: jest.fn().mockRejectedValue(error) };
+    const processor = diagnosticProcessor(ordering, metrics);
+    await expect(processor.process(job as never, 'token')).rejects.toBeInstanceOf(DelayedError);
+    expect(ordering.abandon).not.toHaveBeenCalled();
+    expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_unavailable');
+    expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_not_delayed');
+    expect(JSON.stringify(metrics.record.mock.calls)).not.toContain('private');
   });
 
   it('promotes only the next head while preserving its explicit future wakeup', async () => {
@@ -406,6 +499,101 @@ describe('message duplicate queue', () => {
     expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_unavailable');
     expect(metrics.record).toHaveBeenCalledWith('worker.completed');
   });
+
+  it.each([
+    [
+      Scripts.prototype.finishedErrors({
+        code: ErrorCode.JobNotInState,
+        jobId: 'private-job',
+        command: 'changeDelay',
+        state: 'delayed',
+      }),
+      'worker.wakeup_not_delayed',
+    ],
+    [
+      Scripts.prototype.finishedErrors({
+        code: ErrorCode.JobNotExist,
+        jobId: 'private-job',
+        command: 'changeDelay',
+      }),
+      'worker.wakeup_missing_job',
+    ],
+    [
+      Scripts.prototype.finishedErrors({
+        code: ErrorCode.JobLockNotExist,
+        jobId: 'private-job',
+        command: 'changeDelay',
+      }),
+      'worker.wakeup_change_delay_unavailable',
+    ],
+    [
+      Object.assign(new Error('private-lookalike'), { code: String(ErrorCode.JobNotInState) }),
+      'worker.wakeup_change_delay_unavailable',
+    ],
+    [
+      new Error('Job private-job is not in the delayed state. changeDelay'),
+      'worker.wakeup_change_delay_unavailable',
+    ],
+    [
+      { message: 'private-object', code: ErrorCode.JobNotInState },
+      'worker.wakeup_change_delay_unavailable',
+    ],
+    ['private-unknown-throw', 'worker.wakeup_change_delay_unavailable'],
+  ] as const)('keeps next-head wakeup failure %p diagnostic only', async (error, counter) => {
+    const ordering: jest.Mocked<Pick<MessageDuplicateOrderingStore, 'runInOrder'>> = {
+      runInOrder: jest.fn().mockResolvedValue({
+        kind: 'completed',
+        next: { jobId: 'next-job', nextEligibleAtMs: Date.now() },
+      }),
+    };
+    const nextJob: jest.Mocked<Pick<Job<MessageDuplicateJob>, 'changeDelay'>> = {
+      changeDelay: jest.fn().mockRejectedValue(error),
+    };
+    const queue: jest.Mocked<Pick<Queue<MessageDuplicateJob>, 'getJob'>> = {
+      getJob: jest.fn().mockResolvedValue(nextJob),
+    };
+    const metrics = processorMetrics();
+    const processor = diagnosticProcessor(ordering, metrics, queue);
+    await expect(processor.process(workerJob(jobData()) as never)).resolves.toBeUndefined();
+    expect(metrics.record).toHaveBeenCalledWith('worker.wakeup_unavailable');
+    expect(metrics.record).toHaveBeenCalledWith(counter);
+    expect(metrics.record).toHaveBeenCalledWith('worker.completed');
+    expect(JSON.stringify(metrics.record.mock.calls)).not.toContain('private');
+  });
+
+  it.each([
+    undefined,
+    Scripts.prototype.finishedErrors({
+      code: ErrorCode.JobNotInState,
+      jobId: 'private-job',
+      command: 'getJob',
+    }),
+  ])(
+    'distinguishes an absent next job from a failed lookup without inferring its state',
+    async (error) => {
+      const ordering: jest.Mocked<Pick<MessageDuplicateOrderingStore, 'runInOrder'>> = {
+        runInOrder: jest.fn().mockResolvedValue({
+          kind: 'completed',
+          next: { jobId: 'next-job', nextEligibleAtMs: Date.now() },
+        }),
+      };
+      const queue: jest.Mocked<Pick<Queue<MessageDuplicateJob>, 'getJob'>> = { getJob: jest.fn() };
+      if (error) queue.getJob.mockRejectedValue(error);
+      else queue.getJob.mockResolvedValue(undefined);
+      const metrics = processorMetrics();
+      const processor = diagnosticProcessor(ordering, metrics, queue);
+      await expect(processor.process(workerJob(jobData()) as never)).resolves.toBeUndefined();
+      expect(metrics.record).toHaveBeenCalledWith(
+        error ? 'worker.wakeup_lookup_unavailable' : 'worker.wakeup_lookup_missing',
+      );
+      expect(
+        metrics.record.mock.calls.some(([counter]) => counter === 'worker.wakeup_unavailable'),
+      ).toBe(Boolean(error));
+      expect(metrics.record).not.toHaveBeenCalledWith('worker.wakeup_not_delayed');
+      expect(metrics.record).toHaveBeenCalledWith('worker.completed');
+      expect(JSON.stringify(metrics.record.mock.calls)).not.toContain('private');
+    },
+  );
 
   it('preserves first-admission timestamps when the same queue job is added again', async () => {
     const first = registered(true);

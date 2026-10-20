@@ -4,7 +4,7 @@ import {
 } from './link-history-delete-guard.service';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
-import { createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
+import { createPrismaClient, type Prisma, type PrismaClient } from '../prisma/prisma-client';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { MessageLimitsDeleteGuardService } from './message-limits-delete-guard.service';
 import { MessageDuplicateDeleteGuardService } from './message-duplicate/message-duplicate-delete-guard.service';
@@ -173,6 +173,146 @@ type Authorization = {
       expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    'unchanged',
+    'expired independent reason',
+    'active independent reason',
+    'active horizon',
+  ])('rechecks acknowledged cleanup after a concurrent parent writer: %s', async (change) => {
+    const s = await fixture();
+    await prisma.moderationDeleteIntentReason.deleteMany({ where: { intentId: s.intent.id } });
+    const leaseToken = randomUUID();
+    const acknowledgedAt = new Date(Date.now() - 86_400_000);
+    const expiredHorizon = new Date(Date.now() - 1_000);
+    const activeHorizon = new Date(Date.now() + 60_000);
+    await prisma.moderationDeleteIntent.update({
+      where: { id: s.intent.id },
+      data: {
+        status: 'IN_PROGRESS',
+        messageAuthorKind: 'bot',
+        routingPolicy: 'origin_only',
+        leaseToken,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        remoteDeleteSucceededAt: acknowledgedAt,
+        remoteDeleteSucceededBotId: 'old-executor',
+        sourceMessageAt: new Date(acknowledgedAt.getTime() - 120_000),
+        executeAt: new Date(acknowledgedAt.getTime() - 60_000),
+        firstAttemptAt: acknowledgedAt,
+        lastAttemptAt: new Date(),
+        createdAt: new Date(acknowledgedAt.getTime() - 120_000),
+        retryUntilAt: expiredHorizon,
+        attemptCount: 44,
+        reasons: {
+          create: {
+            id: randomUUID(),
+            reasonKey: 'auto-delete',
+            ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+          },
+        },
+      },
+    });
+    const service = s.service as unknown as {
+      loadRequiredIntent(id: string): Promise<unknown>;
+      finishRetryableAttempt(intent: unknown, token: string, details: unknown): Promise<unknown>;
+    };
+    const enqueueWakeup = jest.fn().mockResolvedValue(undefined);
+    Object.assign(service, { enqueueWakeup });
+    const original = await service.loadRequiredIntent(s.intent.id);
+
+    let writerReady!: () => void;
+    let releaseWriter!: () => void;
+    let retryLockAttempted!: () => void;
+    const ready = new Promise<void>((resolve) => (writerReady = resolve));
+    const release = new Promise<void>((resolve) => (releaseWriter = resolve));
+    const lockAttempted = new Promise<void>((resolve) => (retryLockAttempted = resolve));
+    const writer = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "moderation_delete_intents"
+          WHERE "id" = ${s.intent.id} FOR UPDATE`;
+      if (change.endsWith('independent reason')) {
+        await tx.moderationDeleteIntentReason.create({
+          data: {
+            id: randomUUID(),
+            intentId: s.intent.id,
+            reasonKey: 'new-independent-reason',
+            ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+          },
+        });
+      }
+      if (change.startsWith('active')) {
+        await tx.moderationDeleteIntent.update({
+          where: { id: s.intent.id },
+          data: { retryUntilAt: activeHorizon, nextAttemptAt: new Date() },
+        });
+      }
+      writerReady();
+      await release;
+    });
+    await ready;
+    Object.assign(service, {
+      prisma: {
+        $queryRaw: prisma.$queryRaw.bind(prisma),
+        $executeRaw: prisma.$executeRaw.bind(prisma),
+        $transaction: (
+          callback: (
+            tx: Pick<Prisma.TransactionClient, '$queryRaw' | '$executeRaw'>,
+          ) => Promise<unknown>,
+          options: { isolationLevel: Prisma.TransactionIsolationLevel },
+        ) =>
+          prisma.$transaction(
+            (tx) =>
+              callback({
+                $executeRaw: tx.$executeRaw.bind(tx),
+                $queryRaw: ((query: Prisma.Sql) => {
+                  if (query.strings.join('?').includes('FOR UPDATE')) retryLockAttempted();
+                  return tx.$queryRaw(query);
+                }) as Prisma.TransactionClient['$queryRaw'],
+              }),
+            options,
+          ),
+      },
+    });
+    const startedAt = Date.now();
+    const retry = service.finishRetryableAttempt(original, leaseToken, {
+      status: 'WAITING_CAPABILITY',
+      statusCode: 404,
+      errorCode: 'predelete_presence_unknown',
+      message: 'Exact presence is unavailable',
+      retryDelayMs: 300_000,
+    });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        lockAttempted,
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error('Retry did not lock its parent')), 2_000);
+        }),
+      ]);
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      releaseWriter();
+    }
+    await writer;
+    await retry;
+
+    const actual = await prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { id: s.intent.id },
+    });
+    const expectedDelayMs = change === 'unchanged' ? 3_600_000 : 300_000;
+    expect(actual.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(startedAt + expectedDelayMs);
+    expect(actual.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now() + expectedDelayMs);
+    expect(actual.retryUntilAt).toEqual(
+      change.startsWith('active') ? activeHorizon : expiredHorizon,
+    );
+    expect(actual.status).toBe('AMBIGUOUS');
+    expect(actual.remoteDeleteSucceededAt).toEqual(acknowledgedAt);
+    expect(actual.remoteDeleteSucceededBotId).toBe('old-executor');
+    expect(actual.deleteDispatchStartedAt).toBeNull();
+    expect(actual.leaseToken).toBeNull();
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+  });
 
   it.each([
     'unchanged',

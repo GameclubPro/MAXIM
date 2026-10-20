@@ -247,6 +247,7 @@ const DEFAULT_PURGE_MAX_BATCHES = 40;
 const DEFAULT_DELETE_TIMEOUT_MS = 5_000;
 const DEFAULT_RETENTION_DAYS = 90;
 const BOT_MESSAGE_AUTO_DELETE_MAX_EXTERNAL_ATTEMPTS = 5;
+const BOT_MESSAGE_AUTO_DELETE_EXPIRED_VERIFICATION_RETRY_MS = 60 * 60_000;
 const BOT_MESSAGE_AUTO_DELETE_RETRY_LIMIT_ERROR_CODE =
   'bot_message_auto_delete_retry_limit_reached';
 const BOT_MESSAGE_AUTO_DELETE_SUCCESS_VERIFICATION_PENDING_ERROR_CODE =
@@ -6240,59 +6241,103 @@ export class ModerationDeleteIntentService {
       intent = retryLimitOutcome.intent;
     }
 
-    const now = Date.now();
-    const requestedNextAt = new Date(now + Math.max(1_000, details.retryDelayMs ?? 1_000));
-    const hasRemoteSuccessMarker = this.hasRemoteSuccessMarker(intent);
-    const hasUnresolvedDispatch = this.hasDeleteDispatchMarker(intent);
-    const hasDefinitiveFollowupPending = hasRemoteSuccessMarker || hasUnresolvedDispatch;
-    const waitingForCapability =
-      !hasDefinitiveFollowupPending && details.status === 'WAITING_CAPABILITY';
-    const expires =
-      !hasDefinitiveFollowupPending &&
-      (details.status === 'EXPIRED' ||
-        (!waitingForCapability && requestedNextAt >= intent.retryUntilAt));
-    const terminal = !hasDefinitiveFollowupPending && details.status === 'FAILED_TERMINAL';
-    const status: ModerationDeleteIntentStatus = hasDefinitiveFollowupPending
-      ? 'AMBIGUOUS'
-      : expires
-        ? 'EXPIRED'
-        : details.status;
-    const nextAttemptAt = expires ? intent.retryUntilAt : requestedNextAt;
+    const persistRetry = async (
+      currentIntent: IntentRow,
+      executor: Pick<Prisma.TransactionClient, '$executeRaw'>,
+      allowSlowVerification = false,
+    ): Promise<number> => {
+      const now = Date.now();
+      // FLAG: Acknowledged cleanup still needs exact absence proof. An expired auto-delete-only
+      // obligation retains its markers and polls no sooner than hourly, preserving longer hints.
+      const expiredAutoDeleteVerification =
+        allowSlowVerification && this.isExpiredAutoDeleteVerification(currentIntent, now);
+      const requestedNextAt = new Date(
+        now +
+          Math.max(
+            1_000,
+            details.retryDelayMs ?? 1_000,
+            expiredAutoDeleteVerification
+              ? BOT_MESSAGE_AUTO_DELETE_EXPIRED_VERIFICATION_RETRY_MS
+              : 0,
+          ),
+      );
+      const hasRemoteSuccessMarker = this.hasRemoteSuccessMarker(currentIntent);
+      const hasUnresolvedDispatch = this.hasDeleteDispatchMarker(currentIntent);
+      const hasDefinitiveFollowupPending = hasRemoteSuccessMarker || hasUnresolvedDispatch;
+      const waitingForCapability =
+        !hasDefinitiveFollowupPending && details.status === 'WAITING_CAPABILITY';
+      const expires =
+        !hasDefinitiveFollowupPending &&
+        (details.status === 'EXPIRED' ||
+          (!waitingForCapability && requestedNextAt >= currentIntent.retryUntilAt));
+      const terminal = !hasDefinitiveFollowupPending && details.status === 'FAILED_TERMINAL';
+      const status: ModerationDeleteIntentStatus = hasDefinitiveFollowupPending
+        ? 'AMBIGUOUS'
+        : expires
+          ? 'EXPIRED'
+          : details.status;
+      const nextAttemptAt = expires ? currentIntent.retryUntilAt : requestedNextAt;
 
-    const changed = await this.prisma.$executeRaw(Prisma.sql`
-      UPDATE "moderation_delete_intents"
-      SET
-        "status" = CAST(${status} AS "ModerationDeleteIntentStatus"),
-        "next_attempt_at" = CASE
-          WHEN ${waitingForCapability}
-          THEN CASE
-            WHEN "next_attempt_at" > "last_attempt_at"
-              AND "retry_until_at" > CURRENT_TIMESTAMP
-            THEN CURRENT_TIMESTAMP
-            ELSE LEAST(${requestedNextAt}, "retry_until_at")
-          END
-          ELSE ${nextAttemptAt}
-        END,
-        "last_status_code" = ${details.statusCode},
-        "last_error_code" = ${details.errorCode},
-        "last_error" = ${details.message.slice(0, 2_000)},
-        "completed_at" = ${expires || terminal ? new Date() : null},
-        "lease_token" = NULL,
-        "lease_expires_at" = NULL,
-        "leased_from_status" = NULL,
-        "updated_at" = CURRENT_TIMESTAMP
-      WHERE "id" = ${intent.id}
-        AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
-        AND "lease_token" = ${leaseToken}
-        AND (${!requireInitialUnattempted} OR (
-          (${requireInitialUnattempted !== true} OR "attempt_count" = 1)
-          AND "lease_expires_at" > (clock_timestamp() AT TIME ZONE 'UTC')
-          AND "delete_dispatch_started_at" IS NULL
-          AND "delete_dispatch_started_bot_id" IS NULL
-          AND "remote_delete_succeeded_at" IS NULL
-          AND "remote_delete_succeeded_bot_id" IS NULL
-        ))
-    `);
+      return executor.$executeRaw(Prisma.sql`
+        UPDATE "moderation_delete_intents"
+        SET
+          "status" = CAST(${status} AS "ModerationDeleteIntentStatus"),
+          "next_attempt_at" = CASE
+            WHEN ${waitingForCapability}
+            THEN CASE
+              WHEN "next_attempt_at" > "last_attempt_at"
+                AND "retry_until_at" > CURRENT_TIMESTAMP
+              THEN CURRENT_TIMESTAMP
+              ELSE LEAST(${requestedNextAt}, "retry_until_at")
+            END
+            ELSE ${nextAttemptAt}
+          END,
+          "last_status_code" = ${details.statusCode},
+          "last_error_code" = ${details.errorCode},
+          "last_error" = ${details.message.slice(0, 2_000)},
+          "completed_at" = ${expires || terminal ? new Date() : null},
+          "lease_token" = NULL,
+          "lease_expires_at" = NULL,
+          "leased_from_status" = NULL,
+          "updated_at" = CURRENT_TIMESTAMP
+        WHERE "id" = ${currentIntent.id}
+          AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+          AND "lease_token" = ${leaseToken}
+          AND (${!requireInitialUnattempted} OR (
+            (${requireInitialUnattempted !== true} OR "attempt_count" = 1)
+            AND "lease_expires_at" > (clock_timestamp() AT TIME ZONE 'UTC')
+            AND "delete_dispatch_started_at" IS NULL
+            AND "delete_dispatch_started_bot_id" IS NULL
+            AND "remote_delete_succeeded_at" IS NULL
+            AND "remote_delete_succeeded_bot_id" IS NULL
+          ))
+      `);
+    };
+    const changed = this.isExpiredAutoDeleteVerification(intent, Date.now())
+      ? await this.prisma.$transaction(
+          async (tx) => {
+            // FLAG: A concurrent reason writer locks this parent before inserting its reason.
+            // Lock first, then classify in a fresh READ COMMITTED statement; the loaded snapshot
+            // cannot postpone an independent obligation behind historical cleanup verification.
+            const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+              SELECT "id" FROM "moderation_delete_intents"
+              WHERE "id" = ${intent.id}
+                AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+                AND "lease_token" = ${leaseToken}
+              FOR UPDATE
+            `);
+            if (!locked[0]) return 0;
+            const latestRows = await tx.$queryRaw<IntentRow[]>(Prisma.sql`
+              SELECT ${this.intentSelectSql('intent')}
+              FROM "moderation_delete_intents" intent
+              WHERE intent."id" = ${intent.id}
+              LIMIT 1
+            `);
+            return latestRows[0] ? persistRetry(latestRows[0], tx, true) : 0;
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        )
+      : await persistRetry(intent, this.prisma);
     if (changed === 0) {
       if (requireInitialUnattempted === 'guarded') throw new ModerationDeleteIntentLeaseLostError();
       if (requireInitialUnattempted)
@@ -8596,6 +8641,20 @@ export class ModerationDeleteIntentService {
 
   private capabilityRetryDelayMs(attemptCount: number): number {
     return Math.max(this.capabilityRetryMs, this.retryDelayMs(attemptCount));
+  }
+
+  private isExpiredAutoDeleteVerification(intent: IntentRow, nowMs: number): boolean {
+    const acknowledgedAtMs = intent.remoteDeleteSucceededAt?.getTime() ?? Number.NaN;
+    const retryUntilAtMs = intent.retryUntilAt.getTime();
+    return (
+      this.isBotMessageAutoDeleteOnlyReason(intent) &&
+      Number.isFinite(acknowledgedAtMs) &&
+      acknowledgedAtMs <= nowMs &&
+      typeof intent.remoteDeleteSucceededBotId === 'string' &&
+      intent.remoteDeleteSucceededBotId.trim().length > 0 &&
+      Number.isFinite(retryUntilAtMs) &&
+      retryUntilAtMs <= nowMs
+    );
   }
 
   private isBotMessageAutoDeleteRetryLimitApplicable(

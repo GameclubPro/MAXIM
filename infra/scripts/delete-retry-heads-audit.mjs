@@ -68,6 +68,9 @@ export function buildDeleteRetryHeadsAuditSql(explain = false) {
       row.updated_at, row.source_message_at, row.attempt_count, row.last_attempt_at, row.retry_until_at,
       row.delete_dispatch_started_at IS NOT NULL AS dispatch_started,
       row.remote_delete_succeeded_at IS NOT NULL AS remote_success_marker,
+      (row.remote_delete_succeeded_at <= statement_timestamp()
+        AND nullif(btrim(row.remote_delete_succeeded_bot_id), '') IS NOT NULL)
+        IS TRUE AS remote_success_pair_complete,
       row.lease_expires_at, row.last_status_code,
       CASE
         WHEN row.last_error_code = 'delete_pre_dispatch_guard_rejected'
@@ -97,9 +100,10 @@ export function buildDeleteRetryHeadsAuditSql(explain = false) {
        FROM (SELECT rule_code FROM moderation_delete_intent_reasons WHERE intent_id = samples.id
           ORDER BY reason_key LIMIT 65) reason) AS reasons
     FROM samples CROSS JOIN LATERAL (SELECT updated_at, source_message_at, attempt_count, last_attempt_at, retry_until_at,
-      delete_dispatch_started_at, remote_delete_succeeded_at, lease_expires_at, last_status_code, last_error_code, last_error
+      delete_dispatch_started_at, remote_delete_succeeded_at, remote_delete_succeeded_bot_id,
+      lease_expires_at, last_status_code, last_error_code, last_error
       FROM moderation_delete_intents WHERE id = samples.id OFFSET 0) row
-  ) SELECT json_build_object('schema_version',2,'audit','delete_retry_heads',
+  ) SELECT json_build_object('schema_version',3,'audit','delete_retry_heads',
     'observed_at',statement_timestamp(),'policy_checked',false,'remote_effect_proven',false,
     'failure_classification_authority','saved_metadata_only',
     'per_group_cap',32,'sample_truncated',EXISTS (SELECT 1 FROM heads GROUP BY sample_kind, status HAVING count(*) > 32),
