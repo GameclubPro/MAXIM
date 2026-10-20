@@ -8,8 +8,13 @@ export type ManagedEntityForwardedRecoveryCandidate = {
   sourceMessageId: string;
 };
 
+export type ManagedEntityForwardedRecoveryOptions = {
+  allowOfficialForwardContent?: boolean;
+};
+
 export function extractManagedEntityForwardedRecoveryCandidate(
   payload: unknown,
+  options: ManagedEntityForwardedRecoveryOptions = {},
 ): ManagedEntityForwardedRecoveryCandidate | null {
   const update = asRecord(payload);
   if (!update || readLowerString(update.type ?? update.update_type) !== 'message_created') {
@@ -59,12 +64,17 @@ export function extractManagedEntityForwardedRecoveryCandidate(
     return null;
   }
 
-  if (hasDirectMessageContent(message)) {
+  const forwardedSource = extractForwardedSource(message);
+  if (!forwardedSource || !isNegativeId(forwardedSource.sourceChatId)) {
     return null;
   }
 
-  const forwardedSource = extractForwardedSource(message);
-  if (!forwardedSource || !isNegativeId(forwardedSource.sourceChatId)) {
+  // FLAG: Publisher may accept content accompanying an official linked forward.
+  // Content never supplies the source or authority; legacy loose forwards stay strict.
+  if (
+    hasDirectMessageContent(message) &&
+    !(options.allowOfficialForwardContent && asRecord(message.link))
+  ) {
     return null;
   }
 
@@ -89,8 +99,11 @@ export function extractManagedEntityForwardedRecoveryCandidate(
   };
 }
 
-export function isManagedEntityForwardedRecoveryMessage(payload: unknown): boolean {
-  return extractManagedEntityForwardedRecoveryCandidate(payload) !== null;
+export function isManagedEntityForwardedRecoveryMessage(
+  payload: unknown,
+  options: ManagedEntityForwardedRecoveryOptions = {},
+): boolean {
+  return extractManagedEntityForwardedRecoveryCandidate(payload, options) !== null;
 }
 
 function extractRawMessage(raw: Record<string, unknown>): Record<string, unknown> | null {

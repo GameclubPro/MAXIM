@@ -57,7 +57,15 @@ describeRedis('MAX token rolling-second admission', () => {
   });
   beforeEach(() => {
     const prefix = `test:max-token-window:${randomUUID()}`;
-    keys = [`${prefix}:token`, `${prefix}:class`, `${prefix}:other`];
+    keys = [
+      `${prefix}:token`,
+      `${prefix}:class`,
+      `${prefix}:other`,
+      `${prefix}:background`,
+      `${prefix}:interactive`,
+      `${prefix}:chat`,
+      `${prefix}:send-target`,
+    ];
   });
   afterEach(async () => {
     await redis.del(...keys.flatMap((key) => [key, `${key}:window:v1`, `${key}:cooldown`]));
@@ -106,6 +114,34 @@ describeRedis('MAX token rolling-second admission', () => {
         redis.call('ZCARD', KEYS[1] .. ':window:v1')}
     `);
     expect(result).toEqual([[1, 0, 0], [0, 2, 900], 1, 1]);
+  });
+
+  it('admits interactive SEND beyond background capacity while retaining shared token and target limits', async () => {
+    const result = await clockedScenario(`
+      local time = {1700000000, 0}
+      local background = {KEYS[1], KEYS[4]}
+      local backgroundArgs = {'30', '4', '29', '3', '2000'}
+      local backgroundCount = 0
+      for i=1,4 do backgroundCount = backgroundCount + reserve(background, backgroundArgs, time)[1] end
+      local backgroundTat = redis.call('GET', KEYS[4])
+      local backgroundBlocked = reserve(background, backgroundArgs, time)
+      local send = {KEYS[1], KEYS[5], KEYS[6], KEYS[7]}
+      local sendArgs = {'30', '18', '5', '2', '29', '17', '4', '0', '2000'}
+      local admitted = reserve(send, sendArgs, time)
+      local tats = redis.call('MGET', unpack(send))
+      local targetBlocked = reserve(send, sendArgs, time)
+      local unchanged = true
+      for i,key in ipairs(send) do
+        unchanged = unchanged and tats[i] == redis.call('GET', key)
+      end
+      local remainder = 0
+      for i=1,25 do remainder = remainder + reserve({KEYS[1]}, {'30', '29', '2000'}, time)[1] end
+      local tokenBlocked = reserve(send, sendArgs, time)
+      return {backgroundCount, backgroundBlocked, admitted, targetBlocked, unchanged and 1 or 0,
+        remainder, tokenBlocked, redis.call('ZCARD', KEYS[1] .. ':window:v1'),
+        backgroundTat == redis.call('GET', KEYS[4]) and 1 or 0}
+    `);
+    expect(result).toEqual([4, [0, 2, 250], [1, 0, 0], [0, 4, 500], 1, 25, [0, 1, 1000], 30, 1]);
   });
 
   it('retains the configured sustained throughput without growing the window', async () => {

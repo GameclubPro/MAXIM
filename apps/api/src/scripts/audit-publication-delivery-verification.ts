@@ -3,7 +3,9 @@ import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.se
 import {
   ManagedBroadcastStatus,
   ManagedBroadcastDeliveryStatus,
+  PublicationDispatchProfile,
   type Prisma,
+  type PublicationScheduleMode,
   PublicationDeliveryVerificationSource,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -16,11 +18,13 @@ export const PUBLICATION_VERIFICATION_AUDIT_USAGE = [
   'Usage:',
   '  --since <ISO> [--until <ISO>] [--limit 1..200] [--unverified [--completed | --terminal] [--after <ISO>,<id>] | --apply] [--json]',
   '  --delivery-id <id> [--delivery-id <id> ...] [--unverified | --apply] [--json]',
+  '  --evidence --delivery-id <id> [--delivery-id <id> ...] [--json]',
   '',
   'Dry-run is the default. The audit performs exact MAX reads but never replays a send.',
   '--unverified audits SENT deliveries still awaiting stable verification and cannot be applied.',
   '--completed restricts --unverified range audits to completed broadcasts.',
   '--terminal includes completed and canceled broadcasts.',
+  '--evidence reads exact PUBLIK_V1 SENT receipts with any verification source; it cannot write or classify.',
 ].join('\n');
 
 export type PublicationVerificationAuditCursor = {
@@ -30,6 +34,7 @@ export type PublicationVerificationAuditCursor = {
 
 export type PublicationVerificationAuditOptions = {
   apply: boolean;
+  evidence: boolean;
   json: boolean;
   limit: number;
   since: Date | null;
@@ -47,16 +52,24 @@ type LegacyVerificationCandidate = {
   occurrenceIndex: number;
   targetChatId: string;
   botId: string | null;
+  requiredBotId: string | null;
   status: ManagedBroadcastDeliveryStatus;
   sentAt: Date | null;
   remoteMessageId: string;
   remoteMessageVerifiedAt: Date | null;
+  remoteMessageVerificationSource: PublicationDeliveryVerificationSource | null;
   remoteMessageVerificationAttemptCount: number;
   remoteMessageVerificationAbsentCount: number;
   remoteMessageVerificationPresentCount: number;
   remoteMessageVerificationAttemptedAt: Date | null;
   remoteMessageVerificationNextAt: Date | null;
   remoteMessageVerificationLastError: string | null;
+  publicationOccurrence?: {
+    scheduledAt: Date;
+    scheduleRevision: number;
+    schedule: { mode: PublicationScheduleMode; revision: number };
+    publication: { createdAt: Date };
+  } | null;
 };
 
 type AuditPresence =
@@ -73,7 +86,13 @@ type AuditOutcome = {
   botId: string | null;
   messageId: string;
   sentAt: string | null;
-  candidateState: 'legacy_verified' | 'unverified';
+  candidateState: 'legacy_verified' | 'unverified' | 'evidence';
+  savedVerificationSource?: PublicationDeliveryVerificationSource | null;
+  savedVerifiedAt?: string | null;
+  scheduledAt?: string | null;
+  publicationCreatedAt?: string | null;
+  scheduleMode?: PublicationScheduleMode | null;
+  scheduleRevisionMatches?: boolean | null;
   presence: AuditPresence['kind'];
   classification: PublicationDeliveryVerificationSource | null;
   persistence: 'dry_run' | 'updated' | 'cas_conflict';
@@ -82,6 +101,7 @@ type AuditOutcome = {
 
 export type PublicationVerificationAuditSummary = {
   apply: boolean;
+  evidence: boolean;
   selected: number;
   present: number;
   absent: number;
@@ -97,7 +117,12 @@ export type PublicationVerificationAuditSummary = {
   outcomes: AuditOutcome[];
 };
 
-type AuditPrisma = Pick<PrismaService, 'managedBroadcastDelivery'>;
+type AuditPrisma = {
+  managedBroadcastDelivery: Pick<
+    PrismaService['managedBroadcastDelivery'],
+    'findMany' | 'updateMany'
+  >;
+};
 type AuditMaxClient = Pick<MaxClientService, 'getExactMessagePresences'>;
 
 function readRequiredValue(argv: readonly string[], index: number, option: string): string {
@@ -137,6 +162,7 @@ export function readPublicationVerificationAuditOptions(
   argv: readonly string[],
 ): PublicationVerificationAuditOptions {
   let apply = false;
+  let evidence = false;
   let json = false;
   let limit = DEFAULT_LIMIT;
   let since: Date | null = null;
@@ -151,6 +177,10 @@ export function readPublicationVerificationAuditOptions(
     const arg = argv[index];
     if (arg === '--apply') {
       apply = true;
+      continue;
+    }
+    if (arg === '--evidence') {
+      evidence = true;
       continue;
     }
     if (arg === '--json') {
@@ -250,8 +280,9 @@ export function readPublicationVerificationAuditOptions(
     throw new Error('--unverified is read-only and cannot be combined with --apply');
   }
 
-  return {
+  const options = {
     apply,
+    evidence,
     json,
     limit,
     since,
@@ -262,10 +293,34 @@ export function readPublicationVerificationAuditOptions(
     terminal,
     after,
   };
+  validateEvidenceOptions(options);
+  return options;
 }
 
-const resultKey = (chatId: string, messageId: string): string =>
-  JSON.stringify([chatId, messageId]);
+function validateEvidenceOptions(options: PublicationVerificationAuditOptions): void {
+  // FLAG: Enforce this again at the exported runner boundary, before any database/MAX access.
+  if (
+    options.evidence &&
+    (options.apply ||
+      options.since ||
+      options.until ||
+      options.after ||
+      options.unverified ||
+      options.completed ||
+      options.terminal ||
+      options.deliveryIds.length === 0 ||
+      options.deliveryIds.length > MAX_LIMIT ||
+      new Set(options.deliveryIds).size !== options.deliveryIds.length ||
+      options.deliveryIds.some((id) => !/^[A-Za-z0-9_-]{1,128}$/.test(id)))
+  ) {
+    throw new Error(
+      '--evidence is read-only and requires only exact --delivery-id values (1..200)',
+    );
+  }
+}
+
+const resultKey = (chatId: string, messageId: string, botId: string | null): string =>
+  JSON.stringify([botId?.trim() ?? '', chatId, messageId]);
 
 const normalizeError = (error: unknown): string => {
   const message = error instanceof Error ? error.message : error ? String(error) : 'Unknown error';
@@ -289,47 +344,49 @@ async function loadCandidates(
       publicationOccurrenceId: { not: null },
       status: ManagedBroadcastDeliveryStatus.SENT,
       remoteMessageId: { not: null },
-      ...(options.unverified
-        ? {
-            ...(options.deliveryIds.length > 0
-              ? {}
-              : {
-                  broadcast: {
-                    is: {
-                      status: options.completed
-                        ? ManagedBroadcastStatus.COMPLETED
-                        : options.terminal
-                          ? {
-                              in: [
-                                ManagedBroadcastStatus.COMPLETED,
-                                ManagedBroadcastStatus.CANCELED,
-                              ],
-                            }
-                          : {
-                              in: [
-                                ManagedBroadcastStatus.ACTIVE,
-                                ManagedBroadcastStatus.PARTIAL,
-                                ManagedBroadcastStatus.FAILED,
-                              ],
-                            },
+      ...(options.evidence
+        ? { dispatchProfile: PublicationDispatchProfile.PUBLIK_V1, sentAt: { not: null } }
+        : options.unverified
+          ? {
+              ...(options.deliveryIds.length > 0
+                ? {}
+                : {
+                    broadcast: {
+                      is: {
+                        status: options.completed
+                          ? ManagedBroadcastStatus.COMPLETED
+                          : options.terminal
+                            ? {
+                                in: [
+                                  ManagedBroadcastStatus.COMPLETED,
+                                  ManagedBroadcastStatus.CANCELED,
+                                ],
+                              }
+                            : {
+                                in: [
+                                  ManagedBroadcastStatus.ACTIVE,
+                                  ManagedBroadcastStatus.PARTIAL,
+                                  ManagedBroadcastStatus.FAILED,
+                                ],
+                              },
+                      },
                     },
-                  },
-                }),
-            remoteMessageVerifiedAt: null,
-            sentAt: {
-              not: null,
-              ...(options.since ? { gte: options.since } : {}),
-              ...(options.until ? { lte: options.until } : {}),
-            },
-          }
-        : {
-            remoteMessageVerifiedAt: {
-              not: null,
-              ...(options.since ? { gte: options.since } : {}),
-              ...(options.until ? { lte: options.until } : {}),
-            },
-          }),
-      remoteMessageVerificationSource: null,
+                  }),
+              remoteMessageVerifiedAt: null,
+              sentAt: {
+                not: null,
+                ...(options.since ? { gte: options.since } : {}),
+                ...(options.until ? { lte: options.until } : {}),
+              },
+            }
+          : {
+              remoteMessageVerifiedAt: {
+                not: null,
+                ...(options.since ? { gte: options.since } : {}),
+                ...(options.until ? { lte: options.until } : {}),
+              },
+            }),
+      ...(options.evidence ? {} : { remoteMessageVerificationSource: null }),
       ...(options.deliveryIds.length > 0 ? { id: { in: options.deliveryIds } } : {}),
       ...(cursorWhere ? { AND: [cursorWhere] } : {}),
     },
@@ -343,16 +400,31 @@ async function loadCandidates(
       occurrenceIndex: true,
       targetChatId: true,
       botId: true,
+      requiredBotId: true,
       status: true,
       sentAt: true,
       remoteMessageId: true,
       remoteMessageVerifiedAt: true,
+      remoteMessageVerificationSource: true,
       remoteMessageVerificationAttemptCount: true,
       remoteMessageVerificationAbsentCount: true,
       remoteMessageVerificationPresentCount: true,
       remoteMessageVerificationAttemptedAt: true,
       remoteMessageVerificationNextAt: true,
       remoteMessageVerificationLastError: true,
+      // FLAG: Evidence enriches only exact saved delivery IDs through their parent keys.
+      ...(options.evidence
+        ? {
+            publicationOccurrence: {
+              select: {
+                scheduledAt: true,
+                scheduleRevision: true,
+                schedule: { select: { mode: true, revision: true } },
+                publication: { select: { createdAt: true } },
+              },
+            },
+          }
+        : {}),
     },
   })) as LegacyVerificationCandidate[];
   if (options.deliveryIds.length > 0 || rows.length <= options.limit) {
@@ -372,15 +444,23 @@ async function loadCandidates(
 async function readExactPresences(
   maxClient: AuditMaxClient,
   candidates: readonly LegacyVerificationCandidate[],
+  evidence = false,
 ): Promise<Map<string, AuditPresence>> {
   const presences = new Map<string, AuditPresence>();
   const byBotId = new Map<string, LegacyVerificationCandidate[]>();
   for (const candidate of candidates) {
     const botId = candidate.botId?.trim();
     if (!botId) {
-      presences.set(resultKey(candidate.targetChatId, candidate.remoteMessageId), {
+      presences.set(candidate.id, {
         kind: 'no_bot',
         error: 'Delivery has no recorded bot route',
+      });
+      continue;
+    }
+    if (evidence && (botId !== candidate.requiredBotId || botId !== candidate.botId)) {
+      presences.set(candidate.id, {
+        kind: 'error',
+        error: 'Recorded bot route does not match the required Publisher bot',
       });
       continue;
     }
@@ -411,12 +491,16 @@ async function readExactPresences(
       }));
     }
 
-    for (const result of results) {
-      const key = resultKey(result.chatId, result.messageId);
+    const exactResults = new Map(
+      results.map((result) => [resultKey(result.chatId, result.messageId, botId), result]),
+    );
+    for (const row of rows) {
+      const result = exactResults.get(resultKey(row.targetChatId, row.remoteMessageId, botId));
+      if (!result) continue;
       if ('presence' in result) {
-        presences.set(key, { kind: result.presence });
+        presences.set(row.id, { kind: result.presence });
       } else {
-        presences.set(key, { kind: 'error', error: normalizeError(result.error) });
+        presences.set(row.id, { kind: 'error', error: normalizeError(result.error) });
       }
     }
   }
@@ -491,24 +575,28 @@ export async function runPublicationVerificationAudit(
   maxClient: AuditMaxClient,
   options: PublicationVerificationAuditOptions,
 ): Promise<PublicationVerificationAuditSummary> {
+  validateEvidenceOptions(options);
   const { candidates, nextAfter } = await loadCandidates(prisma, options);
   const selectedDeliveryIds = new Set(candidates.map((candidate) => candidate.id));
   const unmatchedDeliveryIds = options.deliveryIds.filter((id) => !selectedDeliveryIds.has(id));
-  const presences = await readExactPresences(maxClient, candidates);
+  const presences = await readExactPresences(maxClient, candidates, options.evidence);
   const outcomes: AuditOutcome[] = [];
 
   for (const candidate of candidates) {
     const presence =
-      presences.get(resultKey(candidate.targetChatId, candidate.remoteMessageId)) ??
+      presences.get(candidate.id) ??
       ({ kind: 'error', error: 'MAX exact lookup returned no result' } as const);
-    const candidateState = candidate.remoteMessageVerifiedAt
-      ? ('legacy_verified' as const)
-      : ('unverified' as const);
-    const classification = candidate.remoteMessageVerifiedAt
-      ? presence.kind === 'present'
-        ? PublicationDeliveryVerificationSource.AUTOMATED_STABLE
-        : PublicationDeliveryVerificationSource.LEGACY_SINGLE_OBSERVATION
-      : null;
+    const candidateState = options.evidence
+      ? ('evidence' as const)
+      : candidate.remoteMessageVerifiedAt
+        ? ('legacy_verified' as const)
+        : ('unverified' as const);
+    const classification =
+      !options.evidence && candidate.remoteMessageVerifiedAt
+        ? presence.kind === 'present'
+          ? PublicationDeliveryVerificationSource.AUTOMATED_STABLE
+          : PublicationDeliveryVerificationSource.LEGACY_SINGLE_OBSERVATION
+        : null;
     const persistence = options.apply
       ? await persistClassification(prisma, candidate, presence, new Date())
       : 'dry_run';
@@ -521,6 +609,20 @@ export async function runPublicationVerificationAudit(
       messageId: candidate.remoteMessageId,
       sentAt: candidate.sentAt?.toISOString() ?? null,
       candidateState,
+      ...(options.evidence
+        ? {
+            savedVerificationSource: candidate.remoteMessageVerificationSource,
+            savedVerifiedAt: candidate.remoteMessageVerifiedAt?.toISOString() ?? null,
+            scheduledAt: candidate.publicationOccurrence?.scheduledAt.toISOString() ?? null,
+            publicationCreatedAt:
+              candidate.publicationOccurrence?.publication.createdAt.toISOString() ?? null,
+            scheduleMode: candidate.publicationOccurrence?.schedule.mode ?? null,
+            scheduleRevisionMatches: candidate.publicationOccurrence
+              ? candidate.publicationOccurrence.scheduleRevision ===
+                candidate.publicationOccurrence.schedule.revision
+              : null,
+          }
+        : {}),
       presence: presence.kind,
       classification,
       persistence,
@@ -530,6 +632,7 @@ export async function runPublicationVerificationAudit(
 
   return {
     apply: options.apply,
+    evidence: options.evidence,
     selected: outcomes.length,
     present: outcomes.filter((outcome) => outcome.presence === 'present').length,
     absent: outcomes.filter((outcome) => outcome.presence === 'absent').length,
@@ -594,7 +697,11 @@ async function main(): Promise<void> {
       options,
     );
     printSummary(summary, options.json);
-    if (summary.casConflicts > 0 || summary.unmatchedDeliveryIds.length > 0) {
+    if (
+      summary.casConflicts > 0 ||
+      summary.unmatchedDeliveryIds.length > 0 ||
+      (summary.evidence && summary.present !== summary.requested)
+    ) {
       process.exitCode = 1;
     }
   } finally {

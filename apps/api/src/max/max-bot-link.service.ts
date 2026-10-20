@@ -988,10 +988,10 @@ export class MaxBotLinkService implements OnModuleDestroy {
     activation?: ManagedEntityExplicitActivation,
   ) {
     const current = await this.getChatBotActivationState(chatId, botId);
-    const required =
-      botId === this.botRegistry.getPublisherBotDescriptor?.().id
-        ? isPublisherManagedEntityActivationRequired(current)
-        : isMajorManagedEntityActivationRequired(current, current?.chat?.entityType);
+    const isPublisher = botId === this.botRegistry.getPublisherBotDescriptor?.().id;
+    const required = isPublisher
+      ? isPublisherManagedEntityActivationRequired(current)
+      : isMajorManagedEntityActivationRequired(current, current?.chat?.entityType);
     if (!required && !activation) return current;
     const priorAt = Math.max(
       current?.botAccessCheckedAt?.getTime() ?? 0,
@@ -1000,10 +1000,16 @@ export class MaxBotLinkService implements OnModuleDestroy {
     if (
       !isExplicitManagedEntityActivationCurrent(activation, chatId, botId) ||
       (required &&
-        (botId === this.botRegistry.getPublisherBotDescriptor?.().id
+        (isPublisher
           ? !isPublisherActivationSourceAfterEpoch(current, activation.sourceAt)
           : activation.sourceAt.getTime() <= priorAt)) ||
-      !(await hasPersistedManagedEntityActivationSource(this.prisma, activation))
+      // FLAG: Only the exact configured Publisher accepts official forwarded body content.
+      // Moderator activation and membership writers retain the strict shared reader.
+      !(await (isPublisher
+        ? hasPersistedManagedEntityActivationSource(this.prisma, activation, {
+            allowOfficialForwardContent: true,
+          })
+        : hasPersistedManagedEntityActivationSource(this.prisma, activation)))
     )
       throw new ManagedEntityActivationRequiredError();
     return current;

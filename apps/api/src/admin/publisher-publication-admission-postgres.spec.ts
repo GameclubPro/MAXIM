@@ -1,4 +1,9 @@
-import { MaxApiInternalRateLimitError } from '../max/max-client.service';
+import { MAX_API_SOURCE_TAGS, MaxApiInternalRateLimitError } from '../max/max-client.service';
+import type {
+  MaxRoutedPublicationAttemptContext,
+  MaxRoutedPublicationRequest,
+  MaxRoutedPublicationResult,
+} from '../max/max-routed-publication.service';
 import { PublicationService } from './publication.service';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { PublisherDeliveryDeferredError } from './publisher-managed-broadcast-dispatch';
@@ -77,6 +82,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
   const botId = `publisher-admission-${randomUUID()}`;
   const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
   const remoteSend = jest.fn();
+  const admittedSends: MaxRoutedPublicationRequest[] = [];
   const runtimeLogger = { warn: jest.fn(), log: jest.fn() };
   const unavailableTargets = new Set<string>();
   const prepareContext = jest.fn(async ({ dialogBotId }: { dialogBotId: string }) => ({
@@ -114,6 +120,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
   beforeEach(() => {
     requestActorAccessRefresh.mockClear();
     remoteSend.mockClear();
+    admittedSends.length = 0;
     runtimeLogger.log.mockClear();
     runtimeLogger.warn.mockClear();
     prepareContext.mockClear();
@@ -203,21 +210,43 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
         },
         publisherDialogContextService: { prepare: prepareContext },
         maxRoutedPublicationService: {
-          publish: async (request: {
-            entityId: string;
-            publisherExactBotId: string;
-            prepareAttempt: (context: { botId: string }) => Promise<unknown>;
-            onDispatchAttempt: (context: { botId: string }) => Promise<void>;
-            beforeSendMutation: (context: { botId: string }) => Promise<void>;
-          }) => {
+          publish: async (
+            request: MaxRoutedPublicationRequest,
+          ): Promise<MaxRoutedPublicationResult> => {
             expect(request.publisherExactBotId).toBe(botId);
-            const context = { botId };
+            if (
+              !request.prepareAttempt ||
+              !request.onDispatchAttempt ||
+              !request.beforeSendMutation
+            )
+              throw new Error('Publisher SEND requires preparation, dispatch and final guards');
+            const context: MaxRoutedPublicationAttemptContext = {
+              botId,
+              job: {
+                actionType: 'SEND_MESSAGE',
+                chatId: request.entityId,
+                botId,
+                trafficClass: request.trafficClass,
+                actionHealthLane: request.actionHealthLane,
+                sourceTag: request.sourceTag,
+                attempt: 1,
+                idempotencyKey: request.logicalIdempotencyKey,
+                createdAt: new Date().toISOString(),
+              },
+            };
             await request.prepareAttempt(context);
             await request.onDispatchAttempt(context);
             await beforeMutation?.();
             await request.beforeSendMutation(context);
+            admittedSends.push(request);
             remoteSend(request.entityId);
-            return { messageId: `synthetic-${request.entityId}`, botId, url: null };
+            return {
+              messageId: `synthetic-${request.entityId}`,
+              botId,
+              url: null,
+              candidateBotIds: [botId],
+              routingVersion: null,
+            };
           },
         },
       } as never,
@@ -605,12 +634,32 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
         data: { state: 'USER_DENIED' },
       });
       beforeMutation = async () => {
+        expect(
+          await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
+        ).toMatchObject({
+          status: 'SENDING',
+          attemptCount: 1,
+          requiredBotId: botId,
+          botId,
+          remoteMessageId: null,
+        });
         await db.managedEntityAccessEdge.deleteMany({
           where: { chatId: chatIds[0], userId: actorId, botId },
         });
       };
-      await run();
+      if (mode === 'NOW') await runtime.processDueImmediatePublicationBroadcasts();
+      else await runtime.processDueDeadlinePublicationBroadcasts();
       expect(remoteSend).toHaveBeenCalledTimes(1);
+      expect(admittedSends).toEqual([
+        expect.objectContaining({
+          entityId: chatIds[0],
+          trafficClass: 'interactive',
+          actionHealthLane: mode === 'NOW' ? 'interactive' : 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+          publisherExactBotId: botId,
+          hydrateMessageUrl: false,
+        }),
+      ]);
       expect(requestActorAccessRefresh).not.toHaveBeenCalled();
       expect(
         await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),

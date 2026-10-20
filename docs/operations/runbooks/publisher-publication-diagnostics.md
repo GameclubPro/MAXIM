@@ -80,6 +80,20 @@ content revision, profile and bot match flags. The comparison IDs, content and l
 tokens never leave SQL. A pending delivery without attempts or a blocker does not
 establish readiness: its envelope can be stopped, locked, not yet due or mismatched.
 
+When the author is unknown, select the exact target without an author filter:
+
+```bash
+./infra/scripts/vps-connect.sh postgres-audit publisher-slots --target NEGATIVE_CHAT_ID YYYY-MM-DDTHH:MM:00Z --explain
+./infra/scripts/vps-connect.sh postgres-audit publisher-slots --target NEGATIVE_CHAT_ID YYYY-MM-DDTHH:MM:00Z
+```
+
+The target-only mode reports `selection_scope=target` and omits actor-wide candidates.
+It retains the same fourteen capped index heads, exact target join, privilege/index
+attestation and session limits. It does not enumerate other targets or expose authors.
+The eight-delivery cap still applies before the target filter. Inspect both completeness
+flags; an unmatched target in an incomplete sample is not proof of absence. Use a
+concrete known scheduled minute rather than repeatedly scanning arbitrary history.
+
 `source_complete=false` means more source rows existed than were inspected. A zero
 match then proves only that the capped source sample did not contain a match.
 `deliveries_complete=false` means the target may be outside the first eight deliveries;
@@ -93,7 +107,9 @@ Rows retain lifecycle, schedule status (including ERROR), cancellation/blocker c
 revision agreement, saved deadline/retry/lock clocks, attempts and recorded-receipt
 presence. Unknown saved reasons become `other`; identifiers, tokens, content and raw
 errors are excluded. These are current saved metadata, not historical authority or
-execution traces. The action ledger is outside this selector; envelopes are probed only
+execution traces. `access_reason` describes the saved author's access edge; an actor
+warning alone does not block an accepted finite entity intent, whose execution authority
+is checked separately at dispatch. The action ledger is outside this selector; envelopes are probed only
 through sampled deliveries, so zero delivery rows cannot establish whether handoff or
 an envelope exists.
 `capabilities_and_activation_checked=false` and `client_visibility=not_observed` remain
@@ -111,6 +127,31 @@ without starting the application, sending messages or changing subscriptions. It
 the exact bot and webhook target; it does not verify update-type coverage or publication
 delivery. Invoke the built file directly: the runtime image omits the repository-root
 package manifest required by a root-level `npm run --workspace` invocation.
+
+For current message-presence evidence, use previously observed exact delivery IDs:
+
+```bash
+./infra/scripts/vps-connect.sh exec 'docker compose -f infra/docker-compose.yml exec -T api-publisher node apps/api/dist/apps/api/src/scripts/audit-publication-delivery-verification.js --evidence --delivery-id DELIVERY_ID --json'
+```
+
+This separate mode reads only the requested PUBLIK_V1 SENT receipts and performs exact
+MAX presence reads with the saved, matching required bot through normal client admission.
+It accepts modern verification sources. It refuses `--apply`, range/cursor selection,
+unverified/terminal filters and invalid or duplicate IDs, including at the exported
+runner boundary before database or MAX access. It never sends a message or updates
+delivery verification. Use a small selection while production is healthy; do not turn
+the 200-ID ceiling into a routine polling batch.
+
+Retain the private result with the bounded incident evidence. It contains exact join
+identities; user-facing reports should give the selected scope and aggregate outcome.
+`savedVerificationSource` and `savedVerifiedAt` describe retained observations;
+`presence` describes the new MAX read. A saved source label alone does not establish all
+stable-verification invariants. A missing/failed exact lookup is not replay authority,
+and a successful one does not prove absence of every possible external duplicate.
+`scheduledAt` and `publicationCreatedAt` retain the occurrence and original intent clocks.
+`scheduleMode` describes the currently linked schedule; use it for latency comparisons
+only when `scheduleRevisionMatches=true`. A later schedule edit does not rewrite the
+saved occurrence time or prove its original mode.
 
 ## Current scheduling and recovery
 
@@ -248,7 +289,8 @@ coordinator separation above supersedes only that serialization detail:
   The 15-second safety poll remains; pauses and failed sweeps do not spin the timer.
 - A PENDING recipient with the exact `PUBLISHER_ACTOR_ACCESS_REQUIRED` marker becomes
   eligible for the pending-work timer only after its persisted 60-second retry delay.
-  The worker still verifies current bot/actor/policy authority before claiming and sending.
+  The worker still verifies current bot/policy and the applicable entity or legacy actor
+  authority before claiming and sending.
   A refused recipient renews its delay; other blockers, route quarantine, ambiguous
   effects and fresh in-flight siblings remain excluded. This prevents a recovered large
   audience from draining only four recipients per 15-second safety poll.

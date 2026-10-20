@@ -90,6 +90,7 @@ Commands:
   postgres-audit publisher-comments <chat-id> [--explain]
   postgres-audit publisher-publications [--explain]
   postgres-audit publisher-slots <actor> <chat> <UTC-minute> [--explain]
+  postgres-audit publisher-slots --target <chat> <UTC-minute> [--explain]
   postgres-audit publisher-access-census [--explain]
   postgres-audit storage [--explain]
   postgres-audit multibot-preparation [--explain]

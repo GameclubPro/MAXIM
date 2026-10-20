@@ -79,6 +79,9 @@ describe('PublisherStartProcessor', () => {
     expect(text).toContain('[Майора Максимова](https://max.ru/id613070470872_9_bot)');
     expect(text).toContain(USER_AGREEMENT_START_NOTICE);
     expect(text).toContain('автопостинг из VK.');
+    expect(text).toContain('перешлите сюда любое сообщение');
+    expect(text).toContain('текст, фото, видео или файл');
+    expect(text).toContain('администратором с правом публикации');
     expect(text).not.toContain('Настройки модерации');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '123',

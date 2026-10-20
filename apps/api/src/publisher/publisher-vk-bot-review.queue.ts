@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import type { Queue } from 'bullmq';
 import { createHash } from 'node:crypto';
+import { isManagedEntityForwardedRecoveryMessage } from '../common/managed-entity-forwarded-recovery.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
 import { PUBLISHER_SUGGESTION_ADMIN_QUEUE } from './publisher-suggestion-admin.queue';
@@ -76,7 +77,12 @@ export class PublisherVkBotReviewQueueService {
         (node?.payload ?? node?.start_payload ?? node?.startPayload) === VK_BOT_REVIEW_START,
     );
     const isConnect =
-      (update.type === 'message_created' && (text === '/vk' || text === '/start vk_review')) ||
+      (update.type === 'message_created' &&
+        (text === '/vk' || text === '/start vk_review') &&
+        // FLAG: Forwarded post text is connection content, never a VK inbox command.
+        !isManagedEntityForwardedRecoveryMessage(update, {
+          allowOfficialForwardContent: true,
+        })) ||
       (update.type === 'bot_started' && start);
     const isCallback =
       update.type === 'message_callback' && value.startsWith(VK_BOT_REVIEW_CALLBACK_PREFIX);

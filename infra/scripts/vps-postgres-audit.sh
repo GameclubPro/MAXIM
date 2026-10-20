@@ -45,6 +45,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-slots <actor> <chat> <UTC-minute> [--explain]
+  ./infra/scripts/vps-postgres-audit.sh publisher-slots --target <chat> <UTC-minute> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-access-census [--explain]
   ./infra/scripts/vps-postgres-audit.sh storage [--explain]
   ./infra/scripts/vps-postgres-audit.sh multibot-preparation [--explain]

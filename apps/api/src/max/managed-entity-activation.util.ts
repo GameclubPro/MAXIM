@@ -1,5 +1,8 @@
 import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
-import { extractManagedEntityForwardedRecoveryCandidate } from '../common/managed-entity-forwarded-recovery.util';
+import {
+  extractManagedEntityForwardedRecoveryCandidate,
+  type ManagedEntityForwardedRecoveryOptions,
+} from '../common/managed-entity-forwarded-recovery.util';
 import {
   ChatBotAccessState,
   ChatBotMembershipStatus,
@@ -239,6 +242,7 @@ export function isExplicitManagedEntityActivationCurrent(
 export async function hasPersistedManagedEntityActivationSource(
   client: Pick<Prisma.TransactionClient, 'webhookEvent'>,
   proof: ManagedEntityExplicitActivation,
+  forwardedOptions: ManagedEntityForwardedRecoveryOptions = {},
 ): Promise<boolean> {
   if (!isExplicitManagedEntityActivationCurrent(proof, proof.chatId, proof.botId)) return false;
   // FLAG: Caller labels never grant activation. Read the exact authenticated receipt by
@@ -262,7 +266,7 @@ export async function hasPersistedManagedEntityActivationSource(
   )
     return false;
   if (proof.kind === 'forwarded_message') {
-    const candidate = extractManagedEntityForwardedRecoveryCandidate(payload);
+    const candidate = extractManagedEntityForwardedRecoveryCandidate(payload, forwardedOptions);
     return Boolean(
       candidate &&
       candidate.sourceChatId === proof.chatId &&
