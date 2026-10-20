@@ -37,6 +37,13 @@ pages; a zero-candidate page does not mean there is no remaining work.
 Before each distinct read shape, production runs plain `EXPLAIN` and refuses scans,
 sorts, filters or unknown indexes. It never runs live `EXPLAIN ANALYZE`. Native local
 tests exercise actual PostgreSQL query visits under skew and equal-time cohorts.
+The maintenance session discourages sequential/bitmap scans and explicit sorts so a
+small remaining status partition cannot make a cheaper sorted path displace the bounded
+ordered index. The same plan guard still rejects any resulting sort or filter.
+Failures expose only fixed diagnostic codes, allowed SQLSTATEs, a query-shape digest
+and known plan-node/index metadata. SQL, parameters and raw errors remain private.
+An apply diagnostic never establishes whether a transaction committed; retain its
+evidence and follow the unknown-outcome procedure below.
 
 ## Retire untouched slots
 

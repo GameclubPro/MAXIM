@@ -18,6 +18,7 @@ import {
   RETIREMENT_STOP_OPERATION,
   retirementPlanMatchesOperation,
   retirementSnapshotDigest,
+  sanitizeRetirementFailureDiagnostic,
 } from './publisher-obsolete-retirement.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -32,6 +33,42 @@ export const executeRetirementCommand = (command, args, options = {}) =>
     stdio: [Object.hasOwn(options, 'input') ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     ...options,
   }).trim();
+
+export function buildRetirementHelperSource(helper, request) {
+  return `${helper}\ntry { process.stdout.write(JSON.stringify(await runContainerRetirement(${JSON.stringify(request)}))+'\\n'); } catch (error) { process.stderr.write(JSON.stringify({kind:'publisher_obsolete_retirement_failure',diagnostic:retirementFailureDiagnostic(error)})+'\\n'); process.exitCode=1; }\n`;
+}
+
+function readHelperDiagnostic(stderr) {
+  if (typeof stderr !== 'string' || Buffer.byteLength(stderr, 'utf8') > 4096) return null;
+  try {
+    const envelope = JSON.parse(stderr);
+    if (envelope?.kind !== 'publisher_obsolete_retirement_failure') return null;
+    return sanitizeRetirementFailureDiagnostic(envelope.diagnostic);
+  } catch {
+    return null;
+  }
+}
+
+export function executeRetirementHelper(command, args, options = {}) {
+  try {
+    return JSON.parse(executeRetirementCommand(command, args, options));
+  } catch (error) {
+    const diagnostic = readHelperDiagnostic(error.stderr) ?? {
+      code:
+        error.code === 'ENOBUFS'
+          ? 'helper_output_limit'
+          : error.code === 'ETIMEDOUT'
+            ? 'helper_timeout'
+            : error instanceof SyntaxError
+              ? 'helper_invalid_output'
+              : 'helper_process_failed',
+    };
+    throw Object.assign(
+      new Error('retirement_failed_or_acknowledgement_unknown_fresh_preview_required'),
+      { diagnostic },
+    );
+  }
+}
 
 export function parseRetirementArgs(args) {
   if (['stop-preview', 'stop-apply'].includes(args[0])) {
@@ -304,32 +341,29 @@ export async function runRetirementHost(args) {
     join(root, 'infra/scripts/publisher-obsolete-retirement.mjs'),
     'utf8',
   );
-  const source = `${helper}\ntry { process.stdout.write(JSON.stringify(await runContainerRetirement(${JSON.stringify(request)}))+'\\n'); } catch { process.stderr.write('Publisher obsolete retirement refused; inspect private evidence and make a fresh preview.\\n'); process.exitCode=1; }\n`;
+  const source = buildRetirementHelperSource(helper, request);
   let output;
-  let failed = false;
+  let failure = null;
   try {
-    output = JSON.parse(
-      executeRetirementCommand(
-        'docker',
-        [
-          'exec',
-          '-i',
-          before.generations.find((row) => row.service === 'api-publisher').id,
-          'node',
-          '--input-type=module',
-          '-',
-        ],
-        { input: source, timeout: 90_000, maxBuffer: 256 * 1024 },
-      ),
+    output = executeRetirementHelper(
+      'docker',
+      [
+        'exec',
+        '-i',
+        before.generations.find((row) => row.service === 'api-publisher').id,
+        'node',
+        '--input-type=module',
+        '-',
+      ],
+      { input: source, timeout: 90_000, maxBuffer: 256 * 1024 },
     );
-  } catch {
-    failed = true;
+  } catch (error) {
+    failure = error;
   }
   const after = captureRetirementRuntime();
   if (JSON.stringify(before) !== JSON.stringify(after))
     throw new Error('runtime_changed_result_unaccepted');
-  if (failed)
-    throw new Error('retirement_failed_or_acknowledgement_unknown_fresh_preview_required');
+  if (failure) throw failure;
   if (args.action === 'apply') {
     writePrivate(`${args.reviewedDigest}.applied-${Date.now()}.json`, {
       completedAt: new Date().toISOString(),
@@ -380,6 +414,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   } catch (error) {
     const safe = /^[a-z_]+$/u.test(error.message) ? error.message : 'retirement_request_refused';
     process.stderr.write(`Publisher obsolete retirement: ${safe}.\n`);
+    if (error.diagnostic)
+      process.stderr.write(
+        `${JSON.stringify({ diagnostic: sanitizeRetirementFailureDiagnostic(error.diagnostic) })}\n`,
+      );
     process.exitCode = 1;
   }
 }
