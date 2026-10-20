@@ -13,7 +13,12 @@ import {
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertInheritedDeployLock } from './legacy-cold-journal.mjs';
-import { RETIREMENT_CUTOFF, retirementSnapshotDigest } from './publisher-obsolete-retirement.mjs';
+import {
+  RETIREMENT_CUTOFF,
+  RETIREMENT_STOP_OPERATION,
+  retirementPlanMatchesOperation,
+  retirementSnapshotDigest,
+} from './publisher-obsolete-retirement.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const directory = '/var/lib/maxim-deploy/publisher-obsolete-retirement';
@@ -29,6 +34,12 @@ export const executeRetirementCommand = (command, args, options = {}) =>
   }).trim();
 
 export function parseRetirementArgs(args) {
+  if (['stop-preview', 'stop-apply'].includes(args[0])) {
+    return {
+      ...parseRetirementArgs([args[0] === 'stop-preview' ? 'preview' : 'apply', ...args.slice(1)]),
+      operation: RETIREMENT_STOP_OPERATION,
+    };
+  }
   if (args.length === 0 || (args.length === 1 && args[0] === 'preview'))
     return { action: 'preview' };
   if (
@@ -46,7 +57,7 @@ export function parseRetirementArgs(args) {
   )
     return { action: 'apply', reviewedDigest: args[2] };
   throw new Error(
-    'usage: publisher-obsolete-retirement [preview [--after-digest sha256] | apply --reviewed-digest sha256]',
+    'usage: publisher-obsolete-retirement [preview|stop-preview [--after-digest sha256] | apply|stop-apply --reviewed-digest sha256]',
   );
 }
 
@@ -211,7 +222,7 @@ function privateDirectory() {
     throw new Error('private_retirement_directory_required');
 }
 
-function readPlan(id) {
+function readPlan(id, operation) {
   if (!hash.test(id)) throw new Error('invalid_plan_digest');
   const fd = openSync(join(directory, `${id}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -227,7 +238,7 @@ function readPlan(id) {
     const plan = JSON.parse(readFileSync(fd, 'utf8'));
     if (
       retirementSnapshotDigest(plan) !== id ||
-      plan.version !== 1 ||
+      !retirementPlanMatchesOperation(plan, operation) ||
       plan.cutoff !== RETIREMENT_CUTOFF ||
       !Array.isArray(plan.candidates) ||
       plan.candidates.length > 96
@@ -265,9 +276,9 @@ function writePrivate(name, value) {
 export async function runRetirementHost(args) {
   assertInheritedDeployLock();
   privateDirectory();
-  const before = captureRetirementRuntime();
   const selectedDigest = args.action === 'apply' ? args.reviewedDigest : args.afterDigest;
-  const previous = selectedDigest ? readPlan(selectedDigest) : null;
+  const previous = selectedDigest ? readPlan(selectedDigest, args.operation) : null;
+  const before = captureRetirementRuntime();
   if (previous && JSON.stringify(previous.binding) !== JSON.stringify(before))
     throw new Error('retirement_runtime_or_source_changed');
   if (
@@ -282,6 +293,7 @@ export async function runRetirementHost(args) {
     cutoff: RETIREMENT_CUTOFF,
     botId: before.botId,
     deadlineMs: Date.now() + 80_000,
+    ...(args.operation ? { operation: args.operation } : {}),
     ...(args.action === 'apply'
       ? { plan: previous }
       : previous
@@ -322,11 +334,13 @@ export async function runRetirementHost(args) {
     writePrivate(`${args.reviewedDigest}.applied-${Date.now()}.json`, {
       completedAt: new Date().toISOString(),
       previewDigest: args.reviewedDigest,
+      ...(args.operation ? { operation: args.operation } : {}),
       binding: before,
       outcome: output,
     });
     return {
       action: 'apply',
+      ...(args.operation ? { operation: args.operation } : {}),
       previewDigest: args.reviewedDigest,
       ...output,
       nextPreview: previous.report.sourceComplete ? null : { afterDigest: args.reviewedDigest },
@@ -335,7 +349,8 @@ export async function runRetirementHost(args) {
   }
   const createdAt = new Date().toISOString();
   const plan = {
-    version: 1,
+    version: args.operation === RETIREMENT_STOP_OPERATION ? 2 : 1,
+    ...(args.operation ? { operation: args.operation } : {}),
     cutoff: RETIREMENT_CUTOFF,
     createdAt,
     expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
@@ -347,6 +362,7 @@ export async function runRetirementHost(args) {
   writePrivate(`${id}.json`, plan);
   return {
     action: 'preview',
+    ...(args.operation ? { operation: args.operation } : {}),
     cutoff: RETIREMENT_CUTOFF,
     previewDigest: id,
     expiresAt: plan.expiresAt,
