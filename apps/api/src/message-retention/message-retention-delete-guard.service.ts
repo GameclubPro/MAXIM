@@ -3,6 +3,7 @@ import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
+import { MessageRetentionAdmissionService } from '../system/message-retention-admission.service';
 import { MessageRetentionStore } from './message-retention-store.service';
 import { retentionBindingQuery, type RetentionBindingRow } from './message-retention-binding';
 
@@ -43,6 +44,7 @@ export class MessageRetentionDeleteGuard {
     private readonly max: MaxClientService,
     private readonly bots: MaxBotLinkService,
     private readonly governor: BackgroundRuntimeGovernorService,
+    private readonly admission: MessageRetentionAdmissionService,
   ) {}
 
   async assertAllowed(
@@ -58,6 +60,12 @@ export class MessageRetentionDeleteGuard {
     });
     if (decision.action === 'pause')
       this.retry('Background capacity unavailable', 'capacity_paused');
+    try {
+      const admission = await this.admission.decide();
+      if (!admission.allowed) this.retry('Waiting for low load before cleanup', 'capacity_paused');
+    } catch {
+      this.retry('Cleanup capacity observation unavailable', 'capacity_paused');
+    }
     const options = this.options(botId);
     const cacheKey = `${botId}:${candidate.chatId}`;
     let author = this.authors.get(`${cacheKey}:${candidate.authorId}`);

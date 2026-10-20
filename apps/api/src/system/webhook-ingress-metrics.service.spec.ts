@@ -1,5 +1,11 @@
 import Redis from 'ioredis';
 import { WebhookIngressMetricsService } from './webhook-ingress-metrics.service';
+import {
+  retentionPriorityTrafficKey,
+  RETENTION_PRIORITY_TRAFFIC_KEY_PREFIX,
+  RETENTION_PRIORITY_TRAFFIC_TTL_SEC,
+  HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+} from '../max/retention-priority-admission';
 
 type RedisMockState = {
   hashes: Map<string, Record<string, string>>;
@@ -15,6 +21,7 @@ const redisState: RedisMockState = {
 
 const redisInstances: Array<{
   eval: jest.Mock;
+  set: jest.Mock;
   pipeline: jest.Mock;
   quit: jest.Mock;
 }> = [];
@@ -27,6 +34,7 @@ jest.mock('ioredis', () => ({
         if (redisState.failWrites) {
           throw new Error('redis write unavailable');
         }
+        if (script.includes('MAX_HIGHER_PRIORITY_ACTIVITY_')) return 1;
         const hash = { ...(redisState.hashes.get(key) ?? {}) };
         const increment = (field: string) => {
           hash[field] = String(Number(hash[field] ?? 0) + 1);
@@ -41,6 +49,15 @@ jest.mock('ioredis', () => ({
           }
           redisState.hashes.set(key, hash);
           return 1;
+        }
+
+        if (_keyCount === 2) {
+          const prefix = args.shift();
+          expect(prefix).toBe(RETENTION_PRIORITY_TRAFFIC_KEY_PREFIX);
+          const trafficKey = retentionPriorityTrafficKey(Date.now());
+          const traffic = redisState.hashes.get(trafficKey) ?? {};
+          traffic.arrivals = String(Number(traffic.arrivals ?? 0) + 1);
+          redisState.hashes.set(trafficKey, traffic);
         }
 
         const [outcome, encodedBotId, latencyBucket, rawLatencyMs, underTarget] = args;
@@ -66,6 +83,7 @@ jest.mock('ioredis', () => ({
         redisState.hashes.set(key, hash);
         return 1;
       }),
+      set: jest.fn().mockResolvedValue('OK'),
       pipeline: jest.fn(() => {
         const keys: string[] = [];
         return {
@@ -105,6 +123,105 @@ describe('WebhookIngressMetricsService', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it('records fixed minute arrivals inside the existing receipt Lua command', async () => {
+    const service = createService();
+    await service.recordReceiptPersistence({ botId: 'major', outcome: 'persisted', latencyMs: 1 });
+    expect(redisInstances[0]!.eval).toHaveBeenCalledTimes(1);
+    const args = redisInstances[0]!.eval.mock.calls[0]!;
+    expect(args[1]).toBe(2);
+    expect(args[3]).toBe(RETENTION_PRIORITY_TRAFFIC_KEY_PREFIX);
+    expect(args.at(-1)).toBe(String(RETENTION_PRIORITY_TRAFFIC_TTL_SEC));
+    expect(redisState.hashes.get(retentionPriorityTrafficKey(Date.now()))).toEqual({
+      arrivals: '1',
+    });
+    await service.onModuleDestroy();
+  });
+
+  it('keeps receipt activity until the actual operation settles after the caller stops waiting', async () => {
+    const service = createService();
+    let finish!: (value: number) => void;
+    const operation = jest.fn(
+      () =>
+        new Promise<number>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const actual = service.observeReceiptWork(operation);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(
+      redisInstances[0]!.eval.mock.calls.some(([script]) =>
+        String(script).includes('ACTIVITY_RELEASE'),
+      ),
+    ).toBe(false);
+    finish(42);
+    await expect(actual).resolves.toBe(42);
+    expect(
+      redisInstances[0]!.eval.mock.calls.some(([script]) =>
+        String(script).includes('ACTIVITY_RELEASE'),
+      ),
+    ).toBe(true);
+    await service.onModuleDestroy();
+  });
+
+  it('preserves the receipt operation when observation fails and leaves cleanup unavailable', async () => {
+    const service = createService();
+    redisState.failWrites = true;
+    const operation = jest.fn().mockResolvedValue('persisted');
+    await expect(service.observeReceiptWork(operation)).resolves.toBe('persisted');
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(redisInstances[0]!.set).toHaveBeenCalledWith(
+      HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+      'receipt_observation_unknown',
+    );
+    await service.onModuleDestroy();
+  });
+
+  it('returns SQL completion without waiting for slow observation release and keeps the active marker until acknowledgement', async () => {
+    const service = createService();
+    let active = false;
+    let acknowledgeRelease!: (value: number) => void;
+    redisInstances[0]!.eval.mockImplementation(async (script: string) => {
+      if (script.includes('ACTIVITY_ACQUIRE')) {
+        active = true;
+        return 1;
+      }
+      if (script.includes('ACTIVITY_RELEASE')) {
+        return new Promise<number>((resolve) => {
+          acknowledgeRelease = (value) => {
+            if (value === 1) active = false;
+            resolve(value);
+          };
+        });
+      }
+      return 1;
+    });
+    const actual = service.observeReceiptWork(async () => 'SQL committed');
+    await expect(actual).resolves.toBe('SQL committed');
+    expect(active).toBe(true);
+    expect(acknowledgeRelease).toBeDefined();
+    acknowledgeRelease(1);
+    await service.onModuleDestroy();
+    expect(active).toBe(false);
+  });
+
+  it('preserves a committed SQL result while failed asynchronous release blocks cleanup', async () => {
+    const service = createService();
+    redisInstances[0]!.eval.mockImplementation(async (script: string) => {
+      if (script.includes('ACTIVITY_RELEASE')) throw new Error('Release unavailable');
+      return 1;
+    });
+    await expect(service.observeReceiptWork(async () => 'SQL committed')).resolves.toBe(
+      'SQL committed',
+    );
+    await service.onModuleDestroy();
+    expect(redisInstances[0]!.set).toHaveBeenCalledWith(
+      HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+      'receipt_observation_unknown',
+    );
   });
 
   it('aggregates bounded persistence histograms and per-bot receipt counts', async () => {
@@ -372,7 +489,7 @@ describe('WebhookIngressMetricsService', () => {
 
     const redis = Redis as unknown as jest.Mock;
     expect(redis).toHaveBeenCalledWith('redis://localhost:6379/0', {
-      commandTimeout: 1_000,
+      commandTimeout: 100,
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
     });
@@ -413,7 +530,7 @@ describe('WebhookIngressMetricsService', () => {
 
     const redis = Redis as unknown as jest.Mock;
     expect(redis).toHaveBeenCalledWith('redis://localhost:6379/0', {
-      commandTimeout: 1_000,
+      commandTimeout: 100,
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
     });

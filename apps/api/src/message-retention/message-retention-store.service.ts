@@ -76,10 +76,12 @@ export class MessageRetentionStore {
     return this.mode === 'off' ? { chatId: { in: [] } } : {};
   }
 
-  workSchedulingFilter(): Prisma.MessageRetentionPolicyWhereInput {
+  workSchedulingFilter(allowExecution = true): Prisma.MessageRetentionPolicyWhereInput {
     return {
       OR: [
-        this.schedulingFilter(),
+        ...(allowExecution
+          ? [this.schedulingFilter()]
+          : [{ enabled: false, pendingCount: { gt: 0 } }]),
         {
           candidates: {
             some: { outcomeCode: 'reconciliation', reconcileAfter: { lte: new Date() } },

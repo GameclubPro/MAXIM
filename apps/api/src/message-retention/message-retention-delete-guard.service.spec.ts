@@ -1,5 +1,6 @@
 import { MessageRetentionDeleteGuard } from './message-retention-delete-guard.service';
 import { MESSAGE_RETENTION_RULE } from './message-retention.policy';
+import type { MessageRetentionAdmissionService } from '../system/message-retention-admission.service';
 
 function setup() {
   const policy = { enabled: true, activationId: 'a', hours: 24, revision: 1 };
@@ -61,18 +62,39 @@ function setup() {
   };
   const store = { allows: jest.fn().mockReturnValue(true) };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'run' }) };
+  const admission = {
+    decide: jest
+      .fn<ReturnType<MessageRetentionAdmissionService['decide']>, []>()
+      .mockResolvedValue({ allowed: true, reason: 'allowed', retryAfterMs: 60_000 }),
+  } satisfies Pick<MessageRetentionAdmissionService, 'decide'>;
   const guard = new MessageRetentionDeleteGuard(
     prisma as never,
     store as never,
     max as never,
     { isKnownBotUserId: () => false } as never,
     governor as never,
+    admission as unknown as MessageRetentionAdmissionService,
   );
-  return { guard, policy, candidate, intent, chat, binding, prisma, max, store, governor };
+  return { guard, policy, candidate, intent, chat, binding, prisma, max, store, governor, admission };
 }
 
 describe('retention destructive boundary', () => {
   afterEach(() => jest.useRealTimers());
+  it('does not prepare remote evidence while more important work is waiting', async () => {
+    const { guard, admission, max } = setup();
+    admission.decide.mockResolvedValue({ allowed: false, reason: 'higher_priority_ready', retryAfterMs: 5_000 });
+    await expect(guard.assertAllowed('i1', 'bot')).rejects.toMatchObject({ disposition: 'retry', reasonCode: 'capacity_paused' });
+    expect(max.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(max.getPinnedMessageId).not.toHaveBeenCalled();
+  });
+  it('rejects final dispatch if the quiet permit was revoked after preparation', async () => {
+    const { guard, admission, max } = setup();
+    await guard.assertAllowed('i1', 'bot', 'prepare');
+    admission.decide.mockResolvedValue({ allowed: false, reason: 'permit_expired', retryAfterMs: 5_000 });
+    await expect(guard.assertAllowed('i1', 'bot', 'dispatch')).rejects.toMatchObject({ disposition: 'retry', reasonCode: 'capacity_paused' });
+    expect(max.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(max.getPinnedMessageId).toHaveBeenCalledTimes(1);
+  });
   it('never makes remote reads after the delete transport slot has been reserved', async () => {
     jest.useFakeTimers();
     const { guard, max } = setup();

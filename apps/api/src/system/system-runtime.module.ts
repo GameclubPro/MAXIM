@@ -4,11 +4,13 @@ import { MAX_ACTION_ALL_QUEUE_NAMES } from '../max/max-action.queue';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
 import { RedisCounterModule } from '../moderation/redis-counter.module';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
+import { RETENTION_PRIORITY_ADDITIONAL_QUEUE_NAMES } from '../runtime/runtime-queue-inventory';
 import { ALL_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { ActionHealthService } from './action-health.service';
 import { ActionLatencyService } from './action-latency.service';
 import { BackgroundRuntimeGovernorService } from './background-runtime-governor.service';
 import { MaxApiMetricsService } from './max-api-metrics.service';
+import { MessageRetentionAdmissionService } from './message-retention-admission.service';
 import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.service';
 import { AUXILIARY_QUEUE_NAMES, QueueMetricsService } from './queue-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
@@ -28,12 +30,14 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     ...registerRuntimeQueues(...MAX_ACTION_ALL_QUEUE_NAMES),
     ...registerRuntimeQueues(GLOBAL_SPAMMER_DENORM_QUEUE),
     ...registerRuntimeQueues(...AUXILIARY_QUEUE_NAMES),
+    ...registerRuntimeQueues(...RETENTION_PRIORITY_ADDITIONAL_QUEUE_NAMES),
   ],
   providers: [
     QueueMetricsService,
     ActionHealthService,
     ActionLatencyService,
     MaxApiMetricsService,
+    MessageRetentionAdmissionService,
     MaxActionLedgerWatchdogService,
     RuntimeDiagnosticsService,
     BackgroundRuntimeGovernorService,
@@ -48,6 +52,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     ActionHealthService,
     ActionLatencyService,
     MaxApiMetricsService,
+    MessageRetentionAdmissionService,
     RuntimeDiagnosticsService,
     BackgroundRuntimeGovernorService,
     SystemModeService,

@@ -24,6 +24,32 @@ exact comma-separated `MESSAGE_RETENTION_CANARY_CHAT_IDS` cohort; `*` is not an 
 `on` makes the module available to explicitly enabled chat policies, not every chat.
 Keep the mode/cohort aligned across ingress, admin and `api-message-retention`.
 
+### Changing production availability
+
+Use the caller-only deploy setting from a clean release checkout whose exact target
+SHA has passed the required CI checks. Preview leaves the production dotenv unchanged:
+
+```sh
+MAXIM_MESSAGE_RETENTION_MODE=on ./infra/scripts/vps-connect.sh deploy main --plan
+MAXIM_MESSAGE_RETENTION_MODE=on ./infra/scripts/vps-connect.sh deploy main --auto
+```
+
+Only `on` and `off` are accepted by this workflow; omit the setting to preserve the
+current mode. The ordinary deploy takes the shared lock, selects the complete shared
+API component even when its source SHA is unchanged, journals the transition and
+quiesces webhook producers before atomically replacing only `MESSAGE_RETENTION_MODE`
+in the canonical production `.env`. Other dotenv values and file permissions are
+preserved. Every API role is recreated through the normal fenced rollout; its exact
+mode is verified before queues resume, followed by strict smokes and the component
+manifest. An interrupted rollout keeps its normal recovery evidence and queue fence;
+do not retry it blindly or manually edit the environment.
+
+`on` opens availability for manual per-chat opt-in. It does not enable any chat,
+change retention intervals or backfill history. Opening availability while all
+policies are disabled does not demonstrate deletion throughput or replace the
+executing-cohort and capacity acceptance gates below. To stop intake and execution,
+use the same preview/apply workflow with `MAXIM_MESSAGE_RETENTION_MODE=off`.
+
 `api-message-retention` is a headless shared-image role with a two-connection pool,
 0.5 CPU, 512 MiB memory, one worker and a separate `message-retention` queue. The
 adaptive scheduler wakes at one-second resolution, backs off while idle, and admits at most 100 outstanding chat wakeups using fixed BullMQ
@@ -39,6 +65,17 @@ distributed source budget is two requests/second across all tokens and processes
 plus one retention deletion/second per chat and existing shared transport limits.
 Reads and retries consume the same budget. This is not 172,800 guaranteed deletions
 per day: rights, pin, recovery and absence checks reduce useful throughput.
+
+Cleanup has the lowest priority across all webhook, action and auxiliary queues.
+One shared sampler observes a complete current rolling minute, with at most two
+seconds between samples. Admission requires at most 300 incoming events and 300
+non-retention MAX HTTP attempts per minute, plus stable resource headroom. There
+is no daily history or P25 warmup. Queue occupancy blocks each attempt without
+resetting independently observed quiet traffic. A short permit and atomic transport
+check cover ready, active, prioritized, paused and due delayed work, plus in-flight
+ingress/HTTP activity. Missing or stale observations defer cleanup. Every retry and
+read uses the same gate; candidate age never raises priority. The 24/48-hour setting
+is a minimum age, and deletion may wait until the next quiet period.
 
 The 32 transactional quota shards hold at most 62,500 active candidates each;
 per-chat capacity is 50,000. Intake pauses at 80% and resumes below 60% after a stable
@@ -86,6 +123,22 @@ no dispatch/success evidence and healthy quota. It resets only the scheduling st
 and writes one audit in the same transaction. Unknown outcomes must reconcile first.
 The ordinary deletion retry endpoint rejects retention-owned intents.
 
+For a bounded admission observation, use `vps-connect.sh exec` to run Node inside
+`api-message-retention` and read only the fixed Redis string
+`maxapi:retention-priority:status:v1` through `ioredis` using the container's
+`REDIS_URL`. Do not print the URL. The JSON includes the collector observation time,
+current-window coverage and traffic rates, queue counts, resource ratios and
+the admission reason. Require a fresh observation (at most two seconds old); a
+missing/stale value is an evidence gap. `current_window_incomplete` during the first minute is an
+expected closed gate. No SCAN, SQL or MAX request is needed for this observation.
+
+An expired in-flight activity observation closes admission conservatively. A forced
+process termination can leave such an observation; this version does not infer
+completion from lease expiry or automatically erase it. Inspect the fixed activity
+and unavailable keys with bounded cardinality/type reads and preserve uncertainty.
+Recovery requires reviewed evidence that the observed work has ended; do not clear
+markers or queues merely to reopen cleanup.
+
 Local capacity command (disposable localhost schema only, no MAX; replace the example
 URL with your configured local test database, without URL options):
 
@@ -101,10 +154,11 @@ Run uniform/hot/retry/skew/removed scenarios before raising the rollout gate.
 
 ## Release Gates
 
-The proposed strict lowest-priority admission, historical quiet-window selection
-and 20,000-chat capacity gates are documented in the
+The strict lowest-priority admission, current quiet-window selection
+and separate 20,000-chat capacity gates are documented in the
 [20 October optimization plan](../plans/2026-10-20-message-retention-low-priority.md).
-That document describes future changes, not behavior already enabled by this runbook.
+Opening runtime availability for manual opt-in does not certify fleet capacity or
+complete the executing-cohort acceptance below. Preserve disabled chat policies.
 
 1. Keep the runtime off while deploying the additive migration and compatible shared
    image to every role. Deploy the Major mini app and validate the contracts consumers.

@@ -54,6 +54,8 @@ async function exactLookupFailure(data: Record<string, unknown>): Promise<unknow
   const reserveRateLimitSlot: MaxClientService['reserveRateLimitSlot'] = async () => undefined;
   const mutationExecutionScope: MaxClientService['mutationExecutionScope'] =
     new AsyncLocalStorage();
+  const priorityHttpSource: MaxClientService['priorityHttpSource'] = new AsyncLocalStorage();
+  const recordPriorityHttpAttempt: MaxClientService['recordPriorityHttpAttempt'] = () => undefined;
   const actionHealthService: Pick<ActionHealthService, 'recordSuccessForLane'> = {
     recordSuccessForLane: jest.fn(),
   };
@@ -65,6 +67,8 @@ async function exactLookupFailure(data: Record<string, unknown>): Promise<unknow
     botContext: new MaxBotContextService(),
     actionHealthService,
     mutationExecutionScope,
+    priorityHttpSource,
+    recordPriorityHttpAttempt,
     resolveBot,
     acquireCircuitPermit,
     reserveRateLimitSlot,

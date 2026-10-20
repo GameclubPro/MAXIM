@@ -1,5 +1,7 @@
 import { MessageRetentionRuntime } from './message-retention-runtime.service';
 import { MessageRetentionGuardError } from './message-retention-delete-guard.service';
+import type { MessageRetentionAdmissionService } from '../system/message-retention-admission.service';
+import { MaxApiInternalRateLimitError } from '../max/max-client.service';
 
 function setup() {
   const policy = {
@@ -68,6 +70,11 @@ function setup() {
     reconcileRetentionIntent: jest.fn().mockResolvedValue({ status: 'ALREADY_ABSENT' }),
   };
   const governor = { decide: jest.fn().mockResolvedValue({ action: 'run', retryAfterMs: 60_000 }) };
+  const admission = {
+    decide: jest
+      .fn<ReturnType<MessageRetentionAdmissionService['decide']>, []>()
+      .mockResolvedValue({ allowed: true, reason: 'allowed', retryAfterMs: 60_000 }),
+  } satisfies Pick<MessageRetentionAdmissionService, 'decide'>;
   const locks = {
     acquireLock: jest.fn().mockResolvedValue('lease'),
     renewLock: jest.fn().mockResolvedValue(true),
@@ -87,10 +94,88 @@ function setup() {
     governor as never,
     locks as never,
     queue as never,
+    admission as unknown as MessageRetentionAdmissionService,
   );
-  return { runtime, prisma, store, deletes, governor, locks, queue, policy, candidate, intent };
+  return {
+    runtime,
+    prisma,
+    store,
+    deletes,
+    governor,
+    admission,
+    locks,
+    queue,
+    policy,
+    candidate,
+    intent,
+  };
 }
 describe('retention runtime isolation', () => {
+  it('waits for quiet load without creating intents or consuming attempts', async () => {
+    const { runtime, admission, deletes, store, prisma, candidate } = setup();
+    candidate.sourceAt = new Date(Date.now() - 100 * 86_400_000);
+    admission.decide.mockResolvedValue({
+      allowed: false,
+      reason: 'current_window_incomplete',
+      retryAfterMs: 60_000,
+    });
+    await runtime.process('-1');
+    expect(deletes.ensureRetentionIntent).not.toHaveBeenCalled();
+    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
+    expect(prisma.messageRetentionCandidate.updateMany).not.toHaveBeenCalled();
+    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'paused');
+  });
+  it('yields the rest of a visit when higher-priority work appears', async () => {
+    const { runtime, admission, store, deletes, candidate } = setup();
+    store.dueCandidates.mockResolvedValue([candidate, { ...candidate, messageId: 'next' }]);
+    admission.decide
+      .mockResolvedValueOnce({ allowed: true, reason: 'allowed', retryAfterMs: 1_000 })
+      .mockResolvedValueOnce({ allowed: true, reason: 'allowed', retryAfterMs: 1_000 })
+      .mockResolvedValue({ allowed: false, reason: 'higher_priority_active', retryAfterMs: 5_000 });
+    await runtime.process('-1');
+    expect(deletes.attemptRetentionIntent).toHaveBeenCalledTimes(1);
+    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'paused');
+    expect(store.scheduleNext).not.toHaveBeenCalled();
+  });
+  it('does not mistake a missing capacity observation for available capacity', async () => {
+    const { runtime, admission, deletes } = setup();
+    admission.decide.mockRejectedValue(new Error('lost observation'));
+    await runtime.process('-1');
+    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
+  });
+  it('settles confirmed receipts from the database when governor observations fail', async () => {
+    const { runtime, governor, admission, store, deletes, candidate } = setup();
+    governor.decide.mockRejectedValue(new Error('governor observations unavailable'));
+    store.dueReconciliations.mockResolvedValue([
+      { ...candidate, status: 'cancelled', reconcileAfter: new Date() },
+    ]);
+
+    await runtime.process('-1');
+
+    expect(deletes.reconcileRetentionIntent).toHaveBeenCalledWith('i', {
+      allowRead: false,
+      canRead: expect.any(Function),
+    });
+    expect(store.settleReconciliation).toHaveBeenCalledWith(expect.any(Object), 'deleted');
+    expect(admission.decide).not.toHaveBeenCalled();
+    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
+    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'paused');
+  });
+  it('defers final transport priority rejection without marking the module as broken', async () => {
+    const { runtime, deletes, store, prisma } = setup();
+    deletes.attemptRetentionIntent.mockRejectedValueOnce(
+      new MaxApiInternalRateLimitError('Higher-priority activity', 1_000, 'retention_priority'),
+    );
+
+    await runtime.process('-1');
+
+    expect(prisma.messageRetentionCandidate.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'retry', outcomeCode: 'deferred' }),
+      }),
+    );
+    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'delayed');
+  });
   it('presents expected verification deferrals as delayed work, not a broken module', async () => {
     const { runtime, deletes, store } = setup();
     deletes.attemptRetentionIntent.mockResolvedValue({

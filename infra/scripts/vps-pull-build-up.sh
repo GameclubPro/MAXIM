@@ -39,6 +39,8 @@ RECOVERY_BASE_MANIFEST=""
 PUBLIC_HEALTH_URL="${MAXIM_VPS_PUBLIC_URL:-${MAXIM_PUBLIC_HEALTH_URL:-https://major-maksimov.ru}}"
 PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 API_READY_TIMEOUT_SEC="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-900}"
+RETENTION_DEPLOY_MODE="${MAXIM_MESSAGE_RETENTION_MODE:-}"
+RETENTION_STATE_HELPER="$ROOT_DIR/infra/scripts/message-retention-rollout-state.mjs"
 
 SERVICES=()
 if [[ $# -ge 2 ]]; then
@@ -141,6 +143,44 @@ validate_post_release_reclaim() {
     echo "MAXIM_DEPLOY_RECLAIM_OLD_IMAGES must be 0 or 1." >&2
     return 2
   fi
+}
+
+validate_retention_deploy_mode() {
+  case "$RETENTION_DEPLOY_MODE" in
+    ''|on|off) ;;
+    *) echo 'MAXIM_MESSAGE_RETENTION_MODE must be on or off when supplied.' >&2; return 2 ;;
+  esac
+}
+
+prepare_retention_deploy_mode() {
+  [[ -n "$RETENTION_DEPLOY_MODE" ]] || return 0
+  # FLAG: A requested runtime mode comes only from the canonical production dotenv.
+  unset MAXIM_COMPOSE_SERVICE_ENV_FILE
+  export MAXIM_COMPOSE_SERVICE_ENV_FILE=../.env
+  node "$RETENTION_STATE_HELPER" read-env .env >/dev/null
+}
+
+persist_retention_deploy_mode() {
+  [[ -n "$RETENTION_DEPLOY_MODE" ]] || return 0
+  require_deploy_lock || return
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES || return
+  node "$RETENTION_STATE_HELPER" patch-env .env "$RETENTION_DEPLOY_MODE" || return
+  docker compose "${COMPOSE_FILES[@]}" config --format json |
+    node "$RETENTION_STATE_HELPER" verify-compose "$RETENTION_DEPLOY_MODE" "${API_SERVICES[@]}"
+}
+
+verify_retention_deploy_mode() {
+  [[ -n "$RETENTION_DEPLOY_MODE" ]] || return 0
+  local service container_id
+  for service in "${API_SERVICES[@]}"; do
+    container_id="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || return
+    if [[ ! "$container_id" =~ ^[0-9a-f]{12,64}$ ]]; then
+      echo 'Retention mode verification requires exactly one container for every API role.' >&2
+      return 1
+    fi
+    docker inspect --format '{{json .Config.Env}}' "$container_id" |
+      node "$RETENTION_STATE_HELPER" verify-runtime-env "$RETENTION_DEPLOY_MODE" || return
+  done
 }
 
 release_manifest() {
@@ -349,7 +389,7 @@ impact_plan_selects_component() {
 
 derive_auto_services() {
   SERVICES=()
-  if impact_plan_selects_component api-shared; then
+  if [[ -n "$RETENTION_DEPLOY_MODE" ]] || impact_plan_selects_component api-shared; then
     SERVICES+=("api-ingress")
   fi
   if impact_plan_selects_component miniapp-major-static; then
@@ -367,11 +407,14 @@ print_deploy_plan() {
 
   for component in api-shared miniapp-major-static admin-static; do
     current_sha="$(release_field "$component" sourceSha || printf '%s' unknown)"
-    if impact_plan_selects_component "$component"; then
+    if [[ "$component" == api-shared && -n "$RETENTION_DEPLOY_MODE" ]] || impact_plan_selects_component "$component"; then
       selected+=("$component")
     fi
     echo "$component current=$current_sha target=$(git rev-parse HEAD)"
   done
+  if [[ -n "$RETENTION_DEPLOY_MODE" ]]; then
+    echo "Retention runtime mode requested: $RETENTION_DEPLOY_MODE (all API roles; chat policies unchanged)."
+  fi
   if [[ "${#selected[@]}" -eq 0 ]]; then
     echo "No production components require deployment."
   else
@@ -1269,6 +1312,7 @@ require_production_branch_confirmation
 validate_requested_services
 validate_api_ready_timeout
 validate_post_release_reclaim
+validate_retention_deploy_mode
 acquire_deploy_lock
 trap cleanup EXIT
 if [[ "$DEPLOY_MODE" != "plan" ]]; then
@@ -1284,6 +1328,7 @@ if [[ "$DEPLOY_MODE" == "plan" ]]; then
 fi
 maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 ensure_compose_env
+prepare_retention_deploy_mode
 initialize_release_inventory
 load_current_component_images
 if [[ "$DEPLOY_MODE" == "auto" ]]; then
@@ -1305,6 +1350,9 @@ fi
 validate_admin_access_code
 warn_postgres_password_fallback
 
+if [[ -n "$RETENTION_DEPLOY_MODE" ]] && ! has_requested_api_service; then
+  SERVICES+=("api-ingress")
+fi
 BUILD_API_IMAGE=0
 for service in "${API_SERVICES[@]}"; do
   if contains_service "$service" "${SERVICES[@]}"; then
@@ -1465,6 +1513,8 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     node infra/scripts/commercial-ocr-rollout-state.mjs patch-rollout-env .env baseline >/dev/null
   fi
 
+  persist_retention_deploy_mode
+
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service_wave "action, publisher and retention" "api-action" "api-publisher" "api-message-retention"
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
@@ -1513,6 +1563,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   for service in "${API_SERVICES[@]}"; do
     verify_service_image_id "$service" "$expected_api_image_id"
   done
+  verify_retention_deploy_mode
   if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
     maxim_topology_verify_ocr_native_sandbox_runtime \
       COMPOSE_FILES "$expected_api_image_id" with-media
@@ -1545,6 +1596,9 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   node scripts/smoke-http.mjs json-ok http://127.0.0.1:3002/api/health/ready
   node scripts/smoke-http.mjs json-ok "$PUBLIC_HEALTH_URL/api/health/live"
   SMOKE_RESULTS+=("api-local-live" "api-local-ready" "api-admin-live" "api-admin-ready" "api-public-live")
+  if [[ -n "$RETENTION_DEPLOY_MODE" ]]; then
+    SMOKE_RESULTS+=("api-message-retention-mode-$RETENTION_DEPLOY_MODE")
+  fi
   if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
     SMOKE_RESULTS+=(api-photo-native-sandbox-isolation api-photo-native-sandbox-uds)
   fi

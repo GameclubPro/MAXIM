@@ -222,7 +222,18 @@ export class WebhookIngestionService {
     };
     let operationPromise: Promise<T>;
     try {
-      operationPromise = operation();
+      const startOperation = () => {
+        // FLAG: Observing low-priority exclusion never renews the original ACK
+        // deadline or starts SQL work after admission has already expired.
+        if (Date.now() >= deadlineAtMs)
+          throw new WebhookAckDeadlineExceededError(
+            `Webhook ACK deadline exceeded before ${context.label}`,
+          );
+        return operation();
+      };
+      operationPromise = this.webhookIngressMetricsService
+        ? this.webhookIngressMetricsService.observeReceiptWork(startOperation)
+        : startOperation();
     } catch (error: unknown) {
       release();
       throw error;

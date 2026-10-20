@@ -1,3 +1,19 @@
+import {
+  HIGHER_PRIORITY_ACTIVITY_KEY,
+  HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+  HIGHER_PRIORITY_ACTIVITY_LEASE_MS,
+  HIGHER_PRIORITY_ACTIVITY_RENEW_MS,
+  HIGHER_PRIORITY_ACTIVITY_LIMIT,
+  HIGHER_PRIORITY_ACTIVITY_RENEW_SCRIPT,
+  RETENTION_PRIORITY_ADMISSION_LUA,
+  RETENTION_PRIORITY_PERMIT_KEY,
+  RETENTION_PRIORITY_RESERVATION_MARKER,
+  RETENTION_PRIORITY_TRAFFIC_TTL_SEC,
+  RETENTION_PRIORITY_VERSION,
+  retentionPriorityQueueKeys,
+  retentionPriorityTrafficKey,
+  type RetentionPriorityReservationOptions,
+} from './retention-priority-admission';
 import { performMaxHttpRequest } from './max-http-request';
 import {
   beginMaxHttpFailureRequest,
@@ -362,6 +378,7 @@ type MaxMessageMarkup = MaxTextMarkup;
 const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
 const DEFAULT_SUCCESS_FALSE_STATUS = 200;
 const MAX_UPLOAD_BINARY_TIMEOUT_MS = 30_000;
+const MAX_PRIORITY_ACTIVITY_RELEASE_DRAIN_MS = 1_000;
 const MAX_UPLOAD_FILENAME_MAX_LENGTH = 180;
 const MAX_RESUMABLE_VIDEO_UPLOAD_CHUNK_BYTES = 4 * 1_024 * 1_024;
 const MAX_RESUMABLE_VIDEO_UPLOAD_SESSION_ATTEMPTS = 2;
@@ -422,6 +439,7 @@ type MaxApiRateLimitScope =
   | 'message_target'
   | 'retention_fleet'
   | 'retention_chat'
+  | 'retention_priority'
   | 'managed_refresh'
   | 'external_cooldown'
   | 'unknown';
@@ -773,6 +791,7 @@ const DEFAULT_MAX_ACTION_FAILED_RETENTION_AGE_SEC = 7 * 24 * 60 * 60;
 const DEFAULT_MAX_ACTION_FAILED_RETENTION_COUNT = 1_000;
 export const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
 -- MAX_API_GCRA_RESERVE_V1
+${RETENTION_PRIORITY_ADMISSION_LUA}
 -- FLAG: The per-token external cooldown shares this atomic admission boundary;
 -- rejected calls never consume GCRA slots or shorten a concurrent longer cooldown.
 local cooldown = redis.call('PTTL', KEYS[1] .. ':cooldown')
@@ -780,6 +799,25 @@ if cooldown == -1 then return {0, 0, 30000} end
 if cooldown > 0 then return {0, 0, cooldown} end
 local time = redis.call('TIME')
 local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
+local priority = nil
+local metadata = ARGV[#ARGV - 1]
+local marker = '${RETENTION_PRIORITY_RESERVATION_MARKER}'
+if metadata and string.sub(metadata, 1, string.len(marker)) == marker then
+  local decoded, value = pcall(cjson.decode, string.sub(metadata, string.len(marker) + 1))
+  if not decoded or type(value) ~= 'table' or value.version ~= '${RETENTION_PRIORITY_VERSION}' or
+      type(value.retention) ~= 'boolean' or type(value.dimensions) ~= 'number' or value.dimensions < 1 or
+      value.dimensions ~= math.floor(value.dimensions) or value.dimensions > #KEYS - 3 then
+    return {0, -1, 1000, 'metrics_unavailable'}
+  end
+  priority = value
+end
+local keyCount = priority and priority.dimensions or #KEYS
+if priority and priority.retention then
+  local expected = keyCount + 3 + ${retentionPriorityQueueKeys().length}
+  if #KEYS ~= expected then return {0, -1, 1000, 'metrics_unavailable'} end
+  local denied = retentionPriorityAdmission(KEYS, keyCount, nowMs)
+  if denied then return {0, -1, 1000, denied} end
+end
 -- FLAG: GCRA permits an initial burst plus replenished slots inside one second.
 -- Bound the actual per-token rolling window too; all roles share KEYS[1].
 -- A local refusal must consume neither this window nor another dimension's slots.
@@ -791,7 +829,6 @@ if redis.call('ZCOUNT', windowKey, windowStart, '+inf') >= tokenLimit then
   return {0, 1, math.max(1, math.ceil(tonumber(oldest[2]) + 1000 - nowMs))}
 end
 local ttlFloorMs = tonumber(ARGV[#ARGV])
-local keyCount = #KEYS
 local nextTats = {}
 local nextTtls = {}
 
@@ -822,6 +859,21 @@ end
 redis.call('ZREMRANGEBYSCORE', windowKey, '-inf', tostring(nowMs - 1000))
 redis.call('ZADD', windowKey, nowMs, tostring(nextTats[1]))
 redis.call('PEXPIRE', windowKey, 1000)
+-- FLAG: Higher-priority transport proceeds even if its observational registry is
+-- corrupt/full. A sticky unavailable marker denies retention until reviewed.
+if priority and not priority.retention then
+  local activity = KEYS[keyCount + 2]
+  local unavailable = KEYS[keyCount + 3]
+  local count = redis.pcall('ZCARD', activity)
+  if type(count) == 'table' or type(priority.operationId) ~= 'string' or
+      string.len(priority.operationId) == 0 or count >= ${HIGHER_PRIORITY_ACTIVITY_LIMIT} then
+    redis.call('SET', unavailable, 'activity_coverage_unavailable')
+  else
+    local registered = redis.pcall('ZADD', activity,
+      nowMs + ${HIGHER_PRIORITY_ACTIVITY_LEASE_MS}, priority.operationId)
+    if type(registered) == 'table' then redis.call('SET', unavailable, 'activity_coverage_unavailable') end
+  end
+end
 
 return {1, 0, 0}
 `;
@@ -1002,6 +1054,9 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly resumableVideoUploadEnabled: boolean;
   private readonly limiterRedis: Redis;
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
+  private readonly higherPriorityActivityTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pendingHigherPriorityActivityReleases = new Set<Promise<void>>();
+  private readonly priorityHttpSource = new AsyncLocalStorage<string | null>();
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
   private readonly rateLimitLogAtMsByKey = new Map<string, number>();
   private readonly actionFailureLogAtMsByBot = new Map<string, number>();
@@ -1189,6 +1244,8 @@ export class MaxClientService implements OnModuleDestroy {
 
   async onModuleDestroy() {
     this.mediaUploadValidationCache.clear();
+    for (const timer of this.higherPriorityActivityTimers.values()) clearInterval(timer);
+    this.higherPriorityActivityTimers.clear();
     for (const timeout of new Set([
       ...this.pendingTimeouts,
       ...this.keyedActionTimeouts.values(),
@@ -1197,6 +1254,21 @@ export class MaxClientService implements OnModuleDestroy {
     }
     this.pendingTimeouts.clear();
     this.keyedActionTimeouts.clear();
+    // FLAG: Drain only releases whose HTTP operation already settled. Live or unknown
+    // activity keeps its marker; teardown never fabricates completion to admit cleanup.
+    if (this.pendingHigherPriorityActivityReleases.size) {
+      let deadline: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...this.pendingHigherPriorityActivityReleases]),
+          new Promise<void>((resolve) => {
+            deadline = setTimeout(resolve, MAX_PRIORITY_ACTIVITY_RELEASE_DRAIN_MS);
+          }),
+        ]);
+      } finally {
+        if (deadline) clearTimeout(deadline);
+      }
+    }
     await this.limiterRedis.quit();
   }
 
@@ -6971,12 +7043,13 @@ export class MaxClientService implements OnModuleDestroy {
     const actionHealthLane = options.actionHealthLane ?? trafficClass;
     const sourceTag = this.normalizeMetricSourceTag(options.sourceTag);
     const associationOwner = typeof operation === 'function' ? null : createMaxHttpFailureOwner();
+    let priorityActivityId: string | undefined;
     try {
       let failureAssociation: MaxHttpFailureAssociation | null = null;
       const circuitPermit = await this.acquireCircuitPermit(bot.id);
       try {
         if (!options.deferRateLimitReservation)
-          await this.reserveRateLimitSlot(
+          priorityActivityId = await this.reserveRateLimitSlot(
             bot.id,
             options.chatId ?? null,
             trafficClass,
@@ -7000,10 +7073,12 @@ export class MaxClientService implements OnModuleDestroy {
       }
 
       try {
-        const terminal = await this.botContext.runWithBot<T | MaxHttpOutcome<T>>(bot.id, () =>
-          typeof operation === 'function'
-            ? operation()
-            : operation[MAX_HTTP_ASSOCIATED_OPERATION](associationOwner!),
+        const terminal = await this.priorityHttpSource.run(sourceTag, () =>
+          this.botContext.runWithBot<T | MaxHttpOutcome<T>>(bot.id, () =>
+            typeof operation === 'function'
+              ? operation()
+              : operation[MAX_HTTP_ASSOCIATED_OPERATION](associationOwner!),
+          ),
         );
         let result: T;
         if (associationOwner) {
@@ -7097,6 +7172,7 @@ export class MaxClientService implements OnModuleDestroy {
         throw error;
       }
     } finally {
+      this.releaseHigherPriorityActivity(priorityActivityId);
       if (associationOwner) closeMaxHttpFailureOwner(associationOwner);
     }
   }
@@ -8138,6 +8214,10 @@ export class MaxClientService implements OnModuleDestroy {
         ? Math.max(0, Math.min(configuredMaxWaitMs, Math.trunc(maxWaitMsOverride)))
         : configuredMaxWaitMs;
     const startedAtMs = Date.now();
+    const activityId =
+      this.normalizeMetricSourceTag(sourceTag) === MAX_API_SOURCE_TAGS.MESSAGE_RETENTION
+        ? undefined
+        : randomUUID();
 
     while (true) {
       const reservation = await this.tryReserveRateLimitSlot(
@@ -8146,15 +8226,17 @@ export class MaxClientService implements OnModuleDestroy {
         trafficClass,
         sourceTag,
         messageMutation,
+        activityId,
       );
       if (reservation.ok) {
+        if (activityId) this.renewHigherPriorityActivity(activityId);
         await this.recordRateLimitUsage(botId, trafficClass, sourceTag);
-        return;
+        return activityId;
       }
 
       const elapsedMs = Date.now() - startedAtMs;
       const remainingWaitMs = maxWaitMs - elapsedMs;
-      if (remainingWaitMs <= 0) {
+      if (remainingWaitMs <= 0 || reservation.limitScope === 'retention_priority') {
         await this.recordRateLimitOutcome({
           origin: 'internal_limiter',
           botId,
@@ -8195,6 +8277,7 @@ export class MaxClientService implements OnModuleDestroy {
     trafficClass: MaxApiTrafficClass,
     sourceTag?: string | null,
     messageMutation?: MaxMessageMutationRateLimitScope,
+    activityId?: string,
   ): Promise<
     | { ok: true }
     | {
@@ -8281,10 +8364,25 @@ export class MaxClientService implements OnModuleDestroy {
       }
     }
 
+    const retention =
+      this.normalizeMetricSourceTag(sourceTag) === MAX_API_SOURCE_TAGS.MESSAGE_RETENTION;
+    const priority: RetentionPriorityReservationOptions = {
+      version: RETENTION_PRIORITY_VERSION,
+      dimensions: dimensions.length,
+      retention,
+      ...(!retention ? { operationId: activityId ?? randomUUID() } : {}),
+    };
+    const priorityKeys = [
+      RETENTION_PRIORITY_PERMIT_KEY,
+      HIGHER_PRIORITY_ACTIVITY_KEY,
+      HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+      ...(retention ? retentionPriorityQueueKeys() : []),
+    ];
     const raw = await this.limiterRedis.eval(
       MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
-      dimensions.length,
+      dimensions.length + priorityKeys.length,
       ...dimensions.map((dimension) => dimension.key),
+      ...priorityKeys,
       ...dimensions.map((dimension) => String(dimension.limit)),
       ...dimensions.map((dimension) =>
         String(
@@ -8293,6 +8391,7 @@ export class MaxClientService implements OnModuleDestroy {
             : Math.max(0, dimension.limit - 1),
         ),
       ),
+      RETENTION_PRIORITY_RESERVATION_MARKER + JSON.stringify(priority),
       String(MAX_API_RATE_LIMIT_SLOT_TTL_MS),
     );
     const result = Array.isArray(raw) ? raw : null;
@@ -8315,15 +8414,84 @@ export class MaxClientService implements OnModuleDestroy {
       ok: false,
       retryAfterMs: normalizedRetryAfterMs,
       limitScope:
-        rejectedKeyIndex === 0
-          ? 'external_cooldown'
-          : (dimensions[Math.trunc(rejectedKeyIndex) - 1]?.limitScope ?? 'unknown'),
+        rejectedKeyIndex === -1
+          ? 'retention_priority'
+          : rejectedKeyIndex === 0
+            ? 'external_cooldown'
+            : (dimensions[Math.trunc(rejectedKeyIndex) - 1]?.limitScope ?? 'unknown'),
       reason:
-        (rejectedKeyIndex === 0
-          ? `MAX API external cooldown for bot ${botId}`
-          : dimensions[Math.trunc(rejectedKeyIndex) - 1]?.reason) ??
+        (rejectedKeyIndex === -1
+          ? `MAX message retention waiting for lowest priority admission: ${String(result?.[3] ?? 'metrics_unavailable')}`
+          : rejectedKeyIndex === 0
+            ? `MAX API external cooldown for bot ${botId}`
+            : dimensions[Math.trunc(rejectedKeyIndex) - 1]?.reason) ??
         `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`,
     };
+  }
+
+  private renewHigherPriorityActivity(id: string): void {
+    const timer = setInterval(() => {
+      void this.limiterRedis
+        .eval(
+          HIGHER_PRIORITY_ACTIVITY_RENEW_SCRIPT,
+          2,
+          HIGHER_PRIORITY_ACTIVITY_KEY,
+          HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+          id,
+          String(HIGHER_PRIORITY_ACTIVITY_LEASE_MS),
+        )
+        .catch(() => this.markPriorityActivityUnavailable('activity_renew_failed'));
+    }, HIGHER_PRIORITY_ACTIVITY_RENEW_MS);
+    timer.unref();
+    this.higherPriorityActivityTimers.set(id, timer);
+  }
+
+  private releaseHigherPriorityActivity(id: string | undefined): void {
+    if (!id) return;
+    const timer = this.higherPriorityActivityTimers.get(id);
+    if (timer) clearInterval(timer);
+    this.higherPriorityActivityTimers.delete(id);
+    // FLAG: Cleanup observation cannot delay a completed higher-priority HTTP result.
+    // Until this exact release settles, its marker continues to deny retention.
+    const release = this.limiterRedis
+      .zrem(HIGHER_PRIORITY_ACTIVITY_KEY, id)
+      .then(async (removed) => {
+        if (removed !== 1) await this.markPriorityActivityUnavailable('activity_release_unknown');
+      })
+      .catch(() => this.markPriorityActivityUnavailable('activity_release_failed'))
+      .finally(() => {
+        this.pendingHigherPriorityActivityReleases.delete(release);
+      });
+    this.pendingHigherPriorityActivityReleases.add(release);
+  }
+
+  private async markPriorityActivityUnavailable(reason: string): Promise<void> {
+    try {
+      await this.limiterRedis.set(HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY, reason);
+    } catch {
+      // FLAG: Redis failure cannot authorize retention; its permit/reservation fails closed.
+    }
+  }
+
+  private recordPriorityHttpAttempt(): void {
+    try {
+      if (this.priorityHttpSource.getStore() === MAX_API_SOURCE_TAGS.MESSAGE_RETENTION) return;
+      // FLAG: Enqueue observation synchronously, without an authority await between the
+      // final feature guard and HTTP. Failure closes cleanup, never this higher-priority call.
+      const trafficKey = retentionPriorityTrafficKey(Date.now());
+      void this.limiterRedis
+        .multi()
+        .hincrby(trafficKey, 'http', 1)
+        .expire(trafficKey, RETENTION_PRIORITY_TRAFFIC_TTL_SEC)
+        .exec()
+        .then(async (results) => {
+          if (!results || results.some(([error]) => error !== null))
+            await this.markPriorityActivityUnavailable('http_traffic_unavailable');
+        })
+        .catch(() => this.markPriorityActivityUnavailable('http_traffic_unavailable'));
+    } catch {
+      void this.markPriorityActivityUnavailable('http_traffic_unavailable');
+    }
   }
 
   private async recordRateLimitOutcome(params: {
@@ -8985,84 +9153,91 @@ export class MaxClientService implements OnModuleDestroy {
         )
       : undefined;
     observeMaxSendAdmission(method, path);
-    if (scope && method === scope.method && path === scope.path) {
-      const messageId = this.readTrimmedString(this.asRecord(config.params)?.message_id);
-      const existingMessage =
-        messageId && (scope.purpose === 'edit_message' || scope.purpose === 'delete_message')
-          ? {
-              messageId,
-              ...(scope.requestOptions.boundObject
-                ? { object: scope.requestOptions.boundObject }
-                : {}),
-            }
-          : undefined;
-      // FLAG: Reserve the unchanged quota once at this exact HTTP mutation, after remote
-      // preparation. Recheck the SQL route epoch after waits, then grant the feature permit last.
-      await this.runPreDispatchMutationGuard(async () => {
-        const proof = await this.assertChatMutationExecutionProof(
-          scope.chatId,
-          bot.id,
-          scope.purpose,
-          scope.requestOptions,
-          existingMessage,
-        );
-        try {
-          await this.reserveRateLimitSlot(
-            bot.id,
+    let priorityActivityId: string | undefined;
+    try {
+      if (scope && method === scope.method && path === scope.path) {
+        const messageId = this.readTrimmedString(this.asRecord(config.params)?.message_id);
+        const existingMessage =
+          messageId && (scope.purpose === 'edit_message' || scope.purpose === 'delete_message')
+            ? {
+                messageId,
+                ...(scope.requestOptions.boundObject
+                  ? { object: scope.requestOptions.boundObject }
+                  : {}),
+              }
+            : undefined;
+        // FLAG: Reserve the unchanged quota once at this exact HTTP mutation, after remote
+        // preparation. Recheck the SQL route epoch after waits, then grant the feature permit last.
+        await this.runPreDispatchMutationGuard(async () => {
+          const proof = await this.assertChatMutationExecutionProof(
             scope.chatId,
-            scope.requestOptions.trafficClass ?? 'critical',
-            scope.requestOptions.sourceTag,
-            scope.requestOptions.timeoutMs,
-            scope.messageMutation,
+            bot.id,
+            scope.purpose,
+            scope.requestOptions,
+            existingMessage,
           );
-        } catch (error: unknown) {
-          scope.quotaState.error = error;
-          throw error;
-        }
-        const verifyExecutionProof = async (stage: string) => {
-          if (
-            proof &&
-            !(await this.maxBotLinkService!.verifyChatExecutionProof({
-              chatId: scope.chatId,
-              ...proof,
-              purpose: scope.purpose,
-              maxAgeMs: scope.purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000,
-              ...(existingMessage ? { existingMessage } : {}),
-            }))
-          ) {
-            throw Object.assign(new Error(`MAX action executor proof changed during ${stage}`), {
-              code: 'max_action_executor_proof_rejected',
-            });
+          try {
+            priorityActivityId = await this.reserveRateLimitSlot(
+              bot.id,
+              scope.chatId,
+              scope.requestOptions.trafficClass ?? 'critical',
+              scope.requestOptions.sourceTag,
+              scope.requestOptions.timeoutMs,
+              scope.messageMutation,
+            );
+          } catch (error: unknown) {
+            scope.quotaState.error = error;
+            throw error;
           }
-        };
-        await verifyExecutionProof('quota wait');
-        // FLAG: The feature owns its last authority await. Queued notice qualification calls
-        // this route recheck before its final policy/Redis permit; never await after that permit.
-        await scope.finalGuard?.(() => verifyExecutionProof('feature qualification'));
-      }, scope.guardCode);
-      scope.onDispatchAttempt?.();
-    }
-    return performMaxHttpRequest({
-      method,
-      path,
-      association,
-      sendAttempted: Boolean(
-        scope?.purpose === 'send_message' && method === scope.method && path === scope.path,
-      ),
-      request: () =>
-        firstValueFrom(
-          this.httpService.request<T>({
-            method,
-            url: `${this.baseUrl}${path}`,
-            ...config,
-            headers: {
-              Authorization: bot.token,
-              ...(config.headers as Record<string, string> | undefined),
-            },
-          }),
+          const verifyExecutionProof = async (stage: string) => {
+            if (
+              proof &&
+              !(await this.maxBotLinkService!.verifyChatExecutionProof({
+                chatId: scope.chatId,
+                ...proof,
+                purpose: scope.purpose,
+                maxAgeMs: scope.purpose === 'send_message' ? 15 * 60_000 : 5 * 60_000,
+                ...(existingMessage ? { existingMessage } : {}),
+              }))
+            ) {
+              throw Object.assign(new Error(`MAX action executor proof changed during ${stage}`), {
+                code: 'max_action_executor_proof_rejected',
+              });
+            }
+          };
+          await verifyExecutionProof('quota wait');
+          // FLAG: The feature owns its last authority await. Queued notice qualification calls
+          // this route recheck before its final policy/Redis permit; never await after that permit.
+          await scope.finalGuard?.(() => verifyExecutionProof('feature qualification'));
+        }, scope.guardCode);
+        scope.onDispatchAttempt?.();
+      }
+      this.recordPriorityHttpAttempt();
+      return await performMaxHttpRequest({
+        method,
+        path,
+        association,
+        sendAttempted: Boolean(
+          scope?.purpose === 'send_message' && method === scope.method && path === scope.path,
         ),
-      assertResponse: (status, data) => this.assertSuccessfulMutationResponse(method, status, data),
-    });
+        request: () =>
+          firstValueFrom(
+            this.httpService.request<T>({
+              method,
+              url: `${this.baseUrl}${path}`,
+              ...config,
+              headers: {
+                Authorization: bot.token,
+                ...(config.headers as Record<string, string> | undefined),
+              },
+            }),
+          ),
+        assertResponse: (status, data) =>
+          this.assertSuccessfulMutationResponse(method, status, data),
+      });
+    } finally {
+      this.releaseHigherPriorityActivity(priorityActivityId);
+    }
   }
 
   private async requestAbsolute<T = unknown>(
@@ -9073,6 +9248,7 @@ export class MaxClientService implements OnModuleDestroy {
     const bot = this.getCurrentBot();
     const { skipAuthorization, ...requestConfig } = config;
     const headers = requestConfig.headers as Record<string, string> | undefined;
+    this.recordPriorityHttpAttempt();
     const response = await firstValueFrom(
       this.httpService.request<T>({
         method,

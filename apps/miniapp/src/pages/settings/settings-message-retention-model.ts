@@ -5,7 +5,7 @@ export const messageRetentionStatusLabels: Record<MessageRetentionState['status'
   unavailable: 'Недоступно',
   shadow: 'Наблюдение',
   running: 'Вкл',
-  delayed: 'С задержкой',
+  delayed: 'Отложено',
   paused: 'Пауза',
   capacity_paused: 'Пауза',
   no_access: 'Нет прав',

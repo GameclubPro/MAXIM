@@ -309,6 +309,41 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
     );
     assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 0, skipped: 1 });
   });
+  it('backs off enabled execution while keeping cancellation and due receipts schedulable', async () => {
+    await seed();
+    assert.equal(
+      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter(false) }),
+      0,
+    );
+    await prisma.messageRetentionPolicy.update({
+      where: { chatId: '-1' },
+      data: { enabled: false },
+    });
+    assert.equal(
+      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter(false) }),
+      1,
+    );
+    await prisma.messageRetentionPolicy.update({
+      where: { chatId: '-1' },
+      data: { enabled: true },
+    });
+    await prisma.messageRetentionCandidate.update({
+      where: { chatId_messageId: { chatId: '-1', messageId: 'm' } },
+      data: { outcomeCode: 'reconciliation', reconcileAfter: new Date(Date.now() + 60_000) },
+    });
+    assert.equal(
+      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter(false) }),
+      0,
+    );
+    await prisma.messageRetentionCandidate.update({
+      where: { chatId_messageId: { chatId: '-1', messageId: 'm' } },
+      data: { reconcileAfter: new Date(Date.now() - 1_000) },
+    });
+    assert.equal(
+      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter(false) }),
+      1,
+    );
+  });
   it('keeps future ended receipts schedulable after the administrator disables a zero-credit policy', async () => {
     await seed({
       status: 'skipped',

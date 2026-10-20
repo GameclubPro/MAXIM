@@ -20,7 +20,26 @@ import {
   isMaxDuplicateNoticeAction,
 } from './max-duplicate-notice.guard';
 
-jest.mock('ioredis', () => jest.fn().mockImplementation(() => ({ quit: jest.fn() })));
+jest.mock('ioredis', () =>
+  jest.fn().mockImplementation(() => {
+    type Transaction = ReturnType<MaxClientService['limiterRedis']['multi']>;
+    const transaction = {
+      hincrby: jest
+        .fn<ReturnType<Transaction['hincrby']>, Parameters<Transaction['hincrby']>>()
+        .mockReturnThis(),
+      expire: jest
+        .fn<ReturnType<Transaction['expire']>, Parameters<Transaction['expire']>>()
+        .mockReturnThis(),
+      exec: jest
+        .fn<ReturnType<Transaction['exec']>, Parameters<Transaction['exec']>>()
+        .mockResolvedValue([
+          [null, 1],
+          [null, 1],
+        ]),
+    };
+    return { quit: jest.fn(), multi: jest.fn(() => transaction) };
+  }),
+);
 
 function fixture() {
   const eventTimestampMs = Date.now() - 10_000;

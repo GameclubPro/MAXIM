@@ -36,7 +36,7 @@ const labels: Record<MessageRetentionState['status'], string> = {
   unavailable: 'Отключено оператором',
   shadow: 'Проверка без удаления',
   running: 'Работает',
-  delayed: 'С задержкой',
+  delayed: 'Удаление отложено',
   paused: 'Пауза',
   capacity_paused: 'Учёт приостановлен',
   no_access: 'Нет прав',
@@ -345,13 +345,14 @@ export function SettingsMessageRetentionEditor({
             </div>
             <p className="message-retention-policy">
               Удаляем только новые сообщения, полученные после включения. Старую историю не очищаем.
-              После повторного включения учёт начинается заново. Удалённые сообщения восстановить
-              нельзя.
+              24 или 48 часов — минимальный возраст. Очистка ждёт периода низкой нагрузки, поэтому
+              сообщения могут оставаться в чате дольше. После повторного включения учёт начинается
+              заново. Удалённые сообщения восстановить нельзя.
             </p>
             <fieldset disabled={closeBlocked}>
-              <legend>Возраст сообщений</legend>
+              <legend>Минимальный возраст сообщений</legend>
               <SegmentedControl
-                ariaLabel="Возраст сообщений"
+                ariaLabel="Минимальный возраст сообщений"
                 value={current.hours === 24 ? '24' : '48'}
                 options={[
                   { value: '24', label: '24 часа', disabled: closeBlocked },
@@ -364,8 +365,8 @@ export function SettingsMessageRetentionEditor({
               <p className="message-retention-policy" role="status">
                 Новый срок применяется и к уже учтённым сообщениям.
                 {current.hours < state.hours
-                  ? ' Сообщения старше 24 часов смогут удаляться сразу после сохранения.'
-                  : ' Ещё не удалённые сообщения будут ожидать 48 часов.'}
+                  ? ' Сообщения старше 24 часов будут ожидать периода низкой нагрузки.'
+                  : ' Сообщения будут удаляться не раньше возраста 48 часов, в период низкой нагрузки.'}
               </p>
             ) : null}
             <div className="message-retention-exclusions">

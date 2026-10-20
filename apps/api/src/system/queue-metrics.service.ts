@@ -1,35 +1,18 @@
+import { AUXILIARY_QUEUE_NAMES, type AuxiliaryQueueName } from '../runtime/runtime-queue-inventory';
+export { AUXILIARY_QUEUE_NAMES, type AuxiliaryQueueName } from '../runtime/runtime-queue-inventory';
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
-import { ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE } from '../admin/admin-managed-entities-refresh.queue';
-import { ADMIN_MANUAL_FANOUT_QUEUE } from '../admin/admin-manual-fanout.queue';
-import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from '../admin/admin-suggestion-delivery.queue';
-import { ADMIN_SUPER_BAN_QUEUE } from '../admin/admin-super-ban.queue';
-import { PUBLISHER_SUGGESTION_PUBLICATION_QUEUE } from '../admin/publisher-suggestion-publication.queue';
-import { PUBLISHER_PUBLICATION_WAKEUP_QUEUE } from '../admin/publisher-publication-wakeup.queue';
-import { VK_PARSING_PUBLISHER_QUEUE, VK_PARSING_SYNC_QUEUE } from '../admin/vk-parsing.queue';
-import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from '../max/max-chat-admin-roster-sync.queue';
 import {
   MAX_ACTION_ALL_QUEUE_NAMES,
   MAX_ACTION_LEGACY_QUEUE,
   type MaxActionQueueName,
 } from '../max/max-action.queue';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
-import { PUBLISHER_BINDING_REFRESH_QUEUE } from '../publisher/publisher-binding-refresh.queue';
-import { PUBLISHER_CHAT_COMMENT_QUEUE } from '../publisher/publisher-chat-comment.queue';
-import { PUBLISHER_POST_IMPORT_QUEUE } from '../publisher/publisher-post-import.queue';
-import { PUBLISHER_AUTO_REPLY_QUEUE } from '../publisher/publisher-auto-reply.queue';
-import { PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE } from '../publisher/publisher-auto-reply-authoring.queue';
-import { PUBLISHER_SUGGESTION_ADMIN_QUEUE } from '../publisher/publisher-suggestion-admin.queue';
-import { PUBLISHER_START_QUEUE } from '../publisher/publisher-start.queue';
-import { PUBLISHER_VIDEO_UPLOAD_QUEUE } from '../publisher/publisher-video-upload.queue';
 import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
-import { COMMERCIAL_OCR_QUEUE } from '../moderation/commercial-ocr/commercial-ocr.queue';
-import { MODERATION_DELETE_INTENT_QUEUE } from '../moderation/moderation-delete-intent.queue';
-import { NIGHT_MODE_TRANSITION_QUEUE } from '../moderation/night-mode-transition.queue';
 import { MESSAGE_DUPLICATE_QUEUE } from '../moderation/message-duplicate/message-duplicate.queue';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
@@ -69,32 +52,6 @@ export type QueueCounters = {
   failed: number;
   completed: number;
 };
-
-export const AUXILIARY_QUEUE_NAMES = [
-  'message-retention',
-  ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
-  VK_PARSING_SYNC_QUEUE,
-  VK_PARSING_PUBLISHER_QUEUE,
-  PUBLISHER_BINDING_REFRESH_QUEUE,
-  PUBLISHER_CHAT_COMMENT_QUEUE,
-  PUBLISHER_POST_IMPORT_QUEUE,
-  PUBLISHER_AUTO_REPLY_QUEUE,
-  PUBLISHER_AUTO_REPLY_AUTHORING_QUEUE,
-  PUBLISHER_SUGGESTION_PUBLICATION_QUEUE,
-  PUBLISHER_PUBLICATION_WAKEUP_QUEUE,
-  PUBLISHER_SUGGESTION_ADMIN_QUEUE,
-  PUBLISHER_START_QUEUE,
-  PUBLISHER_VIDEO_UPLOAD_QUEUE,
-  NIGHT_MODE_TRANSITION_QUEUE,
-  MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
-  ADMIN_MANUAL_FANOUT_QUEUE,
-  ADMIN_SUPER_BAN_QUEUE,
-  ADMIN_SUGGESTION_DELIVERY_QUEUE,
-  MODERATION_DELETE_INTENT_QUEUE,
-  MESSAGE_DUPLICATE_QUEUE,
-  COMMERCIAL_OCR_QUEUE,
-] as const;
-export type AuxiliaryQueueName = (typeof AUXILIARY_QUEUE_NAMES)[number];
 
 export type WebhookStatusMetrics = {
   count: number;

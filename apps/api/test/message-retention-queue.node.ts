@@ -4,6 +4,7 @@ import { after, before, describe, it } from 'node:test';
 import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { RedisCounterService } from '../src/moderation/redis-counter.service';
+import type { MessageRetentionAdmissionService } from '../src/system/message-retention-admission.service';
 import {
   MessageRetentionRuntime,
   type MessageRetentionJob,
@@ -129,6 +130,12 @@ describe('retention scheduler with real isolated Redis and BullMQ', { skip: !red
       { decide: async () => ({ action: 'run' }) } as never,
       locks,
       queue,
+      {
+        decide: async () => ({ allowed: true, reason: 'allowed', retryAfterMs: 1_000 }),
+      } satisfies Pick<
+        MessageRetentionAdmissionService,
+        'decide'
+      > as MessageRetentionAdmissionService,
     );
     runtimes.push(runtime);
     return runtime;

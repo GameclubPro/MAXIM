@@ -52,6 +52,7 @@ describe('WebhookIngestionService', () => {
     };
     const webhookIngressMetricsService = {
       recordReceiptPersistence: jest.fn().mockResolvedValue(undefined),
+      observeReceiptWork: async <T>(operation: () => Promise<T>): Promise<T> => operation(),
     };
     const configService = {
       get: jest.fn((key: string) => {
@@ -315,6 +316,40 @@ describe('WebhookIngestionService', () => {
         outcome: 'failed',
         latencyMs: expect.any(Number),
       });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not start SQL after priority observation exhausts the original ACK deadline', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const { service, webhookService, webhookIngressMetricsService } = createService({
+      receiptMaxInFlight: 1,
+    });
+    webhookIngressMetricsService.observeReceiptWork = async <T>(
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      now.mockReturnValue(1_002);
+      return operation();
+    };
+    const ingest = (deadlineAtMs: number) =>
+      service.ingest(
+        { botId: 'bot-1', secretPath: 'secret-path' },
+        {},
+        {
+          headers: { 'x-max-bot-api-secret': 'secret-header' },
+          ip: '127.0.0.1',
+        } as never,
+        deadlineAtMs,
+      );
+
+    try {
+      await expect(ingest(1_001)).rejects.toMatchObject({ status: 503 });
+      expect(webhookService.storeReceipt).not.toHaveBeenCalled();
+      expect(webhookService.schedulePersistedWebhookPreparation).not.toHaveBeenCalled();
+
+      await expect(ingest(1_005)).resolves.toMatchObject({ ok: true });
+      expect(webhookService.storeReceipt).toHaveBeenCalledTimes(1);
     } finally {
       now.mockRestore();
     }

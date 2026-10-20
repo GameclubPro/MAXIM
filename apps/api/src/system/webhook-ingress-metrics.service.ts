@@ -1,6 +1,18 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { randomUUID } from 'node:crypto';
+import {
+  HIGHER_PRIORITY_ACTIVITY_ACQUIRE_SCRIPT,
+  HIGHER_PRIORITY_ACTIVITY_KEY,
+  HIGHER_PRIORITY_ACTIVITY_LEASE_MS,
+  HIGHER_PRIORITY_ACTIVITY_RELEASE_SCRIPT,
+  HIGHER_PRIORITY_ACTIVITY_RENEW_MS,
+  HIGHER_PRIORITY_ACTIVITY_RENEW_SCRIPT,
+  HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+  RETENTION_PRIORITY_TRAFFIC_KEY_PREFIX,
+  RETENTION_PRIORITY_TRAFFIC_TTL_SEC,
+} from '../max/retention-priority-admission';
 import type { AdminAccessEpochMutationMetric } from '../chat-context/chat-context-cache.service';
 import {
   MAX_WEBHOOK_ROUTE_OUTCOMES,
@@ -118,7 +130,7 @@ const METRICS_BUCKET_SEC = 10;
 const DEFAULT_INGRESS_TARGET_MS = 2_000;
 const DEFAULT_SLO_WINDOW_SEC = 15 * 60;
 const MAX_SLO_WINDOW_SEC = 24 * 60 * 60;
-const REDIS_COMMAND_TIMEOUT_MS = 1_000;
+const REDIS_COMMAND_TIMEOUT_MS = 100;
 const ROUTE_METRICS_FLUSH_INTERVAL_MS = 1_000;
 const MIN_RETENTION_SEC = 60 * 60;
 const MAX_RETENTION_SEC = 24 * 60 * 60;
@@ -140,6 +152,14 @@ local latencyBucket = ARGV[3]
 local latencyMs = tonumber(ARGV[4]) or 0
 local underTarget = ARGV[5]
 local ttlSec = tonumber(ARGV[6]) or 3600
+
+-- FLAG: The fixed minute arrival counter shares the existing receipt observation.
+-- Missing telemetry is never manufactured into an observed quiet minute.
+local time = redis.call('TIME')
+local minute = math.floor(tonumber(time[1]) / 60) * 60
+local trafficKey = KEYS[2] .. ':' .. tostring(minute)
+redis.call('HINCRBY', trafficKey, 'arrivals', 1)
+redis.call('EXPIRE', trafficKey, tonumber(ARGV[7]))
 
 redis.call('HINCRBY', key, 'attempted', 1)
 redis.call('HINCRBY', key, 'bot:' .. bot .. ':attempted', 1)
@@ -194,6 +214,7 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
   private destroying = false;
   private lastWriteFailureLogAtMs = 0;
   private lastReadFailureLogAtMs = 0;
+  private readonly receiptObservationSettlements = new Set<Promise<void>>();
 
   constructor(configService: ConfigService) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'), {
@@ -220,6 +241,7 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
     }
     await this.routeFlushInFlight;
     await this.flushRouteOutcomes();
+    await Promise.allSettled([...this.receiptObservationSettlements]);
     await this.redis.quit();
   }
 
@@ -236,17 +258,100 @@ export class WebhookIngressMetricsService implements OnModuleDestroy {
     try {
       await this.redis.eval(
         RECORD_RECEIPT_LUA,
-        1,
+        2,
         key,
+        RETENTION_PRIORITY_TRAFFIC_KEY_PREFIX,
         metric.outcome,
         Buffer.from(botId, 'utf8').toString('base64url'),
         String(latencyBucket),
         String(latencyMs),
         latencyMs <= this.targetMs ? '1' : '0',
         String(this.retentionSec),
+        String(RETENTION_PRIORITY_TRAFFIC_TTL_SEC),
       );
     } catch {
+      await this.redis
+        .set(HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY, 'receipt_counter_unknown')
+        .catch(() => undefined);
       this.logWriteFailure();
+    }
+  }
+
+  async observeReceiptWork<T>(operation: () => Promise<T>): Promise<T> {
+    const operationId = `receipt:${randomUUID()}`;
+    let acquired = false;
+    const unavailable = async () => {
+      await this.redis
+        .set(HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY, 'receipt_observation_unknown')
+        .catch(() => undefined);
+    };
+    try {
+      acquired =
+        (await this.redis.eval(
+          HIGHER_PRIORITY_ACTIVITY_ACQUIRE_SCRIPT,
+          2,
+          HIGHER_PRIORITY_ACTIVITY_KEY,
+          HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+          operationId,
+          String(HIGHER_PRIORITY_ACTIVITY_LEASE_MS),
+        )) === 1;
+      if (!acquired) await unavailable();
+    } catch {
+      await unavailable();
+    }
+    let renewing: Promise<void> | null = null;
+    const timer = acquired
+      ? setInterval(() => {
+          if (renewing) return;
+          renewing = this.redis
+            .eval(
+              HIGHER_PRIORITY_ACTIVITY_RENEW_SCRIPT,
+              2,
+              HIGHER_PRIORITY_ACTIVITY_KEY,
+              HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+              operationId,
+              String(HIGHER_PRIORITY_ACTIVITY_LEASE_MS),
+            )
+            .then(async (result) => {
+              if (result !== 1) await unavailable();
+            })
+            .catch(unavailable)
+            .finally(() => {
+              renewing = null;
+            });
+        }, HIGHER_PRIORITY_ACTIVITY_RENEW_MS)
+      : null;
+    timer?.unref();
+    try {
+      // FLAG: The caller's ACK timeout does not own this observation. Its exact
+      // lease follows the actual SQL operation until that operation settles.
+      return await operation();
+    } finally {
+      if (timer) clearInterval(timer);
+      if (acquired) {
+        // FLAG: SQL completion owns the ACK result. Observation settlement stays
+        // tracked independently; its marker remains until Redis confirms release.
+        const settlement: Promise<void> = (async () => {
+          await renewing;
+          try {
+            if (
+              (await this.redis.eval(
+                HIGHER_PRIORITY_ACTIVITY_RELEASE_SCRIPT,
+                2,
+                HIGHER_PRIORITY_ACTIVITY_KEY,
+                HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+                operationId,
+              )) !== 1
+            )
+              await unavailable();
+          } catch {
+            await unavailable();
+          }
+        })()
+          .catch(unavailable)
+          .finally(() => this.receiptObservationSettlements.delete(settlement));
+        this.receiptObservationSettlements.add(settlement);
+      }
     }
   }
 

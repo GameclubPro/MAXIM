@@ -1,3 +1,10 @@
+import {
+  HIGHER_PRIORITY_ACTIVITY_KEY,
+  HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
+  RETENTION_PRIORITY_PERMIT_KEY,
+  RETENTION_PRIORITY_RESERVATION_MARKER,
+  RETENTION_PRIORITY_VERSION,
+} from './retention-priority-admission';
 import { ManagedEntityActivationRequiredError } from './managed-entity-activation.util';
 import { restrictPassiveManagedEntityAccess } from './managed-entity-passive-access.util';
 import { ChatEntityType } from '../prisma/prisma-client';
@@ -88,6 +95,23 @@ function createMp4Fixture(size = TINY_VALID_MP4.length, fill = 0): Buffer {
   free.writeUInt32BE(paddingSize, 0);
   free.write('free', 4, 4, 'latin1');
   return Buffer.concat([TINY_VALID_MP4, free]);
+}
+
+function reservationDimensions(call: readonly unknown[]) {
+  const allKeyCount = Number(call[1]);
+  const metadata = String(call.at(-2));
+  const count = metadata.startsWith(RETENTION_PRIORITY_RESERVATION_MARKER)
+    ? (
+        JSON.parse(metadata.slice(RETENTION_PRIORITY_RESERVATION_MARKER.length)) as {
+          dimensions: number;
+        }
+      ).dimensions
+    : allKeyCount;
+  return {
+    keyCount: count,
+    keys: call.slice(2, 2 + count).map(String),
+    limits: call.slice(2 + allKeyCount, 2 + allKeyCount + count),
+  };
 }
 
 jest.mock('ioredis', () => {
@@ -190,6 +214,14 @@ jest.mock('ioredis', () => {
             });
             return 'OK';
           }),
+        zrem: jest.fn().mockImplementation(async (key: string, id: string) => {
+          const entry = readEntry(key);
+          const leases = JSON.parse(entry?.value ?? '{}') as Record<string, number>;
+          if (!(id in leases)) return 0;
+          delete leases[id];
+          store.set(key, { value: JSON.stringify(leases), expiresAtMs: null });
+          return 1;
+        }),
         del: jest.fn().mockImplementation(async (...keys: string[]) => {
           let deleted = 0;
           for (const key of keys) {
@@ -223,6 +255,36 @@ jest.mock('ioredis', () => {
 
               if (script.includes('MAX_API_GCRA_RESERVE_V1')) {
                 const nowMs = Date.now();
+                const metadata = String(argValues.at(-2) ?? '');
+                const marker = 'retention-priority:v1:';
+                const priority = metadata.startsWith(marker)
+                  ? (JSON.parse(metadata.slice(marker.length)) as {
+                      dimensions: number;
+                      retention: boolean;
+                      operationId: string;
+                    })
+                  : null;
+                const dimensionCount = priority?.dimensions ?? numKeys;
+                if (priority?.retention) {
+                  if (readEntry(keys[dimensionCount + 2]))
+                    return [0, -1, 1000, 'metrics_unavailable'];
+                  const leases = JSON.parse(
+                    readEntry(keys[dimensionCount + 1])?.value ?? '{}',
+                  ) as Record<string, number>;
+                  if (Object.keys(leases).length) return [0, -1, 1000, 'higher_priority_active'];
+                  const entry = readEntry(keys[dimensionCount]);
+                  if (!entry) return [0, -1, 1000, 'permit_missing'];
+                  const permit = JSON.parse(entry.value) as Record<string, string>;
+                  if (
+                    permit.version !== '1' ||
+                    Number(permit.sampleStartedAtMs) > nowMs ||
+                    nowMs - Number(permit.sampleStartedAtMs) > 2000 ||
+                    Number(permit.validUntilMs) <= nowMs ||
+                    entry.expiresAtMs === null ||
+                    entry.expiresAtMs - nowMs > 1000
+                  )
+                    return [0, -1, 1000, 'permit_expired'];
+                }
                 const windowKey = `${keys[0]}:window:v1`;
                 const window = (JSON.parse(readEntry(windowKey)?.value ?? '[]') as number[]).filter(
                   (at) => at > nowMs - 1_000,
@@ -231,10 +293,10 @@ jest.mock('ioredis', () => {
                   return [0, 1, Math.max(1, window[0]! + 1_000 - nowMs)];
                 const ttlFloorMs = Number(argValues[argValues.length - 1] ?? 0);
                 const updates: Array<{ key: string; tat: number; ttlMs: number }> = [];
-                for (let index = 0; index < numKeys; index += 1) {
+                for (let index = 0; index < dimensionCount; index += 1) {
                   const limit = Number(argValues[index] ?? 0);
                   const intervalMs = 1_000 / limit;
-                  const burstToleranceSlots = Number(argValues[numKeys + index] ?? 0);
+                  const burstToleranceSlots = Number(argValues[dimensionCount + index] ?? 0);
                   const burstToleranceMs = burstToleranceSlots * intervalMs;
                   const storedTat = Number(readEntry(keys[index])?.value ?? nowMs);
                   const tat = Math.max(storedTat, nowMs);
@@ -263,7 +325,31 @@ jest.mock('ioredis', () => {
                   value: JSON.stringify([...window, nowMs]),
                   expiresAtMs: nowMs + 1_000,
                 });
+                if (priority && !priority.retention) {
+                  const activityKey = keys[dimensionCount + 1];
+                  const leases = JSON.parse(readEntry(activityKey)?.value ?? '{}') as Record<
+                    string,
+                    number
+                  >;
+                  leases[priority.operationId] = nowMs + 30_000;
+                  store.set(activityKey, { value: JSON.stringify(leases), expiresAtMs: null });
+                }
                 return [1, 0, 0];
+              }
+
+              if (script.includes('MAX_HIGHER_PRIORITY_ACTIVITY_RENEW_V1')) {
+                const leases = JSON.parse(readEntry(keys[0])?.value ?? '{}') as Record<
+                  string,
+                  number
+                >;
+                const id = String(argValues[0]);
+                if ((leases[id] ?? 0) <= Date.now()) {
+                  store.set(keys[1], { value: 'activity_coverage_lost', expiresAtMs: null });
+                  return 0;
+                }
+                leases[id] = Date.now() + Number(argValues[1]);
+                store.set(keys[0], { value: JSON.stringify(leases), expiresAtMs: null });
+                return 1;
               }
 
               const readFailures = (key: string, cutoffMs: number) =>
@@ -15072,7 +15158,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     await jest.advanceTimersByTimeAsync(1_500);
-    await expect(moderationDeleteReservation).resolves.toBeUndefined();
+    const activityId = await moderationDeleteReservation;
+    expect(activityId).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+    expect(reserve.mock.calls[0]?.[5]).toBe(activityId);
+    expect(reserve.mock.calls[1]?.[5]).toBe(activityId);
 
     reserve.mockReset().mockResolvedValue({
       ok: false,
@@ -15160,12 +15249,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } })
         .limiterRedis;
       const call = limiterRedis.eval.mock.calls.at(-1) as unknown[];
-      const keyCount = Number(call[1]);
-      return {
-        keyCount,
-        keys: call.slice(2, 2 + keyCount).map(String),
-        limiterRedis,
-      };
+      return { ...reservationDimensions(call), limiterRedis };
     };
     const first = readLastDimensions(firstService);
     const second = readLastDimensions(secondService);
@@ -16290,9 +16374,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     const call = limiterRedis.eval.mock.calls.at(-1) as unknown[];
-    const keyCount = Number(call[1]);
-    const keys = call.slice(2, 2 + keyCount);
-    const limits = call.slice(2 + keyCount, 2 + keyCount * 2);
+    const { keys, limits } = reservationDimensions(call);
     expect(keys).toEqual([
       'maxapi:gcra:v1:bot:777000_bot:all',
       'maxapi:gcra:v1:service:api_action_a:bot:777000_bot:class:background',
@@ -16303,6 +16385,170 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(limits.at(-1)).toBe('2');
 
     await service.onModuleDestroy();
+  });
+
+  it('defers retention immediately without a current quiet permit and does not call HTTP', async () => {
+    const http = { request: jest.fn() };
+    const service = createService(http, { MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND: '5000' });
+    try {
+      await expect(
+        service.getChatSnapshot('chat-1', {
+          trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MESSAGE_RETENTION,
+        }),
+      ).rejects.toMatchObject({
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        preDispatch: true,
+        limitScope: 'retention_priority',
+      });
+      expect(http.request).not.toHaveBeenCalled();
+      const redis = (
+        service as unknown as {
+          limiterRedis: { eval: jest.Mock; get(key: string): Promise<string | null> };
+        }
+      ).limiterRedis;
+      expect(
+        redis.eval.mock.calls.filter(([script]) =>
+          String(script).includes('MAX_API_GCRA_RESERVE_V1'),
+        ),
+      ).toHaveLength(1);
+      expect(await redis.get('maxapi:gcra:v1:bot:777000_bot:all')).toBeNull();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('admits retention reads with a fresh permit while preserving its source budget', async () => {
+    const at = Date.now();
+    (
+      Redis as unknown as { __store: Map<string, { value: string; expiresAtMs: number | null }> }
+    ).__store.set(RETENTION_PRIORITY_PERMIT_KEY, {
+      value: JSON.stringify({
+        version: RETENTION_PRIORITY_VERSION,
+        sampleStartedAtMs: String(at),
+        validUntilMs: String(at + 1000),
+      }),
+      expiresAtMs: at + 1000,
+    });
+    const http = {
+      request: jest
+        .fn()
+        .mockReturnValue(of({ status: 200, data: { title: 'Chat', participants_count: 10 } })),
+    };
+    const service = createService(http);
+    try {
+      await expect(
+        service.getChatSnapshot('chat-1', {
+          trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MESSAGE_RETENTION,
+        }),
+      ).resolves.toEqual(expect.objectContaining({ chatId: 'chat-1' }));
+      expect(http.request).toHaveBeenCalledTimes(1);
+      const redis = (
+        service as unknown as { limiterRedis: { get(key: string): Promise<string | null> } }
+      ).limiterRedis;
+      expect(await redis.get(HIGHER_PRIORITY_ACTIVITY_KEY)).toBeNull();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('keeps HTTP available when synchronous observational Redis MULTI fails', async () => {
+    const http = {
+      request: jest
+        .fn()
+        .mockReturnValue(of({ status: 200, data: { title: 'Chat', participants_count: 10 } })),
+    };
+    const service = createService(http);
+    const redis = (service as unknown as { limiterRedis: Pick<Redis, 'multi' | 'get'> })
+      .limiterRedis;
+    jest.spyOn(redis, 'multi').mockImplementation(() => {
+      throw new Error('Synthetic synchronous observation failure');
+    });
+    try {
+      await expect(service.getChatSnapshot('chat-1')).resolves.toEqual(
+        expect.objectContaining({ chatId: 'chat-1' }),
+      );
+      expect(http.request).toHaveBeenCalledTimes(1);
+      expect(await redis.get(HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY)).toBe(
+        'http_traffic_unavailable',
+      );
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('holds a non-retention HTTP lease through its response and releases it afterwards', async () => {
+    let complete!: (value: {
+      status: number;
+      data: { title: string; participants_count: number };
+    }) => void;
+    const response = new Promise<{
+      status: number;
+      data: { title: string; participants_count: number };
+    }>((resolve) => {
+      complete = resolve;
+    });
+    const http = { request: jest.fn().mockReturnValue(from(response)) };
+    const service = createService(http);
+    const redis = (
+      service as unknown as { limiterRedis: { get(key: string): Promise<string | null> } }
+    ).limiterRedis;
+    try {
+      const read = service.getChatSnapshot('chat-1');
+      for (let i = 0; i < 50 && !http.request.mock.calls.length; i++) await Promise.resolve();
+      expect(http.request).toHaveBeenCalledTimes(1);
+      expect(
+        Object.keys(JSON.parse((await redis.get(HIGHER_PRIORITY_ACTIVITY_KEY)) ?? '{}')),
+      ).toHaveLength(1);
+      complete({ status: 200, data: { title: 'Chat', participants_count: 10 } });
+      await read;
+      expect(await redis.get(HIGHER_PRIORITY_ACTIVITY_KEY)).toBe('{}');
+      expect(await redis.get(HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY)).toBeNull();
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it('returns HTTP before a slow lease release but waits for its acknowledgment at shutdown', async () => {
+    const http = {
+      request: jest
+        .fn()
+        .mockReturnValue(of({ status: 200, data: { title: 'Chat', participants_count: 10 } })),
+    };
+    const service = createService(http);
+    const redis = (service as unknown as { limiterRedis: { zrem: jest.Mock; quit: jest.Mock } })
+      .limiterRedis;
+    let acknowledge!: (removed: number) => void;
+    redis.zrem.mockReturnValueOnce(
+      new Promise<number>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    let shutdown: Promise<void> | undefined;
+    try {
+      await expect(service.getChatSnapshot('chat-1')).resolves.toEqual(
+        expect.objectContaining({ chatId: 'chat-1' }),
+      );
+      expect(redis.zrem).toHaveBeenCalledTimes(1);
+      expect(redis.quit).not.toHaveBeenCalled();
+
+      let stopped = false;
+      shutdown = service.onModuleDestroy().then(() => {
+        stopped = true;
+      });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      expect(redis.quit).not.toHaveBeenCalled();
+
+      acknowledge(1);
+      await shutdown;
+      expect(stopped).toBe(true);
+      expect(redis.quit).toHaveBeenCalledTimes(1);
+    } finally {
+      acknowledge(1);
+      await (shutdown ?? service.onModuleDestroy());
+    }
   });
 
   it('adds a fleet-wide retention budget without sharing the normal token budget', async () => {
@@ -16326,9 +16572,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
         { operation: 'delete', entityId: '-1' },
       );
       const call = internal.limiterRedis.eval.mock.calls.at(-1) as unknown[];
-      const count = Number(call[1]);
-      const keys = call.slice(2, 2 + count);
-      const limits = call.slice(2 + count, 2 + count * 2).map(Number);
+      const dimensions = reservationDimensions(call);
+      const { keys } = dimensions;
+      const limits = dimensions.limits.map(Number);
       expect(limits[keys.indexOf('maxapi:gcra:v1:source:message-retention:all')]).toBe(2);
       expect(limits[keys.indexOf('maxapi:gcra:v1:source:message-retention:chat:target:-1')]).toBe(
         1,
