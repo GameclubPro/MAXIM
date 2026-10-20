@@ -101,6 +101,11 @@ Run uniform/hot/retry/skew/removed scenarios before raising the rollout gate.
 
 ## Release Gates
 
+The proposed strict lowest-priority admission, historical quiet-window selection
+and 20,000-chat capacity gates are documented in the
+[20 October optimization plan](../plans/2026-10-20-message-retention-low-priority.md).
+That document describes future changes, not behavior already enabled by this runbook.
+
 1. Keep the runtime off while deploying the additive migration and compatible shared
    image to every role. Deploy the Major mini app and validate the contracts consumers.
 2. Run `npm run check`, `node --test scripts/message-retention-migration.test.mjs`, and
