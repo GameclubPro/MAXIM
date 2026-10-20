@@ -2,7 +2,6 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type {
   PublicationDelivery,
   PublicationDetails,
-  PublicationDeliveryStatus,
   PublicationOccurrenceSummary,
   PublicationOccurrenceStatus,
   PublicationSummary,
@@ -22,6 +21,7 @@ import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus
 import { useNativeBackHandler } from '../../lib/native-back';
 import { formatPublicationDeliveryError } from './publication-delivery-error';
 import { PublicationDeliveryActions } from './publication-delivery-actions';
+import { getPublicationDeliveryPresentation } from './publication-delivery-presentation';
 import {
   publicationPostActionLabels,
   publicationPostActionsPollingInterval,
@@ -86,15 +86,6 @@ const OCCURRENCE_STATUS_LABELS: Record<PublicationOccurrenceStatus, string> = {
   IN_PROGRESS: 'В обработке',
   SENT: 'Опубликовано',
   PARTIAL: 'Частично',
-  FAILED: 'Ошибка',
-  AMBIGUOUS: 'Нужно проверить',
-  CANCELED: 'Отменено',
-};
-
-const DELIVERY_STATUS_LABELS: Record<PublicationDeliveryStatus, string> = {
-  PENDING: 'В очереди',
-  SENDING: 'Отправляется',
-  SENT: 'Опубликовано',
   FAILED: 'Ошибка',
   AMBIGUOUS: 'Нужно проверить',
   CANCELED: 'Отменено',
@@ -600,6 +591,7 @@ export function PublicationDetailsSheet({
                         details.content.revision,
                       );
                       const deliveryError = formatPublicationDeliveryError(delivery.lastError);
+                      const deliveryPresentation = getPublicationDeliveryPresentation(delivery);
                       return (
                         <div key={delivery.id}>
                           <EntityAvatar
@@ -615,9 +607,12 @@ export function PublicationDetailsSheet({
                                 `is-${delivery.status.toLowerCase()}`,
                               )}
                             >
-                              {DELIVERY_STATUS_LABELS[delivery.status]}
+                              {deliveryPresentation.label}
                             </small>
-                            {delivery.status === 'PENDING' && delivery.waitReason ? (
+                            {deliveryPresentation.stopNotice ? (
+                              <small>{deliveryPresentation.stopNotice}</small>
+                            ) : null}
+                            {deliveryPresentation.showPendingTiming && delivery.waitReason ? (
                               <small>
                                 {delivery.waitReason === 'max_rate_limit'
                                   ? 'MAX ограничил частоту. Пост остаётся в очереди.'
@@ -626,7 +621,7 @@ export function PublicationDetailsSheet({
                                     : 'Ожидаем доступного времени отправки.'}
                               </small>
                             ) : null}
-                            {delivery.status === 'PENDING' && delivery.nextAttemptAt ? (
+                            {deliveryPresentation.showPendingTiming && delivery.nextAttemptAt ? (
                               <small>
                                 Следующая попытка не раньше{' '}
                                 {formatDateTime(
@@ -636,7 +631,7 @@ export function PublicationDetailsSheet({
                                 )}
                               </small>
                             ) : null}
-                            {delivery.status === 'PENDING' && delivery.deadlineAt ? (
+                            {deliveryPresentation.showPendingTiming && delivery.deadlineAt ? (
                               <small>
                                 При задержке пост актуален до{' '}
                                 {formatDateTime(delivery.deadlineAt, details.schedule?.timezone)}

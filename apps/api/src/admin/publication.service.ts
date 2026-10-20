@@ -129,6 +129,7 @@ import {
 import {
   PublicationPresenterService,
   PUBLICATION_DELIVERY_PRESENTATION_INCLUDE,
+  isPublicationDeliveryDispatchStopped,
   mapPublicationDeliveryWait,
 } from './publication-presenter.service';
 import { PublisherPublicationWakeupQueueService } from './publisher-publication-wakeup.queue';
@@ -1314,6 +1315,7 @@ export class PublicationService {
           publisherTargetPresentations,
         ),
         status: resolveEffectivePublicationDeliveryStatus(row),
+        dispatchStopped: isPublicationDeliveryDispatchStopped(row),
         ...this.publicationPresenterService.mapDeliveryContentRevision(row),
         ...mapPublicationDeliveryWait(row),
         attemptCount: row.attemptCount,

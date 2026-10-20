@@ -16,6 +16,7 @@ import {
   publicationScheduleInputSchema,
   DEFAULT_PUBLICATION_LATE_POLICY,
   publicationDeliverySchema,
+  publicationDeliveryStatsSchema,
   publicationDispatchIssueSchema,
   publicationOccurrenceSummarySchema,
   publicationSlotsScheduleSchema,
@@ -494,6 +495,47 @@ describe('publication contracts', () => {
         sentAt: null,
       }).success,
     ).toBe(true);
+  });
+
+  it('preserves unknown dispatch context and explicit stopped values', () => {
+    const legacy = {
+      id: 'delivery-legacy',
+      occurrenceId: 'occurrence-1',
+      target: { chatId: 'chat-1', entityType: 'chat', title: 'Чат' },
+      status: 'PENDING',
+      attemptCount: 0,
+      remoteMessageId: null,
+      lastError: null,
+      sentAt: null,
+    };
+    expect(publicationDeliverySchema.parse(legacy)).not.toHaveProperty('dispatchStopped');
+    for (const dispatchStopped of [true, false]) {
+      expect(publicationDeliverySchema.parse({ ...legacy, dispatchStopped })).toHaveProperty(
+        'dispatchStopped',
+        dispatchStopped,
+      );
+    }
+    for (const dispatchStopped of [null, 0, 'true']) {
+      expect(publicationDeliverySchema.safeParse({ ...legacy, dispatchStopped }).success).toBe(
+        false,
+      );
+    }
+  });
+
+  it('keeps active dispatch counts additive and accepts authoritative zero', () => {
+    const legacy = { total: 2, pending: 2, sent: 0, failed: 0, ambiguous: 0, canceled: 0 };
+    expect(publicationDeliveryStatsSchema.parse(legacy)).not.toHaveProperty('dispatchPending');
+    for (const dispatchPending of [0, 2]) {
+      expect(publicationDeliveryStatsSchema.parse({ ...legacy, dispatchPending })).toEqual({
+        ...legacy,
+        dispatchPending,
+      });
+    }
+    for (const dispatchPending of [-1, 1.5, '0', null]) {
+      expect(publicationDeliveryStatsSchema.safeParse({ ...legacy, dispatchPending }).success).toBe(
+        false,
+      );
+    }
   });
 });
 

@@ -553,6 +553,7 @@ export type TestPublicationRequest = z.infer<typeof testPublicationRequestSchema
 export const publicationDeliveryStatsSchema = z.object({
   total: z.number().int().min(0),
   pending: z.number().int().min(0),
+  dispatchPending: z.number().int().min(0).optional(),
   sent: z.number().int().min(0),
   failed: z.number().int().min(0),
   ambiguous: z.number().int().min(0),
@@ -825,6 +826,7 @@ export const publicationCapacityWaitReasonSchema = z.enum([
 export type PublicationCapacityWaitReason = z.infer<typeof publicationCapacityWaitReasonSchema>;
 
 export const publicationDeliverySchema = z.object({
+  dispatchStopped: z.boolean().optional(),
   deadlineAt: publicationDateTimeSchema.nullable().optional(),
   nextAttemptAt: publicationDateTimeSchema.nullable().optional(),
   waitReason: publicationCapacityWaitReasonSchema.nullable().optional(),

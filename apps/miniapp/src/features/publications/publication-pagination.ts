@@ -31,14 +31,16 @@ export function mergePublicationPages<T extends { id: string }>(
   return Array.from(items.values());
 }
 
-export function shouldPollPublicationDeliveryPages<T extends { status: string }>(
-  aggregatePending: boolean,
-  pages: readonly CursorPage<T>[] | undefined,
-): boolean {
+export function shouldPollPublicationDeliveryPages<
+  T extends { status: string; dispatchStopped?: boolean },
+>(aggregatePending: boolean, pages: readonly CursorPage<T>[] | undefined): boolean {
   return (
     aggregatePending ||
     (pages ?? []).some((page) =>
-      page.items.some((item) => item.status === 'PENDING' || item.status === 'SENDING'),
+      page.items.some(
+        (item) =>
+          item.dispatchStopped !== true && (item.status === 'PENDING' || item.status === 'SENDING'),
+      ),
     )
   );
 }

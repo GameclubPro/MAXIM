@@ -15,12 +15,15 @@ import { stripSupportedMarkdownToPlainText } from '../common/max-markdown.util';
 import {
   ChatEntityType,
   ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
+  type ManagedBroadcast,
   type ManagedBroadcastDelivery,
   Prisma,
   PublicationContentFormat,
   PublicationDispatchProfile,
   PublicationLifecycle,
   PublicationOccurrenceStatus,
+  type PublicationOccurrence,
   PublicationScheduleStatus,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -46,17 +49,35 @@ import { buildEffectivePublicationDeliveryStatusSql } from './publication-legacy
 
 const PUBLICATION_LIST_PREVIEW_TARGETS = 6;
 export const PUBLICATION_DELIVERY_PRESENTATION_INCLUDE = {
-  broadcast: { select: { entityType: true } },
+  broadcast: { select: { entityType: true, status: true } },
   contentRevision: { select: { id: true, revision: true, postPublish: true } },
   publicationOccurrence: {
     select: {
       id: true,
+      status: true,
       deliveryDeadlineAt: true,
       retryExpiresAt: true,
       publication: { select: { canonicalContentRevisionId: true } },
     },
   },
 } as const;
+
+export function isPublicationDeliveryDispatchStopped(row: {
+  broadcast: Pick<ManagedBroadcast, 'status'>;
+  publicationOccurrence: Pick<PublicationOccurrence, 'status'> | null;
+}): boolean {
+  return (
+    row.publicationOccurrence?.status === PublicationOccurrenceStatus.CANCELED ||
+    row.broadcast.status === ManagedBroadcastStatus.CANCELED
+  );
+}
+
+export type PublicationActionableDeliveryStatsRow = {
+  publicationId: string;
+  status: ManagedBroadcastDeliveryStatus;
+  count: bigint;
+  dispatchPending: bigint;
+};
 
 export function mapPublicationDeliveryWait(
   row: Pick<
@@ -673,27 +694,34 @@ export class PublicationPresenterService {
   ): Promise<Map<string, PublicationDeliveryStats>> {
     const uniquePublicationIds = [...new Set(publicationIds)];
     const statsByPublicationId = new Map<string, PublicationDeliveryStats>(
-      uniquePublicationIds.map((publicationId) => [publicationId, this.emptyDeliveryStats()]),
+      uniquePublicationIds.map((publicationId) => [
+        publicationId,
+        { ...this.emptyDeliveryStats(), dispatchPending: 0 },
+      ]),
     );
     if (uniquePublicationIds.length === 0) {
       return statsByPublicationId;
     }
 
     const effectiveStatusSql = buildEffectivePublicationDeliveryStatusSql();
-    const grouped = await this.prisma.$queryRaw<
-      Array<{
-        publicationId: string;
-        status: ManagedBroadcastDeliveryStatus;
-        count: bigint;
-      }>
-    >(Prisma.sql`
+    const grouped = await this.prisma.$queryRaw<PublicationActionableDeliveryStatsRow[]>(Prisma.sql`
       SELECT
         occurrence."publication_id" AS "publicationId",
         ${effectiveStatusSql} AS "status",
-        COUNT(*)::bigint AS "count"
+        COUNT(*)::bigint AS "count",
+        COUNT(*) FILTER (
+          WHERE delivery."status" IN (
+            'PENDING'::"ManagedBroadcastDeliveryStatus",
+            'SENDING'::"ManagedBroadcastDeliveryStatus"
+          )
+          AND occurrence."status" <> 'CANCELED'::"PublicationOccurrenceStatus"
+          AND broadcast."status" <> 'CANCELED'::"ManagedBroadcastStatus"
+        )::bigint AS "dispatchPending"
       FROM "managed_broadcast_deliveries" AS delivery
       INNER JOIN "publication_occurrences" AS occurrence
         ON occurrence."id" = delivery."publication_occurrence_id"
+      INNER JOIN "managed_broadcasts" AS broadcast
+        ON broadcast."id" = delivery."broadcast_id"
       INNER JOIN "publication_schedules" AS schedule
         ON schedule."id" = occurrence."schedule_id"
         AND schedule."publication_id" = occurrence."publication_id"
@@ -707,6 +735,7 @@ export class PublicationPresenterService {
       const stats = statsByPublicationId.get(group.publicationId);
       if (stats) {
         this.addDeliveryCount(stats, group.status, Number(group.count));
+        stats.dispatchPending = (stats.dispatchPending ?? 0) + Number(group.dispatchPending);
       }
     }
     return statsByPublicationId;

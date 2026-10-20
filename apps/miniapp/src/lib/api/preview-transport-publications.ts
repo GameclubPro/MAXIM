@@ -348,26 +348,29 @@ export function syncPreviewPublication(
     );
     const delivery = buildPreviewPublicationDeliveryStats(deliveries);
     const status =
-      delivery.ambiguous > 0
-        ? ('AMBIGUOUS' as const)
-        : delivery.failed > 0 && delivery.sent > 0
-          ? ('PARTIAL' as const)
-          : delivery.failed > 0
-            ? ('FAILED' as const)
-            : delivery.pending > 0
-              ? occurrence.status === 'IN_PROGRESS'
-                ? ('IN_PROGRESS' as const)
-                : ('SCHEDULED' as const)
-              : delivery.sent > 0
-                ? ('SENT' as const)
-                : occurrence.status;
+      occurrence.status === 'CANCELED'
+        ? occurrence.status
+        : delivery.ambiguous > 0
+          ? ('AMBIGUOUS' as const)
+          : delivery.failed > 0 && delivery.sent > 0
+            ? ('PARTIAL' as const)
+            : delivery.failed > 0
+              ? ('FAILED' as const)
+              : delivery.pending > 0
+                ? occurrence.status === 'IN_PROGRESS'
+                  ? ('IN_PROGRESS' as const)
+                  : ('SCHEDULED' as const)
+                : delivery.sent > 0
+                  ? ('SENT' as const)
+                  : occurrence.status;
     return {
       ...occurrence,
       status,
       delivery,
       canRetry:
-        delivery.failed > 0 ||
-        (occurrence.requiresScheduleDecision === true && status === 'FAILED'),
+        status !== 'CANCELED' &&
+        (delivery.failed > 0 ||
+          (occurrence.requiresScheduleDecision === true && status === 'FAILED')),
     };
   });
   const nextOccurrenceAt =
@@ -377,6 +380,16 @@ export function syncPreviewPublication(
       )
       .sort((left, right) => Date.parse(left.scheduledAt) - Date.parse(right.scheduledAt))[0]
       ?.scheduledAt ?? null;
+  const actionableOccurrence =
+    occurrences.find(
+      (occurrence) =>
+        occurrence.status === 'FAILED' ||
+        occurrence.status === 'PARTIAL' ||
+        occurrence.status === 'AMBIGUOUS' ||
+        occurrence.status === 'IN_PROGRESS',
+    ) ??
+    occurrences.find((occurrence) => occurrence.status === 'SCHEDULED') ??
+    occurrences.at(-1);
   const publication = publicationDetailsSchema.parse({
     ...current,
     schedule: current.schedule
@@ -386,17 +399,16 @@ export function syncPreviewPublication(
         }
       : null,
     delivery: buildPreviewPublicationDeliveryStats(publicationDeliveries),
-    actionableDelivery:
-      occurrences.find(
-        (occurrence) =>
-          occurrence.status === 'FAILED' ||
-          occurrence.status === 'PARTIAL' ||
-          occurrence.status === 'AMBIGUOUS' ||
-          occurrence.status === 'IN_PROGRESS',
-      )?.delivery ??
-      occurrences.find((occurrence) => occurrence.status === 'SCHEDULED')?.delivery ??
-      occurrences.at(-1)?.delivery ??
-      createEmptyPublicationDeliveryStats(),
+    actionableDelivery: {
+      ...(actionableOccurrence?.delivery ?? createEmptyPublicationDeliveryStats()),
+      dispatchPending: publicationDeliveries.filter(
+        (delivery) =>
+          delivery.occurrenceId === actionableOccurrence?.id &&
+          actionableOccurrence.status !== 'CANCELED' &&
+          delivery.dispatchStopped !== true &&
+          (delivery.status === 'PENDING' || delivery.status === 'SENDING'),
+      ).length,
+    },
     occurrences,
   });
   state.publications = state.publications.map((item) =>

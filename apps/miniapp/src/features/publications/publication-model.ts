@@ -507,6 +507,10 @@ export function getPublicationActionableDelivery(
   return publication.actionableDelivery ?? publication.delivery;
 }
 
+export function getPublicationDispatchPendingCount(delivery: PublicationDeliveryStats): number {
+  return delivery.dispatchPending ?? delivery.pending;
+}
+
 export function shouldPollPublicationDeliveries(
   publication: Pick<PublicationDetails, 'dispatchIssue' | 'lifecycle' | 'schedule'>,
   delivery: PublicationDeliveryStats,
@@ -515,7 +519,7 @@ export function shouldPollPublicationDeliveries(
     return false;
   }
   return (
-    delivery.pending > 0 ||
+    getPublicationDispatchPendingCount(delivery) > 0 ||
     (publication.dispatchIssue === null &&
       publication.lifecycle === 'ACTIVE' &&
       publication.schedule?.mode === 'now' &&
@@ -563,7 +567,7 @@ export function getPublicationListPollingInterval(
         item.lifecycle !== 'COMPLETED' &&
         item.lifecycle !== 'CANCELED' &&
         !item.dispatchIssue &&
-        getPublicationActionableDelivery(item).pending > 0,
+        getPublicationDispatchPendingCount(getPublicationActionableDelivery(item)) > 0,
     )
   ) {
     return 5_000;
