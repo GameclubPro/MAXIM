@@ -1,3 +1,4 @@
+import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import {
   ChatEntityType,
   PublicationDispatchProfile,
@@ -458,7 +459,10 @@ describe('PublicationPresenterService', () => {
       expect.objectContaining({
         where: {
           id: 'publication-publik',
-          actorUserId: 'actor-1',
+          ...publicationAdminAccessWhere(
+            publicationAdminScope('actor-1'),
+            PublicationDispatchProfile.PUBLIK_V1,
+          ),
           dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
         },
       }),

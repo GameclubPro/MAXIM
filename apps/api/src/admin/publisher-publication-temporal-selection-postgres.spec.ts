@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { Prisma, PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
 import { MANAGED_BROADCAST_LOCK_STALE_MS } from './admin.service.support';
+import { PUBLIK_LEDGER_DISPATCH_MARKER } from './admin-managed-broadcast-ledger-recovery';
+import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 import {
   selectNextPendingPublisherPublicationDeadline,
   selectPublicationManagedBroadcastDueBatch,
@@ -53,8 +55,12 @@ type DeliveryOverrides = Partial<
     | 'sentAt'
     | 'dispatchBlockerCode'
     | 'dispatchBlockedAt'
+    | 'lastErrorCode'
     | 'remoteMessageVerificationAbsentCount'
     | 'remoteMessageVerificationPresentCount'
+    | 'remoteMessageVerificationAttemptCount'
+    | 'remoteMessageVerificationAttemptedAt'
+    | 'remoteMessageVerifiedAt'
     | 'remoteMessageVerificationNextAt'
     | 'remoteMessageVerificationLastError'
     | 'remoteMessageVerificationSource'
@@ -652,6 +658,370 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       displaced: 0,
     });
   });
+
+  it.each(['ONCE', 'SLOTS', 'RECURRENCE'] as const)(
+    'prefers ready %s recipients beyond a full batch of persisted future waits',
+    async (mode) => {
+      await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode } });
+      const waitingIds: string[] = [];
+      for (let index = 0; index < 25; index += 1) {
+        const waiting = await envelope(-120_000 + index, {
+          delivery:
+            index % 2 === 0
+              ? { nextAttemptAt: new Date(now.getTime() + 60_000) }
+              : {
+                  dispatchBlockerCode: 'bot_not_admin',
+                  dispatchBlockedAt: new Date(now.getTime() - 1_000),
+                },
+        });
+        waitingIds.push(waiting.id);
+      }
+      const ready = await envelope(-1_000);
+      const waitingBefore = await db.managedBroadcastDelivery.findMany({
+        where: { broadcastId: { in: waitingIds } },
+        orderBy: { id: 'asc' },
+      });
+      const result = await selectPublicationManagedBroadcastDueBatch(
+        db,
+        [mode],
+        25,
+        'PUBLIK_V1',
+        'off',
+      );
+      // FLAG: A persisted retry wait is not executable work. It must not consume the
+      // scheduled send budget before a ready independent publication reaches admission.
+      expect(result.dueRows[0]).toEqual({ id: ready.id });
+      expect(
+        await db.managedBroadcastDelivery.findMany({
+          where: { broadcastId: { in: waitingIds } },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(waitingBefore);
+    },
+  );
+
+  it.each(['ledger', 'quarantine', 'large_audience', 'legacy'] as const)(
+    'prioritizes ready scheduled work ahead of retained %s recovery',
+    async (kind) => {
+      await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'SLOTS' } });
+      if (kind === 'large_audience') await extendAudience(65);
+      const recovery: Envelope[] = [];
+      for (let index = 0; index < 25; index += 1) {
+        recovery.push(
+          await envelope(-120_000 + index, {
+            ...(kind === 'legacy' ? { deadline: null } : {}),
+            delivery: {
+              nextAttemptAt: new Date(now.getTime() + 60_000),
+              ...(kind === 'ledger' ? { lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER } : {}),
+              ...(kind === 'quarantine'
+                ? { lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE }
+                : {}),
+            },
+          }),
+        );
+      }
+      const before = await db.managedBroadcastDelivery.findMany({ orderBy: { id: 'asc' } });
+      const select = () =>
+        selectPublicationManagedBroadcastDueBatch(db, ['SLOTS'], 25, 'PUBLIK_V1', 'off');
+      // FLAG: Unknown effects and unbounded/legacy audiences remain recoverable. Their
+      // compatibility lane must not consume the send priority of a proven ready recipient.
+      expect((await select()).dueRows).toEqual(recovery.map(({ id }) => ({ id })));
+      const ready = await envelope(-1_000, { deliveryCount: 1, savedTargets: [sourceChatId] });
+      const result = await select();
+      expect(result.dueRows[0]).toEqual({ id: ready.id });
+      expect(result.dueRows).toHaveLength(25);
+      expect(result.dueRows.slice(1)).toEqual(recovery.slice(0, 24).map(({ id }) => ({ id })));
+      expect(
+        await db.managedBroadcastDelivery.findMany({
+          where: { broadcastId: { in: recovery.map(({ id }) => id) } },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(before);
+    },
+  );
+
+  const scheduledQueryOptions = (at = now) => ({
+    now: at,
+    staleLockBefore: new Date(at.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS),
+    scheduleModes: ['ONCE', 'SLOTS', 'RECURRENCE'] as const,
+  });
+  const scheduledRows = (at = now) =>
+    withPublisherPublicationSelectionPlan(db, (tx) =>
+      tx.$queryRaw<Array<{ id: string }>>(
+        buildPublisherExecutionDueQuery({ ...scheduledQueryOptions(at), limit: 100 }),
+      ),
+    );
+  const scheduledRecoveryRows = async () =>
+    (
+      await selectPublicationManagedBroadcastDueBatch(
+        db,
+        ['ONCE', 'SLOTS', 'RECURRENCE'],
+        100,
+        'PUBLIK_V1',
+        'off',
+      )
+    ).dueRows;
+
+  it.each(['large_audience', 'legacy'] as const)(
+    'keeps ready %s recipients in scheduled send priority',
+    async (kind) => {
+      await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'SLOTS' } });
+      if (kind === 'large_audience') await extendAudience(65);
+      const ready = await envelope(-1_000, kind === 'legacy' ? { deadline: null } : {});
+      expect(await scheduledRows()).toEqual([{ id: ready.id }]);
+    },
+  );
+
+  it('finds scheduled pending readiness beyond 64 completed recipients', async () => {
+    await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'SLOTS' } });
+    await extendAudience(65);
+    const ready = await envelope(-1_000);
+    await db.managedBroadcastDelivery.updateMany({
+      where: { broadcastId: ready.id, targetChatId: { not: targetId(64) } },
+      data: {
+        status: 'SENT',
+        attemptCount: 1,
+        remoteMessageId: 'synthetic-completed-prefix',
+        sentAt: now,
+        remoteMessageVerifiedAt: now,
+      },
+    });
+    expect(await scheduledRows()).toEqual([{ id: ready.id }]);
+  });
+
+  it.each(['ledger', 'quarantine', 'large_audience', 'legacy'] as const)(
+    'reserves scheduled %s recovery behind a full fresh send batch',
+    async (kind) => {
+      await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'SLOTS' } });
+      if (kind === 'large_audience') await extendAudience(65);
+      const recovery = await envelope(-120_000, {
+        ...(kind === 'legacy' ? { deadline: null } : {}),
+        delivery: {
+          nextAttemptAt: new Date(now.getTime() + 60_000),
+          ...(kind === 'ledger' ? { lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER } : {}),
+          ...(kind === 'quarantine'
+            ? { lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE }
+            : {}),
+        },
+      });
+      const ready: Envelope[] = [];
+      for (let index = 0; index < 25; index += 1)
+        ready.push(
+          await envelope(-1_000 + index, { deliveryCount: 1, savedTargets: [sourceChatId] }),
+        );
+      const before = await db.managedBroadcastDelivery.findMany({ orderBy: { id: 'asc' } });
+      const result = await selectPublicationManagedBroadcastDueBatch(
+        db,
+        ['SLOTS'],
+        25,
+        'PUBLIK_V1',
+        'off',
+      );
+      expect(result.dueRows).toEqual([
+        ...ready.slice(0, 24).map(({ id }) => ({ id })),
+        { id: recovery.id },
+      ]);
+      expect(await db.managedBroadcastDelivery.findMany({ orderBy: { id: 'asc' } })).toEqual(
+        before,
+      );
+    },
+  );
+
+  it('removes complete scheduled future waits from the send and wake lanes until they become due', async () => {
+    await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'SLOTS' } });
+    const waiting = await envelope(-60_000, {
+      delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+    const before = await db.managedBroadcastDelivery.findMany({
+      where: { broadcastId: waiting.id },
+    });
+    expect(await scheduledRows()).toEqual([]);
+    expect(await selectNextPendingPublisherPublicationDeadline(db, now)).toBeNull();
+    const due = new Date(now.getTime() + 60_001);
+    expect(await scheduledRows(due)).toEqual([{ id: waiting.id }]);
+    expect(await selectNextPendingPublisherPublicationDeadline(db, due)).toEqual({
+      id: waiting.id,
+      nextSendAt: new Date(now.getTime() - 60_000),
+    });
+    expect(
+      await db.managedBroadcastDelivery.findMany({ where: { broadcastId: waiting.id } }),
+    ).toEqual(before);
+  });
+
+  it('retains a scheduled envelope when one recipient is ready and its retry clock is null', async () => {
+    await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'ONCE' } });
+    await extendAudience(2);
+    const mixed = await envelope(-60_000, {
+      delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+    await db.managedBroadcastDelivery.updateMany({
+      where: { broadcastId: mixed.id, targetChatId: targetId(1) },
+      data: { nextAttemptAt: null },
+    });
+    expect(await scheduledRows()).toEqual([{ id: mixed.id }]);
+    expect(await selectNextPendingPublisherPublicationDeadline(db, now)).toMatchObject({
+      id: mixed.id,
+    });
+  });
+
+  it('keeps a clean scheduled recipient ahead of its sibling and occurrence blocker', async () => {
+    await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'SLOTS' } });
+    await extendAudience(2);
+    const mixed = await envelope(-60_000, {
+      delivery: { dispatchBlockerCode: 'bot_not_admin', dispatchBlockedAt: now },
+    });
+    await db.managedBroadcastDelivery.updateMany({
+      where: { broadcastId: mixed.id, targetChatId: targetId(1) },
+      data: { dispatchBlockerCode: null, dispatchBlockedAt: null },
+    });
+    await db.publicationOccurrence.update({
+      where: { id: mixed.occurrenceId },
+      data: { dispatchBlockerCode: 'bot_not_admin', dispatchBlockedAt: now },
+    });
+    const before = await db.managedBroadcastDelivery.findMany({
+      where: { broadcastId: mixed.id },
+      orderBy: { id: 'asc' },
+    });
+    expect(await scheduledRows()).toEqual([{ id: mixed.id }]);
+    expect(
+      await db.managedBroadcastDelivery.findMany({
+        where: { broadcastId: mixed.id },
+        orderBy: { id: 'asc' },
+      }),
+    ).toEqual(before);
+  });
+
+  it('keeps incomplete or mismatched saved scheduled audiences eligible for repair', async () => {
+    await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'ONCE' } });
+    await extendAudience(2);
+    const incomplete = await envelope(-60_000, {
+      deliveryCount: 1,
+      delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+    const duplicateSaved = await envelope(-59_000, {
+      savedTargets: [sourceChatId, sourceChatId],
+      delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+    });
+    expect(await scheduledRows()).toEqual([]);
+    expect(await scheduledRecoveryRows()).toEqual(
+      [incomplete, duplicateSaved].map(({ id }) => ({ id })),
+    );
+  });
+
+  it('retains scheduled legacy, expired, attempted, stale lease and receipt-tail work without changing effects', async () => {
+    await db.publicationSchedule.update({
+      where: { id: scheduleId },
+      data: { mode: 'RECURRENCE' },
+    });
+    const future = { nextAttemptAt: new Date(now.getTime() + 60_000) };
+    const legacy = await envelope(-60_000, { deadline: null, delivery: future });
+    const expired = await envelope(-59_000, {
+      deadline: new Date(now.getTime() - 1),
+      delivery: future,
+    });
+    const attempted = await envelope(-58_000, { delivery: { ...future, attemptCount: 1 } });
+    const stale = await envelope(-57_000, {
+      delivery: {
+        status: 'SENDING',
+        attemptCount: 1,
+        lockedAt: new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS - 1),
+        lockToken: 'synthetic-scheduled-stale-lease',
+      },
+    });
+    await extendAudience(2);
+    const receipt = await envelope(-56_000, { delivery: future });
+    await db.managedBroadcastDelivery.updateMany({
+      where: { broadcastId: receipt.id, targetChatId: targetId(1) },
+      data: {
+        status: 'SENT',
+        attemptCount: 1,
+        remoteMessageId: 'synthetic-scheduled-receipt',
+        sentAt: now,
+      },
+    });
+    const before = await db.managedBroadcastDelivery.findMany({
+      orderBy: { id: 'asc' },
+      where: {
+        broadcastId: { in: [legacy, expired, attempted, stale, receipt].map(({ id }) => id) },
+      },
+    });
+    expect(await scheduledRows()).toEqual([]);
+    expect(await scheduledRecoveryRows()).toEqual(
+      [legacy, expired, attempted, stale, receipt].map(({ id }) => ({ id })),
+    );
+    expect(
+      await db.managedBroadcastDelivery.findMany({
+        orderBy: { id: 'asc' },
+        where: {
+          broadcastId: { in: [legacy, expired, attempted, stale, receipt].map(({ id }) => id) },
+        },
+      }),
+    ).toEqual(before);
+  });
+
+  it('retains scheduled verification history and unknown future blocker timestamps', async () => {
+    await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'SLOTS' } });
+    const future = new Date(now.getTime() + 60_000);
+    const overrides: DeliveryOverrides[] = [
+      { remoteMessageVerificationAbsentCount: 1 },
+      { remoteMessageVerificationPresentCount: 1 },
+      { remoteMessageVerificationAttemptCount: 1 },
+      { remoteMessageVerificationAttemptedAt: now },
+      { remoteMessageVerifiedAt: now },
+      { remoteMessageVerificationNextAt: future },
+      { remoteMessageVerificationLastError: 'Synthetic verification error' },
+      { remoteMessageVerificationSource: 'AUTOMATED_STABLE' },
+      { lastErrorCode: PUBLIK_LEDGER_DISPATCH_MARKER },
+      { lastErrorCode: PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE },
+      { dispatchBlockerCode: 'FUTURE_PROVIDER_CODE', dispatchBlockedAt: future },
+    ];
+    const compatible: Envelope[] = [];
+    for (const [index, delivery] of overrides.entries())
+      compatible.push(
+        await envelope(-60_000 + index, { delivery: { nextAttemptAt: future, ...delivery } }),
+      );
+    expect(await scheduledRows()).toEqual([]);
+    expect(await scheduledRecoveryRows()).toEqual(compatible.map(({ id }) => ({ id })));
+  });
+
+  it.each([64, 65, 10_000])(
+    'bounds scheduled audience probes at %i recipients and preserves larger audiences',
+    async (size) => {
+      await db.publicationSchedule.update({ where: { id: scheduleId }, data: { mode: 'ONCE' } });
+      await extendAudience(size);
+      const waiting = await envelope(-60_000, {
+        delivery: { nextAttemptAt: new Date(now.getTime() + 60_000) },
+      });
+      expect(await scheduledRows()).toEqual([]);
+      expect(await scheduledRecoveryRows()).toEqual([{ id: waiting.id }]);
+      const priorityNodes = planNodes(
+        await explain(buildPublisherExecutionDueQuery({ ...scheduledQueryOptions(), limit: 25 })),
+      ).filter((node) => node.Alias === 'ready_recipient');
+      expect(priorityNodes.length).toBeGreaterThan(0);
+      for (const prefix of priorityNodes) {
+        expect(
+          (prefix['Actual Rows'] ?? 0) + (prefix['Rows Removed by Filter'] ?? 0),
+        ).toBeLessThanOrEqual(64);
+        for (const node of descendants(prefix))
+          expect(node['Node Type']).not.toMatch(/Bitmap|Sort/);
+      }
+      for (const sql of [buildPublisherPendingExecutionDeadlineQuery(scheduledQueryOptions())]) {
+        const nodes = planNodes(await explain(sql));
+        const keys = nodes.filter((node) => node['Subplan Name'] === 'CTE scheduled_delivery_keys');
+        expect(keys.length).toBeGreaterThan(0);
+        for (const key of keys) {
+          expect(key['Actual Rows']).toBeLessThanOrEqual(65);
+          for (const node of descendants(key)) expect(node['Node Type']).not.toMatch(/Bitmap|Sort/);
+        }
+        for (const page of nodes.filter(
+          (node) => node['Subplan Name'] === 'CTE scheduled_delivery_page',
+        )) {
+          expect(page['Actual Rows']).toBeLessThanOrEqual(64);
+          if (size > 64) expect(page['Actual Loops']).toBe(0);
+        }
+      }
+    },
+  );
 
   it('does not count a changed decision when fallback restores the entire ordered baseline', async () => {
     const first = await envelope(-60_000, {

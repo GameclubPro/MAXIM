@@ -40,6 +40,7 @@ import {
   PublicationPublisherRoutingService,
 } from './publication-publisher-routing.service';
 import { PublicationService } from './publication.service';
+import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import {
   LEGACY_PUBLICATION_DISAPPEARANCE_LAST_ERROR,
   LEGACY_PUBLICATION_EXACT_ABSENCE_ERROR,
@@ -6504,7 +6505,7 @@ describe('PublicationService', () => {
     expect(tx.publicationOccurrence.updateMany).not.toHaveBeenCalled();
   });
 
-  it("requires manual review before replacing another owner's publication occurrence", async () => {
+  it("allows replacing another creator's unattempted occurrence within the authorized target set", async () => {
     const slot = new Date('2026-07-12T09:00:00.000Z');
     const tx = {
       $executeRaw: jest.fn().mockResolvedValue(1),
@@ -6524,39 +6525,38 @@ describe('PublicationService', () => {
             },
           },
         ]),
-        updateMany: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
-      managedBroadcast: { findMany: jest.fn() },
+      managedBroadcast: { findMany: jest.fn().mockResolvedValue([]) },
+      managedBroadcastDelivery: { count: jest.fn().mockResolvedValue(0) },
     };
     const { service } = createService();
 
-    await expect(
-      (service as any).reservePublicationCalendar(
-        tx,
-        [
-          {
-            chatId: 'chat-1',
-            entityType: 'chat',
-            title: 'Чат',
-            avatarUrl: null,
-            link: null,
-          },
-        ],
-        [slot],
+    await (service as any).reservePublicationCalendar(
+      tx,
+      [
         {
-          mode: 'once',
-          timezone: 'Europe/Moscow',
-          at: '2026-07-12T12:00:00.000+03:00',
-          replaceConflicts: true,
+          chatId: 'chat-1',
+          entityType: 'chat',
+          title: 'Чат',
+          avatarUrl: null,
+          link: null,
         },
-        'new-publication',
-        'user-1',
-      ),
-    ).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'PUBLICATION_CONFLICT_REQUIRES_MANUAL_REVIEW' }),
-    });
-    expect(tx.managedBroadcast.findMany).not.toHaveBeenCalled();
-    expect(tx.publicationOccurrence.updateMany).not.toHaveBeenCalled();
+      ],
+      [slot],
+      {
+        mode: 'once',
+        timezone: 'Europe/Moscow',
+        at: '2026-07-12T12:00:00.000+03:00',
+        replaceConflicts: true,
+      },
+      'new-publication',
+      'user-1',
+    );
+    expect(tx.managedBroadcastDelivery.count).toHaveBeenCalled();
+    expect(tx.publicationOccurrence.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: PublicationOccurrenceStatus.CANCELED } }),
+    );
   });
 
   it('rejects replacement after any conflicting publication delivery attempt', async () => {
@@ -6968,7 +6968,7 @@ describe('PublicationService', () => {
     expect(managedEntitiesService.assertChannelAdminAccess).not.toHaveBeenCalled();
   });
 
-  it('scopes publication ownership checks to the requested dispatch profile', async () => {
+  it('scopes publication management to exact Publisher administrator grants', async () => {
     const findFirst = jest.fn().mockResolvedValue(null);
     const { service } = createService({ publication: { findFirst } });
 
@@ -6983,8 +6983,11 @@ describe('PublicationService', () => {
       expect.objectContaining({
         where: {
           id: 'publication-1',
-          actorUserId: 'user-1',
-          dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+          ...publicationAdminAccessWhere(
+            publicationAdminScope('user-1', 'publisher-bot'),
+            PublicationDispatchProfile.PUBLIK_V1,
+            'manage',
+          ),
         },
       }),
     );

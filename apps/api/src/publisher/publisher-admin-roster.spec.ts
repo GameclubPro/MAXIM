@@ -82,18 +82,9 @@ describe('Publisher administrator discovery', () => {
       const update = f.tx.managedEntityAccessEdge.updateMany.mock.calls[0][0];
       expect(update.where.checkedAt).toEqual({ lte: f.params.probeStartedAt });
       expect(update.data).not.toHaveProperty('sourceVersion');
-      expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          where: {
-            chatId: 'chat-1',
-            botId: 'publik',
-            state: 'GRANTED',
-            userId: { notIn: ['installer', 'other-admin', 'bot-admin', 'untyped-admin'] },
-            checkedAt: { lte: f.params.probeStartedAt },
-          },
-          data: expect.objectContaining({ state: 'USER_DENIED' }),
-        }),
-      );
+      expect(f.tx.managedEntityAccessEdge.updateMany.mock.calls).toHaveLength(2);
+      for (const [write] of f.tx.managedEntityAccessEdge.updateMany.mock.calls)
+        expect(write.data.state).toBe('GRANTED');
     },
   );
 
@@ -130,6 +121,17 @@ describe('Publisher administrator discovery', () => {
     f.maxClient.getChatAdminAccesses.mockRejectedValue(new Error('incomplete roster'));
     await expect(syncPublisherAdminRoster(f.params)).rejects.toThrow('incomplete roster');
     expect(f.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { members: [] },
+    { members: [{ userId: 'another-admin', isBot: true, isAdmin: true, isOwner: false }] },
+  ])('does not infer lost user authority from roster absence: %j', async ({ members }) => {
+    const f = fixture();
+    f.maxClient.getChatAdminAccesses.mockResolvedValue(members as never);
+    await expect(syncPublisherAdminRoster(f.params)).resolves.toBe(true);
+    expect(f.tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+    expect(f.tx.managedEntityAccessEdge.createMany).not.toHaveBeenCalled();
   });
 
   it('retains OWNER role and refuses an incomplete roster without rewriting any grants', async () => {

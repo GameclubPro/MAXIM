@@ -23,10 +23,15 @@ import {
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PUBLICATION_ASSET_METADATA_SELECT } from './publication-media-limits';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
+import {
+  publicationAdminAccessWhere,
+  publicationAdminScope,
+  publicationAdminTargetWhere,
+} from './publication-admin-access';
 import { PublisherPolicyService } from './publisher-policy.service';
 
-const draftWhere = (actorUserId: string) => ({
-  actorUserId,
+const draftWhere = (actorUserId: string, mode: 'read' | 'manage' = 'read') => ({
+  ...publicationAdminAccessWhere(publicationAdminScope(actorUserId), 'PUBLIK_V1', mode),
   lifecycle: 'DRAFT' as const,
   dispatchProfile: 'PUBLIK_V1' as const,
   occurrences: { none: {} },
@@ -48,7 +53,11 @@ export class PublicationDraftsService {
       where: { id, ...draftWhere(user.userId) },
       include: {
         schedule: true,
-        targets: { orderBy: { position: 'asc' } },
+        targets: {
+          where: publicationAdminTargetWhere(publicationAdminScope(user.userId)),
+          orderBy: { position: 'asc' },
+        },
+        _count: { select: { targets: true } },
         canonicalContentRevision: {
           include: {
             assets: {
@@ -111,12 +120,17 @@ export class PublicationDraftsService {
     if (replay) {
       if (replay.requestHash !== hash || (id && replay.publicationId !== id))
         throw new ConflictException('Идентификатор запроса уже использован.');
+      const accessible = await this.prisma.publication.findFirst({
+        where: { id: replay.publicationId, ...draftWhere(user.userId, 'manage') },
+        select: { id: true },
+      });
+      if (!accessible) throw new NotFoundException('Черновик недоступен для изменения.');
       return this.getSavedVersion(replay.publicationId, replay.resultingVersion, user);
     }
     const route = this.routing.requireNewRoute();
     const targets = await this.policy.resolveDraftTargets(user, request.targets);
     const prepared = await this.content.prepareContentRevision(request.content);
-    await this.content.assertPublisherCompatibleContent(prepared, user.userId);
+    await this.content.assertPublisherCompatibleContent(prepared, user.userId, id ?? undefined);
     let saved: { id: string; version: number };
     try {
       saved = await this.prisma.$transaction(
@@ -126,7 +140,7 @@ export class PublicationDraftsService {
           );
           const current = id
             ? await tx.publication.findFirst({
-                where: { id, ...draftWhere(user.userId) },
+                where: { id, ...draftWhere(user.userId, 'manage') },
                 include: { canonicalContentRevision: { select: { revision: true } } },
               })
             : null;
@@ -134,7 +148,13 @@ export class PublicationDraftsService {
             throw new NotFoundException('Черновик не найден или уже опубликован.');
           if (current && current.version !== request.expectedRevision)
             throw new ConflictException('Черновик изменён на другом устройстве. Обновите его.');
-          await this.assertQuota(tx, user.userId, id, prepared);
+          await this.assertQuota(
+            tx,
+            current?.actorUserId ?? user.userId,
+            id,
+            prepared,
+            user.userId,
+          );
           const row =
             current ??
             (await tx.publication.create({
@@ -150,7 +170,11 @@ export class PublicationDraftsService {
             }));
           if (current) {
             const claim = await tx.publication.updateMany({
-              where: { id: row.id, ...draftWhere(user.userId), version: request.expectedRevision },
+              where: {
+                id: row.id,
+                ...draftWhere(user.userId, 'manage'),
+                version: request.expectedRevision,
+              },
               data: { version: { increment: 1 }, title: request.title },
             });
             if (!claim.count) throw new ConflictException('Черновик уже изменён. Обновите его.');
@@ -237,7 +261,7 @@ export class PublicationDraftsService {
         Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${`publication-drafts:${user.userId}`}))`,
       );
       const row = await tx.publication.findFirst({
-        where: { id, actorUserId: user.userId, dispatchProfile: 'PUBLIK_V1' },
+        where: { id, ...draftWhere(user.userId, 'manage') },
         select: { lifecycle: true, version: true },
       });
       if (!row) return;
@@ -251,12 +275,12 @@ export class PublicationDraftsService {
       if (links.length > 1000)
         throw new ConflictException('Слишком много версий черновика для одной операции.');
       await tx.publisherPostImportSession.updateMany({
-        where: { publicationId: id, actorUserId: user.userId, status: 'READY' },
+        where: { publicationId: id, status: 'READY' },
         data: { status: 'CANCELED', notificationPending: false, notificationKind: null },
       });
       // FLAG: Only a never-dispatched owned draft may be removed; shared/sent assets survive.
       const deleted = await tx.publication.deleteMany({
-        where: { id, ...draftWhere(user.userId), version: request.data.expectedRevision },
+        where: { id, ...draftWhere(user.userId, 'manage'), version: request.data.expectedRevision },
       });
       if (!deleted.count) throw new ConflictException('Черновик уже изменён или отправляется.');
       await tx.publicationAsset.deleteMany({
@@ -274,6 +298,7 @@ export class PublicationDraftsService {
     actorUserId: string,
     excludeId: string | null,
     content: PreparedPublicationContentRevision,
+    actingActorUserId = actorUserId,
   ) {
     const drafts = await tx.publication.findMany({
       where: {
@@ -298,7 +323,32 @@ export class PublicationDraftsService {
     );
     const references = referenceIds.length
       ? await tx.publicationAsset.findMany({
-          where: { id: { in: referenceIds }, actorUserId },
+          where: {
+            id: { in: referenceIds },
+            OR: [
+              { actorUserId: actingActorUserId },
+              ...(excludeId
+                ? [
+                    {
+                      contentLinks: {
+                        some: {
+                          contentRevision: {
+                            publication: {
+                              id: excludeId,
+                              ...publicationAdminAccessWhere(
+                                publicationAdminScope(actingActorUserId),
+                                'PUBLIK_V1',
+                                'manage',
+                              ),
+                            },
+                          },
+                        },
+                      },
+                    },
+                  ]
+                : []),
+            ],
+          },
           select: { id: true, sizeBytes: true },
         })
       : [];

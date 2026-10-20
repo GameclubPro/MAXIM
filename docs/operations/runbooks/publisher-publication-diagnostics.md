@@ -93,8 +93,9 @@ Rows retain lifecycle, schedule status (including ERROR), cancellation/blocker c
 revision agreement, saved deadline/retry/lock clocks, attempts and recorded-receipt
 presence. Unknown saved reasons become `other`; identifiers, tokens, content and raw
 errors are excluded. These are current saved metadata, not historical authority or
-execution traces. Execution envelopes and the action ledger are outside this selector;
-zero delivery rows cannot establish whether handoff or an envelope exists.
+execution traces. The action ledger is outside this selector; envelopes are probed only
+through sampled deliveries, so zero delivery rows cannot establish whether handoff or
+an envelope exists.
 `capabilities_and_activation_checked=false` and `client_visibility=not_observed` remain
 explicit: a receipt or SENT status does not prove the client saw a post. Neither the
 report nor its plan authorizes replay, cancellation, permission repair or another SEND.
@@ -113,6 +114,10 @@ package manifest required by a root-level `npm run --workspace` invocation.
 
 ## Current scheduling and recovery
 
+Before enabling entity execution authority for this incident, use the reviewed
+[obsolete-slot retirement](publisher-obsolete-retirement.md). Its fixed cutoff,
+private preview and whole-audience zero-effect proof preserve uncertain work.
+
 Deadline dispatch and imminent-publication preflight each have one coalesced coordinator
 slot, independent of the serialized recovery slot. The existing MAX limiter, two refresh workers
 and SQL send fences retain their quotas and ownership. Publication scheduling is owned by
@@ -125,7 +130,8 @@ admission. Saved snapshot audiences are materialized in full; a blocked recipien
 not prevent other recipients from preparing. A bounded page prepares each pending
 context independently. Version zero is intent only; SQL forbids sending until the
 untouched delivery wins the single transition to immutable version one. Every actual
-send still rechecks actor, bot, content, policy and schedule authority.
+send still rechecks bot, content, policy and schedule authority. Modern accepted finite
+intents use saved entity execution authority; legacy indefinite intents retain actor checks.
 
 New schedules persist an explicit late policy: by default recover for 24 hours and,
 for recurring schedules, retain the latest due durable occurrence of the same revision.
@@ -140,8 +146,9 @@ new recurrence limits, and catch-up materialization is capped at 300 slots per p
 Confirmed Publisher bot and human ADMIN/OWNER rights do not expire. SQL reads enforce
 explicit revocation, exact bot, binding, policy and lifecycle before new effects.
 Never clear existing access edges to activate this release. Bare 403/404 and partial
-MAX responses are unknown; explicit chat/access denial or a valid complete roster
-can revoke rights. There is no periodic all-chat permission scan.
+MAX responses are unknown. A valid exact-member nonadmin answer or an explicit trusted
+removal can revoke rights; absence from a roster does not revoke a human grant.
+There is no periodic all-chat permission scan.
 
 Recipient `nextAttemptAt` persists across restarts. MAX Retry-After is a lower bound;
 without it, external 429 backs off 30/60/120/240/300 seconds plus bounded positive jitter.
@@ -247,6 +254,16 @@ coordinator separation above supersedes only that serialization detail:
   audience from draining only four recipients per 15-second safety poll.
 - Delivery verification becomes selectable only after its initial delay and persisted
   next-check time. Future verification rows cannot displace currently due verification.
+- Scheduled send priority requires one untouched, due recipient in a bounded prefix of
+  64 PENDING rows for the exact occurrence. Completed recipients do not occupy that
+  prefix. A positive match also works for large and legacy audiences; final legacy
+  author checks remain mandatory. Error/ledger/quarantine history and due blockers stay
+  in fallback recovery rather than filling the send-priority portion. One tail slot is
+  reserved for recovery when ready work exists. This is a selection opportunity: the
+  five-second sweep may stop before the tail, and a ready recipient beyond 64 future
+  PENDING rows remains in fallback. It is not a recovery latency guarantee under saturation.
+  The pending-work timer excludes a future wait only after the separate bounded proof
+  of a complete, finite, untouched audience; unknown work retains its previous wake path.
 
 Regression coverage includes a real disposable PostgreSQL fixture with 3,000 old
 blocked occurrences, fresh-work priority, rotating recovery, the actual generated

@@ -14,6 +14,7 @@ function harness(
     scheduledAt: new Date(now.getTime() + 120_000),
     publication: { actorUserId: 'author-1' },
     scheduleRevision: 1,
+    deliveryDeadlineAt: null as Date | null,
     accessPreflightPosition: null as number | null,
     accessPreflightCycleStartedAt: null as Date | null,
   };
@@ -71,7 +72,7 @@ describe('PublisherPublicationAccessPreflightService', () => {
     expect(f.readiness.requestBotAccessRefresh).toHaveBeenCalledTimes(1);
     backgroundWork.onModuleDestroy();
   });
-  it('nominates exact bot and author checks before the publication deadline without sending', async () => {
+  it('keeps exact bot and author nominations for indefinite legacy intent', async () => {
     const f = harness();
     await f.service.runOnce();
     expect(f.readiness.requestBotAccessRefresh).toHaveBeenCalledWith(
@@ -95,6 +96,25 @@ describe('PublisherPublicationAccessPreflightService', () => {
         }),
       }),
     );
+  });
+
+  it('prepares accepted entity intent without nominating or waiting on its former author', async () => {
+    const f = harness();
+    f.occurrence.deliveryDeadlineAt = new Date(Date.now() + 86_400_000);
+    f.readiness.requestActorAccessRefresh.mockRejectedValue(new Error('Former author unavailable'));
+    await f.service.runOnce();
+    expect(f.readiness.requestBotAccessRefresh).toHaveBeenCalledTimes(1);
+    expect(f.readiness.requestActorAccessRefresh).not.toHaveBeenCalled();
+    expect(f.prisma.publicationOccurrence.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not advance entity preparation when the bot nomination acknowledgement fails', async () => {
+    const f = harness();
+    f.occurrence.deliveryDeadlineAt = new Date(Date.now() + 86_400_000);
+    f.readiness.requestBotAccessRefresh.mockRejectedValue(new Error('Redis unavailable'));
+    await f.service.runOnce();
+    expect(f.prisma.publicationOccurrence.updateMany).not.toHaveBeenCalled();
+    expect(f.readiness.requestActorAccessRefresh).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -33,6 +33,15 @@ import {
   type PublicationDispatchIssueIndex,
   type InternalPublicationDispatchIssue,
 } from './publication-dispatch-issue';
+import {
+  publicationAdminAccessWhere,
+  publicationAdminScope,
+  publicationAdminTargetWhere,
+  publicationAdminDeliverySql,
+  publicationAdminReadSql,
+  publicationAdminTargetSql,
+  type PublicationAdminScope,
+} from './publication-admin-access';
 import { buildEffectivePublicationDeliveryStatusSql } from './publication-legacy-automated-absence';
 
 const PUBLICATION_LIST_PREVIEW_TARGETS = 6;
@@ -107,6 +116,19 @@ const resolveEffectiveOccurrenceStatus = (
     ? PublicationOccurrenceStatus.AMBIGUOUS
     : status;
 
+export function scopedPublicationOccurrenceStatus(
+  status: PublicationOccurrenceStatus,
+  delivery: PublicationDeliveryStats,
+): PublicationOccurrenceStatus {
+  if (status === 'CANCELED') return status;
+  if (delivery.total === 0) return status === 'IN_PROGRESS' ? status : 'SCHEDULED';
+  if (delivery.pending > 0) return 'IN_PROGRESS';
+  if (delivery.ambiguous > 0) return 'AMBIGUOUS';
+  if (delivery.failed > 0) return delivery.sent > 0 ? 'PARTIAL' : 'FAILED';
+  if (delivery.sent > 0) return 'SENT';
+  return 'CANCELED';
+}
+
 type PublicationTargetRow = {
   targetChatId: string;
   entityType: ChatEntityType;
@@ -125,7 +147,7 @@ export type PublisherTargetPresentationMap = ReadonlyMap<string, PublisherTarget
 export class PublicationPresenterService {
   constructor(private readonly prisma: PrismaService) {}
 
-  publicationSummaryInclude() {
+  publicationSummaryInclude(scope?: PublicationAdminScope) {
     return {
       canonicalContentRevision: {
         include: {
@@ -135,7 +157,12 @@ export class PublicationPresenterService {
           },
         },
       },
-      targets: { orderBy: { position: 'asc' }, include: { chat: true } },
+      targets: {
+        ...(scope ? { where: publicationAdminTargetWhere(scope) } : {}),
+        orderBy: { position: 'asc' },
+        include: { chat: true },
+      },
+      _count: { select: { targets: true } },
       schedule: true,
       occurrences: {
         where: { status: PublicationOccurrenceStatus.SCHEDULED },
@@ -150,11 +177,19 @@ export class PublicationPresenterService {
     publicationId: string,
     actorUserId: string,
     dispatchProfile?: PublicationDispatchProfile,
+    publisherBotId?: string,
   ) {
+    const scope =
+      dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? publicationAdminScope(actorUserId, publisherBotId)
+        : undefined;
     const row = await this.prisma.publication.findFirst({
       where: {
         id: publicationId,
-        actorUserId,
+        ...publicationAdminAccessWhere(
+          publicationAdminScope(actorUserId, publisherBotId),
+          dispatchProfile,
+        ),
         ...(dispatchProfile ? { dispatchProfile } : {}),
       },
       include: {
@@ -166,7 +201,12 @@ export class PublicationPresenterService {
             },
           },
         },
-        targets: { orderBy: { position: 'asc' }, include: { chat: true } },
+        targets: {
+          ...(scope ? { where: publicationAdminTargetWhere(scope) } : {}),
+          orderBy: { position: 'asc' },
+          include: { chat: true },
+        },
+        _count: { select: { targets: true } },
         schedule: true,
         occurrences: {
           orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
@@ -198,13 +238,14 @@ export class PublicationPresenterService {
         orderBy: [{ scheduledAt: 'desc' }, { id: 'desc' }],
         select: PUBLICATION_DETAILS_OCCURRENCE_SELECT,
       }),
-      this.loadDeliveryStats(publicationId),
-      this.loadActionableDeliveryStatsByPublicationIds([publicationId]),
+      this.loadDeliveryStats(publicationId, scope),
+      this.loadActionableDeliveryStatsByPublicationIds([publicationId], scope),
       row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
         ? this.loadPublicationDispatchIssues(
             [publicationId],
             actorUserId,
             PublicationDispatchProfile.PUBLIK_V1,
+            scope,
           )
         : Promise.resolve(emptyPublicationDispatchIssueIndex()),
     ]);
@@ -224,6 +265,7 @@ export class PublicationPresenterService {
     });
     const occurrenceDeliveryStats = await this.loadOccurrenceDeliveryStats(
       orderedOccurrences.map((occurrence) => occurrence.id),
+      scope,
     );
     const occurrences = orderedOccurrences.map((occurrence) => {
       const deliveryStats = occurrenceDeliveryStats.get(occurrence.id) ?? this.emptyDeliveryStats();
@@ -252,10 +294,14 @@ export class PublicationPresenterService {
     publisherBotId?: string | null;
   }) {
     const publicationIds = params.rows.map((row) => row.id);
+    const scope =
+      params.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
+        ? publicationAdminScope(params.actorUserId, params.publisherBotId ?? undefined)
+        : undefined;
     const [deliveryStats, actionableDeliveryStats, publisherTargetPresentations, dispatchIssues] =
       await Promise.all([
-        this.loadDeliveryStatsByPublicationIds(publicationIds),
-        this.loadActionableDeliveryStatsByPublicationIds(publicationIds),
+        this.loadDeliveryStatsByPublicationIds(publicationIds, scope),
+        this.loadActionableDeliveryStatsByPublicationIds(publicationIds, scope),
         params.publisherBotId
           ? this.loadPublisherTargetPresentations(
               params.rows.flatMap((row) => row.targets),
@@ -266,6 +312,7 @@ export class PublicationPresenterService {
           publicationIds,
           params.actorUserId,
           params.dispatchProfile,
+          scope,
         ),
       ]);
     return {
@@ -283,6 +330,7 @@ export class PublicationPresenterService {
     publisherTargetPresentations?: PublisherTargetPresentationMap,
     preloadedDispatchIssue?: InternalPublicationDispatchIssue | null,
   ): Promise<PublicationSummary> {
+    const canManageAllTargets = (row._count?.targets ?? row.targets.length) === row.targets.length;
     const issue =
       row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
         ? preloadedDispatchIssue !== undefined
@@ -316,15 +364,19 @@ export class PublicationPresenterService {
       postPublish: publicationPostPublishSchema.parse(content?.postPublish ?? {}),
       id: row.id,
       title: row.title,
-      lifecycle: row.lifecycle,
+      lifecycle:
+        !canManageAllTargets && row.lifecycle === PublicationLifecycle.ERROR
+          ? PublicationLifecycle.ACTIVE
+          : row.lifecycle,
+      access: { canManageAllTargets },
       version: row.version,
       contentPreview: contentPreview.slice(0, 160),
       contentPreviewFormat: 'plain',
       targetCount: targets.length,
       targetPreviews,
       targetOverflowCount: Math.max(0, targets.length - targetPreviews.length),
-      audienceSelection: row.audienceSelection,
-      audienceMode: row.audienceMode,
+      audienceSelection: canManageAllTargets ? row.audienceSelection : 'SELECTED',
+      audienceMode: canManageAllTargets ? row.audienceMode : 'SNAPSHOT',
       mediaCount: content?.assets.length ?? 0,
       hasVideo:
         content?.assets.some(
@@ -339,7 +391,10 @@ export class PublicationPresenterService {
           row.schedule.status === 'DRAFT' &&
           !publicationScheduleInputSchema.safeParse(row.schedule.rule).success
         )
-          ? this.mapSchedule(row.schedule, nextOccurrenceAt)
+          ? this.mapSchedule(
+              canManageAllTargets ? row.schedule : { ...row.schedule, lastError: null },
+              nextOccurrenceAt,
+            )
           : null,
       dispatchIssue: issue === 'decision_required' ? 'target_setup_required' : issue,
       requiresScheduleDecision: issue === 'decision_required',
@@ -392,10 +447,10 @@ export class PublicationPresenterService {
       occurrences: row.occurrences.map((occurrence: any) => {
         const delivery =
           occurrence.deliveryStats ?? this.buildDeliveryStats(occurrence.deliveries ?? []);
-        const effectiveOccurrenceStatus = resolveEffectiveOccurrenceStatus(
-          occurrence.status,
-          delivery,
-        );
+        const effectiveOccurrenceStatus =
+          summary.access?.canManageAllTargets !== false
+            ? resolveEffectiveOccurrenceStatus(occurrence.status, delivery)
+            : scopedPublicationOccurrenceStatus(occurrence.status, delivery);
         const usesLatestContent =
           typeof row.canonicalContentRevisionId === 'string' &&
           occurrence.contentRevisionId === row.canonicalContentRevisionId;
@@ -405,6 +460,7 @@ export class PublicationPresenterService {
           occurrence._count?.legacyBroadcasts === 0 &&
           effectiveOccurrenceStatus === PublicationOccurrenceStatus.FAILED;
         const canRetry =
+          summary.access?.canManageAllTargets !== false &&
           (delivery.failed > 0 || hasRetryableMissingEnvelope) &&
           (row.lifecycle === PublicationLifecycle.ACTIVE ||
             row.lifecycle === PublicationLifecycle.ERROR) &&
@@ -457,6 +513,7 @@ export class PublicationPresenterService {
     publicationIds: string[],
     actorUserId: string,
     dispatchProfile?: PublicationDispatchProfile,
+    scope?: PublicationAdminScope,
   ): Promise<PublicationDispatchIssueIndex> {
     const uniquePublicationIds = [
       ...new Set(publicationIds.map((id) => id.trim()).filter(Boolean)),
@@ -479,6 +536,7 @@ export class PublicationPresenterService {
           occurrence."publication_id" AS "publicationId",
           occurrence."status" AS "occurrenceStatus",
           occurrence."dispatch_blocker_code" AS "occurrenceBlockerCode",
+          ${scope ? Prisma.sql`NOT EXISTS (SELECT 1 FROM "publication_targets" AS target WHERE target."publication_id" = publication."id" AND NOT ${publicationAdminTargetSql(scope)})` : Prisma.sql`TRUE`} AS "allTargetsAuthorized",
           EXISTS (
             SELECT 1
             FROM "managed_broadcast_deliveries" AS delivery
@@ -498,7 +556,7 @@ export class PublicationPresenterService {
           ) OR (occurrence."status" = 'FAILED'::"PublicationOccurrenceStatus"
             AND occurrence."dispatch_blocker_code" = 'PUBLISHER_MISSED_WINDOW_REVIEW'))
           AND occurrence."dispatch_profile" = 'PUBLIK_V1'::"PublicationDispatchProfile"
-          AND publication."actor_user_id" = ${normalizedActorUserId}
+          AND ${scope ? publicationAdminReadSql(scope) : Prisma.sql`publication."actor_user_id" = ${normalizedActorUserId}`}
           AND publication."dispatch_profile" = CAST(
             ${dispatchProfile} AS "PublicationDispatchProfile"
           )
@@ -520,12 +578,15 @@ export class PublicationPresenterService {
         OR (current_occurrence."occurrenceStatus" = 'FAILED'::"PublicationOccurrenceStatus"
           AND current_occurrence."occurrenceBlockerCode" = 'PUBLISHER_MISSED_WINDOW_REVIEW'))
         AND current_occurrence."occurrenceBlockerCode" IS NOT NULL
+        AND (current_occurrence."allTargetsAuthorized" OR current_occurrence."occurrenceBlockerCode" = 'PUBLISHER_MISSED_WINDOW_REVIEW')
       UNION ALL
       SELECT DISTINCT
         current_occurrence."publicationId",
         current_occurrence."occurrenceId",
         delivery."dispatch_blocker_code" AS "blockerCode"
       FROM "currentOccurrences" AS current_occurrence
+      INNER JOIN "publication_occurrences" AS occurrence
+        ON occurrence."id" = current_occurrence."occurrenceId"
       INNER JOIN "managed_broadcast_deliveries" AS delivery
         ON delivery."publication_occurrence_id" = current_occurrence."occurrenceId"
       WHERE current_occurrence."hasExecutionDeliveries" = TRUE
@@ -535,12 +596,14 @@ export class PublicationPresenterService {
           'SENDING'::"ManagedBroadcastDeliveryStatus"
         )
         AND delivery."dispatch_blocker_code" IS NOT NULL
+        ${publicationAdminDeliverySql(scope)}
     `);
     return buildPublicationDispatchIssueIndex(rows);
   }
 
   async loadDeliveryStatsByPublicationIds(
     publicationIds: string[],
+    scope?: PublicationAdminScope,
   ): Promise<Map<string, PublicationDeliveryStats>> {
     const uniquePublicationIds = [...new Set(publicationIds)];
     const statsByPublicationId = new Map<string, PublicationDeliveryStats>(
@@ -566,6 +629,7 @@ export class PublicationPresenterService {
       INNER JOIN "publication_occurrences" AS occurrence
         ON occurrence."id" = delivery."publication_occurrence_id"
       WHERE occurrence."publication_id" IN (${Prisma.join(uniquePublicationIds)})
+      ${publicationAdminDeliverySql(scope)}
       GROUP BY occurrence."publication_id", 2
     `);
 
@@ -578,7 +642,10 @@ export class PublicationPresenterService {
     return statsByPublicationId;
   }
 
-  async loadDeliveryStats(publicationId: string): Promise<PublicationDeliveryStats> {
+  async loadDeliveryStats(
+    publicationId: string,
+    scope?: PublicationAdminScope,
+  ): Promise<PublicationDeliveryStats> {
     const effectiveStatusSql = buildEffectivePublicationDeliveryStatusSql();
     const grouped = await this.prisma.$queryRaw<
       Array<{ status: ManagedBroadcastDeliveryStatus; count: bigint }>
@@ -590,6 +657,7 @@ export class PublicationPresenterService {
       INNER JOIN "publication_occurrences" AS occurrence
         ON occurrence."id" = delivery."publication_occurrence_id"
       WHERE occurrence."publication_id" = ${publicationId}
+      ${publicationAdminDeliverySql(scope)}
       GROUP BY 1
     `);
     const stats = this.emptyDeliveryStats();
@@ -601,6 +669,7 @@ export class PublicationPresenterService {
 
   async loadActionableDeliveryStatsByPublicationIds(
     publicationIds: string[],
+    scope?: PublicationAdminScope,
   ): Promise<Map<string, PublicationDeliveryStats>> {
     const uniquePublicationIds = [...new Set(publicationIds)];
     const statsByPublicationId = new Map<string, PublicationDeliveryStats>(
@@ -630,6 +699,7 @@ export class PublicationPresenterService {
         AND schedule."publication_id" = occurrence."publication_id"
         AND schedule."revision" = occurrence."schedule_revision"
       WHERE occurrence."publication_id" IN (${Prisma.join(uniquePublicationIds)})
+      ${publicationAdminDeliverySql(scope)}
       GROUP BY occurrence."publication_id", 2
     `);
 
@@ -644,6 +714,7 @@ export class PublicationPresenterService {
 
   async loadOccurrenceDeliveryStats(
     occurrenceIds: string[],
+    scope?: PublicationAdminScope,
   ): Promise<Map<string, PublicationDeliveryStats>> {
     const uniqueOccurrenceIds = [...new Set(occurrenceIds)];
     const statsByOccurrenceId = new Map<string, PublicationDeliveryStats>(
@@ -666,7 +737,10 @@ export class PublicationPresenterService {
         ${effectiveStatusSql} AS "status",
         COUNT(*)::bigint AS "count"
       FROM "managed_broadcast_deliveries" AS delivery
+      INNER JOIN "publication_occurrences" AS occurrence
+        ON occurrence."id" = delivery."publication_occurrence_id"
       WHERE delivery."publication_occurrence_id" IN (${Prisma.join(uniqueOccurrenceIds)})
+      ${publicationAdminDeliverySql(scope)}
       GROUP BY delivery."publication_occurrence_id", 2
     `);
     for (const group of grouped) {

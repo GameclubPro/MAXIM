@@ -102,6 +102,7 @@ test('native race lane lists existing literal test paths without shell operators
     'src/webhook/webhook-multibot-fixed-fullpath.spec.ts',
     'src/scripts/cancel-webhook-backlog-v2-postgres.spec.ts',
     'src/scripts/cancel-webhook-backlog-v2-history-postgres.spec.ts',
+    'src/admin/publication-admin-access-postgres.spec.ts',
   ]) {
     assert.ok(paths.includes(path), `Missing critical native regression: ${path}`);
   }

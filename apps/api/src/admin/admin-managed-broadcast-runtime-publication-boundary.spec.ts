@@ -671,6 +671,7 @@ describe('AdminManagedBroadcastRuntime publication boundary', () => {
       { id: 'broadcast-publik', publicationOccurrenceId: null },
       { id: 'delivery-publik', targetChatId: 'chat-1' },
       'publisher-bot',
+      { kind: 'legacy_actor', actorUserId: 'author', entityType: 'chat' },
     );
 
     expect(retryAt).toEqual(expect.any(Date));

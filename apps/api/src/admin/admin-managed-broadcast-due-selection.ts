@@ -310,17 +310,34 @@ function mergePublicationDueRows(
   verificationDueRows: readonly DueManagedBroadcastRow[],
   fallbackDueRows: readonly DueManagedBroadcastRow[],
   limit: number,
+  reserveScheduledRecovery = false,
 ): { dueRows: DueManagedBroadcastRow[]; verificationOnlyRows: DueManagedBroadcastRow[] } {
   const executionIds = new Set(executionDueRows.map((row) => row.id));
   const verificationOnlyRows = verificationDueRows.filter((row) => !executionIds.has(row.id));
+  const verificationIds = new Set(verificationOnlyRows.map((row) => row.id));
+  const fallbackOnlyRows = fallbackDueRows.filter(
+    (row) => !executionIds.has(row.id) && !verificationIds.has(row.id),
+  );
   const verificationReservation = Math.min(
     verificationOnlyRows.length,
     MANAGED_BROADCAST_RECOVERY_BATCH_SIZE,
     executionDueRows.length > 0 ? Math.max(0, limit - 1) : limit,
   );
+  // FLAG: All selected send-ready rows precede recovery. One scheduled tail slot is
+  // a selection opportunity for uncertainty and readiness beyond the bounded prefix;
+  // the five-second sweep may stop before reaching it. NOW retains its existing merge.
+  const recoveryReservation =
+    reserveScheduledRecovery && executionDueRows.length > 0 && fallbackOnlyRows.length > 0
+      ? Math.min(1, Math.max(0, limit - verificationReservation - 1))
+      : 0;
+  const prioritizedExecutionRows = executionDueRows.slice(
+    0,
+    limit - verificationReservation - recoveryReservation,
+  );
   const dueRows: DueManagedBroadcastRow[] = [
-    ...executionDueRows.slice(0, limit - verificationReservation),
+    ...prioritizedExecutionRows,
     ...verificationOnlyRows.slice(0, verificationReservation),
+    ...fallbackOnlyRows.slice(0, recoveryReservation),
   ];
   const selectedIds = new Set(dueRows.map((row) => row.id));
   for (const row of [...executionDueRows, ...verificationOnlyRows, ...fallbackDueRows]) {
@@ -553,6 +570,8 @@ export async function selectPublicationManagedBroadcastDueBatch(
     verificationDueRows,
     fallbackDueRows,
     boundedLimit,
+    dispatchProfile === PublicationDispatchProfile.PUBLIK_V1 &&
+      !scheduleModes.includes(PublicationScheduleMode.NOW),
   );
   if (temporalSelectionUsed) {
     // FLAG: These are repeated bounded selection observations, not unique publications or

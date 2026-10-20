@@ -1,6 +1,7 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { MINIAPP_PROFILES_METADATA } from '../auth/miniapp-profile';
 import type { ManagedBroadcastDelivery } from '../prisma/prisma-client';
+import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import {
   buildPublicationPostActionChange,
   PublicationPostActionCommandsService,
@@ -33,7 +34,7 @@ const makeRow = (overrides = {}) =>
     ...overrides,
   }) as ManagedBroadcastDelivery;
 const request = { requestId: 'action-request', expectedVersion: '0'.repeat(64) };
-const owner = { userId: 'owner', username: null, displayName: null };
+const administrator = { userId: 'administrator', username: null, displayName: null };
 
 describe('publication post-action commands', () => {
   it('keeps the HTTP route Publisher-only', () => {
@@ -185,16 +186,35 @@ describe('publication post-action commands', () => {
     return { row, prisma, access, service, body };
   }
 
-  it('authorizes the exact owner and entity, and replays a lost acknowledgement without repeating the mutation', async () => {
+  it('authorizes an exact target administrator and replays a lost acknowledgement without repeating the mutation', async () => {
     const { service, body, prisma, access } = setup();
-    await service.execute('publication', 'delivery', owner, body);
-    await service.execute('publication', 'delivery', owner, body);
-    expect(access.getEntity).toHaveBeenCalledWith('chat', 'chat', owner);
+    await service.execute('publication', 'delivery', administrator, body);
+    await service.execute('publication', 'delivery', administrator, body);
+    expect(access.getEntity).toHaveBeenCalledTimes(2);
+    expect(access.getEntity).toHaveBeenCalledWith('chat', 'chat', administrator);
     expect(prisma.publication.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'publication', actorUserId: 'owner', dispatchProfile: 'PUBLIK_V1' },
+        where: {
+          id: 'publication',
+          ...publicationAdminAccessWhere(publicationAdminScope(administrator.userId), 'PUBLIK_V1'),
+        },
       }),
     );
+    expect(prisma.publicationMutationRecord.findUnique).toHaveBeenCalledWith({
+      where: {
+        actorUserId_requestId: {
+          actorUserId: administrator.userId,
+          requestId: body.requestId,
+        },
+      },
+    });
+    expect(prisma.publicationMutationRecord.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        actorUserId: administrator.userId,
+        requestId: body.requestId,
+        publicationId: 'publication',
+      }),
+    });
     expect(prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -207,10 +227,46 @@ describe('publication post-action commands', () => {
     );
   });
 
-  it('does not mutate another owner publication or a stale version', async () => {
+  it('rejects a committed replay after exact recipient administrator access is revoked', async () => {
+    const { service, body, prisma, access } = setup();
+    await service.execute('publication', 'delivery', administrator, body);
+    const denial = new ForbiddenException('Нет доступа к получателю.');
+    access.getEntity.mockRejectedValueOnce(denial);
+
+    await expect(service.execute('publication', 'delivery', administrator, body)).rejects.toBe(
+      denial,
+    );
+
+    expect(access.getEntity).toHaveBeenCalledTimes(2);
+    expect(prisma.publicationMutationRecord.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.managedBroadcastDelivery.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.publicationMutationRecord.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('denies a foreign delivery even when another saved target makes the publication visible', async () => {
+    const { service, body, row, prisma, access } = setup();
+    row.broadcast.entityType = 'CHANNEL';
+    row.targetChatId = 'foreign-channel';
+    const denial = new ForbiddenException('Нет доступа к получателю.');
+    access.getEntity.mockRejectedValueOnce(denial);
+
+    await expect(service.execute('publication', 'delivery', administrator, body)).rejects.toBe(
+      denial,
+    );
+
+    expect(prisma.publication.findFirst).toHaveBeenCalledTimes(1);
+    expect(access.getEntity).toHaveBeenCalledWith('channel', 'foreign-channel', administrator);
+    expect(prisma.publicationMutationRecord.findUnique).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+    expect(prisma.publicationMutationRecord.create).not.toHaveBeenCalled();
+  });
+
+  it('does not mutate an inaccessible publication or a stale version', async () => {
     const { service, body, prisma } = setup();
     await expect(
-      service.execute('publication', 'delivery', owner, {
+      service.execute('publication', 'delivery', administrator, {
         ...body,
         expectedVersion: 'f'.repeat(64),
       }),
@@ -218,14 +274,14 @@ describe('publication post-action commands', () => {
     expect(prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
     prisma.publication.findFirst.mockResolvedValue(null);
     await expect(
-      service.execute('publication', 'delivery', { ...owner, userId: 'other' }, body),
+      service.execute('publication', 'delivery', { ...administrator, userId: 'other' }, body),
     ).rejects.toThrow('Публикация не найдена');
   });
 
   it('rejects a worker claim race instead of reporting a false cancellation', async () => {
     const { service, body, prisma } = setup();
     prisma.managedBroadcastDelivery.updateMany.mockResolvedValue({ count: 0 });
-    await expect(service.execute('publication', 'delivery', owner, body)).rejects.toThrow(
+    await expect(service.execute('publication', 'delivery', administrator, body)).rejects.toThrow(
       ConflictException,
     );
     expect(prisma.publicationMutationRecord.create).not.toHaveBeenCalled();

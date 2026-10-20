@@ -434,9 +434,10 @@ export function getPublicationRecurrenceIntervalNotice(
 export function getPublicationActionCapabilities(
   publication: Pick<
     PublicationSummary,
-    'actionableDelivery' | 'delivery' | 'lifecycle' | 'schedule'
+    'access' | 'actionableDelivery' | 'delivery' | 'lifecycle' | 'schedule'
   >,
 ): PublicationActionCapabilities {
+  const canManage = publication.access?.canManageAllTargets !== false;
   const terminal = publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED';
   const retryableLifecycle =
     publication.lifecycle === 'ACTIVE' || publication.lifecycle === 'ERROR';
@@ -465,12 +466,12 @@ export function getPublicationActionCapabilities(
   }
 
   return {
-    canCancel: !terminal,
-    canEdit: editScope !== null,
-    canPause: retryableLifecycle && isMultiSendSchedule && !scheduleError,
-    canResume: canResumePublication(publication.lifecycle),
-    canRetry: retryableLifecycle && actionableDelivery.failed > 0,
-    editScope,
+    canCancel: canManage && !terminal,
+    canEdit: canManage && editScope !== null,
+    canPause: canManage && retryableLifecycle && isMultiSendSchedule && !scheduleError,
+    canResume: canManage && canResumePublication(publication.lifecycle),
+    canRetry: canManage && retryableLifecycle && actionableDelivery.failed > 0,
+    editScope: canManage ? editScope : null,
     hasFutureSends,
   };
 }
@@ -525,6 +526,7 @@ export function shouldPollPublicationDeliveries(
 export function getPublicationDetailsPollingInterval(
   publication: Pick<PublicationDetails, 'dispatchIssue' | 'lifecycle' | 'schedule'>,
   delivery: PublicationDeliveryStats,
+  nowMs = Date.now(),
 ): number | false {
   if (publication.lifecycle === 'COMPLETED' || publication.lifecycle === 'CANCELED') {
     return false;
@@ -532,7 +534,19 @@ export function getPublicationDetailsPollingInterval(
   if (publication.dispatchIssue !== null) {
     return PUBLICATION_DISPATCH_ISSUE_POLL_INTERVAL_MS;
   }
-  return shouldPollPublicationDeliveries(publication, delivery) ? 5_000 : false;
+  if (shouldPollPublicationDeliveries(publication, delivery)) return 5_000;
+  if (
+    publication.lifecycle !== 'ACTIVE' ||
+    publication.schedule?.mode === 'now' ||
+    publication.schedule?.status === 'ERROR'
+  )
+    return false;
+  const nextAt = Date.parse(publication.schedule?.nextOccurrenceAt ?? '');
+  if (!Number.isFinite(nextAt)) return 30_000;
+  const untilNext = nextAt - nowMs;
+  return untilNext <= 2 * 60_000
+    ? 5_000
+    : Math.min(15 * 60_000, Math.max(30_000, untilNext - 60_000));
 }
 
 export function getPublicationListPollingInterval(

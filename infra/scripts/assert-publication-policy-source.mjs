@@ -70,9 +70,38 @@ export const PUBLICATION_POLICY_SOURCE_CHECKS = [
   [
     'apps/api/src/admin/publisher-managed-broadcast-dispatch.ts',
     [
-      'await this.assertDeliveryReady(delivery.targetChatId, requiredBotId, actorUserId)',
+      'await this.assertDeliveryReady(delivery.targetChatId, requiredBotId, authority)',
+      'await this.requiresLegacyActorAuthority(authority, requiredBotId)',
+      'resolvePublicationExecutionIntent(occurrence)',
+      'occurrence.contentRevisionId !== authority.contentRevisionId',
+      'occurrence.schedule.revision !== occurrence.scheduleRevision',
       'await preparePendingPublicationContext(this.context, delivery, requiredBotId)',
     ],
+  ],
+  [
+    'apps/api/src/admin/publication-execution-authority.ts',
+    [
+      'PUBLISHER_ENTITY_EXECUTION_AUTHORITY_VERSION = 1',
+      'readPublicationRetryAuthorizedAt(occurrence)',
+      "return { kind: 'invalid' }",
+      "return { kind: 'entity', deadlineAt }",
+    ],
+  ],
+  [
+    'apps/api/src/admin/admin-managed-broadcast-runtime.ts',
+    [
+      'const publisherAuthority: PublisherDeliveryAuthority',
+      'await this.publisherDispatch.assertDeliveryReady(delivery.targetChatId, publisherRoute.exactBotId, publisherAuthority,)',
+      'await this.publisherDispatch.deferUnreadyBeforeClaim(row, delivery, requiredPublisherBotId!, publisherAuthority,)',
+    ],
+  ],
+  [
+    'apps/api/src/publisher/publisher-publication-access-preflight.service.ts',
+    ["resolvePublicationExecutionIntent(occurrence, now).kind === 'legacy_actor'"],
+  ],
+  [
+    'apps/api/src/publisher/publisher-publication-post-actions.service.ts',
+    ['resolvePublicationExecutionIntent(occurrence ?? {}, now)', 'const entityIntent'],
   ],
   [
     'apps/api/src/admin/publisher-dialog-context.service.ts',

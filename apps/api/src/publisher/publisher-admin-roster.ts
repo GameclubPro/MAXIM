@@ -9,7 +9,6 @@ import {
 } from './publisher-access-probe-fence';
 
 const GRANTED_TTL_MS = 3 * 24 * 60 * 60_000;
-const DENIED_TTL_MS = 15 * 60_000;
 
 export type PublisherAdminRosterProbe = Readonly<{
   chatId: string;
@@ -65,17 +64,10 @@ export async function syncPublisherAdminRoster(
   )
     return false;
   const roster = proof.members;
-  // FLAG: An omitted role may hide a current owner/admin. Never turn a partial roster
-  // into mass revocation; retain all stored grants and retry this explicit discovery.
+  // FLAG: A roster discovers positive authority only. Omitted or absent members never
+  // prove that a previously confirmed exact user lost rights; explicit negatives own revocation.
   if (roster.some((member) => !member.userId || !(member.isAdmin || member.isOwner)))
     throw new Error('Incomplete MAX administrator role evidence');
-  const presentUserIds = [
-    ...new Set(
-      roster.flatMap((member) =>
-        member.userId && (member.isAdmin || member.isOwner) ? [member.userId] : [],
-      ),
-    ),
-  ];
   const humanAdminIds = [
     ...new Set(
       roster.flatMap((member) =>
@@ -188,24 +180,6 @@ export async function syncPublisherAdminRoster(
         });
       }
     }
-    // FLAG: Only absence from a complete roster revokes; unknown bot markers grant nothing.
-    await tx.managedEntityAccessEdge.updateMany({
-      where: {
-        chatId,
-        botId: publisherBotId,
-        state: 'GRANTED',
-        userId: { notIn: presentUserIds },
-        checkedAt: { lte: probeStartedAt },
-      },
-      data: {
-        state: 'USER_DENIED',
-        userRole: 'UNKNOWN',
-        checkedAt: probeStartedAt,
-        expiresAt: new Date(probeStartedAt.getTime() + DENIED_TTL_MS),
-        deniedReason: 'publisher_user_removed_from_admin_roster',
-        source: 'publisher_admin_roster',
-      },
-    });
     return true;
   });
 }

@@ -381,7 +381,7 @@ describePostgresRace('PostgreSQL multi-bot routing races', () => {
             expect.objectContaining({
               userId: 'absent-admin',
               botId: 'publik',
-              state: 'USER_DENIED',
+              state: 'GRANTED',
             }),
             expect.objectContaining({ userId: 'absent-admin', botId: 'major', state: 'GRANTED' }),
           ]),

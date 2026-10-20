@@ -5,6 +5,7 @@ import type { PublicationContentInput } from '@maxim/contracts/publication';
 import { PrismaClient, createPrismaAdapter, type Prisma } from '../prisma/prisma-client';
 import { PublicationService } from './publication.service';
 import { PublicationContentService } from './publication-content.service';
+import type { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import {
   PUBLIK_LEDGER_DISPATCH_MARKER,
   reconcileRoutedManagedBroadcastSendingDeliveries,
@@ -63,6 +64,17 @@ integration('Publication content freeze and immutable recovery on PostgreSQL', (
   });
 
   function createService(prisma: PrismaClient = db) {
+    const publisherRouting = {
+      requireNewRoute: () => ({ dispatchProfile: 'PUBLIK_V1', requiredBotId: botId }),
+      resolvePersistedTargets: async () => [
+        { chatId, entityType: 'chat', title: 'Synthetic', avatarUrl: null, link: null },
+      ],
+      assertTargetsReady: async (targets) =>
+        targets.map((target) => ({ ...target, requiredBotId: botId, policyRevision: 0 })),
+    } satisfies Pick<
+      PublicationPublisherRoutingService,
+      'requireNewRoute' | 'resolvePersistedTargets' | 'assertTargetsReady'
+    >;
     const result = new PublicationService(
       prisma as never,
       new PublicationContentService(prisma as never, {} as never),
@@ -71,10 +83,7 @@ integration('Publication content freeze and immutable recovery on PostgreSQL', (
       {} as never,
       {} as never,
       {} as never,
-      {
-        resolvePersistedTargets: async () => [{ chatId, entityType: 'chat', title: 'Synthetic' }],
-        assertTargetsReady: async () => undefined,
-      } as never,
+      publisherRouting as never,
       { enqueueAfterCommittedMutation: async () => undefined } as never,
       new ConfigService({ PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: 'off' }),
     );
@@ -85,6 +94,18 @@ integration('Publication content freeze and immutable recovery on PostgreSQL', (
   beforeEach(async () => {
     chatId = `publication-freeze-${randomUUID()}`;
     await db.chat.create({ data: { id: chatId, title: 'Synthetic publication freeze fixture' } });
+    await db.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        userId: chatId,
+        botId,
+        entityType: 'CHAT',
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+        source: 'publication_content_freeze_test',
+      },
+    });
     const scheduledAt = new Date(Date.now() + 60_000);
     const publication = await db.publication.create({
       data: {

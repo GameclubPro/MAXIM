@@ -1,97 +1,42 @@
-import { BadRequestException } from '@nestjs/common';
 import { ChatEntityType, PublicationDispatchProfile } from '../prisma/prisma-client';
-import {
-  PublisherActorAccessRequiredException,
-  PublisherSetupRequiredException,
-} from '../publisher/publisher-errors';
 import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
 import { PublisherDialogContextService } from './publisher-dialog-context.service';
 
 describe('PublicationPublisherRoutingService', () => {
-  it('defers an unavailable dynamic audience and requests an exact Publisher actor refresh', async () => {
-    const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
-    const resolvePublicationTargets = jest
-      .fn()
-      .mockRejectedValue(new PublisherActorAccessRequiredException(['channel']));
-    const service = new PublicationPublisherRoutingService(
-      {} as never,
-      {} as never,
-      { requestActorAccessRefresh } as never,
-      {} as never,
-      {} as never,
-      { resolvePublicationTargets } as never,
-    );
-    await expect(
-      service.resolveScheduledTargets({
-        actorUserId: 'author',
-        requiredBotId: 'publik',
-        audienceMode: 'DYNAMIC',
-        audienceSelection: 'ALL_CHANNELS',
-        targets: [{ targetChatId: 'channel', entityType: ChatEntityType.CHANNEL }],
-      }),
-    ).rejects.toMatchObject({
-      chatIds: ['channel'],
-      blockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED',
-    });
-    expect(requestActorAccessRefresh).toHaveBeenCalledWith(
-      [{ chatId: 'channel', entityType: 'channel' }],
-      'author',
-      'publik',
-    );
-    expect(resolvePublicationTargets).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'author' }),
-      undefined,
-    );
-  });
-
-  it('keeps an empty dynamic scheduled audience recoverable without freezing it to the snapshot', async () => {
-    const requestActorAccessRefresh = jest.fn().mockResolvedValue(undefined);
-    const resolvePublicationTargets = jest.fn().mockResolvedValue([]);
-    const service = new PublicationPublisherRoutingService(
-      {} as never,
-      {} as never,
-      { requestActorAccessRefresh } as never,
-      {} as never,
-      {} as never,
-      { resolvePublicationTargets } as never,
-    );
-    await expect(
-      service.resolveScheduledTargets({
-        actorUserId: 'author',
-        requiredBotId: 'publik',
-        audienceMode: 'DYNAMIC',
-        audienceSelection: 'ALL_CHATS',
-        targets: [{ targetChatId: 'chat', entityType: ChatEntityType.CHAT }],
-      }),
-    ).rejects.toBeInstanceOf(PublisherSetupRequiredException);
-    expect(resolvePublicationTargets).toHaveBeenCalledWith(expect.any(Object), undefined);
-  });
-
-  it.each([
-    Object.assign(new Error('Pool timeout'), { code: 'P2024' }),
-    new BadRequestException('Invalid audience'),
-    new PublisherSetupRequiredException(['channel'], 'policy_disabled'),
-  ])('does not convert an unrelated error into actor access: %s', async (error) => {
-    const requestActorAccessRefresh = jest.fn();
-    const service = new PublicationPublisherRoutingService(
-      {} as never,
-      {} as never,
-      { requestActorAccessRefresh } as never,
-      {} as never,
-      {} as never,
-      { resolvePublicationTargets: jest.fn().mockRejectedValue(error) } as never,
-    );
-    await expect(
-      service.resolveScheduledTargets({
-        actorUserId: 'author',
-        requiredBotId: 'publik',
-        audienceMode: 'DYNAMIC',
-        audienceSelection: 'ALL_CHANNELS',
-        targets: [],
-      }),
-    ).rejects.toBe(error);
-    expect(requestActorAccessRefresh).not.toHaveBeenCalled();
-  });
+  it.each(['ALL_CHATS', 'ALL_CHANNELS', 'ALL_MANAGED'] as const)(
+    'keeps the accepted DYNAMIC %s target set without expanding another administrator scope',
+    async (audienceSelection) => {
+      const resolvePublicationTargets = jest.fn().mockResolvedValue([{ chatId: 'foreign' }]);
+      const requestActorAccessRefresh = jest.fn();
+      const service = new PublicationPublisherRoutingService(
+        {} as never,
+        {} as never,
+        { requestActorAccessRefresh } as never,
+        {} as never,
+        {} as never,
+        { resolvePublicationTargets } as never,
+      );
+      await expect(
+        service.resolveScheduledTargets({
+          actorUserId: 'original-author',
+          requiredBotId: 'publik',
+          audienceMode: 'DYNAMIC',
+          audienceSelection,
+          targets: [{ targetChatId: 'accepted', entityType: ChatEntityType.CHANNEL }],
+        }),
+      ).resolves.toEqual([
+        {
+          chatId: 'accepted',
+          entityType: 'channel',
+          title: 'accepted',
+          avatarUrl: null,
+          link: null,
+        },
+      ]);
+      expect(resolvePublicationTargets).not.toHaveBeenCalled();
+      expect(requestActorAccessRefresh).not.toHaveBeenCalled();
+    },
+  );
 
   it('stores deferred context inputs before any recipient preparation for PUBLIK_V1 chats', async () => {
     const assertTargetsReady = jest.fn().mockResolvedValue([

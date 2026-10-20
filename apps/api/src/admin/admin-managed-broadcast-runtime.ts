@@ -323,6 +323,7 @@ import {
   reconcileRoutedManagedBroadcastSendingDeliveries as reconcileRoutedManagedBroadcastSendingDeliveriesValue,
 } from './admin-managed-broadcast-ledger-recovery';
 import { cancelManagedBroadcastTargetDeliveries } from './admin-managed-broadcast-target-failure';
+import type { PublisherDeliveryAuthority } from './publication-execution-authority';
 import {
   cancelPublicationDeliveryBeforeStoppedDispatch,
   deferClaimedPublicationEnvelopeAfterTransientPrismaError,
@@ -3132,6 +3133,19 @@ export class AdminManagedBroadcastRuntime {
     const currentOccurrence = getCurrentManagedBroadcastOccurrence(row);
     const isPublikExecution = rowDispatchProfile === PrismaPublicationDispatchProfile.PUBLIK_V1;
     const requiredPublisherBotId = isPublikExecution ? (row.requiredBotId?.trim() ?? null) : null;
+    const publisherAuthority: PublisherDeliveryAuthority = row.publicationOccurrenceId
+      ? {
+          kind: 'publication',
+          occurrenceId: row.publicationOccurrenceId,
+          contentRevisionId: row.publicationContentRevisionId,
+          actorUserId: row.actorUserId,
+          entityType: row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
+        }
+      : {
+          kind: 'legacy_actor',
+          actorUserId: row.actorUserId,
+          entityType: row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
+        };
     const publicationTiming = createPublicationExecutionObserver(
       this.logger,
       row,
@@ -3619,7 +3633,7 @@ export class AdminManagedBroadcastRuntime {
                           await this.publisherDispatch.assertDeliveryReady(
                             delivery.targetChatId,
                             publisherRoute.exactBotId,
-                            row.actorUserId,
+                            publisherAuthority,
                           );
                           sendStarted = true;
                           publisherRoute.onAttemptStarted(new Date());
@@ -3729,7 +3743,7 @@ export class AdminManagedBroadcastRuntime {
             row,
             delivery,
             requiredPublisherBotId!,
-            row.actorUserId,
+            publisherAuthority,
           );
           if (deferredUntil) {
             pendingNotBefore = resolveEarlierDate(pendingNotBefore, deferredUntil);
@@ -3830,6 +3844,7 @@ export class AdminManagedBroadcastRuntime {
                 await this.publisherDispatch.assertDeliveryReady(
                   delivery.targetChatId,
                   requiredPublisherBotId!,
+                  publisherAuthority,
                 );
                 return sendDeliveryRouted(
                   delivery,

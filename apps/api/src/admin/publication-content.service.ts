@@ -23,6 +23,7 @@ import {
   PUBLICATION_MAX_TOTAL_IMAGE_BYTES,
   PUBLICATION_ASSET_METADATA_SELECT,
 } from './publication-media-limits';
+import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import { canonicalizeAdminMaxMediaFileName } from './admin-max-media-file-name';
 
 const PUBLICATION_VIDEO_MIME_TYPE_FALLBACK = 'application/octet-stream';
@@ -104,11 +105,13 @@ export class PublicationContentService {
     const asset = await this.prisma.publicationAsset.findFirst({
       where: {
         id: assetId,
-        actorUserId,
         contentLinks: {
           some: {
             contentRevision: {
-              publication: { id: publicationId, actorUserId, dispatchProfile: 'PUBLIK_V1' },
+              publication: {
+                id: publicationId,
+                ...publicationAdminAccessWhere(publicationAdminScope(actorUserId), 'PUBLIK_V1'),
+              },
             },
           },
         },
@@ -166,6 +169,7 @@ export class PublicationContentService {
   async assertPublisherCompatibleContent(
     content: PreparedPublicationContentRevision,
     actorUserId: string,
+    publicationId?: string,
   ): Promise<void> {
     for (const asset of content.assets) {
       if (asset.expectedType !== 'video') {
@@ -180,20 +184,28 @@ export class PublicationContentService {
         continue;
       }
 
-      const persisted = await this.prisma.publicationAsset.findFirst({
+      let persisted = await this.prisma.publicationAsset.findFirst({
         where: {
           id: asset.assetId,
           actorUserId,
           bytes: { not: null },
-          contentLinks: {
-            some: { contentRevision: { publication: { actorUserId } } },
-          },
+          contentLinks: { some: { contentRevision: { publication: { actorUserId } } } },
         },
         select: { mimeType: true },
       });
+      if (!persisted && publicationId) {
+        persisted = await this.prisma.publicationAsset.findFirst({
+          where: {
+            id: asset.assetId,
+            bytes: { not: null },
+            ...this.sharedAssetReferenceWhere(actorUserId, publicationId),
+          },
+          select: { mimeType: true },
+        });
+      }
       if (
         (!persisted || !persisted.mimeType.toLowerCase().startsWith('video/')) &&
-        !(await this.findOwnedUploadedVideo(this.prisma, asset.assetId, actorUserId))
+        !(await this.findOwnedUploadedVideo(this.prisma, asset.assetId, actorUserId, publicationId))
       ) {
         throw new BadRequestException(
           'Сохранённое видео загружено другим ботом. Выберите видеофайл снова.',
@@ -209,7 +221,12 @@ export class PublicationContentService {
     content: PreparedPublicationContentRevision,
     actorUserId: string,
   ): Promise<{ id: string }> {
-    const assets = await this.resolvePersistedAssetInputs(tx, content.assets, actorUserId);
+    const assets = await this.resolvePersistedAssetInputs(
+      tx,
+      content.assets,
+      actorUserId,
+      publicationId,
+    );
     const contentRevision = await tx.publicationContentRevision.create({
       data: {
         publicationId,
@@ -448,25 +465,33 @@ export class PublicationContentService {
     tx: any,
     prepared: PreparedAssetInput[],
     actorUserId: string,
+    publicationId?: string,
   ): Promise<PersistedAssetInput[]> {
     const resolved: PersistedAssetInput[] = [];
     let totalImageBytes = 0;
     for (const item of prepared) {
       if (item.kind === 'reference') {
-        const linkedAsset = await tx.publicationAsset.findFirst({
+        let linkedAsset = await tx.publicationAsset.findFirst({
           where: {
             id: item.assetId,
             actorUserId,
-            contentLinks: {
-              some: { contentRevision: { publication: { actorUserId } } },
-            },
+            contentLinks: { some: { contentRevision: { publication: { actorUserId } } } },
           },
           select: PUBLICATION_ASSET_METADATA_SELECT,
         });
+        if (!linkedAsset && publicationId) {
+          linkedAsset = await tx.publicationAsset.findFirst({
+            where: {
+              id: item.assetId,
+              ...this.sharedAssetReferenceWhere(actorUserId, publicationId),
+            },
+            select: PUBLICATION_ASSET_METADATA_SELECT,
+          });
+        }
         const asset =
           linkedAsset ??
           (item.expectedType === 'video'
-            ? await this.findOwnedUploadedVideo(tx, item.assetId, actorUserId)
+            ? await this.findOwnedUploadedVideo(tx, item.assetId, actorUserId, publicationId)
             : null);
         if (!asset) {
           throw new BadRequestException('Медиа публикации больше недоступно.');
@@ -513,15 +538,52 @@ export class PublicationContentService {
     return resolved;
   }
 
+  private sharedAssetReferenceWhere(
+    actorUserId: string,
+    publicationId: string,
+  ): Prisma.PublicationAssetWhereInput {
+    return {
+      contentLinks: {
+        some: {
+          contentRevision: {
+            publication: {
+              id: publicationId,
+              ...publicationAdminAccessWhere(
+                publicationAdminScope(actorUserId),
+                'PUBLIK_V1',
+                'manage',
+              ),
+            },
+          },
+        },
+      },
+    };
+  }
+
   private publisherBotId(): string {
     return buildPublisherBotDescriptor({ id: process.env.MAX_PUBLISHER_BOT_ID }).id;
   }
 
-  private async findOwnedUploadedVideo(tx: any, assetId: string, actorUserId: string) {
-    const asset = await tx.publicationAsset.findFirst({
+  private async findOwnedUploadedVideo(
+    tx: any,
+    assetId: string,
+    actorUserId: string,
+    publicationId?: string,
+  ) {
+    let asset = await tx.publicationAsset.findFirst({
       where: { id: assetId, actorUserId, bytes: null },
       select: PUBLICATION_ASSET_METADATA_SELECT,
     });
+    if (!asset && publicationId) {
+      asset = await tx.publicationAsset.findFirst({
+        where: {
+          id: assetId,
+          bytes: null,
+          ...this.sharedAssetReferenceWhere(actorUserId, publicationId),
+        },
+        select: PUBLICATION_ASSET_METADATA_SELECT,
+      });
+    }
     return asset &&
       asset.mimeType.startsWith('video/') &&
       readPublicationUploadedVideo(asset.durablePayload, this.publisherBotId())

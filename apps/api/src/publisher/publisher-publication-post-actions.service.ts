@@ -25,6 +25,8 @@ import {
 import { PublisherIdentityAttestationService } from './publisher-identity-attestation.service';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import { PublisherReadinessService } from './publisher-readiness.service';
+import { resolvePublicationExecutionIntent } from '../admin/publication-execution-authority';
+import { isPublisherManagedEntityActivationRequired } from './publisher-entity-connection.util';
 
 const POLL_MS = 5_000;
 const LEASE_MS = 120_000;
@@ -36,7 +38,7 @@ const PIN_AUTHORITY_WAIT_MS = 30 * 60_000;
 const PIN_UNCONFIRMED = 'Закрепление не подтверждено. Проверьте пост в MAX.';
 class PinAuthorityUnavailableError extends Error {
   constructor(
-    message = 'Закрепление отложено до подтверждения прав автора и подключения Публика.',
+    message = 'Закрепление отложено до подтверждения подключения Публика.',
     readonly terminalStatus: Status | null = null,
   ) {
     super(message);
@@ -59,6 +61,18 @@ const actionSelect = {
   deleteAt: true,
   deleteAttemptCount: true,
   contentRevision: { select: { postPublish: true, publicationId: true } },
+  publicationOccurrence: {
+    select: {
+      publicationId: true,
+      dispatchProfile: true,
+      requiredBotId: true,
+      deliveryDeadlineAt: true,
+      retryAuthorizedAt: true,
+      retryExpiresAt: true,
+      dispatchBlockerCode: true,
+      dispatchBlockedAt: true,
+    },
+  },
 } satisfies Prisma.ManagedBroadcastDeliverySelect;
 type Delivery = Prisma.ManagedBroadcastDeliveryGetPayload<{ select: typeof actionSelect }>;
 
@@ -293,7 +307,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
               : pinStatus === Status.DONE
                 ? null
                 : pinStatus === Status.PENDING
-                  ? 'Закрепление отложено до подтверждения прав автора и подключения Публика.'
+                  ? 'Закрепление отложено до подтверждения подключения Публика.'
                   : pinStatus === Status.FAILED
                     ? 'Не удалось закрепить пост. Проверьте права Публика в MAX.'
                     : PIN_UNCONFIRMED,
@@ -439,51 +453,65 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       throw new PinAuthorityUnavailableError();
     }
     const now = new Date();
-    // FLAG: A new pin needs current author authority. Previously committed timed
-    // deletion keeps its original policy and never inherits this permission check.
-    const access = await this.prisma.managedEntityAccessEdge.findFirst({
-      where: {
-        chatId: row.targetChatId,
-        userId: publication.actorUserId,
-        botId,
-        state: 'GRANTED',
-        userRole: { in: ['OWNER', 'ADMIN'] },
-        chat: {
-          OR: [
-            { publicationPolicy: { is: null } },
-            { publicationPolicy: { is: { publikEnabled: true } } },
-          ],
-          publisherBinding: {
-            is: {
-              publisherBotId: botId,
-              status: 'ACTIVE',
-              botAccessState: { in: ['CONFIRMED_ADMIN', 'CONFIRMED_OWNER'] },
+    const occurrence = row.publicationOccurrence;
+    const intent = resolvePublicationExecutionIntent(occurrence ?? {}, now);
+    const entityIntent = intent.kind === 'entity';
+    if (
+      intent.kind === 'invalid' ||
+      (entityIntent &&
+        (!occurrence ||
+          occurrence.publicationId !== publicationId ||
+          occurrence.dispatchProfile !== 'PUBLIK_V1' ||
+          occurrence.requiredBotId !== botId))
+    )
+      throw new PinAuthorityUnavailableError('Исходная публикация недоступна.', Status.FAILED);
+    // FLAG: Bounded accepted entity intent retains its pin after an author change.
+    // Indefinite legacy intent keeps the original actor fence; committed deletion is independent.
+    if (!entityIntent) {
+      const access = await this.prisma.managedEntityAccessEdge.findFirst({
+        where: {
+          chatId: row.targetChatId,
+          userId: publication.actorUserId,
+          botId,
+          state: 'GRANTED',
+          userRole: { in: ['OWNER', 'ADMIN'] },
+          chat: {
+            OR: [
+              { publicationPolicy: { is: null } },
+              { publicationPolicy: { is: { publikEnabled: true } } },
+            ],
+            publisherBinding: {
+              is: {
+                publisherBotId: botId,
+                status: 'ACTIVE',
+                botAccessState: { in: ['CONFIRMED_ADMIN', 'CONFIRMED_OWNER'] },
 
-              AND: [
-                { OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lte: row.sentAt! } }] },
-                {
-                  OR: [
-                    { sendRouteQuarantinedUntil: null },
-                    { sendRouteQuarantinedUntil: { lte: now } },
-                  ],
-                },
-              ],
+                AND: [
+                  { OR: [{ lifecycleEventAt: null }, { lifecycleEventAt: { lte: row.sentAt! } }] },
+                  {
+                    OR: [
+                      { sendRouteQuarantinedUntil: null },
+                      { sendRouteQuarantinedUntil: { lte: now } },
+                    ],
+                  },
+                ],
+              },
             },
           },
         },
-      },
-      select: { chatId: true },
-    });
-    if (access) return;
-    const edge = await this.prisma.managedEntityAccessEdge.findFirst({
-      where: { chatId: row.targetChatId, userId: publication.actorUserId, botId },
-      select: { state: true, userRole: true, expiresAt: true, checkedAt: true },
-    });
-    if (edge && (edge.state !== 'GRANTED' || !['ADMIN', 'OWNER'].includes(edge.userRole))) {
-      throw new PinAuthorityUnavailableError(
-        'Закрепление отменено: права автора или Публика отозваны.',
-        Status.FAILED,
-      );
+        select: { chatId: true },
+      });
+      if (access) return;
+      const edge = await this.prisma.managedEntityAccessEdge.findFirst({
+        where: { chatId: row.targetChatId, userId: publication.actorUserId, botId },
+        select: { state: true, userRole: true, expiresAt: true, checkedAt: true },
+      });
+      if (edge && (edge.state !== 'GRANTED' || !['ADMIN', 'OWNER'].includes(edge.userRole))) {
+        throw new PinAuthorityUnavailableError(
+          'Закрепление отменено: права автора или Публика отозваны.',
+          Status.FAILED,
+        );
+      }
     }
     const chat = await this.prisma.chat.findUnique({
       where: { id: row.targetChatId },
@@ -496,6 +524,7 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       binding.publisherBotId !== botId ||
       binding.status !== 'ACTIVE' ||
       chat.publicationPolicy?.publikEnabled === false ||
+      isPublisherManagedEntityActivationRequired(binding) ||
       (binding.lifecycleEventAt && binding.lifecycleEventAt > row.sentAt!)
     ) {
       throw new PinAuthorityUnavailableError(
@@ -509,6 +538,12 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
         Status.FAILED,
       );
     }
+    if (
+      entityIntent &&
+      ['CONFIRMED_ADMIN', 'CONFIRMED_OWNER'].includes(binding.botAccessState) &&
+      (!binding.sendRouteQuarantinedUntil || binding.sendRouteQuarantinedUntil <= now)
+    )
+      return;
     if (Date.now() - row.sentAt!.getTime() < PIN_AUTHORITY_WAIT_MS) {
       const targets = [
         {
@@ -518,7 +553,8 @@ export class PublisherPublicationPostActionsService implements OnModuleInit, OnM
       ];
       // FLAG: A probe nomination never grants authority. Existing final guards must pass again.
       await this.readiness?.requestBotAccessRefresh(targets, botId);
-      await this.readiness?.requestActorAccessRefresh(targets, publication.actorUserId, botId);
+      if (!entityIntent)
+        await this.readiness?.requestActorAccessRefresh(targets, publication.actorUserId, botId);
     }
     throw new PinAuthorityUnavailableError();
   }

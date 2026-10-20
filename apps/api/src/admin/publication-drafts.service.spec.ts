@@ -1,3 +1,4 @@
+import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { MINIAPP_PROFILES_METADATA } from '../auth/miniapp-profile';
 import { PublicationDraftsService } from './publication-drafts.service';
@@ -131,7 +132,7 @@ describe('PublicationDraftsService', () => {
     expect(tx.publication.updateMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
         id: 'draft',
-        actorUserId: 'owner',
+        ...publicationAdminAccessWhere(publicationAdminScope('owner'), 'PUBLIK_V1', 'manage'),
         lifecycle: 'DRAFT',
         dispatchProfile: 'PUBLIK_V1',
         occurrences: { none: {} },
@@ -213,6 +214,7 @@ describe('PublicationDraftsService', () => {
     await service.save(null, actor, request);
     const record = tx.publicationMutationRecord.create.mock.calls[0][0].data;
     tx.publicationMutationRecord.findUnique.mockResolvedValue(record as never);
+    tx.publication.findFirst.mockResolvedValue({ id: 'draft' } as never);
     prisma.$transaction.mockClear();
     await service.save(null, actor, request);
     expect(prisma.$transaction).not.toHaveBeenCalled();
@@ -233,7 +235,7 @@ describe('PublicationDraftsService', () => {
     await expect(service.remove('draft', actor, action)).rejects.toThrow(ConflictException);
     expect(tx.publication.deleteMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
-        actorUserId: 'owner',
+        ...publicationAdminAccessWhere(publicationAdminScope('owner'), 'PUBLIK_V1', 'manage'),
         dispatchProfile: 'PUBLIK_V1',
         occurrences: { none: {} },
         version: 1,
@@ -249,7 +251,7 @@ describe('PublicationDraftsService', () => {
       expect.objectContaining({
         where: expect.objectContaining({
           id: 'draft',
-          actorUserId: 'owner',
+          ...publicationAdminAccessWhere(publicationAdminScope('owner'), 'PUBLIK_V1'),
           dispatchProfile: 'PUBLIK_V1',
           lifecycle: 'DRAFT',
           occurrences: { none: {} },
@@ -260,7 +262,7 @@ describe('PublicationDraftsService', () => {
     expect(tx.publication.findFirst).toHaveBeenLastCalledWith({
       where: expect.objectContaining({
         requestId: 'draft-request',
-        actorUserId: 'owner',
+        ...publicationAdminAccessWhere(publicationAdminScope('owner'), 'PUBLIK_V1'),
         dispatchProfile: 'PUBLIK_V1',
       }),
       select: { id: true },

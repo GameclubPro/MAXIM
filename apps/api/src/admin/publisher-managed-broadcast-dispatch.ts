@@ -16,6 +16,7 @@ import {
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import {
   PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
+  PUBLISHER_MISSED_WINDOW_BLOCKER_CODE,
   PUBLISHER_EXPLICIT_RETRY_CODE,
   PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS as PUBLISHER_BLOCKED_RETRY_MS,
 } from './publication-dispatch-issue';
@@ -32,6 +33,10 @@ import {
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
 
 import { preparePendingPublicationContext } from './publication-target-preparation';
+import {
+  resolvePublicationExecutionIntent,
+  type PublisherDeliveryAuthority,
+} from './publication-execution-authority';
 
 const PUBLISHER_RUNTIME_BLOCKER = 'PUBLISHER_RUNTIME_UNAVAILABLE';
 
@@ -100,17 +105,17 @@ export class PublisherManagedBroadcastDispatch {
   async assertDeliveryReady(
     chatId: string,
     requiredBotId: string,
-    actorUserId?: string,
+    authority: PublisherDeliveryAuthority,
   ): Promise<void> {
     return measurePublicationStage(this.logger, 'delivery_readiness', () =>
-      this.assertDeliveryReadyInternal(chatId, requiredBotId, actorUserId),
+      this.assertDeliveryReadyInternal(chatId, requiredBotId, authority),
     );
   }
 
   private async assertDeliveryReadyInternal(
     chatId: string,
     requiredBotId: string,
-    actorUserId?: string,
+    authority: PublisherDeliveryAuthority,
   ): Promise<void> {
     try {
       const boundary = this.context.publisherRuntimeBoundaryService;
@@ -125,10 +130,13 @@ export class PublisherManagedBroadcastDispatch {
       if (route.requiredBotId !== requiredBotId) {
         throw new PublisherDeliveryDeferredError('PUBLISHER_BOT_CHANGED');
       }
-      if (actorUserId !== undefined) {
+      if (route.entityType !== authority.entityType) {
+        throw new PublisherDeliveryDeferredError('bot_not_connected');
+      }
+      if (await this.requiresLegacyActorAuthority(authority, requiredBotId)) {
         await this.assertActorAdminAccess({
           targetChatIds: [chatId],
-          actorUserId,
+          actorUserId: authority.actorUserId,
           entityType: route.entityType,
           requiredBotId,
         });
@@ -148,6 +156,54 @@ export class PublisherManagedBroadcastDispatch {
             : PUBLISHER_RUNTIME_BLOCKER;
       throw new PublisherDeliveryDeferredError(blockerCode.slice(0, 96));
     }
+  }
+
+  private async requiresLegacyActorAuthority(
+    authority: PublisherDeliveryAuthority,
+    requiredBotId: string,
+  ): Promise<boolean> {
+    if (authority.kind === 'legacy_actor') return true;
+    if (!authority.occurrenceId || !authority.contentRevisionId)
+      throw new PublisherDeliveryDeferredError(PUBLISHER_RUNTIME_BLOCKER);
+    const occurrence = await this.context.prisma.publicationOccurrence.findUnique({
+      where: { id: authority.occurrenceId },
+      select: {
+        contentRevisionId: true,
+        dispatchProfile: true,
+        requiredBotId: true,
+        status: true,
+        scheduleRevision: true,
+        deliveryDeadlineAt: true,
+        retryAuthorizedAt: true,
+        retryExpiresAt: true,
+        dispatchBlockerCode: true,
+        dispatchBlockedAt: true,
+        publication: { select: { lifecycle: true, dispatchProfile: true, requiredBotId: true } },
+        schedule: { select: { status: true, revision: true } },
+      },
+    });
+    // FLAG: Accepted entity intent is exact to the content, schedule and Publisher route.
+    // Losing this proof never falls back to an author grant or clears a recipient fence.
+    if (
+      !occurrence ||
+      occurrence.contentRevisionId !== authority.contentRevisionId ||
+      occurrence.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
+      occurrence.requiredBotId !== requiredBotId ||
+      !['SCHEDULED', 'IN_PROGRESS'].includes(occurrence.status) ||
+      occurrence.publication.lifecycle !== 'ACTIVE' ||
+      occurrence.publication.dispatchProfile !== PublicationDispatchProfile.PUBLIK_V1 ||
+      occurrence.publication.requiredBotId !== requiredBotId ||
+      occurrence.schedule.status !== 'ACTIVE' ||
+      occurrence.schedule.revision !== occurrence.scheduleRevision
+    )
+      throw new PublisherDeliveryDeferredError(PUBLISHER_RUNTIME_BLOCKER);
+    const intent = resolvePublicationExecutionIntent(occurrence);
+    if (intent.kind === 'invalid')
+      throw new PublisherDeliveryDeferredError(PUBLISHER_RUNTIME_BLOCKER);
+    if (intent.kind === 'legacy_actor') return true;
+    if (intent.deadlineAt.getTime() < Date.now())
+      throw new PublisherDeliveryDeferredError(PUBLISHER_MISSED_WINDOW_BLOCKER_CODE);
+    return false;
   }
 
   async assertActorAdminAccess(params: {
@@ -249,10 +305,10 @@ export class PublisherManagedBroadcastDispatch {
     row: PublisherBroadcastRow,
     delivery: PublisherDeliveryRow,
     requiredBotId: string,
-    actorUserId?: string,
+    authority: PublisherDeliveryAuthority,
   ): Promise<Date | null> {
     try {
-      await this.assertDeliveryReady(delivery.targetChatId, requiredBotId, actorUserId);
+      await this.assertDeliveryReady(delivery.targetChatId, requiredBotId, authority);
       await preparePendingPublicationContext(this.context, delivery, requiredBotId);
       await this.context.prisma.managedBroadcastDelivery.updateMany({
         where: {

@@ -83,7 +83,7 @@ function formatDateTime(value: string, timezone = 'Europe/Moscow', seconds = fal
 
 const OCCURRENCE_STATUS_LABELS: Record<PublicationOccurrenceStatus, string> = {
   SCHEDULED: 'Запланировано',
-  IN_PROGRESS: 'Отправляется',
+  IN_PROGRESS: 'В обработке',
   SENT: 'Опубликовано',
   PARTIAL: 'Частично',
   FAILED: 'Ошибка',
@@ -92,7 +92,7 @@ const OCCURRENCE_STATUS_LABELS: Record<PublicationOccurrenceStatus, string> = {
 };
 
 const DELIVERY_STATUS_LABELS: Record<PublicationDeliveryStatus, string> = {
-  PENDING: 'Ожидает',
+  PENDING: 'В очереди',
   SENDING: 'Отправляется',
   SENT: 'Опубликовано',
   FAILED: 'Ошибка',
@@ -638,7 +638,7 @@ export function PublicationDetailsSheet({
                             ) : null}
                             {delivery.status === 'PENDING' && delivery.deadlineAt ? (
                               <small>
-                                Срок отправки:{' '}
+                                При задержке пост актуален до{' '}
                                 {formatDateTime(delivery.deadlineAt, details.schedule?.timezone)}
                               </small>
                             ) : null}

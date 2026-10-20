@@ -121,6 +121,9 @@ Commands:
   publisher-dispatch-disable [--apply]
                               Preview or fail-closed disable Publik dispatch
   publisher-dispatch-status   Read privacy-safe Publik dispatch rollout status
+  publisher-obsolete-retirement [preview [--after-digest <sha256>]]
+  publisher-obsolete-retirement apply --reviewed-digest <sha256>
+                              Retire reviewed obsolete untouched scheduled deliveries
   publisher-selection-rollout <off|test|5|25|100> [--apply]
   publisher-rollup-noop-rollout <off|test|5|25|100> [--apply]
                               Preview or change selection stage without changing dispatch
@@ -1051,6 +1054,20 @@ publisher_selection_command() {
   publisher_reader_mode_command selection "$@"
 }
 
+publisher_obsolete_retirement() {
+  node --input-type=module - "$@" <<'VALIDATE_RETIREMENT'
+import { parseRetirementArgs } from './infra/scripts/publisher-obsolete-retirement-host.mjs';
+try { parseRetirementArgs(process.argv.slice(2)); }
+catch { process.stderr.write('Invalid Publisher retirement request.\n'); process.exitCode = 2; }
+VALIDATE_RETIREMENT
+  local target_sha
+  target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  # FLAG: Maintenance cancellation requires exact green tooling and a reviewed
+  # private preview. It never enables the new runtime or bypasses effect fences.
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" >&2
+  remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-publisher-obsolete-retirement.sh "$@")" </dev/null
+}
+
 publisher_rollup_noop_command() {
   publisher_reader_mode_command rollup-noop "$@"
 }
@@ -1795,6 +1812,9 @@ case "$command" in
     ;;
   publisher-dispatch-status)
     publisher_dispatch_command status "$@"
+    ;;
+  publisher-obsolete-retirement)
+    publisher_obsolete_retirement "$@"
     ;;
   publisher-selection-rollout)
     publisher_selection_command "$@"

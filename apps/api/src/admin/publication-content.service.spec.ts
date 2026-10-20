@@ -1,3 +1,4 @@
+import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
 import { PublicationContentService } from './publication-content.service';
 import { PUBLICATION_UPLOADED_VIDEO_FIELD } from './publication-video-media';
 import { DEFAULT_MAX_PUBLISHER_BOT_ID } from '../publisher/publisher-bot-descriptor';
@@ -196,7 +197,7 @@ describe('PublicationContentService', () => {
     );
   });
 
-  it('serves bytes only from an actor-owned Publisher publication link', async () => {
+  it('serves bytes only from an authorized exact Publisher publication link', async () => {
     const prisma = {
       publicationAsset: {
         findFirst: jest.fn().mockResolvedValue({ bytes: TINY_JPEG, mimeType: 'image/jpeg' }),
@@ -207,13 +208,12 @@ describe('PublicationContentService', () => {
     expect(prisma.publicationAsset.findFirst).toHaveBeenCalledWith({
       where: {
         id: 'asset',
-        actorUserId: 'owner',
         contentLinks: {
           some: {
             contentRevision: {
               publication: {
                 id: 'publication',
-                actorUserId: 'owner',
+                ...publicationAdminAccessWhere(publicationAdminScope('owner'), 'PUBLIK_V1'),
                 dispatchProfile: 'PUBLIK_V1',
               },
             },

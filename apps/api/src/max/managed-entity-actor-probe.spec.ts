@@ -82,15 +82,45 @@ describe('personal human access probe', () => {
     expect(f.prisma.$transaction).not.toHaveBeenCalled();
     expect(f.cache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
   });
-  it('confirms member GET denial through a roster before denying only the human', async () => {
+  it.each([
+    { roster: [] },
+    {
+      roster: [
+        {
+          userId: '456',
+          isBot: false,
+          isAdmin: true,
+          isOwner: false,
+          explicitPrivilegeEvidence: true,
+          permissions: [],
+        },
+      ],
+    },
+  ])(
+    'preserves confirmed rights when a refused member lookup omits the actor from a roster (%j)',
+    async ({ roster }) => {
+      const f = fixture();
+      const error = { response: { status: 403 } };
+      f.maxClient.getChatMembersAccess.mockRejectedValue(error);
+      f.maxClient.getChatAdminAccesses.mockResolvedValue(roster);
+      await expect(f.run()).rejects.toBe(error);
+      expect(f.prisma.$transaction).not.toHaveBeenCalled();
+      expect(f.cache.applyAdminAccessEpochMutation).not.toHaveBeenCalled();
+      expect(f.membership.botAccessState).toBe('CONFIRMED_ADMIN');
+    },
+  );
+  it('requires an exact member response before revoking human rights', async () => {
     const f = fixture();
-    f.maxClient.getChatMembersAccess.mockRejectedValue({ response: { status: 403 } });
-    f.maxClient.getChatAdminAccesses.mockResolvedValue([]);
+    f.maxClient.getChatMembersAccess.mockResolvedValue(new Map());
+    await expect(f.run()).rejects.toThrow('unavailable');
+    expect(f.prisma.$transaction).not.toHaveBeenCalled();
+    f.maxClient.getChatMembersAccess.mockResolvedValue(
+      new Map([['123', { ...f.human, isAdmin: false }]]),
+    );
     await f.run();
     expect(f.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ update: expect.objectContaining({ state: 'USER_DENIED' }) }),
     );
-    expect(f.membership.botAccessState).toBe('CONFIRMED_ADMIN');
   });
   it('does not turn an incomplete positive result into a denial', async () => {
     const f = fixture();

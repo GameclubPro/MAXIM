@@ -18,6 +18,7 @@ import {
   selectPublicationManagedBroadcastDueBatch,
 } from './admin-managed-broadcast-due-selection';
 import type { PublisherTemporalSelectionRollout } from './publisher-publication-temporal-enrollment';
+import { PublisherReadinessService } from '../publisher/publisher-readiness.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const integration = databaseUrl ? describe : describe.skip;
@@ -172,7 +173,15 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
 
   function createRuntime(
     publisherTemporalSelectionRollout: PublisherTemporalSelectionRollout = 'off',
+    withRealReadiness = false,
   ) {
+    const entityReadiness = withRealReadiness
+      ? new PublisherReadinessService(
+          db as never,
+          { read: async () => ({ dispatchEnabled: true }) } as never,
+          { get: (key: string) => (key === 'MAX_PUBLISHER_BOT_ID' ? botId : true) } as never,
+        )
+      : null;
     const result = new AdminManagedBroadcastRuntime(
       {
         prisma: db,
@@ -187,6 +196,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
           assertEntityReady: async (chatId: string) => {
             if (unavailableTargets.has(chatId))
               throw new PublisherDeliveryDeferredError('bot_not_admin');
+            if (entityReadiness) return entityReadiness.assertEntityReady(chatId, 'publication');
             return { requiredBotId: botId, entityType: 'chat' };
           },
           requestActorAccessRefresh,
@@ -213,7 +223,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       } as never,
       'PUBLIK_V1',
     );
-    // FLAG: Keep SQL claims, receipt persistence, admission and final author guards real.
+    // FLAG: Keep SQL claims, receipt persistence, admission and final authority guards real.
     // Only media rendering, optional URL hydration and the synthetic MAX response are replaced.
     jest
       .spyOn((result as any).mediaRuntime, 'loadManagedBroadcastExecutionMedia')
@@ -381,7 +391,10 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     runtime = createRuntime(temporalNow ? '100' : 'off');
   }
 
-  async function olderWaitingPublication(): Promise<string> {
+  async function olderWaitingPublication(
+    mode: 'NOW' | 'ONCE' | 'SLOTS' | 'RECURRENCE' = 'NOW',
+    wait: 'capacity' | 'blocker' = 'capacity',
+  ): Promise<string> {
     const scheduledAt = new Date(Date.now() - 60_000);
     const publication = await db.publication.create({
       data: {
@@ -393,7 +406,7 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
         requiredBotId: botId,
         targets: { create: { targetChatId: chatIds[0]!, entityType: 'CHAT', position: 0 } },
         schedule: {
-          create: { mode: 'NOW', status: 'ACTIVE', rule: { mode: 'now', timezone: 'UTC' } },
+          create: { mode, status: 'ACTIVE', rule: { mode: 'now', timezone: 'UTC' } },
         },
         contentRevisions: { create: { revision: 1, text: 'Synthetic future-wait fixture' } },
       },
@@ -440,7 +453,9 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
             dialogBotId: botId,
             publisherDialogContext: { version: 1, dialogBotId: botId, buttons: [] },
             publicationPolicyRevision: 0,
-            nextAttemptAt: new Date(Date.now() + 60_000),
+            ...(wait === 'capacity'
+              ? { nextAttemptAt: new Date(Date.now() + 60_000) }
+              : { dispatchBlockerCode: 'bot_not_admin', dispatchBlockedAt: new Date() }),
           },
         },
       },
@@ -522,6 +537,168 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     expect(
       await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: waiting.id } }),
     ).toMatchObject({ status: 'SENT', attemptCount: 1, waitReason: null, nextAttemptAt: null });
+  });
+
+  async function acceptFiniteEntityIntent(mode: 'NOW' | 'ONCE' | 'SLOTS' | 'RECURRENCE') {
+    await db.publicationSchedule.updateMany({ where: { publicationId }, data: { mode } });
+    const deadline = new Date(Date.now() + 86_400_000);
+    await db.publicationOccurrence.update({
+      where: { id: occurrenceId },
+      data: { deliveryDeadlineAt: deadline },
+    });
+    await db.publisherEntityBinding.updateMany({
+      where: { publisherBotId: botId, chatId: { in: chatIds } },
+      data: {
+        permissionsSnapshot: {
+          isAdmin: true,
+          isOwner: false,
+          permissionsKnown: true,
+          permissions: ['write'],
+        },
+      },
+    });
+    runtime = createRuntime('off', true);
+    return deadline;
+  }
+
+  it.each(['ONCE', 'SLOTS', 'RECURRENCE'] as const)(
+    'sends ready %s work beyond 25 waiting envelopes through real selection, claim and receipt persistence',
+    async (mode) => {
+      await fixture(1);
+      await acceptFiniteEntityIntent(mode);
+      const waitingIds: string[] = [];
+      for (let index = 0; index < 25; index += 1)
+        waitingIds.push(await olderWaitingPublication(mode, index % 2 ? 'blocker' : 'capacity'));
+      const before = await db.managedBroadcastDelivery.findMany({
+        where: { broadcastId: { in: waitingIds } },
+        orderBy: { id: 'asc' },
+      });
+      const process = jest.spyOn(runtime as any, 'processManagedBroadcastOccurrence');
+      await runtime.processDueDeadlinePublicationBroadcasts();
+      expect(process.mock.calls[0]?.[0]).toBe(broadcastId);
+      expect(remoteSend.mock.calls).toEqual([[chatIds[0]]]);
+      expect(requestActorAccessRefresh).not.toHaveBeenCalled();
+      expect(
+        await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
+      ).toMatchObject({
+        status: 'SENT',
+        attemptCount: 1,
+        remoteMessageId: `synthetic-${chatIds[0]}`,
+        botId,
+      });
+      expect(
+        await db.managedBroadcastDelivery.findMany({
+          where: { broadcastId: { in: waitingIds } },
+          orderBy: { id: 'asc' },
+        }),
+      ).toEqual(before);
+    },
+  );
+
+  it.each(['NOW', 'ONCE', 'SLOTS', 'RECURRENCE'] as const)(
+    'delivers accepted finite %s intent independently of the former author and keeps its deadline',
+    async (mode) => {
+      await fixture(1);
+      const deadline = await acceptFiniteEntityIntent(mode);
+      await db.managedEntityAccessEdge.updateMany({
+        where: { chatId: chatIds[0], userId: actorId, botId },
+        data: { state: 'USER_DENIED' },
+      });
+      beforeMutation = async () => {
+        await db.managedEntityAccessEdge.deleteMany({
+          where: { chatId: chatIds[0], userId: actorId, botId },
+        });
+      };
+      await run();
+      expect(remoteSend).toHaveBeenCalledTimes(1);
+      expect(requestActorAccessRefresh).not.toHaveBeenCalled();
+      expect(
+        await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
+      ).toMatchObject({
+        status: 'SENT',
+        attemptCount: 1,
+      });
+      expect(
+        await db.publicationOccurrence.findUniqueOrThrow({ where: { id: occurrenceId } }),
+      ).toMatchObject({
+        deliveryDeadlineAt: deadline,
+        retryAuthorizedAt: null,
+        retryExpiresAt: null,
+      });
+    },
+  );
+
+  it.each(['bot', 'policy', 'deadline'] as const)(
+    'retains the final %s guard for accepted entity intent after a real SQL claim',
+    async (change) => {
+      await fixture(1);
+      await acceptFiniteEntityIntent('SLOTS');
+      beforeMutation = async () => {
+        if (change === 'bot')
+          await db.publisherEntityBinding.updateMany({
+            where: { chatId: chatIds[0], publisherBotId: botId },
+            data: { botAccessState: 'LOST' },
+          });
+        if (change === 'policy')
+          await db.managedEntityPublicationPolicy.upsert({
+            where: { chatId: chatIds[0]! },
+            create: { chatId: chatIds[0]!, publikEnabled: false },
+            update: { publikEnabled: false },
+          });
+        if (change === 'deadline')
+          await db.publicationOccurrence.update({
+            where: { id: occurrenceId },
+            data: { deliveryDeadlineAt: new Date(Date.now() - 1) },
+          });
+      };
+      await run();
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(remoteSend).not.toHaveBeenCalled();
+      if (change === 'deadline') {
+        expect(
+          await db.publicationOccurrence.findUniqueOrThrow({ where: { id: occurrenceId } }),
+        ).toMatchObject({
+          status: 'FAILED',
+          dispatchBlockerCode: 'PUBLISHER_MISSED_WINDOW_REVIEW',
+        });
+        expect(
+          await db.managedBroadcastDelivery.count({
+            where: { broadcastId, status: { in: ['PENDING', 'SENDING'] } },
+          }),
+        ).toBe(0);
+        return;
+      }
+      expect(
+        await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
+      ).toMatchObject({
+        status: 'PENDING',
+        attemptCount: 0,
+        remoteMessageId: null,
+      });
+    },
+  );
+
+  it('does not activate a 53-day-old indefinite NOW intent through entity authority', async () => {
+    await fixture(1, 1);
+    await db.publicationSchedule.updateMany({ where: { publicationId }, data: { mode: 'NOW' } });
+    await db.publicationOccurrence.update({
+      where: { id: occurrenceId },
+      data: {
+        scheduledAt: new Date(Date.now() - 53 * 86_400_000),
+        deliveryDeadlineAt: null,
+        retryAuthorizedAt: null,
+        retryExpiresAt: null,
+      },
+    });
+    await run();
+    expect(remoteSend).not.toHaveBeenCalled();
+    expect(
+      await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
+    ).toMatchObject({
+      status: 'PENDING',
+      attemptCount: 0,
+      dispatchBlockerCode: PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE,
+    });
   });
 
   it('expires new intent before a long rate-limit retry without sending or renewing its deadline', async () => {
@@ -865,10 +1042,12 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
     ).toBeGreaterThan(Date.now() + 50_000);
   });
 
-  it.each(['revoked_actor', 'canceled_publication'] as const)(
+  it.each(['revoked_bot', 'canceled_publication'] as const)(
     'preserves the final %s guard after a changed temporal selection and a real SQL claim',
     async (change) => {
       await fixture(1, 0, { temporalNow: true });
+      await acceptFiniteEntityIntent('NOW');
+      runtime = createRuntime('100', true);
       const waitingId = await olderWaitingPublication();
       const baseline = await selectPublicationManagedBroadcastDueBatch(
         db,
@@ -894,10 +1073,10 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
             sentAt: true,
           },
         });
-        if (change === 'revoked_actor') {
-          await db.managedEntityAccessEdge.updateMany({
-            where: { chatId: chatIds[0], userId: actorId, botId },
-            data: { state: 'USER_DENIED' },
+        if (change === 'revoked_bot') {
+          await db.publisherEntityBinding.updateMany({
+            where: { chatId: chatIds[0], publisherBotId: botId },
+            data: { botAccessState: 'LOST' },
           });
         } else {
           await db.publication.update({
@@ -955,18 +1134,17 @@ integration('Publisher bounded recipient admission on PostgreSQL', () => {
       expect(
         await db.managedBroadcastDelivery.findFirstOrThrow({ where: { broadcastId } }),
       ).toMatchObject({
-        status: change === 'revoked_actor' ? 'PENDING' : 'CANCELED',
+        status: change === 'revoked_bot' ? 'PENDING' : 'CANCELED',
         attemptCount: 0,
         lockedAt: null,
         lockToken: null,
         remoteMessageId: null,
         sentAt: null,
-        dispatchBlockerCode:
-          change === 'revoked_actor' ? PUBLISHER_ACTOR_ACCESS_BLOCKER_CODE : null,
+        dispatchBlockerCode: change === 'revoked_bot' ? 'bot_not_admin' : null,
       });
       expect(
         (await db.publication.findUniqueOrThrow({ where: { id: publicationId } })).lifecycle,
-      ).toBe(change === 'revoked_actor' ? 'ACTIVE' : 'CANCELED');
+      ).toBe(change === 'revoked_bot' ? 'ACTIVE' : 'CANCELED');
     },
   );
 

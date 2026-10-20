@@ -63,8 +63,8 @@ export async function probeManagedEntityActor(params: {
   } catch (error: unknown) {
     const status = (error as { response?: { status?: number } })?.response?.status;
     if (status !== 403 && status !== 404) throw error;
-    // FLAG: A member GET refusal is ambiguous. Only a complete exact-bot roster can
-    // establish absence; a failed fallback leaves both bot and previous human evidence intact.
+    // FLAG: A member GET refusal and absence from an administrator roster are ambiguous.
+    // The fallback may prove a grant, but cannot revoke a previously confirmed human.
     const roster = await maxClient.getChatAdminAccesses(chatId, options);
     if (
       roster.some(
@@ -77,7 +77,10 @@ export async function probeManagedEntityActor(params: {
     )
       throw new Error('Incomplete MAX administrator roster');
     access = roster.find((member) => identity(member.userId) === canonicalUserId) ?? null;
+    if (!access) throw error;
   }
+  // FLAG: An omitted requested member is not an exact negative privilege response.
+  if (!access) throw new Error('MAX actor privilege evidence is unavailable');
   if (access && typeof access.isBot !== 'boolean') throw new Error('MAX actor type is unknown');
   if (access && (access.isAdmin || access.isOwner) && access.explicitPrivilegeEvidence !== true)
     throw new Error('MAX actor privilege evidence is incomplete');

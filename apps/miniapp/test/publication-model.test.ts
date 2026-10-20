@@ -538,6 +538,23 @@ test('keeps publication actions aligned with lifecycle and actual future sends',
     editScope: null,
     hasFutureSends: false,
   });
+  assert.deepEqual(
+    getPublicationActionCapabilities({
+      ...base,
+      lifecycle: 'ERROR',
+      access: { canManageAllTargets: false },
+      actionableDelivery: { ...emptyDelivery, total: 1, failed: 1 },
+    }),
+    {
+      canCancel: false,
+      canEdit: false,
+      canPause: false,
+      canResume: false,
+      canRetry: false,
+      editScope: null,
+      hasFutureSends: false,
+    },
+  );
 
   assert.deepEqual(
     getPublicationActionCapabilities({
@@ -761,6 +778,30 @@ test('keeps mixed Publisher delivery rows fresh while an issue is unresolved', (
   assert.equal(
     getPublicationDetailsPollingInterval({ ...publication, dispatchIssue: null }, delivery),
     5_000,
+  );
+});
+
+test('scheduled details refresh before and after preparation without a recipient counter', () => {
+  const now = Date.parse('2026-10-20T00:00:00Z');
+  const delivery = { total: 0, pending: 0, sent: 0, failed: 0, ambiguous: 0, canceled: 0 };
+  const publication = {
+    lifecycle: 'ACTIVE',
+    dispatchIssue: null,
+    schedule: { mode: 'slots', nextOccurrenceAt: new Date(now + 60_000).toISOString() },
+  } as Parameters<typeof getPublicationDetailsPollingInterval>[0];
+  assert.equal(getPublicationDetailsPollingInterval(publication, delivery, now), 5_000);
+  assert.equal(getPublicationDetailsPollingInterval(publication, delivery, now + 120_000), 5_000);
+  assert.equal(
+    getPublicationDetailsPollingInterval(
+      { ...publication, schedule: { ...publication.schedule!, nextOccurrenceAt: null } },
+      delivery,
+      now,
+    ),
+    30_000,
+  );
+  assert.equal(
+    getPublicationDetailsPollingInterval({ ...publication, lifecycle: 'PAUSED' }, delivery, now),
+    false,
   );
 });
 

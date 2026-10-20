@@ -9,6 +9,7 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { PublisherDialogContextService } from '../admin/publisher-dialog-context.service';
 import { preparePendingPublicationContext } from '../admin/publication-target-preparation';
+import { resolvePublicationExecutionIntent } from '../admin/publication-execution-authority';
 import { PrismaService } from '../prisma/prisma.service';
 import { PublisherActionCredentialService } from './publisher-action-credential.service';
 import { PublisherBackgroundWorkCoordinatorService } from './publisher-background-work-coordinator.service';
@@ -114,6 +115,11 @@ export class PublisherPublicationAccessPreflightService implements OnModuleInit,
               publicationId: true,
               scheduledAt: true,
               scheduleRevision: true,
+              deliveryDeadlineAt: true,
+              retryAuthorizedAt: true,
+              retryExpiresAt: true,
+              dispatchBlockerCode: true,
+              dispatchBlockedAt: true,
               accessPreflightPosition: true,
               accessPreflightCycleStartedAt: true,
               publication: { select: { actorUserId: true } },
@@ -157,19 +163,21 @@ export class PublisherPublicationAccessPreflightService implements OnModuleInit,
             new Date(now.getTime() + horizonMs),
             { publicationUrgentAt: urgentAt, strictEnqueue: true },
           );
-          await this.readiness.requestActorAccessRefresh(
-            nominations,
-            occurrence.publication.actorUserId,
-            this.botId,
-            {
-              publicationUrgentAt: urgentAt,
-              strictEnqueue: true,
-            },
-          );
+          if (resolvePublicationExecutionIntent(occurrence, now).kind === 'legacy_actor') {
+            await this.readiness.requestActorAccessRefresh(
+              nominations,
+              occurrence.publication.actorUserId,
+              this.botId,
+              {
+                publicationUrgentAt: urgentAt,
+                strictEnqueue: true,
+              },
+            );
+          }
           remaining -= page.length;
           visitedTargets += page.length;
           const complete = targets.length <= page.length;
-          // FLAG: Progress follows both Redis acknowledgements. Crash/retry re-nominates
+          // FLAG: Progress follows the required Redis acknowledgements. Crash/retry re-nominates
           // exact jobs; a completed cycle wraps to recover lost jobs and changed targets.
           await this.prisma.publicationOccurrence.updateMany({
             where: {
@@ -218,7 +226,7 @@ export class PublisherPublicationAccessPreflightService implements OnModuleInit,
       strict: false,
     });
     // FLAG: The bounded imminent-target page prepares intent only. It never claims or sends;
-    // final author/bot/content checks and the SQL v0-to-v1 fence still own dispatch authority.
+    // final entity/bot/content checks and the SQL v0-to-v1 fence still own dispatch authority.
     const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
       where: {
         publicationOccurrenceId: occurrenceId,

@@ -4,6 +4,10 @@ import {
   PUBLISHER_PUBLICATION_BLOCKED_RETRY_MS,
 } from './publication-dispatch-issue';
 import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication-delivery-verification-state';
+import {
+  buildPublisherScheduledRecipientPriorityHint,
+  buildPublisherScheduledRecipientReadyHint,
+} from './publisher-publication-scheduled-readiness';
 
 function scheduleModesWhere(modes: readonly PublicationScheduleMode[]): Prisma.Sql {
   return modes.length
@@ -108,6 +112,7 @@ export function buildPublisherExecutionDueQuery(options: {
       -- recipient-wide semi/anti plans. Correlation alone can probe every stale parent.
       AND CASE WHEN (${buildPublisherCurrentExecutionScope()}) THEN (
         ${buildPublisherExecutionDeliveryPredicate(options.staleLockBefore)}
+        AND ${buildPublisherScheduledRecipientPriorityHint(options.now)}
       ) ELSE FALSE END
     ORDER BY broadcast."next_send_at" ASC, broadcast."created_at" ASC, broadcast."id" ASC
     LIMIT ${options.limit}
@@ -174,6 +179,7 @@ export function buildPublisherPendingExecutionDeadlineQuery(options: {
           )
         )
         AND NOT ${buildPublisherFreshDeliveryExists(options.staleLockBefore)}
+        AND ${buildPublisherScheduledRecipientReadyHint(options.now)}
       ) ELSE FALSE END
     ORDER BY broadcast."next_send_at" ASC, broadcast."created_at" ASC, broadcast."id" ASC
     LIMIT 1
