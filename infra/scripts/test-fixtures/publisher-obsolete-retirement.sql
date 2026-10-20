@@ -1,6 +1,7 @@
 CREATE TYPE "PublicationOccurrenceStatus" AS ENUM ('SCHEDULED','IN_PROGRESS','SENT','PARTIAL','FAILED','AMBIGUOUS','CANCELED');
 CREATE TYPE "PublicationDispatchProfile" AS ENUM ('LEGACY_ROUTED','PUBLIK_V1');
 CREATE TYPE "ChatEntityType" AS ENUM ('CHAT','CHANNEL');
+CREATE TYPE "ManagedBroadcastStatus" AS ENUM ('ACTIVE','PARTIAL','FAILED','COMPLETED','CANCELED');
 CREATE TABLE publications (
   id text PRIMARY KEY, actor_user_id text NOT NULL DEFAULT 'private-actor', lifecycle text NOT NULL DEFAULT 'ACTIVE',
   audience_mode text NOT NULL DEFAULT 'SNAPSHOT', dispatch_profile "PublicationDispatchProfile" NOT NULL DEFAULT 'PUBLIK_V1',
@@ -29,7 +30,7 @@ CREATE TABLE publication_targets (
 );
 CREATE UNIQUE INDEX publication_targets_publication_position_key ON publication_targets(publication_id,position);
 CREATE TABLE managed_broadcasts (
-  id text PRIMARY KEY, entity_type "ChatEntityType" NOT NULL DEFAULT 'CHANNEL', sent_count integer NOT NULL DEFAULT 0, status text NOT NULL DEFAULT 'ACTIVE',
+  id text PRIMARY KEY, entity_type "ChatEntityType" NOT NULL DEFAULT 'CHANNEL', sent_count integer NOT NULL DEFAULT 0, status "ManagedBroadcastStatus" NOT NULL DEFAULT 'ACTIVE',
   next_send_at timestamp(3) DEFAULT '2026-10-19T22:00:00', locked_at timestamp(3), lock_token text,
   cycle_enabled boolean NOT NULL DEFAULT false, cycle_count integer NOT NULL DEFAULT 1, apply_to_all_chats boolean NOT NULL DEFAULT false,
   target_chat_ids jsonb NOT NULL DEFAULT '[]', last_error text,
@@ -40,7 +41,7 @@ CREATE TABLE managed_broadcasts (
 CREATE UNIQUE INDEX managed_broadcasts_pub_occurrence_entity_key ON managed_broadcasts(publication_occurrence_id,entity_type);
 CREATE TABLE managed_broadcast_occurrences (
   id text PRIMARY KEY, broadcast_id text NOT NULL REFERENCES managed_broadcasts(id), occurrence_index integer NOT NULL DEFAULT 1,
-  scheduled_at timestamp(3) NOT NULL DEFAULT '2026-10-19T22:00:00', status text NOT NULL DEFAULT 'ACTIVE',
+  scheduled_at timestamp(3) NOT NULL DEFAULT '2026-10-19T22:00:00', status "ManagedBroadcastStatus" NOT NULL DEFAULT 'ACTIVE',
   updated_at timestamp(3) NOT NULL DEFAULT '2026-10-19T20:00:00'
 );
 CREATE UNIQUE INDEX managed_broadcast_occurrences_broadcast_occurrence_key ON managed_broadcast_occurrences(broadcast_id,occurrence_index);

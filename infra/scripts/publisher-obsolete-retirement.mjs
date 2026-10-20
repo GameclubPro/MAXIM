@@ -5,6 +5,17 @@ export const RETIREMENT_CUTOFF = '2026-10-19T23:00:00.000Z';
 export const RETIREMENT_STATUSES = ['SCHEDULED', 'IN_PROGRESS', 'FAILED'];
 export const RETIREMENT_SOURCE_CAP = 32;
 export const RETIREMENT_TARGET_CAP = 128;
+export const RETIREMENT_STOP_OPERATION = 'stop-only';
+export const RETIREMENT_STOP_STATUSES = [
+  ...RETIREMENT_STATUSES,
+  'SENT',
+  'PARTIAL',
+  'AMBIGUOUS',
+  'CANCELED',
+];
+export const RETIREMENT_STOP_PAGE_CAP = 96;
+const stopEnvelopeStatuses = ['ACTIVE', 'PARTIAL', 'FAILED'];
+const stopOccurrenceStatuses = [...RETIREMENT_STATUSES, 'PARTIAL', 'AMBIGUOUS'];
 const profile = 'PUBLIK_V1';
 const knownPreDispatchErrors = new Set([
   'PUBLISHER_ACTOR_ACCESS_REQUIRED',
@@ -45,6 +56,12 @@ export function initialRetirementCursors() {
   );
 }
 
+export function initialStopRetirementCursors() {
+  return Object.fromEntries(
+    RETIREMENT_STOP_STATUSES.map((status) => [status, { blocker: null, after: null, done: false }]),
+  );
+}
+
 // FLAG: The existing ready index has blocker before slot. Each page fixes that
 // full leading prefix, so equal-time cohorts use (scheduled_at,id) without a sort.
 // Blocker discovery is a separate one-row index seek; never filter the source
@@ -53,6 +70,15 @@ export function initialRetirementCursors() {
 // when proving slot order and would otherwise sort the entire NULL partition.
 export function buildRetirementSourceQuery(status, cursor) {
   if (!RETIREMENT_STATUSES.includes(status)) throw new Error('invalid_source_status');
+  return buildSourceQuery(status, cursor);
+}
+
+export function buildStopRetirementSourceQuery(status, cursor) {
+  if (!RETIREMENT_STOP_STATUSES.includes(status)) throw new Error('invalid_source_status');
+  return buildSourceQuery(status, cursor);
+}
+
+function buildSourceQuery(status, cursor) {
   const values = [status, RETIREMENT_CUTOFF];
   let blocker = 'dispatch_blocker_code IS NULL';
   if (cursor.blocker !== null) {
@@ -380,6 +406,12 @@ export function classifyRetirementSnapshot(snapshot, botId) {
 }
 
 export const retirementSnapshotDigest = digest;
+export function retirementPlanMatchesOperation(plan, operation) {
+  return operation === RETIREMENT_STOP_OPERATION
+    ? plan?.version === 2 && plan.operation === RETIREMENT_STOP_OPERATION
+    : operation === undefined && plan?.version === 1 && !Object.hasOwn(plan, 'operation');
+}
+
 export function retirementSendKey(delivery) {
   return `managed-broadcast:send:${delivery.broadcast_id}:occurrence:${delivery.occurrence_index}:target:${delivery.target_chat_id}:content:publication-${delivery.content_revision_id}`;
 }
@@ -511,6 +543,249 @@ export async function applyRetirement(db, plan, botId) {
       outcomes.canceled += 1;
       outcomes.deliveries += snapshot.deliveries.length;
       outcomes.envelopes += snapshot.envelopes.length;
+    } catch (error) {
+      await db.query('ROLLBACK');
+      if (error.code === '55P03' || error.message === 'calendar_writer_busy')
+        outcomes.refused.writer_busy = (outcomes.refused.writer_busy ?? 0) + 1;
+      else throw error;
+    }
+  }
+  return outcomes;
+}
+
+export async function readStopRetirementSnapshot(db, source, lock = false) {
+  const suffix = lock ? ' FOR UPDATE NOWAIT' : '';
+  if (lock) {
+    const result = await db.query(
+      "SELECT pg_try_advisory_xact_lock(hashtext('publication-calendar')) AS acquired",
+    );
+    if (!result.rows[0].acquired) throw new Error('calendar_writer_busy');
+  }
+  const publication = (
+    await db.query(
+      `SELECT id,lifecycle,audience_mode,dispatch_profile,required_bot_id,version,
+      canonical_content_revision_id,created_at,updated_at FROM public.publications WHERE id=$1 LIMIT 1${suffix}`,
+      [source.publication_id],
+    )
+  ).rows[0];
+  const schedule = (
+    await db.query(
+      `SELECT id,publication_id,mode,revision,status,created_at,updated_at
+      FROM public.publication_schedules WHERE id=$1 LIMIT 1${suffix}`,
+      [source.schedule_id],
+    )
+  ).rows[0];
+  const occurrence = (
+    await db.query(
+      `SELECT ${occurrenceColumns} FROM public.publication_occurrences WHERE id=$1 LIMIT 1${suffix}`,
+      [source.id],
+    )
+  ).rows[0];
+  if (!publication || !schedule || !occurrence) return null;
+  // FLAG: Stop intent never reads child effects or audience JSON. An ACK may
+  // settle independently; only this occurrence and its one-shot envelopes stop.
+  const envelopes = (
+    await db.query(
+      `SELECT id,entity_type,status,next_send_at,cycle_enabled,cycle_count,
+      publication_occurrence_id,dispatch_profile,required_bot_id FROM public.managed_broadcasts
+      WHERE publication_occurrence_id=$1 ORDER BY entity_type LIMIT 3${suffix}`,
+      [occurrence.id],
+    )
+  ).rows;
+  const envelopeOccurrences = [];
+  if (envelopes.length <= 2)
+    for (const envelope of envelopes) {
+      const rows = (
+        await db.query(
+          `SELECT id,occurrence_index,scheduled_at FROM public.managed_broadcast_occurrences
+          WHERE broadcast_id=$1 ORDER BY occurrence_index LIMIT 2${suffix}`,
+          [envelope.id],
+        )
+      ).rows;
+      envelopeOccurrences.push({ envelopeId: envelope.id, rows });
+    }
+  return normalized({ publication, schedule, occurrence, envelopes, envelopeOccurrences });
+}
+
+export function classifyStopRetirementSnapshot(snapshot, botId) {
+  if (!snapshot) return fail('missing_parent');
+  const { publication: p, schedule: s, occurrence: o, envelopes } = snapshot;
+  if ([p, o].some((row) => row.dispatch_profile !== profile || row.required_bot_id !== botId))
+    return fail('foreign_bot_or_profile');
+  if (!RETIREMENT_STOP_STATUSES.includes(o.status)) return fail('unknown_occurrence_status');
+  if (!['ONCE', 'SLOTS', 'RECURRENCE'].includes(s.mode)) return fail('not_scheduled_mode');
+  if (p.audience_mode !== 'SNAPSHOT') return fail('dynamic_audience');
+  if (!beforeCutoff(o.scheduled_at) || ![p, s, o].every((row) => beforeCutoff(row.created_at)))
+    return fail('newer_plan');
+  if (
+    (o.retry_authorized_at && !beforeCutoff(o.retry_authorized_at)) ||
+    (o.dispatch_blocker_code === 'PUBLISHER_EXPLICIT_RETRY' &&
+      (!o.dispatch_blocked_at || !beforeCutoff(o.dispatch_blocked_at)))
+  )
+    return fail('newer_explicit_retry');
+  if (s.publication_id !== p.id || o.publication_id !== p.id || o.schedule_id !== s.id)
+    return fail('parent_mismatch');
+  if (!['ACTIVE', 'PAUSED', 'ERROR', 'COMPLETED', 'CANCELED'].includes(p.lifecycle))
+    return fail('publication_lifecycle');
+  if (envelopes.length > 2) return fail('envelope_cap');
+  if (o.legacy_broadcast_id && !envelopes.some((row) => row.id === o.legacy_broadcast_id))
+    return fail('foreign_legacy_envelope');
+  for (const envelope of envelopes) {
+    if (
+      envelope.publication_occurrence_id !== o.id ||
+      envelope.dispatch_profile !== profile ||
+      envelope.required_bot_id !== botId ||
+      !['CHAT', 'CHANNEL'].includes(envelope.entity_type)
+    )
+      return fail('envelope_identity_mismatch');
+    if (!['ACTIVE', 'PARTIAL', 'FAILED', 'COMPLETED', 'CANCELED'].includes(envelope.status))
+      return fail('unknown_envelope_status');
+  }
+  const cancelOccurrence = stopOccurrenceStatuses.includes(o.status);
+  const stopEnvelopes = envelopes.filter((row) => stopEnvelopeStatuses.includes(row.status));
+  if (!cancelOccurrence && stopEnvelopes.length === 0)
+    return { safe: true, cancelOccurrence, envelopes: 0, noAction: true };
+  for (const envelope of envelopes) {
+    const slots = snapshot.envelopeOccurrences.find(
+      (entry) => entry.envelopeId === envelope.id,
+    )?.rows;
+    if (
+      envelope.cycle_enabled !== false ||
+      envelope.cycle_count !== 1 ||
+      !slots ||
+      slots.length > 1 ||
+      slots.some(
+        (row) =>
+          row.occurrence_index !== 1 || timestamp(row.scheduled_at) !== timestamp(o.scheduled_at),
+      )
+    )
+      return fail('future_or_mismatched_envelope_slots');
+  }
+  return {
+    safe: true,
+    cancelOccurrence,
+    envelopes: stopEnvelopes.length,
+    noAction: !cancelOccurrence && stopEnvelopes.length === 0,
+  };
+}
+
+export async function previewStopRetirement(
+  db,
+  { botId, cursors = initialStopRetirementCursors() },
+) {
+  if (
+    Object.keys(cursors).length !== RETIREMENT_STOP_STATUSES.length ||
+    RETIREMENT_STOP_STATUSES.some((status) => !cursors[status])
+  )
+    throw new Error('invalid_stop_cursor');
+  const nextCursors = normalized(cursors);
+  const candidates = [];
+  const refusals = {};
+  const heads = [];
+  let sampled = 0;
+  let noAction = 0;
+  for (const status of RETIREMENT_STOP_STATUSES) {
+    if (sampled >= RETIREMENT_STOP_PAGE_CAP) break;
+    const cursor = cursors[status];
+    if (!cursor || typeof cursor.done !== 'boolean') throw new Error('invalid_stop_cursor');
+    if (cursor.done) continue;
+    const rows = (await db.query(buildStopRetirementSourceQuery(status, cursor))).rows;
+    const cap = Math.min(RETIREMENT_SOURCE_CAP, RETIREMENT_STOP_PAGE_CAP - sampled);
+    const selected = rows.slice(0, cap);
+    sampled += selected.length;
+    heads.push({ status, sampled: selected.length, truncated: rows.length > cap });
+    for (const source of selected) {
+      const snapshot = await readStopRetirementSnapshot(db, source);
+      const result = classifyStopRetirementSnapshot(snapshot, botId);
+      if (!result.safe) refusals[result.reason] = (refusals[result.reason] ?? 0) + 1;
+      else if (result.noAction) noAction += 1;
+      else
+        candidates.push({
+          source: normalized(source),
+          snapshotDigest: digest(snapshot),
+          cancelOccurrence: result.cancelOccurrence,
+          envelopes: result.envelopes,
+        });
+    }
+    if (rows.length > cap) {
+      const last = selected.at(-1);
+      nextCursors[status].after = {
+        scheduledAt: new Date(timestamp(last.scheduled_at)).toISOString(),
+        id: last.id,
+      };
+    } else {
+      const next = (await db.query(buildRetirementBlockerQuery(status, cursor.blocker))).rows[0];
+      nextCursors[status] = next
+        ? { blocker: next.dispatch_blocker_code, after: null, done: false }
+        : { blocker: cursor.blocker, after: null, done: true };
+    }
+  }
+  return {
+    candidates,
+    nextCursors,
+    report: {
+      sampled,
+      eligible: candidates.length,
+      occurrencesToCancel: candidates.filter((row) => row.cancelOccurrence).length,
+      envelopes: candidates.reduce((sum, row) => sum + row.envelopes, 0),
+      noAction,
+      refusals,
+      heads,
+      sourceComplete: Object.values(nextCursors).every((cursor) => cursor.done),
+    },
+  };
+}
+
+export async function applyStopRetirement(db, plan, botId) {
+  const outcomes = { stopped: 0, canceled: 0, envelopes: 0, preservedOccurrences: 0, refused: {} };
+  for (const candidate of plan.candidates) {
+    await db.query('BEGIN');
+    try {
+      const snapshot = await readStopRetirementSnapshot(db, candidate.source, true);
+      const result = classifyStopRetirementSnapshot(snapshot, botId);
+      const reason = !result.safe
+        ? result.reason
+        : digest(snapshot) !== candidate.snapshotDigest
+          ? 'snapshot_changed'
+          : null;
+      if (reason) {
+        await db.query('ROLLBACK');
+        outcomes.refused[reason] = (outcomes.refused[reason] ?? 0) + 1;
+        continue;
+      }
+      // FLAG: Never alter delivery/slot/ledger/lease/post-action evidence. Late
+      // receipts remain valid; canceled envelopes cannot be auto-projected again.
+      if (result.noAction) {
+        await db.query('ROLLBACK');
+        continue;
+      }
+      for (const envelope of snapshot.envelopes.filter((row) =>
+        stopEnvelopeStatuses.includes(row.status),
+      )) {
+        const changed = await db.query(
+          `UPDATE public.managed_broadcasts SET status='CANCELED',next_send_at=NULL,
+          updated_at=(statement_timestamp() AT TIME ZONE 'UTC')
+          WHERE id=$1 AND status=$2::"ManagedBroadcastStatus" AND publication_occurrence_id=$3
+          AND dispatch_profile='PUBLIK_V1' AND required_bot_id=$4`,
+          [envelope.id, envelope.status, snapshot.occurrence.id, botId],
+        );
+        if (changed.rowCount !== 1) throw new Error('stop_envelope_cas_failed');
+      }
+      if (result.cancelOccurrence) {
+        const changed = await db.query(
+          `UPDATE public.publication_occurrences SET status='CANCELED',
+          updated_at=(statement_timestamp() AT TIME ZONE 'UTC')
+          WHERE id=$1 AND status=$2::"PublicationOccurrenceStatus"
+          AND dispatch_profile='PUBLIK_V1' AND required_bot_id=$3`,
+          [snapshot.occurrence.id, snapshot.occurrence.status, botId],
+        );
+        if (changed.rowCount !== 1) throw new Error('stop_occurrence_cas_failed');
+      }
+      await db.query('COMMIT');
+      outcomes.stopped += 1;
+      outcomes.canceled += Number(result.cancelOccurrence);
+      outcomes.preservedOccurrences += Number(!result.cancelOccurrence);
+      outcomes.envelopes += result.envelopes;
     } catch (error) {
       await db.query('ROLLBACK');
       if (error.code === '55P03' || error.message === 'calendar_writer_busy')
@@ -657,6 +932,11 @@ export async function runContainerRetirement(request) {
   if (
     !request ||
     !['preview', 'apply'].includes(request.action) ||
+    ![undefined, RETIREMENT_STOP_OPERATION].includes(request.operation) ||
+    (request.action === 'apply' &&
+      (!retirementPlanMatchesOperation(request.plan, request.operation) ||
+        !Array.isArray(request.plan.candidates) ||
+        request.plan.candidates.length > RETIREMENT_STOP_PAGE_CAP)) ||
     request.cutoff !== RETIREMENT_CUTOFF ||
     request.botId !== process.env.MAX_PUBLISHER_BOT_ID ||
     request.botId !== process.env.MAX_BOT_ID ||
@@ -695,7 +975,9 @@ export async function runContainerRetirement(request) {
     if (request.action === 'preview') {
       await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       try {
-        const result = await previewRetirement(db, request);
+        const result = await (request.operation === RETIREMENT_STOP_OPERATION
+          ? previewStopRetirement(db, request)
+          : previewRetirement(db, request));
         await db.query('COMMIT');
         return { ...result, readPlans: [...readPlans.values()] };
       } catch (error) {
@@ -703,7 +985,9 @@ export async function runContainerRetirement(request) {
         throw error;
       }
     }
-    return await applyRetirement(db, request.plan, request.botId);
+    return await (request.operation === RETIREMENT_STOP_OPERATION
+      ? applyStopRetirement(db, request.plan, request.botId)
+      : applyRetirement(db, request.plan, request.botId));
   } finally {
     await client.end();
   }

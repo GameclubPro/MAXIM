@@ -124,6 +124,9 @@ Commands:
   publisher-obsolete-retirement [preview [--after-digest <sha256>]]
   publisher-obsolete-retirement apply --reviewed-digest <sha256>
                               Retire reviewed obsolete untouched scheduled deliveries
+  publisher-obsolete-retirement stop-preview [--after-digest <sha256>]
+  publisher-obsolete-retirement stop-apply --reviewed-digest <sha256>
+                              Stop reviewed obsolete dispatch intents; preserve delivery evidence
   publisher-selection-rollout <off|test|5|25|100> [--apply]
   publisher-rollup-noop-rollout <off|test|5|25|100> [--apply]
                               Preview or change selection stage without changing dispatch

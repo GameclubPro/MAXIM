@@ -14,6 +14,8 @@ import {
   previewRetirement,
   readRetirementSnapshot,
   RETIREMENT_CUTOFF,
+  RETIREMENT_STOP_OPERATION,
+  retirementPlanMatchesOperation,
   retirementSendKey,
 } from './publisher-obsolete-retirement.mjs';
 import {
@@ -212,13 +214,43 @@ test('host accepts only digest-nominated maintenance commands', () => {
     'a'.repeat(64),
   );
   assert.equal(parseRetirementArgs(['apply', '--reviewed-digest', 'b'.repeat(64)]).action, 'apply');
+  assert.deepEqual(parseRetirementArgs(['stop-preview']), {
+    action: 'preview',
+    operation: RETIREMENT_STOP_OPERATION,
+  });
+  assert.deepEqual(parseRetirementArgs(['stop-preview', '--after-digest', 'a'.repeat(64)]), {
+    action: 'preview',
+    operation: RETIREMENT_STOP_OPERATION,
+    afterDigest: 'a'.repeat(64),
+  });
+  assert.deepEqual(parseRetirementArgs(['stop-apply', '--reviewed-digest', 'b'.repeat(64)]), {
+    action: 'apply',
+    operation: RETIREMENT_STOP_OPERATION,
+    reviewedDigest: 'b'.repeat(64),
+  });
   for (const args of [
     ['apply'],
     ['--all'],
     ['preview', '--cutoff', RETIREMENT_CUTOFF],
     ['apply', '--reviewed-digest', '../private'],
+    ['stop-apply'],
+    ['stop-apply', '--reviewed-digest', '../private'],
+    ['stop-preview', '--all'],
   ])
     assert.throws(() => parseRetirementArgs(args));
+});
+
+test('host binds reviewed plans and continuation digests to their exact operation', () => {
+  const untouched = { version: 1 };
+  const stop = { version: 2, operation: RETIREMENT_STOP_OPERATION };
+  assert.equal(retirementPlanMatchesOperation(untouched), true);
+  assert.equal(retirementPlanMatchesOperation(stop, RETIREMENT_STOP_OPERATION), true);
+  assert.equal(retirementPlanMatchesOperation(untouched, RETIREMENT_STOP_OPERATION), false);
+  assert.equal(retirementPlanMatchesOperation(stop), false);
+  assert.equal(retirementPlanMatchesOperation({ ...untouched, operation: 'stop-only' }), false);
+  assert.equal(retirementPlanMatchesOperation({ ...stop, version: 1 }, 'stop-only'), false);
+  assert.equal(retirementPlanMatchesOperation({ version: 2 }, 'stop-only'), false);
+  assert.equal(retirementPlanMatchesOperation(untouched, 'unknown'), false);
 });
 
 function runtimeFixture(t) {
