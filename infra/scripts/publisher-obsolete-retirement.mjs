@@ -607,6 +607,113 @@ export async function readStopRetirementSnapshot(db, source, lock = false) {
   return normalized({ publication, schedule, occurrence, envelopes, envelopeOccurrences });
 }
 
+/** @typedef {{
+ * publication: {id: string, lifecycle: string, audience_mode: string, dispatch_profile: string,
+ * required_bot_id: string, version: number, canonical_content_revision_id: string | null,
+ * created_at: string, updated_at: string},
+ * schedule: {id: string, publication_id: string, mode: string, revision: number, status: string,
+ * created_at: string, updated_at: string},
+ * occurrence: {id: string, publication_id: string, schedule_id: string, content_revision_id: string,
+ * schedule_revision: number, scheduled_at: string, status: string, legacy_broadcast_id: string | null,
+ * dispatch_profile: string, required_bot_id: string, dispatch_blocker_code: string | null,
+ * dispatch_blocked_at: string | null, dispatch_first_blocked_at: string | null,
+ * retry_authorized_at: string | null, retry_expires_at: string | null,
+ * delivery_deadline_at: string | null, created_at: string, updated_at: string},
+ * envelopes: Array<{id: string, entity_type: string, status: string, next_send_at: string | null,
+ * cycle_enabled: boolean, cycle_count: number, publication_occurrence_id: string,
+ * dispatch_profile: string, required_bot_id: string}>,
+ * envelopeOccurrences: Array<{envelopeId: string,
+ * rows: Array<{id: string, occurrence_index: number, scheduled_at: string}>}>
+ * }} StopRetirementSnapshot */
+
+/** @param {StopRetirementSnapshot} snapshot */
+export function stopRetirementSnapshotDigest(snapshot) {
+  const { publication: p, schedule: s, occurrence: o } = snapshot;
+  // FLAG: Freeze posting intent, identity and retry authority, not worker wakeups.
+  // The full snapshot is still classified under calendar/row locks before writes.
+  // Legacy explicit retry uses blocked_at as authority: retain that timestamp.
+  return digest({
+    boundary: 'publik-stop-semantic-v1',
+    publication: {
+      id: p.id,
+      lifecycle: p.lifecycle,
+      audience_mode: p.audience_mode,
+      dispatch_profile: p.dispatch_profile,
+      required_bot_id: p.required_bot_id,
+      version: p.version,
+      canonical_content_revision_id: p.canonical_content_revision_id,
+      created_at: p.created_at,
+    },
+    schedule: {
+      id: s.id,
+      publication_id: s.publication_id,
+      mode: s.mode,
+      revision: s.revision,
+      status: s.status,
+      created_at: s.created_at,
+    },
+    occurrence: {
+      id: o.id,
+      publication_id: o.publication_id,
+      schedule_id: o.schedule_id,
+      content_revision_id: o.content_revision_id,
+      schedule_revision: o.schedule_revision,
+      scheduled_at: o.scheduled_at,
+      status: o.status,
+      legacy_broadcast_id: o.legacy_broadcast_id,
+      dispatch_profile: o.dispatch_profile,
+      required_bot_id: o.required_bot_id,
+      dispatch_blocker_code: o.dispatch_blocker_code,
+      dispatch_blocked_at:
+        o.dispatch_blocker_code === 'PUBLISHER_EXPLICIT_RETRY' ? o.dispatch_blocked_at : null,
+      retry_authorized_at: o.retry_authorized_at,
+      retry_expires_at: o.retry_expires_at,
+      delivery_deadline_at: o.delivery_deadline_at,
+      created_at: o.created_at,
+    },
+    envelopes: snapshot.envelopes.map((envelope) => ({
+      id: envelope.id,
+      entity_type: envelope.entity_type,
+      status: envelope.status,
+      cycle_enabled: envelope.cycle_enabled,
+      cycle_count: envelope.cycle_count,
+      publication_occurrence_id: envelope.publication_occurrence_id,
+      dispatch_profile: envelope.dispatch_profile,
+      required_bot_id: envelope.required_bot_id,
+    })),
+    envelopeOccurrences: snapshot.envelopeOccurrences.map((entry) => ({
+      envelopeId: entry.envelopeId,
+      rows: entry.rows.map((slot) => ({
+        id: slot.id,
+        occurrence_index: slot.occurrence_index,
+        scheduled_at: slot.scheduled_at,
+      })),
+    })),
+  });
+}
+
+/** @param {StopRetirementSnapshot} snapshot */
+export function stopRetirementBookkeepingDigests(snapshot) {
+  return Object.fromEntries(
+    [
+      ['publication.updated_at', snapshot.publication.updated_at],
+      ['schedule.updated_at', snapshot.schedule.updated_at],
+      ['occurrence.updated_at', snapshot.occurrence.updated_at],
+      [
+        'occurrence.dispatch_blocked_at',
+        snapshot.occurrence.dispatch_blocker_code === 'PUBLISHER_EXPLICIT_RETRY'
+          ? null
+          : snapshot.occurrence.dispatch_blocked_at,
+      ],
+      ['occurrence.dispatch_first_blocked_at', snapshot.occurrence.dispatch_first_blocked_at],
+      ...['CHAT', 'CHANNEL'].map((entityType) => [
+        `envelopes.${entityType}.next_send_at`,
+        snapshot.envelopes.find((row) => row.entity_type === entityType)?.next_send_at ?? null,
+      ]),
+    ].map(([path, value]) => [path, digest(value)]),
+  );
+}
+
 export function classifyStopRetirementSnapshot(snapshot, botId) {
   if (!snapshot) return fail('missing_parent');
   const { publication: p, schedule: s, occurrence: o, envelopes } = snapshot;
@@ -702,7 +809,9 @@ export async function previewStopRetirement(
       else
         candidates.push({
           source: normalized(source),
-          snapshotDigest: digest(snapshot),
+          snapshotDigest: stopRetirementSnapshotDigest(snapshot),
+          rawSnapshotDigest: digest(snapshot),
+          bookkeepingFieldDigests: stopRetirementBookkeepingDigests(snapshot),
           cancelOccurrence: result.cancelOccurrence,
           envelopes: result.envelopes,
         });
@@ -745,7 +854,7 @@ export async function applyStopRetirement(db, plan, botId) {
       const result = classifyStopRetirementSnapshot(snapshot, botId);
       const reason = !result.safe
         ? result.reason
-        : digest(snapshot) !== candidate.snapshotDigest
+        : stopRetirementSnapshotDigest(snapshot) !== candidate.snapshotDigest
           ? 'snapshot_changed'
           : null;
       if (reason) {
@@ -759,6 +868,14 @@ export async function applyStopRetirement(db, plan, botId) {
         await db.query('ROLLBACK');
         continue;
       }
+      const currentBookkeepingDigests = stopRetirementBookkeepingDigests(snapshot);
+      const ignoredBookkeepingChanges =
+        candidate.rawSnapshotDigest && digest(snapshot) !== candidate.rawSnapshotDigest
+          ? Object.keys(currentBookkeepingDigests).filter(
+              (path) =>
+                candidate.bookkeepingFieldDigests?.[path] !== currentBookkeepingDigests[path],
+            )
+          : [];
       for (const envelope of snapshot.envelopes.filter((row) =>
         stopEnvelopeStatuses.includes(row.status),
       )) {
@@ -782,6 +899,11 @@ export async function applyStopRetirement(db, plan, botId) {
         if (changed.rowCount !== 1) throw new Error('stop_occurrence_cas_failed');
       }
       await db.query('COMMIT');
+      for (const path of ignoredBookkeepingChanges) {
+        outcomes.ignoredBookkeepingChanges ??= {};
+        outcomes.ignoredBookkeepingChanges[path] =
+          (outcomes.ignoredBookkeepingChanges[path] ?? 0) + 1;
+      }
       outcomes.stopped += 1;
       outcomes.canceled += Number(result.cancelOccurrence);
       outcomes.preservedOccurrences += Number(!result.cancelOccurrence);

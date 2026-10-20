@@ -110,6 +110,25 @@ audience, the parent's current canonical content revision, or its current schedu
 revision do not block this operation. The current frozen snapshot must still match
 at apply; a racing edit or retry requires a fresh preview.
 
+Stop-only uses the versioned semantic projection in
+[`stopRetirementSnapshotDigest`](../../../infra/scripts/publisher-obsolete-retirement.mjs).
+It retains all selected identities, statuses, publication version and canonical
+content, schedule revision, slot/cycle shape, deadlines and retry authority. It
+excludes parent/occurrence `updated_at`, ordinary occurrence blocked timestamps
+and envelope `next_send_at`: dispatch deferral, schedule materialization and runtime
+capacity recovery update those fields without changing the saved posting intent.
+The `PUBLISHER_EXPLICIT_RETRY` marker still freezes its `dispatch_blocked_at`
+authority timestamp. The full snapshot remains subject to classification under
+the same locks; blocker code changes, newer retries and semantic changes still
+refuse. Ordinary untouched-retirement digests are unchanged. Older stop previews
+require a fresh preview with the selected source.
+
+Private stop candidates also retain the raw snapshot digest and seven fixed
+bookkeeping field hashes. After a successful semantic match and atomic stop, an
+optional `ignoredBookkeepingChanges` receipt counts only changed allowlisted field
+paths, without values or identifiers. It proves observed bookkeeping drift for
+that operation; source analysis alone does not identify a production race field.
+
 Apply takes the calendar advisory lock and row locks before checking the frozen
 snapshot and compare-and-set predicates. In one occurrence transaction it changes
 `SCHEDULED`, `IN_PROGRESS`, `FAILED`, `PARTIAL` or `AMBIGUOUS` occurrences to

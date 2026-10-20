@@ -16,6 +16,8 @@ import {
   RETIREMENT_CUTOFF,
   RETIREMENT_STOP_STATUSES,
   retirementSnapshotDigest,
+  stopRetirementBookkeepingDigests,
+  stopRetirementSnapshotDigest,
 } from './publisher-obsolete-retirement.mjs';
 
 const fixture = readFileSync(
@@ -36,6 +38,15 @@ const tables = [
 ];
 const source = (id) => ({ id, publication_id: 'p-' + id, schedule_id: 's-' + id });
 const envelopeIds = (id) => ['b-' + id + '-CHAT', 'b-' + id + '-CHANNEL'];
+const bookkeepingPaths = [
+  'publication.updated_at',
+  'schedule.updated_at',
+  'occurrence.updated_at',
+  'occurrence.dispatch_blocked_at',
+  'occurrence.dispatch_first_blocked_at',
+  'envelopes.CHAT.next_send_at',
+  'envelopes.CHANNEL.next_send_at',
+];
 
 async function lite(t) {
   const store = new PGlite({
@@ -246,13 +257,185 @@ async function planFor(db, id) {
     candidates: [
       {
         source: source(id),
-        snapshotDigest: retirementSnapshotDigest(snapshot),
+        snapshotDigest: stopRetirementSnapshotDigest(snapshot),
+        rawSnapshotDigest: retirementSnapshotDigest(snapshot),
+        bookkeepingFieldDigests: stopRetirementBookkeepingDigests(snapshot),
         cancelOccurrence: result.cancelOccurrence,
         envelopes: result.envelopes,
       },
     ],
   };
 }
+
+async function assertBookkeepingChurnAccepted(db, id) {
+  await seed(db, id);
+  await db.query(
+    "UPDATE publication_occurrences SET dispatch_blocker_code='bot_not_admin',dispatch_blocked_at='2026-10-19T21:00:00',dispatch_first_blocked_at='2026-10-19T20:30:00' WHERE id=$1",
+    [id],
+  );
+  const traced = stopDb(db);
+  const plan = await planFor(traced, id);
+  const original = await readStopRetirementSnapshot(traced, source(id));
+  await db.query("UPDATE publications SET updated_at='2026-10-20T00:01:00' WHERE id=$1", [
+    'p-' + id,
+  ]);
+  await db.query("UPDATE publication_schedules SET updated_at='2026-10-20T00:01:01' WHERE id=$1", [
+    's-' + id,
+  ]);
+  await db.query(
+    "UPDATE publication_occurrences SET updated_at='2026-10-20T00:01:02',dispatch_blocked_at='2026-10-20T00:01:03',dispatch_first_blocked_at='2026-10-20T00:01:04' WHERE id=$1",
+    [id],
+  );
+  await db.query(
+    "UPDATE managed_broadcasts SET next_send_at='2026-10-20T05:00:00' WHERE publication_occurrence_id=$1",
+    [id],
+  );
+  const changed = await readStopRetirementSnapshot(traced, source(id));
+  assert.equal(classifyStopRetirementSnapshot(changed, botId).safe, true);
+  assert.equal(stopRetirementSnapshotDigest(changed), stopRetirementSnapshotDigest(original));
+  assert.notEqual(retirementSnapshotDigest(changed), retirementSnapshotDigest(original));
+  const beforeDigests = stopRetirementBookkeepingDigests(original);
+  const afterDigests = stopRetirementBookkeepingDigests(changed);
+  assert.deepEqual(Object.keys(afterDigests), bookkeepingPaths);
+  for (const path of bookkeepingPaths) {
+    assert.match(beforeDigests[path], /^[a-f0-9]{64}$/u);
+    assert.match(afterDigests[path], /^[a-f0-9]{64}$/u);
+    assert.notEqual(afterDigests[path], beforeDigests[path], path);
+  }
+  const before = await evidence(db);
+  const result = await applyStopRetirement(traced, plan, botId);
+  assert.deepEqual(result, {
+    stopped: 1,
+    canceled: 1,
+    envelopes: 2,
+    preservedOccurrences: 0,
+    refused: {},
+    ignoredBookkeepingChanges: Object.fromEntries(bookkeepingPaths.map((path) => [path, 1])),
+  });
+  assertOnlyStopChanges(before, await evidence(db), [id], envelopeIds(id));
+}
+
+function assertStopProjectionLeaves(snapshot) {
+  const ignored = new Set([
+    ...bookkeepingPaths.filter((path) => !path.startsWith('envelopes.')),
+    ...snapshot.envelopes.map((_, index) => 'envelopes.' + index + '.next_send_at'),
+  ]);
+  const frozen = stopRetirementSnapshotDigest(snapshot);
+  const visit = (value, path = []) => {
+    if (value !== null && typeof value === 'object') {
+      for (const [key, child] of Object.entries(value)) visit(child, [...path, key]);
+      return;
+    }
+    if (ignored.has(path.join('.'))) return;
+    const changed = structuredClone(snapshot);
+    const parent = path.slice(0, -1).reduce((row, key) => row[key], changed);
+    parent[path.at(-1)] =
+      typeof value === 'number'
+        ? value + 1
+        : typeof value === 'boolean'
+          ? !value
+          : String(value) + '-changed';
+    assert.notEqual(stopRetirementSnapshotDigest(changed), frozen, path.join('.'));
+  };
+  visit(snapshot);
+}
+
+async function assertSemanticChangesRefused(db, prefix) {
+  const cases = [
+    ['publication-version', 'publications', 'version=version+1', 'p-'],
+    [
+      'canonical-content',
+      'publications',
+      "canonical_content_revision_id='replacement-canonical-content'",
+      'p-',
+    ],
+    ['publication-lifecycle', 'publications', "lifecycle='PAUSED'", 'p-'],
+    ['schedule-revision', 'publication_schedules', 'revision=revision+1', 's-'],
+    ['schedule-status', 'publication_schedules', "status='PAUSED'", 's-'],
+    ['occurrence-revision', 'publication_occurrences', 'schedule_revision=schedule_revision+1', ''],
+    [
+      'occurrence-content',
+      'publication_occurrences',
+      "content_revision_id='replacement-occurrence-content'",
+      '',
+    ],
+    ['occurrence-status', 'publication_occurrences', "status='IN_PROGRESS'", ''],
+    ['retry-authority', 'publication_occurrences', "retry_authorized_at='2026-10-19T21:00:00'", ''],
+    ['retry-expiry', 'publication_occurrences', "retry_expires_at='2026-10-20T21:00:00'", ''],
+    [
+      'delivery-deadline',
+      'publication_occurrences',
+      "delivery_deadline_at='2026-10-20T23:00:00'",
+      '',
+    ],
+    ['blocker-code', 'publication_occurrences', "dispatch_blocker_code='bot_not_admin'", ''],
+    [
+      'explicit-retry-marker',
+      'publication_occurrences',
+      "dispatch_blocked_at='2026-10-19T22:00:00'",
+      '',
+    ],
+    ['envelope-status', 'managed_broadcasts', "status='FAILED'", 'b-'],
+  ];
+  for (const [name, table, assignments, idPrefix] of cases) {
+    const id = prefix + '-' + name;
+    await seed(db, id);
+    if (name === 'explicit-retry-marker')
+      await db.query(
+        "UPDATE publication_occurrences SET dispatch_blocker_code='PUBLISHER_EXPLICIT_RETRY',dispatch_blocked_at='2026-10-19T21:00:00' WHERE id=$1",
+        [id],
+      );
+    const traced = stopDb(db);
+    const plan = await planFor(traced, id);
+    const original = await readStopRetirementSnapshot(traced, source(id));
+    if (name === 'publication-version') assertStopProjectionLeaves(original);
+    await db.query('UPDATE ' + table + ' SET ' + assignments + ' WHERE id=$1', [
+      idPrefix + id + (table === 'managed_broadcasts' ? '-CHAT' : ''),
+    ]);
+    const changed = await readStopRetirementSnapshot(traced, source(id));
+    assert.equal(classifyStopRetirementSnapshot(changed, botId).safe, true, name);
+    assert.notEqual(stopRetirementSnapshotDigest(changed), plan.candidates[0].snapshotDigest, name);
+    if (name === 'explicit-retry-marker') {
+      assert.equal(
+        stopRetirementBookkeepingDigests(original)['occurrence.dispatch_blocked_at'],
+        stopRetirementBookkeepingDigests(changed)['occurrence.dispatch_blocked_at'],
+        'explicit retry authority is never reported as ignored bookkeeping',
+      );
+    }
+    const before = await evidence(db);
+    const result = await applyStopRetirement(traced, plan, botId);
+    assert.deepEqual(
+      result,
+      {
+        stopped: 0,
+        canceled: 0,
+        envelopes: 0,
+        preservedOccurrences: 0,
+        refused: { snapshot_changed: 1 },
+      },
+      name,
+    );
+    assert.deepEqual(await evidence(db), before, name + ' must not write');
+  }
+  const id = prefix + '-legacy-plan';
+  await seed(db, id);
+  const traced = stopDb(db);
+  const plan = await planFor(traced, id);
+  plan.candidates[0].snapshotDigest = plan.candidates[0].rawSnapshotDigest;
+  const before = await evidence(db);
+  const result = await applyStopRetirement(traced, plan, botId);
+  assert.equal(result.stopped, 0);
+  assert.deepEqual(result.refused, { snapshot_changed: 1 });
+  assert.deepEqual(await evidence(db), before, 'old raw snapshot requires a fresh preview');
+}
+
+test('stop-only accepts only approved bookkeeping churn and reports fixed field counts', async (t) => {
+  await assertBookkeepingChurnAccepted(await lite(t), 'bookkeeping');
+});
+
+test('stop-only still refuses racing content, revisions, statuses and explicit retry authority', async (t) => {
+  await assertSemanticChangesRefused(await lite(t), 'semantic');
+});
 
 test('stop-only cancels five incomplete states, preserves SENT/CANCELED parents and all child evidence', async (t) => {
   const db = await lite(t);
@@ -267,6 +450,13 @@ test('stop-only cancels five incomplete states, preserves SENT/CANCELED parents 
   );
   assert.equal(preview.report.occurrencesToCancel, 5);
   assert.equal(preview.report.envelopes, 14);
+  for (const candidate of preview.candidates) {
+    const snapshot = await readStopRetirementSnapshot(traced, candidate.source);
+    assert.equal(candidate.snapshotDigest, stopRetirementSnapshotDigest(snapshot));
+    assert.equal(candidate.rawSnapshotDigest, retirementSnapshotDigest(snapshot));
+    assert.deepEqual(candidate.bookkeepingFieldDigests, stopRetirementBookkeepingDigests(snapshot));
+    assert.deepEqual(Object.keys(candidate.bookkeepingFieldDigests), bookkeepingPaths);
+  }
   const applied = await applyStopRetirement(traced, preview, botId);
   assert.deepEqual(applied, {
     stopped: 7,
@@ -492,6 +682,52 @@ test('stop-only visits every status/blocker at equal times within the global 96-
       for (const status of ['SENT', 'PARTIAL', 'AMBIGUOUS', 'CANCELED'])
         assert.deepEqual(preview.nextCursors[status], initial[status]);
       assert.equal(preview.report.sourceComplete, false);
+      const boundedId = 'c'.repeat(128);
+      const maximumPlan = {
+        version: 2,
+        operation: 'stop-only',
+        cutoff: RETIREMENT_CUTOFF,
+        createdAt: '2026-10-20T00:00:00.000Z',
+        expiresAt: '2026-10-20T00:15:00.000Z',
+        previousDigest: 'a'.repeat(64),
+        binding: {
+          sourceSha: 'a'.repeat(40),
+          runtimeSha: 'b'.repeat(40),
+          botId: boundedId,
+          generations: ['api-admin', 'api-publisher'].map((service) => ({
+            service,
+            id: 'c'.repeat(64),
+            imageId: 'sha256:' + 'd'.repeat(64),
+            startedAt: '2026-10-20T00:00:00.000Z',
+            restartCount: 99,
+          })),
+        },
+        ...preview,
+        candidates: preview.candidates.map((candidate) => ({
+          ...candidate,
+          source: {
+            ...candidate.source,
+            id: boundedId,
+            publication_id: boundedId,
+            schedule_id: boundedId,
+          },
+        })),
+        readPlans: Array.from({ length: 32 }, () => ({
+          shapeDigest: 'e'.repeat(64),
+          indexes: [
+            'publication_occurrences_ready_dispatch_idx',
+            'managed_broadcasts_pub_occurrence_entity_key',
+            'managed_broadcast_occurrences_broadcast_occurrence_key',
+          ],
+          estimatedRows: 33,
+        })),
+      };
+      assert.equal(maximumPlan.candidates.length, 96);
+      const planBytes = Buffer.byteLength(JSON.stringify(maximumPlan) + '\n');
+      assert.ok(planBytes < 256 * 1024, '96-candidate private plan exceeds host read cap');
+      t.diagnostic(
+        JSON.stringify({ maxCandidatePlanBytes: planBytes, idLength: boundedId.length }),
+      );
     }
     const reads = log.filter((row) =>
       /^SELECT id,publication_id,schedule_id,scheduled_at FROM public\.publication_occurrences/iu.test(
@@ -725,6 +961,9 @@ test(
     );
     assert.deepEqual(await evidence(db), casBefore);
     await db.query('DROP TRIGGER refuse_stop_cas ON publication_occurrences');
+
+    await assertBookkeepingChurnAccepted(db, 'native-bookkeeping');
+    await assertSemanticChangesRefused(db, 'native-semantic');
 
     await db.query(
       "INSERT INTO publication_occurrences(id,publication_id,schedule_id,status,dispatch_blocker_code) SELECT 'stop-skew-'||n,'p-native-SENT','s-native-SENT','SENT',CASE WHEN n<=10000 THEN NULL ELSE 'bot_not_admin' END FROM generate_series(1,20000) n",
