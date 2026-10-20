@@ -3526,8 +3526,13 @@ export class AdminManagedBroadcastRuntime {
           delivery.targetChatId,
           deliveryAttemptCount,
         );
-        const maxSendOptions =
-          this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions);
+        // FLAG: Only an exact Publik deadline SEND uses interactive admission. Media,
+        // preparation and receipt-link reads retain the original background options.
+        const maxSendOptions = this.mediaRuntime.buildManagedBroadcastMaxApiRequestOptions(
+          publisherRoute && reason === 'deadline'
+            ? { ...maxApiOptions, trafficClass: 'interactive' }
+            : maxApiOptions,
+        );
         const attempts =
           Math.max(
             BROADCAST_VIDEO_SEND_RETRY_DELAYS_MS.length,

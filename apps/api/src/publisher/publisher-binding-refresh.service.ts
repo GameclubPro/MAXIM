@@ -564,7 +564,11 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     if (
       (activationRequired || !bindingHasRefreshEvidence || explicitActivation !== null) &&
       (!explicitActivation ||
-        !(await hasPersistedManagedEntityActivationSource(this.prisma, explicitActivation)))
+        !(await (explicitActivation.kind === 'forwarded_message'
+          ? hasPersistedManagedEntityActivationSource(this.prisma, explicitActivation, {
+              allowOfficialForwardContent: true,
+            })
+          : hasPersistedManagedEntityActivationSource(this.prisma, explicitActivation))))
     )
       return;
     if (job.replyToStartCommand && !explicitActivation) return;
@@ -1051,7 +1055,11 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
           chatId,
           this.publisherBotId,
         ) ||
-        !(await hasPersistedManagedEntityActivationSource(tx, params.explicitActivation)) ||
+        !(await (params.explicitActivation.kind === 'forwarded_message'
+          ? hasPersistedManagedEntityActivationSource(tx, params.explicitActivation, {
+              allowOfficialForwardContent: true,
+            })
+          : hasPersistedManagedEntityActivationSource(tx, params.explicitActivation))) ||
         (isPublisherManagedEntityActivationRequired(binding) &&
           !isPublisherActivationSourceAfterEpoch(binding, params.explicitActivation.sourceAt))
       ) {

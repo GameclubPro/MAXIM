@@ -4,6 +4,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import type { Queue } from 'bullmq';
 import { createHash } from 'node:crypto';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
+import { isManagedEntityForwardedRecoveryMessage } from '../common/managed-entity-forwarded-recovery.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
 import { PrismaService } from '../prisma/prisma.service';
@@ -43,6 +44,10 @@ export class PublisherStartQueueService {
     if (!isPrivateDirectChatId(privateChatId) || update.message?.entityType === 'channel') {
       return false;
     }
+    // FLAG: Normalized text includes forwarded content. A source post saying Start
+    // remains an entity-connection candidate, never an instruction to greet its forwarder.
+    if (isManagedEntityForwardedRecoveryMessage(update, { allowOfficialForwardContent: true }))
+      return false;
     if (type === 'bot_started') {
       const raw = asRecord(update.raw);
       const data = asRecord(raw?.data);

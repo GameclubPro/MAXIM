@@ -1,6 +1,8 @@
 import {
   ManagedBroadcastStatus,
   ManagedBroadcastDeliveryStatus,
+  PublicationDispatchProfile,
+  PublicationScheduleMode,
   PublicationDeliveryVerificationSource,
 } from '../prisma/prisma-client';
 import {
@@ -157,6 +159,268 @@ describe('publication delivery verification audit', () => {
       }),
     );
     expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('restricts evidence to exact IDs and rejects mutation or range arguments', async () => {
+    expect(
+      readPublicationVerificationAuditOptions(['--evidence', '--delivery-id', 'delivery-1']),
+    ).toEqual(
+      expect.objectContaining({
+        evidence: true,
+        apply: false,
+        deliveryIds: ['delivery-1'],
+        since: null,
+      }),
+    );
+    for (const extra of [
+      ['--apply'],
+      ['--unverified'],
+      ['--since', '2026-07-01T00:00:00Z'],
+      ['--until', '2026-07-01T00:00:00Z'],
+      ['--after', '2026-07-01T00:00:00Z,delivery-1'],
+      ['--completed'],
+      ['--terminal'],
+    ]) {
+      expect(() =>
+        readPublicationVerificationAuditOptions([
+          '--evidence',
+          '--delivery-id',
+          'delivery-1',
+          ...extra,
+        ]),
+      ).toThrow();
+    }
+    for (const id of ['', 'bad id', 'x'.repeat(129)]) {
+      expect(() =>
+        readPublicationVerificationAuditOptions(['--evidence', '--delivery-id', id]),
+      ).toThrow();
+    }
+    const prisma = {
+      managedBroadcastDelivery: { findMany: jest.fn(), updateMany: jest.fn() },
+    } satisfies Parameters<typeof runPublicationVerificationAudit>[0];
+    const maxClient = { getExactMessagePresences: jest.fn() } satisfies Parameters<
+      typeof runPublicationVerificationAudit
+    >[1];
+    for (const overrides of [
+      { apply: true },
+      { since: new Date() },
+      { until: new Date() },
+      { after: { sentAt: new Date(), deliveryId: 'delivery-1' } },
+      { unverified: true },
+      { completed: true },
+      { terminal: true },
+      { deliveryIds: [] },
+      { deliveryIds: ['bad id'] },
+      { deliveryIds: ['delivery-1', 'delivery-1'] },
+      { deliveryIds: Array.from({ length: 201 }, (_, index) => `delivery-${index}`) },
+    ]) {
+      await expect(
+        runPublicationVerificationAudit(
+          prisma,
+          maxClient,
+          options({
+            evidence: true,
+            since: null,
+            deliveryIds: ['delivery-1'],
+            ...overrides,
+          }),
+        ),
+      ).rejects.toThrow('read-only');
+    }
+    expect(prisma.managedBroadcastDelivery.findMany).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+    expect(maxClient.getExactMessagePresences).not.toHaveBeenCalled();
+  });
+
+  it('reads modern and legacy exact receipts as evidence without writes, SEND or reclassification', async () => {
+    const sources = [null, ...Object.values(PublicationDeliveryVerificationSource)];
+    const rows = sources.map((source, index) =>
+      candidate({
+        id: `delivery-${index}`,
+        remoteMessageId: `mid-${index}`,
+        remoteMessageVerificationSource: source,
+      }),
+    );
+    const prisma = {
+      managedBroadcastDelivery: {
+        findMany: jest.fn().mockResolvedValue(rows),
+        updateMany: jest.fn(),
+      },
+    } satisfies Parameters<typeof runPublicationVerificationAudit>[0];
+    const maxClient = {
+      getExactMessagePresences: jest.fn().mockResolvedValue(
+        rows.map((row) => ({
+          chatId: row.targetChatId,
+          messageId: row.remoteMessageId,
+          presence: 'present',
+        })),
+      ),
+      sendMessage: jest.fn(),
+    } satisfies Parameters<typeof runPublicationVerificationAudit>[1] & { sendMessage: jest.Mock };
+    const deliveryIds = [...rows.map((row) => row.id), 'delivery-missing'];
+    const summary = await runPublicationVerificationAudit(
+      prisma,
+      maxClient,
+      options({
+        evidence: true,
+        since: null,
+        deliveryIds,
+        limit: 1,
+      }),
+    );
+    const query = prisma.managedBroadcastDelivery.findMany.mock.calls[0]?.[0];
+    expect(query.where).toEqual({
+      publicationOccurrenceId: { not: null },
+      status: ManagedBroadcastDeliveryStatus.SENT,
+      remoteMessageId: { not: null },
+      dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+      sentAt: { not: null },
+      id: { in: deliveryIds },
+    });
+    expect(query.take).toBe(deliveryIds.length);
+    expect(query.select.publicationOccurrence).toEqual({
+      select: {
+        scheduledAt: true,
+        scheduleRevision: true,
+        schedule: { select: { mode: true, revision: true } },
+        publication: { select: { createdAt: true } },
+      },
+    });
+    expect(summary.present).toBe(rows.length);
+    expect(summary.unmatchedDeliveryIds).toEqual(['delivery-missing']);
+    expect(summary.nextAfter).toBeNull();
+    expect(summary.outcomes.map((row) => row.savedVerificationSource)).toEqual(sources);
+    expect(
+      summary.outcomes.every(
+        (row) =>
+          row.candidateState === 'evidence' &&
+          row.classification === null &&
+          row.persistence === 'dry_run',
+      ),
+    ).toBe(true);
+    expect(maxClient.getExactMessagePresences).toHaveBeenCalledWith(expect.any(Array), {
+      botId: 'bot-1',
+      bypassCache: true,
+      trafficClass: 'background',
+      sourceTag: 'managed_broadcast',
+      timeoutMs: 5_000,
+      ignoreFailureMetricStatuses: [404],
+    });
+    expect(prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports exact occurrence clocks and distinguishes a changed schedule from its saved revision', async () => {
+    const scheduledAt = new Date('2026-07-01T12:30:00Z');
+    const createdAt = new Date('2026-07-01T10:00:00Z');
+    const rows = [
+      ...Object.values(PublicationScheduleMode).map((mode, index) => ({
+        ...candidate({ id: `clock-${index}`, remoteMessageId: `mid-${index}` }),
+        publicationOccurrence: {
+          scheduledAt,
+          scheduleRevision: 2,
+          schedule: { mode, revision: mode === PublicationScheduleMode.ONCE ? 3 : 2 },
+          publication: { createdAt },
+        },
+      })),
+      {
+        ...candidate({ id: 'missing-parent', remoteMessageId: 'missing-mid' }),
+        publicationOccurrence: null,
+      },
+    ];
+    const prisma = {
+      managedBroadcastDelivery: {
+        findMany: jest.fn().mockResolvedValue(rows),
+        updateMany: jest.fn(),
+      },
+    } satisfies Parameters<typeof runPublicationVerificationAudit>[0];
+    const maxClient = {
+      getExactMessagePresences: jest
+        .fn()
+        .mockResolvedValue(
+          rows.map((row) => ({
+            chatId: row.targetChatId,
+            messageId: row.remoteMessageId,
+            presence: 'present',
+          })),
+        ),
+    } satisfies Parameters<typeof runPublicationVerificationAudit>[1];
+    const summary = await runPublicationVerificationAudit(
+      prisma,
+      maxClient,
+      options({
+        evidence: true,
+        since: null,
+        deliveryIds: rows.map((row) => row.id),
+      }),
+    );
+    expect(summary.outcomes.slice(0, -1)).toEqual(
+      Object.values(PublicationScheduleMode).map((mode) =>
+        expect.objectContaining({
+          scheduleMode: mode,
+          scheduledAt: scheduledAt.toISOString(),
+          publicationCreatedAt: createdAt.toISOString(),
+          scheduleRevisionMatches: mode !== PublicationScheduleMode.ONCE,
+        }),
+      ),
+    );
+    expect(summary.outcomes.at(-1)).toEqual(
+      expect.objectContaining({
+        scheduleMode: null,
+        scheduledAt: null,
+        publicationCreatedAt: null,
+        scheduleRevisionMatches: null,
+      }),
+    );
+    expect(prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps exact bot scopes separate and preserves absent, missing-result and invalid-route evidence', async () => {
+    const rows = [
+      candidate({ id: 'delivery-present', remoteMessageId: 'shared-mid' }),
+      candidate({
+        id: 'delivery-absent',
+        remoteMessageId: 'shared-mid',
+        botId: 'bot-2',
+        requiredBotId: 'bot-2',
+      }),
+      candidate({ id: 'delivery-missing-result', remoteMessageId: 'missing-mid' }),
+      candidate({
+        id: 'delivery-invalid-route',
+        remoteMessageId: 'shared-mid',
+        requiredBotId: 'bot-2',
+      }),
+      candidate({ id: 'delivery-no-bot', remoteMessageId: 'no-bot-mid', botId: null }),
+    ];
+    const prisma = {
+      managedBroadcastDelivery: {
+        findMany: jest.fn().mockResolvedValue(rows),
+        updateMany: jest.fn(),
+      },
+    } satisfies Parameters<typeof runPublicationVerificationAudit>[0];
+    const maxClient = {
+      getExactMessagePresences: jest
+        .fn()
+        .mockResolvedValueOnce([{ chatId: 'chat-1', messageId: 'shared-mid', presence: 'present' }])
+        .mockResolvedValueOnce([{ chatId: 'chat-1', messageId: 'shared-mid', presence: 'absent' }]),
+    } satisfies Parameters<typeof runPublicationVerificationAudit>[1];
+    const summary = await runPublicationVerificationAudit(
+      prisma,
+      maxClient,
+      options({
+        evidence: true,
+        since: null,
+        deliveryIds: rows.map((row) => row.id),
+      }),
+    );
+    expect(summary).toEqual(
+      expect.objectContaining({ present: 1, absent: 1, errors: 2, noBot: 1 }),
+    );
+    expect(maxClient.getExactMessagePresences).toHaveBeenCalledTimes(2);
+    expect(
+      maxClient.getExactMessagePresences.mock.calls.flatMap(([requests]) => requests),
+    ).toHaveLength(3);
+    expect(prisma.managedBroadcastDelivery.updateMany).not.toHaveBeenCalled();
   });
 
   it('audits an unverified SENT delivery without classifying or mutating it', async () => {
@@ -461,6 +725,7 @@ function options(
 ): ReturnType<typeof readPublicationVerificationAuditOptions> {
   return {
     apply: false,
+    evidence: false,
     json: false,
     limit: 50,
     since: new Date('2026-07-01T00:00:00Z'),
@@ -479,6 +744,8 @@ function candidate(
     id: string;
     remoteMessageId: string;
     botId: string | null;
+    requiredBotId: string | null;
+    remoteMessageVerificationSource: PublicationDeliveryVerificationSource | null;
     remoteMessageVerifiedAt: Date | null;
     sentAt: Date;
   }> = {},
@@ -489,6 +756,7 @@ function candidate(
     occurrenceIndex: 1,
     targetChatId: 'chat-1',
     botId: overrides.botId === undefined ? 'bot-1' : overrides.botId,
+    requiredBotId: overrides.requiredBotId === undefined ? 'bot-1' : overrides.requiredBotId,
     status: ManagedBroadcastDeliveryStatus.SENT,
     sentAt: overrides.sentAt ?? new Date('2026-07-01T00:00:00Z'),
     remoteMessageId: overrides.remoteMessageId ?? 'mid-1',
@@ -496,6 +764,7 @@ function candidate(
       overrides.remoteMessageVerifiedAt === undefined
         ? new Date('2026-07-01T00:00:00Z')
         : overrides.remoteMessageVerifiedAt,
+    remoteMessageVerificationSource: overrides.remoteMessageVerificationSource ?? null,
     remoteMessageVerificationAttemptCount: 0,
     remoteMessageVerificationAbsentCount: 0,
     remoteMessageVerificationPresentCount: 0,

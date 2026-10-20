@@ -295,7 +295,11 @@ const createPublicationEnvelopeRow = () => ({
   publicationContentRevisionId: 'content-access-check',
 });
 
-function createPublicationPrismaSendFailureHarness(error: Error | null, dispatchStarted: boolean) {
+function createPublicationPrismaSendFailureHarness(
+  error: Error | null,
+  dispatchStarted: boolean,
+  dispatchProfile: PublicationDispatchProfile = PublicationDispatchProfile.PUBLIK_V1,
+) {
   const row = {
     ...createPublicationEnvelopeRow(),
     id: 'broadcast-prisma-failure',
@@ -316,7 +320,7 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
     scheduleTimezone: 'Europe/Moscow',
     cycleEnabled: false,
     cycleEveryHours: 1,
-    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    dispatchProfile,
     requiredBotId: 'publisher-bot',
     publicationOccurrenceId: 'occurrence-prisma-failure',
     publicationContentRevisionId: 'content-prisma-failure',
@@ -335,7 +339,7 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
     sentAt: null,
     lockedAt: null,
     lockToken: null,
-    dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
+    dispatchProfile,
     requiredBotId: 'publisher-bot',
     dialogBotId: 'publisher-bot',
     publisherDialogContext: null,
@@ -395,7 +399,7 @@ function createPublicationPrismaSendFailureHarness(error: Error | null, dispatch
       assertManagedEntityAdminAccess: jest.fn().mockResolvedValue(undefined),
       logger,
     } as never,
-    PublicationDispatchProfile.PUBLIK_V1,
+    dispatchProfile,
   );
   jest
     .spyOn(runtime as any, 'ensureManagedBroadcastPublicationExecutionActive')
@@ -514,6 +518,55 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
     jest.useRealTimers();
   });
 
+  it.each([
+    {
+      profile: PublicationDispatchProfile.PUBLIK_V1,
+      reason: 'deadline',
+      trafficClass: 'interactive',
+    },
+    {
+      profile: PublicationDispatchProfile.PUBLIK_V1,
+      reason: 'immediate',
+      trafficClass: 'interactive',
+    },
+    {
+      profile: PublicationDispatchProfile.PUBLIK_V1,
+      reason: 'manual_retry',
+      trafficClass: 'interactive',
+    },
+    {
+      profile: PublicationDispatchProfile.PUBLIK_V1,
+      reason: 'scheduled',
+      trafficClass: 'background',
+    },
+    {
+      profile: PublicationDispatchProfile.PUBLIK_V1,
+      reason: 'startup',
+      trafficClass: 'background',
+    },
+    {
+      profile: PublicationDispatchProfile.LEGACY_ROUTED,
+      reason: 'deadline',
+      trafficClass: 'background',
+    },
+  ] as const)(
+    'uses $trafficClass admission for a $profile $reason SEND',
+    async ({ profile, reason, trafficClass }) => {
+      const { runtime, row, publish } = createPublicationPrismaSendFailureHarness(
+        null,
+        false,
+        profile,
+      );
+      await occurrenceProjectionSeam(runtime).process(row.id, reason, new Date(), [
+        ManagedBroadcastStatus.ACTIVE,
+      ]);
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish).toHaveBeenCalledWith(
+        expect.objectContaining({ trafficClass, sourceTag: 'managed_broadcast' }),
+      );
+    },
+  );
+
   it('uses canonical execution media once per exact bot and passes it into media-only send preparation', async () => {
     const { runtime, row, publish } = createPublicationPrismaSendFailureHarness(null, false);
     row.text = '';
@@ -523,7 +576,7 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       .mockResolvedValue(execution);
     const media = { imagePayload: { token: 'canonical-image' } };
     const resolve = jest
-      .spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastExecutionMedia')
+      .spyOn(publicationMediaRuntime(runtime), 'resolveManagedBroadcastExecutionMedia')
       .mockResolvedValue(media);
     const legacyResolve = jest.spyOn((runtime as any).mediaRuntime, 'resolveManagedBroadcastMedia');
     const build = jest.spyOn((runtime as any).messageRuntime, 'buildMessage').mockResolvedValue({
@@ -547,9 +600,22 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
       ManagedBroadcastStatus.ACTIVE,
     ]);
     expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publisherExactBotId: 'publisher-bot',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(resolve.mock.calls[0]?.[0]).toBe(execution);
     expect(resolve.mock.calls[0]?.[5]).toBe('publisher-bot');
+    expect(resolve.mock.calls[0]?.[6]).toEqual({
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: 'managed_broadcast',
+    });
     expect(legacyResolve).not.toHaveBeenCalled();
     expect(build).toHaveBeenCalledTimes(2);
     expect(build.mock.calls[0]?.[4]).toBe(media);

@@ -134,7 +134,9 @@ export class PublisherEntityBindingLifecycleService {
     if (!this.isPublisherUpdate(update)) {
       return 'not_publisher';
     }
-    const forwardedCandidate = extractManagedEntityForwardedRecoveryCandidate(update);
+    const forwardedCandidate = extractManagedEntityForwardedRecoveryCandidate(update, {
+      allowOfficialForwardContent: true,
+    });
     if (forwardedCandidate) {
       return this.observeForwardedRecovery(update, forwardedCandidate);
     }

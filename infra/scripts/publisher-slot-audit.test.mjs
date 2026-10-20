@@ -162,6 +162,43 @@ test('UTC slot and Prisma metadata clocks stay equivalent across session timezon
   await assertUtcMetadataClocks(db);
 });
 
+test('target-only scope derives each author internally and never reports unrelated author candidates', async (t) => {
+  const db = await setup(t);
+  await seed(db);
+  await db.exec(`
+    INSERT INTO publications VALUES ('private-unrelated','888888888','PRIVATE_UNRELATED','SNAPSHOT','SELECTED','PUBLIK_V1','private-bot','private-title');
+    INSERT INTO publication_targets VALUES ('private-unrelated','-999999999','CHANNEL',0);
+    INSERT INTO publication_occurrences(id,publication_id,schedule_id,status,scheduled_at,dispatch_profile,required_bot_id)
+      VALUES ('private-unrelated-o','private-unrelated','private-s','SCHEDULED','${minute}','PUBLIK_V1','private-bot');
+  `);
+  const targetQuery = buildPublisherSlotAuditSql(null, chat, minute);
+  const targetReport = async () => (await db.query(targetQuery)).rows[0].json_build_object;
+  const result = await targetReport();
+  assert.equal(result.selection_scope, 'target');
+  assert.equal(result.matched_occurrences, 9);
+  assert.equal(result.source_complete, true);
+  assert.equal(result.actor_candidates, undefined);
+  assert.equal(result.actor_matched_occurrences, undefined);
+  assert.equal(result.rows.filter((row) => row.access_reason === 'actor_edge_missing').length, 1);
+  await db.exec(`INSERT INTO managed_entity_access_edges(chat_id,user_id,bot_id,state,user_role,entity_type)
+    VALUES ('${chat}','999999999','private-bot','DENIED','ADMIN','CHANNEL');`);
+  const denied = await targetReport();
+  assert.equal(denied.rows.filter((row) => row.access_reason === 'actor_denied').length, 1);
+  assert.doesNotMatch(
+    JSON.stringify(denied),
+    /private-|111222333|999999999|888888888|PRIVATE_UNRELATED|scoped_actor|actor_user_id/u,
+  );
+  assert.equal(denied.client_visibility, 'not_observed');
+  const cli = spawnSync(
+    process.execPath,
+    [resolve(import.meta.dirname, 'publisher-slot-audit.mjs'), '--target', chat, minute],
+    { encoding: 'utf8' },
+  );
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.match(cli.stdout, /'selection_scope','target'/u);
+  assert.doesNotMatch(cli.stdout, /'actor_candidates'/u);
+});
+
 test('fixed slots include every status, ERROR/cancellation causes and bounded actor candidates without identities', async (t) => {
   const db = await setup(t);
   await seed(db);
@@ -288,6 +325,12 @@ test('source and delivery sentinels precede actor/target filtering and preserve 
   assert.equal(result.rows[0].delivery_sampled, 8);
   assert.equal(result.rows[0].deliveries_truncated, true);
   assert.deepEqual(result.rows[0].target_deliveries, []);
+  const target = (await db.query(buildPublisherSlotAuditSql(null, chat, minute))).rows[0]
+    .json_build_object;
+  assert.equal(target.source_complete, false);
+  assert.equal(target.deliveries_complete, false);
+  assert.equal(target.matched_occurrences, 1);
+  assert.deepEqual(target.rows[0].target_deliveries, []);
   await db.exec("DELETE FROM publication_occurrences WHERE id='recipient-cap';");
   const noMatches = await report(db);
   assert.equal(noMatches.matched_occurrences, 0);
@@ -420,6 +463,9 @@ test('CLI rejects injection, nonminute clocks, invalid dates, arbitrary options 
     [actor, chat, '2026-10-19T21:29:01Z'],
     [actor, chat, minute, '--analyze'],
     [actor, chat, minute, '--explain', 'extra'],
+    ['--target', chat, '2026-02-30T21:29:00Z'],
+    ['--target', '123', minute],
+    ['--target', chat, minute, '--apply'],
   ]) {
     if (!args[3]) assert.throws(() => validatePublisherSlotArgs(...args.slice(0, 3)), /Expected/u);
     const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
@@ -522,6 +568,64 @@ test(
     const nativePlan = (await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`)).rows[0][
       'QUERY PLAN'
     ][0].Plan;
+    const targetQuery = buildPublisherSlotAuditSql(null, chat, minute);
+    const nativeTargetPlan = (
+      await db.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${targetQuery}`)
+    ).rows[0]['QUERY PLAN'][0].Plan;
+    const targetNodes = [];
+    const visitTarget = (node) => {
+      if (node['Relation Name']) targetNodes.push(node);
+      for (const child of node.Plans ?? []) visitTarget(child);
+    };
+    visitTarget(nativeTargetPlan);
+    const targetHeads = targetNodes.filter(
+      (node) => node['Relation Name'] === 'publication_occurrences',
+    );
+    assert.equal(targetHeads.length, 14);
+    for (const node of targetNodes) {
+      assert.ok(
+        ['Index Scan', 'Index Only Scan'].includes(node['Node Type']),
+        JSON.stringify(node),
+      );
+      const source = node['Relation Name'] === 'publication_occurrences';
+      const cap = source ? 33 : node['Relation Name'] === 'managed_broadcast_deliveries' ? 9 : 1;
+      assert.ok(
+        node['Actual Rows'] + (node['Rows Removed by Filter'] ?? 0) <= cap,
+        JSON.stringify(node),
+      );
+      if (source) {
+        assert.equal(node['Index Name'], 'publication_occurrences_dispatch_status_scheduled_idx');
+        assert.equal(node['Actual Loops'], 1);
+        assert.match(node['Index Cond'], /scheduled_at/u);
+      }
+    }
+    assertBoundedMetadataProbe(
+      nativeTargetPlan,
+      'managed_entity_access_edges',
+      ['managed_entity_access_edges_pkey', 'managed_entity_access_edges_user_demand_idx'],
+      ['chat_id', 'user_id', 'bot_id'],
+      false,
+    );
+    const targetReport = (await db.query(targetQuery)).rows[0].json_build_object;
+    assert.equal(targetReport.selection_scope, 'target');
+    assert.equal(targetReport.source_complete, false);
+    assert.equal(targetReport.deliveries_complete, false);
+    assert.deepEqual(
+      targetReport.rows.find((row) => row.status === 'IN_PROGRESS').target_deliveries,
+      [],
+    );
+    assert.doesNotMatch(
+      JSON.stringify(targetReport),
+      /private-|111222333|77700011122233|scoped_actor|actor_candidates/u,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(
+        (await db.query(buildPublisherSlotAuditSql(null, chat, minute, true))).rows[0][
+          'QUERY PLAN'
+        ],
+      ),
+      new RegExp(`${actor}|${chat}`, 'u'),
+    );
     const catalogPresent = assertBoundedMetadataProbe(
       nativePlan,
       'managed_bot_chat_catalog',

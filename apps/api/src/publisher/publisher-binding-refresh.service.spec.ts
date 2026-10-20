@@ -407,7 +407,10 @@ describe('PublisherBindingRefreshService', () => {
     expect(candidate.publisherBinding!.permissionsSnapshot).toBe(snapshot);
   });
 
-  function dormantActivation(kind: 'start_in_chat' | 'forwarded_message' = 'start_in_chat') {
+  function dormantActivation(
+    kind: 'start_in_chat' | 'forwarded_message' = 'start_in_chat',
+    forwardedBody: { text: string | null; attachments: unknown[] | null } | null = null,
+  ) {
     const f = createHarness(adminAccess);
     f.activationSource.mockImplementation(readPersistedActivation);
     const sourceAt = new Date(Date.now() - 1_000);
@@ -457,7 +460,7 @@ describe('PublisherBindingRefreshService', () => {
           chatId: forwarded ? '303' : '-101',
           senderId: '202',
           messageId: 'incoming-1',
-          text: forwarded ? '' : 'Старт',
+          text: forwarded ? (forwardedBody?.text ?? '') : 'Старт',
           createdAt: sourceAt.toISOString(),
         },
         raw: forwarded
@@ -467,7 +470,7 @@ describe('PublisherBindingRefreshService', () => {
                 id: 'incoming-1',
                 sender: { user_id: 202 },
                 recipient: { chat_id: 303, chat_type: 'dialog' },
-                body: null,
+                body: forwardedBody,
                 link: {
                   type: 'forward',
                   chat_id: -101,
@@ -672,6 +675,52 @@ describe('PublisherBindingRefreshService', () => {
             state: ManagedEntityAccessState.GRANTED,
             userRole: ManagedEntityAccessRole.ADMIN,
           }),
+        }),
+      );
+      expect(JSON.stringify(f.tx.chat.update.mock.calls)).not.toMatch(
+        /primaryBotId|memberships|publikEnabled/,
+      );
+    },
+  );
+
+  it.each([
+    { text: '/start', attachments: null },
+    { text: '/start', attachments: [{ type: 'image' }] },
+    { text: '/vk', attachments: [{ type: 'video' }] },
+    { text: '/start vk_review', attachments: [{ type: 'file' }] },
+  ])(
+    'activates an official forwarded body %j through both persisted Publisher proofs',
+    async (body) => {
+      const f = dormantActivation('forwarded_message', body);
+      const proof: activation.ManagedEntityExplicitActivation = {
+        kind: 'forwarded_message',
+        sourceAt: f.sourceAt,
+        updateId: 'fresh-explicit-update',
+        actorUserId: '202',
+        botId: 'publik_bot',
+        chatId: '-101',
+      };
+      // The shared reader remains strict for moderation callers that do not opt in.
+      await expect(
+        readPersistedActivation(
+          f.prisma as unknown as Parameters<typeof readPersistedActivation>[0],
+          proof,
+        ),
+      ).resolves.toBe(false);
+      f.prisma.webhookEvent.findUnique.mockClear();
+      await f.service.refresh(f.command);
+      expect(f.activationSource).toHaveBeenCalledTimes(2);
+      expect(f.activationSource).toHaveBeenNthCalledWith(1, f.prisma, proof, {
+        allowOfficialForwardContent: true,
+      });
+      expect(f.activationSource).toHaveBeenNthCalledWith(2, f.tx, proof, {
+        allowOfficialForwardContent: true,
+      });
+      expect(f.prisma.webhookEvent.findUnique).toHaveBeenCalledTimes(2);
+      expect(f.tx.publisherEntityBinding.upsert).toHaveBeenCalledTimes(1);
+      expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ state: ManagedEntityAccessState.GRANTED }),
         }),
       );
       expect(JSON.stringify(f.tx.chat.update.mock.calls)).not.toMatch(

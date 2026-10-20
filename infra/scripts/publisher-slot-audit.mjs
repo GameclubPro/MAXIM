@@ -182,7 +182,8 @@ export function buildPublisherSlotIndexSql() {
 }
 
 export function buildPublisherSlotAuditSql(actor, chat, minute, explain = false) {
-  validatePublisherSlotArgs(actor, chat, minute);
+  // FLAG: Null is an explicit target-only scope, never a wildcard accepted as an actor ID.
+  validatePublisherSlotArgs(actor === null ? '1' : actor, chat, minute);
   const start = Date.parse(minute);
   // FLAG: Cap all fourteen literal status/minute index heads before actor, target or parent filters.
   // Ties are intentionally unordered: ordering by id would sort an unbounded equal-time population.
@@ -205,14 +206,21 @@ export function buildPublisherSlotAuditSql(actor, chat, minute, explain = false)
   const chatParam = '(SELECT chat FROM scope_params)';
   // FLAG: Both catalog tuple bounds and their matching order keep a competing chat/status
   // index from filtering other bots before LIMIT. Compare saved Prisma clocks as UTC timestamps.
-  const query = `WITH scope_params AS MATERIALIZED (SELECT ${literal(actor)}::text AS actor,${literal(chat)}::text AS chat), heads AS MATERIALIZED (${heads}), counts AS MATERIALIZED (
+  const actorDiagnostics =
+    actor === null
+      ? ''
+      : `'actor_matched_occurrences',(SELECT count(*) FROM owned),
+    'actor_candidates',coalesce((SELECT json_agg(json_build_object('slot',slot,'status',status,'blocker',${reason('dispatch_blocker_code')},
+      'lifecycle',lifecycle,'schedule_mode',mode,'schedule_status',schedule_status,'audience_mode',audience_mode,
+      'audience_selection',audience_selection,'has_saved_target',has_saved_target,'scheduled_at',scheduled_at) ORDER BY slot,scheduled_at,status::text) FROM facts),'[]'::json),`;
+  const query = `WITH scope_params AS MATERIALIZED (SELECT ${actor === null ? 'NULL' : literal(actor)}::text AS actor,${literal(chat)}::text AS chat), heads AS MATERIALIZED (${heads}), counts AS MATERIALIZED (
     SELECT slot,status,least(count(*),32)::integer AS sampled,count(*)>32 AS truncated FROM heads GROUP BY slot,status
   ), samples AS MATERIALIZED (SELECT * FROM (SELECT *,row_number() OVER(PARTITION BY slot,status ORDER BY scheduled_at) AS ordinal FROM heads) ranked WHERE ordinal<=32),
-  owned AS MATERIALIZED (SELECT o.*,p.lifecycle,p.audience_mode,p.audience_selection,p.dispatch_profile AS parent_profile,p.required_bot_id AS parent_bot
+  owned AS MATERIALIZED (SELECT o.*,p.actor_user_id AS scoped_actor,p.lifecycle,p.audience_mode,p.audience_selection,p.dispatch_profile AS parent_profile,p.required_bot_id AS parent_bot
     FROM samples o CROSS JOIN LATERAL (SELECT actor_user_id,lifecycle,audience_mode,audience_selection,dispatch_profile,required_bot_id
-      FROM public.publications WHERE id=o.publication_id LIMIT 1 OFFSET 0) p WHERE p.actor_user_id=${actorParam}),
+      FROM public.publications WHERE id=o.publication_id LIMIT 1 OFFSET 0) p${actor === null ? '' : ` WHERE p.actor_user_id=${actorParam}`}),
   scoped AS MATERIALIZED (SELECT o.*,target.entity_type,coalesce(target.present,false) AS has_saved_target FROM owned o LEFT JOIN LATERAL (
-    SELECT entity_type,true AS present FROM public.publication_targets WHERE publication_id=o.publication_id AND target_chat_id=${chatParam} LIMIT 1 OFFSET 0) target ON true),
+    SELECT entity_type,true AS present FROM public.publication_targets WHERE publication_id=o.publication_id AND target_chat_id=${chatParam} LIMIT 1 OFFSET 0) target ON true${actor === null ? ' WHERE target.present' : ''}),
   facts AS MATERIALIZED (SELECT o.*,s.mode,s.status AS schedule_status,s.revision AS current_revision,
     CASE WHEN NOT o.has_saved_target THEN 'saved_target_missing'
       WHEN o.parent_profile IS DISTINCT FROM 'PUBLIK_V1' OR o.required_bot_id IS DISTINCT FROM o.parent_bot THEN 'invalid_parent_binding'
@@ -233,7 +241,7 @@ export function buildPublisherSlotAuditSql(actor, chat, minute, explain = false)
     LEFT JOIN LATERAL (SELECT status,entity_type FROM public.managed_bot_chat_catalog
       WHERE (bot_id,chat_id)>=(o.required_bot_id,${chatParam}) AND (bot_id,chat_id)<=(o.required_bot_id,${chatParam})
       ORDER BY bot_id,chat_id LIMIT 1 OFFSET 0) c ON true
-    LEFT JOIN LATERAL (SELECT chat_id,state,user_role,entity_type FROM public.managed_entity_access_edges WHERE chat_id=${chatParam} AND user_id=${actorParam} AND bot_id=o.required_bot_id LIMIT 1 OFFSET 0) e ON true),
+    LEFT JOIN LATERAL (SELECT chat_id,state,user_role,entity_type FROM public.managed_entity_access_edges WHERE chat_id=${chatParam} AND user_id=o.scoped_actor AND bot_id=o.required_bot_id LIMIT 1 OFFSET 0) e ON true),
   delivery_heads AS MATERIALIZED (SELECT o.id AS occurrence_id,o.required_bot_id AS occurrence_bot,o.content_revision_id AS occurrence_content,d.* FROM scoped o CROSS JOIN LATERAL (
     SELECT id,broadcast_id,content_revision_id,target_chat_id,status,attempt_count,remote_message_id,created_at,bot_id,required_bot_id,dispatch_profile,
       next_attempt_at,wait_reason,dispatch_blocker_code,locked_at,lock_token,sent_at,last_error_code
@@ -274,10 +282,8 @@ export function buildPublisherSlotAuditSql(actor, chat, minute, explain = false)
     'occurrence_cap_per_status_minute',32,'delivery_cap_per_occurrence',8,
     'source_complete',NOT EXISTS(SELECT 1 FROM counts WHERE truncated),'deliveries_complete',NOT EXISTS(SELECT 1 FROM delivery_counts WHERE truncated),
     'source_heads',coalesce((SELECT json_agg(counts ORDER BY slot,status::text) FROM counts),'[]'::json),
-    'matched_occurrences',(SELECT count(*) FROM scoped WHERE has_saved_target),'actor_matched_occurrences',(SELECT count(*) FROM owned),
-    'actor_candidates',coalesce((SELECT json_agg(json_build_object('slot',slot,'status',status,'blocker',${reason('dispatch_blocker_code')},
-      'lifecycle',lifecycle,'schedule_mode',mode,'schedule_status',schedule_status,'audience_mode',audience_mode,
-      'audience_selection',audience_selection,'has_saved_target',has_saved_target,'scheduled_at',scheduled_at) ORDER BY slot,scheduled_at,status::text) FROM facts),'[]'::json),
+    'selection_scope',${literal(actor === null ? 'target' : 'actor_and_target')},
+    'matched_occurrences',(SELECT count(*) FROM scoped WHERE has_saved_target),${actorDiagnostics}
     'rows',coalesce((SELECT json_agg(report ORDER BY slot,scheduled_at,status::text) FROM report),'[]'::json));`;
   return `${explain ? 'EXPLAIN (FORMAT JSON) ' : ''}${query}\n`;
 }
@@ -288,10 +294,17 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     process.stdout.write(buildPublisherSlotPrivilegesSql(args[1] === '--require-all'));
   } else {
     if (args.length < 3 || args.length > 4 || (args[3] && args[3] !== '--explain'))
-      throw new Error('Usage: publisher-slot-audit.mjs <actor> <chat> <UTC-minute> [--explain]');
+      throw new Error(
+        'Usage: publisher-slot-audit.mjs <actor|--target> <chat> <UTC-minute> [--explain]',
+      );
     process.stdout.write(
       buildPublisherSlotIndexSql() +
-        buildPublisherSlotAuditSql(...args.slice(0, 3), args[3] === '--explain'),
+        buildPublisherSlotAuditSql(
+          args[0] === '--target' ? null : args[0],
+          args[1],
+          args[2],
+          args[3] === '--explain',
+        ),
     );
   }
 }

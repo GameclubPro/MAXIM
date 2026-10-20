@@ -2667,11 +2667,33 @@ test('Publisher slot audit validates exact arguments and keeps fixed session lim
   assert.match(readFileSync(data.dockerArgs, 'utf8'), /search_path=pg_catalog,public,pg_temp/u);
   assert.doesNotMatch(sql, /EXPLAIN ANALYZE|raw_payload|publisher_dialog_context/u);
   assert.equal(runConnect(data, ['postgres-audit', ...args]).status, 0);
+  const targetArgs = [
+    'publisher-slots',
+    '--target',
+    '-77700011122233',
+    '2026-10-19T21:29:00Z',
+    '--explain',
+  ];
+  assert.equal(runAudit(data, targetArgs).status, 0);
+  const targetSql = readFileSync(data.sql, 'utf8');
+  assert.match(targetSql, /publisher_slot_indexes_ready/u);
+  assert.match(targetSql, /'selection_scope','target'/u);
+  assert.match(targetSql, /user_id=o.scoped_actor/u);
+  assert.match(targetSql, /WHERE target.present/u);
+  assert.doesNotMatch(targetSql, /'actor_candidates'|EXPLAIN ANALYZE/u);
+  assert.equal(
+    (targetSql.match(/ORDER BY dispatch_profile,status,scheduled_at LIMIT 33/gu) ?? []).length,
+    14,
+  );
+  assert.equal(runConnect(data, ['postgres-audit', ...targetArgs]).status, 0);
   for (const invalid of [
     ['publisher-slots', '111222333', '-77700011122233', '2026-10-19T21:29:01Z'],
     ['publisher-slots', '111222333', '77700011122233', '2026-10-19T21:29:00Z'],
     ['publisher-slots', '111222333', '-77700011122233', '2026-10-19T21:29:00Z', '--apply'],
     ['publisher-slots', '111222333', '-77700011122233'],
+    ['publisher-slots', '--target', '-77700011122233', '2026-10-19T21:29:01Z'],
+    ['publisher-slots', '--target', '77700011122233', '2026-10-19T21:29:00Z'],
+    ['publisher-slots', '--target', '-77700011122233', '2026-10-19T21:29:00Z', '--apply'],
   ]) {
     assert.notEqual(runAudit(data, invalid).status, 0);
     assert.notEqual(runConnect(data, ['postgres-audit', ...invalid]).status, 0);
