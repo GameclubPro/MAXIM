@@ -36,10 +36,11 @@
    `node scripts/agent/doctor.mjs --browser`; run `node scripts/agent/preflight.mjs` early.
 2. For changed methods, find callers and test doubles with `rg` before broad tests. Keep doubles
    typed against the real contract. Run the affected unit and native integration cases first.
-3. Use `node scripts/agent/plan.mjs --worktree` for checks, migrations and deploy components.
-   Focused public checks include `check:api`, `check:prisma`, `check:miniapp`, `typecheck:contracts`,
-   `typecheck:admin`, `test:admin` and `check:refactor-guards`; run `npm run check` for broad/risky work.
-   Repeat broad checks only after changed inputs, failure or a newly identified coverage gap.
+3. Select local checks/components with `node scripts/agent/plan.mjs --worktree`; `agent:verify`
+   runs that plan (also in the commit helper). Miniapp-only UI needs no API/Prisma/admin or native
+   store suites without a changed boundary or concrete regression; see scoped miniapp notes.
+   Shared contracts/dependencies and unknown paths expand checks; use `npm run check` for broad/risky
+   work. Do not duplicate included checks or repeat green suites without changed inputs/failure/gap.
 4. Public API scripts own generator locks. Do not invoke `*:unlocked`, `*:source` or raw Prisma
    generation to bypass them. Native stores: `node scripts/agent/with-test-stores.mjs --migrate --`
    followed by the public validation command. Report store-dependent skips; mocks are not native
@@ -48,8 +49,9 @@
    `./infra/scripts/local-commit-push.sh "commit message" branch`. The helper is staged-only;
    use `--all` only intentionally and `--include-agents` for any staged `AGENTS.md`. It refuses
    unstaged executable inputs, partial staging and index drift; use an isolated checkout instead.
-6. Require successful `Required` and `Analyze JavaScript and TypeScript` on the exact selected
-   SHA. Deploy through `./infra/scripts/vps-connect.sh deploy main --auto`; read `infra/AGENTS.md`
+6. Before runtime deploy, require successful `Required` and `Analyze JavaScript and TypeScript`
+   on the exact selected SHA; local check scope never bypasses CI. Deploy through
+   `./infra/scripts/vps-connect.sh deploy main --auto`; read `infra/AGENTS.md`
    first. Verify the synchronized VPS SHA, strict smokes and immutable component manifest.
    Do not use an old green commit's checks for a new release. Emergency bypass needs explicit reason.
 7. Unless the user says not to deploy, runtime API/UI/contracts/Prisma/Docker/MAX changes finish
