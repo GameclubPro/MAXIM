@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { SettingsDrilldownPanel } from './ui/settings-drilldown-panel';
+import { SettingsSectionIcon } from './ui/settings-section-toggle';
 import MarketplaceProfileWorkspace from './marketplace-profile-workspace';
 import type { MarketplaceProfileCardProps } from './marketplace-profile-card';
 
@@ -13,8 +14,10 @@ export default function MarketplaceProfilePanel({
   return (
     <SettingsDrilldownPanel
       id={id}
+      icon={props.profile === 'moderation' ? <SettingsSectionIcon name="ads" /> : undefined}
       open
       title="Профиль на бирже"
+      tone={props.profile === 'moderation' ? 'amber' : undefined}
       variant="screen"
       overlayClassName="marketplace-profile-overlay"
       onClose={onClose}

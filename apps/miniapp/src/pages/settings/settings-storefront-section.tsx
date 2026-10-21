@@ -10,7 +10,10 @@ import type {
 import { SettingsStorefrontTextEditor } from './settings-storefront-text-editor';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import { Spinner } from '../../components/ui/spinner';
 import { useToast } from '../../components/ui/toast';
 import type { ApiTransport } from '../../lib/api/transport';
@@ -169,6 +172,7 @@ export function SettingsStorefrontSection({
 
         <SettingsDrilldownPanel
           id="settings-storefront-content"
+          icon={<SettingsSectionIcon name="storefront" />}
           open={expanded}
           title="Интернет-витрина"
           summary={summary}

@@ -68,6 +68,7 @@ export function SettingsPollsSection({
 
       <SettingsDrilldownPanel
         id="settings-polls-content"
+        icon={<StatsUpSquare aria-hidden focusable="false" />}
         open={expanded}
         title="Опросы"
         tone="mint"

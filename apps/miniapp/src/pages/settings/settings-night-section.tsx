@@ -5,7 +5,10 @@ import SettingsChatClosureStatus from './settings-chat-closure-status';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
   createEmptyBroadcastLinkButton,
@@ -126,6 +129,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
 
       <SettingsDrilldownPanel
         id="settings-night-content"
+        icon={<SettingsSectionIcon name="moon" />}
         open={expanded}
         title="Ночной режим"
         summary={nightHeaderSummary}

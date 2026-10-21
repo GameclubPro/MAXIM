@@ -1,7 +1,10 @@
 import { Suspense, useState, type Dispatch, type SetStateAction } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import { Spinner } from '../../components/ui/spinner';
 import { cn } from '../../lib/cn';
 import type { ApiTransport } from '../../lib/api/transport';
@@ -81,6 +84,7 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
 
       <SettingsDrilldownPanel
         id="settings-stop-words-content"
+        icon={<SettingsSectionIcon name="keywords" />}
         open={expanded}
         title="Стоп-слова"
         summary={stopWordsHeaderSummary}

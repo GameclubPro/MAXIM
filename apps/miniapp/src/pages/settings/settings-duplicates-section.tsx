@@ -7,7 +7,10 @@ import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-butt
 import { GlassCard } from '../../components/ui/glass-card';
 import { SegmentedControl } from '../../components/ui/segmented-control';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
   createEmptyBroadcastLinkButton,
@@ -164,6 +167,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
 
       <SettingsDrilldownPanel
         id="settings-duplicates-content"
+        icon={<SettingsSectionIcon name="repeat" />}
         open={expanded}
         title="Антидубль"
         summary={duplicatesHeaderSummary}

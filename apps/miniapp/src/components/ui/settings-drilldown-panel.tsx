@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type ReactElement,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -17,6 +18,7 @@ import { useKeyboardOpen } from '../../lib/use-keyboard-open';
 const LazyActionConfirmSheet = lazy(() =>
   import('./action-confirm-sheet').then((module) => ({ default: module.ActionConfirmSheet })),
 );
+const LazySettingsModuleSurface = lazy(() => import('./settings-module-surface'));
 
 type DrilldownScrollLockState = {
   bodyOverflow: string;
@@ -27,6 +29,7 @@ type SettingsDrilldownPanelProps = {
   id: string;
   open: boolean;
   title: string;
+  icon?: ReactElement;
   summary?: string;
   variant?: 'sheet' | 'screen';
   tone?: 'sky' | 'mint' | 'amber' | 'rose' | 'ink';
@@ -123,10 +126,22 @@ function releaseDrilldownScrollLock(): void {
   drilldownUnlockFrame = window.requestAnimationFrame(restoreDrilldownScrollLock);
 }
 
-export function SettingsDrilldownPanel({
+export function SettingsDrilldownPanel(props: SettingsDrilldownPanelProps) {
+  const content = <SettingsDrilldownPanelContent {...props} />;
+  return props.icon && props.open ? (
+    <Suspense fallback={null}>
+      <LazySettingsModuleSurface>{content}</LazySettingsModuleSurface>
+    </Suspense>
+  ) : (
+    content
+  );
+}
+
+function SettingsDrilldownPanelContent({
   id,
   open,
   title,
+  icon,
   summary,
   variant = 'sheet',
   tone = 'sky',
@@ -244,6 +259,7 @@ export function SettingsDrilldownPanel({
             ref={panelRef}
             className={cn(
               'settings-drilldown__panel',
+              icon && 'settings-drilldown__panel--module',
               `settings-drilldown__panel--tone-${tone}`,
               className,
             )}
@@ -255,6 +271,11 @@ export function SettingsDrilldownPanel({
           >
             <header className="settings-drilldown__header">
               <div className="settings-drilldown__title-wrap">
+                {icon ? (
+                  <span className="settings-drilldown__symbol" aria-hidden>
+                    {icon}
+                  </span>
+                ) : null}
                 <h3 id={titleId} className="settings-drilldown__title">
                   {title}
                 </h3>
@@ -266,7 +287,11 @@ export function SettingsDrilldownPanel({
               </div>
 
               <div className="settings-drilldown__header-actions">
-                {headerAction}
+                {headerAction && icon ? (
+                  <div className="settings-drilldown__secondary-actions">{headerAction}</div>
+                ) : (
+                  headerAction
+                )}
                 <button
                   type="button"
                   className="settings-drilldown__close"

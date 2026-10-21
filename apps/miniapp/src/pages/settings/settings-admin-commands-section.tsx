@@ -12,7 +12,10 @@ import {
 } from '@maxim/contracts/settings';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import { cn } from '../../lib/cn';
 import { useHintPopoverAutoPosition } from '../../lib/hint-popover';
 import { SettingsHintAnchor } from './settings-hint-anchor';
@@ -174,6 +177,7 @@ export function SettingsAdminCommandsSection({
 
       <SettingsDrilldownPanel
         id="settings-commands-content"
+        icon={<SettingsSectionIcon name="commands" />}
         open={expanded}
         title="Команды"
         summary={headerSummary}

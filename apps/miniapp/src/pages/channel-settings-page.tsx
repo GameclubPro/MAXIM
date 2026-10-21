@@ -71,7 +71,10 @@ import { GlassCard } from '../components/ui/glass-card';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../components/ui/settings-section-toggle';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -3379,6 +3382,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
         <SettingsDrilldownPanel
           id="channel-settings-post-signature"
+          icon={<SettingsSectionIcon name="links" />}
           open={expandedSections.postSignature}
           title="Действие под публикацией"
           summary={postSignaturePanelSummary}
@@ -3649,6 +3653,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </div>
         <SettingsDrilldownPanel
           id="channel-settings-quick-buttons"
+          icon={<SettingsSectionIcon name="links" />}
           open={expandedSections.quickButtons}
           title="Быстрые кнопки"
           tone="sky"
@@ -3693,6 +3698,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
         <SettingsDrilldownPanel
           id="channel-settings-comments"
+          icon={<SettingsSectionIcon name="comments" />}
           open={expandedSections.comments}
           title="Комментарии в приложении"
           summary={commentsCardSummary}
@@ -3793,6 +3799,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
         <SettingsDrilldownPanel
           id="channel-settings-post-suggestions"
+          icon={<SettingsSectionIcon name="spark" />}
           open={expandedSections.postSuggestions}
           title="Предложения"
           summary={postSuggestionsCardSummary}
@@ -4309,6 +4316,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
           <SettingsDrilldownPanel
             id="channel-settings-polls"
+            icon={<StatsUpSquare aria-hidden focusable="false" />}
             open={expandedSections.polls}
             title="Опросы"
             variant="screen"
@@ -4356,6 +4364,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
           <SettingsDrilldownPanel
             id="channel-settings-giveaway"
+            icon={<SettingsSectionIcon name="gift" />}
             open={expandedSections.giveaway}
             title="Розыгрыши"
             summary="Запуск и итоги"

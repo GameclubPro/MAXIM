@@ -10,6 +10,7 @@ import botSpeechFriendlyImage from '../../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../../police.webp';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
+import { SettingsSectionIcon } from '../../components/ui/settings-section-toggle';
 import { cn } from '../../lib/cn';
 import { resolveRadioGroupNavigationIndex } from '../../lib/radio-group-navigation';
 import { buildSpeechStylePreviewSamples } from '../../lib/bot-speech-style-preview';
@@ -67,6 +68,7 @@ export default function SettingsSpeechStylePanel({
   return (
     <SettingsDrilldownPanel
       id="settings-bot-speech-style-panel"
+      icon={<SettingsSectionIcon name="comments" />}
       open
       title="Стиль речи"
       summary={BOT_SPEECH_STYLE_METADATA[selectedStyle].label}

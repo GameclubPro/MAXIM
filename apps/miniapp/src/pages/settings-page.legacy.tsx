@@ -91,7 +91,10 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { ResetIcon } from '../components/ui/reset-icon';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../components/ui/settings-section-toggle';
 import { SettingsAdvertisingSection } from './settings/settings-advertising-section';
 import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -317,6 +320,8 @@ import {
   resolveManagedBroadcastMetric,
   buildManagedBroadcastFactChips,
   formatNightForceCloseDuration,
+  formatMuteDurationCompact,
+  secondsToHours,
   resolveCommercialSensitivityConfig,
   getCommercialSensitivityLabel,
   inferCommercialSensitivitySliderValue,
@@ -342,16 +347,12 @@ import {
 import {
   AdminContactToggle,
   BroadcastPublishBar,
+  LazyActionConfirmSheet,
   SettingsLoadErrorState,
   SettingsPollsSection,
   SettingsStorefrontSection,
 } from './settings/settings-lazy-surfaces';
 
-const LazyActionConfirmSheet = lazy(() =>
-  import('../components/ui/action-confirm-sheet').then((module) => ({
-    default: module.ActionConfirmSheet,
-  })),
-);
 const LazyBotPermissionRequiredDialog = lazy(() =>
   import('../components/bot-permission-required-dialog').then((module) => ({
     default: module.BotPermissionRequiredDialog,
@@ -1991,10 +1992,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return null;
   }
 
-  function secondsToHours(value: number): number {
-    return Math.max(1, Math.round(value / 3600));
-  }
-
   function applyDuplicateFlowConfig(overrides: {
     allowedCount?: number;
     windowSec?: number;
@@ -2069,10 +2066,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : Math.min(DUPLICATE_WINDOW_MAX_SEC / 3_600, Math.max(1, Math.round(parsed)));
     applyDuplicateFlowConfig({ windowSec: safeHours * 3600 });
     setDuplicateWindowInputValue(null);
-  }
-
-  function formatMuteDurationCompact(hours: number) {
-    return hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`;
   }
 
   function setMuteDurationValue(key: AutoMuteDurationKey, nextValue: number) {
@@ -4632,6 +4625,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-links-content"
+                icon={<SettingsSectionIcon name="links" />}
                 open={expandedSections.links}
                 title="Ссылки"
                 summary={linksHeaderSummary}
@@ -5210,6 +5204,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-rules-content"
+                icon={<SettingsSectionIcon name="rules" />}
                 open={expandedSections.rules}
                 title="Правила"
                 summary={rulesHeaderSummary}
@@ -5486,6 +5481,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                 <SettingsDrilldownPanel
                   id="settings-giveaway-content"
+                  icon={<SettingsSectionIcon name="gift" />}
                   open={expandedSections.giveaway}
                   title="Розыгрыши"
                   summary="Запуск, участники и итоги"
@@ -5539,6 +5535,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-greeting-content"
+                icon={<SettingsSectionIcon name="greeting" />}
                 open={expandedSections.greeting}
                 title="Приветствие"
                 summary={greetingHeaderSummary}
@@ -5832,6 +5829,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-profanity-filter-content"
+                icon={<SettingsSectionIcon name="warning" />}
                 open={expandedSections.profanityFilter}
                 title="Мат и оскорбления"
                 summary={profanityFilterHeaderSummary}
@@ -6727,6 +6725,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-required-subscription-content"
+                icon={<SettingsSectionIcon name="subscription" />}
                 open={expandedSections.requiredSubscription}
                 title="Подписка"
                 summary={requiredSubscriptionHeaderSummary}

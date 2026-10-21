@@ -18,6 +18,18 @@ const profiles = [
   ['iphone-dark', devices['iPhone SE'], 'dark', 'ios'],
   ['android-light', devices['Pixel 7'], 'light', 'android'],
   ['android-dark', devices['Pixel 7'], 'dark', 'android'],
+  [
+    'android-320-light',
+    { ...devices['Pixel 7'], viewport: { width: 320, height: 740 } },
+    'light',
+    'android',
+  ],
+  [
+    'android-320-dark',
+    { ...devices['Pixel 7'], viewport: { width: 320, height: 740 } },
+    'dark',
+    'android',
+  ],
   ['desktop-light', { viewport: { width: 1280, height: 900 } }, 'light', 'desktop'],
 ];
 const routes = [
@@ -49,6 +61,177 @@ async function settledBox(locator) {
     }
     throw new Error('Settings geometry did not settle within 120 animation frames');
   });
+}
+
+async function readSteelPalette(page) {
+  return page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none';
+    document.body.append(probe);
+    try {
+      return Object.fromEntries(
+        ['page', 'panel', 'inset', 'ink', 'line', 'blue'].map((role) => {
+          probe.style.color = `var(--steel-${role})`;
+          return [role, getComputedStyle(probe).color];
+        }),
+      );
+    } finally {
+      probe.remove();
+    }
+  });
+}
+
+function assertBoxWithin(box, bounds, message) {
+  assert.ok(
+    box.width > 0 &&
+      box.height > 0 &&
+      box.x >= bounds.x - 0.5 &&
+      box.y >= bounds.y - 0.5 &&
+      box.x + box.width <= bounds.x + bounds.width + 0.5 &&
+      box.y + box.height <= bounds.y + bounds.height + 0.5,
+    `${message}: ${JSON.stringify({ box, bounds })}`,
+  );
+}
+
+async function assertReachableControl(locator, label, { touchTarget = false } = {}) {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await settledBox(locator);
+  const viewport = await locator.page().evaluate(() => ({
+    x: 0,
+    y: 0,
+    width: innerWidth,
+    height: innerHeight,
+  }));
+  assertBoxWithin(box, viewport, `${label} must fit inside the viewport`);
+  if (touchTarget) {
+    assert.ok(box.width >= 44 && box.height >= 44, `${label} must retain a 44px touch target`);
+  }
+  assert.equal(
+    await locator.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return hit === element || element.contains(hit);
+    }),
+    true,
+    `${label} must receive pointer input without another surface covering it`,
+  );
+}
+
+async function assertModulePresentation(page, name, entity, title, panelSelector, palette) {
+  const label = `${name}/${entity}`;
+  const panel = page.locator(panelSelector);
+  await settledBox(panel);
+  assert.equal(await page.getByRole('dialog', { name: title, exact: true }).count(), 1);
+  assert.equal(
+    await panel.locator('.settings-drilldown__symbol[aria-hidden="true"] svg').count(),
+    1,
+  );
+  const header = panel.locator('.settings-drilldown__header');
+  const heading = panel.locator('.settings-drilldown__title');
+  const symbol = panel.locator('.settings-drilldown__symbol');
+  const close = header.getByRole('button', { name: 'Закрыть панель', exact: true });
+  const [headerBox, titleBox, symbolBox, closeBox] = await Promise.all(
+    [header, heading, symbol, close].map(settledBox),
+  );
+  for (const [part, box] of [
+    ['title', titleBox],
+    ['icon', symbolBox],
+    ['close', closeBox],
+  ]) {
+    assertBoxWithin(box, headerBox, `${label} header ${part} must remain inside the header`);
+  }
+  assert.ok(symbolBox.x + symbolBox.width <= titleBox.x + 0.5, `${label} icon overlaps the title`);
+  assert.ok(titleBox.x + titleBox.width <= closeBox.x + 0.5, `${label} title overlaps close`);
+  await assertReachableControl(close, `${label} close`, { touchTarget: true });
+  const headerAction = header.locator('.settings-drilldown__header-action');
+  if (await headerAction.count()) {
+    assertBoxWithin(await settledBox(headerAction), headerBox, `${label} header action is clipped`);
+    await assertReachableControl(headerAction, `${label} header action`, { touchTarget: true });
+  }
+  const body = panel.locator('.settings-drilldown__body');
+  const bodyBox = await settledBox(body);
+  assert.ok(bodyBox.y >= headerBox.y + headerBox.height - 0.5, `${label} body overlaps its header`);
+  const actual = await panel.evaluate((element, entity) => {
+    const color = (target, property) => getComputedStyle(target).getPropertyValue(property);
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none';
+    element.append(probe);
+    const role = (name) => {
+      probe.style.color = `var(${name})`;
+      return getComputedStyle(probe).color;
+    };
+    try {
+      const card = element.querySelector(
+        entity === 'chat' ? '.settings-native-toggle' : '.channel-post-signature__activation',
+      );
+      const field = element.querySelector('.field input, .field select, .field textarea');
+      return {
+        panel: color(element, 'background-color'),
+        body: color(element.querySelector('.settings-drilldown__body'), 'background-color'),
+        title: color(element.querySelector('.settings-drilldown__title'), 'color'),
+        card: color(card, 'background-color'),
+        border: color(card, 'border-top-color'),
+        field: field ? color(field, 'background-color') : null,
+        majorSurface: role('--major-surface'),
+        surfaceCard: role('--surface-card'),
+        surfaceInset: role('--surface-card-muted'),
+      };
+    } finally {
+      probe.remove();
+    }
+  }, entity);
+  if (entity === 'channel') {
+    assert.notEqual(
+      actual.field,
+      null,
+      `${label} the signature fixture must expose a real editable field for palette coverage`,
+    );
+  }
+  assert.deepEqual(
+    actual,
+    {
+      panel: palette.page,
+      body: palette.page,
+      title: palette.ink,
+      card: palette.panel,
+      border: palette.line,
+      field: actual.field === null ? null : palette.inset,
+      majorSurface: palette.panel,
+      surfaceCard: palette.panel,
+      surfaceInset: palette.inset,
+    },
+    `${label} module surfaces and local roles must match the steel overview palette`,
+  );
+  if (entity === 'chat') {
+    const longTitle = panel.locator('.settings-native-toggle__title', {
+      hasText: 'Ограничить отправку',
+    });
+    assert.equal(await longTitle.count(), 1, 'The real duplicate action label must be covered');
+    assert.equal(
+      await longTitle.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return style.whiteSpace !== 'nowrap' && element.scrollWidth <= element.clientWidth + 1;
+      }),
+      true,
+      `${label} duplicate action title must wrap completely beside duration and switch`,
+    );
+  }
+  const lastControl = body
+    .locator(
+      '.settings-native-switch:visible, .field input:visible, .field select:visible, .field textarea:visible, .settings-duration-editor__preset:visible, .segmented-control__item:visible',
+    )
+    .last();
+  await assertReachableControl(lastControl, `${label} final module control`);
+  assertBoxWithin(
+    await settledBox(lastControl),
+    await settledBox(body),
+    `${label} the final control must scroll into the body without the header or footer covering it`,
+  );
+  assert.equal(
+    await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+    true,
+    `${label} the module must not overflow horizontally`,
+  );
 }
 
 async function assertOverviewLayout(page, name, entity) {
@@ -290,9 +473,11 @@ try {
           'Navigation-only tools must not claim an enabled or disabled state',
         );
         if (platform === 'desktop') await page.mouse.up();
-        else await entry.tap();
+        const palette = await readSteelPalette(page);
+        if (platform !== 'desktop') await entry.tap();
         await page.locator(panelSelector).waitFor({ state: 'visible' });
         assert.equal(await page.locator('.settings-drilldown__panel:visible').count(), 1);
+        await assertModulePresentation(page, name, entity, title, panelSelector, palette);
         const moduleSwitch =
           entity === 'chat'
             ? page.getByRole('checkbox', { name: 'Включить антидубль', exact: true })
@@ -302,8 +487,37 @@ try {
           enabled === 'true',
           'Overview indicator must match the actual module setting',
         );
+        await assertReachableControl(
+          moduleSwitch.locator('..'),
+          `${name}/${entity} module switch`,
+          {
+            touchTarget: true,
+          },
+        );
+        assert.equal(
+          await moduleSwitch
+            .locator('..')
+            .locator('.toggle-switch')
+            .evaluate((element) => getComputedStyle(element).backgroundColor),
+          enabled === 'true' ? palette.blue : palette.inset,
+          `${name}/${entity} the real switch must use the module accent and inset roles`,
+        );
         await page.locator(`${panelSelector} .settings-drilldown__close`).click();
         await page.locator(panelSelector).waitFor({ state: 'hidden' });
+        const pollsEntry = page.getByRole('button', { name: 'Опросы', exact: true });
+        await pollsEntry.scrollIntoViewIfNeeded();
+        await settledBox(pollsEntry);
+        await pollsEntry.click();
+        const pollsPanel = page.locator('.settings-drilldown__panel--polls');
+        await pollsPanel.waitFor({ state: 'visible' });
+        assert.equal(
+          await pollsPanel.locator('.settings-drilldown__symbol[aria-hidden="true"] svg').count(),
+          1,
+          `${name}/${entity} a ReactElement module icon must render once as decorative content`,
+        );
+        assert.equal(await page.getByRole('dialog', { name: 'Опросы', exact: true }).count(), 1);
+        await pollsPanel.locator('.settings-drilldown__close').click();
+        await pollsPanel.waitFor({ state: 'hidden' });
         await assertOverviewLayout(page, name, entity);
         await assertOverviewSearch(page, name, entity, entry, enabled);
         assert.deepEqual(await page.evaluate(() => window.__SEARCH_LAYOUT_WRITES__), []);
@@ -313,7 +527,7 @@ try {
         );
         assert.deepEqual(errors, []);
         console.log(
-          `PASS ${name}/${entity}: delayed search keeps ${readyBox.height}px geometry, two-column modules, alias/empty/clear search, intended section and no writes`,
+          `PASS ${name}/${entity}: delayed search keeps ${readyBox.height}px geometry, two-column modules, steel module palette, reachable header/controls, alias/empty/clear search and no writes`,
         );
       } finally {
         releaseModule();

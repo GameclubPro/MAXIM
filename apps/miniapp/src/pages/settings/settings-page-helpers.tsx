@@ -1324,6 +1324,14 @@ export type WarnMessageEditorProps = BotSpeechMessageEditorProps & {
   editorKey: WarnMessageEditorKey;
 };
 
+export function secondsToHours(value: number): number {
+  return Math.max(1, Math.round(value / 3600));
+}
+
+export function formatMuteDurationCompact(hours: number) {
+  return hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`;
+}
+
 export const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   pickedDayCount: 0,
   selectedDayCount: 0,

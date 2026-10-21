@@ -1,6 +1,9 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import type { ApiTransport } from '../../lib/api/transport';
 import type {
   SettingsSectionMutationProps,
@@ -105,6 +108,7 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
       </div>
       <SettingsDrilldownPanel
         id="settings-reports-content"
+        icon={<SettingsSectionIcon name="warning" />}
         open={expanded}
         title="Система жалоб"
         tone="rose"

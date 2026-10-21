@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import { GlassCard } from '../../components/ui/glass-card';
 import { cn } from '../../lib/cn';
 import { SettingsHintAnchor } from './settings-page-helpers';
@@ -94,6 +97,7 @@ export function SettingsCommentsSection({
 
       <SettingsDrilldownPanel
         id="settings-comments-content"
+        icon={<SettingsSectionIcon name="comments" />}
         open={expanded}
         title="Комментарии"
         summary={summary}

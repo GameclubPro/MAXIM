@@ -1,7 +1,10 @@
 import { Suspense } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import { Spinner } from '../../components/ui/spinner';
 import type { ApiTransport } from '../../lib/api/transport';
 import type { BroadcastLinkButtonFieldErrors } from '../../lib/broadcast-link-buttons';
@@ -77,6 +80,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
 
       <SettingsDrilldownPanel
         id="settings-commercial-filter-content"
+        icon={<SettingsSectionIcon name="ads" />}
         open={expanded}
         title="Коммерческая реклама"
         summary={commercialFilterHeaderSummary}

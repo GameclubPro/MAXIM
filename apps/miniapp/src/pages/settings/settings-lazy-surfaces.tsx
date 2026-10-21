@@ -4,6 +4,11 @@ import { SkeletonCard } from '../../components/ui/skeleton';
 
 const LazyAdminContactToggle = lazy(() => import('../../components/admin-contact-toggle'));
 const LazyBroadcastPublishBar = lazy(() => import('../../components/broadcast-publish-bar'));
+export const LazyActionConfirmSheet = lazy(() =>
+  import('../../components/ui/action-confirm-sheet').then((module) => ({
+    default: module.ActionConfirmSheet,
+  })),
+);
 const LazySettingsLoadErrorState = lazy(() =>
   import('../../components/settings-load-error-state').then((module) => ({
     default: module.SettingsLoadErrorState,

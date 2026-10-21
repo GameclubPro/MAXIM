@@ -3,7 +3,10 @@ import { useQuery } from '@tanstack/react-query';
 import type { ApiTransport } from '../../lib/api/transport';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import { SkeletonCard } from '../../components/ui/skeleton';
 import { SettingsAdvertisingSoonSection } from './settings-advertising-soon-section';
 
@@ -53,6 +56,7 @@ export function SettingsAdvertisingSection({
       </div>
       <SettingsDrilldownPanel
         id="settings-advertising-content"
+        icon={<SettingsSectionIcon name="ads" />}
         open={open}
         title="Рекламная площадка"
         variant="screen"

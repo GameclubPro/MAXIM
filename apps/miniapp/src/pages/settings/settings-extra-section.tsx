@@ -2,7 +2,10 @@ import { InfoCircle } from 'iconoir-react';
 import type { ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import { GlassCard } from '../../components/ui/glass-card';
 import { cn } from '../../lib/cn';
 import { DeleteDelayStepper, type FieldErrors, type HintKey } from './settings-page-helpers';
@@ -68,6 +71,7 @@ export function SettingsExtraSection({
 
       <SettingsDrilldownPanel
         id="settings-extra-content"
+        icon={<SettingsSectionIcon name="tools" />}
         open={expanded}
         title="Сообщения и боты"
         summary={summary}

@@ -1,7 +1,10 @@
 import { Suspense } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionIcon,
+  SettingsSectionToggle,
+} from '../../components/ui/settings-section-toggle';
 import { Spinner } from '../../components/ui/spinner';
 import type { ApiTransport } from '../../lib/api/transport';
 import type { BroadcastLinkButtonFieldErrors } from '../../lib/broadcast-link-buttons';
@@ -86,6 +89,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
 
       <SettingsDrilldownPanel
         id="settings-limits-content"
+        icon={<SettingsSectionIcon name="shield" />}
         open={expanded}
         title="Ограничения"
         summary={`Активных ограничений: ${limitsRulesEnabledCount}`}

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useReducer, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, RefreshDouble, ShieldCheck } from 'iconoir-react';
+import { Check, Clock, RefreshDouble, ShieldCheck } from 'iconoir-react';
 import type { MessageRetentionState, UpdateMessageRetention } from '@maxim/contracts/settings';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import { SegmentedControl } from '../../components/ui/segmented-control';
@@ -182,6 +182,7 @@ export function SettingsMessageRetentionEditor({
   return (
     <SettingsDrilldownPanel
       id="settings-message-retention"
+      icon={<Clock />}
       open
       title="Удаление старых сообщений"
       className="message-retention-panel"
