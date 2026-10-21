@@ -112,7 +112,7 @@ try {
     await context.route('https://st.max.ru/js/max-web-app.js', (route) =>
       route.fulfill({ contentType: 'application/javascript', body: '' }),
     );
-    // FLAG: Exercise the 72px virtual row contract; grouped rows include a separator.
+    // FLAG: Exercise the 132px virtual row contract with separate settings and statistics actions.
     await context.route('**/src/lib/api/preview-transport-runtime.ts', async (route) => {
       const response = await route.fetch();
       const source = await response.text();
@@ -183,7 +183,7 @@ try {
         borderBottom: style.borderBottomWidth,
       };
     });
-    assert.equal(rowGeometry.height, 72, JSON.stringify(rowGeometry));
+    assert.equal(rowGeometry.height, 132, JSON.stringify(rowGeometry));
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1),
       false,

@@ -48,8 +48,25 @@ try {
       await open('');
       const row = page.locator('.chat-card').first();
       await row.waitFor();
-      if (width === 320) assert.ok((await row.boundingBox()).y <= 150, 'first chat below 150px');
-      for (const selector of ['.chat-card__action--favorite', '.chat-card__action--statistics']) {
+      if (width === 320) {
+        const cardBounds = await row.boundingBox();
+        const actionBounds = await row.locator('.chat-card__row-actions').boundingBox();
+        const navBounds = await page.locator('.bottom-nav').boundingBox();
+        assert.ok(
+          cardBounds.y >= 0 && cardBounds.y + cardBounds.height <= navBounds.y + 1,
+          'the complete first card must fit above the bottom navigation on a small screen',
+        );
+        assert.ok(
+          actionBounds.y >= cardBounds.y &&
+            actionBounds.y + actionBounds.height <= cardBounds.y + cardBounds.height + 1,
+          'first-card settings and statistics must fit inside the card',
+        );
+      }
+      for (const selector of [
+        '.chat-card__action--favorite',
+        '.chat-card__action--settings',
+        '.chat-card__action--statistics',
+      ]) {
         const box = await row.locator(selector).boundingBox();
         assert.ok(box.width >= 44 && box.height >= 44, `${selector}: small touch target`);
       }
@@ -90,8 +107,12 @@ try {
           const { PREVIEW_REQUEST_HANDLERS } = await import(moduleUrl('preview-transport.ts'));
           const { PREVIEW_NOT_HANDLED } = await import(moduleUrl('preview-transport-runtime.ts'));
           window.__signalSettingsWrites = 0;
-          PREVIEW_REQUEST_HANDLERS.unshift(({ url, method }) => {
-            if (url.pathname === '/chats/preview-chat/settings' && method === 'PUT') {
+          PREVIEW_REQUEST_HANDLERS.unshift(({ url, method, init }) => {
+            if (
+              url.pathname === '/chats/preview-chat/settings/section' &&
+              method === 'PATCH' &&
+              JSON.parse(init.body).section === 'links'
+            ) {
               window.__signalSettingsWrites += 1;
               if (window.__signalSettingsWrites === 1)
                 throw new Error('Не удалось сохранить. Повторите попытку.');

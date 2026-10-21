@@ -25,17 +25,33 @@ async function checkHeader(page, profile, name, key) {
   const header = page.locator(selector);
   await header.waitFor();
   const headerBounds = await header.boundingBox();
-  assert.ok(headerBounds.height <= 84, `${name}: header is too tall`);
+  assert.ok(
+    headerBounds.height <= (profile === 'moderation' ? 91 : 84),
+    `${name}: header is too tall`,
+  );
   if (profile === 'moderation') {
     const shellBounds = await page.locator('.app-shell').boundingBox();
-    assert.ok(Math.abs(headerBounds.x - shellBounds.x) <= 1, 'header left edge has a gap');
-    assert.ok(Math.abs(headerBounds.width - shellBounds.width) <= 1, 'header right edge has a gap');
+    assert.ok(
+      headerBounds.x >= shellBounds.x - 1 &&
+        headerBounds.x + headerBounds.width <= shellBounds.x + shellBounds.width + 1,
+      'catalog header must stay inside the app shell',
+    );
+    assert.ok(
+      Math.abs(headerBounds.x + headerBounds.width / 2 - (shellBounds.x + shellBounds.width / 2)) <=
+        1,
+      'catalog header must remain centered',
+    );
+    assert.ok(headerBounds.width <= 760, 'catalog header must keep its reading width');
+    assert.equal(await header.locator('h1').innerText(), 'Чаты');
+    assert.equal(await header.locator('.chats-command__mark').count(), 1);
+    assert.equal(await header.locator('img').count(), 0);
+  } else {
+    assert.equal(await header.locator('h1').innerText(), name);
+    const img = header.locator('img');
+    await img.evaluate((el) => el.decode());
+    assert.equal(await img.evaluate((el) => el.naturalWidth), 192);
+    assert.ok((await img.getAttribute('src')).includes(key));
   }
-  assert.equal(await header.locator('h1').innerText(), name);
-  const img = header.locator('img');
-  await img.evaluate((el) => el.decode());
-  assert.equal(await img.evaluate((el) => el.naturalWidth), 192);
-  assert.ok((await img.getAttribute('src')).includes(key));
   assert.equal(
     await header.evaluate((el) => {
       const rect = el.getBoundingClientRect();
@@ -115,7 +131,9 @@ try {
             animations: 'disabled',
           });
         }
-        console.log(`PASS ${name}, ${width}px, ${theme}: correct avatar/name, unclipped header`);
+        console.log(
+          `PASS ${name}, ${width}px, ${theme}: ${profile === 'moderation' ? 'catalog title and mark' : 'correct avatar/name'}, unclipped header`,
+        );
       }
       assert.deepEqual(errors, []);
       await context.close();
