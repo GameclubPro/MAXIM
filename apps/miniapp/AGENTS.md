@@ -10,6 +10,7 @@
 ## Design Direction
 
 - The mini app must feel bold, stylish, modern, and visually memorable, with a clear wow effect. This is the default design target for future UI work, including moderation screens.
+- Major headers use graphite with blue/indigo accents. Do not introduce lime accents; preserve Publisher's separate orange identity. Entity settings omit redundant settings subtitles and the duplicate inline Back in native MAX; keep save retry in the action row.
 - Build a recognizable visual identity through expressive typography, confident color accents, deliberate composition, refined icons and imagery, and polished interaction states. Use depth and purposeful motion where they strengthen the experience; respect reduced-motion preferences.
 - Minimalism and muted utilitarian styling are not product goals. Existing flat surfaces, disabled shadows, and uniform radii are implementation choices, not requirements to preserve during redesign.
 - Visual ambition must support clear priorities and fast everyday actions. Keep readable contrast, accessible touch targets, responsive layouts, and coherent light/dark themes; decoration must not obscure content or controls.

@@ -64,6 +64,7 @@ import {
 } from '../components/broadcast-studio-workspace';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
+import '../components/ui/managed-entity-settings-header.css';
 import { getInitDataUserId } from '../lib/init-data';
 import { GlassCard } from '../components/ui/glass-card';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';

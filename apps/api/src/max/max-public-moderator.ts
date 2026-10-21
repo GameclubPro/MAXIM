@@ -12,11 +12,14 @@ const IDENTITIES: Readonly<Record<string, Pick<PublicModerator, 'name' | 'portra
 };
 
 export function publicModerator(bot: Pick<MaxBotDefinition, 'id' | 'contactId'>): PublicModerator {
-  const handle = bot.contactId?.trim() || bot.id;
-  const identity = IDENTITIES[handle] ?? IDENTITIES[bot.id];
+  const handle = bot.id.trim();
+  const identity = IDENTITIES[handle];
   return {
     key: createHash('sha256').update(`moderator-v1:${bot.id}`).digest('hex').slice(0, 24),
     ...(identity ?? { name: 'Бот сообщества', portrait: 'neutral' as const }),
-    url: /^[A-Za-z0-9_]+$/u.test(handle) ? `https://max.ru/${handle}` : null,
+    url:
+      /^[A-Za-z0-9_]+$/u.test(handle) && /[A-Za-z]/u.test(handle)
+        ? `https://max.ru/${handle}`
+        : null,
   };
 }

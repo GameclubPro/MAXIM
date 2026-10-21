@@ -42,6 +42,63 @@ async function assertInViewport(locator, label) {
     `${label}: ${JSON.stringify(geometry)}`,
   );
 }
+
+async function assertSettingsHeaderScroll(page) {
+  const header = page.locator('.managed-entity-workspace-header');
+  await page.evaluate(() => document.fonts.ready);
+  assert.equal(await header.locator('.compact-page-header__back').isVisible(), false);
+  assert.equal(await header.locator('.compact-page-header__subtitle').count(), 0);
+  await page.waitForFunction(() => window.__MAXIM_VISUAL_BRIDGE__.BackButton.isVisible);
+  const samples = await page.evaluate(async () => {
+    scrollTo(0, 11);
+    const samples = [];
+    const start = performance.now();
+    while (performance.now() - start < 700) {
+      await new Promise(requestAnimationFrame);
+      samples.push({
+        time: performance.now() - start,
+        y: scrollY,
+        height: document.querySelector('.managed-entity-workspace-header').getBoundingClientRect()
+          .height,
+      });
+    }
+    return samples.filter((sample) => sample.time > 400);
+  });
+  assert.ok(samples.length > 1);
+  for (const key of ['y', 'height']) {
+    const values = samples.map((sample) => sample[key]);
+    assert.ok(
+      Math.max(...values) - Math.min(...values) <= 0.5,
+      `Settings header must settle near the compact threshold: ${JSON.stringify(samples)}`,
+    );
+  }
+
+  await page.evaluate(() => scrollTo(0, 96));
+  await page.waitForTimeout(350);
+  const actions = header.locator(
+    '[data-managed-entity-bots-trigger], .managed-entity-workspace-header__counterpart',
+  );
+  for (const action of await actions.all()) {
+    await assertInViewport(action, 'Settings header action after scrolling');
+    assert.equal(
+      await action.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return (
+          rect.width >= 44 &&
+          rect.height >= 44 &&
+          element.contains(
+            document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
+          )
+        );
+      }),
+      true,
+      'Settings header actions must remain tappable after scrolling',
+    );
+  }
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.waitForTimeout(350);
+}
+
 try {
   for (const [width, height, platform, theme, entityType] of [
     [320, 568, 'ios', 'light', 'chat'],
@@ -184,6 +241,7 @@ try {
       );
     }
     await assertInViewport(trigger, botsLabel);
+    await assertSettingsHeaderScroll(page);
     await page.screenshot({
       path: `${output}/${platform}-${theme}-${entityType}-settings.png`,
       fullPage: false,
@@ -452,6 +510,12 @@ try {
       path: `${output}/${platform}-${theme}-${entityType}-bots.png`,
       fullPage: false,
     });
+    await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+    await sheet.waitFor({ state: 'hidden' });
+    assert.equal(page.url(), settingsLocation);
+    await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+    await page.waitForURL((url) => url.pathname === new URL(base).pathname);
+    await page.locator('.chat-grid--virtual .chat-card').first().waitFor();
     assert.deepEqual(errors, []);
     console.log(
       `PASS ${platform} ${theme} ${entityType}: compact home, settings entry, viewport bounds, scrolling, focus trap, rights, repeated tap, lost response, reopen recovery, native Back, focus, 403/429/409 same-UUID recovery, unavailable current with one candidate, separate Publik handoff`,

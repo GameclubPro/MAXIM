@@ -148,7 +148,7 @@ export function ManagedEntityWorkspaceHeader({
       backLabel={entityType === 'channel' ? 'Назад к каналам' : 'Назад к чатам'}
       onBack={() => requestBack(backTo)}
       title={resolvedTitle}
-      subtitle={screen === 'settings' ? 'Настройки' : 'Статистика'}
+      subtitle={screen === 'stats' ? 'Статистика' : undefined}
       avatar={
         <EntityAvatar
           title={resolvedTitle}
@@ -159,7 +159,12 @@ export function ManagedEntityWorkspaceHeader({
       }
       identityAction={identityAction}
       compact={compact}
-      className={cn('managed-entity-workspace-header', className)}
+      className={cn(
+        'managed-entity-workspace-header',
+        screen === 'settings' && 'managed-entity-workspace-header--settings',
+        Boolean(status) && 'managed-entity-workspace-header--with-status',
+        className,
+      )}
       headerRef={headerRef}
       aside={
         <div className="managed-entity-workspace-header__actions">
@@ -191,6 +196,7 @@ export function ManagedEntityWorkspaceHeader({
               }}
             >
               <CounterpartIcon aria-hidden focusable="false" />
+              {screen === 'settings' ? <span>Статистика</span> : null}
             </button>
           ) : null}
         </div>

@@ -64,11 +64,13 @@ export function CompactStickyHeader({
           <div className="compact-page-header__title-wrap">
             {subtitle ? <span className="compact-page-header__subtitle">{subtitle}</span> : null}
             <h1 className="compact-page-header__title">{title}</h1>
-            {identityAction}
           </div>
         </div>
 
         <div className="compact-page-header__aside">{aside}</div>
+        {identityAction ? (
+          <div className="compact-page-header__identity-action">{identityAction}</div>
+        ) : null}
       </div>
     </header>
   );

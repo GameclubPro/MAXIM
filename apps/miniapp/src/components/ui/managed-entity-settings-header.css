@@ -1,0 +1,259 @@
+@layer workspace {
+  /* Keep the viewport as the sticky header's scroll container. */
+  body[data-miniapp-profile='moderation']:is(
+      .settings-home-page-open,
+      .channel-settings-page-open
+    ) {
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-workspace-header--settings {
+    --settings-header-ink: #f7f9ff;
+    --settings-header-muted: #b9c8e2;
+    --settings-header-accent: #4263eb;
+    --settings-header-surface: #151b26;
+    --settings-header-on-accent: #ffffff;
+    --settings-header-focus: #abc0ff;
+    --settings-header-border: rgb(255 255 255 / 12%);
+    --settings-header-control-border: rgb(255 255 255 / 18%);
+    --settings-header-control-surface: rgb(255 255 255 / 7%);
+    --settings-header-control-hover: rgb(255 255 255 / 12%);
+    --settings-header-control-hover-border: rgb(255 255 255 / 35%);
+    --settings-header-brand-frame: color-mix(
+      in srgb,
+      var(--settings-header-focus) 55%,
+      transparent
+    );
+    --settings-header-brand-surface: color-mix(
+      in srgb,
+      var(--settings-header-accent) 10%,
+      transparent
+    );
+    --settings-header-background:
+      radial-gradient(ellipse at 100% 0, rgb(86 118 255 / 28%), transparent 68%),
+      radial-gradient(ellipse at 0 110%, var(--settings-header-brand-surface), transparent 58%),
+      linear-gradient(120deg, #252d3b, #151b26 75%);
+    --settings-header-shadow: 0 12px 30px rgb(16 24 40 / 15%), inset 0 -1px 0 rgb(255 255 255 / 6%);
+    --settings-header-avatar-shadow: 0 4px 18px rgb(0 0 0 / 18%);
+    --settings-header-avatar-highlight: inset 0 1px 0 rgb(255 255 255 / 22%);
+    --settings-header-action-shadow:
+      0 4px 12px rgb(0 0 0 / 12%), inset 0 1px 0 rgb(255 255 255 / 40%);
+    min-height: 0;
+    margin-bottom: 18px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__bar {
+    position: relative;
+    isolation: isolate;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 10px;
+    padding: calc(var(--compact-page-header-safe-top) + 16px) 16px 16px;
+    border: 1px solid var(--settings-header-border);
+    border-top: 0;
+    border-radius: 0 0 26px 26px;
+    background: var(--settings-header-background);
+    background-color: var(--settings-header-surface);
+    box-shadow: var(--settings-header-shadow);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__back {
+    grid-area: 1 / 1;
+    align-self: center;
+    z-index: 1;
+    border: 1px solid var(--settings-header-control-border);
+    border-radius: 14px;
+    background: var(--settings-header-control-surface);
+    color: var(--settings-header-ink);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__identity {
+    grid-area: 1 / 1 / 2 / -1;
+    margin-inline-start: 56px;
+    gap: 12px;
+  }
+
+  html[data-max-client='native']
+    body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__back {
+    display: none;
+  }
+
+  html[data-max-client='native']
+    body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__identity {
+    margin-inline-start: 0;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__avatar-wrap {
+    padding: 3px;
+    border: 1px solid var(--settings-header-brand-frame);
+    border-radius: 19px;
+    background: var(--settings-header-brand-surface);
+    box-shadow: var(--settings-header-avatar-shadow);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__entity-avatar {
+    width: 46px;
+    min-width: 46px;
+    height: 46px;
+    border: 0;
+    border-radius: 14px;
+    font-size: 15px;
+    box-shadow: var(--settings-header-avatar-highlight);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__title {
+    color: var(--settings-header-ink);
+    font-size: clamp(20px, 5.4vw, 24px);
+    font-weight: 800;
+    line-height: 1.14;
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    :is(.compact-page-header__aside, .managed-entity-workspace-header__actions) {
+    display: contents;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__identity-action {
+    grid-area: 2 / 1;
+    min-width: 0;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .managed-entity-workspace-header__counterpart {
+    grid-area: 2 / 2;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    height: auto;
+    padding: 10px;
+    border: 1px solid var(--settings-header-control-border);
+    border-radius: 14px;
+    background: var(--settings-header-control-surface);
+    color: var(--settings-header-ink);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 750;
+    line-height: 1.3;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .managed-entity-bots-control__trigger {
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding-inline: 8px;
+    border-color: var(--settings-header-accent);
+    background: var(--settings-header-accent);
+    color: var(--settings-header-on-accent);
+    box-shadow: var(--settings-header-action-shadow);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .managed-entity-bots-control__status {
+    color: var(--settings-header-muted);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings.managed-entity-workspace-header--with-status
+    .compact-page-header__bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) 44px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__actions[role='status'] {
+    grid-area: 2 / 3;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    color: var(--settings-header-ink);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__retry {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border-color: var(--settings-header-control-border);
+    background: var(--settings-header-control-surface);
+    color: var(--settings-header-ink);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .managed-entity-workspace-header__busy {
+    top: calc(var(--compact-page-header-safe-top) + 13px);
+    right: 14px;
+    border-color: var(--settings-header-control-surface);
+    background: var(--settings-header-focus);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    :is(.compact-page-header__back, .managed-entity-workspace-header__counterpart):hover {
+    border-color: var(--settings-header-control-hover-border);
+    background: var(--settings-header-control-hover);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    :is(button, a):focus-visible {
+    outline-color: var(--settings-header-focus);
+    outline-offset: 3px;
+  }
+
+  @media (max-width: 359px) {
+    body[data-miniapp-profile='moderation']
+      .managed-entity-workspace-header--settings.managed-entity-workspace-header--with-status
+      .compact-page-header__bar {
+      grid-template-columns: minmax(0, 1fr) 44px 44px;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .managed-entity-workspace-header--settings.managed-entity-workspace-header--with-status
+      .managed-entity-workspace-header__counterpart {
+      padding: 0;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .managed-entity-workspace-header--settings.managed-entity-workspace-header--with-status
+      .managed-entity-workspace-header__counterpart
+      span {
+      display: none;
+    }
+  }
+
+  @media (min-width: 600px) {
+    body[data-miniapp-profile='moderation']
+      .managed-entity-workspace-header--settings
+      .compact-page-header__bar {
+      padding-inline: max(24px, calc((100vw - 728px) / 2));
+    }
+  }
+}
