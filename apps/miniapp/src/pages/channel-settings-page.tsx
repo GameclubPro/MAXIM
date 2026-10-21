@@ -64,6 +64,7 @@ import {
 } from '../components/broadcast-studio-workspace';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
+import { getInitDataUserId } from '../lib/init-data';
 import { GlassCard } from '../components/ui/glass-card';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -309,6 +310,9 @@ function areBroadcastPlannerStatesEqual(
   );
 }
 
+const LazyManagedEntityBotsControl = lazy(
+  () => import('../components/managed-entity-bots-control'),
+);
 const LazySettingsHandoffState = lazy(() => import('../components/handoff'));
 const LazyBroadcastSchedulePlanner = lazy(() =>
   import('../components/broadcast-schedule-planner').then((module) => ({
@@ -881,6 +885,7 @@ function normalizeChannelSettingsDraft(
 }
 
 export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
+  const userId = getInitDataUserId()?.trim() || null;
   const { chatId = '' } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -2255,6 +2260,24 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         settingsQuery.isLoading || autosaveState === 'saving' || postSignatureSaveState === 'saving'
       }
       className="channel-settings-screen__sticky-header"
+      identityAction={
+        chatId &&
+        channelHeader &&
+        userId &&
+        !handoffRequested &&
+        !settingsHandoffMode &&
+        !legacyBroadcastWorkspaceRequested ? (
+          <Suspense fallback={null}>
+            <LazyManagedEntityBotsControl
+              api={api}
+              userId={userId}
+              entityType="channel"
+              entityId={chatId}
+              title={resolvedTitle}
+            />
+          </Suspense>
+        ) : null
+      }
       status={
         showHeaderSaveRetry ? (
           <div

@@ -1,0 +1,261 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    align-items: end;
+    justify-items: center;
+    box-sizing: border-box;
+    padding: 12px 12px max(12px, env(safe-area-inset-bottom, 0px));
+    overflow: hidden;
+    isolation: isolate;
+    container: managed-entity-bots / size;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: var(--major-scrim);
+    touch-action: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    width: min(100%, 480px);
+    max-height: min(760px, 100%);
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--major-border);
+    border-radius: 26px;
+    background: var(--major-surface);
+    color: var(--major-ink);
+    box-shadow: var(--major-overlay-shadow);
+    animation: managed-entity-bots-enter 160ms ease-out both;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__header {
+    display: flex;
+    flex-shrink: 0;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 20px 16px 14px 20px;
+    border-top: 3px solid var(--major-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__identity {
+    min-width: 0;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__identity h2 {
+    margin: 0;
+    color: var(--major-ink);
+    font-size: clamp(21px, 5.5vw, 25px);
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -0.04em;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__identity p {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    margin: 6px 0 0;
+    color: var(--major-muted);
+    font-size: 13px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__close {
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 10px;
+    border: 1px solid var(--major-border);
+    border-radius: 15px;
+    background: var(--major-subtle);
+    color: var(--major-ink);
+    cursor: pointer;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__publications {
+    flex-shrink: 0;
+    margin: 0 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--major-border);
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.managed-entity-bots-sheet__publications, .managed-entity-bots-sheet__moderation)
+    > h3 {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 7px;
+    margin: 0 0 10px;
+    color: var(--major-muted);
+    font-size: 12px;
+    font-weight: 750;
+    line-height: 1.4;
+    letter-spacing: 0.04em;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__publik {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) 20px;
+    align-items: center;
+    gap: 10px;
+    min-height: 68px;
+    box-sizing: border-box;
+    padding: 10px;
+    border: 1px solid var(--major-border);
+    border-radius: 18px;
+    background: var(--major-subtle);
+    color: var(--major-ink);
+    text-decoration: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__publik img {
+    border-radius: 13px;
+    object-fit: cover;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__publik strong {
+    display: block;
+    font-size: 15px;
+    font-weight: 800;
+    line-height: 1.4;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__publik small {
+    display: block;
+    margin-top: 2px;
+    color: var(--major-muted);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__publik > .app-icon {
+    width: 20px;
+    height: 20px;
+    color: var(--major-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__moderation {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding-top: 16px;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__moderation > h3 {
+    margin-inline: 20px;
+    margin-bottom: 0;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__moderation > h3 .app-icon {
+    width: 17px;
+    height: 17px;
+    color: var(--major-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__choices {
+    min-height: 0;
+    padding: 0 16px 16px;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet .home-moderator,
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet .home-moderator__options {
+    flex-shrink: 0;
+    overflow: visible;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet .home-moderator__option {
+    grid-template-columns: 40px minmax(0, 1fr) 20px;
+    gap: 10px;
+    min-height: 68px;
+    padding: 10px;
+    border-radius: 18px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-bots-sheet
+    .home-moderator__option
+    .moderator-portrait {
+    width: 40px;
+    height: 40px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-bots-sheet
+    .home-moderator__current
+    > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet :is(button, a):focus-visible {
+    outline: 2px solid var(--major-accent);
+    outline-offset: -3px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-bots-sheet
+    :is(.home-moderator__submit, .home-moderator__open) {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  @container managed-entity-bots (max-height: 420px) {
+    body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__panel {
+      overflow-y: auto;
+      overscroll-behavior-y: contain;
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__moderation {
+      flex-shrink: 0;
+    }
+
+    body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__choices {
+      overflow: visible;
+    }
+  }
+
+  @keyframes managed-entity-bots-enter {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body[data-miniapp-profile='moderation'] .managed-entity-bots-sheet__panel {
+      animation: none;
+    }
+  }
+}

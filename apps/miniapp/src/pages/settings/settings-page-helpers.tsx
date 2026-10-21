@@ -210,6 +210,9 @@ export const LazyBroadcastSchedulePlanner = lazy(() =>
     default: module.BroadcastSchedulePlanner,
   })),
 );
+export const LazySettingsDateField = lazy(() =>
+  import('../../components/ui/date-field').then((module) => ({ default: module.DateField })),
+);
 const loadBotSpeechMessageEditorSheet = () => import('../../components/bot-speech-message-editor');
 export function preloadBotSpeechMessageEditorSheet() {
   void loadBotSpeechMessageEditorSheet();

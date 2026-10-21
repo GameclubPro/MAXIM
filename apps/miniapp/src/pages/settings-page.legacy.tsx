@@ -87,7 +87,6 @@ import {
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
 import { EntityAvatar } from '../components/ui/entity-avatar';
-import { DateField } from '../components/ui/date-field';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { ResetIcon } from '../components/ui/reset-icon';
@@ -247,6 +246,7 @@ import {
   AdminContactButtonGroup,
   LazyBroadcastAudienceControls,
   LazyBroadcastSchedulePlanner,
+  LazySettingsDateField,
   LazyBroadcastContentComposer,
   LazyBroadcastButtonsSheet,
   LazyBroadcastPublishReviewSheet,
@@ -325,7 +325,6 @@ import {
   formatRequiredSubscriptionLinkPreview,
   getRouteChatTitle,
   getRouteChatAvatarUrl,
-  resolveDesktopToggleRowLabel,
   CalendarIcon,
   ClockIcon,
   TrashIcon,
@@ -337,6 +336,7 @@ import {
 } from './settings/settings-page-helpers';
 import {
   ChatSettingsWorkspaceHeader,
+  handleDesktopToggleRowClick,
   useChatSettingsWorkspaceLeaveGuard,
 } from './settings/chat-settings-workspace';
 import {
@@ -4465,19 +4465,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  function handleDesktopToggleRowClick(event: MouseEvent<HTMLElement>) {
-    const switchLabel = resolveDesktopToggleRowLabel(event.target);
-    if (!switchLabel) {
-      return;
-    }
-
-    event.preventDefault();
-    switchLabel.click();
-  }
-
   return (
     <div className="page-stack page-enter" data-managed-entity-workspace="chat-settings">
       <ChatSettingsWorkspaceHeader
+        api={api}
+        userId={meQuery.data?.userId ?? null}
         chatId={chatId}
         title={chatTitle}
         header={chatHeaderQuery.data}
@@ -4886,16 +4878,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                   aria-label={`План удаления ${targetLabel}`}
                                                 >
                                                   <div className="allowlist-item__schedule-fields">
-                                                    <DateField
-                                                      className="allowlist-item__schedule-field"
-                                                      label="День удаления"
-                                                      value={scheduleDate}
-                                                      min={toLocalDateInputValue(new Date())}
-                                                      onChange={(nextValue) => {
-                                                        setScheduleDate(nextValue);
-                                                        setScheduleError('');
-                                                      }}
-                                                    />
+                                                    <Suspense fallback={null}>
+                                                      <LazySettingsDateField
+                                                        className="allowlist-item__schedule-field"
+                                                        label="День удаления"
+                                                        value={scheduleDate}
+                                                        min={toLocalDateInputValue(new Date())}
+                                                        onChange={(nextValue) => {
+                                                          setScheduleDate(nextValue);
+                                                          setScheduleError('');
+                                                        }}
+                                                      />
+                                                    </Suspense>
                                                     <div className="field allowlist-item__schedule-field">
                                                       <Suspense fallback={null}>
                                                         <LazySettingsTimeFields

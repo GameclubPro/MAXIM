@@ -5,7 +5,14 @@ import type {
 } from '@maxim/contracts/settings';
 import type { ManagedEntityHeader } from '@maxim/contracts/managed-entities';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, type Dispatch, type SetStateAction } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  type Dispatch,
+  type MouseEvent,
+  type SetStateAction,
+} from 'react';
 import { useLocation } from 'react-router';
 import { ManagedEntityWorkspaceHeader } from '../../components/ui/managed-entity-workspace-header';
 import { useToast } from '../../components/ui/toast';
@@ -21,8 +28,20 @@ import {
   formatApiError,
   normalizeDuplicateFlowSettings,
   normalizeLegacyChatCommentScope,
+  resolveDesktopToggleRowLabel,
 } from './settings-page-helpers';
 import { normalizeRequiredSubscriptionDraftSettings } from '../settings-page-state';
+
+const LazyManagedEntityBotsControl = lazy(
+  () => import('../../components/managed-entity-bots-control'),
+);
+
+export function handleDesktopToggleRowClick(event: MouseEvent<HTMLElement>) {
+  const switchLabel = resolveDesktopToggleRowLabel(event.target);
+  if (!switchLabel) return;
+  event.preventDefault();
+  switchLabel.click();
+}
 
 function normalizeWorkspaceDraft(settings: ChatSettings): ChatSettings {
   return normalizeDuplicateFlowSettings(
@@ -131,6 +150,8 @@ export function useChatSettingsWorkspaceLeaveGuard({
 }
 
 type ChatSettingsWorkspaceHeaderProps = {
+  api: ApiTransport;
+  userId: string | null;
   chatId: string | undefined;
   title: string;
   header: Pick<ManagedEntityHeader, 'title' | 'avatarUrl'> | null | undefined;
@@ -141,6 +162,8 @@ type ChatSettingsWorkspaceHeaderProps = {
 };
 
 export function ChatSettingsWorkspaceHeader({
+  api,
+  userId,
   chatId,
   title,
   header,
@@ -172,6 +195,19 @@ export function ChatSettingsWorkspaceHeader({
       }
       counterpartHidden={counterpartHidden}
       compact={compact}
+      identityAction={
+        chatId && header && userId && !counterpartHidden ? (
+          <Suspense fallback={null}>
+            <LazyManagedEntityBotsControl
+              api={api}
+              userId={userId}
+              entityType="chat"
+              entityId={chatId}
+              title={title}
+            />
+          </Suspense>
+        ) : null
+      }
       className="settings-home-sticky-header"
     />
   );

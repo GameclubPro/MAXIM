@@ -23,6 +23,7 @@ type ManagedEntityWorkspaceHeaderProps = {
   compact?: boolean;
   busy?: boolean;
   status?: ReactNode;
+  identityAction?: ReactNode;
   className?: string;
 };
 
@@ -38,6 +39,7 @@ export function ManagedEntityWorkspaceHeader({
   compact = false,
   busy = false,
   status = null,
+  identityAction = null,
   className,
 }: ManagedEntityWorkspaceHeaderProps) {
   const location = useLocation();
@@ -155,6 +157,7 @@ export function ManagedEntityWorkspaceHeader({
           className="compact-page-header__entity-avatar"
         />
       }
+      identityAction={identityAction}
       compact={compact}
       className={cn('managed-entity-workspace-header', className)}
       headerRef={headerRef}

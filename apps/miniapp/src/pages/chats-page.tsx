@@ -1,7 +1,6 @@
-import type { ConfirmedModeratorAssignment } from '../lib/use-entity-presentation';
 import { mergeEntityPresentation } from '../lib/entity-presentation';
 import type { ManagedEntityPresentation } from '@maxim/contracts';
-import { displayChatTitle, isUnusableChatTitle } from '../lib/chat-titles';
+import { displayChatTitle } from '../lib/chat-titles';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Suspense,
@@ -100,7 +99,6 @@ import {
 import './chats-page.css';
 import './chats-page-native.css';
 import './chats-page-signal.css';
-import './home-moderator.css';
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'error';
@@ -126,7 +124,7 @@ const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
-const CHAT_LIST_ROW_HEIGHT = 96;
+const CHAT_LIST_ROW_HEIGHT = 72;
 const CHAT_LIST_VIRTUAL_ROW_PITCH = CHAT_LIST_ROW_HEIGHT + 8;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
@@ -160,7 +158,6 @@ function preloadHomeEntitySheets() {
 }
 const LazyHomeEntitySheets = lazy(preloadHomeEntitySheets);
 const LazyEntityPresentationLoader = lazy(() => import('../lib/entity-presentation-loader'));
-const LazyHomeModeratorBadge = lazy(() => import('./home-moderator-badge'));
 const LazyHomeListStatus = lazy(() =>
   import('./home-list-status').catch(() => ({
     default: () => (
@@ -344,9 +341,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
     entityType: ManagedTab;
     entity: ManagedHomeEntity;
   } | null>(null);
-  const [moderatorTarget, setModeratorTarget] = useState<typeof favoritePicker>(null);
-  const [moderatorAssignment, setModeratorAssignment] =
-    useState<ConfirmedModeratorAssignment | null>(null);
   const [favoriteFilterPickerOpen, setFavoriteFilterPickerOpen] = useState(false);
   const [favoriteLabelsEditorOpen, setFavoriteLabelsEditorOpen] = useState(false);
   const [connectSheetOpen, setConnectSheetOpen] = useState(false);
@@ -359,14 +353,12 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
   } | null>(null);
   const homeOverlayOpen =
     connectSheetOpen ||
-    Boolean(moderatorTarget) ||
     Boolean(favoritePicker) ||
     favoriteFilterPickerOpen ||
     favoriteLabelsEditorOpen;
 
   useEffect(() => {
     setFavoriteLabelsEditorOpen(false);
-    setModeratorTarget(null);
   }, [api, favoriteStorageScope]);
   const favoriteMigrationAttemptedRef = useRef(false);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
@@ -414,7 +406,7 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
 
   useNativeBackHandler(
     () => {
-      if (connectSheetOpen || moderatorTarget) {
+      if (connectSheetOpen) {
         closeHomeEntitySheet();
       } else if (favoriteLabelsEditorOpen) {
         return true;
@@ -1059,7 +1051,7 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
 
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (connectSheetOpen || moderatorTarget) {
+      if (connectSheetOpen) {
         closeHomeEntitySheet();
         return;
       }
@@ -1072,13 +1064,7 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [
-    connectSheetOpen,
-    moderatorTarget,
-    favoriteLabelsEditorOpen,
-    favoritePicker,
-    homeOverlayOpen,
-  ]);
+  }, [connectSheetOpen, favoriteLabelsEditorOpen, favoritePicker, homeOverlayOpen]);
 
   useEffect(() => {
     if (!categoryEditMode || homeOverlayOpen) {
@@ -1406,7 +1392,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
   }
 
   function closeHomeEntitySheet() {
-    setModeratorTarget(null);
     setFavoriteLabelsEditorOpen(false);
     setFavoriteFilterPickerOpen(false);
     setFavoritePicker(null);
@@ -1589,7 +1574,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
     const staggerIndex = limitedStagger === null ? index : index < limitedStagger ? index : null;
     const className = cn(
       'chat-card',
-      !categoryEditMode && 'chat-card--moderator',
       favorite && 'is-favorite',
       favoriteTypes[0] && `is-${favoriteTypes[0]}`,
       categoryEditMode && 'chat-card--category-editing',
@@ -1721,31 +1705,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
           </Link>
         )}
 
-        {!categoryEditMode && (
-          <div className="chat-card__moderator">
-            {entity.moderator && (
-              <Suspense fallback={null}>
-                <LazyHomeModeratorBadge
-                  moderator={entity.moderator}
-                  title={title}
-                  canChoose={
-                    entity.canChooseModerator === true &&
-                    !isUnusableChatTitle(entity.id, entity.title)
-                  }
-                  expanded={
-                    moderatorTarget?.entity.id === entity.id &&
-                    moderatorTarget.entityType === activeTab
-                  }
-                  onClick={(event) => {
-                    homeOverlayTriggerRef.current = event.currentTarget;
-                    setModeratorTarget({ entityType: activeTab, entity: { ...entity, title } });
-                  }}
-                />
-              </Suspense>
-            )}
-          </div>
-        )}
-
         {!categoryEditMode ? (
           <>
             <button
@@ -1855,7 +1814,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
           entities={isLoading || queryError ? [] : renderedEntities}
           scope={favoriteStorageScope}
           reloadNonce={refreshRequestByTab[activeTab].nonce}
-          assignment={moderatorAssignment}
           onChange={setPresentationState}
         />
       </Suspense>
@@ -1865,18 +1823,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
             api={api}
             connectOpen={connectSheetOpen}
             favoriteTarget={favoritePicker}
-            moderatorTarget={moderatorTarget}
-            onModeratorSaved={(result) => {
-              if (!moderatorTarget) return;
-              setModeratorAssignment({ ...moderatorTarget, scope: favoriteStorageScope, result });
-              closeHomeEntitySheet();
-              pushToast({
-                title: 'Бот выбран',
-                description: result.moderator.name,
-                tone: 'success',
-                replaceKey: `moderator:${favoriteStorageScope}:${moderatorTarget.entityType}:${moderatorTarget.entity.id}`,
-              });
-            }}
             filterPickerOpen={favoriteFilterPickerOpen}
             filterValue={favoriteFilter}
             labelsEditorOpen={favoriteLabelsEditorOpen}

@@ -1,4 +1,3 @@
-import HomeModeratorChoice from './home-moderator-choice';
 import {
   useEffect,
   useRef,
@@ -8,11 +7,7 @@ import {
   type SVGProps,
 } from 'react';
 import { createPortal } from 'react-dom';
-import type {
-  ChatSummary,
-  ManagedEntityFavoriteType,
-  ManagedModeratorAssignmentResult,
-} from '@maxim/contracts';
+import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
 import { EditPencil, Undo } from 'iconoir-react';
 import { AppIcon } from '../components/ui/app-icon';
 import {
@@ -53,8 +48,6 @@ type HomeEntitySheetsProps = {
   api: ApiTransport;
   connectOpen: boolean;
   favoriteTarget: SheetTarget | null;
-  moderatorTarget: SheetTarget | null;
-  onModeratorSaved: (result: ManagedModeratorAssignmentResult) => void;
   filterPickerOpen: boolean;
   filterValue: FavoriteFilter;
   labelsEditorOpen: boolean;
@@ -449,29 +442,6 @@ function HomeFavoriteLabelsEditor({
 
 export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
   const overlayStyle = useVisualViewportOverlayStyle(true);
-
-  if (props.moderatorTarget) {
-    const { entity, entityType } = props.moderatorTarget;
-    return (
-      <HomeSheet
-        sheetKey="moderator"
-        title="Бот сообщества"
-        subtitle={entity.title}
-        overlayStyle={overlayStyle}
-        panelClassName="home-moderator__panel"
-        onClose={props.onClose}
-      >
-        <HomeModeratorChoice
-          key={`${props.favoriteStorageScope}:${entityType}:${entity.id}`}
-          api={props.api}
-          scope={props.favoriteStorageScope}
-          entityType={entityType}
-          entityId={entity.id}
-          onSaved={props.onModeratorSaved}
-        />
-      </HomeSheet>
-    );
-  }
 
   if (props.connectOpen) {
     return (

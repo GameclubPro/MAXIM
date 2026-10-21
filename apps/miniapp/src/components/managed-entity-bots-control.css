@@ -1,0 +1,78 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-control {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-control__trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: fit-content;
+    max-width: 100%;
+    min-height: 44px;
+    padding: 7px 10px;
+    border: 1px solid var(--major-border);
+    border-radius: 14px;
+    background: var(--major-accent-soft);
+    color: var(--major-accent);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 750;
+    line-height: 1.3;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      border-color 140ms,
+      box-shadow 140ms;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-control__trigger > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-control__trigger .app-icon {
+    flex-shrink: 0;
+    width: 17px;
+    height: 17px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-bots-control__trigger
+    .managed-entity-bots-control__chevron {
+    width: 13px;
+    height: 13px;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-control__trigger:hover {
+    border-color: var(--major-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-control__trigger:focus-visible {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 2px;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-control__trigger:disabled {
+    cursor: progress;
+  }
+
+  body[data-miniapp-profile='moderation'] .managed-entity-bots-control__status {
+    display: block;
+    margin-top: 4px;
+    color: var(--major-muted);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body[data-miniapp-profile='moderation'] .managed-entity-bots-control__trigger {
+      transition: none;
+    }
+  }
+}
