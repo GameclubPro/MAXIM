@@ -105,7 +105,7 @@ test('statistics navigation and chart controls retain explicit semantics', () =>
   );
   assert.match(
     eventsPageSource,
-    /className="events-screen page-enter" data-managed-entity-workspace/u,
+    /className="events-screen page-enter"\s+data-managed-entity-workspace/u,
   );
   assert.match(
     channelStatsPageSource,

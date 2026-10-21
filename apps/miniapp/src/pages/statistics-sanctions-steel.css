@@ -1,0 +1,329 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace {
+    --sanctions-notice-border: color-mix(in srgb, var(--steel-amber) 35%, var(--steel-line));
+    --sanctions-row-hover: color-mix(in srgb, var(--steel-inset) 65%, var(--steel-panel));
+    gap: 4px;
+    padding-bottom: 24px;
+    color: var(--steel-ink);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.sanctions-workspace__toolbar, .sanctions-workspace__filters) {
+    gap: 8px;
+    align-items: center;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.sanctions-workspace__search, .sanctions-workspace__filters select) {
+    min-height: 48px;
+    border: 1px solid var(--steel-line);
+    border-radius: 14px;
+    background: var(--steel-raised);
+    color: var(--steel-ink);
+    box-shadow: inset 0 1px 0 var(--steel-glint);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__search {
+    grid-template-columns: 18px minmax(0, 1fr) 44px;
+    padding-inline: 12px 3px;
+    color: var(--steel-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__search
+    input {
+    min-height: 46px;
+    color: var(--steel-ink);
+    font-size: 16px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__search
+    input::placeholder {
+    color: var(--steel-muted);
+    opacity: 1;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__filters
+    select {
+    padding: 10px 24px 10px 12px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(
+      .sanctions-workspace__icon-button,
+      .sanctions-workspace__search button,
+      .sanctions-workspace__user-filter button
+    ) {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    color: var(--steel-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__icon-button {
+    border-color: var(--steel-line);
+    background: var(--steel-raised);
+    box-shadow: inset 0 1px 0 var(--steel-glint);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__search:focus-within {
+    outline: 2px solid var(--steel-blue);
+    outline-offset: 2px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace
+    :is(button, select):focus-visible {
+    outline: 2px solid var(--steel-blue);
+    outline-offset: 2px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__heading {
+    min-height: 20px;
+    margin-top: 0;
+    padding: 0 2px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__heading
+    h2 {
+    color: var(--steel-ink);
+    font-size: 15px;
+    font-weight: 750;
+    letter-spacing: -0.025em;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__heading
+    time {
+    color: var(--steel-muted);
+    font-size: 12px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__count {
+    min-width: 28px;
+    height: 24px;
+    border-radius: 8px;
+    background: var(--steel-inset);
+    color: var(--steel-muted);
+    font-size: 12px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.sanctions-workspace__list, .sanctions-workspace__loading) {
+    overflow: hidden;
+    border: 1px solid var(--steel-line);
+    border-radius: 20px;
+    background: var(--steel-panel);
+    box-shadow: 0 6px 20px var(--steel-shadow);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__list:empty {
+    display: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.sanctions-workspace__row, .sanctions-workspace__skeleton) {
+    padding: 14px;
+    border-bottom-color: var(--steel-line);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.sanctions-workspace__row, .sanctions-workspace__skeleton):last-child {
+    border-bottom: 0;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__row {
+    gap: 12px;
+    color: var(--steel-ink);
+    border-radius: 0;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__avatar {
+    background: var(--steel-inset);
+    color: var(--steel-muted);
+    box-shadow: 0 0 0 1px var(--steel-line);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__identity
+    > strong {
+    font-weight: 750;
+    letter-spacing: -0.02em;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__identity
+    > :is(span, small) {
+    color: var(--steel-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__identity
+    > span {
+    display: -webkit-box;
+    white-space: normal;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__details-trigger {
+    min-height: 48px;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--steel-inset);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__state {
+    --sanction-signal: var(--steel-amber);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__state--ban {
+    --sanction-signal: var(--steel-rose);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__state
+    > span {
+    padding: 0;
+    background: transparent;
+    color: var(--sanction-signal);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__timer {
+    max-width: 100%;
+    color: var(--steel-ink);
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.035em;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__row:not([data-status='active'])
+    .sanctions-workspace__state {
+    --sanction-signal: var(--steel-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__row:not([data-status='active'])
+    .sanctions-workspace__timer {
+    color: var(--steel-muted);
+    font-size: 14px;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__row[data-status='review']
+    .sanctions-workspace__timer {
+    color: var(--steel-amber);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__progress {
+    height: 3px;
+    background: var(--steel-line);
+    accent-color: var(--sanction-signal);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__progress::-webkit-progress-bar {
+    background: var(--steel-line);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__progress::-webkit-progress-value {
+    background: var(--sanction-signal);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__progress::-moz-progress-bar {
+    background: var(--sanction-signal);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.sanctions-workspace__arrow, .sanctions-workspace__user-filter) {
+    color: var(--steel-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__empty {
+    min-height: 212px;
+    padding: 24px 16px;
+    border: 1px solid var(--steel-line);
+    border-radius: 20px;
+    background: var(--steel-panel);
+    color: var(--steel-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__empty
+    strong {
+    color: var(--steel-ink);
+    font-weight: 750;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__empty-icon {
+    border: 1px solid var(--steel-line);
+    border-radius: 18px;
+    background: var(--steel-inset);
+    color: var(--steel-muted);
+    box-shadow: inset 0 1px 0 var(--steel-glint);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .sanctions-workspace__notice {
+    padding: 14px;
+    border: 1px solid var(--sanctions-notice-border);
+    border-radius: 14px;
+    background: var(--steel-panel);
+    color: var(--steel-ink);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(
+      .sanctions-workspace__more,
+      .sanctions-workspace__empty button,
+      .sanctions-workspace__notice button
+    ) {
+    min-height: 48px;
+    border: 1px solid var(--steel-line);
+    border-radius: 14px;
+    background: var(--steel-raised);
+    color: var(--steel-ink);
+    font-size: 14px;
+    font-weight: 700;
+  }
+  @media (hover: hover) {
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace]
+      .sanctions-workspace__row:hover {
+      background: var(--sanctions-row-hover);
+    }
+  }
+}

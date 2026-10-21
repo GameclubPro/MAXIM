@@ -3125,7 +3125,11 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
 
   if (!chatId) {
     return (
-      <div className="events-screen page-enter" data-managed-entity-workspace>
+      <div
+        className="events-screen page-enter"
+        data-managed-entity-workspace
+        data-statistics-section={section}
+      >
         <ManagedEntityWorkspaceHeader
           entityType="chat"
           screen="stats"
@@ -3213,7 +3217,11 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
       (participantsFeed.isReloading || participantsFeed.isLoadingMore));
 
   return (
-    <div className="events-screen page-enter" data-managed-entity-workspace>
+    <div
+      className="events-screen page-enter"
+      data-managed-entity-workspace
+      data-statistics-section={section}
+    >
       <ManagedEntityWorkspaceHeader
         entityType="chat"
         screen="stats"
@@ -3381,7 +3389,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
               {section === 'participants' ? (
                 <div className="events-dashboard__body events-dashboard__body--participants">
                   <article className="events-dashboard__hero events-dashboard__hero--accent">
-                    <small>Сейчас в чате</small>
+                    <small>Участников</small>
                     <strong className="events-dashboard__hero-value">
                       {participantsTotalPresentation.status === 'loading' ? (
                         <span
@@ -3406,9 +3414,13 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                 </div>
               ) : null}
               <div className="events-dashboard__head">
-                {section === 'participants' ? (
-                  <span className="events-dashboard__period-label">Нарушения</span>
-                ) : null}
+                <span className="events-dashboard__period-label">
+                  {section === 'participants'
+                    ? 'Нарушения'
+                    : section === 'activity'
+                      ? 'Движение участников'
+                      : 'Действия за период'}
+                </span>
                 <SegmentedControl
                   value={range}
                   options={periodOptions}
@@ -3488,6 +3500,19 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                   <article className="events-dashboard__hero events-dashboard__hero--accent">
                     <small>Действия</small>
                     <strong>{violationsSummary.total}</strong>
+                    <div className="events-dashboard__composition" aria-hidden="true">
+                      {filterOptions
+                        .slice(1)
+                        .map((item) =>
+                          item.count > 0 ? (
+                            <span
+                              key={item.value}
+                              data-action={item.value}
+                              style={{ flexGrow: item.count }}
+                            />
+                          ) : null,
+                        )}
+                    </div>
                   </article>
 
                   <div className="events-dashboard__stack">

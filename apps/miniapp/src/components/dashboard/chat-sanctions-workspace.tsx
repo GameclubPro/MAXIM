@@ -32,6 +32,7 @@ import { Spinner } from '../ui/spinner';
 import { Skeleton } from '../ui/skeleton';
 import { useToast } from '../ui/toast';
 import './chat-sanctions-workspace.css';
+import '../../pages/statistics-sanctions-steel.css';
 
 type Props = {
   api: ApiTransport;
