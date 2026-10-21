@@ -74,7 +74,7 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import type { ManagedGiveawayCardHandle } from '../components/managed-giveaway-card';
-import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
+import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor-entry';
 import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
