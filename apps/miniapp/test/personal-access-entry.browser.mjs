@@ -112,7 +112,7 @@ try {
           const settingsLink =
             profile === 'publisher'
               ? cards.first().locator('a').first()
-              : cards.first().locator('[data-action="settings"]');
+              : cards.first().locator('.chat-card__action--settings');
           await page.evaluate(() => {
             window.__holdSelectedCheck = true;
           });

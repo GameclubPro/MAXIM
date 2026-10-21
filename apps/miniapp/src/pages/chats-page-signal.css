@@ -23,20 +23,21 @@
     --steel-stat-end: #e7effe;
     --steel-stat-ink: var(--steel-blue);
     --steel-scrim: #20395857;
-    --steel-important-ink: #82652f;
-    --steel-important-soft: #f5efe3;
-    --steel-watch-ink: #8e545d;
-    --steel-watch-soft: #f6edef;
-    --steel-broadcast-ink: #8b5e3e;
-    --steel-broadcast-soft: #f6eee8;
-    --steel-test-ink: #526d91;
-    --steel-test-soft: #eaf0f7;
-    --steel-partner-ink: #3e6d64;
-    --steel-partner-soft: #eaf2ef;
-    --steel-service-ink: #656c79;
-    --steel-service-soft: #eceff3;
+    --steel-important-ink: #8a6200;
+    --steel-important-soft: #fff9e8;
+    --steel-watch-ink: #b32a55;
+    --steel-watch-soft: #fff4f7;
+    --steel-broadcast-ink: #a24412;
+    --steel-broadcast-soft: #fff6ef;
+    --steel-test-ink: #7040bd;
+    --steel-test-soft: #f8f4ff;
+    --steel-partner-ink: #08715a;
+    --steel-partner-soft: #f0fbf7;
+    --steel-service-ink: #096b87;
+    --steel-service-soft: #f0faff;
     --steel-symbol-ink: var(--steel-muted);
     --steel-symbol-soft: var(--steel-blue-soft);
+    --steel-symbol-bloom: 0%;
     --steel-blue-lift: color-mix(in srgb, var(--steel-blue) 88%, white);
     --steel-button-glint: #ffffff60;
     --steel-button-shadow: color-mix(in srgb, var(--steel-blue) 20%, transparent);
@@ -75,18 +76,19 @@
     --steel-stat-end: #172941;
     --steel-stat-ink: #6ea6ff;
     --steel-scrim: #020611a8;
-    --steel-important-ink: #d7be87;
-    --steel-important-soft: #342d22;
-    --steel-watch-ink: #d4a5ac;
-    --steel-watch-soft: #35272e;
-    --steel-broadcast-ink: #dbb395;
-    --steel-broadcast-soft: #352c28;
-    --steel-test-ink: #aabedb;
-    --steel-test-soft: #243143;
-    --steel-partner-ink: #9bc6bb;
-    --steel-partner-soft: #223632;
-    --steel-service-ink: #bec6d3;
-    --steel-service-soft: #2c323d;
+    --steel-important-ink: #ffd84a;
+    --steel-important-soft: #302a16;
+    --steel-watch-ink: #ff6d97;
+    --steel-watch-soft: #321b2c;
+    --steel-broadcast-ink: #ff9658;
+    --steel-broadcast-soft: #332416;
+    --steel-test-ink: #b48aff;
+    --steel-test-soft: #281f3c;
+    --steel-partner-ink: #41e8bb;
+    --steel-partner-soft: #14332e;
+    --steel-service-ink: #65dcff;
+    --steel-service-soft: #17313e;
+    --steel-symbol-bloom: 32%;
   }
 
   body[data-miniapp-profile='moderation'].chats-home-page-open .app-shell {
@@ -1138,6 +1140,36 @@
     border-radius: 14px;
     background: var(--steel-raised);
     color: var(--steel-ink);
+  }
+
+  body[data-miniapp-profile='moderation'].chats-home-page-open
+    :is(
+      .chat-card,
+      .favorite-picker__option,
+      .home-category-chip,
+      .favorite-label-editor__icon,
+      .favorite-filter__trigger
+    ) {
+    --steel-symbol-glow: color-mix(
+      in srgb,
+      var(--steel-symbol-ink) var(--steel-symbol-bloom),
+      transparent
+    );
+  }
+
+  body[data-miniapp-profile='moderation'].chats-home-page-open
+    .chat-card__action--favorite.is-active
+    .chat-card__favorite-symbol,
+  body[data-miniapp-profile='moderation'].chats-home-page-open
+    .favorite-picker__option:not(.favorite-picker__remove)
+    .favorite-picker__icon
+    svg,
+  body[data-miniapp-profile='moderation'].chats-home-page-open .home-category-chip svg,
+  body[data-miniapp-profile='moderation'].chats-home-page-open .favorite-label-editor__icon svg,
+  body[data-miniapp-profile='moderation'].chats-home-page-open
+    .favorite-filter__trigger.is-active
+    svg {
+    filter: drop-shadow(0 0 3px var(--steel-symbol-glow));
   }
 
   body[data-miniapp-profile='moderation'].chats-home-page-open

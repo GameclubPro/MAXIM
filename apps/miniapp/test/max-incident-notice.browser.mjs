@@ -299,7 +299,7 @@ try {
       false,
     );
     assert.equal(await page.evaluate((key) => localStorage.getItem(key), acknowledgementKey), null);
-    await page.locator('.chat-card[data-entity-id] [data-action="settings"]').first().click();
+    await page.locator('.chat-card[data-entity-id] .chat-card__primary-link').first().click();
     await page.waitForURL(/\/chat\/[^/]+\/settings/u);
     await page.locator('.settings-sections--chat-home').waitFor();
     await page.waitForTimeout(500);
