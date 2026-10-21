@@ -6,7 +6,10 @@ import {
   stopChildProcess,
 } from '../../../scripts/miniapp-local-server.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
-import { installNativeVisualModeInitScript } from '../../../scripts/miniapp-native-visual-mode.mjs';
+import {
+  applyNativeVisualMode,
+  installNativeVisualModeInitScript,
+} from '../../../scripts/miniapp-native-visual-mode.mjs';
 
 const base = await allocateMiniappBaseUrl('http://127.0.0.1:3015/app/');
 const server = await ensureMiniappDevServer(base);
@@ -35,6 +38,11 @@ try {
     await page.goto(new URL('?preview=1&view=chat', base).href);
     await page.locator('.chat-card[data-entity-id]').first().waitFor();
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 400)));
+    const nativeVisual = await applyNativeVisualMode(page, {
+      safeTop: 0,
+      safeBottom: platform === 'android' ? 24 : 0,
+    });
+    assert.equal(nativeVisual.previewScaffoldDetached, true);
     await page.evaluate(async () => {
       const url = (name) =>
         performance

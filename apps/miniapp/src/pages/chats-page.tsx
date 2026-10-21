@@ -23,6 +23,7 @@ import {
   PlusCircleGlyph,
   RefreshGlyph,
   SearchGlyph,
+  SettingsGlyph,
   StarGlyph,
   StatisticsGlyph,
   XmarkGlyph,
@@ -34,7 +35,6 @@ import { useToast } from '../components/ui/toast';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
-import { resolveModerationBotBrand } from '../lib/bot-brand';
 import {
   HOME_ENTITY_FAVORITE_TYPES,
   type HomeEntityFavoriteLabelOverrides,
@@ -124,7 +124,7 @@ const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
-const CHAT_LIST_ROW_HEIGHT = 72;
+const CHAT_LIST_ROW_HEIGHT = 132;
 const CHAT_LIST_VIRTUAL_ROW_PITCH = CHAT_LIST_ROW_HEIGHT + 8;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
@@ -291,8 +291,7 @@ function readHomeSnapshotFromRouteState(
   return workspace?.entityType === entityType ? (workspace.homeSnapshot ?? null) : null;
 }
 
-export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string | null }) {
-  const botBrand = resolveModerationBotBrand(botUrl);
+export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const location = useLocation();
@@ -1556,10 +1555,6 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
   const favoriteFilterButtonLabel = activeFavoriteFilterLabel
     ? `Фильтр: ${activeFavoriteFilterLabel}`
     : 'Фильтр категорий';
-  const ActiveFavoriteFilterIcon =
-    favoriteFilter === FAVORITE_FILTER_ALL
-      ? FilterGlyph
-      : HOME_ENTITY_FAVORITE_ICONS[favoriteFilter];
   const homeResultStatus = queryError
     ? ''
     : isLoading
@@ -1735,44 +1730,67 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
                 setFavoritePicker({ entityType: activeTab, entity });
               }}
             >
-              <span
-                className={cn(
-                  'chat-card__favorite-mark',
-                  primaryFavoriteType && primaryFavoriteType !== 'important' && 'has-category',
+              <span className="chat-card__favorite-mark" aria-hidden>
+                {primaryFavoriteType ? (
+                  <CategoryIcon className="chat-card__favorite-symbol" focusable="false" />
+                ) : (
+                  <StarGlyph className="chat-card__favorite-symbol" focusable="false" />
                 )}
-                aria-hidden
-              >
-                <StarGlyph className="chat-card__favorite-star" focusable="false" />
-                {primaryFavoriteType && primaryFavoriteType !== 'important' ? (
-                  <CategoryIcon className="chat-card__favorite-category-icon" focusable="false" />
-                ) : null}
               </span>
             </button>
-            <Link
-              to={statisticsRoute}
-              className="chat-card__action chat-card__action--statistics"
-              state={routeState}
-              aria-label={`Открыть статистику: ${title}`}
-              title="Статистика"
-              data-action="statistics"
-              onClick={(event) => {
-                rememberEntity(activeTab, entity);
-                prefetchEntityActivity(activeTab, entity.id, statsPreference);
-                handleEntityNavigation(event, entity, index, 'statistics', statisticsRoute);
-              }}
-              onPointerEnter={(event) => {
-                if (shouldPrefetchFromPointerEvent(event)) {
+            <div className="chat-card__row-actions">
+              <Link
+                to={settingsRoute}
+                className="chat-card__action chat-card__action--settings"
+                state={routeState}
+                data-action="settings"
+                aria-label={`Открыть настройки: ${title}`}
+                onClick={(event) => {
+                  rememberEntity(activeTab, entity);
+                  prefetchEntitySettings(activeTab, entity.id);
+                  handleEntityNavigation(event, entity, index, 'settings', settingsRoute);
+                }}
+                onPointerEnter={(event) => {
+                  if (shouldPrefetchFromPointerEvent(event)) {
+                    prefetchEntitySettings(activeTab, entity.id);
+                  }
+                }}
+                onPointerDown={(event) => {
+                  if (shouldPrefetchFromPressEvent(event)) {
+                    prefetchEntitySettings(activeTab, entity.id);
+                  }
+                }}
+              >
+                <SettingsGlyph aria-hidden focusable="false" />
+                <span>Настройки</span>
+              </Link>
+              <Link
+                to={statisticsRoute}
+                className="chat-card__action chat-card__action--statistics"
+                state={routeState}
+                aria-label={`Открыть статистику: ${title}`}
+                title="Статистика"
+                data-action="statistics"
+                onClick={(event) => {
+                  rememberEntity(activeTab, entity);
                   prefetchEntityActivity(activeTab, entity.id, statsPreference);
-                }
-              }}
-              onPointerDown={(event) => {
-                if (shouldPrefetchFromPressEvent(event)) {
-                  prefetchEntityActivity(activeTab, entity.id, statsPreference);
-                }
-              }}
-            >
-              <StatisticsGlyph aria-hidden focusable="false" />
-            </Link>
+                  handleEntityNavigation(event, entity, index, 'statistics', statisticsRoute);
+                }}
+                onPointerEnter={(event) => {
+                  if (shouldPrefetchFromPointerEvent(event)) {
+                    prefetchEntityActivity(activeTab, entity.id, statsPreference);
+                  }
+                }}
+                onPointerDown={(event) => {
+                  if (shouldPrefetchFromPressEvent(event)) {
+                    prefetchEntityActivity(activeTab, entity.id, statsPreference);
+                  }
+                }}
+              >
+                <StatisticsGlyph aria-hidden focusable="false" />
+                <span>Статистика</span>
+              </Link>
+            </div>
           </>
         ) : null}
       </GlassCard>
@@ -1868,16 +1886,35 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
         elevated
       >
         <div className="chats-command__identity">
-          <EntityAvatar
-            className="chats-command__avatar"
-            title={botBrand.name}
-            avatarUrl={botBrand.avatarUrl}
-            entityType="chat"
-          />
+          <span className="chats-command__mark" aria-hidden />
           <div className="chats-command__brand">
-            <h1>{botBrand.name}</h1>
-            <span>{tabLabel}</span>
+            <h1>{tabLabel}</h1>
+            {!isLoading && activeEntities ? (
+              <span className="chats-command__count">{activeEntities.length}</span>
+            ) : null}
           </div>
+          {!categoryEditMode ? (
+            <button
+              type="button"
+              className={cn(
+                'chats-command__icon-button',
+                'chats-command__refresh',
+                `is-${homeSyncStatus.tone}`,
+              )}
+              onClick={() => handleRefresh(activeTab, 'manual')}
+              disabled={isFetching || isManualRefreshInProgressByState}
+              aria-label={refreshButtonLabel}
+              title={refreshButtonLabel}
+            >
+              {homeSyncStatus.tone === 'syncing' ? (
+                <span className="chats-command__sync-ring" aria-hidden />
+              ) : homeSyncStatus.tone === 'error' ? (
+                <XmarkGlyph aria-hidden />
+              ) : (
+                <RefreshGlyph aria-hidden />
+              )}
+            </button>
+          ) : null}
           {!categoryEditMode ? (
             <button
               type="button"
@@ -1984,44 +2021,39 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
               >
                 <FilterGlyph aria-hidden focusable="false" />
               </button>
-              <button
-                type="button"
-                className={cn(
-                  'chats-command__icon-button',
-                  'chats-command__refresh',
-                  `is-${homeSyncStatus.tone}`,
-                )}
-                onClick={() => handleRefresh(activeTab, 'manual')}
-                disabled={isFetching || isManualRefreshInProgressByState}
-                aria-label={refreshButtonLabel}
-                title={refreshButtonLabel}
-              >
-                {homeSyncStatus.tone === 'syncing' ? (
-                  <span className="chats-command__sync-ring" aria-hidden />
-                ) : homeSyncStatus.tone === 'error' ? (
-                  <XmarkGlyph aria-hidden />
-                ) : (
-                  <RefreshGlyph aria-hidden />
-                )}
-              </button>
             </div>
           )}
         </div>
+        {!categoryEditMode ? (
+          <div className="home-category-chips" role="group" aria-label="Категории">
+            <button
+              type="button"
+              className="home-category-chip"
+              aria-pressed={favoriteFilter === FAVORITE_FILTER_ALL}
+              onClick={() => setFavoriteFilter(FAVORITE_FILTER_ALL)}
+            >
+              Все
+            </button>
+            {HOME_ENTITY_FAVORITE_TYPES.filter(
+              (type) => favoriteCounts[type] > 0 || favoriteFilter === type,
+            ).map((type) => {
+              const Icon = HOME_ENTITY_FAVORITE_ICONS[type];
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  className={cn('home-category-chip', `is-${type}`)}
+                  aria-pressed={favoriteFilter === type}
+                  onClick={() => setFavoriteFilter(type)}
+                >
+                  <Icon aria-hidden focusable="false" />
+                  <span>{favoriteLabels[type]}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </GlassCard>
-
-      {activeFavoriteFilterLabel && !categoryEditMode ? (
-        <button
-          type="button"
-          className={cn('home-active-filter', `is-${favoriteFilter}`)}
-          onClick={() => setFavoriteFilter(FAVORITE_FILTER_ALL)}
-          aria-label={`Сбросить фильтр: ${activeFavoriteFilterLabel}`}
-          title={`Сбросить фильтр: ${activeFavoriteFilterLabel}`}
-        >
-          <ActiveFavoriteFilterIcon aria-hidden focusable="false" />
-          <span>{activeFavoriteFilterLabel}</span>
-          <XmarkGlyph aria-hidden focusable="false" />
-        </button>
-      ) : null}
 
       {showTransientEmptyState ? (
         <div className="chats-route-state chats-transient-state">
@@ -2052,7 +2084,10 @@ export function ChatsPage({ api, botUrl }: { api: ApiTransport; botUrl: string |
                 <Skeleton className="chat-card__skeleton-chevron" />
               </div>
               <Skeleton className="chat-card__skeleton-action chat-card__skeleton-action--favorite" />
-              <Skeleton className="chat-card__skeleton-action chat-card__skeleton-action--statistics" />
+              <div className="chat-card__row-actions" aria-hidden>
+                <Skeleton className="chat-card__skeleton-action" />
+                <Skeleton className="chat-card__skeleton-action" />
+              </div>
             </GlassCard>
           ))}
         </section>

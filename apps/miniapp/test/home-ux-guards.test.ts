@@ -19,6 +19,10 @@ const chatsPageNativeCss = readFileSync(
   new URL('../src/pages/chats-page-native.css', import.meta.url),
   'utf8',
 );
+const chatsPageSignalCss = readFileSync(
+  new URL('../src/pages/chats-page-signal.css', import.meta.url),
+  'utf8',
+);
 const shellSource = readFileSync(new URL('../src/components/shell.tsx', import.meta.url), 'utf8');
 const sheetsSource = readFileSync(
   new URL('../src/pages/home-entity-sheets.tsx', import.meta.url),
@@ -36,15 +40,20 @@ const onboardingSource = readFileSync(
 test('entity cards expose settings, favorite, statistics and category edit targets', () => {
   assert.match(chatsPageSource, /className="chat-card__primary-link"/u);
   assert.match(chatsPageSource, /'chat-card__action--favorite'/u);
+  assert.match(chatsPageSource, /className="chat-card__row-actions"/u);
+  assert.match(chatsPageSource, /chat-card__action chat-card__action--settings/u);
   assert.match(chatsPageSource, /chat-card__action chat-card__action--statistics/u);
-  assert.doesNotMatch(chatsPageSource, /chat-card__action--settings|chat-card__title-link/u);
-  assert.match(chatsPageSource, /chat-card__category-editor/u);
-  assert.doesNotMatch(chatsPageSource, /chat-card__category-marker/u);
   assert.match(
     chatsPageSource,
-    /aria-label=\{`Открыть настройки: \$\{title\}\$\{[\s\S]*?primaryFavoriteType \? `\. Категория: \$\{categoryLabel\}` : ''[\s\S]*?\}`\}/u,
+    /chat-card__action--settings[\s\S]*?data-action="settings"[\s\S]*?Настройки[\s\S]*?<\/Link>/u,
   );
-  assert.match(chatsPageSource, /<BackChevronIcon \/>/u);
+  assert.match(
+    chatsPageSource,
+    /chat-card__action--statistics[\s\S]*?data-action="statistics"[\s\S]*?Статистика[\s\S]*?<\/Link>/u,
+  );
+  assert.match(chatsPageSource, /chat-card__category-editor/u);
+  assert.doesNotMatch(chatsPageSource, /chat-card__category-marker/u);
+  assert.match(chatsPageSource, /aria-label=\{`Открыть настройки: \$\{title\}/u);
   assert.match(chatsPageSource, /to=\{settingsRoute\}/u);
   assert.match(chatsPageSource, /to=\{statisticsRoute\}/u);
   assert.match(
@@ -62,10 +71,14 @@ test('entity cards expose settings, favorite, statistics and category edit targe
     chatsPageSource,
     /`Добавить в избранное: \$\{title\}`[\s\S]*?aria-controls="home-sheet-favorite"/u,
   );
-  assert.match(chatsPageSource, /className="chat-card__favorite-star"/u);
+  assert.match(chatsPageSource, /className="chat-card__favorite-symbol"/u);
   assert.match(
     chatsPageSource,
-    /'chat-card__action--favorite'[\s\S]*?className=\{cn\([\s\S]*?'chat-card__favorite-mark'[\s\S]*?<StarGlyph[\s\S]*?<\/button>/u,
+    /'chat-card__action--favorite'[\s\S]*?chat-card__favorite-mark[\s\S]*?primaryFavoriteType\s*\?[\s\S]*?<CategoryIcon[\s\S]*?:[\s\S]*?<StarGlyph[\s\S]*?<\/button>/u,
+  );
+  assert.doesNotMatch(
+    chatsPageSource,
+    /chat-card__favorite-star|chat-card__favorite-category-icon/u,
   );
   assert.match(chatsPageSource, /import\('\.\/home-entity-sheets'\)/u);
   assert.doesNotMatch(chatsPageSource, /from '\.\.\/lib\/dialog-focus'/u);
@@ -106,87 +119,31 @@ test('home sheets are named, focus-trapped and leave the shell controls inert', 
   assert.match(chatsPageSource, /event\.key !== 'Escape'/u);
 });
 
-test('compact home controls keep direct 44px actions and one filter control', () => {
+test('home controls keep explicit actions, category filters and readable rows', () => {
   assert.match(chatsPageSource, /const searchPlaceholder = 'Поиск';/u);
-  assert.match(chatsPageCss, /\.chats-command__icon-button \{[\s\S]*?min-width: 44px/u);
-  assert.match(chatsPageNativeCss, /\.favorite-filter__trigger \{[\s\S]*?min-width: 44px/u);
-  assert.match(chatsPageNativeCss, /\.chat-card\.glass-card \{[\s\S]*?height: 72px/u);
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card\.glass-card \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) 50px 52px;/u,
-  );
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card__primary-link \{[\s\S]*?position: relative;[\s\S]*?grid-column: 1;[\s\S]*?min-height: 72px/u,
-  );
-  assert.match(chatsPageNativeCss, /\.chat-card__category-editor \{[\s\S]*?grid-column: 1 \/ -1;/u);
-  assert.match(chatsPageNativeCss, /\.chat-card__action \{[\s\S]*?min-width: 44px/u);
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card__action--favorite\.is-active \{[\s\S]*?var\(--chat-card-favorite-accent\)/u,
-  );
-  assert.match(
-    chatsPageNativeCss,
-    /html\[data-max-theme='dark'\] \.chat-card\.is-important \.chat-card__action--favorite\.is-active \{\s*color: var\(--warning\);/u,
-  );
-  assert.match(
-    chatsPageNativeCss,
-    /\.chats-command__tools \{[\s\S]*?grid-template-columns: minmax\(112px, 1fr\) auto/u,
-  );
-  assert.match(
-    chatsPageNativeCss,
-    /\.chats-command__actions \{[\s\S]*?grid-template-columns: repeat\(3, 44px\);[\s\S]*?gap: 6px;/u,
-  );
-  assert.match(
-    chatsPageNativeCss,
-    /\.chats-command__field:not\(\.has-query\) input \{\s*padding-right: 14px;/u,
-  );
-  assert.match(
-    chatsPageSource,
-    /hasSearchQuery && 'has-query'[\s\S]*?className="chats-command__actions" role="group" aria-label="Действия со списком"/u,
-  );
-  assert.match(chatsPageNativeCss, /\.chat-card__action--statistics \{\s*margin-right: 8px;/u);
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card__action--favorite\.is-active \.chat-card__favorite-star \{\s*fill: currentColor;/u,
-  );
-  assert.match(
-    chatsPageSource,
-    /primaryFavoriteType !== 'important'[\s\S]*?'has-category'[\s\S]*?className="chat-card__favorite-category-icon"/u,
-  );
-  assert.match(chatsPageNativeCss, /\.chat-card__action--favorite \{[\s\S]*?overflow: hidden;/u);
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card__favorite-mark\.has-category \{[\s\S]*?width: 34px;[\s\S]*?gap: 2px;/u,
-  );
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card__favorite-category-icon \{[\s\S]*?width: 13px;[\s\S]*?height: 13px;[\s\S]*?flex: 0 0 13px;/u,
-  );
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card__action > svg \{[\s\S]*?width: 20px;[\s\S]*?height: 20px;/u,
-  );
-  assert.doesNotMatch(chatsPageNativeCss, /\.chat-card__action svg \{/u);
-  assert.doesNotMatch(chatsPageNativeCss, /chat-card__favorite-category\s*\{/u);
-  assert.match(
-    chatsPageNativeCss,
-    /\.chat-card__category-value span \{[\s\S]*?text-overflow: ellipsis/u,
-  );
+  assert.match(chatsPageSource, /<h1>\{tabLabel\}<\/h1>/u);
+  assert.doesNotMatch(chatsPageSource, /chats-command__avatar|home-active-filter/u);
+  assert.match(chatsPageSource, /hasSearchQuery && 'has-query'/u);
   assert.match(
     chatsPageSource,
     /className=\{cn\([\s\S]*?'favorite-filter__trigger'[\s\S]*?aria-controls="home-sheet-filter"/u,
   );
+  assert.match(chatsPageSource, /setFavoriteFilter\(FAVORITE_FILTER_ALL\)/u);
+  assert.match(chatsPageSource, /HOME_ENTITY_FAVORITE_TYPES\.filter\(/u);
+  assert.match(chatsPageSource, /favoriteCounts\[\w+\]/u);
+  assert.match(chatsPageSource, /favoriteLabels\[\w+\]/u);
   assert.match(
     chatsPageSource,
-    /const ActiveFavoriteFilterIcon =[\s\S]*?HOME_ENTITY_FAVORITE_ICONS\[favoriteFilter\]/u,
+    /'chats-command__refresh'[\s\S]*?aria-label=\{refreshButtonLabel\}/u,
   );
-  assert.match(
-    chatsPageSource,
-    /className=\{cn\([\s\S]*?'favorite-filter__trigger'[\s\S]*?<FilterGlyph aria-hidden focusable="false" \/>/u,
-  );
-  assert.doesNotMatch(chatsPageSource, /data-allow-horizontal-overflow|favorite-filter-bar/u);
-  assert.match(chatsPageSource, /className=\{cn\('home-active-filter'/u);
+  assert.match(chatsPageSignalCss, /\.chat-card__row-actions/u);
+  assert.match(chatsPageSignalCss, /overflow-wrap:\s*anywhere/u);
+  assert.match(chatsPageSignalCss, /min-height:\s*44px/u);
+  assert.match(chatsPageCss, /\.chats-command__icon-button \{[\s\S]*?min-width: 44px/u);
+  assert.match(chatsPageNativeCss, /\.favorite-filter__trigger \{[\s\S]*?min-width: 44px/u);
+});
+
+test('home sheets preserve accessible categories and authenticated label persistence', () => {
   assert.match(sheetsSource, /sheetKey="filter"[\s\S]*?home-filter__grid/u);
   assert.match(sheetsSource, /Распределить по категориям/u);
   assert.match(sheetsSource, /'Повторить загрузку названий'[\s\S]*?'Настроить названия'/u);
@@ -308,7 +265,7 @@ test('home list keeps grouped rows at wide breakpoints', () => {
     chatsPageNativeCss,
     /\.chats-home \.chat-grid \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/u,
   );
-  assert.match(chatsPageSource, /const CHAT_LIST_ROW_HEIGHT = 72;/u);
+  assert.match(chatsPageSource, /const CHAT_LIST_ROW_HEIGHT = 132;/u);
   assert.match(chatsPageSource, /const CHAT_LIST_VIRTUAL_ROW_PITCH = CHAT_LIST_ROW_HEIGHT \+ 8;/u);
   assert.doesNotMatch(chatsPageSource, /chat-card__moderator|HomeModeratorBadge|moderatorTarget/u);
   assert.doesNotMatch(chatsPageSource, /import ['"]\.\/home-moderator\.css['"]/u);
@@ -317,7 +274,19 @@ test('home list keeps grouped rows at wide breakpoints', () => {
     /top: index \* CHAT_LIST_VIRTUAL_ROW_PITCH,[\s\S]*?height: CHAT_LIST_ROW_HEIGHT/u,
   );
   assert.match(chatsPageSource, /height: filteredEntities\.length \* CHAT_LIST_VIRTUAL_ROW_PITCH/u);
-  assert.match(chatsPageNativeCss, /\.chat-grid--virtual \.chat-card \{[\s\S]*?height: 72px;/u);
+  // Virtual rows receive the shared height inline; CSS must not override that geometry.
+  assert.doesNotMatch(
+    chatsPageSignalCss,
+    /\.chat-card(?:\.glass-card)?(?=\s|,|:|\{)[^{}]*\{[^{}]*\bheight:\s*[^;}]+!important/u,
+  );
+  assert.match(
+    chatsPageSignalCss,
+    /\.chat-grid:not\(\.chat-grid--virtual\)[^{}]*h3\s*\{[^{}]*-webkit-line-clamp:\s*unset;/u,
+  );
+  assert.match(
+    chatsPageSignalCss,
+    /\.chat-grid--virtual[^{}]*h3\s*\{[^{}]*-webkit-line-clamp:\s*2;/u,
+  );
 });
 
 test('category assignment is explicit, exclusive and stable while editing', () => {

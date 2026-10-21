@@ -4372,53 +4372,121 @@ async function assertFavoriteCategoryIndicatorsContained(page, scenario) {
       inner.top >= outer.top - tolerance &&
       inner.right <= outer.right + tolerance &&
       inner.bottom <= outer.bottom + tolerance;
+    const overlaps = (first, second) =>
+      Math.min(first.right, second.right) - Math.max(first.left, second.left) > tolerance &&
+      Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top) > tolerance;
+    const size = (rect) => `${rect.width.toFixed(1)}x${rect.height.toFixed(1)}`;
 
-    return Array.from(document.querySelectorAll('.chat-card__favorite-mark.has-category')).flatMap(
-      (badge, index) => {
-        if (!(badge instanceof HTMLElement)) {
-          return [];
+    return Array.from(document.querySelectorAll('.chat-card__action--favorite')).flatMap(
+      (action, index) => {
+        if (!(action instanceof HTMLElement)) {
+          return [{ index, reason: 'favorite action is missing' }];
         }
 
-        const action = badge.closest('.chat-card__action--favorite');
-        const star = badge.querySelector(':scope > .chat-card__favorite-star');
-        const category = badge.querySelector(':scope > .chat-card__favorite-category-icon');
-        const statistics = action?.nextElementSibling;
+        const card = action.closest('.chat-card');
+        const marks = action.querySelectorAll('.chat-card__favorite-mark');
+        const symbols = action.querySelectorAll('svg');
+        const mark = marks[0];
+        const symbol = symbols[0];
         if (
-          !(action instanceof HTMLElement) ||
-          !(star instanceof SVGElement) ||
-          !(category instanceof SVGElement)
+          !(card instanceof HTMLElement) ||
+          marks.length !== 1 ||
+          !(mark instanceof HTMLElement) ||
+          symbols.length !== 1 ||
+          !(symbol instanceof SVGElement) ||
+          !symbol.classList.contains('chat-card__favorite-symbol') ||
+          !mark.contains(symbol)
         ) {
-          return [{ index, reason: 'missing action or compound mark icon' }];
+          return [
+            { index, reason: 'favorite must contain exactly one visible symbol in its mark' },
+          ];
         }
 
+        const identity = card.querySelector('.chat-card__primary-link');
+        const row = card.querySelector('.chat-card__row-actions');
+        const settings = row?.querySelector('.chat-card__action--settings');
+        const statistics = row?.querySelector('.chat-card__action--statistics');
+        if (
+          !(identity instanceof HTMLAnchorElement) ||
+          !(row instanceof HTMLElement) ||
+          !(settings instanceof HTMLAnchorElement) ||
+          !(statistics instanceof HTMLAnchorElement) ||
+          identity.contains(row) ||
+          identity.contains(action) ||
+          settings.contains(statistics) ||
+          statistics.contains(settings) ||
+          identity.dataset.action !== 'settings' ||
+          settings.dataset.action !== 'settings' ||
+          statistics.dataset.action !== 'statistics' ||
+          !settings.textContent?.includes('Настройки') ||
+          !statistics.textContent?.includes('Статистика')
+        ) {
+          return [
+            { index, reason: 'card needs separate identity, favorite and labeled action links' },
+          ];
+        }
+
+        const cardRect = card.getBoundingClientRect();
         const actionRect = action.getBoundingClientRect();
-        const badgeRect = badge.getBoundingClientRect();
-        const starRect = star.getBoundingClientRect();
-        const categoryRect = category.getBoundingClientRect();
-        const statisticsRect =
-          statistics instanceof HTMLElement ? statistics.getBoundingClientRect() : null;
-        const iconGap = categoryRect.left - starRect.right;
-        const actionGap = statisticsRect ? statisticsRect.left - actionRect.right : null;
+        const markRect = mark.getBoundingClientRect();
+        const symbolRect = symbol.getBoundingClientRect();
+        const identityRect = identity.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        const settingsRect = settings.getBoundingClientRect();
+        const statisticsRect = statistics.getBoundingClientRect();
+        const symbolStyle = getComputedStyle(symbol);
+        const touchTargets = [identityRect, actionRect, settingsRect, statisticsRect];
+        const favoriteGap = actionRect.left - identityRect.right;
+        const rowGap = rowRect.top - Math.max(identityRect.bottom, actionRect.bottom);
+        const failures = [];
         if (
-          isContained(badgeRect, actionRect) &&
-          isContained(starRect, badgeRect) &&
-          isContained(categoryRect, badgeRect) &&
-          iconGap >= 1.5 &&
-          (actionGap === null || actionGap >= 5.5)
+          touchTargets.some((rect) => rect.width < 44 - tolerance || rect.height < 44 - tolerance)
         ) {
+          failures.push('touch target is smaller than 44px');
+        }
+        if (
+          symbolRect.width <= 0 ||
+          symbolRect.height <= 0 ||
+          symbolStyle.visibility === 'hidden' ||
+          Number.parseFloat(symbolStyle.opacity) === 0 ||
+          !isContained(markRect, actionRect) ||
+          !isContained(symbolRect, markRect) ||
+          ![...touchTargets, rowRect].every((rect) => isContained(rect, cardRect))
+        ) {
+          failures.push('symbol or control is clipped outside its container');
+        }
+        if (
+          favoriteGap < 5.5 ||
+          rowGap < -tolerance ||
+          overlaps(settingsRect, statisticsRect) ||
+          overlaps(actionRect, rowRect)
+        ) {
+          failures.push('favorite overlaps the identity or actions are not separated below it');
+        }
+        if (
+          identity.scrollWidth > identity.clientWidth + 1 ||
+          row.scrollWidth > row.clientWidth + 1
+        ) {
+          failures.push('identity or action row overflows horizontally');
+        }
+        if (failures.length === 0) {
           return [];
         }
-
         return [
           {
             index,
-            reason: 'compound mark is clipped, overlapping or too close to statistics',
-            action: `${actionRect.width.toFixed(1)}x${actionRect.height.toFixed(1)}`,
-            mark: `${badgeRect.width.toFixed(1)}x${badgeRect.height.toFixed(1)}`,
-            star: `${starRect.width.toFixed(1)}x${starRect.height.toFixed(1)}`,
-            category: `${categoryRect.width.toFixed(1)}x${categoryRect.height.toFixed(1)}`,
-            iconGap: iconGap.toFixed(1),
-            actionGap: actionGap?.toFixed(1) ?? 'n/a',
+            reason: failures.join('; '),
+            sizes: {
+              card: size(cardRect),
+              identity: size(identityRect),
+              favorite: size(actionRect),
+              mark: size(markRect),
+              symbol: size(symbolRect),
+              settings: size(settingsRect),
+              statistics: size(statisticsRect),
+            },
+            favoriteGap: favoriteGap.toFixed(1),
+            rowGap: rowGap.toFixed(1),
           },
         ];
       },
@@ -4428,11 +4496,10 @@ async function assertFavoriteCategoryIndicatorsContained(page, scenario) {
   if (issues.length > 0) {
     const first = issues[0];
     throw new Error(
-      `Scenario ${scenario.name} has an invalid favorite category indicator at index ${first.index}: ` +
+      `Scenario ${scenario.name} has an invalid home card at index ${first.index}: ` +
         `${first.reason}` +
-        (first.action
-          ? ` (action=${first.action}, mark=${first.mark}, star=${first.star}, category=${first.category}, ` +
-            `iconGap=${first.iconGap}, actionGap=${first.actionGap})`
+        (first.sizes
+          ? ` (${JSON.stringify(first.sizes)}, favoriteGap=${first.favoriteGap}, rowGap=${first.rowGap})`
           : ''),
     );
   }
