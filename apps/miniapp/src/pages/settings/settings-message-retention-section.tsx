@@ -69,6 +69,7 @@ export function SettingsMessageRetentionSection({
       <div className="settings-section__head settings-section__head--interactive">
         <SettingsSectionToggle
           title="Удаление старых сообщений"
+          enabled={state?.enabled}
           summary={state?.enabled ? `Старше ${state.hours} ч` : ''}
           status={state ? messageRetentionStatusLabels[state.status] : undefined}
           icon={<Clock />}

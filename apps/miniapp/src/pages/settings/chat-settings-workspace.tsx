@@ -16,6 +16,7 @@ import {
 import { useLocation } from 'react-router';
 import { ManagedEntityWorkspaceHeader } from '../../components/ui/managed-entity-workspace-header';
 import '../../components/ui/managed-entity-settings-header.css';
+import '../../styles/settings-steel.css';
 import { useToast } from '../../components/ui/toast';
 import { updateSettings } from '../../lib/api/chat-settings-client';
 import type { ApiTransport } from '../../lib/api/transport';

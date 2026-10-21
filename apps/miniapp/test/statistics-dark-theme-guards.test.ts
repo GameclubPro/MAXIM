@@ -14,6 +14,10 @@ const statisticsExperienceCss = readFileSync(
   new URL('../src/styles/statistics-experience.css', import.meta.url),
   'utf8',
 );
+const channelStatsExperienceCss = readFileSync(
+  new URL('../src/styles/channel-stats-experience.css', import.meta.url),
+  'utf8',
+);
 const channelStatsPageSource = readFileSync(
   new URL('../src/pages/channel-stats-page.tsx', import.meta.url),
   'utf8',
@@ -78,7 +82,7 @@ test('channel event dark overrides keep their semantic final-layer import order'
     "import '../styles/channel-stats-executive.css'",
   );
   const experienceImport = channelStatsPageSource.indexOf(
-    "import '../styles/statistics-experience.css'",
+    "import '../styles/channel-stats-experience.css'",
   );
 
   assert.ok(baseImport >= 0);
@@ -125,7 +129,7 @@ test('channel event dark overrides keep their semantic final-layer import order'
   assert.match(darkOverrides, /color: var\(--danger\);/u);
   assert.doesNotMatch(darkOverrides, /rgba\(|#[\da-f]{3,8}\b/iu);
   assert.match(
-    statisticsExperienceCss,
+    channelStatsExperienceCss,
     /html\[data-max-theme='dark'\][\s\S]*?\.channel-insights__section-tabs[\s\S]*?background: var\(--accent\);[\s\S]*?color: var\(--color-surface\);/u,
   );
 });

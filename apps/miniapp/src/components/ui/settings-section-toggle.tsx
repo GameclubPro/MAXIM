@@ -57,6 +57,8 @@ type SettingsSectionToggleProps = {
   title: string;
   summary?: string;
   status?: string;
+  enabled?: boolean;
+  paused?: boolean;
   icon: SettingsSectionIconName | ReactElement;
   tone: SettingsSectionTone;
   open: boolean;
@@ -93,6 +95,8 @@ export function SettingsSectionToggle({
   title,
   summary,
   status,
+  enabled,
+  paused = false,
   icon,
   tone,
   open,
@@ -103,7 +107,19 @@ export function SettingsSectionToggle({
   const trimmedStatus = status?.trim() ?? '';
   const summaryId = `${controls}-entry-summary`;
   const statusId = `${controls}-entry-status`;
-  const descriptionIds = [trimmedSummary ? summaryId : '', trimmedStatus ? statusId : '']
+  const enabledId = `${controls}-entry-enabled`;
+  const enabledLabel = paused
+    ? 'Приостановлено'
+    : typeof enabled === 'boolean'
+      ? enabled
+        ? 'Включено'
+        : 'Выключено'
+      : '';
+  const descriptionIds = [
+    trimmedSummary ? summaryId : '',
+    trimmedStatus ? statusId : '',
+    enabledLabel ? enabledId : '',
+  ]
     .filter(Boolean)
     .join(' ');
   const searchText = [title, trimmedSummary, trimmedStatus, SETTINGS_SECTION_SEARCH_ALIASES[title]]
@@ -119,6 +135,7 @@ export function SettingsSectionToggle({
       aria-label={title}
       aria-describedby={descriptionIds || undefined}
       data-settings-search={searchText}
+      data-enabled={enabled}
       onClick={onClick}
     >
       <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
@@ -138,6 +155,21 @@ export function SettingsSectionToggle({
         <span id={statusId} className={cn('settings-section__status-chip', `is-${tone}`)}>
           {trimmedStatus}
         </span>
+      ) : null}
+
+      {paused || typeof enabled === 'boolean' ? (
+        <>
+          <span
+            className={cn(
+              'settings-section__state',
+              paused ? 'is-paused' : enabled ? 'is-on' : 'is-off',
+            )}
+            aria-hidden
+          />
+          <span id={enabledId} className="settings-section__state-label">
+            {enabledLabel}
+          </span>
+        </>
       ) : null}
 
       <span className="settings-section__chevron" aria-hidden>

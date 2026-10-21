@@ -90,6 +90,8 @@ export function SettingsReportsSection(props: SettingsReportsSectionProps) {
       <div className="settings-section__head settings-section__head--interactive">
         <SettingsSectionToggle
           title="Система жалоб"
+          enabled={draft.reportsEnabled}
+          paused={draft.reportsEnabled && !props.reportsAvailable}
           summary={draft.reportsEnabled ? `Порог: ${draft.reportsThreshold}` : ''}
           status={
             draft.reportsEnabled ? (props.reportsAvailable ? 'Вкл' : 'Приостановлен') : 'Выкл'

@@ -68,6 +68,7 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
           title="Стоп-слова"
+          enabled={policy?.enabled}
           summary={stopWordsHeaderSummary}
           status={stopWordsCardStatus}
           icon="keywords"

@@ -65,6 +65,7 @@ import {
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import '../components/ui/managed-entity-settings-header.css';
+import '../styles/settings-steel.css';
 import { getInitDataUserId } from '../lib/init-data';
 import { GlassCard } from '../components/ui/glass-card';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
@@ -3365,6 +3366,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Действие под публикацией"
+            enabled={postSignature.enabled}
             summary={postSignatureCardSummary}
             status={postSignatureCardStatus}
             icon="links"
@@ -3635,6 +3637,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <div className="settings-section__head settings-section__head--interactive">
           <SettingsSectionToggle
             title="Быстрые кнопки"
+            enabled={draft.quickButtonsEnabled}
             summary={draft.quickButtonsEnabled ? 'Включены' : 'Выключены'}
             status={draft.quickButtonsEnabled ? 'Вкл' : 'Выкл'}
             icon="links"
@@ -3677,6 +3680,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Комментарии в приложении"
+            enabled={draft.commentsEnabled}
             summary={commentsCardSummary}
             status={commentsCardStatus}
             icon="comments"
@@ -3776,6 +3780,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Предложения"
+            enabled={draft.postSuggestionsEnabled}
             summary={postSuggestionsCardSummary}
             status={postSuggestionsCardStatus}
             icon="spark"

@@ -156,6 +156,7 @@ export function SettingsStorefrontSection({
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Интернет-витрина"
+            enabled={draft.karavanStorefrontEnabled}
             summary={summary}
             status={status}
             icon="storefront"

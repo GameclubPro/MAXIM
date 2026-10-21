@@ -28,6 +28,7 @@ import '../styles/settings-experience.css';
 import '../styles/dashboard-events.css';
 import '../styles/statistics-experience.css';
 import '../styles/events-participant-navigation.css';
+import './statistics-steel.css';
 import {
   startTransition,
   Suspense,

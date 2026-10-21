@@ -165,6 +165,10 @@ try {
         window.scrollTo(0, 0);
       });
       await settle(page);
+      await page.locator('.membership-feed__name-link').first().scrollIntoViewIfNeeded();
+      await page.waitForFunction(
+        () => document.querySelector('.membership-feed__name-link')?.innerText.length > 0,
+      );
       assert.match(
         await page.locator('.membership-feed__name-link').first().innerText(),
         /^ОченьДлинноеИмяПользователяБезПробелов/,

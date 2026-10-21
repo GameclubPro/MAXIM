@@ -1,0 +1,199 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation']:is(
+      .settings-home-page-open,
+      .channel-settings-page-open,
+      .events-page-open,
+      .channel-stats-page-open
+    ) {
+    --steel-page: #eef1f6;
+    --steel-panel: #fcfdff;
+    --steel-raised: #ffffff;
+    --steel-inset: #e7ecf3;
+    --steel-ink: #15243b;
+    --steel-muted: #5b6b82;
+    --steel-header-muted: #4a5e79;
+    --steel-line: #d6dfe9;
+    --steel-blue: #245fe5;
+    --steel-on-blue: #ffffff;
+    --steel-blue-soft: #e5edfc;
+    --steel-red: #a93245;
+    --steel-glint: #ffffff;
+    --steel-shadow: #16325a16;
+    --steel-head-glow: #b9d0ff6b;
+    --steel-ice: #096b87;
+    --steel-mint: #08715a;
+    --steel-amber: #946000;
+    --steel-rose: #b32a55;
+    --steel-violet: #7040bd;
+    --steel-symbol-bloom: 0%;
+    --steel-header-signature: linear-gradient(
+      90deg,
+      var(--steel-blue) 0 62%,
+      transparent 62% 72%,
+      var(--steel-red) 72%
+    );
+    --major-page: var(--steel-page);
+    --major-surface: var(--steel-panel);
+    --major-subtle: var(--steel-inset);
+    --major-border: var(--steel-line);
+    --major-border-strong: color-mix(in srgb, var(--steel-muted) 40%, var(--steel-line));
+    --major-ink: var(--steel-ink);
+    --major-muted: var(--steel-muted);
+    --major-accent: var(--steel-blue);
+    --major-accent-soft: var(--steel-blue-soft);
+    --major-on-accent: var(--steel-on-blue);
+    --app-page-background: var(--steel-page);
+    background: var(--steel-page);
+    color: var(--steel-ink);
+  }
+
+  html[data-max-theme='dark']
+    body[data-miniapp-profile='moderation']:is(
+      .settings-home-page-open,
+      .channel-settings-page-open,
+      .events-page-open,
+      .channel-stats-page-open
+    ) {
+    --steel-page: #080b10;
+    --steel-panel: #10161f;
+    --steel-raised: #19232f;
+    --steel-inset: #090e16;
+    --steel-ink: #eff5ff;
+    --steel-muted: #a4b3cb;
+    --steel-header-muted: #afbdd4;
+    --steel-line: #2a3747;
+    --steel-blue: #5796ff;
+    --steel-on-blue: #07172f;
+    --steel-blue-soft: #1a2b42;
+    --steel-red: #d56577;
+    --steel-glint: #c6deff20;
+    --steel-shadow: #00000055;
+    --steel-head-glow: #3b6d9630;
+    --steel-ice: #65dcff;
+    --steel-mint: #41e8bb;
+    --steel-amber: #ffd84a;
+    --steel-rose: #ff6d97;
+    --steel-violet: #b48aff;
+    --steel-symbol-bloom: 18%;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header
+    .compact-page-header__bar::after {
+    content: '';
+    display: block;
+    position: absolute;
+    inset: 0 20px auto auto;
+    width: 48px;
+    height: 2px;
+    border-radius: 0;
+    background: var(--steel-header-signature);
+    pointer-events: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+    .compact-page-header__bar {
+    min-height: calc(var(--compact-page-header-safe-top) + 88px);
+    gap: 12px;
+    padding: calc(var(--compact-page-header-safe-top) + 15px) 16px 15px;
+    border: 1px solid var(--steel-line);
+    border-top: 0;
+    border-radius: 0 0 24px 24px;
+    background:
+      radial-gradient(ellipse at 100% 0, var(--steel-head-glow), transparent 68%),
+      linear-gradient(145deg, var(--steel-raised), var(--steel-panel));
+    box-shadow:
+      0 10px 26px var(--steel-shadow),
+      inset 0 -1px 0 var(--steel-glint);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+    .compact-page-header__identity {
+    gap: 11px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+    .compact-page-header__entity-avatar {
+    width: 46px;
+    min-width: 46px;
+    height: 46px;
+    border-radius: 15px;
+    box-shadow:
+      0 5px 14px var(--steel-shadow),
+      inset 0 1px 0 var(--steel-glint);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+    .compact-page-header__title {
+    color: var(--steel-ink);
+    font-size: clamp(19px, 5.4vw, 24px);
+    font-weight: 800;
+    line-height: 1.15;
+    letter-spacing: -0.035em;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+    .compact-page-header__subtitle {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--steel-header-muted);
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+    :is(
+      .compact-page-header__back,
+      .managed-entity-workspace-header__counterpart,
+      .events-refresh-button
+    ) {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    border: 1px solid var(--steel-line);
+    border-radius: 14px;
+    background: linear-gradient(145deg, var(--steel-raised), var(--steel-panel));
+    color: var(--steel-ink);
+    box-shadow: inset 0 1px 0 var(--steel-glint);
+  }
+
+  html[data-max-client='native']
+    body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header
+    .compact-page-header__back {
+    display: none;
+  }
+
+  html[data-max-client='native']
+    body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+    .compact-page-header__bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  @media (max-width: 359px) {
+    body[data-miniapp-profile='moderation']
+      .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+      .compact-page-header__bar {
+      gap: 8px;
+      padding-inline: 12px;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)
+      .compact-page-header__entity-avatar {
+      width: 38px;
+      min-width: 38px;
+      height: 38px;
+      border-radius: 12px;
+    }
+  }
+}

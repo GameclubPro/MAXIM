@@ -81,6 +81,7 @@ export function SettingsCommentsSection({
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
           title="Комментарии"
+          enabled={draft.commentsEnabled}
           summary={summary}
           status={status}
           icon="comments"

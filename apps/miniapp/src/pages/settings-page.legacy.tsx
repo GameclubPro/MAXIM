@@ -4619,6 +4619,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Ссылки"
+                  enabled={draft.linkPolicy !== 'ALERT_ONLY'}
                   summary={linksHeaderSummary}
                   status={linksCardStatus}
                   icon="links"
@@ -5525,6 +5526,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Приветствие"
+                  enabled={draft.greetingEnabled && draft.greetingBotMessageEnabled}
                   summary={greetingHeaderSummary}
                   status={greetingCardStatus}
                   icon="greeting"
@@ -5817,6 +5819,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Мат и оскорбления"
+                  enabled={draft.russianProfanityFilterEnabled}
                   summary={profanityFilterHeaderSummary}
                   status={profanityFilterCardStatus}
                   icon="warning"
@@ -6711,6 +6714,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Подписка"
+                  enabled={draft.requiredSubscriptionEnabled && requiredSubscriptionIsActive}
                   summary={requiredSubscriptionHeaderSummary}
                   status={requiredSubscriptionCardStatus}
                   icon="subscription"

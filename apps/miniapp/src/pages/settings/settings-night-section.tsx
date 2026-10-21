@@ -113,6 +113,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
           title="Ночной режим"
+          enabled={draft.nightModeEnabled || draft.nightModeForceCloseEnabled}
           summary={nightHeaderSummary}
           status={nightCardStatus}
           icon="moon"

@@ -151,6 +151,7 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
           title="Антидубль"
+          enabled={draft.antiDuplicateEnabled}
           summary={duplicatesHeaderSummary}
           status={draft.antiDuplicateEnabled ? 'Вкл' : 'Выкл'}
           icon="repeat"

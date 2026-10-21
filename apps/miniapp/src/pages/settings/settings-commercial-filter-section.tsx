@@ -64,6 +64,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
           title="Коммерческая реклама"
+          enabled={props.draft.commercialAdsFilterEnabled}
           summary={commercialFilterHeaderSummary}
           status={commercialFilterCardStatus}
           icon="ads"

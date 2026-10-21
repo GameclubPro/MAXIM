@@ -19,6 +19,7 @@ export function SettingsExtraSection(props: SettingsExtraSectionProps) {
       <div className="settings-section__head settings-section__head--interactive">
         <SettingsSectionToggle
           title="Сообщения и боты"
+          enabled={props.draft.deleteBotMessagesEnabled || props.draft.removeBotsFromGroupEnabled}
           summary={props.summary}
           status={props.status}
           icon="tools"

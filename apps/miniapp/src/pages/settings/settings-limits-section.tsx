@@ -73,6 +73,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
           title="Ограничения"
+          enabled={limitsRulesEnabledCount > 0}
           summary={`Активных ограничений: ${limitsRulesEnabledCount}`}
           status={limitsCardStatus}
           icon="shield"

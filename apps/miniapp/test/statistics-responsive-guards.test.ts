@@ -21,10 +21,12 @@ const eventsPageSource = readFileSync(
   new URL('../src/pages/events-page.tsx', import.meta.url),
   'utf8',
 );
-const statisticsExperienceCss = readFileSync(
-  new URL('../src/styles/statistics-experience.css', import.meta.url),
-  'utf8',
-);
+const statisticsExperienceCss = [
+  '../src/styles/statistics-experience.css',
+  '../src/styles/channel-stats-experience.css',
+]
+  .map((path) => readFileSync(new URL(path, import.meta.url), 'utf8'))
+  .join('\n');
 const motionCss = readFileSync(new URL('../src/styles/motion.css', import.meta.url), 'utf8');
 
 function relativeLuminance(hex: string): number {

@@ -55,6 +55,7 @@ export function SettingsExtraSection({
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
           title="Сообщения и боты"
+          enabled={draft.deleteBotMessagesEnabled || draft.removeBotsFromGroupEnabled}
           summary={summary}
           status={status}
           icon="tools"

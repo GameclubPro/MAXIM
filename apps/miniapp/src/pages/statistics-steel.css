@@ -1,0 +1,463 @@
+@layer workspace {
+  /* Chat statistics entrypoint. Mixed route selectors remain intact to preserve cascade specificity. */
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace] {
+    --surface-page: var(--steel-page);
+    --surface-card: var(--steel-panel);
+    --surface-card-muted: var(--steel-inset);
+    --color-surface: var(--steel-panel);
+    --color-surface-raised: var(--steel-raised);
+    --text-primary: var(--steel-ink);
+    --text-secondary: var(--steel-muted);
+    --text-muted: var(--steel-muted);
+    --border-subtle: var(--steel-line);
+    --border-strong: color-mix(in srgb, var(--steel-muted) 35%, var(--steel-line));
+    --accent: var(--steel-blue);
+    --accent-soft: var(--steel-blue-soft);
+    --success: var(--steel-mint);
+    --warning: var(--steel-amber);
+    --danger: var(--steel-rose);
+    --audience-board-success: var(--steel-mint);
+    --audience-board-success-strong: var(--steel-mint);
+    --audience-board-danger: var(--steel-rose);
+    --audience-board-neutral: var(--steel-muted);
+    --audience-board-border: var(--steel-line);
+    --stats-action-shadow: color-mix(in srgb, var(--steel-blue) 20%, transparent);
+    --stats-highlight-border: color-mix(in srgb, var(--steel-ice) 16%, var(--steel-line));
+    --stats-hero-glow: color-mix(in srgb, var(--steel-ice) 9%, transparent);
+    --stats-metric-glow: color-mix(in srgb, var(--steel-ice) 8%, transparent);
+    --stats-flow-left: color-mix(in srgb, var(--steel-rose) 40%, var(--steel-inset));
+    --stats-current-row: color-mix(in srgb, var(--steel-blue) 5%, transparent);
+    gap: 14px;
+    color: var(--steel-ink);
+    font-family: 'Manrope', system-ui, sans-serif;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    > .events-primary-tabs,
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-insights__section-tabs {
+    min-height: 56px;
+    padding: 4px;
+    border: 1px solid var(--steel-line);
+    border-radius: 18px;
+    background: var(--steel-inset);
+    box-shadow: inset 0 1px 3px var(--steel-shadow);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    > .events-primary-tabs {
+    width: calc(100% - 24px);
+    margin-inline: 12px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-primary-tabs__track {
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 13px;
+    background: transparent;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(.events-primary-tab, .channel-insights__section-tabs .segmented-control__item) {
+    min-height: 46px;
+    padding: 8px 5px;
+    gap: 6px;
+    border: 0;
+    border-radius: 13px;
+    background: transparent;
+    color: var(--steel-muted);
+    font-size: 0.82rem;
+    font-weight: 750;
+    line-height: 1.2;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(
+      .events-primary-tab.is-active,
+      .channel-insights__section-tabs .segmented-control__item.is-active
+    ) {
+    background: var(--steel-raised);
+    color: var(--steel-blue);
+    box-shadow:
+      0 3px 10px var(--steel-shadow),
+      inset 0 1px 0 var(--steel-glint);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-primary-tab__label {
+    font-size: clamp(0.72rem, 3.25vw, 0.83rem);
+    font-weight: 750;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-primary-tab {
+    flex-direction: column;
+    gap: 4px;
+    min-height: 54px;
+    padding-block: 7px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(.events-moderation-view, .events-dashboard__range, .channel-insights__range) {
+    gap: 3px;
+    min-height: 50px;
+    padding: 3px;
+    border: 1px solid var(--steel-line);
+    border-radius: 15px;
+    background: var(--steel-inset);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(.events-moderation-view, .events-dashboard__range, .channel-insights__range)
+    .segmented-control__item {
+    min-height: 44px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 11px;
+    background: transparent;
+    color: var(--steel-muted);
+    font-size: 0.78rem;
+    font-weight: 750;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(.events-moderation-view, .events-dashboard__range, .channel-insights__range)
+    .segmented-control__item.is-active {
+    background: var(--steel-blue);
+    color: var(--steel-on-blue);
+    box-shadow: 0 3px 9px var(--stats-action-shadow);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    > .events-stage {
+    border: 1px solid var(--steel-line);
+    border-radius: 22px;
+    background: var(--steel-panel);
+    box-shadow:
+      0 8px 24px var(--steel-shadow),
+      inset 0 1px 0 var(--steel-glint);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-stage__panel {
+    gap: 16px;
+    padding: 14px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-dashboard {
+    gap: 16px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.events-dashboard__body--moderation, .events-dashboard__activity) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+    padding: 0;
+    border: 0;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.events-dashboard__stack, .events-dashboard__activity-ledger) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 10px;
+    border: 0;
+    background: transparent;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.events-dashboard__hero, .events-dashboard__activity-balance) {
+    min-height: 178px;
+    justify-content: center;
+    gap: 10px;
+    padding: 16px;
+    border: 1px solid var(--stats-highlight-border);
+    border-radius: 18px;
+    background:
+      radial-gradient(ellipse at 0 100%, var(--stats-hero-glow), transparent 85%),
+      var(--steel-raised);
+    box-shadow: inset 0 1px 0 var(--steel-glint);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.events-dashboard__hero, .events-dashboard__activity-balance)
+    > strong {
+    min-width: 0;
+    max-width: 100%;
+    color: var(--steel-ink);
+    font-size: clamp(2rem, 8.8vw, 3rem);
+    font-weight: 850;
+    line-height: 1.06;
+    letter-spacing: -0.055em;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-dashboard__hero-number {
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.events-dashboard__metric, .events-dashboard__flow-card) {
+    min-height: 84px;
+    justify-content: center;
+    gap: 5px;
+    padding: 11px 13px;
+    border: 1px solid var(--steel-line);
+    border-radius: 15px;
+    background: var(--steel-inset);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(
+      .events-dashboard__hero,
+      .events-dashboard__activity-balance,
+      .events-dashboard__metric,
+      .events-dashboard__flow-card
+    )
+    > small {
+    min-height: 0;
+    color: var(--steel-muted);
+    font-size: 0.76rem;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.events-dashboard__metric, .events-dashboard__flow-card)
+    > strong {
+    color: var(--steel-ink);
+    font-size: 1.65rem;
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.04em;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(
+      .events-dashboard__hero,
+      .events-dashboard__activity-balance,
+      .events-dashboard__metric,
+      .events-dashboard__flow-card
+    )
+    > span {
+    color: var(--steel-muted);
+    font-size: 0.72rem;
+    line-height: 1.35;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(
+      .events-dashboard__activity-balance--success,
+      .events-dashboard__metric--success,
+      .events-dashboard__flow-card--joined
+    )
+    > strong {
+    color: var(--steel-mint);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(
+      .events-dashboard__activity-balance--danger,
+      .events-dashboard__metric--danger,
+      .events-dashboard__flow-card--left
+    )
+    > strong {
+    color: var(--steel-rose);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.events-dashboard__activity-balance--warning, .events-dashboard__metric--warning)
+    > strong {
+    color: var(--steel-amber);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-dashboard__flow-bar {
+    height: 5px;
+    margin: 0 3px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--stats-flow-left);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-dashboard__flow-bar
+    > span {
+    background: var(--steel-mint);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-dashboard__flow-bar.is-empty {
+    background: var(--steel-line);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-dashboard__body--participants
+    .events-dashboard__hero {
+    min-height: 106px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid var(--steel-line);
+    border-radius: 18px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-filter-menu
+    select {
+    min-height: 48px;
+    border: 1px solid var(--steel-line);
+    border-radius: 13px;
+    background: var(--steel-inset);
+    color: var(--steel-ink);
+    font-size: 0.85rem;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(
+      .events-inline-state,
+      .channel-insights__inline-state,
+      .membership-feed__status,
+      .membership-feed__group-list,
+      .events-feed,
+      .spammer-review,
+      .participants-roster__results
+    ) {
+    border: 1px solid var(--steel-line);
+    border-radius: 20px;
+    background: var(--steel-panel);
+    box-shadow: 0 6px 20px var(--steel-shadow);
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(.membership-feed__toolbar, .membership-feed__day) {
+    border: 1px solid var(--steel-line);
+    border-radius: 14px;
+    background: var(--steel-inset);
+    color: var(--steel-ink);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    .membership-feed__toolbar {
+    padding-inline: 10px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    .membership-feed__group-list {
+    padding: 6px 12px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(.membership-feed__avatar, .event-feed-item__avatar, .participants-roster__avatar) {
+    border: 1px solid var(--steel-line);
+    border-radius: 13px;
+    background: var(--steel-inset);
+    color: var(--steel-ink);
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(.membership-feed__filters, .participants-roster__role-filters)
+    :is(.segmented-control__item, button) {
+    min-height: 44px;
+    border-radius: 11px;
+    color: var(--steel-muted);
+    background: var(--steel-inset);
+  }
+
+  body[data-miniapp-profile='moderation']
+    :is(.events-screen, .channel-insights)[data-managed-entity-workspace]
+    :is(.membership-feed__filters, .participants-roster__role-filters)
+    .is-active {
+    background: var(--steel-blue-soft);
+    color: var(--steel-blue);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.event-feed-item, .participants-roster__item) {
+    padding: 14px 12px;
+    border-color: var(--steel-line);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    :is(.participants-roster__search, .participants-roster__manage > summary) {
+    min-height: 48px;
+    border: 1px solid var(--steel-line);
+    border-radius: 14px;
+    background: var(--steel-panel);
+  }
+
+  @media (max-width: 359px) {
+
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace]
+      .events-stage__panel {
+      padding: 11px;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace]
+      :is(.events-dashboard__hero, .events-dashboard__activity-balance) {
+      padding: 12px;
+    }
+  }
+}

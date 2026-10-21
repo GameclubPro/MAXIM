@@ -2609,9 +2609,7 @@ const scenarioBehaviors = [
       await page.goto(originalUrl);
       await assertAdvertisingSoonModule(page);
       await applyNativeScreenshotMode(page, profile);
-      await page
-        .locator('[data-managed-entity-workspace="chat-settings"]')
-        .evaluate((element) => element.scrollIntoView({ block: 'start', behavior: 'instant' }));
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
     },
   },
   {
@@ -4064,7 +4062,7 @@ async function assertConfiguredChecks(page, scenario) {
 async function assertCompactTextContained(page, scenario) {
   const clipped = await page.evaluate(() => {
     for (const label of document.querySelectorAll(
-      '.settings-mode-segments .segmented-control__item > span, .channel-summary-table th, .channel-summary-table td',
+      '.settings-mode-segments .segmented-control__item > span, .channel-summary-table th, .channel-summary-table td, .channel-audience-metric b, .channel-audience-metric small, .channel-audience-metric em',
     )) {
       const control = label.closest('button') ?? label;
       if (!control || !label.getClientRects().length) continue;
@@ -4085,6 +4083,17 @@ async function assertCompactTextContained(page, scenario) {
       }
     }
     if (document.body.dataset.miniappProfile === 'moderation') {
+      for (const header of document.querySelectorAll(
+        '.managed-entity-workspace-header:not(.managed-entity-workspace-header--settings)',
+      )) {
+        const title = header.querySelector('.compact-page-header__title')?.getBoundingClientRect();
+        const actions = header
+          .querySelector('.compact-page-header__aside')
+          ?.getBoundingClientRect();
+        if (title?.width && actions?.width && title.right > actions.left - 2) {
+          return 'statistics title overlaps its header actions';
+        }
+      }
       for (const card of document.querySelectorAll('.events-screen .membership-feed__card')) {
         const avatar = card.querySelector('.membership-feed__avatar')?.getBoundingClientRect();
         const name = card.querySelector('.membership-feed__name-link')?.getBoundingClientRect();
@@ -4105,6 +4114,19 @@ async function assertCompactTextContained(page, scenario) {
         const bounds = summary.getBoundingClientRect();
         if (!bounds.width || !bounds.height) continue;
         const style = getComputedStyle(summary);
+        const descriptionIds = summary
+          .closest('.settings-section__toggle')
+          ?.getAttribute('aria-describedby')
+          ?.split(/\s+/u);
+        if (
+          bounds.width <= 1 &&
+          bounds.height <= 1 &&
+          style.clipPath === 'inset(50%)' &&
+          summary.id &&
+          descriptionIds?.includes(summary.id)
+        ) {
+          continue;
+        }
         const text = summary.textContent?.trim() ?? '';
         const lineHeight =
           Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.5;

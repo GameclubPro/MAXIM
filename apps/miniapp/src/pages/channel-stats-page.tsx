@@ -11,7 +11,8 @@ import {
 import '../styles/channel-stats.css';
 import '../styles/channel-stats-route-polish.css';
 import '../styles/channel-stats-executive.css';
-import '../styles/statistics-experience.css';
+import '../styles/channel-stats-experience.css';
+import './channel-stats-steel.css';
 import type { ComponentProps } from 'react';
 import {
   Suspense,

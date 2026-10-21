@@ -19,6 +19,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
       <div className="settings-section__head settings-section__head--interactive">
         <SettingsSectionToggle
           title="Ночной режим"
+          enabled={props.draft.nightModeEnabled || props.draft.nightModeForceCloseEnabled}
           summary={props.nightHeaderSummary}
           status={props.nightCardStatus}
           icon="moon"
