@@ -1,16 +1,16 @@
+import type { SVGProps } from 'react';
 import type { ManagedEntityFavoriteType, ManagedEntityType } from '@maxim/contracts';
 import type { NetworkSettingsTarget } from '@maxim/contracts/network-settings';
 import { AppIcon } from '../../components/ui/app-icon';
-import type { AppIconName } from '../../components/ui/app-icon-names';
+import { HOME_ENTITY_FAVORITE_ICONS } from '../../components/ui/compact-icons';
 
-export const networkCategoryIcons: Record<ManagedEntityFavoriteType, AppIconName> = {
-  important: 'Star',
-  watch: 'ShieldCheck',
-  broadcast: 'SendDiagonal',
-  test: 'Flask',
-  partner: 'Group',
-  service: 'Wrench',
-};
+export function NetworkCategoryIcon({
+  favoriteType,
+  ...props
+}: SVGProps<SVGSVGElement> & { favoriteType?: ManagedEntityFavoriteType }) {
+  const Icon = favoriteType ? HOME_ENTITY_FAVORITE_ICONS[favoriteType] : null;
+  return Icon ? <Icon {...props} /> : <AppIcon icon="Community" {...props} />;
+}
 const plural = new Intl.PluralRules('ru-RU');
 const number = new Intl.NumberFormat('ru-RU');
 export function formatNetworkEntityCount(count: number, type: ManagedEntityType): string {
@@ -34,8 +34,9 @@ export function NetworkScopeBadge({
       className="network-settings-scope"
       data-network-category={target.mode === 'category' ? target.favoriteType : undefined}
     >
-      <AppIcon
-        icon={target.mode === 'category' ? networkCategoryIcons[target.favoriteType] : 'Group'}
+      <NetworkCategoryIcon
+        favoriteType={target.mode === 'category' ? target.favoriteType : undefined}
+        aria-hidden
       />
       <span>
         <strong>{title}</strong>

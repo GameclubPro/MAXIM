@@ -1,11 +1,7 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect } from 'react';
 import type { ManagedEntityType } from '@maxim/contracts';
-import {
-  useHomeEntityFavorites,
-  useHomeEntityFavoritesSession,
-} from './home-entity-favorites-context';
+import { useHomeEntityFavorites } from './home-entity-favorites-context';
 import type { ManagedEntityNetworkKey } from './home-entity-favorites-types';
-import { ManagedEntityNetworkCompositionDraft } from './managed-entity-network-composition-draft';
 
 export function useHomeEntityNetworkCatalogue(type: ManagedEntityType) {
   const { snapshot, actions } = useHomeEntityFavorites();
@@ -44,20 +40,5 @@ export function useHomeEntityNetwork(key: ManagedEntityNetworkKey) {
     status: catalogue.status,
     error: catalogue.error,
     refresh: catalogue.refresh,
-  };
-}
-export function useManagedEntityNetworkCompositionDraft(key: ManagedEntityNetworkKey) {
-  const session = useHomeEntityFavoritesSession();
-  const draft = useMemo(
-    () => new ManagedEntityNetworkCompositionDraft(session, key),
-    [session, key.entityType, key.favoriteType],
-  );
-  const snapshot = useSyncExternalStore(draft.subscribe, draft.getSnapshot, draft.getSnapshot);
-  return {
-    ...snapshot,
-    stage: draft.stage,
-    discard: draft.discard,
-    save: draft.save,
-    rebaseAfterReview: draft.rebaseAfterReview,
   };
 }

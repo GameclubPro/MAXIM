@@ -7,6 +7,7 @@ import { SettingsGlyph, StatisticsGlyph } from './compact-icons';
 import { EntityAvatar } from './entity-avatar';
 import { CompactStickyHeader } from './compact-sticky-header';
 import './managed-entity-workspace-header.css';
+import './managed-entity-workspace-tokens.css';
 import './managed-entity-workspace-steel.css';
 
 type ManagedEntityWorkspaceHeaderProps = {

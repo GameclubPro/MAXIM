@@ -15,7 +15,8 @@ import {
 } from '../features/networks/network-workspace-header';
 import { useHomeEntityNetworkCatalogue } from '../lib/home-entity-networks-context';
 import { buildNetworkRoute, readNetworkRoute } from '../features/networks/network-route-state';
-import '../components/ui/managed-entity-workspace-steel.css';
+import '../components/ui/managed-entity-workspace-tokens.css';
+import '../styles/moderation-catalogue-steel.css';
 import './network-settings-page.css';
 import '../styles/settings-home-compact.css';
 import '../styles/settings-home-route-polish.css';
@@ -69,8 +70,8 @@ export function NetworkSettingsOverview({
   useEffect(() => {
     const className =
       entityType === 'chat' ? 'settings-home-page-open' : 'channel-settings-page-open';
-    document.body.classList.add(className);
-    return () => document.body.classList.remove(className);
+    document.body.classList.add(className, 'network-settings-page-open');
+    return () => document.body.classList.remove(className, 'network-settings-page-open');
   }, [entityType]);
   useNativeBackHandler(
     () => {

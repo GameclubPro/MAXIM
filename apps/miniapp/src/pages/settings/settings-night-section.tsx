@@ -112,7 +112,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
 
   return (
     <GlassCard
-      className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+      className="settings-section settings-home-entry settings-home-entry--list settings-home-entry--wide stagger-in"
       style={{ animationDelay: '250ms', order: SECTION_PRESENTATION.order }}
       aria-label="Ночной режим"
     >

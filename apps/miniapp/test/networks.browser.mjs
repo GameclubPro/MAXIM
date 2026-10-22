@@ -169,6 +169,100 @@ async function back(page) {
   await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
 }
 
+async function categoryIcon(root) {
+  return root
+    .locator('svg')
+    .first()
+    .evaluate((svg) => ({
+      viewBox: svg.getAttribute('viewBox'),
+      drawing: svg.innerHTML,
+    }));
+}
+
+async function navigationAppearance(page) {
+  return page.locator('.bottom-nav').evaluate((nav) => {
+    const appearance = (node) => {
+      const style = getComputedStyle(node);
+      return Object.fromEntries(
+        ['backgroundImage', 'borderRadius', 'boxShadow', 'color', 'fontFamily', 'fontWeight'].map(
+          (key) => [key, style[key]],
+        ),
+      );
+    };
+    return {
+      surface: appearance(nav),
+      active: appearance(nav.querySelector('[aria-current="page"]')),
+    };
+  });
+}
+
+async function networkNavigation(page, homeAppearance) {
+  assert.deepEqual(await page.locator('.bottom-nav__label').allTextContents(), [
+    'Чаты',
+    'Каналы',
+    'Сетки',
+    'Публик',
+  ]);
+  assert.deepEqual(
+    await page.locator('.bottom-nav [aria-current="page"]').allTextContents(),
+    ['Сетки'],
+    'only Networks is selected in its catalogue, detail and settings hub',
+  );
+  assert.deepEqual(
+    await navigationAppearance(page),
+    homeAppearance,
+    'home and Networks share the navigation surface and active-item appearance',
+  );
+}
+
+async function workspaceHeaderAppearance(page) {
+  return page.locator('.managed-entity-workspace-header').evaluate((header) => {
+    const title = getComputedStyle(header.querySelector('.compact-page-header__title'));
+    const avatar = getComputedStyle(header.querySelector('.compact-page-header__entity-avatar'));
+    const signature = getComputedStyle(
+      header.querySelector('.compact-page-header__bar'),
+      '::after',
+    );
+    return {
+      title: Object.fromEntries(
+        ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'color'].map(
+          (key) => [key, title[key]],
+        ),
+      ),
+      avatar: Object.fromEntries(
+        ['width', 'height', 'borderRadius'].map((key) => [key, avatar[key]]),
+      ),
+      signature: Object.fromEntries(
+        ['content', 'width', 'height', 'backgroundImage'].map((key) => [key, signature[key]]),
+      ),
+      titleWrapGap: getComputedStyle(header.querySelector('.compact-page-header__title-wrap')).gap,
+      backDisplay: getComputedStyle(header.querySelector('.compact-page-header__back')).display,
+    };
+  });
+}
+
+async function networkHeaderSubtitle(page) {
+  return page
+    .locator('.network-workspace-heading .compact-page-header__subtitle')
+    .evaluate((node) => {
+      const style = getComputedStyle(node);
+      return Object.fromEntries(
+        ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textTransform'].map((key) => [
+          key,
+          style[key],
+        ]),
+      );
+    });
+}
+
+async function labelWrites(page) {
+  return page.evaluate(() =>
+    window.__networkRequests.filter(
+      (row) => row.method === 'PUT' && row.path.endsWith('/favorite-labels'),
+    ),
+  );
+}
+
 const LINK_POLICY_LABEL = 'Режим модерации ссылок';
 const LINK_PERIOD_LABEL = 'Повторные ссылки: период';
 const LINK_PERIOD_ERROR = 'Укажите число от 1 до 168.';
@@ -237,26 +331,58 @@ async function selectBlockingPolicy(policy) {
 
 async function tileAppearance(root) {
   return root.locator('.settings-section__toggle').evaluateAll((buttons) =>
-    buttons.map((button) => {
-      const card = button.closest('.settings-home-entry');
-      const badge = button.querySelector('.settings-section__icon-badge');
-      const title = button.querySelector('.settings-section__title');
-      const style = getComputedStyle(title);
-      return {
-        title: title.textContent.trim(),
-        card: [...card.classList].sort(),
-        badge: [...badge.classList].sort(),
-        icon: badge.innerHTML,
-        titleStyle: {
-          fontFamily: style.fontFamily,
-          fontSize: style.fontSize,
-          fontWeight: style.fontWeight,
-          lineHeight: style.lineHeight,
-          color: style.color,
-        },
-      };
-    }),
+    [...buttons]
+      .sort((a, b) => {
+        const left = a.getBoundingClientRect();
+        const right = b.getBoundingClientRect();
+        return left.top - right.top || left.left - right.left;
+      })
+      .map((button) => {
+        const card = button.closest('.settings-home-entry');
+        const badge = button.querySelector('.settings-section__icon-badge');
+        const title = button.querySelector('.settings-section__title');
+        const style = getComputedStyle(title);
+        const cardStyle = getComputedStyle(card);
+        const toggleStyle = getComputedStyle(button);
+        return {
+          title: title.textContent.trim(),
+          card: [...card.classList].sort(),
+          badge: [...badge.classList].sort(),
+          icon: badge.innerHTML,
+          layout: {
+            column: cardStyle.gridColumn,
+            cardMinHeight: cardStyle.minHeight,
+            toggleMinHeight: toggleStyle.minHeight,
+            padding: toggleStyle.padding,
+            iconArea: getComputedStyle(badge).gridArea,
+          },
+          titleStyle: {
+            fontFamily: style.fontFamily,
+            fontSize: style.fontSize,
+            fontWeight: style.fontWeight,
+            lineHeight: style.lineHeight,
+            color: style.color,
+          },
+        };
+      }),
   );
+}
+
+async function overviewOrder(root) {
+  const misplaced = await root
+    .locator('.settings-home-entry, .settings-home-group-head')
+    .evaluateAll((nodes) => {
+      const entries = nodes
+        .filter((node) => node.getBoundingClientRect().height > 0)
+        .map((node) => ({
+          title: node.textContent.trim(),
+          order: Number(getComputedStyle(node).order),
+          top: node.getBoundingClientRect().top,
+        }))
+        .sort((a, b) => a.order - b.order);
+      return entries.filter((entry, index) => index > 0 && entry.top < entries[index - 1].top - 1);
+    });
+  assert.deepEqual(misplaced, [], 'settings tiles keep their order within the visible groups');
 }
 
 async function sectionAppearance(panel, section) {
@@ -363,7 +489,9 @@ async function singleSettingsAppearance(context, profile, errors) {
     await single.getByRole('searchbox', { name: 'Найти настройку', exact: true }).waitFor();
     await applyNativeVisualMode(single, { safeTop: 0, safeBottom: profile.safeBottom });
     await settleVisualFrame(single);
+    const header = await workspaceHeaderAppearance(single);
     const tiles = await tileAppearance(single.locator('#chat-settings-overview'));
+    await overviewOrder(single.locator('#chat-settings-overview'));
     const sections = {};
     for (const [section, title] of [
       ['links', 'Ссылки'],
@@ -396,7 +524,7 @@ async function singleSettingsAppearance(context, profile, errors) {
       await back(single);
       await panel.waitFor({ state: 'hidden' });
     }
-    return { tiles, sections };
+    return { header, tiles, sections };
   } finally {
     await single.close();
   }
@@ -442,7 +570,14 @@ async function settingsHub(page, { scope, readCount = 0, single } = {}) {
       1,
     );
     const tiles = await tileAppearance(hub);
+    await overviewOrder(hub);
     assert.ok(tiles.length > 0, 'hub has actual settings cards');
+    const sharedTitles = new Set(tiles.map((tile) => tile.title));
+    assert.deepEqual(
+      tiles.map((tile) => tile.title),
+      single.tiles.filter((tile) => sharedTitles.has(tile.title)).map((tile) => tile.title),
+      'shared network settings follow the same visual order as ordinary settings',
+    );
     for (const tile of tiles) {
       const original = single.tiles.find((entry) => entry.title === tile.title);
       assert.ok(original, 'group tile exists in actual single settings: ' + tile.title);
@@ -545,10 +680,13 @@ for (const profile of [
       'gated Major keeps three navigation items',
     );
     assert.equal(await page.getByRole('link', { name: 'Сетки', exact: true }).count(), 0);
+    await page.locator('.home-category-chip.is-important').waitFor();
+    const homeIcon = await categoryIcon(page.locator('.home-category-chip.is-important'));
+    const homeNavigation = await navigationAppearance(page);
     const single = await singleSettingsAppearance(context, profile, errors);
     await open('networks?type=chat', '.network-summary-card', { networks: '1' });
     await observe(page);
-    assert.equal(await page.locator('.bottom-nav__item').count(), 4);
+    await networkNavigation(page, homeNavigation);
     await fits(page, `${profile.name} catalogue`);
     await numericSamplesFit(page, `${profile.name} catalogue`);
     await page.screenshot({
@@ -557,6 +695,11 @@ for (const profile of [
     });
 
     const importantCard = page.locator('.network-summary-card[data-network-category="important"]');
+    assert.deepEqual(
+      await categoryIcon(importantCard.locator('.network-category-icon')),
+      homeIcon,
+      'the same favorite category keeps its home icon in the network catalogue',
+    );
     await importantCard.getByRole('button', { name: 'Настройки', exact: true }).click();
     const directScope = await settingsHub(page);
     assert.deepEqual(
@@ -568,11 +711,21 @@ for (const profile of [
       'card Settings targets the complete favorite category without selecting recipients',
     );
     await back(page);
-    await page.getByRole('button', { name: 'Все сетки', exact: true }).click();
+    await page.locator('.networks-page .network-workspace-tabs').waitFor();
+    await back(page);
     await importantCard.waitFor();
 
     await page.locator('.network-summary-card__open').first().click();
     await page.locator('.network-detail-metric').first().waitFor();
+    await networkNavigation(page, homeNavigation);
+    assert.deepEqual(await workspaceHeaderAppearance(page), single.header);
+    const coldSubtitle = await networkHeaderSubtitle(page);
+    assert.deepEqual(await categoryIcon(page.locator('.network-workspace-icon')), homeIcon);
+    assert.equal(
+      await page.getByRole('button', { name: 'Все сетки', exact: true }).isVisible(),
+      false,
+      'native MAX uses its Back button without a duplicate inline control',
+    );
     await fits(page, `${profile.name} network statistics`);
     await numericSamplesFit(page, `${profile.name} network statistics`, true);
     await page.screenshot({
@@ -593,7 +746,7 @@ for (const profile of [
       await page
         .locator('.network-metrics-row')
         .first()
-        .getByRole('button', { name: 'Районный чат 62', exact: true })
+        .getByRole('button', { name: 'Открыть статистику: Районный чат 62', exact: true })
         .waitFor();
       assert.equal(
         await page.locator('.network-metrics-row').count(),
@@ -623,16 +776,33 @@ for (const profile of [
       });
     }
     const configure = page.getByRole('button', { name: 'Настройки', exact: true });
+    assert.deepEqual(
+      await networkHeaderSubtitle(page),
+      coldSubtitle,
+      'network count keeps its appearance after opening ordinary community statistics',
+    );
+    assert.deepEqual(
+      await workspaceHeaderAppearance(page),
+      single.header,
+      'header appearance remains stable after opening ordinary community statistics',
+    );
     assert.equal(await configure.isEnabled(), true);
     await configure.click();
     const categoryScope = await settingsHub(page, { single });
-    assert.equal(await page.locator('.bottom-nav').count(), 1);
+    await networkNavigation(page, homeNavigation);
+    assert.deepEqual(await workspaceHeaderAppearance(page), single.header);
     await fits(page, `${profile.name} settings hub`);
     await page.screenshot({
       path: join(output, `${profile.name}-settings-hub.png`),
       animations: 'disabled',
     });
     await openSettingsSection(page, 'links', single);
+    assert.equal(
+      await page.locator('.bottom-nav').count(),
+      0,
+      'the field editor owns the viewport',
+    );
+    assert.deepEqual(await categoryIcon(page.locator('.network-settings-scope')), homeIcon);
     const reads = await readRequests(page);
     assert.ok(reads.length > 1, 'group settings must read beyond the first recipient page');
     assert.ok(
@@ -684,6 +854,31 @@ for (const profile of [
       await page.locator('.network-community-list input').count(),
       0,
       'network membership is not a second settings-recipient picker',
+    );
+
+    const memberSearch = page.getByRole('searchbox', { name: 'Поиск в составе', exact: true });
+    const membersUrl = page.url();
+    const membershipCount = page.locator('.network-community-heading > .networks-caption');
+    const membersCount = await membershipCount.innerText();
+    await memberSearch.fill('нет-такого-сообщества-82931');
+    await page
+      .locator('.network-community-list')
+      .getByText('Ничего не найдено', { exact: true })
+      .waitFor();
+    assert.equal(await page.locator('.network-community-list [data-network-entity-id]').count(), 0);
+    assert.equal(await page.getByText('В сетке пока пусто', { exact: true }).count(), 0);
+    assert.equal(page.url(), membersUrl, 'member search keeps the selected network and tab');
+    assert.equal(
+      await membershipCount.innerText(),
+      membersCount,
+      'a search miss does not change the network membership count',
+    );
+    await page.getByRole('button', { name: 'Сбросить поиск', exact: true }).click();
+    await page.locator('.network-community-list [data-network-entity-id]').first().waitFor();
+    assert.equal(await memberSearch.inputValue(), '');
+    assert.equal(
+      await page.locator('.network-community-list [data-network-entity-id]').count(),
+      50,
     );
 
     await page.getByRole('button', { name: 'Показать ещё', exact: true }).click();
@@ -804,11 +999,73 @@ for (const profile of [
       'composition changes keep Settings targeted at the whole network',
     );
     await back(page);
-    await page.locator('.networks-page .network-workspace-menu summary').click();
+    const menu = page.locator('.network-workspace-menu');
+    const menuTrigger = menu.locator('summary');
+    const networkTitle = page.locator('.network-workspace-heading h1');
+    const importantName = await networkTitle.innerText();
+    const beforeRenameUrl = page.url();
+    const beforeLabelWrites = (await labelWrites(page)).length;
+    await menuTrigger.click();
+    await back(page);
+    await menu.locator('select').first().waitFor({ state: 'hidden' });
+    assert.equal(
+      page.url(),
+      beforeRenameUrl,
+      'Native Back closes the menu before leaving the network',
+    );
+
+    await menuTrigger.click();
+    await menu.getByRole('button', { name: 'Переименовать', exact: true }).click();
+    const renameInput = page.getByRole('textbox', { name: 'Название сетки', exact: true });
+    await renameInput.fill('Несохранённое название');
+    await back(page);
+    await renameInput.waitFor({ state: 'hidden' });
+    assert.equal(
+      page.url(),
+      beforeRenameUrl,
+      'Native Back cancels renaming in the current network',
+    );
+    assert.equal(await networkTitle.innerText(), importantName);
+
+    await menuTrigger.click();
+    await menu.getByRole('button', { name: 'Переименовать', exact: true }).click();
+    await renameInput.fill('Черновик другой сетки');
+    await menuTrigger.click();
     await page
       .getByRole('combobox', { name: 'Переключить сетку', exact: true })
       .selectOption('watch');
-    await page.locator('.network-workspace-menu summary').click();
+    await page.waitForURL((url) => url.searchParams.get('category') === 'watch');
+    await renameInput.waitFor({ state: 'hidden' });
+    assert.equal(
+      (await labelWrites(page)).length,
+      beforeLabelWrites,
+      'cancelling or switching a rename draft never saves a category label',
+    );
+    const watchName = await networkTitle.innerText();
+    await menuTrigger.click();
+    await menu.getByRole('button', { name: 'Переименовать', exact: true }).click();
+    assert.equal(
+      await renameInput.inputValue(),
+      watchName,
+      'new rename starts from the new target',
+    );
+    const renamedWatch = `${watchName} 2`;
+    await renameInput.fill(renamedWatch);
+    await page.getByRole('button', { name: 'Сохранить название', exact: true }).click();
+    await renameInput.waitFor({ state: 'hidden' });
+    assert.equal(await networkTitle.innerText(), renamedWatch);
+    const renamedLabels = await labelWrites(page);
+    assert.equal(
+      renamedLabels.length,
+      beforeLabelWrites + 1,
+      'explicit save writes the label once',
+    );
+    assert.equal(renamedLabels.at(-1).body.labels.watch, renamedWatch);
+    assert.equal(
+      await page.locator('.network-workspace-menu option[value="important"]').textContent(),
+      importantName,
+      'saving the switched network never overwrites the previous category',
+    );
     await configure.click();
     const switchedScope = await settingsHub(page, { readCount: (await readRequests(page)).length });
     assert.deepEqual(
@@ -829,6 +1086,19 @@ for (const profile of [
     );
     await settleVisualFrame(page);
     await back(page);
+    await page.locator('.network-summary-card').first().waitFor();
+    await page
+      .locator('.network-summary-card[data-network-category="watch"]')
+      .getByText(renamedWatch, { exact: true })
+      .waitFor();
+    await back(page);
+    await page.locator('.chats-home--chat .chat-card').first().waitFor();
+    assert.equal(
+      new URL(page.url()).searchParams.get('view'),
+      'chat',
+      'catalogue Back returns to its home entity type',
+    );
+    await page.locator('.bottom-nav').getByRole('link', { name: 'Сетки', exact: true }).click();
     await page.locator('.network-summary-card').first().waitFor();
     await page.getByRole('radio', { name: 'Каналы', exact: true }).click();
     await page.getByText('Подписчики', { exact: true }).first().waitFor();

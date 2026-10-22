@@ -1,0 +1,216 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    ) {
+    --steel-nav-start: #ffffff;
+    --steel-nav-end: #f4f8ff;
+    --steel-nav-active-start: #e4edfd;
+    --steel-nav-active-end: #f2f6ff;
+    --steel-important-ink: #8a6200;
+    --steel-important-soft: #fff9e8;
+    --steel-watch-ink: #b32a55;
+    --steel-watch-soft: #fff4f7;
+    --steel-broadcast-ink: #a24412;
+    --steel-broadcast-soft: #fff6ef;
+    --steel-test-ink: #7040bd;
+    --steel-test-soft: #f8f4ff;
+    --steel-partner-ink: #08715a;
+    --steel-partner-soft: #f0fbf7;
+    --steel-service-ink: #096b87;
+    --steel-service-soft: #f0faff;
+    --steel-light-halo: color-mix(in srgb, var(--steel-blue) 45%, transparent);
+  }
+  html[data-max-theme='dark']
+    body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    ) {
+    --steel-nav-start: #1b293f;
+    --steel-nav-end: #101a2b;
+    --steel-nav-active-start: #244573;
+    --steel-nav-active-end: #162b48;
+    --steel-important-ink: #ffd84a;
+    --steel-important-soft: #302a16;
+    --steel-watch-ink: #ff6d97;
+    --steel-watch-soft: #321b2c;
+    --steel-broadcast-ink: #ff9658;
+    --steel-broadcast-soft: #332416;
+    --steel-test-ink: #b48aff;
+    --steel-test-soft: #281f3c;
+    --steel-partner-ink: #41e8bb;
+    --steel-partner-soft: #14332e;
+    --steel-service-ink: #65dcff;
+    --steel-service-soft: #17313e;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav {
+    width: min(calc(100% - 28px), 736px);
+    padding: 7px;
+    gap: 0;
+    border: 1px solid var(--steel-line);
+    border-radius: 25px;
+    background: linear-gradient(165deg, var(--steel-nav-start), var(--steel-nav-end));
+    box-shadow:
+      0 1px 0 var(--steel-glint) inset,
+      0 12px 24px var(--steel-shadow);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav::before {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__item {
+    position: relative;
+    min-height: 59px;
+    padding: 7px 3px;
+    gap: 6px;
+    border: 0;
+    border-radius: 18px;
+    background: transparent;
+    color: var(--steel-muted);
+    font-weight: 500;
+    transform: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__item::before,
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__item::after {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__item.is-active {
+    border: 0;
+    background: linear-gradient(150deg, var(--steel-nav-active-start), var(--steel-nav-active-end));
+    color: var(--steel-blue);
+    box-shadow: 0 1px 0 var(--steel-glint) inset;
+    transform: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__item.is-active::after {
+    content: '';
+    position: absolute;
+    display: block;
+    top: -8px;
+    right: 12px;
+    bottom: auto;
+    left: 12px;
+    width: auto;
+    height: 2px;
+    border: 0;
+    border-radius: 4px;
+    background: var(--steel-blue);
+    box-shadow: 0 2px 12px var(--steel-light-halo);
+    opacity: 1;
+    transform: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__icon,
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__item.is-active
+    .bottom-nav__icon {
+    width: 25px;
+    height: 25px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    box-shadow: none;
+    transform: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__icon-svg.app-icon {
+    width: 21px;
+    height: 21px;
+    stroke-width: 1.65;
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .chats-home-page-open,
+      .networks-page-open,
+      .network-settings-page-open
+    )
+    .bottom-nav__label {
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.1;
+    letter-spacing: 0;
+  }
+
+  body[data-miniapp-profile='moderation'] [data-network-category='important'] {
+    --network-category: var(--steel-important-ink);
+    --network-category-surface: var(--steel-important-soft);
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='watch'] {
+    --network-category: var(--steel-watch-ink);
+    --network-category-surface: var(--steel-watch-soft);
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='broadcast'] {
+    --network-category: var(--steel-broadcast-ink);
+    --network-category-surface: var(--steel-broadcast-soft);
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='test'] {
+    --network-category: var(--steel-test-ink);
+    --network-category-surface: var(--steel-test-soft);
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='partner'] {
+    --network-category: var(--steel-partner-ink);
+    --network-category-surface: var(--steel-partner-soft);
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='service'] {
+    --network-category: var(--steel-service-ink);
+    --network-category-surface: var(--steel-service-soft);
+  }
+}

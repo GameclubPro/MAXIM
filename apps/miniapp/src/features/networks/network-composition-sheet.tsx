@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { ManagedEntityFavoriteType, ManagedEntityType } from '@maxim/contracts';
 import type { ApiTransport } from '../../lib/api/transport';
 import { useHomeEntityFavorites } from '../../lib/home-entity-favorites-context';
-import { useManagedEntityNetworkCompositionDraft } from '../../lib/home-entity-networks-context';
+import { useManagedEntityNetworkCompositionDraft } from '../../lib/use-managed-entity-network-composition-draft';
 import { useManagedEntityLeaveGuard } from '../../lib/managed-entity-navigation';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';

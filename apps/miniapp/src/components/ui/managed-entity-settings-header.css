@@ -2,6 +2,7 @@
   /* Keep the viewport as the sticky header's scroll container. */
   body[data-miniapp-profile='moderation']:is(
       .settings-home-page-open,
+      .networks-page-open,
       .channel-settings-page-open
     ) {
     overflow-x: clip;
@@ -54,14 +55,40 @@
 
   body[data-miniapp-profile='moderation']
     .managed-entity-workspace-header--settings
+    .compact-page-header__bar::after {
+    content: '';
+    display: block;
+    position: absolute;
+    inset: 0 20px auto auto;
+    width: 48px;
+    height: 2px;
+    border-radius: 0;
+    background: var(--steel-header-signature);
+    pointer-events: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
     .compact-page-header__back {
     grid-area: 1 / 1;
     align-self: center;
     z-index: 1;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
     border: 1px solid var(--settings-header-control-border);
     border-radius: 14px;
     background: var(--settings-header-control-surface);
     color: var(--settings-header-ink);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
+    .compact-page-header__back
+    svg {
+    width: 21px;
+    height: 21px;
   }
 
   body[data-miniapp-profile='moderation']
@@ -110,12 +137,23 @@
 
   body[data-miniapp-profile='moderation']
     .managed-entity-workspace-header--settings
+    .compact-page-header__title-wrap {
+    gap: 2px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .managed-entity-workspace-header--settings
     .compact-page-header__title {
     color: var(--settings-header-ink);
     font-size: clamp(20px, 5.4vw, 24px);
     font-weight: 750;
     line-height: 1.14;
     letter-spacing: -0.035em;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     text-wrap: balance;
   }
 
