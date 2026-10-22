@@ -4,6 +4,7 @@ import type { NetworkSettingsOperationResponse } from '@maxim/contracts/network-
 import type { ApiTransport } from '../../lib/api/transport';
 import {
   hydrateNetworkSettingsOperationReceipts,
+  hasUnsettledNetworkSettingsRetry,
   persistNetworkSettingsOperationReceipt,
   removeNetworkSettingsOperationReceipt,
   type NetworkSettingsOperationReceipt,
@@ -87,6 +88,12 @@ export function NetworkOperationHistory({ api, userId }: { api: ApiTransport; us
     }
   };
   const archive = async (receipt: NetworkSettingsOperationReceipt) => {
+    if (hasUnsettledNetworkSettingsRetry(receipt.operationId, receipts)) {
+      setError(
+        'Сначала завершите повторную операцию или уберите её неподтверждённую проверку из истории.',
+      );
+      return;
+    }
     if (
       !result ||
       result.operationId !== receipt.operationId ||

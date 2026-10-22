@@ -197,6 +197,51 @@ test('archiving preserves terminal operations with unsettled outcomes until sett
   }
 });
 
+test('a prepared retry retains its parent until it can no longer dispatch', async () => {
+  const env = environment();
+  try {
+    const parent = historyReceipt(1, {
+      lastKnownStatus: 'FAILED',
+      completionConfirmedAt: undefined,
+      settlementConfirmedAt: new Date().toISOString(),
+    });
+    await persistNetworkSettingsOperationReceipt(parent);
+    const child = historyReceipt(2, {
+      retryOfOperationId: parent.operationId,
+      launchState: 'unconfirmed',
+      lastKnownStatus: 'PREPARED',
+      completionConfirmedAt: undefined,
+    });
+    await persistNetworkSettingsOperationReceipt(child);
+    await assert.rejects(
+      removeNetworkSettingsOperationReceipt('actor', parent.operationId),
+      /повторной операции/u,
+    );
+    await persistNetworkSettingsOperationReceipt({ ...child, launchState: 'launching' });
+    await persistNetworkSettingsOperationReceipt({
+      ...child,
+      launchState: 'submitted',
+      lastKnownStatus: 'COMPLETE',
+      completionConfirmedAt: new Date().toISOString(),
+    });
+    await removeNetworkSettingsOperationReceipt('actor', parent.operationId);
+    assert.equal(
+      listNetworkSettingsOperationReceipts('actor').some(
+        (receipt) => receipt.operationId === parent.operationId,
+      ),
+      false,
+    );
+    assert.equal(
+      listNetworkSettingsOperationReceipts('actor').some(
+        (receipt) => receipt.operationId === child.operationId,
+      ),
+      true,
+    );
+  } finally {
+    env.restore();
+  }
+});
+
 test('more than 100 proven completed receipts make space for a new operation by pruning oldest only', async () => {
   const env = environment();
   try {

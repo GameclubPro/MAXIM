@@ -308,6 +308,17 @@ export async function persistNetworkSettingsOperationReceipt(
     if (queues.get(value.userId) === work) queues.delete(value.userId);
   }
 }
+export function hasUnsettledNetworkSettingsRetry(
+  operationId: string,
+  receipts: readonly NetworkSettingsOperationReceipt[],
+): boolean {
+  return receipts.some(
+    (receipt) =>
+      receipt.retryOfOperationId === operationId &&
+      !(receipt.settlementConfirmedAt || receipt.completionConfirmedAt),
+  );
+}
+
 export async function removeNetworkSettingsOperationReceipt(
   userId: string,
   operationId: string,
@@ -318,6 +329,9 @@ export async function removeNetworkSettingsOperationReceipt(
     .then(async () => {
       const list = listNetworkSettingsOperationReceipts(userId);
       const receipt = list.find((r) => r.operationId === operationId);
+      // FLAG: An unfinished retry still needs its parent witness before dispatch.
+      if (hasUnsettledNetworkSettingsRetry(operationId, list))
+        throw new Error('Сначала проверьте результат повторной операции.');
       if (
         receipt &&
         receipt.launchState !== 'unconfirmed' &&
