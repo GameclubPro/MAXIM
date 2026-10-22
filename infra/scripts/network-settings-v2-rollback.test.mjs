@@ -196,7 +196,7 @@ test('v2+ runtime imports retain every canonical schema without pinning unrelate
     }
     const extended = original.replace(
       edge[0],
-      edge[0].replace('{', '{ networkSettingsFieldSchema,'),
+      edge[0].replaceAll('{', '{ networkSettingsFieldSchema,'),
     );
     assert.doesNotThrow(() =>
       assertNetworkSettingsV2Source('a'.repeat(40), (candidate) =>
