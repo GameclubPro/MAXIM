@@ -1,5 +1,5 @@
 import { AppIcon } from './ui/app-icon';
-import { lazy, Suspense, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router';
 import { cn } from '../lib/cn';
 import { saveChatTitle } from '../lib/chat-titles';
@@ -26,10 +26,6 @@ import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { openPublikBot, PUBLIK_BOT_URL } from '../lib/publik-bot';
 import '../styles/moderation-workspace.css';
 import '../styles/publisher-workspace.css';
-
-const MaxIncidentNotice = lazy(() =>
-  import('./max-incident-notice').catch(() => ({ default: () => null })),
-);
 
 export function Shell({
   profile = 'moderation',
@@ -261,12 +257,6 @@ export function Shell({
       <main className="shell-content">
         <Outlet />
       </main>
-
-      {!isDialogRoute && !isGiveawayRoute && !isLegalRoute ? (
-        <Suspense fallback={null}>
-          <MaxIncidentNotice />
-        </Suspense>
-      ) : null}
 
       {shouldShowBottomNav ? (
         <nav
