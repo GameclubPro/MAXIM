@@ -146,6 +146,20 @@ export class AdminSettingsController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
+    // FLAG: An older open editor cannot overwrite a group rules revision it never read.
+    if (
+      !body ||
+      typeof body !== 'object' ||
+      !('expectedRevision' in body) ||
+      (body.expectedRevision !== null && typeof body.expectedRevision !== 'string')
+    )
+      throw new HttpException(
+        {
+          code: 'CHAT_RULES_REVISION_REQUIRED',
+          message: 'Обновите экран правил перед сохранением.',
+        },
+        428,
+      );
     return this.settingsService.updateRules(chatId, user, body);
   }
 

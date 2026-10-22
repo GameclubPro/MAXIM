@@ -49,7 +49,23 @@ test('Publik launches into its own entity catalog with Posts as a peer module', 
     /<LazyPublisherEntitiesPage api=\{apiClient\} botDialogUrl=\{me\.botDialogUrl\}/u,
   );
   assert.match(shellSource, /profile === 'publisher' \? '\/'/u);
-  assert.match(shellSource, /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute;/u);
+  assert.match(
+    shellSource,
+    /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute \|\| isNetworksRoute;/u,
+  );
+  assert.match(
+    shellSource,
+    /const isNetworksRoute =\s*profile === 'moderation' && networksEnabled && location\.pathname === '\/networks';/u,
+  );
+  assert.match(shellSource, /profile === 'moderation' && networksEnabled && 'bottom-nav--four'/u);
+  assert.match(
+    shellSource,
+    /\{profile === 'moderation' && networksEnabled \? \(\s*<Link\s+to="\/networks"/u,
+  );
+  assert.match(
+    shellSource,
+    /\{profile === 'publisher' \? \(\s*<NavLink\s+to="\/publications"[\s\S]*?>Посты<\/span>/u,
+  );
 });
 
 test('Posts uses one compact recipient status instead of a second catalog card', () => {

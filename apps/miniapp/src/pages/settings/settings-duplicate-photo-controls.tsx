@@ -9,10 +9,12 @@ export default function SettingsDuplicatePhotoControls({
   moderationPolicy,
   scope,
   onScopeChange,
+  disabled = false,
 }: {
-  moderationPolicy: DuplicatePhotoPresentationPolicy;
-  scope: DuplicatePhotoScope;
+  moderationPolicy?: DuplicatePhotoPresentationPolicy;
+  scope: DuplicatePhotoScope | null;
   onScopeChange: (value: DuplicatePhotoScope) => void;
+  disabled?: boolean;
 }) {
   return (
     <>
@@ -20,9 +22,11 @@ export default function SettingsDuplicatePhotoControls({
         <div className="settings-native-toggle__row">
           <span className="settings-native-toggle__title">Одинаковые картинки</span>
         </div>
-        {moderationPolicy.moderationMode !== 'FULL' ? (
+        {moderationPolicy?.moderationMode !== 'FULL' ? (
           <p className="policy-mode-hint" role="status">
-            Проверка картинок сейчас недоступна
+            {moderationPolicy
+              ? 'Проверка картинок сейчас недоступна'
+              : 'Доступность проверки зависит от каждого чата'}
           </p>
         ) : null}
       </div>
@@ -35,11 +39,14 @@ export default function SettingsDuplicatePhotoControls({
           <span className="field__label">Чьи картинки сравнивать</span>
           <SegmentedControl
             value={scope}
-            options={DUPLICATE_PHOTO_SCOPE_OPTIONS}
-            onChange={onScopeChange}
+            options={DUPLICATE_PHOTO_SCOPE_OPTIONS.map((option) => ({ ...option, disabled }))}
+            onChange={(value) => {
+              if (value === 'CHAT' || value === 'SAME_AUTHOR') onScopeChange(value);
+            }}
             className="settings-mode-segments duplicate-photo-settings__segments"
             ariaLabel="Чьи картинки сравнивать"
           />
+          {scope === null ? <p className="field__hint">Разные значения</p> : null}
         </div>
         <dl className="duplicate-diagnostics__facts">
           <div>

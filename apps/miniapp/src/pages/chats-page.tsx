@@ -38,21 +38,11 @@ import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
 import {
   HOME_ENTITY_FAVORITE_TYPES,
-  type HomeEntityFavoriteLabelOverrides,
-  getHomeEntityFavoritesFallbackScope,
   getHomeEntityFavoriteTypes,
-  hydrateHomeEntityFavorites,
   isHomeEntityFavorite,
-  mergeHomeEntityFavorites,
   orderHomeEntitiesByFavorites,
-  readHomeEntityFavorites,
-  resolveHomeEntityFavoriteLabels,
-  reconcileHomeEntityFavoritesFromEntities,
-  saveHomeEntityFavoriteLabels,
-  saveHomeEntityFavorites,
-  setHomeEntityFavoriteTypes,
 } from '../lib/home-entity-favorites';
-import { getInitDataUserId } from '../lib/init-data';
+import { useHomeEntityFavorites } from '../lib/home-entity-favorites-context';
 import {
   buildManagedEntityHomeSnapshotStorageKey,
   buildManagedEntitySettingsRoute,
@@ -155,6 +145,8 @@ function preloadHomeEntitySheets() {
     homeEntitySheetsPromise = null;
     throw error;
   });
+  // Preloading may be interrupted by leaving the WebView; explicit opens still receive rejection.
+  void homeEntitySheetsPromise.catch(() => undefined);
   return homeEntitySheetsPromise;
 }
 const LazyHomeEntitySheets = lazy(preloadHomeEntitySheets);
@@ -178,21 +170,6 @@ const LazyHomeListStatus = lazy(() =>
     ),
   })),
 );
-
-async function recoverHomeEntityFavoritesRuntime(
-  cause: unknown,
-  signal: AbortSignal,
-): Promise<boolean> {
-  try {
-    const recovery = await import('../lib/lazy-load-recovery');
-    if (signal.aborted) {
-      return false;
-    }
-    return recovery.reloadAfterLazyPageLoadFailure('HomeEntityFavoritesRuntime', cause);
-  } catch {
-    return false;
-  }
-}
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
@@ -230,24 +207,6 @@ function buildHomeSyncStatus(options: {
   }
 
   return { label: 'Список обновлён', tone: 'ready' };
-}
-
-async function saveManagedEntityFavoriteTypes(
-  api: ApiTransport,
-  entityType: ManagedTab,
-  entityId: string,
-  favoriteTypes: ManagedEntityFavoriteType[],
-  expectedFavoriteType: ManagedEntityFavoriteType | null,
-) {
-  const { updateManagedEntityFavorites } =
-    await import('../lib/api/managed-entity-favorites-client');
-  return updateManagedEntityFavorites(
-    api,
-    entityType,
-    entityId,
-    favoriteTypes,
-    expectedFavoriteType,
-  );
 }
 
 function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity) {
@@ -311,8 +270,8 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
   ) as ManagedTab;
   const initialHomeSnapshot = readHomeSnapshotFromRouteState(location.state, activeTab);
   const [query, setQuery] = useState(() => initialHomeSnapshot?.query ?? '');
-  const initDataUserId = getInitDataUserId()?.trim() || null;
-  const [currentUserId, setCurrentUserId] = useState<string | null>(() => initDataUserId);
+  const { snapshot: favoritesSnapshot, actions: favoritesActions } = useHomeEntityFavorites();
+  const currentUserId = favoritesSnapshot.actor.userId;
   const homeRootRef = useRef<HTMLDivElement | null>(null);
   const virtualListViewportRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -323,24 +282,16 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
   const homeSnapshotRestoreAttemptRef = useRef<string | null>(null);
   const entityNavigationPendingRef = useRef(false);
   const [virtualListScrollTop, setVirtualListScrollTop] = useState(0);
-  const favoriteStorageScope = useMemo(() => {
-    const normalizedUserId = currentUserId?.trim();
-    return normalizedUserId ? `u:${normalizedUserId}` : getHomeEntityFavoritesFallbackScope();
-  }, [currentUserId]);
-  const favoriteStorageScopeRef = useRef(favoriteStorageScope);
-  const [homeEntityFavorites, setHomeEntityFavorites] = useState(() =>
-    readHomeEntityFavorites(favoriteStorageScope),
-  );
-  const [homeEntityFavoriteLabels, setHomeEntityFavoriteLabels] =
-    useState<HomeEntityFavoriteLabelOverrides>({});
-  const [favoriteLabelsStatus, setFavoriteLabelsStatus] = useState<
-    'loading' | 'ready' | 'api' | 'chunk'
-  >('loading');
-  const [favoriteLabelsRetryNonce, setFavoriteLabelsRetryNonce] = useState(0);
-  const favoriteLabels = useMemo(
-    () => resolveHomeEntityFavoriteLabels(homeEntityFavoriteLabels),
-    [homeEntityFavoriteLabels],
-  );
+  const favoriteStorageScope = favoritesSnapshot.actor.scope;
+  const homeEntityFavorites = favoritesSnapshot.assignments;
+  const homeEntityFavoriteLabels = favoritesSnapshot.labels.overrides;
+  const favoriteLabels = favoritesSnapshot.labels.resolved;
+  const favoriteLabelsStatus =
+    favoritesSnapshot.labels.status === 'ready'
+      ? 'ready'
+      : favoritesSnapshot.labels.status === 'error'
+        ? 'api'
+        : 'loading';
   const [favoriteFilter, setFavoriteFilter] = useState<
     ManagedEntityFavoriteType | typeof FAVORITE_FILTER_ALL
   >(() => initialHomeSnapshot?.filter ?? FAVORITE_FILTER_ALL);
@@ -353,11 +304,6 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
   const [connectSheetOpen, setConnectSheetOpen] = useState(false);
   const [categoryEditMode, setCategoryEditMode] = useState(false);
   const [savingFavoriteEntityKey, setSavingFavoriteEntityKey] = useState<string | null>(null);
-  const pendingFavoriteMutationRef = useRef<{
-    entityType: ManagedTab;
-    entityId: string;
-    favoriteTypes: ManagedEntityFavoriteType[];
-  } | null>(null);
   const homeOverlayOpen =
     connectSheetOpen ||
     Boolean(favoritePicker) ||
@@ -786,109 +732,20 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
   }, [channelsState.data, chatsState.data]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    void hydrateHomeEntityFavorites(favoriteStorageScope).then((nativeFavorites) => {
-      if (cancelled) {
-        return;
-      }
-
-      setHomeEntityFavorites((current) => {
-        let next = reconcileHomeEntityFavoritesFromEntities(
-          mergeHomeEntityFavorites(current, nativeFavorites),
-          authoritativeFavoriteEntitiesRef.current,
-        );
-        const pending = pendingFavoriteMutationRef.current;
-        if (pending) {
-          next = setHomeEntityFavoriteTypes(
-            next,
-            pending.entityType,
-            pending.entityId,
-            pending.favoriteTypes,
-          );
-        }
-        if (JSON.stringify(next) === JSON.stringify(current)) {
-          return current;
-        }
-
-        saveHomeEntityFavorites(favoriteStorageScope, next);
-        return next;
-      });
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [favoriteStorageScope]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setHomeEntityFavoriteLabels({});
-    setFavoriteLabelsStatus('loading');
-
-    void import('../lib/home-entity-favorites-runtime').then(
-      async (runtime) => {
-        const ready = await runtime.synchronizeAuthenticatedHomeEntityFavoriteLabels(
-          api,
-          initDataUserId,
-          controller.signal,
-          setCurrentUserId,
-          setHomeEntityFavoriteLabels,
-        );
-        if (controller.signal.aborted) {
-          return;
-        }
-        if (ready) {
-          setFavoriteLabelsStatus('ready');
-        } else if (ready === undefined) {
-          setFavoriteLabelsStatus('api');
-        }
-      },
-      async (cause: unknown) => {
-        if (
-          !controller.signal.aborted &&
-          !(await recoverHomeEntityFavoritesRuntime(cause, controller.signal)) &&
-          !controller.signal.aborted
-        ) {
-          setFavoriteLabelsStatus('chunk');
-        }
-      },
-    );
-
-    return () => controller.abort();
-  }, [api, favoriteLabelsRetryNonce, initDataUserId]);
-
-  useEffect(() => {
-    const serverEntities = authoritativeFavoriteEntitiesRef.current;
-    if (!serverEntities.chats && !serverEntities.channels) {
-      return;
-    }
-
-    setHomeEntityFavorites((current) => {
-      let next = reconcileHomeEntityFavoritesFromEntities(current, serverEntities);
-      const pending = pendingFavoriteMutationRef.current;
-      if (pending) {
-        next = setHomeEntityFavoriteTypes(
-          next,
-          pending.entityType,
-          pending.entityId,
-          pending.favoriteTypes,
-        );
-      }
-      if (JSON.stringify(next) === JSON.stringify(current)) {
-        return current;
-      }
-
-      saveHomeEntityFavorites(favoriteStorageScope, next);
-      return next;
-    });
+    favoritesActions.reconcileLoadedEntities(authoritativeFavoriteEntitiesRef.current);
   }, [
+    favoritesActions,
     channelsState.data,
     channelsState.hasLoadedFromServer,
     chatsState.data,
     chatsState.hasLoadedFromServer,
-    favoriteStorageScope,
   ]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void favoritesActions.refreshAssignments(activeTab, controller.signal).catch(() => undefined);
+    return () => controller.abort();
+  }, [favoritesActions, activeTab, refreshRequestByTab[activeTab].nonce]);
 
   useEffect(() => {
     saveLastEntityType(activeTab);
@@ -1090,46 +947,6 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
   }, [categoryEditMode, homeOverlayOpen]);
 
   useEffect(() => {
-    const previousScope = favoriteStorageScopeRef.current;
-    if (previousScope === favoriteStorageScope) {
-      return;
-    }
-
-    const storedFavorites = readHomeEntityFavorites(favoriteStorageScope);
-    const nextFavorites =
-      previousScope === getHomeEntityFavoritesFallbackScope() &&
-      favoriteStorageScope !== getHomeEntityFavoritesFallbackScope()
-        ? mergeHomeEntityFavorites(storedFavorites, readHomeEntityFavorites(previousScope))
-        : storedFavorites;
-    let scopedFavorites = reconcileHomeEntityFavoritesFromEntities(nextFavorites, {
-      chats: chatsState.hasLoadedFromServer ? (chatsState.data ?? []) : undefined,
-      channels: channelsState.hasLoadedFromServer ? (channelsState.data ?? []) : undefined,
-    });
-    const pending = pendingFavoriteMutationRef.current;
-    if (pending) {
-      scopedFavorites = setHomeEntityFavoriteTypes(
-        scopedFavorites,
-        pending.entityType,
-        pending.entityId,
-        pending.favoriteTypes,
-      );
-    }
-
-    if (JSON.stringify(scopedFavorites) !== JSON.stringify(storedFavorites)) {
-      saveHomeEntityFavorites(favoriteStorageScope, scopedFavorites);
-    }
-
-    favoriteStorageScopeRef.current = favoriteStorageScope;
-    setHomeEntityFavorites(scopedFavorites);
-  }, [
-    channelsState.data,
-    channelsState.hasLoadedFromServer,
-    chatsState.data,
-    chatsState.hasLoadedFromServer,
-    favoriteStorageScope,
-  ]);
-
-  useEffect(() => {
     if (showEmptyState) {
       void preloadHomeEntitySheets();
     }
@@ -1137,11 +954,11 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
 
   function prefetchChatSettings(chatId: string) {
     void chatId;
-    preloadSettingsPage();
+    void preloadSettingsPage().catch(() => undefined);
   }
 
   function prefetchChatEvents(chatId: string, preference: ManagedEntityStatsPreference) {
-    preloadEventsPage();
+    void preloadEventsPage().catch(() => undefined);
     if (preference.section === 'participants') {
       return;
     }
@@ -1169,7 +986,7 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
 
   function prefetchChannelSettings(chatId: string) {
     void chatId;
-    preloadChannelSettingsPage();
+    void preloadChannelSettingsPage().catch(() => undefined);
   }
 
   function rememberEntity(entityType: ManagedTab, entity: ManagedHomeEntity) {
@@ -1328,11 +1145,7 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
 
   function openFavoriteLabelsEditor(trigger?: HTMLElement) {
     if (favoriteLabelsStatus !== 'ready') {
-      if (favoriteLabelsStatus === 'chunk') {
-        window.location.reload();
-      } else if (favoriteLabelsStatus === 'api') {
-        setFavoriteLabelsRetryNonce((current) => current + 1);
-      }
+      void favoritesActions.refreshLabels().catch(() => undefined);
       return;
     }
     if (trigger) {
@@ -1399,74 +1212,35 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
       return;
     }
 
-    const previousFavorites = homeEntityFavorites;
-    const previousFavoriteTypes = getHomeEntityFavoriteTypes(
-      previousFavorites,
-      entityType,
-      entityId,
-    );
-    const favoriteTypes = favoriteType ? [favoriteType] : [];
-    pendingFavoriteMutationRef.current = { entityType, entityId, favoriteTypes };
-    const nextFavorites = setHomeEntityFavoriteTypes(
-      previousFavorites,
-      entityType,
-      entityId,
-      favoriteTypes,
-    );
-    setHomeEntityFavorites(nextFavorites);
-    saveHomeEntityFavorites(favoriteStorageScope, nextFavorites);
+    const expectedFavoriteType =
+      getHomeEntityFavoriteTypes(homeEntityFavorites, entityType, entityId)[0] ?? null;
     setSavingFavoriteEntityKey(buildFavoriteEntityKey(entityType, entityId));
-
     try {
-      const saved = await saveManagedEntityFavoriteTypes(
-        api,
+      const result = await favoritesActions.setFavorite({
         entityType,
         entityId,
-        favoriteTypes,
-        previousFavoriteTypes[0] ?? null,
-      );
-      pendingFavoriteMutationRef.current = {
-        entityType,
-        entityId,
-        favoriteTypes: saved.favoriteTypes,
-      };
-      setHomeEntityFavorites((current) => {
-        const next = setHomeEntityFavoriteTypes(current, entityType, entityId, saved.favoriteTypes);
-        saveHomeEntityFavorites(favoriteStorageScope, next);
-        return next;
+        expectedFavoriteType,
+        favoriteType,
       });
       setFavoritePicker((current) =>
         current?.entityType === entityType && current.entity.id === entityId ? null : current,
       );
+      if (result.refresh === 'pending')
+        pushToast({
+          title: 'Категория сохранена',
+          description: 'Обновите список, чтобы увидеть актуальный состав.',
+          tone: 'info',
+        });
     } catch (error) {
-      pendingFavoriteMutationRef.current = {
-        entityType,
-        entityId,
-        favoriteTypes: previousFavoriteTypes,
-      };
-      setHomeEntityFavorites((current) => {
-        const rollback = setHomeEntityFavoriteTypes(
-          current,
-          entityType,
-          entityId,
-          previousFavoriteTypes,
-        );
-        saveHomeEntityFavorites(favoriteStorageScope, rollback);
-        return rollback;
-      });
       pushToast({
         title:
           error instanceof ApiRequestError && error.status === 409
             ? 'Состав избранного изменился'
-            : 'Не удалось сохранить категорию',
-        description:
-          error instanceof ApiRequestError && error.status === 409
-            ? 'Обновите список перед сохранением.'
-            : 'Попробуйте ещё раз.',
+            : 'Проверьте сохранение категории',
+        description: 'Обновите состав перед следующим сохранением.',
         tone: 'danger',
       });
     } finally {
-      pendingFavoriteMutationRef.current = null;
       setSavingFavoriteEntityKey((current) =>
         current === buildFavoriteEntityKey(entityType, entityId) ? null : current,
       );
@@ -1474,7 +1248,7 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
   }
 
   function prefetchChannelStats(chatId: string, preference: ManagedEntityStatsPreference) {
-    preloadChannelStatsPage();
+    void preloadChannelStatsPage().catch(() => undefined);
     const range = preference.range ?? DEFAULT_CHANNEL_STATS_RANGE;
     void queryClient
       .prefetchQuery({
@@ -1851,9 +1625,7 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
                 );
               }
             }}
-            onFavoriteLabelsSaved={(savedLabels) => {
-              setHomeEntityFavoriteLabels(savedLabels);
-              saveHomeEntityFavoriteLabels(favoriteStorageScope, savedLabels);
+            onFavoriteLabelsSaved={() => {
               setFavoriteLabelsEditorOpen(false);
             }}
           />

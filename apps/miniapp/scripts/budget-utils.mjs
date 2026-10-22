@@ -1,3 +1,27 @@
+import path from 'node:path';
+
+export function resolveManifestEntry(manifest, reference) {
+  const scriptReference = /\.[cm]?[jt]sx?$/u.test(reference);
+  const matchesKind = (chunk) =>
+    !scriptReference || (typeof chunk?.file === 'string' && /\.[cm]?js$/u.test(chunk.file));
+  if (manifest[reference] && matchesKind(manifest[reference])) {
+    return reference;
+  }
+
+  const baseName = path.parse(reference).name;
+  const candidate = Object.entries(manifest).find(
+    ([entryKey, chunk]) =>
+      matchesKind(chunk) &&
+      (entryKey.endsWith(reference) ||
+        chunk?.name === baseName ||
+        chunk?.file?.includes(`/${baseName}-`)),
+  )?.[0];
+  if (!candidate) {
+    throw new Error(`Manifest entry not found for ${reference}`);
+  }
+  return candidate;
+}
+
 export function collectManifestAssets(manifest, entryKeys) {
   const assets = { js: new Set(), css: new Set() };
   const visited = new Set();

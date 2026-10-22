@@ -1,3 +1,4 @@
+import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 import { PlusCircle, Trash } from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
@@ -28,6 +29,7 @@ import { describeUserFacingError } from '../../lib/user-facing-error';
 import '../../styles/settings-storefront.css';
 
 type SettingsStorefrontSectionProps = {
+  sharedContent?: ReactNode;
   draft: Pick<ChatSettings, 'karavanStorefrontEnabled' | 'karavanStorefrontAdminsOnly'> &
     KaravanStorefrontTexts;
   api: ApiTransport;
@@ -66,7 +68,10 @@ function allowlistEntryLabel(entry: KaravanStorefrontAllowlistEntry): string {
   return entry.displayName?.trim() || `Пользователь ${entry.userId}`;
 }
 
+const SECTION_PRESENTATION = getNetworkSettingsSectionPresentation('chat', 'storefront');
+
 export function SettingsStorefrontSection({
+  sharedContent,
   draft,
   api,
   chatId,
@@ -153,17 +158,17 @@ export function SettingsStorefrontSection({
     <>
       <GlassCard
         className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-        style={{ animationDelay: '386ms', order: 31 }}
+        style={{ animationDelay: '386ms', order: SECTION_PRESENTATION.order }}
         aria-label="Интернет-витрина"
       >
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
-            title="Интернет-витрина"
+            title={SECTION_PRESENTATION.title}
             enabled={draft.karavanStorefrontEnabled}
             summary={summary}
             status={status}
-            icon="storefront"
-            tone="sky"
+            icon={SECTION_PRESENTATION.icon}
+            tone={SECTION_PRESENTATION.tone}
             open={expanded}
             controls="settings-storefront-content"
             onClick={onToggleSection}
@@ -172,12 +177,12 @@ export function SettingsStorefrontSection({
 
         <SettingsDrilldownPanel
           id="settings-storefront-content"
-          icon={<SettingsSectionIcon name="storefront" />}
+          icon={<SettingsSectionIcon name={SECTION_PRESENTATION.icon} />}
           open={expanded}
-          title="Интернет-витрина"
+          title={SECTION_PRESENTATION.title}
           summary={summary}
-          tone="sky"
-          className="settings-drilldown__panel--notice"
+          tone={SECTION_PRESENTATION.tone}
+          className={SECTION_PRESENTATION.panelClassName}
           onClose={onToggleSection}
           headerAction={headerAction}
           confirmCloseWhen={hasChanges}
@@ -190,60 +195,66 @@ export function SettingsStorefrontSection({
           >
             {expanded ? (
               <div className="settings-section__collapse-inner">
-                <div className="settings-native-toggle">
-                  <div className="settings-native-toggle__row">
-                    <div className="settings-native-toggle__title-wrap">
-                      <span className="settings-native-toggle__title">Караван</span>
-                    </div>
+                {sharedContent ?? (
+                  <div className="settings-native-toggle">
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Караван</span>
+                      </div>
 
-                    <label
-                      className="settings-native-switch"
-                      aria-label="Включить кнопку витрины Караван"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={draft.karavanStorefrontEnabled}
-                        onChange={(event) => onFieldChange(event.target.checked)}
-                      />
-                      <span className="toggle-switch" aria-hidden>
-                        <span className="toggle-switch__thumb" />
-                      </span>
-                    </label>
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить кнопку витрины Караван"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.karavanStorefrontEnabled}
+                          onChange={(event) => onFieldChange(event.target.checked)}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+                    <p className="settings-native-toggle__hint">
+                      Одиночный $ без витрины покажет кнопки витрин.
+                    </p>
                   </div>
-                  <p className="settings-native-toggle__hint">
-                    Одиночный $ без витрины покажет кнопки витрин.
-                  </p>
-                </div>
+                )}
 
                 {draft.karavanStorefrontEnabled ? (
                   <>
-                    <SettingsStorefrontTextEditor draft={draft} onChange={onTextChange} />
-                    <div className="settings-native-toggle settings-native-toggle--nested">
-                      <div className="settings-native-toggle__row">
-                        <div className="settings-native-toggle__title-wrap">
-                          <span className="settings-native-toggle__title">
-                            Только администраторы
-                          </span>
-                        </div>
+                    {!sharedContent ? (
+                      <SettingsStorefrontTextEditor draft={draft} onChange={onTextChange} />
+                    ) : null}
+                    {!sharedContent ? (
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">
+                              Только администраторы
+                            </span>
+                          </div>
 
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Разрешать витрину только администраторам и пользователям из списка"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={draft.karavanStorefrontAdminsOnly}
-                            onChange={(event) => onAdminsOnlyChange(event.target.checked)}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Разрешать витрину только администраторам и пользователям из списка"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.karavanStorefrontAdminsOnly}
+                              onChange={(event) => onAdminsOnlyChange(event.target.checked)}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                        <p className="settings-native-toggle__hint">
+                          Кнопка будет доступна администраторам и выданным пользователям.
+                        </p>
                       </div>
-                      <p className="settings-native-toggle__hint">
-                        Кнопка будет доступна администраторам и выданным пользователям.
-                      </p>
-                    </div>
+                    ) : null}
 
                     {draft.karavanStorefrontAdminsOnly ? (
                       <section

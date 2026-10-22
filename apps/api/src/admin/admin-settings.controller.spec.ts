@@ -10,6 +10,16 @@ const user = {
 const settingsRevision = '2026-10-01T09:00:00.000Z';
 
 describe('AdminSettingsController capability recheck query', () => {
+  it('requires the rules revision read by the editor and passes it unchanged', () => {
+    const settingsService = { updateRules: jest.fn() };
+    const controller = new AdminSettingsController(settingsService as never);
+    expect(() => controller.updateRules('chat', user, { text: 'old draft' })).toThrow(
+      HttpException,
+    );
+    const body = { text: 'new draft', expectedRevision: settingsRevision };
+    controller.updateRules('chat', user, body);
+    expect(settingsService.updateRules).toHaveBeenCalledWith('chat', user, body);
+  });
   it('routes speech style updates to the narrow mutation', async () => {
     const body = { botSpeechStyle: 'IRONIC' };
     const saved = { ...body, settingsRevision };

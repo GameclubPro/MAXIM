@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   networkSettingsPreviewRequestSchema,
   networkSettingsReadRequestSchema,
+  applySettingsSectionSchema,
+  networkSettingsRecipientSchema,
 } from '../src/network-settings.js';
 
 const request = {
@@ -15,6 +17,40 @@ const request = {
 };
 
 describe('network settings request boundaries', () => {
+  it('adds independent persisted settings without broadening legacy copy or action sections', () => {
+    for (const section of [
+      'speechStyle',
+      'rules',
+      'messageRetention',
+      'advertising',
+      'postSuggestions',
+    ]) {
+      expect(
+        networkSettingsReadRequestSchema.safeParse({
+          entityType: section === 'postSuggestions' ? 'channel' : 'chat',
+          target: request.target,
+          section,
+        }).success,
+      ).toBe(true);
+      expect(applySettingsSectionSchema.safeParse(section).success).toBe(false);
+    }
+    for (const section of ['publishRules', 'polls', 'giveaway', 'sendAdvertising'])
+      expect(
+        networkSettingsReadRequestSchema.safeParse({
+          entityType: 'chat',
+          target: request.target,
+          section,
+        }).success,
+      ).toBe(false);
+    expect(
+      networkSettingsRecipientSchema.parse({
+        ...request.recipients[0],
+        rulesRevision: null,
+        messageRetentionRevision: 0,
+        advertisingRevision: 5,
+      }),
+    ).toMatchObject({ rulesRevision: null, messageRetentionRevision: 0, advertisingRevision: 5 });
+  });
   it('never defaults an absent or empty target to the whole network', () => {
     expect(
       networkSettingsReadRequestSchema.safeParse({ entityType: 'chat', section: 'limits' }).success,

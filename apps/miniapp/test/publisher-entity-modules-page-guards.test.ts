@@ -61,6 +61,23 @@ test('VK module is capability-gated, lazy, and inactive while its workspace is c
   assert.match(pageSource, /onClose=\{\(\) => setVkOpen\(false\)\}/u);
 });
 
+test('VK capability client loads only inside the enabled workspace query', () => {
+  const capabilityQuery = pageSource.match(
+    /const vkCapabilityQuery = useQuery\(\{([\s\S]*?)\n {2}\}\);/u,
+  )?.[1];
+
+  assert.ok(capabilityQuery);
+  assert.doesNotMatch(pageSource, /from ['"]\.\.\/lib\/api\/vk-parsing-client['"]/u);
+  assert.match(
+    capabilityQuery,
+    /queryFn: async \(\) => \{\s*const \{ getVkParsingCapability \} = await import\('\.\.\/lib\/api\/vk-parsing-client'\);\s*return getVkParsingCapability\(api, entityType!, entityId\);\s*\}/u,
+  );
+  assert.match(
+    capabilityQuery,
+    /enabled: vkOpen && entityType !== null && entityId\.length > 0 && Boolean\(entityQuery\.data\)/u,
+  );
+});
+
 test('comment child settings follow the master switch and module rows avoid duplicate statuses', () => {
   assert.match(commentsSource, /disabled=\{pending \|\| disabled\}/u);
   assert.match(

@@ -1,3 +1,4 @@
+import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 import { Suspense } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
@@ -55,6 +56,8 @@ const LazySettingsLimitsEditor = recoverableLazyNamedComponent<SettingsLimitsSec
   'SettingsLimitsEditor',
 );
 
+const SECTION_PRESENTATION = getNetworkSettingsSectionPresentation('chat', 'limits');
+
 export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
   const {
     discardSectionChanges,
@@ -70,17 +73,17 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
   return (
     <GlassCard
       className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-      style={{ animationDelay: '225ms', order: 2 }}
+      style={{ animationDelay: '225ms', order: SECTION_PRESENTATION.order }}
       aria-label="Ограничения"
     >
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
-          title="Ограничения"
+          title={SECTION_PRESENTATION.title}
           enabled={limitsRulesEnabledCount > 0}
           summary={`Активных ограничений: ${limitsRulesEnabledCount}`}
           status={limitsCardStatus}
-          icon="shield"
-          tone="ink"
+          icon={SECTION_PRESENTATION.icon}
+          tone={SECTION_PRESENTATION.tone}
           open={expanded}
           controls="settings-limits-content"
           onClick={() => toggleSection('limits')}
@@ -89,28 +92,34 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
 
       <SettingsDrilldownPanel
         id="settings-limits-content"
-        icon={<SettingsSectionIcon name="shield" />}
+        icon={<SettingsSectionIcon name={SECTION_PRESENTATION.icon} />}
         open={expanded}
-        title="Ограничения"
+        title={SECTION_PRESENTATION.title}
         summary={`Активных ограничений: ${limitsRulesEnabledCount}`}
-        tone="ink"
-        className="settings-drilldown__panel--ladder settings-drilldown__panel--limits"
+        tone={SECTION_PRESENTATION.tone}
+        className={SECTION_PRESENTATION.panelClassName}
         onClose={() => toggleSection('limits')}
         headerAction={renderApplyTargetHeaderAction('limits')}
         confirmCloseWhen={isSectionDirty('limits')}
         onDiscardChanges={() => discardSectionChanges('limits')}
         footer={renderSectionSaveFooter('limits')}
       >
-        <div
-          id="settings-limits-content"
-          className={cn('settings-section__collapse', expanded && 'is-open')}
-        >
-          {expanded ? (
-            <Suspense fallback={<Spinner label="Загружаем ограничения" />}>
-              <LazySettingsLimitsEditor {...props} />
-            </Suspense>
-          ) : null}
-        </div>
+        {props.sharedContent ? (
+          <>{expanded ? <>{props.sharedContent}</> : null}</>
+        ) : (
+          <>
+            <div
+              id="settings-limits-content"
+              className={cn('settings-section__collapse', expanded && 'is-open')}
+            >
+              {expanded ? (
+                <Suspense fallback={<Spinner label="Загружаем ограничения" />}>
+                  <LazySettingsLimitsEditor {...props} />
+                </Suspense>
+              ) : null}
+            </div>
+          </>
+        )}
       </SettingsDrilldownPanel>
     </GlassCard>
   );

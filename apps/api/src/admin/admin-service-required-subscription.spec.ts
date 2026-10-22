@@ -1972,9 +1972,9 @@ describe('AdminService required subscription settings', () => {
       }),
     ]);
     prisma.managedEntityFavorite.findMany.mockResolvedValue([
-      { chatId: 'chat-2' },
-      { chatId: 'chat-3' },
-      { chatId: 'chat-2' },
+      { chatId: 'chat-2', favoriteType: 'BROADCAST' },
+      { chatId: 'chat-3', favoriteType: 'BROADCAST' },
+      { chatId: 'chat-2', favoriteType: 'BROADCAST' },
     ]);
 
     const result = await service.applySettingsToAllChats('chat-1', actor, settings, 'miniapp', {
@@ -1985,11 +1985,10 @@ describe('AdminService required subscription settings', () => {
 
     expect(prisma.managedEntityFavorite.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
+        where: {
           userId: actor.userId,
           entityType: 'CHAT',
-          favoriteType: { in: ['BROADCAST'] },
-        }),
+        },
       }),
     );
     expect(result).toEqual({

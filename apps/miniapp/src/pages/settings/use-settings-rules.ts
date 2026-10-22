@@ -316,11 +316,13 @@ export function useSettingsRules({
       publishedMessageId: _publishedMessageId,
       publishedUrl: _publishedUrl,
       publishedAt: _publishedAt,
+      revision: _revision,
       ...editableDraft
     } = value;
     /* eslint-enable @typescript-eslint/no-unused-vars */
     return {
       ...editableDraft,
+      expectedRevision: value.revision ?? null,
       buttonUrl: normalizedButtonState.buttonUrl,
       buttonText: normalizedButtonState.buttonText,
       adminContactButtonUrl: value.adminContactButtonEnabled ? value.adminContactButtonUrl : '',

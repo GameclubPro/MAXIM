@@ -2,13 +2,28 @@
 module.exports = {
   testRegex: '.*\\.(spec|test)\\.ts$',
   moduleNameMapper: {
-    '^@maxim/contracts/network-settings$': '<rootDir>/../../packages/contracts/src/network-settings.ts',
+    '^@maxim/contracts/broadcast-buttons$':
+      '<rootDir>/../../packages/contracts/src/broadcast-buttons.ts',
+    '^@maxim/contracts/channel-settings$':
+      '<rootDir>/../../packages/contracts/src/channel-settings.ts',
+    '^@maxim/contracts/settings-field-schemas$':
+      '<rootDir>/../../packages/contracts/src/settings-field-schemas.ts',
+    '^@maxim/contracts/network-settings$':
+      '<rootDir>/../../packages/contracts/src/network-settings.ts',
+    '^@maxim/contracts/network-settings-read$':
+      '<rootDir>/../../packages/contracts/src/network-settings-read.ts',
+    '^@maxim/contracts/network-settings-actions$':
+      '<rootDir>/../../packages/contracts/src/network-settings-actions.ts',
+    '^@maxim/contracts/network-settings-metadata$':
+      '<rootDir>/../../packages/contracts/src/network-settings-metadata.ts',
     '^@maxim/contracts/networks-stats$': '<rootDir>/../../packages/contracts/src/networks-stats.ts',
     '^@maxim/contracts/marketplace-integration$':
       '<rootDir>/../../packages/contracts/src/marketplace-integration.ts',
     '^@maxim/contracts/advertising-placement$':
       '<rootDir>/../../packages/contracts/src/advertising-placement.ts',
     '^@maxim/contracts$': '<rootDir>/../../packages/contracts/src/index.ts',
+    '^@maxim/contracts/bot-speech-fields$':
+      '<rootDir>/../../packages/contracts/src/bot-speech-fields.ts',
     '^@maxim/contracts/bot-speech$': '<rootDir>/../../packages/contracts/src/bot-speech.ts',
     '^@maxim/contracts/broadcast$': '<rootDir>/../../packages/contracts/src/broadcast.ts',
     '^@maxim/contracts/channel-dialog$': '<rootDir>/../../packages/contracts/src/channel-dialog.ts',

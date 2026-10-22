@@ -8,6 +8,7 @@ import {
 import type { ApiTransport } from '../../lib/api/transport';
 import { openMaxBotLink } from '../../lib/max-bridge';
 import { SkeletonCard } from '../../components/ui/skeleton';
+import { SharedAdvertisingFields } from './shared-advertising-fields';
 
 export default function SettingsAdvertisingWorkspace({
   api,
@@ -107,29 +108,22 @@ export default function SettingsAdvertisingWorkspace({
             : null;
   return (
     <div className="advertising-workspace">
-      <div className="advertising-workspace__row">
-        <strong>{data.enabled ? 'Включена' : 'Выключена'}</strong>
-        <button
-          className="button button--ghost advertising-workspace__tool"
-          aria-label="Проверить площадку"
-          title="Проверить площадку"
-          disabled={pending || query.isFetching}
-          onClick={() => void query.refetch()}
-        >
-          <Refresh aria-hidden />
-        </button>
-        <label className="settings-native-switch" aria-label="Включить рекламную площадку">
-          <input
-            type="checkbox"
-            checked={data.enabled}
-            disabled={pending || (!data.enabled && (!data.listing || data.lookupFailed))}
-            onChange={(event) => settings.mutate(event.target.checked)}
-          />
-          <span className="toggle-switch" aria-hidden>
-            <span className="toggle-switch__thumb" />
-          </span>
-        </label>
-      </div>
+      <SharedAdvertisingFields
+        enabled={{ kind: 'common', value: data.enabled }}
+        disabled={pending || (!data.enabled && (!data.listing || data.lookupFailed))}
+        onChange={(enabled) => settings.mutate(enabled)}
+        refresh={
+          <button
+            className="button button--ghost advertising-workspace__tool"
+            aria-label="Проверить площадку"
+            title="Проверить площадку"
+            disabled={pending || query.isFetching}
+            onClick={() => void query.refetch()}
+          >
+            <Refresh aria-hidden />
+          </button>
+        }
+      />
       {data.lookupFailed ? (
         <p role="status">Не удалось проверить площадку в Связке.</p>
       ) : data.listing ? (

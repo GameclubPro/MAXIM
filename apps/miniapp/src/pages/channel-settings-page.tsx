@@ -1,9 +1,12 @@
+import { getNetworkSettingsSectionPresentation } from './settings/settings-workspace-sections';
+import { ChannelQuickButtonsFields } from './settings/channel-quick-buttons-fields';
+import { ChannelCommentsFields } from './settings/channel-comments-fields';
+import { ChannelPostSuggestionsFields } from './settings/channel-post-suggestions-fields';
+import { ChannelPostSignatureFields } from './settings/channel-post-signature-fields';
+import { createChannelSettingsFieldAdapter } from '../features/network-settings/settings-field-bindings';
 import { SettingsOverviewSearchPlaceholder } from '../components/ui/settings-overview-search-placeholder';
 import {
-  CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH,
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
-  CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH,
-  CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH,
   type ChannelPostSignatureSettings,
 } from '@maxim/contracts/channel-post-signature';
 import type {
@@ -13,11 +16,7 @@ import type {
   ManagedAutopostRuleSummary,
   ManagedBroadcastDetails,
 } from '@maxim/contracts/broadcast';
-import type {
-  ChannelSettings,
-  ChannelSettingsScreenResponse,
-  ChannelSuggestionEntryMode,
-} from '@maxim/contracts/settings';
+import type { ChannelSettings, ChannelSettingsScreenResponse } from '@maxim/contracts/settings';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
 import {
@@ -75,7 +74,6 @@ import {
   SettingsSectionIcon,
   SettingsSectionToggle,
 } from '../components/ui/settings-section-toggle';
-import { SegmentedControl } from '../components/ui/segmented-control';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
@@ -163,7 +161,6 @@ import {
   reconcilePostSignatureSave,
 } from '../lib/channel-post-signature';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
-import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { queryKeys } from '../lib/query-keys';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
@@ -241,19 +238,6 @@ type ChannelSettingsSectionKey =
   | 'broadcast'
   | 'polls'
   | 'giveaway';
-type ChannelSettingsHintKey =
-  | 'commentsEnabled'
-  | 'commentsModerationEnabled'
-  | 'commentsBlockLinksEnabled'
-  | 'commentsAntiSpamEnabled'
-  | 'commentsLimitTwoInRowEnabled'
-  | 'postSuggestionsEnabled'
-  | 'broadcastStudio'
-  | 'broadcastText'
-  | 'broadcastImage'
-  | 'broadcastButton'
-  | 'broadcastSend';
-
 type BroadcastVideoSource = {
   mediaType?: string | null;
   mediaPayload?: Record<string, unknown> | null;
@@ -264,14 +248,6 @@ type BroadcastVideoSource = {
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const MAX_BROADCAST_TEXT_LENGTH = 2_000;
-const CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
-const CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS: Array<{
-  value: ChannelSuggestionEntryMode;
-  label: string;
-}> = [
-  { value: 'MINIAPP', label: 'В приложении' },
-  { value: 'BOT', label: 'В боте' },
-];
 const DESKTOP_TOGGLE_ROW_BLOCKERS = [
   'a',
   'button',
@@ -711,170 +687,6 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
   ].filter((item): item is string => Boolean(item));
 }
 
-function ChannelSettingsInfoButton({
-  hintKey,
-  openHintKey,
-  onToggleHint,
-  label,
-}: {
-  hintKey: ChannelSettingsHintKey;
-  openHintKey: ChannelSettingsHintKey | null;
-  onToggleHint: (hintKey: ChannelSettingsHintKey) => void;
-  label: string;
-}) {
-  const isOpen = openHintKey === hintKey;
-
-  return (
-    <button
-      type="button"
-      className={cn('settings-info-button', isOpen && 'is-open')}
-      aria-label={label}
-      title={label}
-      data-hint-key={hintKey}
-      aria-controls={`channel-settings-hint-${hintKey}`}
-      aria-describedby={isOpen ? `channel-settings-hint-${hintKey}` : undefined}
-      aria-expanded={isOpen}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        onToggleHint(hintKey);
-      }}
-    >
-      <span aria-hidden>i</span>
-    </button>
-  );
-}
-
-function ChannelSettingsHintAnchor({
-  hintKey,
-  openHintKey,
-  onToggleHint,
-  label,
-  children,
-}: {
-  hintKey: ChannelSettingsHintKey;
-  openHintKey: ChannelSettingsHintKey | null;
-  onToggleHint: (hintKey: ChannelSettingsHintKey) => void;
-  label: string;
-  children: string;
-}) {
-  return (
-    <span className="channel-settings-hint-anchor">
-      <ChannelSettingsInfoButton
-        hintKey={hintKey}
-        openHintKey={openHintKey}
-        onToggleHint={onToggleHint}
-        label={label}
-      />
-      <ChannelSettingsHint hintKey={hintKey} openHintKey={openHintKey}>
-        {children}
-      </ChannelSettingsHint>
-    </span>
-  );
-}
-
-function ChannelSettingsHint({
-  hintKey,
-  openHintKey,
-  children,
-}: {
-  hintKey: ChannelSettingsHintKey;
-  openHintKey: ChannelSettingsHintKey | null;
-  children: string;
-}) {
-  if (openHintKey !== hintKey) {
-    return null;
-  }
-
-  return (
-    <p
-      id={`channel-settings-hint-${hintKey}`}
-      className="channel-settings-hint-popover"
-      role="note"
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {children}
-    </p>
-  );
-}
-
-function ChannelSettingsToggleCard({
-  title,
-  description,
-  describedBy,
-  hintKey,
-  openHintKey,
-  onToggleHint,
-  checked,
-  onChange,
-  disabled = false,
-}: {
-  title: string;
-  description?: string;
-  describedBy?: string;
-  hintKey?: ChannelSettingsHintKey;
-  openHintKey: ChannelSettingsHintKey | null;
-  onToggleHint: (hintKey: ChannelSettingsHintKey) => void;
-  checked: boolean;
-  onChange: (nextValue: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div
-      className={cn('channel-settings-toggle-card', checked && 'is-on', disabled && 'is-disabled')}
-      onClick={(event) => {
-        if (disabled) {
-          return;
-        }
-
-        const target = event.target as HTMLElement;
-        if (
-          target.closest(
-            'button, input, label, .channel-settings-hint-anchor, .settings-native-toggle__hint',
-          )
-        ) {
-          return;
-        }
-
-        onChange(!checked);
-      }}
-    >
-      <div className="channel-settings-toggle-card__copy">
-        <div className="channel-settings-toggle-card__title-row">
-          <strong>{title}</strong>
-          {description && hintKey ? (
-            <ChannelSettingsHintAnchor
-              hintKey={hintKey}
-              openHintKey={openHintKey}
-              onToggleHint={onToggleHint}
-              label={`Пояснение для настройки «${title}»`}
-            >
-              {description}
-            </ChannelSettingsHintAnchor>
-          ) : null}
-        </div>
-        {description && !hintKey ? <span>{description}</span> : null}
-      </div>
-      <label className="settings-native-switch">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={(event) => onChange(event.target.checked)}
-          disabled={disabled}
-          aria-label={title}
-          aria-describedby={describedBy}
-        />
-        <span className="toggle-switch" aria-hidden>
-          <span className="toggle-switch__thumb" />
-        </span>
-      </label>
-    </div>
-  );
-}
-
 function normalizeChannelSettingsDraft(
   draft: ChannelSettings,
   resolvedChannelLink: string,
@@ -894,6 +706,12 @@ function normalizeChannelSettingsDraft(
         : draft.postSuggestionsButtonUrl,
   };
 }
+
+const SHARED_CHANNEL_SECTION_PRESENTATIONS = {
+  postSignature: getNetworkSettingsSectionPresentation('channel', 'postSignature'),
+  quickButtons: getNetworkSettingsSectionPresentation('channel', 'quickButtons'),
+  comments: getNetworkSettingsSectionPresentation('channel', 'comments'),
+} as const;
 
 export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const userId = getInitDataUserId()?.trim() || null;
@@ -941,7 +759,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [expandedSections, setExpandedSections] = useState<
     Record<ChannelSettingsSectionKey, boolean>
   >(INITIAL_EXPANDED_CHANNEL_SECTIONS);
-  const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
   const { pushToast } = useToast();
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastTextError, setBroadcastTextError] = useState('');
@@ -1522,10 +1339,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  function toggleHint(hintKey: ChannelSettingsHintKey) {
-    setOpenHintKey((current) => (current === hintKey ? null : hintKey));
-  }
-
   function closeSection(section: ChannelSettingsSectionKey) {
     const legacyReturnPath = resolveLegacyPublicationReturnPath(location.state);
     if (section === 'broadcast' && legacyEditorTarget && legacyReturnPath) {
@@ -1746,19 +1559,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     updatePostSignatureDraft(next);
     void persistLatestPostSignature();
   }
-
-  const patchDraft = <K extends keyof ChannelSettings>(key: K, value: ChannelSettings[K]) => {
-    setDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [key]: value,
-      };
-    });
-  };
 
   const discardChannelSettingsChanges = () => {
     if (!savedSnapshot) {
@@ -2256,8 +2056,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastWorkspaceView('history');
     openManagedBroadcastEditorMutation.mutate(legacyEditorTarget.id);
   }, [chatId, legacyEditorTarget, openManagedBroadcastEditorMutation, settingsScreenQuery.data]);
-
-  useHintPopoverAutoPosition(openHintKey !== null, openHintKey, () => setOpenHintKey(null));
 
   useEffect(() => {
     document.body.classList.add('channel-settings-page-open');
@@ -3406,11 +3204,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       >
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
-            title="Действие под публикацией"
+            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.title}
             enabled={postSignature.enabled}
             summary={postSignatureCardSummary}
             status={postSignatureCardStatus}
-            icon="links"
+            icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.icon}
             tone={postSignatureTone}
             open={expandedSections.postSignature}
             controls="channel-settings-post-signature"
@@ -3420,12 +3218,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
         <SettingsDrilldownPanel
           id="channel-settings-post-signature"
-          icon={<SettingsSectionIcon name="links" />}
+          icon={
+            <SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.icon} />
+          }
           open={expandedSections.postSignature}
-          title="Действие под публикацией"
+          title={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.title}
           summary={postSignaturePanelSummary}
-          tone="sky"
-          className="settings-drilldown__panel--signature"
+          tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.tone}
+          className={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.panelClassName}
           onClose={closePostSignatureSection}
         >
           <div
@@ -3438,140 +3238,26 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           >
             {expandedSections.postSignature ? (
               <div className="settings-section__collapse-inner channel-post-signature__panel-body">
-                <div className="channel-post-signature__activation">
-                  <span className="channel-post-signature__activation-icon" aria-hidden>
-                    <IconoirLink />
-                  </span>
-                  <span className="channel-post-signature__activation-copy">
-                    <strong>Добавлять действие</strong>
-                    <small>
-                      {postSignature.enabled
-                        ? postSignature.presentation === 'button'
-                          ? 'Кнопкой под публикацией'
-                          : 'Ссылкой в конце текста'
-                        : 'Выключено'}
-                    </small>
-                  </span>
-                  <label className="settings-native-switch channel-post-signature__switch">
-                    <input
-                      type="checkbox"
-                      checked={postSignature.enabled}
-                      aria-label="Действие под публикацией"
-                      onChange={(event) =>
-                        savePostSignature({ ...postSignature, enabled: event.target.checked })
-                      }
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
-                </div>
-
-                <div className="channel-post-signature__presentation">
-                  <span>Отображение</span>
-                  <SegmentedControl
-                    value={postSignature.presentation}
-                    options={[
-                      { value: 'signature', label: 'Ссылка в тексте' },
-                      { value: 'button', label: 'Кнопка' },
-                    ]}
-                    ariaLabel="Формат действия под публикацией"
-                    onChange={(presentation) => {
-                      savePostSignature({
-                        ...(latestPostSignatureRef.current ?? postSignature),
-                        presentation,
-                      });
-                    }}
-                  />
-                </div>
-
-                <div className="channel-post-signature__workspace">
-                  <div className="channel-post-signature__fields">
-                    <label
-                      className={cn(
-                        'field channel-post-signature__field',
-                        postSignatureTextError && 'field--error',
-                      )}
-                    >
-                      <span>
-                        {postSignature.presentation === 'button' ? 'Текст кнопки' : 'Текст ссылки'}
-                      </span>
-                      <input
-                        id="channel-post-signature-text"
-                        type="text"
-                        value={postSignature.text}
-                        maxLength={
-                          postSignature.presentation === 'button'
-                            ? CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH
-                            : CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH
-                        }
-                        aria-invalid={Boolean(postSignatureTextError)}
-                        onChange={(event) => {
-                          const next = { ...postSignature, text: event.target.value };
-                          latestPostSignatureRef.current = next;
-                          latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
-                          setPostSignatureDraft(next);
-                          if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
-                            setPostSignatureSaveState('idle');
-                          }
-                        }}
-                        onBlur={() => savePostSignature(postSignature)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.currentTarget.blur();
-                          }
-                        }}
-                      />
-                      {postSignatureTextError ? (
-                        <small className="field__hint" role="alert">
-                          {postSignatureTextError}
-                        </small>
-                      ) : null}
-                    </label>
-
-                    <label
-                      className={cn(
-                        'field channel-post-signature__field',
-                        postSignatureUrlError && 'field--error',
-                      )}
-                    >
-                      <span>Адрес ссылки</span>
-                      <input
-                        id="channel-post-signature-url"
-                        type="url"
-                        inputMode="url"
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        enterKeyHint="done"
-                        value={postSignature.url}
-                        maxLength={CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH}
-                        placeholder={fallbackPostSignatureUrl || 'https://max.ru/...'}
-                        aria-invalid={Boolean(postSignatureUrlError)}
-                        onChange={(event) => {
-                          const next = { ...postSignature, url: event.target.value };
-                          latestPostSignatureRef.current = next;
-                          latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
-                          setPostSignatureDraft(next);
-                          if (postSignatureSaveInFlightRef.current?.chatId !== chatId) {
-                            setPostSignatureSaveState('idle');
-                          }
-                        }}
-                        onBlur={() => savePostSignature(postSignature)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.currentTarget.blur();
-                          }
-                        }}
-                      />
-                      {postSignatureUrlError ? (
-                        <small className="field__hint" role="alert">
-                          {postSignatureUrlError}
-                        </small>
-                      ) : null}
-                    </label>
-                  </div>
-
+                <ChannelPostSignatureFields
+                  fields={createChannelSettingsFieldAdapter({
+                    settings: postSignature,
+                    onChange: (next, paths) => {
+                      latestPostSignatureRef.current = next;
+                      latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
+                      setPostSignatureDraft(next);
+                      if (postSignatureSaveInFlightRef.current?.chatId !== chatId)
+                        setPostSignatureSaveState('idle');
+                      if (paths.some((path) => path === 'enabled' || path === 'presentation'))
+                        savePostSignature(next);
+                    },
+                    errors: {
+                      text: postSignatureTextError ?? undefined,
+                      url: postSignatureUrlError ?? undefined,
+                    },
+                  })}
+                  onBlur={() => savePostSignature(latestPostSignatureRef.current ?? postSignature)}
+                  fallbackUrl={fallbackPostSignatureUrl}
+                >
                   <div
                     className={cn(
                       'channel-post-signature__preview',
@@ -3635,7 +3321,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         'Ссылка канала недоступна'}
                     </small>
                   </div>
-                </div>
+                </ChannelPostSignatureFields>
 
                 {postSignatureSaveState !== 'idle' || isPostSignatureDirty ? (
                   <div
@@ -3678,12 +3364,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <GlassCard className="channel-settings-card" elevated>
         <div className="settings-section__head settings-section__head--interactive">
           <SettingsSectionToggle
-            title="Быстрые кнопки"
+            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.title}
             enabled={draft.quickButtonsEnabled}
             summary={draft.quickButtonsEnabled ? 'Включены' : 'Выключены'}
             status={draft.quickButtonsEnabled ? 'Вкл' : 'Выкл'}
-            icon="links"
-            tone="sky"
+            icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.icon}
+            tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.tone}
             open={expandedSections.quickButtons}
             controls="channel-settings-quick-buttons"
             onClick={() => toggleSection('quickButtons')}
@@ -3691,43 +3377,35 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </div>
         <SettingsDrilldownPanel
           id="channel-settings-quick-buttons"
-          icon={<SettingsSectionIcon name="links" />}
+          icon={
+            <SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.icon} />
+          }
           open={expandedSections.quickButtons}
-          title="Быстрые кнопки"
-          tone="sky"
+          title={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.title}
+          tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.tone}
           onClose={() => toggleSection('quickButtons')}
           footer={renderChannelSectionFooter('quickButtons')}
           confirmCloseWhen={isDirty}
           onDiscardChanges={discardChannelSettingsChanges}
         >
-          <ChannelSettingsToggleCard
-            title="Быстрые кнопки"
-            describedBy="channel-quick-buttons-help"
-            openHintKey={openHintKey}
-            onToggleHint={toggleHint}
-            checked={draft.quickButtonsEnabled}
-            onChange={(nextValue) => patchDraft('quickButtonsEnabled', nextValue)}
+          <ChannelQuickButtonsFields
+            fields={createChannelSettingsFieldAdapter({
+              settings: draft,
+              onChange: (next) => setDraft(next),
+            })}
           />
-          <p id="channel-quick-buttons-help" className="settings-native-toggle__hint">
-            В новом посте добавьте отдельную строку:
-            <br />
-            <code>Подробнее = https://example.com</code>
-            <br />
-            Бот уберёт эту строку и добавит кнопку под постом. Вложения и оформление текста
-            сохранятся. Для каждой кнопки нужна отдельная строка.
-          </p>
         </SettingsDrilldownPanel>
       </GlassCard>
 
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
-            title="Комментарии в приложении"
+            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.title}
             enabled={draft.commentsEnabled}
             summary={commentsCardSummary}
             status={commentsCardStatus}
-            icon="comments"
-            tone="sky"
+            icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.icon}
+            tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.tone}
             open={expandedSections.comments}
             controls="channel-settings-comments"
             onClick={() => toggleSection('comments')}
@@ -3736,12 +3414,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
         <SettingsDrilldownPanel
           id="channel-settings-comments"
-          icon={<SettingsSectionIcon name="comments" />}
+          icon={<SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.icon} />}
           open={expandedSections.comments}
-          title="Комментарии в приложении"
+          title={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.title}
           summary={commentsCardSummary}
-          tone="sky"
-          className="settings-drilldown__panel--board settings-drilldown__panel--channel-comments"
+          tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.tone}
+          className={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.panelClassName}
           onClose={() => toggleSection('comments')}
           footer={renderChannelSectionFooter('comments')}
           confirmCloseWhen={isDirty}
@@ -3753,67 +3431,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           >
             {expandedSections.comments ? (
               <div className="settings-section__collapse-inner">
-                <ChannelSettingsToggleCard
-                  title="Комментарии под постами"
-                  openHintKey={openHintKey}
-                  onToggleHint={toggleHint}
-                  checked={draft.commentsEnabled}
-                  onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
+                <ChannelCommentsFields
+                  fields={createChannelSettingsFieldAdapter({
+                    settings: draft,
+                    onChange: (next) => setDraft(next),
+                  })}
                 />
-
-                {draft.commentsEnabled ? (
-                  <div className="channel-settings-stack channel-settings-stack--form">
-                    <label className="field channel-settings-field--wide">
-                      <span>Сообщение перед комментариями</span>
-                      <textarea
-                        rows={2}
-                        value={draft.commentsMessageText}
-                        onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-                        placeholder="Например: поделитесь мнением о публикации"
-                      />
-                    </label>
-
-                    <ChannelSettingsToggleCard
-                      title="Проверять комментарии"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.commentsModerationEnabled}
-                      onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
-                    />
-
-                    {draft.commentsModerationEnabled ? (
-                      <div className="channel-settings-stack channel-settings-toggle-grid">
-                        <ChannelSettingsToggleCard
-                          title="Запрещать ссылки"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          checked={draft.commentsBlockLinksEnabled}
-                          onChange={(nextValue) =>
-                            patchDraft('commentsBlockLinksEnabled', nextValue)
-                          }
-                        />
-
-                        <ChannelSettingsToggleCard
-                          title="Защита от повторов"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          checked={draft.commentsAntiSpamEnabled}
-                          onChange={(nextValue) => patchDraft('commentsAntiSpamEnabled', nextValue)}
-                        />
-
-                        <ChannelSettingsToggleCard
-                          title="Не больше двух подряд"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          checked={draft.commentsLimitTwoInRowEnabled}
-                          onChange={(nextValue) =>
-                            patchDraft('commentsLimitTwoInRowEnabled', nextValue)
-                          }
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
             ) : null}
           </div>
@@ -3859,100 +3482,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           >
             {expandedSections.postSuggestions ? (
               <div className="settings-section__collapse-inner">
-                <ChannelSettingsToggleCard
-                  title="Принимать предложения"
-                  openHintKey={openHintKey}
-                  onToggleHint={toggleHint}
-                  checked={draft.postSuggestionsEnabled}
-                  onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
+                <ChannelPostSuggestionsFields
+                  fields={createChannelSettingsFieldAdapter({
+                    settings: draft,
+                    onChange: (next) => setDraft(next),
+                  })}
                 />
-
-                {draft.postSuggestionsEnabled ? (
-                  <>
-                    <ChannelSettingsToggleCard
-                      title="Требовать подписку"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.postSuggestionsRequireSubscription}
-                      onChange={(value) => patchDraft('postSuggestionsRequireSubscription', value)}
-                    />
-                    <ChannelSettingsToggleCard
-                      title="Удалять посты после отписки"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.postSuggestionsDeleteOnUnsubscribe}
-                      onChange={(value) => patchDraft('postSuggestionsDeleteOnUnsubscribe', value)}
-                    />
-                    <div className="channel-settings-mode-card channel-settings-mode-card--suggestion">
-                      <span className="channel-settings-mode-card__label">Отправка</span>
-                      <SegmentedControl<ChannelSuggestionEntryMode>
-                        value={draft.postSuggestionsEntryMode}
-                        options={CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS}
-                        onChange={(value) => patchDraft('postSuggestionsEntryMode', value)}
-                        className="channel-settings-mode-card__control"
-                        ariaLabel="Способ отправки предложения"
-                      />
-                    </div>
-
-                    <div className="channel-settings-stack channel-settings-form-grid">
-                      <label className="field">
-                        <span>Текст кнопки</span>
-                        <input
-                          type="text"
-                          value={draft.postSuggestionsButtonText}
-                          onChange={(event) =>
-                            patchDraft('postSuggestionsButtonText', event.target.value)
-                          }
-                          placeholder="Предложить пост"
-                          maxLength={32}
-                        />
-                      </label>
-
-                      <label className="field channel-settings-field--wide">
-                        <span>Что нужно прислать</span>
-                        <textarea
-                          rows={4}
-                          value={draft.postSuggestionsText}
-                          onChange={(event) =>
-                            patchDraft('postSuggestionsText', event.target.value)
-                          }
-                          placeholder="Например: идея поста или важная новость"
-                        />
-                      </label>
-
-                      <label className="field channel-settings-field--wide">
-                        <span>Текст перед кнопками</span>
-                        <textarea
-                          rows={3}
-                          value={draft.engagementMessageText}
-                          onChange={(event) =>
-                            patchDraft('engagementMessageText', event.target.value)
-                          }
-                          placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
-                        />
-                      </label>
-
-                      <label className="field">
-                        <span>От одного пользователя</span>
-                        <div className="field__number-wrap">
-                          <select
-                            value={String(draft.postSuggestionsDailyLimit)}
-                            onChange={(event) =>
-                              patchDraft('postSuggestionsDailyLimit', Number(event.target.value))
-                            }
-                          >
-                            {CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS.map((value) => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
-                          <small>в сутки</small>
-                        </div>
-                      </label>
-                    </div>
-                  </>
-                ) : null}
               </div>
             ) : null}
           </div>

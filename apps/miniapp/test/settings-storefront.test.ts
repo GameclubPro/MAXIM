@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import {
+  KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH,
+  KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH,
+  resolveKaravanStorefrontTexts,
+  type KaravanStorefrontTexts,
+} from '@maxim/contracts/karavan-storefront';
+import { SettingsStorefrontTextEditor } from '../src/pages/settings/settings-storefront-text-editor';
 
 const sectionSource = readFileSync(
   new URL('../src/pages/settings/settings-storefront-section.tsx', import.meta.url),
@@ -19,10 +28,40 @@ const editorSource = readFileSync(
   'utf8',
 );
 
+const sharedFieldsSource = readFileSync(
+  new URL('../src/pages/settings/shared-settings-storefront-fields.tsx', import.meta.url),
+  'utf8',
+);
+
 test('storefront copy editor shares runtime defaults, text limits, and the section draft', () => {
-  assert.match(editorSource, /resolveKaravanStorefrontTexts\(draft\)/u);
-  assert.match(editorSource, /maxLength=\{KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH\}/u);
-  assert.match(editorSource, /maxLength=\{KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH\}/u);
+  for (const draft of [
+    {
+      karavanStorefrontMessageText: '',
+      karavanStorefrontOpenButtonText: '',
+      karavanStorefrontCatalogButtonText: '',
+      karavanStorefrontCreateButtonText: '',
+    },
+    {
+      karavanStorefrontMessageText: '  Свой текст  ',
+      karavanStorefrontOpenButtonText: '  Перейти  ',
+      karavanStorefrontCatalogButtonText: '',
+      karavanStorefrontCreateButtonText: '',
+    },
+  ] satisfies KaravanStorefrontTexts[]) {
+    const resolved = resolveKaravanStorefrontTexts(draft);
+    const html = renderToStaticMarkup(
+      createElement(SettingsStorefrontTextEditor, { draft, onChange: () => undefined }),
+    );
+    assert.ok(html.includes(`<p>${resolved.karavanStorefrontMessageText}</p>`));
+    assert.ok(html.includes(`<span>${resolved.karavanStorefrontOpenButtonText}</span>`));
+    for (const field of Object.keys(draft)) {
+      const limit =
+        field === 'karavanStorefrontMessageText'
+          ? KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH
+          : KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH;
+      assert.match(html, new RegExp(`id="${field}"[^>]*maxLength="${limit}"`, 'u'));
+    }
+  }
   assert.match(editorSource, /aria-pressed=\{variant === value\}/u);
   assert.match(editorSource, /Вернуть стандартные тексты витрины/u);
   assert.match(
@@ -30,6 +69,8 @@ test('storefront copy editor shares runtime defaults, text limits, and the secti
     /<SettingsStorefrontTextEditor draft=\{draft\} onChange=\{onTextChange\}/u,
   );
   assert.match(pageSource, /onTextChange=\{setFieldValue\}/u);
+  assert.match(pageSource, /sharedContent=\{renderSharedChatSection\('storefront'\)\}/u);
+  assert.match(sharedFieldsSource, /<SettingsStorefrontTextEditor fields=\{fields\} \/>/u);
   for (const field of ['Message', 'OpenButton', 'CatalogButton', 'CreateButton']) {
     assert.ok(stateSource.includes(`'karavanStorefront${field}Text'`));
   }

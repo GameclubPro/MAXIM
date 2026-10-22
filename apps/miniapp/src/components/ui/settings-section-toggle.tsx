@@ -23,7 +23,8 @@ export type SettingsSectionIconName =
   | 'tools'
   | 'comments'
   | 'spark'
-  | 'gift';
+  | 'gift'
+  | 'clock';
 
 export type SettingsSectionTone = 'sky' | 'mint' | 'amber' | 'rose' | 'ink';
 
@@ -85,6 +86,7 @@ const SETTINGS_SECTION_ICONS = {
   comments: 'ChatLines',
   spark: 'Sparks',
   gift: 'Gift',
+  clock: 'Clock',
 } as const satisfies Record<SettingsSectionIconName, AppIconName>;
 
 export function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {

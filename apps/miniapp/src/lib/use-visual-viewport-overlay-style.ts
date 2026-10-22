@@ -1,7 +1,10 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 
 function isDesignPreview() {
-  return document.documentElement.dataset.maxClient === 'preview';
+  return (
+    window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ !== true &&
+    document.documentElement.dataset.maxClient === 'preview'
+  );
 }
 
 function resolveVisualViewportOverlayStyle(): CSSProperties {

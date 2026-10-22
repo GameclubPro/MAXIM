@@ -1,8 +1,13 @@
+import { SharedRulesSettingsStudio } from './settings/shared-rules-settings-studio';
+import { getNetworkSettingsSectionPresentation } from './settings/settings-workspace-sections';
+import { SharedChatSettingsSection } from './settings/shared-chat-settings-section';
+import { createChatSettingsFieldAdapter } from '../features/network-settings/settings-field-bindings';
+import { settingsSectionPaths } from '../features/network-settings/field-paths';
+import { useHomeEntityFavorites } from '../lib/home-entity-favorites-context';
 import { SettingsOverviewSearchPlaceholder } from '../components/ui/settings-overview-search-placeholder';
 import { useSettingsRules } from './settings/use-settings-rules';
 import { useSettingsDraft } from './settings/use-settings-draft';
 import { useSettingsRequiredSubscription } from './settings/use-settings-required-subscription';
-import { InfoCircle } from 'iconoir-react';
 import { getStopWords } from '../lib/api/stop-words-client';
 import { prepareStopWordsInput } from '../lib/stop-words-editor';
 import {
@@ -74,7 +79,6 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import type { ManagedGiveawayCardHandle } from '../components/managed-giveaway-card';
-import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor-entry';
 import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
@@ -223,7 +227,6 @@ import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
   SECTION_SETTING_KEYS,
   type ApplySectionKey,
-  enableDefaultSanctionStages,
   hasSectionBotSpeechMediaChanges,
   hasSectionSettingChanges,
   mergeSectionSettings,
@@ -231,11 +234,8 @@ import {
   normalizeSectionDraftSettings,
 } from './settings-page-state';
 import {
-  PROFANITY_SENSITIVITY_HINTS,
   PROFANITY_SENSITIVITY_LABELS,
-  PROFANITY_SENSITIVITY_OPTIONS,
   type DuplicateDetectionPreset,
-  type NumericChatSettingKey,
 } from './settings-page.constants';
 import { createManagedEntityHeader } from '../lib/managed-entity-header';
 import {
@@ -272,16 +272,9 @@ import {
   DOMAIN_REMOVAL_MIN_FUTURE_MS,
   MAX_BROADCAST_TEXT_LENGTH,
   MIN_BROADCAST_CYCLE_HOURS,
-  LINK_BOT_BUTTON_GROUP,
-  GREETING_BOT_BUTTON_GROUP,
-  LINK_ADMIN_CONTACT_BUTTON_GROUP,
-  PROFANITY_ADMIN_CONTACT_BUTTON_GROUP,
-  REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
   DEFAULT_RULES_POST_BUTTON_TEXT,
   ADMIN_CONTACT_BUTTON_TEXT,
   BROADCAST_HOUR_MS,
-  DeleteDelayStepper,
-  PublishedRulesButtonToggleSlot,
   AutoMuteDurationKey,
   AutoMuteEnabledKey,
   HintKey,
@@ -297,7 +290,6 @@ import {
   resolveDuplicateAllowedCount,
   resolveDuplicateAllowedCountMax,
   buildDuplicateFlowSettings,
-  LINK_POLICY_OPTIONS,
   RUSSIAN_TIMEZONE_OPTIONS,
   resolveBotSpeechPreviewContext,
   formatApiError,
@@ -333,11 +325,8 @@ import {
   CalendarIcon,
   ClockIcon,
   TrashIcon,
-  EditToggleButton,
-  LazyBotMessageEditor,
   EMPTY_BROADCAST_PLANNER_STATE,
   areBroadcastPlannerStatesEqual,
-  LazyWarnMessageEditor,
 } from './settings/settings-page-helpers';
 import {
   ChatSettingsWorkspaceHeader,
@@ -384,9 +373,37 @@ const LazySettingsOverviewSearch = lazy(() =>
   })),
 );
 const LazySettingsSpeechStylePanel = lazy(() => import('./settings/settings-speech-style-panel'));
+const LazySettingsStopWordsSingleTools = lazy(() =>
+  import('./settings/settings-stop-words-single-tools').then((module) => ({
+    default: module.SettingsStopWordsSingleTools,
+  })),
+);
+
+const SHARED_CHAT_SECTION_PRESENTATIONS = {
+  links: getNetworkSettingsSectionPresentation('chat', 'links'),
+  greeting: getNetworkSettingsSectionPresentation('chat', 'greeting'),
+  profanityFilter: getNetworkSettingsSectionPresentation('chat', 'profanityFilter'),
+  requiredSubscription: getNetworkSettingsSectionPresentation('chat', 'requiredSubscription'),
+} as const;
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
+  const { snapshot: favoritesSnapshot } = useHomeEntityFavorites();
+  const favoritesCompositionEpoch = favoritesSnapshot.byType.chat.compositionEpoch;
+  const favoritesCompositionEpochRef = useRef(favoritesCompositionEpoch);
+  favoritesCompositionEpochRef.current = favoritesCompositionEpoch;
+  const [applyTargetPreviewEpoch, setApplyTargetPreviewEpoch] = useState<number | null>(null);
+  const [sharedFieldErrors, setSharedFieldErrors] = useState<Record<string, string>>({});
+  const [isReloadingStopWords, setIsReloadingStopWords] = useState(false);
+  const stopWordsReloadRequestRef = useRef<symbol | null>(null);
+  useEffect(() => {
+    stopWordsReloadRequestRef.current = null;
+    setIsReloadingStopWords(false);
+  }, [chatId]);
+  const [sharedSectionEpochs, setSharedSectionEpochs] = useState<
+    Partial<Record<ApplySectionKey, number>>
+  >({});
+  useEffect(() => setSharedFieldErrors({}), [chatId]);
   const location = useLocation();
   const navigate = useNavigate();
   const { isCompact: isHeaderCompact } = useAutoHideHeader();
@@ -1489,28 +1506,32 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     let cancelled = false;
+    const requestEpoch = favoritesCompositionEpoch;
+    setApplyTargetPreviewEpoch(null);
     setApplyTargetPreview(null);
     setApplyTargetPreviewLoading(true);
     setApplyTargetPreviewError(null);
 
     void previewApplySettingsSectionTarget(api, chatId, applyTargetSheet.target)
       .then((preview) => {
-        if (cancelled) {
+        if (cancelled || favoritesCompositionEpochRef.current !== requestEpoch) {
           return;
         }
 
+        setApplyTargetPreviewEpoch(requestEpoch);
         setApplyTargetPreview(preview);
       })
       .catch((error: unknown) => {
-        if (cancelled) {
+        if (cancelled || favoritesCompositionEpochRef.current !== requestEpoch) {
           return;
         }
 
+        setApplyTargetPreviewEpoch(requestEpoch);
         setApplyTargetPreview(null);
         setApplyTargetPreviewError(formatApiError(error));
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && favoritesCompositionEpochRef.current === requestEpoch) {
           setApplyTargetPreviewLoading(false);
         }
       });
@@ -1518,7 +1539,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return () => {
       cancelled = true;
     };
-  }, [api, applyTargetSheet, chatId]);
+  }, [api, applyTargetSheet, chatId, favoritesCompositionEpoch]);
 
   const addDomainMutation = useMutation({
     mutationFn: (payload: { domain: string; kind: NavigationAllowlistKind }) =>
@@ -1955,6 +1976,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function validateDraft(value: ChatSettings): ChatSettings | null {
+    if (isReloadingStopWords) return null;
+    if (Object.keys(sharedFieldErrors).length) return null;
     const normalizedValue = normalizeRequiredSubscriptionDraftSettings(value);
     const parsed = updateSettingsRequestSchema.safeParse(normalizedValue);
 
@@ -2101,10 +2124,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     adjustDeleteBotMessagesDelayValue('deleteBotMessagesDelayMinutes', direction);
   }
 
-  function adjustGreetingDeleteBotMessagesDelay(direction: number) {
-    adjustDeleteBotMessagesDelayValue('greetingDeleteBotMessageDelayMinutes', direction);
-  }
-
   function adjustStickerMessageCooldown(deltaMinutes: number) {
     if (!draft) {
       return;
@@ -2134,21 +2153,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       Math.max(DUPLICATE_ALLOWED_COUNT_MIN, Number(currentValue) + delta),
     );
     applyDuplicateFlowConfig({ allowedCount: next });
-  }
-
-  function setIntegerChatFieldValue<K extends NumericChatSettingKey>(
-    key: K,
-    rawValue: string,
-    min: number,
-    max: number,
-  ) {
-    const parsed = Number.parseInt(rawValue, 10);
-    if (Number.isNaN(parsed)) {
-      return;
-    }
-
-    const safeValue = Math.min(max, Math.max(min, parsed));
-    setFieldValue(key, safeValue as ChatSettings[K]);
   }
 
   function applyDuplicateDetectionPreset(preset: DuplicateDetectionPreset) {
@@ -3043,104 +3047,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  function renderEscalationTuning(params: {
-    title: string;
-    ariaLabelPrefix: string;
-    windowKey: Extract<NumericChatSettingKey, `${string}EscalationWindowHours`>;
-    warnKey: Extract<NumericChatSettingKey, `${string}WarnMaxCount`>;
-    muteKey: Extract<NumericChatSettingKey, `${string}MuteMaxCount`>;
-    banKey: Extract<NumericChatSettingKey, `${string}BanMaxCount`>;
-  }) {
-    if (!draft) {
-      return null;
-    }
-
-    const fields: Array<{
-      key: NumericChatSettingKey;
-      label: string;
-      suffix: string;
-      min: number;
-      max: number;
-    }> = [
-      {
-        key: params.windowKey,
-        label: 'Период',
-        suffix: 'ч',
-        min: 1,
-        max: 168,
-      },
-      {
-        key: params.warnKey,
-        label: 'Предупреждение',
-        suffix: 'раз',
-        min: 1,
-        max: 20,
-      },
-      {
-        key: params.muteKey,
-        label: 'Ограничение',
-        suffix: 'раз',
-        min: 1,
-        max: 20,
-      },
-      {
-        key: params.banKey,
-        label: 'Блокировка',
-        suffix: 'раз',
-        min: 1,
-        max: 20,
-      },
-    ];
-    const errors = fields
-      .map((field) => fieldErrors[field.key])
-      .filter((error): error is string => Boolean(error));
-
-    return (
-      <article className={cn('duplicate-stage', errors.length > 0 && 'field--error')}>
-        <div className="duplicate-stage__top">
-          <span className="duplicate-stage__title">{params.title}</span>
-        </div>
-
-        <div className="duplicate-stage__controls">
-          {fields.map((field) => (
-            <label
-              key={field.key}
-              className={cn('duplicate-stage__field', fieldErrors[field.key] && 'field--error')}
-            >
-              <span className="duplicate-stage__field-label">{field.label}</span>
-              <div className="duplicate-stage__input-wrap">
-                <input
-                  type="number"
-                  min={field.min}
-                  max={field.max}
-                  step={1}
-                  value={Number(draft[field.key])}
-                  onChange={(event) =>
-                    setIntegerChatFieldValue(field.key, event.target.value, field.min, field.max)
-                  }
-                  aria-label={`${params.ariaLabelPrefix}: ${field.label.toLowerCase()}`}
-                />
-                <span className="duplicate-stage__suffix" aria-hidden>
-                  {field.suffix}
-                </span>
-              </div>
-            </label>
-          ))}
-        </div>
-
-        {errors.length > 0 ? (
-          <div className="duplicate-stage__errors">
-            {errors.map((error) => (
-              <small key={error} className="field__hint">
-                {error}
-              </small>
-            ))}
-          </div>
-        ) : null}
-      </article>
-    );
-  }
-
   function toggleBotMessageEditor(key: BotMessageEditorKey) {
     setOpenWarnEditorKey(null);
     setOpenBotEditorKey((current) => (current === key ? null : key));
@@ -3225,7 +3131,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  const linkPolicyError = fieldErrors.linkPolicy;
   const requiredSubscriptionChannelsError = fieldErrors.requiredSubscriptionChannelIds;
   const allowlistEntries: DomainAllowlistEntry[] = domainsQuery.data ?? [];
   const isDomainMutationPending =
@@ -3233,23 +3138,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     removeDomainMutation.isPending ||
     scheduleDomainRemovalMutation.isPending;
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
-  const shouldShowLinkStages = draft?.linkPolicy !== 'ALERT_ONLY';
-  const showLinkBotButtonErrors = Boolean(
-    draft?.linkBotMessageEnabled && draft?.linkBotButtonEnabled,
-  );
-  const linkBotButtonErrors =
-    showLinkBotButtonErrors && fieldErrors.linkBotButtons
-      ? validateBroadcastLinkButtons(draft?.linkBotButtons ?? [])
-      : [];
-  const hasLinkBotButtonError = Boolean(fieldErrors.linkBotButtons);
-  const showGreetingBotButtonErrors = Boolean(
-    draft?.greetingEnabled && draft?.greetingBotMessageEnabled && draft?.greetingBotButtonEnabled,
-  );
-  const greetingBotButtonErrors =
-    showGreetingBotButtonErrors && fieldErrors.greetingBotButtons
-      ? validateBroadcastLinkButtons(draft?.greetingBotButtons ?? [])
-      : [];
-  const hasGreetingBotButtonError = Boolean(fieldErrors.greetingBotButtons);
   const showDuplicateBotButtonErrors = Boolean(
     draft?.duplicateBotMessageEnabled && draft?.duplicateBotButtonEnabled,
   );
@@ -4187,7 +4075,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingPlannerResetKey((current) => current + 1);
   }
 
+  function hasSharedSectionErrors(section: ApplySectionKey) {
+    return settingsSectionPaths('chat', section).some((path) => Boolean(sharedFieldErrors[path]));
+  }
   function isSectionDirty(section: ApplySectionKey) {
+    if (hasSharedSectionErrors(section)) return true;
     if (!draft || !settingsQuery.data) {
       return false;
     }
@@ -4205,7 +4097,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  function resetSharedSectionEditor(section: ApplySectionKey) {
+    const paths = new Set(settingsSectionPaths('chat', section));
+    setSharedFieldErrors((current) =>
+      Object.fromEntries(Object.entries(current).filter(([path]) => !paths.has(path))),
+    );
+    setSharedSectionEpochs((current) => ({ ...current, [section]: (current[section] ?? 0) + 1 }));
+  }
+
   function discardSectionChanges(section: ApplySectionKey) {
+    resetSharedSectionEditor(section);
     if (!settingsQuery.data) {
       return;
     }
@@ -4228,6 +4129,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function buildSectionPayload(section: ApplySectionKey) {
+    if (section === 'stopWords' && isReloadingStopWords) return null;
+    if (hasSharedSectionErrors(section)) return null;
     if (!draft || !settingsQuery.data) {
       return null;
     }
@@ -4310,6 +4213,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     void preloadSettingsApplyTargetSheet();
+    setApplyTargetPreview(null);
+    setApplyTargetPreviewEpoch(null);
+    setApplyTargetPreviewLoading(true);
     setApplyTargetSheet({
       sourceChatId: chatId,
       section,
@@ -4323,6 +4229,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    if (
+      applyTargetPreviewEpoch !== favoritesCompositionEpochRef.current ||
+      !applyTargetPreview ||
+      applyTargetPreviewLoading
+    ) {
+      setApplyTargetPreview(null);
+      setApplyTargetSheet((current) => (current ? { ...current } : current));
+      return;
+    }
     try {
       if (
         applyTargetSheet.section === 'reports' &&
@@ -4362,7 +4277,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft,
     serverSettings: settingsQuery.data,
     serverRules: rulesQuery.data,
-    settingsDirty: hasChanges,
+    settingsDirty: hasChanges || Object.keys(sharedFieldErrors).length > 0,
     rulesDirty: hasRulesChanges,
     saving:
       isHeaderSaving || isApplyingSectionToAll || isPublishingRules || isResettingPublishedRules,
@@ -4372,6 +4287,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesDraft,
     onSettingsSaveError: (error) => handleSettingsPermissionError(error, null),
     clearValidationErrors: () => {
+      setSharedFieldErrors({});
       setFieldErrors({});
       setRulesTextError('');
       setRulesImageError('');
@@ -4395,7 +4311,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         <LazySettingsSectionSaveFooter
           section={section}
           options={options}
-          isSavingSettings={isSavingSettings}
+          isSavingSettings={isSavingSettings || (section === 'stopWords' && isReloadingStopWords)}
           savingSection={savingSection}
           isApplyingSectionToAll={isApplyingSectionToAll}
           applyingSection={applyingSection}
@@ -4444,7 +4360,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         className="settings-drilldown__header-action"
         aria-label="Применить к другим чатам"
         onClick={() => openApplyTargetSheet(section)}
-        disabled={isSavingSettings || isApplyingSectionToAll}
+        disabled={
+          isSavingSettings ||
+          isApplyingSectionToAll ||
+          (section === 'stopWords' && isReloadingStopWords)
+        }
       >
         {isApplying ? (
           'Применяем...'
@@ -4455,6 +4375,545 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           </>
         )}
       </button>
+    );
+  }
+
+  function createSingleFields(section: ApplySectionKey) {
+    return draft
+      ? createChatSettingsFieldAdapter({
+          settings: draft,
+          baseline: settingsQuery.data,
+          onChange: setDraft,
+          readOnly:
+            isSavingSettings ||
+            isApplyingSectionToAll ||
+            (section === 'stopWords' && isReloadingStopWords),
+          errors: { ...fieldErrors, ...sharedFieldErrors },
+          onError: (path, error) =>
+            setSharedFieldErrors((current) => {
+              const next = { ...current };
+              if (error) next[path] = error;
+              else delete next[path];
+              return next;
+            }),
+        })
+      : null;
+  }
+  const singleNavigationAllowlist = (
+    <>
+      {isAllowlistMode ? (
+        <div className="allowlist-workspace">
+          <div
+            className={cn('field', 'allowlist-panel', domainInputError && 'allowlist-panel--error')}
+          >
+            <div className="allowlist-panel__head">
+              <span className="field__label">Разрешённые ссылки</span>
+            </div>
+
+            <div className="allowlist-composer">
+              <label className="allowlist-composer__head">
+                <span className="field__label allowlist-composer__label">Что разрешить</span>
+                <select
+                  className="button button--ghost"
+                  value={domainInputKind}
+                  disabled={isDomainMutationPending}
+                  onChange={(event) => {
+                    setDomainInputKind(event.target.value as NavigationAllowlistKind);
+                    setDomainInputError('');
+                  }}
+                  aria-label="Что разрешить"
+                >
+                  {NAVIGATION_ALLOWLIST_TARGET_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="allowlist-add-row">
+                <input
+                  type="text"
+                  inputMode={getNavigationAllowlistTargetOption(domainInputKind).inputMode}
+                  value={domainInput}
+                  disabled={isDomainMutationPending}
+                  aria-invalid={Boolean(domainInputError)}
+                  aria-describedby={domainInputError ? 'allowlist-input-error' : undefined}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  enterKeyHint="done"
+                  onChange={(event) => {
+                    setDomainInput(event.target.value);
+                    setDomainInputError('');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      handleAddDomain();
+                    }
+                  }}
+                  placeholder={getNavigationAllowlistTargetOption(domainInputKind).placeholder}
+                  aria-label={getNavigationAllowlistTargetOption(domainInputKind).ariaLabel}
+                />
+
+                {domainInput.trim() ? (
+                  <button
+                    type="button"
+                    className="button button--accent allowlist-add-row__button"
+                    onClick={handleAddDomain}
+                    disabled={isDomainMutationPending}
+                  >
+                    {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            {domainInputError ? (
+              <small id="allowlist-input-error" className="field__hint" role="alert">
+                {domainInputError}
+              </small>
+            ) : null}
+
+            {domainsQuery.isLoading ? <p className="allowlist-empty">Загрузка...</p> : null}
+
+            {domainsQuery.error ? (
+              <p className="allowlist-empty allowlist-empty--error">
+                Ошибка: {formatApiError(domainsQuery.error)}
+              </p>
+            ) : null}
+
+            {!domainsQuery.isLoading && !domainsQuery.error ? (
+              allowlistEntries.length > 0 ? (
+                <div className="allowlist-results">
+                  <ul className="allowlist-list" aria-label="Разрешённые навигационные цели">
+                    {allowlistEntries.map((entry) => {
+                      const isScheduleOpen = scheduleDomain === entry.normalizedValue;
+                      const targetLabel = formatNavigationAllowlistEntryTarget(entry);
+                      const scheduledAtLabel = formatRemovalDateTime(entry.removeAfterAt);
+                      return (
+                        <li
+                          key={entry.normalizedValue}
+                          className={cn('allowlist-item', 'allowlist-item--domain')}
+                        >
+                          <div className="allowlist-item__stack">
+                            <div className="allowlist-item__header">
+                              <div className="allowlist-item__lead">
+                                <span className="allowlist-item__domain" title={targetLabel}>
+                                  {targetLabel}
+                                </span>
+                                <small className="allowlist-item__type">
+                                  {formatNavigationAllowlistEntryKindLabel(entry)} ·{' '}
+                                  {scheduledAtLabel ? `до ${scheduledAtLabel}` : 'без срока'}
+                                </small>
+                              </div>
+                              <div className="allowlist-item__actions">
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'allowlist-item__action',
+                                    'allowlist-item__action--schedule',
+                                    isScheduleOpen && 'is-open',
+                                  )}
+                                  aria-label={
+                                    isScheduleOpen
+                                      ? `Закрыть выбор срока для ${targetLabel}`
+                                      : scheduledAtLabel
+                                        ? `Изменить срок для ${targetLabel}`
+                                        : `Задать срок для ${targetLabel}`
+                                  }
+                                  title={
+                                    isScheduleOpen
+                                      ? 'Закрыть'
+                                      : scheduledAtLabel
+                                        ? 'Изменить срок'
+                                        : 'Задать срок'
+                                  }
+                                  onClick={() => toggleDomainScheduleEditor(entry)}
+                                  disabled={isDomainMutationPending}
+                                >
+                                  <CalendarIcon />
+                                </button>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'allowlist-item__action',
+                                    'allowlist-item__action--remove',
+                                  )}
+                                  onClick={() => removeDomainMutation.mutate(entry.normalizedValue)}
+                                  disabled={isDomainMutationPending}
+                                  aria-label={`Удалить ${targetLabel}`}
+                                  title="Удалить"
+                                >
+                                  <TrashIcon />
+                                </button>
+                              </div>
+                            </div>
+
+                            {isScheduleOpen ? (
+                              <div
+                                className="allowlist-item__schedule-editor"
+                                role="group"
+                                aria-label={`План удаления ${targetLabel}`}
+                              >
+                                <div className="allowlist-item__schedule-fields">
+                                  <Suspense fallback={null}>
+                                    <LazySettingsDateField
+                                      className="allowlist-item__schedule-field"
+                                      label="День удаления"
+                                      value={scheduleDate}
+                                      min={toLocalDateInputValue(new Date())}
+                                      onChange={(nextValue) => {
+                                        setScheduleDate(nextValue);
+                                        setScheduleError('');
+                                      }}
+                                    />
+                                  </Suspense>
+                                  <div className="field allowlist-item__schedule-field">
+                                    <Suspense fallback={null}>
+                                      <LazySettingsTimeFields
+                                        kind="schedule"
+                                        value={scheduleTime}
+                                        onChange={(nextValue) => {
+                                          setScheduleTime(nextValue);
+                                          setScheduleError('');
+                                        }}
+                                      />
+                                    </Suspense>
+                                  </div>
+                                </div>
+
+                                {scheduleError ? (
+                                  <small className="field__hint">{scheduleError}</small>
+                                ) : null}
+
+                                <div className="allowlist-item__schedule-actions">
+                                  <button
+                                    type="button"
+                                    className="button button--accent"
+                                    onClick={() => submitDomainSchedule(entry.normalizedValue)}
+                                    disabled={isDomainMutationPending}
+                                  >
+                                    {scheduleDomainRemovalMutation.isPending
+                                      ? 'Сохраняем...'
+                                      : 'Сохранить'}
+                                  </button>
+                                  {entry.removeAfterAt ? (
+                                    <button
+                                      type="button"
+                                      className="button button--ghost"
+                                      onClick={() => clearDomainSchedule(entry.normalizedValue)}
+                                      disabled={isDomainMutationPending}
+                                    >
+                                      Убрать таймер
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : (
+                <p className="allowlist-empty">Пока пусто</p>
+              )
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+  const singleSubscriptionSources = (
+    <>
+      <div className="managed-giveaway__section required-subscription__board">
+        <div className="managed-giveaway__title-row">
+          <div className="managed-giveaway__section-copy required-subscription__heading">
+            <strong>Куда подписаться</strong>
+            <small
+              className="required-subscription__count"
+              data-state={
+                requiredSubscriptionStaleCount > 0
+                  ? 'warning'
+                  : requiredSubscriptionIsActive
+                    ? 'active'
+                    : 'empty'
+              }
+              aria-label={`Выбрано источников: ${requiredSubscriptionSelectedCount} из ${REQUIRED_SUBSCRIPTION_MAX_CHANNELS}`}
+            >
+              {requiredSubscriptionSelectedCount}/{REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
+            </small>
+          </div>
+        </div>
+
+        {requiredSubscriptionStaleCount > 0 ? (
+          <p className={cn('settings-native-toggle__hint', 'settings-native-toggle__hint--danger')}>
+            Есть недоступные ссылки. Исправьте или удалите их.
+          </p>
+        ) : null}
+
+        {requiredSubscriptionSelectedCount === 0 ? (
+          <div className="required-subscription__selection-empty">
+            <strong>Источники пока не выбраны</strong>
+          </div>
+        ) : null}
+
+        {selectedRequiredSubscriptionChannels.length > 0 ? (
+          <div className="required-subscription__selection-list">
+            {selectedRequiredSubscriptionChannels.map((channel) => {
+              const linkPreview = formatRequiredSubscriptionLinkPreview(channel.link);
+
+              return (
+                <div
+                  key={`required-subscription-channel-${channel.id}`}
+                  className="required-subscription__selection-card"
+                >
+                  <EntityAvatar
+                    title={channel.title}
+                    entityType={channel.entityType}
+                    avatarUrl={channel.avatarUrl}
+                    className="required-subscription__selection-avatar"
+                  />
+                  <div
+                    className="required-subscription__selection-body"
+                    title={channel.link || channel.title}
+                  >
+                    <strong className="required-subscription__selection-title">
+                      {channel.title}
+                    </strong>
+                    <div className="required-subscription__selection-meta">
+                      <span className="required-subscription__selection-kind">
+                        {formatRequiredSubscriptionEntityLabel(channel.entityType)}
+                      </span>
+                      {linkPreview ? (
+                        <span className="required-subscription__selection-link">{linkPreview}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="required-subscription__selection-remove"
+                    onClick={() => removeRequiredSubscriptionChannel(channel.id)}
+                    aria-label={`Удалить ${formatRequiredSubscriptionEntityLabel(channel.entityType).toLowerCase()} ${channel.title}`}
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {selectedUnavailableRequiredSubscriptionChannels.length > 0 ? (
+          <div className="required-subscription__selection-list">
+            {selectedUnavailableRequiredSubscriptionChannels.map((channel, index) => (
+              <div
+                key={`required-subscription-stale-${channel.id}`}
+                className={cn('required-subscription__selection-card', 'is-warning')}
+              >
+                <span className="required-subscription__selection-rank">
+                  {selectedRequiredSubscriptionChannels.length + index + 1}
+                </span>
+                <div className="required-subscription__selection-body" title={channel.description}>
+                  <div className="required-subscription__selection-meta">
+                    <span className="required-subscription__selection-state">Недоступно</span>
+                  </div>
+                  <strong className="required-subscription__selection-title">
+                    Недоступный источник {selectedRequiredSubscriptionChannels.length + index + 1}
+                  </strong>
+                  <small className="required-subscription__selection-detail">
+                    {channel.description}
+                  </small>
+                </div>
+                <button
+                  type="button"
+                  className="required-subscription__selection-remove"
+                  onClick={() => removeRequiredSubscriptionChannel(channel.id)}
+                  aria-label={`Удалить недоступный источник ${selectedRequiredSubscriptionChannels.length + index + 1}`}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {requiredSubscriptionChannelsError ? (
+          <small className="field__hint">{requiredSubscriptionChannelsError}</small>
+        ) : null}
+
+        <RequiredSubscriptionSourceDisclosure
+          initiallyOpen={requiredSubscriptionSelectedCount === 0}
+        >
+          <Suspense
+            fallback={
+              <div className="required-subscription__source-picker">
+                <div className="required-subscription__source-skeleton" aria-hidden>
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            }
+          >
+            <LazyRequiredSubscriptionSourcePicker
+              choices={availableRequiredSubscriptionChannelChoices}
+              selectedCount={requiredSubscriptionSelectedCount}
+              maxSelectedCount={REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
+              loading={requiredSubscriptionEntitiesLoading}
+              syncing={requiredSubscriptionEntitiesSyncing}
+              error={
+                requiredSubscriptionEntitiesError
+                  ? formatApiError(requiredSubscriptionEntitiesError)
+                  : null
+              }
+              backoffActive={requiredSubscriptionEntitiesBackoffActive}
+              emptyState={requiredSubscriptionPickerEmptyState}
+              onAdd={addRequiredSubscriptionChannel}
+              onRefresh={refreshRequiredSubscriptionChannels}
+            />
+          </Suspense>
+
+          <RequiredSubscriptionExternalSource
+            value={requiredSubscriptionExternalChannelValue}
+            error={requiredSubscriptionExternalChannelError}
+            loading={isResolvingRequiredSubscriptionChannel}
+            limitReached={requiredSubscriptionSelectedCount >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
+            onChange={(value) => {
+              setRequiredSubscriptionExternalChannelValue(value);
+              setRequiredSubscriptionExternalChannelError('');
+            }}
+            onSubmit={handleResolveRequiredSubscriptionExternalChannel}
+          />
+        </RequiredSubscriptionSourceDisclosure>
+      </div>
+    </>
+  );
+  async function reloadStopWordsPolicy() {
+    if (!chatId || !settingsQuery.data || isReloadingStopWords) return;
+    const request = Symbol('stop-words-reload');
+    stopWordsReloadRequestRef.current = request;
+    setIsReloadingStopWords(true);
+    try {
+      const saved = await getStopWords(api, chatId);
+      if (activeChatIdRef.current !== chatId || stopWordsReloadRequestRef.current !== request)
+        return;
+      syncSavedSectionSettings('stopWords', {
+        ...settingsQuery.data,
+        stopWordsPolicy: saved.policy,
+        stopWordsRevision: saved.revision,
+      });
+      setMessageLimitsBlockedWordsInput('');
+      setMessageLimitsBlockedDomainsInput('');
+      clearFieldError('messageLimitsBlockedWords');
+      clearFieldError('messageLimitsBlockedDomains');
+      resetSharedSectionEditor('stopWords');
+    } finally {
+      if (stopWordsReloadRequestRef.current === request) {
+        stopWordsReloadRequestRef.current = null;
+        setIsReloadingStopWords(false);
+      }
+    }
+  }
+  function renderSharedChatSection(section: ApplySectionKey) {
+    const singleFields = createSingleFields(section);
+    if (!singleFields) return null;
+    const reportsAvailable = expandedSections.reports
+      ? !reportsAvailabilityQuery.isError &&
+        reportsAvailabilityQuery.data?.reportsAvailable === true
+      : settingsScreenQuery.data?.reportsAvailable === true;
+    const stopWordsTool = (slot: 'toolbar' | 'notice' | 'preview' | 'imageScan') => (
+      <Suspense fallback={null}>
+        <LazySettingsStopWordsSingleTools
+          slot={slot}
+          api={api}
+          chatId={chatId ?? ''}
+          policy={draft?.stopWordsPolicy}
+          revision={draft?.stopWordsRevision}
+          dirty={isSectionDirty('stopWords')}
+          busy={singleFields.readOnly}
+          invalid={hasSharedSectionErrors('stopWords')}
+          reloadPolicy={reloadStopWordsPolicy}
+        />
+      </Suspense>
+    );
+    return (
+      <SharedChatSettingsSection
+        key={`${chatId}:${section}:${sharedSectionEpochs[section] ?? 0}`}
+        section={section}
+        fields={singleFields}
+        context={{
+          mode: 'single',
+          hasPublishedRules,
+          api,
+          stopWordsTools:
+            section === 'stopWords'
+              ? {
+                  toolbar: stopWordsTool('toolbar'),
+                  notice: stopWordsTool('notice'),
+                  preview: stopWordsTool('preview'),
+                  imageScan: stopWordsTool('imageScan'),
+                }
+              : undefined,
+          duplicatePresentation: {
+            messageMode: settingsScreenQuery.data?.duplicateMessageModerationMode ?? 'OFF',
+            photoPolicy: duplicatePhotoModerationPolicy,
+          },
+          limitsRuntime: {
+            deleteSpammersStatus: deleteSpammersRuntimeStatus,
+            enforcementMode: spammerReviewMetricsQuery.data?.enforcementMode,
+          },
+          navigationAllowlist: singleNavigationAllowlist,
+          requiredSubscriptionSources: singleSubscriptionSources,
+          reportsActivationAvailable:
+            reportsAvailable || settingsQuery.data?.reportsEnabled === true,
+          runtimeNotes: {
+            reports: reportsAvailable ? null : (
+              <p className="reports-availability" role="status">
+                {reportsAvailabilityQuery.isPending
+                  ? 'Проверяем приём жалоб…'
+                  : 'Приём жалоб приостановлен оператором.'}
+              </p>
+            ),
+            commercialFilter: (
+              <p className="field__hint">
+                Проверка фото:{' '}
+                {settingsScreenQuery.data?.commercialPhotoModerationMode === 'FULL'
+                  ? 'включена'
+                  : settingsScreenQuery.data?.commercialPhotoModerationMode === 'OBSERVE'
+                    ? 'наблюдение без удаления'
+                    : settingsScreenQuery.data?.commercialPhotoModerationMode === 'OFF'
+                      ? 'выключена'
+                      : 'состояние неизвестно'}
+              </p>
+            ),
+          },
+          renderAdminContact: ({ enabledPath, urlPath, label }) => {
+            if (!chatId) return null;
+            const enabled = singleFields.read(enabledPath);
+            const url = singleFields.read(urlPath);
+            return (
+              <AdminContactToggle
+                api={api}
+                chatId={chatId}
+                title={ADMIN_CONTACT_BUTTON_TEXT}
+                checked={enabled.kind === 'common' && enabled.value === true}
+                url={url.kind === 'common' && typeof url.value === 'string' ? url.value : ''}
+                ariaLabel={label}
+                nested
+                onChange={(nextEnabled, nextUrl) =>
+                  singleFields.transact([
+                    { op: 'set', path: enabledPath, value: nextEnabled },
+                    { op: 'set', path: urlPath, value: nextUrl },
+                  ])
+                }
+              />
+            );
+          },
+        }}
+      />
     );
   }
 
@@ -4479,16 +4938,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           <LazySettingsApplyTargetSheet
             api={api}
             sheet={applyTargetSheet}
-            preview={applyTargetPreview}
-            previewLoading={applyTargetPreviewLoading}
+            preview={
+              applyTargetPreviewEpoch === favoritesCompositionEpoch ? applyTargetPreview : null
+            }
+            previewLoading={
+              applyTargetPreviewLoading || applyTargetPreviewEpoch !== favoritesCompositionEpoch
+            }
             previewError={applyTargetPreviewError}
             sectionLabel={SECTION_LABELS[applyTargetSheet.section]}
             overlayStyle={applyTargetOverlayStyle}
             isApplying={isApplyingSectionToAll}
             onClose={() => setApplyTargetSheet(null)}
-            onTargetChange={(target) =>
-              setApplyTargetSheet((current) => (current ? { ...current, target } : current))
-            }
+            onTargetChange={(target) => {
+              setApplyTargetPreview(null);
+              setApplyTargetPreviewEpoch(null);
+              setApplyTargetPreviewLoading(true);
+              setApplyTargetSheet((current) => (current ? { ...current, target } : current));
+            }}
             onConfirm={() => void handleConfirmApplyTarget()}
           />
         </Suspense>
@@ -4607,16 +5073,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-              style={{ order: 1 }}
+              style={{ order: SHARED_CHAT_SECTION_PRESENTATIONS.links.order }}
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Ссылки"
+                  title={SHARED_CHAT_SECTION_PRESENTATIONS.links.title}
                   enabled={draft.linkPolicy !== 'ALERT_ONLY'}
                   summary={linksHeaderSummary}
                   status={linksCardStatus}
-                  icon="links"
-                  tone="sky"
+                  icon={SHARED_CHAT_SECTION_PRESENTATIONS.links.icon}
+                  tone={SHARED_CHAT_SECTION_PRESENTATIONS.links.tone}
                   open={expandedSections.links}
                   controls="settings-links-content"
                   onClick={() => toggleSection('links')}
@@ -4625,12 +5091,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-links-content"
-                icon={<SettingsSectionIcon name="links" />}
+                icon={<SettingsSectionIcon name={SHARED_CHAT_SECTION_PRESENTATIONS.links.icon} />}
                 open={expandedSections.links}
-                title="Ссылки"
+                title={SHARED_CHAT_SECTION_PRESENTATIONS.links.title}
                 summary={linksHeaderSummary}
-                tone="sky"
-                className="settings-drilldown__panel--board settings-drilldown__panel--links"
+                tone={SHARED_CHAT_SECTION_PRESENTATIONS.links.tone}
+                className={SHARED_CHAT_SECTION_PRESENTATIONS.links.panelClassName}
                 onClose={() => toggleSection('links')}
                 headerAction={renderApplyTargetHeaderAction('links')}
                 confirmCloseWhen={isSectionDirty('links')}
@@ -4640,547 +5106,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 })}
                 keepFooterVisibleWhenKeyboardOpen
               >
-                <div
-                  id="settings-links-content"
-                  className={cn('settings-section__collapse', expandedSections.links && 'is-open')}
-                >
-                  {expandedSections.links ? (
-                    <div className="settings-section__collapse-inner">
-                      <div className="settings-grid settings-grid--single">
-                        <div className={cn('settings-policy', linkPolicyError && 'field--error')}>
-                          <span className="field__label">Режим</span>
-                          <SegmentedControl
-                            value={draft.linkPolicy}
-                            options={LINK_POLICY_OPTIONS.map((option) => ({
-                              value: option.value,
-                              label: option.label,
-                            }))}
-                            onChange={(value) => {
-                              setFieldValue('linkPolicy', value);
-                              if (draft.linkPolicy === 'ALERT_ONLY' && value !== 'ALERT_ONLY') {
-                                enableDefaultSanctionStages(setFieldValue, 'link');
-                              }
-                            }}
-                            className={cn(
-                              'settings-mode-segments',
-                              linkPolicyError && 'settings-mode-segments--error',
-                            )}
-                            ariaLabel="Режим модерации ссылок"
-                          />
-                          {linkPolicyError ? (
-                            <small className="field__hint">{linkPolicyError}</small>
-                          ) : null}
-                        </div>
-
-                        {isAllowlistMode ? (
-                          <div className="allowlist-workspace">
-                            <div
-                              className={cn(
-                                'field',
-                                'allowlist-panel',
-                                domainInputError && 'allowlist-panel--error',
-                              )}
-                            >
-                              <div className="allowlist-panel__head">
-                                <span className="field__label">Разрешённые ссылки</span>
-                              </div>
-
-                              <div className="allowlist-composer">
-                                <label className="allowlist-composer__head">
-                                  <span className="field__label allowlist-composer__label">
-                                    Что разрешить
-                                  </span>
-                                  <select
-                                    className="button button--ghost"
-                                    value={domainInputKind}
-                                    disabled={isDomainMutationPending}
-                                    onChange={(event) => {
-                                      setDomainInputKind(
-                                        event.target.value as NavigationAllowlistKind,
-                                      );
-                                      setDomainInputError('');
-                                    }}
-                                    aria-label="Что разрешить"
-                                  >
-                                    {NAVIGATION_ALLOWLIST_TARGET_OPTIONS.map((option) => (
-                                      <option key={option.value} value={option.value}>
-                                        {option.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                                <div className="allowlist-add-row">
-                                  <input
-                                    type="text"
-                                    inputMode={
-                                      getNavigationAllowlistTargetOption(domainInputKind).inputMode
-                                    }
-                                    value={domainInput}
-                                    disabled={isDomainMutationPending}
-                                    aria-invalid={Boolean(domainInputError)}
-                                    aria-describedby={
-                                      domainInputError ? 'allowlist-input-error' : undefined
-                                    }
-                                    autoCapitalize="none"
-                                    autoCorrect="off"
-                                    spellCheck={false}
-                                    enterKeyHint="done"
-                                    onChange={(event) => {
-                                      setDomainInput(event.target.value);
-                                      setDomainInputError('');
-                                    }}
-                                    onKeyDown={(event) => {
-                                      if (event.key === 'Enter') {
-                                        event.preventDefault();
-                                        handleAddDomain();
-                                      }
-                                    }}
-                                    placeholder={
-                                      getNavigationAllowlistTargetOption(domainInputKind)
-                                        .placeholder
-                                    }
-                                    aria-label={
-                                      getNavigationAllowlistTargetOption(domainInputKind).ariaLabel
-                                    }
-                                  />
-
-                                  {domainInput.trim() ? (
-                                    <button
-                                      type="button"
-                                      className="button button--accent allowlist-add-row__button"
-                                      onClick={handleAddDomain}
-                                      disabled={isDomainMutationPending}
-                                    >
-                                      {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
-                                    </button>
-                                  ) : null}
-                                </div>
-                              </div>
-
-                              {domainInputError ? (
-                                <small
-                                  id="allowlist-input-error"
-                                  className="field__hint"
-                                  role="alert"
-                                >
-                                  {domainInputError}
-                                </small>
-                              ) : null}
-
-                              {domainsQuery.isLoading ? (
-                                <p className="allowlist-empty">Загрузка...</p>
-                              ) : null}
-
-                              {domainsQuery.error ? (
-                                <p className="allowlist-empty allowlist-empty--error">
-                                  Ошибка: {formatApiError(domainsQuery.error)}
-                                </p>
-                              ) : null}
-
-                              {!domainsQuery.isLoading && !domainsQuery.error ? (
-                                allowlistEntries.length > 0 ? (
-                                  <div className="allowlist-results">
-                                    <ul
-                                      className="allowlist-list"
-                                      aria-label="Разрешённые навигационные цели"
-                                    >
-                                      {allowlistEntries.map((entry) => {
-                                        const isScheduleOpen =
-                                          scheduleDomain === entry.normalizedValue;
-                                        const targetLabel =
-                                          formatNavigationAllowlistEntryTarget(entry);
-                                        const scheduledAtLabel = formatRemovalDateTime(
-                                          entry.removeAfterAt,
-                                        );
-                                        return (
-                                          <li
-                                            key={entry.normalizedValue}
-                                            className={cn(
-                                              'allowlist-item',
-                                              'allowlist-item--domain',
-                                            )}
-                                          >
-                                            <div className="allowlist-item__stack">
-                                              <div className="allowlist-item__header">
-                                                <div className="allowlist-item__lead">
-                                                  <span
-                                                    className="allowlist-item__domain"
-                                                    title={targetLabel}
-                                                  >
-                                                    {targetLabel}
-                                                  </span>
-                                                  <small className="allowlist-item__type">
-                                                    {formatNavigationAllowlistEntryKindLabel(entry)}{' '}
-                                                    ·{' '}
-                                                    {scheduledAtLabel
-                                                      ? `до ${scheduledAtLabel}`
-                                                      : 'без срока'}
-                                                  </small>
-                                                </div>
-                                                <div className="allowlist-item__actions">
-                                                  <button
-                                                    type="button"
-                                                    className={cn(
-                                                      'allowlist-item__action',
-                                                      'allowlist-item__action--schedule',
-                                                      isScheduleOpen && 'is-open',
-                                                    )}
-                                                    aria-label={
-                                                      isScheduleOpen
-                                                        ? `Закрыть выбор срока для ${targetLabel}`
-                                                        : scheduledAtLabel
-                                                          ? `Изменить срок для ${targetLabel}`
-                                                          : `Задать срок для ${targetLabel}`
-                                                    }
-                                                    title={
-                                                      isScheduleOpen
-                                                        ? 'Закрыть'
-                                                        : scheduledAtLabel
-                                                          ? 'Изменить срок'
-                                                          : 'Задать срок'
-                                                    }
-                                                    onClick={() =>
-                                                      toggleDomainScheduleEditor(entry)
-                                                    }
-                                                    disabled={isDomainMutationPending}
-                                                  >
-                                                    <CalendarIcon />
-                                                  </button>
-                                                  <button
-                                                    type="button"
-                                                    className={cn(
-                                                      'allowlist-item__action',
-                                                      'allowlist-item__action--remove',
-                                                    )}
-                                                    onClick={() =>
-                                                      removeDomainMutation.mutate(
-                                                        entry.normalizedValue,
-                                                      )
-                                                    }
-                                                    disabled={isDomainMutationPending}
-                                                    aria-label={`Удалить ${targetLabel}`}
-                                                    title="Удалить"
-                                                  >
-                                                    <TrashIcon />
-                                                  </button>
-                                                </div>
-                                              </div>
-
-                                              {isScheduleOpen ? (
-                                                <div
-                                                  className="allowlist-item__schedule-editor"
-                                                  role="group"
-                                                  aria-label={`План удаления ${targetLabel}`}
-                                                >
-                                                  <div className="allowlist-item__schedule-fields">
-                                                    <Suspense fallback={null}>
-                                                      <LazySettingsDateField
-                                                        className="allowlist-item__schedule-field"
-                                                        label="День удаления"
-                                                        value={scheduleDate}
-                                                        min={toLocalDateInputValue(new Date())}
-                                                        onChange={(nextValue) => {
-                                                          setScheduleDate(nextValue);
-                                                          setScheduleError('');
-                                                        }}
-                                                      />
-                                                    </Suspense>
-                                                    <div className="field allowlist-item__schedule-field">
-                                                      <Suspense fallback={null}>
-                                                        <LazySettingsTimeFields
-                                                          kind="schedule"
-                                                          value={scheduleTime}
-                                                          onChange={(nextValue) => {
-                                                            setScheduleTime(nextValue);
-                                                            setScheduleError('');
-                                                          }}
-                                                        />
-                                                      </Suspense>
-                                                    </div>
-                                                  </div>
-
-                                                  {scheduleError ? (
-                                                    <small className="field__hint">
-                                                      {scheduleError}
-                                                    </small>
-                                                  ) : null}
-
-                                                  <div className="allowlist-item__schedule-actions">
-                                                    <button
-                                                      type="button"
-                                                      className="button button--accent"
-                                                      onClick={() =>
-                                                        submitDomainSchedule(entry.normalizedValue)
-                                                      }
-                                                      disabled={isDomainMutationPending}
-                                                    >
-                                                      {scheduleDomainRemovalMutation.isPending
-                                                        ? 'Сохраняем...'
-                                                        : 'Сохранить'}
-                                                    </button>
-                                                    {entry.removeAfterAt ? (
-                                                      <button
-                                                        type="button"
-                                                        className="button button--ghost"
-                                                        onClick={() =>
-                                                          clearDomainSchedule(entry.normalizedValue)
-                                                        }
-                                                        disabled={isDomainMutationPending}
-                                                      >
-                                                        Убрать таймер
-                                                      </button>
-                                                    ) : null}
-                                                  </div>
-                                                </div>
-                                              ) : null}
-                                            </div>
-                                          </li>
-                                        );
-                                      })}
-                                    </ul>
-                                  </div>
-                                ) : (
-                                  <p className="allowlist-empty">Пока пусто</p>
-                                )
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {shouldShowLinkStages ? (
-                          <>
-                            {renderEscalationTuning({
-                              title: 'Повторные ссылки',
-                              ariaLabelPrefix: 'Повторные ссылки',
-                              windowKey: 'linkEscalationWindowHours',
-                              warnKey: 'linkWarnMaxCount',
-                              muteKey: 'linkMuteMaxCount',
-                              banKey: 'linkBanMaxCount',
-                            })}
-
-                            <div
-                              className="settings-subsection-divider"
-                              role="separator"
-                              aria-label="Блок действий бота"
-                            >
-                              <span>Действия бота</span>
-                            </div>
-
-                            <div className="settings-native-toggle">
-                              <div className="settings-native-toggle__row">
-                                <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    1. Объяснение
-                                  </span>
-                                  <div className="settings-native-toggle__title-actions">
-                                    <EditToggleButton
-                                      label="Редактировать текст сообщения о ссылках"
-                                      onClick={() => toggleBotMessageEditor('link')}
-                                      disabled={!draft.linkBotMessageEnabled}
-                                      isOpen={openBotEditorKey === 'link'}
-                                    />
-                                  </div>
-                                </div>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить объяснение для модерации ссылок"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.linkBotMessageEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('linkBotMessageEnabled', enabled);
-                                      if (!enabled) {
-                                        setFieldValue('linkBotButtonEnabled', false);
-                                        clearButtonGroupErrors(LINK_BOT_BUTTON_GROUP);
-                                      }
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-
-                              {draft.linkBotMessageEnabled && openBotEditorKey === 'link' ? (
-                                <LazyBotMessageEditor
-                                  editorKey="link"
-                                  {...botSpeechEditorProps!}
-                                  botSpeechPreviewContext={botSpeechPreviewContext}
-                                  value={draft.linkBotMessageText}
-                                  onChange={(nextValue) =>
-                                    setFieldValue(
-                                      'linkBotMessageText',
-                                      nextValue as ChatSettings['linkBotMessageText'],
-                                    )
-                                  }
-                                  onReset={() => setFieldValue('linkBotMessageText', '')}
-                                  onClose={() => setOpenBotEditorKey(null)}
-                                />
-                              ) : null}
-                            </div>
-
-                            <div className="settings-native-toggle settings-native-toggle--nested">
-                              <div className="settings-native-toggle__row">
-                                <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    2. Предупреждение
-                                  </span>
-                                  <div className="settings-native-toggle__title-actions">
-                                    <EditToggleButton
-                                      label="Редактировать текст предупреждения за ссылки"
-                                      onClick={() => toggleWarnMessageEditor('linkWarn')}
-                                      isOpen={openWarnEditorKey === 'linkWarn'}
-                                    />
-                                  </div>
-                                </div>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label={`Включить предупреждение за ${draft.linkWarnMaxCount}-ю ссылку`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.linkWarnEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('linkWarnEnabled', enabled);
-                                      if (enabled) {
-                                        setFieldValue('linkBotMessageEnabled', true);
-                                      }
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-
-                              {openWarnEditorKey === 'linkWarn' ? (
-                                <LazyWarnMessageEditor
-                                  editorKey="linkWarn"
-                                  {...botSpeechEditorProps!}
-                                  botSpeechPreviewContext={botSpeechPreviewContext}
-                                  value={draft.linkWarnMessageText}
-                                  onChange={(nextValue) =>
-                                    setFieldValue(
-                                      'linkWarnMessageText',
-                                      nextValue as ChatSettings['linkWarnMessageText'],
-                                    )
-                                  }
-                                  onReset={() => setFieldValue('linkWarnMessageText', '')}
-                                  onClose={() => setOpenWarnEditorKey(null)}
-                                />
-                              ) : null}
-                            </div>
-
-                            {renderMuteStageToggle({
-                              enabledKey: 'linkMuteEnabled',
-                              durationKey: 'linkMuteDurationHours',
-                              title: '3. Ограничение',
-                              onEnable: () => {
-                                setFieldValue('linkWarnEnabled', true);
-                                setFieldValue('linkBotMessageEnabled', true);
-                              },
-                            })}
-
-                            <div className="settings-native-toggle settings-native-toggle--nested">
-                              <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">4. Блокировка</span>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить блокировку за повторные ссылки"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.linkBanEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('linkBanEnabled', enabled);
-                                      if (enabled) {
-                                        setFieldValue('linkWarnEnabled', true);
-                                        setFieldValue('linkBotMessageEnabled', true);
-                                      }
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-
-                            {draft.linkBotMessageEnabled ? (
-                              <div
-                                className={cn(
-                                  'settings-native-toggle',
-                                  'settings-native-toggle--nested',
-                                  hasLinkBotButtonError && 'field--error',
-                                )}
-                              >
-                                <div className="settings-native-toggle__row">
-                                  <div className="settings-native-toggle__title-wrap">
-                                    <span className="settings-native-toggle__title">
-                                      Добавить кнопку
-                                    </span>
-                                  </div>
-
-                                  <label
-                                    className="settings-native-switch"
-                                    aria-label="Добавить кнопку в сообщение бота для модерации ссылок"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={draft.linkBotButtonEnabled}
-                                      onChange={(event) => {
-                                        const enabled = event.target.checked;
-                                        updateDraftButtonGroup(LINK_BOT_BUTTON_GROUP, {
-                                          enabled,
-                                          ...(enabled && draft.linkBotButtons.length === 0
-                                            ? { buttons: [createEmptyBroadcastLinkButton()] }
-                                            : {}),
-                                        });
-                                      }}
-                                    />
-                                    <span className="toggle-switch" aria-hidden>
-                                      <span className="toggle-switch__thumb" />
-                                    </span>
-                                  </label>
-                                </div>
-
-                                {draft.linkBotButtonEnabled ? (
-                                  <BroadcastLinkButtonsEditor
-                                    api={api}
-                                    buttons={draft.linkBotButtons}
-                                    errors={linkBotButtonErrors}
-                                    onChange={(nextButtons) =>
-                                      updateDraftButtonGroup(LINK_BOT_BUTTON_GROUP, {
-                                        buttons: nextButtons,
-                                        enabled: nextButtons.length > 0,
-                                      })
-                                    }
-                                    title="Кнопки сообщения"
-                                    subtitle="Название и ссылка"
-                                    urlPlaceholder="https://max.ru/channel/..."
-                                    textPlaceholder="Открыть"
-                                  />
-                                ) : null}
-                              </div>
-                            ) : null}
-
-                            {renderAdminContactToggle(
-                              LINK_ADMIN_CONTACT_BUTTON_GROUP,
-                              'Добавить связь с админом в сообщения о ссылках',
-                            )}
-                          </>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+                {expandedSections.links ? renderSharedChatSection('links') : null}
               </SettingsDrilldownPanel>
             </GlassCard>
 
@@ -5232,8 +5158,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
 
                         {!rulesQuery.isLoading && !rulesQuery.error && rulesDraft ? (
-                          <div className="rules-studio broadcast-studio-screen rules-studio-screen">
-                            <div className="broadcast-studio-screen__chrome">
+                          <SharedRulesSettingsStudio
+                            header={
                               <BroadcastStudioHeader
                                 title="Пост правил"
                                 subtitle={rulesStudioSubtitle}
@@ -5243,203 +5169,127 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 busy={isRulesBusy}
                                 ariaLabel="Сводка правил"
                               />
-                            </div>
-
-                            <div className="broadcast-compose-flow broadcast-compose-flow--screen rules-compose-flow">
-                              <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
-                                <div className="broadcast-stage-card__head">
-                                  <div className="broadcast-stage-card__title-wrap">
-                                    <strong>Пост</strong>
-                                  </div>
-                                  <span
-                                    className={cn(
-                                      'broadcast-stage-card__status',
-                                      rulesHasPublishableContent ? 'is-ready' : 'is-pending',
-                                    )}
-                                  >
-                                    {rulesHasPublishableContent ? 'Готов' : 'Пусто'}
-                                  </span>
-                                </div>
-
-                                <div className="broadcast-stage-card__body">
-                                  <Suspense fallback={null}>
-                                    <LazyBroadcastContentComposer
-                                      key={chatId}
-                                      className="rules-content-composer"
-                                      text={rulesDraft.text}
-                                      sourceFormat={rulesDraft.textFormat}
-                                      maxLength={MAX_CHAT_RULES_TEXT_LENGTH}
-                                      image={{
-                                        enabled: rulesHasImage,
-                                        base64: rulesDraft.imageBase64,
-                                        mimeType: rulesDraft.imageMimeType,
-                                        fileName: rulesDraft.imageFileName,
-                                      }}
-                                      disabled={isRulesDraftEditingDisabled}
-                                      textError={rulesTextError}
-                                      imageError={rulesImageError}
-                                      onImagePreparationChange={handleRulesImagePreparationChange}
-                                      messageAriaLabel="Пост правил"
-                                      textPlaceholder="Текст правил"
-                                      textAriaLabel="Текст правил"
-                                      onTextChange={(nextText) => {
-                                        setRulesTextError('');
-                                        setRulesDraft((current) =>
-                                          current
-                                            ? {
-                                                ...current,
-                                                autoTextEnabled: false,
-                                                text: nextText,
-                                                textFormat: 'markdown',
-                                              }
-                                            : current,
-                                        );
-                                      }}
-                                      onImageChange={(nextImage) => {
-                                        setRulesImageError('');
-                                        setRulesDraft((current) =>
-                                          current
-                                            ? {
-                                                ...current,
-                                                imageBase64: nextImage.enabled
-                                                  ? nextImage.base64
-                                                  : '',
-                                                imageMimeType: nextImage.enabled
-                                                  ? nextImage.mimeType
-                                                  : '',
-                                                imageFileName: nextImage.enabled
-                                                  ? nextImage.fileName
-                                                  : '',
-                                              }
-                                            : current,
-                                        );
-                                      }}
-                                      onError={(message) => {
-                                        setRulesImageError(message);
-                                        maxNotify('error');
-                                      }}
-                                      buttons={normalizedRulesButtons}
-                                      buttonsStatusLabel={rulesButtonStatus}
-                                      buttonsActive={rulesButtonEnabled}
-                                      buttonsError={!rulesButtonDraftValid}
-                                      onOpenButtons={() => setRulesButtonsSheetOpen(true)}
-                                    />
-                                  </Suspense>
-                                </div>
-                              </div>
-
-                              <div className="broadcast-stage-card broadcast-stage-card--rules-settings rules-settings-stack">
-                                <div className="broadcast-stage-card__head">
-                                  <div className="broadcast-stage-card__title-wrap">
-                                    <strong>Настройки</strong>
-                                  </div>
-                                </div>
-
-                                <div className="broadcast-stage-card__body">
-                                  <div className="settings-native-toggle rules-native-card">
-                                    <div className="settings-native-toggle__row">
-                                      <div className="settings-native-toggle__title-wrap">
-                                        <div className="rules-native-card__copy">
-                                          <span className="settings-native-toggle__title">
-                                            Составлять из настроек
-                                          </span>
-                                          <span className="rules-native-card__meta">
-                                            {rulesAutoFillSummary}
-                                          </span>
-                                        </div>
-                                      </div>
-
-                                      <label
-                                        className="settings-native-switch"
-                                        aria-label="Включить автотекст правил из настроек"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={Boolean(rulesDraft.autoTextEnabled)}
-                                          onChange={(event) => {
-                                            const enabled = event.target.checked;
-                                            if (!enabled) {
-                                              setRulesTextError('');
-                                              setRulesDraft((current) =>
-                                                current
-                                                  ? {
-                                                      ...current,
-                                                      autoTextEnabled: false,
-                                                    }
-                                                  : current,
-                                              );
-                                              return;
-                                            }
-
-                                            try {
-                                              const nextDraft = buildRulesDraftFromCurrentSettings({
-                                                ...rulesDraft,
-                                                autoTextEnabled: true,
-                                              });
-                                              setRulesTextError('');
-                                              setRulesDraft(nextDraft);
-                                            } catch (error) {
-                                              reportRulesAutofillError(error);
-                                            }
-                                          }}
-                                        />
-                                        <span className="toggle-switch" aria-hidden>
-                                          <span className="toggle-switch__thumb" />
-                                        </span>
-                                      </label>
-                                    </div>
-                                  </div>
-
-                                  {chatId ? (
-                                    <AdminContactToggle
-                                      key={`${chatId}:rules`}
-                                      api={api}
-                                      chatId={chatId}
-                                      title={ADMIN_CONTACT_BUTTON_TEXT}
-                                      checked={Boolean(rulesDraft.adminContactButtonEnabled)}
-                                      url={rulesDraft.adminContactButtonUrl}
-                                      onChange={handleRulesAdminContactButtonChange}
-                                      ariaLabel="Добавить связь с админом в пост правил"
-                                      meta={rulesAdminContactButtonSummary}
-                                      className="rules-native-card"
-                                    />
-                                  ) : null}
-
-                                  <div className="settings-native-toggle rules-native-card">
-                                    <div className="settings-native-toggle__row">
-                                      <div className="settings-native-toggle__title-wrap">
-                                        <div className="rules-native-card__copy">
-                                          <span className="settings-native-toggle__title">
-                                            Показывать при нарушении
-                                          </span>
-                                          <span className="rules-native-card__meta">
-                                            {rulesViolationButtonSummary}
-                                          </span>
-                                        </div>
-                                      </div>
-
-                                      <label
-                                        className="settings-native-switch"
-                                        aria-label="Включить кнопку Правила в сообщениях о нарушениях"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={Boolean(draft?.rulesAttachViolationsEnabled)}
-                                          disabled={updateRulesAttachMutation.isPending}
-                                          onChange={(event) =>
-                                            updateRulesAttachMutation.mutate(event.target.checked)
+                            }
+                            composer={
+                              <Suspense fallback={null}>
+                                <LazyBroadcastContentComposer
+                                  key={chatId}
+                                  className="rules-content-composer"
+                                  text={rulesDraft.text}
+                                  sourceFormat={rulesDraft.textFormat}
+                                  maxLength={MAX_CHAT_RULES_TEXT_LENGTH}
+                                  image={{
+                                    enabled: rulesHasImage,
+                                    base64: rulesDraft.imageBase64,
+                                    mimeType: rulesDraft.imageMimeType,
+                                    fileName: rulesDraft.imageFileName,
+                                  }}
+                                  disabled={isRulesDraftEditingDisabled}
+                                  textError={rulesTextError}
+                                  imageError={rulesImageError}
+                                  onImagePreparationChange={handleRulesImagePreparationChange}
+                                  messageAriaLabel="Пост правил"
+                                  textPlaceholder="Текст правил"
+                                  textAriaLabel="Текст правил"
+                                  onTextChange={(nextText) => {
+                                    setRulesTextError('');
+                                    setRulesDraft((current) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            autoTextEnabled: false,
+                                            text: nextText,
+                                            textFormat: 'markdown',
                                           }
-                                        />
-                                        <span className="toggle-switch" aria-hidden>
-                                          <span className="toggle-switch__thumb" />
-                                        </span>
-                                      </label>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
+                                        : current,
+                                    );
+                                  }}
+                                  onImageChange={(nextImage) => {
+                                    setRulesImageError('');
+                                    setRulesDraft((current) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            imageBase64: nextImage.enabled ? nextImage.base64 : '',
+                                            imageMimeType: nextImage.enabled
+                                              ? nextImage.mimeType
+                                              : '',
+                                            imageFileName: nextImage.enabled
+                                              ? nextImage.fileName
+                                              : '',
+                                          }
+                                        : current,
+                                    );
+                                  }}
+                                  onError={(message) => {
+                                    setRulesImageError(message);
+                                    maxNotify('error');
+                                  }}
+                                  buttons={normalizedRulesButtons}
+                                  buttonsStatusLabel={rulesButtonStatus}
+                                  buttonsActive={rulesButtonEnabled}
+                                  buttonsError={!rulesButtonDraftValid}
+                                  onOpenButtons={() => setRulesButtonsSheetOpen(true)}
+                                />
+                              </Suspense>
+                            }
+                            hasContent={rulesHasPublishableContent}
+                            autoText={{
+                              kind: 'common',
+                              value: Boolean(rulesDraft.autoTextEnabled),
+                            }}
+                            autoTextSummary={rulesAutoFillSummary}
+                            onAutoTextChange={(enabled) => {
+                              if (!enabled) {
+                                setRulesTextError('');
+                                setRulesDraft((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        autoTextEnabled: false,
+                                      }
+                                    : current,
+                                );
+                                return;
+                              }
+
+                              try {
+                                const nextDraft = buildRulesDraftFromCurrentSettings({
+                                  ...rulesDraft,
+                                  autoTextEnabled: true,
+                                });
+                                setRulesTextError('');
+                                setRulesDraft(nextDraft);
+                              } catch (error) {
+                                reportRulesAutofillError(error);
+                              }
+                            }}
+                            adminContact={
+                              chatId ? (
+                                <AdminContactToggle
+                                  key={`${chatId}:rules`}
+                                  api={api}
+                                  chatId={chatId}
+                                  title={ADMIN_CONTACT_BUTTON_TEXT}
+                                  checked={Boolean(rulesDraft.adminContactButtonEnabled)}
+                                  url={rulesDraft.adminContactButtonUrl}
+                                  onChange={handleRulesAdminContactButtonChange}
+                                  ariaLabel="Добавить связь с админом в пост правил"
+                                  meta={rulesAdminContactButtonSummary}
+                                  className="rules-native-card"
+                                />
+                              ) : null
+                            }
+                            attachViolations={{
+                              kind: 'common',
+                              value: Boolean(draft?.rulesAttachViolationsEnabled),
+                            }}
+                            violationsSummary={rulesViolationButtonSummary}
+                            attachDisabled={updateRulesAttachMutation.isPending}
+                            onAttachViolationsChange={(enabled) =>
+                              updateRulesAttachMutation.mutate(enabled)
+                            }
+                          />
                         ) : null}
                       </div>
                     </div>
@@ -5516,17 +5366,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '60ms', order: 22 }}
+              style={{
+                animationDelay: '60ms',
+                order: SHARED_CHAT_SECTION_PRESENTATIONS.greeting.order,
+              }}
               aria-label="Приветствие новых участников"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Приветствие"
+                  title={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.title}
                   enabled={draft.greetingEnabled && draft.greetingBotMessageEnabled}
                   summary={greetingHeaderSummary}
                   status={greetingCardStatus}
-                  icon="greeting"
-                  tone="mint"
+                  icon={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.icon}
+                  tone={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.tone}
                   open={expandedSections.greeting}
                   controls="settings-greeting-content"
                   onClick={() => toggleSection('greeting')}
@@ -5535,292 +5388,40 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-greeting-content"
-                icon={<SettingsSectionIcon name="greeting" />}
+                icon={
+                  <SettingsSectionIcon name={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.icon} />
+                }
                 open={expandedSections.greeting}
-                title="Приветствие"
+                title={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.title}
                 summary={greetingHeaderSummary}
-                tone="mint"
-                className="settings-drilldown__panel--notice settings-drilldown__panel--greeting"
+                tone={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.tone}
+                className={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.panelClassName}
                 onClose={() => toggleSection('greeting')}
                 headerAction={renderApplyTargetHeaderAction('greeting')}
                 confirmCloseWhen={isSectionDirty('greeting')}
                 onDiscardChanges={() => discardSectionChanges('greeting')}
                 footer={renderSectionSaveFooter('greeting')}
               >
-                <div
-                  id="settings-greeting-content"
-                  className={cn(
-                    'settings-section__collapse',
-                    expandedSections.greeting && 'is-open',
-                  )}
-                >
-                  {expandedSections.greeting ? (
-                    <div className="settings-section__collapse-inner">
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">Приветствие</span>
-                            <button
-                              type="button"
-                              className={cn(
-                                'settings-info-button',
-                                openHintKey === 'greetingEnabled' && 'is-open',
-                              )}
-                              aria-label="Пояснение для приветствия новых участников"
-                              aria-controls="greeting-enabled-hint"
-                              data-hint-key="greetingEnabled"
-                              aria-expanded={openHintKey === 'greetingEnabled'}
-                              onClick={() => toggleHint('greetingEnabled')}
-                            >
-                              <InfoCircle aria-hidden />
-                            </button>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить приветствие новых участников"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.greetingEnabled && draft.greetingBotMessageEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('greetingEnabled', enabled);
-                                setFieldValue('greetingBotMessageEnabled', enabled);
-                                if (!enabled) {
-                                  setFieldValue('greetingBotButtonEnabled', false);
-                                  setFieldValue('greetingRulesButtonEnabled', false);
-                                  clearFieldError('greetingRulesButtonEnabled');
-                                  clearButtonGroupErrors(GREETING_BOT_BUTTON_GROUP);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'greetingEnabled' ? (
-                          <p id="greeting-enabled-hint" className="settings-native-toggle__hint">
-                            Бот отправит приветствие, когда в чат добавляют нового участника.
-                          </p>
-                        ) : null}
-                      </div>
-
-                      {draft.greetingEnabled && draft.greetingBotMessageEnabled ? (
-                        <>
-                          <div className="settings-native-toggle settings-native-toggle--nested">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">
-                                  Текст приветствия
-                                </span>
-                                <div className="settings-native-toggle__title-actions">
-                                  <EditToggleButton
-                                    label="Редактировать текст приветствия"
-                                    onClick={() => toggleBotMessageEditor('greeting')}
-                                    isOpen={openBotEditorKey === 'greeting'}
-                                  />
-                                </div>
-                              </div>
-                            </div>
-
-                            {openBotEditorKey === 'greeting' ? (
-                              <LazyBotMessageEditor
-                                editorKey="greeting"
-                                {...botSpeechEditorProps!}
-                                botSpeechPreviewContext={botSpeechPreviewContext}
-                                value={draft.greetingBotMessageText}
-                                onChange={(nextValue) =>
-                                  setFieldValue(
-                                    'greetingBotMessageText',
-                                    nextValue as ChatSettings['greetingBotMessageText'],
-                                  )
-                                }
-                                onReset={() => setFieldValue('greetingBotMessageText', '')}
-                                onClose={() => setOpenBotEditorKey(null)}
-                              />
-                            ) : null}
-                          </div>
-
-                          {draft.greetingBotMessageEnabled ? (
-                            <div className="settings-native-toggle settings-native-toggle--nested">
-                              <div className="settings-native-toggle__row">
-                                <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    Удалять приветствие
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className={cn(
-                                      'settings-info-button',
-                                      openHintKey === 'greetingDeleteBotMessages' && 'is-open',
-                                    )}
-                                    aria-label="Пояснение для автоудаления приветствия"
-                                    aria-controls="greeting-delete-bot-messages-hint"
-                                    data-hint-key="greetingDeleteBotMessages"
-                                    aria-expanded={openHintKey === 'greetingDeleteBotMessages'}
-                                    onClick={() => toggleHint('greetingDeleteBotMessages')}
-                                  >
-                                    <InfoCircle aria-hidden />
-                                  </button>
-                                </div>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить автоудаление приветственных сообщений бота"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.greetingDeleteBotMessageEnabled}
-                                    onChange={(event) =>
-                                      setFieldValue(
-                                        'greetingDeleteBotMessageEnabled',
-                                        event.target.checked,
-                                      )
-                                    }
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-
-                              {openHintKey === 'greetingDeleteBotMessages' ? (
-                                <p
-                                  id="greeting-delete-bot-messages-hint"
-                                  className="settings-native-toggle__hint"
-                                >
-                                  Бот будет автоматически удалять приветствие через выбранное время.
-                                </p>
-                              ) : null}
-                            </div>
-                          ) : null}
-
-                          {draft.greetingBotMessageEnabled &&
-                          draft.greetingDeleteBotMessageEnabled ? (
-                            <DeleteDelayStepper
-                              title="Через сколько удалять"
-                              value={draft.greetingDeleteBotMessageDelayMinutes}
-                              fieldError={fieldErrors.greetingDeleteBotMessageDelayMinutes}
-                              groupAriaLabel="Задержка удаления приветствия"
-                              decreaseAriaLabel="Уменьшить задержку удаления приветствия"
-                              increaseAriaLabel="Увеличить задержку удаления приветствия"
-                              onAdjust={adjustGreetingDeleteBotMessagesDelay}
-                            />
-                          ) : null}
-
-                          {draft.greetingBotMessageEnabled ? (
-                            <div
-                              className={cn(
-                                'settings-native-toggle',
-                                'settings-native-toggle--nested',
-                                hasGreetingBotButtonError && 'field--error',
-                              )}
-                            >
-                              <div className="settings-native-toggle__row">
-                                <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    Добавить кнопку
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className={cn(
-                                      'settings-info-button',
-                                      openHintKey === 'greetingBotButton' && 'is-open',
-                                    )}
-                                    aria-label="Пояснение для кнопки в приветствии"
-                                    aria-controls="greeting-bot-button-hint"
-                                    data-hint-key="greetingBotButton"
-                                    aria-expanded={openHintKey === 'greetingBotButton'}
-                                    onClick={() => toggleHint('greetingBotButton')}
-                                  >
-                                    <InfoCircle aria-hidden />
-                                  </button>
-                                </div>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Добавить кнопку в приветственное сообщение"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.greetingBotButtonEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      updateDraftButtonGroup(GREETING_BOT_BUTTON_GROUP, {
-                                        enabled,
-                                        ...(enabled && draft.greetingBotButtons.length === 0
-                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
-                                          : {}),
-                                      });
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-
-                              {renderInlineHint(
-                                'greetingBotButton',
-                                'greeting-bot-button-hint',
-                                'Добавляет кнопку в приветствие, например на чат или канал.',
-                                hasGreetingBotButtonError,
-                              )}
-
-                              {draft.greetingBotButtonEnabled ? (
-                                <BroadcastLinkButtonsEditor
-                                  api={api}
-                                  buttons={draft.greetingBotButtons}
-                                  errors={greetingBotButtonErrors}
-                                  onChange={(nextButtons) =>
-                                    updateDraftButtonGroup(GREETING_BOT_BUTTON_GROUP, {
-                                      buttons: nextButtons,
-                                      enabled: nextButtons.length > 0,
-                                    })
-                                  }
-                                  urlPlaceholder="https://max.ru/channel/rules"
-                                  textPlaceholder="Открыть"
-                                  title="Кнопки сообщения"
-                                  subtitle="Название и ссылка"
-                                />
-                              ) : null}
-                            </div>
-                          ) : null}
-
-                          {draft.greetingBotMessageEnabled ? (
-                            <PublishedRulesButtonToggleSlot
-                              ariaLabel="Кнопка Правила в приветствии"
-                              enabled={draft.greetingRulesButtonEnabled}
-                              hasRules={hasPublishedRules}
-                              onChange={(enabled) =>
-                                setFieldValue('greetingRulesButtonEnabled', enabled)
-                              }
-                            />
-                          ) : null}
-                        </>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
+                {expandedSections.greeting ? renderSharedChatSection('greeting') : null}
               </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '90ms', order: 11 }}
+              style={{
+                animationDelay: '90ms',
+                order: SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.order,
+              }}
               aria-label="Мат и оскорбления"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Мат и оскорбления"
+                  title={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.title}
                   enabled={draft.russianProfanityFilterEnabled}
                   summary={profanityFilterHeaderSummary}
                   status={profanityFilterCardStatus}
-                  icon="warning"
-                  tone="rose"
+                  icon={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.icon}
+                  tone={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.tone}
                   open={expandedSections.profanityFilter}
                   controls="settings-profanity-filter-content"
                   onClick={() => toggleSection('profanityFilter')}
@@ -5829,248 +5430,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-profanity-filter-content"
-                icon={<SettingsSectionIcon name="warning" />}
+                icon={
+                  <SettingsSectionIcon
+                    name={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.icon}
+                  />
+                }
                 open={expandedSections.profanityFilter}
-                title="Мат и оскорбления"
+                title={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.title}
                 summary={profanityFilterHeaderSummary}
-                tone="rose"
-                className="settings-drilldown__panel--ladder settings-drilldown__panel--profanity"
+                tone={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.tone}
+                className={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.panelClassName}
                 onClose={() => toggleSection('profanityFilter')}
                 headerAction={renderApplyTargetHeaderAction('profanityFilter')}
                 confirmCloseWhen={isSectionDirty('profanityFilter')}
                 onDiscardChanges={() => discardSectionChanges('profanityFilter')}
                 footer={renderSectionSaveFooter('profanityFilter')}
               >
-                <div
-                  id="settings-profanity-filter-content"
-                  className={cn(
-                    'settings-section__collapse',
-                    expandedSections.profanityFilter && 'is-open',
-                  )}
-                >
-                  {expandedSections.profanityFilter ? (
-                    <div className="settings-section__collapse-inner">
-                      <div className="settings-native-toggle text-filter-card">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">Мат и оскорбления</span>
-                            <button
-                              type="button"
-                              className={cn(
-                                'settings-info-button',
-                                openHintKey === 'textFiltersProfanity' && 'is-open',
-                              )}
-                              aria-label="Пояснение для фильтра мата и оскорблений"
-                              aria-controls="russian-profanity-filter-enabled-hint"
-                              data-hint-key="textFiltersProfanity"
-                              aria-expanded={openHintKey === 'textFiltersProfanity'}
-                              onClick={() => toggleHint('textFiltersProfanity')}
-                            >
-                              <InfoCircle aria-hidden />
-                            </button>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить фильтр мата и оскорблений"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.russianProfanityFilterEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('russianProfanityFilterEnabled', enabled);
-                                if (enabled) {
-                                  enableDefaultSanctionStages(setFieldValue, 'profanity');
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'textFiltersProfanity' ? (
-                          <p
-                            id="russian-profanity-filter-enabled-hint"
-                            className="settings-native-toggle__hint"
-                          >
-                            {PROFANITY_SENSITIVITY_HINTS[draft.profanitySensitivity]}
-                          </p>
-                        ) : null}
-                      </div>
-
-                      {draft.russianProfanityFilterEnabled ? (
-                        <>
-                          <div className="settings-native-toggle">
-                            <div className="settings-policy">
-                              <div className="settings-policy__label-row">
-                                <span className="field__label">Чувствительность</span>
-                              </div>
-                              <SegmentedControl
-                                value={draft.profanitySensitivity}
-                                options={PROFANITY_SENSITIVITY_OPTIONS}
-                                onChange={(value) => setFieldValue('profanitySensitivity', value)}
-                                className="settings-mode-segments"
-                                ariaLabel="Чувствительность фильтра мата и оскорблений"
-                              />
-                            </div>
-                          </div>
-
-                          <div
-                            className="settings-subsection-divider"
-                            role="separator"
-                            aria-label="Действия бота для нецензурной лексики"
-                          >
-                            <span>Действия бота</span>
-                          </div>
-
-                          <div className="settings-native-toggle">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">1. Объяснение</span>
-                                <EditToggleButton
-                                  label="Редактировать объяснение о нецензурной лексике"
-                                  onClick={() => toggleBotMessageEditor('profanity')}
-                                  disabled={!draft.profanityBotMessageEnabled}
-                                  isOpen={openBotEditorKey === 'profanity'}
-                                />
-                              </div>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Включить объяснение для нецензурной лексики"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.profanityBotMessageEnabled}
-                                  onChange={(event) =>
-                                    setFieldValue(
-                                      'profanityBotMessageEnabled',
-                                      event.target.checked,
-                                    )
-                                  }
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                            {draft.profanityBotMessageEnabled &&
-                            openBotEditorKey === 'profanity' ? (
-                              <LazyBotMessageEditor
-                                editorKey="profanity"
-                                {...botSpeechEditorProps!}
-                                botSpeechPreviewContext={botSpeechPreviewContext}
-                                value={draft.profanityBotMessageText}
-                                onChange={(value) =>
-                                  setFieldValue('profanityBotMessageText', value)
-                                }
-                                onReset={() => setFieldValue('profanityBotMessageText', '')}
-                                onClose={() => setOpenBotEditorKey(null)}
-                              />
-                            ) : null}
-                          </div>
-
-                          <div className="settings-native-toggle settings-native-toggle--nested">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">
-                                  2. Предупреждение
-                                </span>
-                                <EditToggleButton
-                                  label="Редактировать предупреждение о нецензурной лексике"
-                                  onClick={() => toggleWarnMessageEditor('profanityWarn')}
-                                  isOpen={openWarnEditorKey === 'profanityWarn'}
-                                />
-                              </div>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Включить предупреждение за нецензурную лексику"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.profanityWarnEnabled}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setFieldValue('profanityWarnEnabled', enabled);
-                                    if (enabled) {
-                                      setFieldValue('profanityBotMessageEnabled', true);
-                                    }
-                                  }}
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                            {openWarnEditorKey === 'profanityWarn' ? (
-                              <LazyWarnMessageEditor
-                                editorKey="profanityWarn"
-                                {...botSpeechEditorProps!}
-                                botSpeechPreviewContext={botSpeechPreviewContext}
-                                value={draft.profanityWarnMessageText}
-                                onChange={(value) =>
-                                  setFieldValue('profanityWarnMessageText', value)
-                                }
-                                onReset={() => setFieldValue('profanityWarnMessageText', '')}
-                                onClose={() => setOpenWarnEditorKey(null)}
-                              />
-                            ) : null}
-                          </div>
-
-                          {renderMuteStageToggle({
-                            enabledKey: 'profanityMuteEnabled',
-                            durationKey: 'profanityMuteDurationHours',
-                            title: '3. Ограничение',
-                            onEnable: () => {
-                              setFieldValue('profanityWarnEnabled', true);
-                              setFieldValue('profanityBotMessageEnabled', true);
-                            },
-                          })}
-
-                          <div className="settings-native-toggle settings-native-toggle--nested">
-                            <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">4. Блокировка</span>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Включить блокировку за повторный мат"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.profanityBanEnabled}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setFieldValue('profanityBanEnabled', enabled);
-                                    if (enabled) {
-                                      setFieldValue('profanityWarnEnabled', true);
-                                      setFieldValue('profanityBotMessageEnabled', true);
-                                    }
-                                  }}
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                          </div>
-
-                          {renderAdminContactToggle(
-                            PROFANITY_ADMIN_CONTACT_BUTTON_GROUP,
-                            'Добавить связь с админом в сообщения о нецензурной лексике',
-                          )}
-                        </>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
+                {expandedSections.profanityFilter
+                  ? renderSharedChatSection('profanityFilter')
+                  : null}
               </SettingsDrilldownPanel>
             </GlassCard>
 
             <SettingsCommercialFilterSection
+              sharedContent={renderSharedChatSection('commercialFilter')}
               api={api}
               botSpeechEditorProps={botSpeechEditorProps!}
               botSpeechPreviewContext={botSpeechPreviewContext}
@@ -6108,6 +5491,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             />
 
             <SettingsReportsSection
+              sharedContent={renderSharedChatSection('reports')}
               api={api}
               reportsAvailable={
                 expandedSections.reports
@@ -6130,6 +5514,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             />
 
             <SettingsDuplicatesSection
+              sharedContent={renderSharedChatSection('duplicates')}
               adjustDuplicateAllowedCount={adjustDuplicateAllowedCount}
               api={api}
               chatId={chatId!}
@@ -6174,6 +5559,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             />
 
             <SettingsLimitsSection
+              sharedContent={renderSharedChatSection('limits')}
               adjustStickerMessageCooldown={adjustStickerMessageCooldown}
               api={api}
               botSpeechEditorProps={botSpeechEditorProps!}
@@ -6206,10 +5592,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             />
 
             <SettingsStopWordsSection
+              sharedContent={renderSharedChatSection('stopWords')}
               api={api}
               chatId={chatId ?? ''}
               draft={draft}
-              busy={isSavingSettings || isApplyingSectionToAll}
+              busy={isSavingSettings || isApplyingSectionToAll || isReloadingStopWords}
               expanded={expandedSections.stopWords}
               toggleSection={toggleSection}
               isSectionDirty={isSectionDirty}
@@ -6226,17 +5613,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               messageLimitsBlockedWordsError={messageLimitsBlockedWordsError}
               messageLimitsBlockedDomainsError={messageLimitsBlockedDomainsError}
               stopWordsError={stopWordsError}
-              reloadPolicy={async () => {
-                if (!chatId || !settingsQuery.data) return;
-                const saved = await getStopWords(api, chatId);
-                syncSavedSectionSettings('stopWords', {
-                  ...settingsQuery.data,
-                  stopWordsPolicy: saved.policy,
-                  stopWordsRevision: saved.revision,
-                });
-                setMessageLimitsBlockedWordsInput('');
-                setMessageLimitsBlockedDomainsInput('');
-              }}
+              reloadPolicy={reloadStopWordsPolicy}
             />
 
             <SettingsMessageRetentionSection
@@ -6247,6 +5624,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             />
 
             <SettingsNightSection
+              sharedContent={renderSharedChatSection('night')}
               api={api}
               closureStatus={settingsScreenQuery.data?.closure}
               botSpeechEditorProps={botSpeechEditorProps!}
@@ -6706,17 +6084,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-              style={{ animationDelay: '360ms', order: 4 }}
+              style={{
+                animationDelay: '360ms',
+                order: SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.order,
+              }}
               aria-label="Подписка на чат или канал"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Подписка"
+                  title={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.title}
                   enabled={draft.requiredSubscriptionEnabled && requiredSubscriptionIsActive}
                   summary={requiredSubscriptionHeaderSummary}
                   status={requiredSubscriptionCardStatus}
-                  icon="subscription"
-                  tone="sky"
+                  icon={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.icon}
+                  tone={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.tone}
                   open={expandedSections.requiredSubscription}
                   controls="settings-required-subscription-content"
                   onClick={() => toggleSection('requiredSubscription')}
@@ -6725,12 +6106,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
               <SettingsDrilldownPanel
                 id="settings-required-subscription-content"
-                icon={<SettingsSectionIcon name="subscription" />}
+                icon={
+                  <SettingsSectionIcon
+                    name={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.icon}
+                  />
+                }
                 open={expandedSections.requiredSubscription}
-                title="Подписка"
+                title={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.title}
                 summary={requiredSubscriptionHeaderSummary}
-                tone="sky"
-                className="settings-drilldown__panel--ladder settings-drilldown__panel--required-subscription"
+                tone={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.tone}
+                className={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.panelClassName}
                 onClose={() => toggleSection('requiredSubscription')}
                 headerAction={
                   <>
@@ -6742,366 +6127,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 onDiscardChanges={() => discardSectionChanges('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription')}
               >
-                <div
-                  id="settings-required-subscription-content"
-                  className={cn(
-                    'settings-section__collapse',
-                    expandedSections.requiredSubscription && 'is-open',
-                  )}
-                >
-                  {expandedSections.requiredSubscription ? (
-                    <div className="settings-section__collapse-inner managed-giveaway required-subscription__workspace">
-                      <div className="managed-giveaway__section required-subscription__board">
-                        <div className="managed-giveaway__title-row">
-                          <div className="managed-giveaway__section-copy required-subscription__heading">
-                            <strong>Куда подписаться</strong>
-                            <small
-                              className="required-subscription__count"
-                              data-state={
-                                requiredSubscriptionStaleCount > 0
-                                  ? 'warning'
-                                  : requiredSubscriptionIsActive
-                                    ? 'active'
-                                    : 'empty'
-                              }
-                              aria-label={`Выбрано источников: ${requiredSubscriptionSelectedCount} из ${REQUIRED_SUBSCRIPTION_MAX_CHANNELS}`}
-                            >
-                              {requiredSubscriptionSelectedCount}/
-                              {REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
-                            </small>
-                          </div>
-                        </div>
-
-                        {requiredSubscriptionStaleCount > 0 ? (
-                          <p
-                            className={cn(
-                              'settings-native-toggle__hint',
-                              'settings-native-toggle__hint--danger',
-                            )}
-                          >
-                            Есть недоступные ссылки. Исправьте или удалите их.
-                          </p>
-                        ) : null}
-
-                        {requiredSubscriptionSelectedCount === 0 ? (
-                          <div className="required-subscription__selection-empty">
-                            <strong>Источники пока не выбраны</strong>
-                          </div>
-                        ) : null}
-
-                        {selectedRequiredSubscriptionChannels.length > 0 ? (
-                          <div className="required-subscription__selection-list">
-                            {selectedRequiredSubscriptionChannels.map((channel) => {
-                              const linkPreview = formatRequiredSubscriptionLinkPreview(
-                                channel.link,
-                              );
-
-                              return (
-                                <div
-                                  key={`required-subscription-channel-${channel.id}`}
-                                  className="required-subscription__selection-card"
-                                >
-                                  <EntityAvatar
-                                    title={channel.title}
-                                    entityType={channel.entityType}
-                                    avatarUrl={channel.avatarUrl}
-                                    className="required-subscription__selection-avatar"
-                                  />
-                                  <div
-                                    className="required-subscription__selection-body"
-                                    title={channel.link || channel.title}
-                                  >
-                                    <strong className="required-subscription__selection-title">
-                                      {channel.title}
-                                    </strong>
-                                    <div className="required-subscription__selection-meta">
-                                      <span className="required-subscription__selection-kind">
-                                        {formatRequiredSubscriptionEntityLabel(channel.entityType)}
-                                      </span>
-                                      {linkPreview ? (
-                                        <span className="required-subscription__selection-link">
-                                          {linkPreview}
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="required-subscription__selection-remove"
-                                    onClick={() => removeRequiredSubscriptionChannel(channel.id)}
-                                    aria-label={`Удалить ${formatRequiredSubscriptionEntityLabel(channel.entityType).toLowerCase()} ${channel.title}`}
-                                  >
-                                    <TrashIcon />
-                                  </button>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-
-                        {selectedUnavailableRequiredSubscriptionChannels.length > 0 ? (
-                          <div className="required-subscription__selection-list">
-                            {selectedUnavailableRequiredSubscriptionChannels.map(
-                              (channel, index) => (
-                                <div
-                                  key={`required-subscription-stale-${channel.id}`}
-                                  className={cn(
-                                    'required-subscription__selection-card',
-                                    'is-warning',
-                                  )}
-                                >
-                                  <span className="required-subscription__selection-rank">
-                                    {selectedRequiredSubscriptionChannels.length + index + 1}
-                                  </span>
-                                  <div
-                                    className="required-subscription__selection-body"
-                                    title={channel.description}
-                                  >
-                                    <div className="required-subscription__selection-meta">
-                                      <span className="required-subscription__selection-state">
-                                        Недоступно
-                                      </span>
-                                    </div>
-                                    <strong className="required-subscription__selection-title">
-                                      Недоступный источник{' '}
-                                      {selectedRequiredSubscriptionChannels.length + index + 1}
-                                    </strong>
-                                    <small className="required-subscription__selection-detail">
-                                      {channel.description}
-                                    </small>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    className="required-subscription__selection-remove"
-                                    onClick={() => removeRequiredSubscriptionChannel(channel.id)}
-                                    aria-label={`Удалить недоступный источник ${selectedRequiredSubscriptionChannels.length + index + 1}`}
-                                  >
-                                    <TrashIcon />
-                                  </button>
-                                </div>
-                              ),
-                            )}
-                          </div>
-                        ) : null}
-
-                        {requiredSubscriptionChannelsError ? (
-                          <small className="field__hint">{requiredSubscriptionChannelsError}</small>
-                        ) : null}
-
-                        <RequiredSubscriptionSourceDisclosure
-                          initiallyOpen={requiredSubscriptionSelectedCount === 0}
-                        >
-                          <Suspense
-                            fallback={
-                              <div className="required-subscription__source-picker">
-                                <div className="required-subscription__source-skeleton" aria-hidden>
-                                  <span />
-                                  <span />
-                                  <span />
-                                </div>
-                              </div>
-                            }
-                          >
-                            <LazyRequiredSubscriptionSourcePicker
-                              choices={availableRequiredSubscriptionChannelChoices}
-                              selectedCount={requiredSubscriptionSelectedCount}
-                              maxSelectedCount={REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
-                              loading={requiredSubscriptionEntitiesLoading}
-                              syncing={requiredSubscriptionEntitiesSyncing}
-                              error={
-                                requiredSubscriptionEntitiesError
-                                  ? formatApiError(requiredSubscriptionEntitiesError)
-                                  : null
-                              }
-                              backoffActive={requiredSubscriptionEntitiesBackoffActive}
-                              emptyState={requiredSubscriptionPickerEmptyState}
-                              onAdd={addRequiredSubscriptionChannel}
-                              onRefresh={refreshRequiredSubscriptionChannels}
-                            />
-                          </Suspense>
-
-                          <RequiredSubscriptionExternalSource
-                            value={requiredSubscriptionExternalChannelValue}
-                            error={requiredSubscriptionExternalChannelError}
-                            loading={isResolvingRequiredSubscriptionChannel}
-                            limitReached={
-                              requiredSubscriptionSelectedCount >=
-                              REQUIRED_SUBSCRIPTION_MAX_CHANNELS
-                            }
-                            onChange={(value) => {
-                              setRequiredSubscriptionExternalChannelValue(value);
-                              setRequiredSubscriptionExternalChannelError('');
-                            }}
-                            onSubmit={handleResolveRequiredSubscriptionExternalChannel}
-                          />
-                        </RequiredSubscriptionSourceDisclosure>
-                      </div>
-
-                      <div className="required-subscription__actions">
-                        <div
-                          className="settings-subsection-divider"
-                          role="separator"
-                          aria-label="Действия бота для обязательной подписки"
-                        >
-                          <span>Без подписки</span>
-                        </div>
-
-                        <div className="settings-native-toggle required-subscription__explanation">
-                          <div className="settings-native-toggle__row">
-                            <div className="settings-native-toggle__title-wrap">
-                              <span className="settings-native-toggle__title">
-                                1. Удаление и объяснение
-                              </span>
-                              <div className="settings-native-toggle__title-actions">
-                                <EditToggleButton
-                                  label="Редактировать объяснение об обязательной подписке"
-                                  onClick={() => toggleBotMessageEditor('requiredSubscription')}
-                                  isOpen={openBotEditorKey === 'requiredSubscription'}
-                                />
-                              </div>
-                            </div>
-                          </div>
-
-                          {openBotEditorKey === 'requiredSubscription' ? (
-                            <LazyBotMessageEditor
-                              editorKey="requiredSubscription"
-                              {...botSpeechEditorProps!}
-                              botSpeechPreviewContext={botSpeechPreviewContext}
-                              value={draft.requiredSubscriptionBotMessageText}
-                              onChange={(nextValue) =>
-                                setFieldValue(
-                                  'requiredSubscriptionBotMessageText',
-                                  nextValue as ChatSettings['requiredSubscriptionBotMessageText'],
-                                )
-                              }
-                              onReset={() =>
-                                setFieldValue('requiredSubscriptionBotMessageText', '')
-                              }
-                              onClose={() => setOpenBotEditorKey(null)}
-                            />
-                          ) : null}
-                        </div>
-
-                        {renderAdminContactToggle(
-                          REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
-                          'Добавить связь с админом в сообщения об обязательной подписке',
-                        )}
-
-                        <div className="settings-native-toggle settings-native-toggle--nested">
-                          <div className="settings-native-toggle__row">
-                            <div className="settings-native-toggle__title-wrap">
-                              <span className="settings-native-toggle__title">
-                                2. Предупреждение
-                              </span>
-                              <div className="settings-native-toggle__title-actions">
-                                <EditToggleButton
-                                  label="Редактировать предупреждение об обязательной подписке"
-                                  onClick={() =>
-                                    toggleWarnMessageEditor('requiredSubscriptionWarn')
-                                  }
-                                  isOpen={openWarnEditorKey === 'requiredSubscriptionWarn'}
-                                />
-                              </div>
-                            </div>
-
-                            <label
-                              className="settings-native-switch"
-                              aria-label="Включить предупреждение за второе сообщение без подписки"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={draft.requiredSubscriptionWarnEnabled}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
-                                  setFieldValue('requiredSubscriptionWarnEnabled', enabled);
-                                  if (enabled) {
-                                    setFieldValue('requiredSubscriptionBotMessageEnabled', true);
-                                  }
-                                }}
-                              />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
-                          </div>
-
-                          {openWarnEditorKey === 'requiredSubscriptionWarn' ? (
-                            <LazyWarnMessageEditor
-                              editorKey="requiredSubscriptionWarn"
-                              {...botSpeechEditorProps!}
-                              botSpeechPreviewContext={botSpeechPreviewContext}
-                              value={draft.requiredSubscriptionWarnMessageText}
-                              onChange={(nextValue) =>
-                                setFieldValue(
-                                  'requiredSubscriptionWarnMessageText',
-                                  nextValue as ChatSettings['requiredSubscriptionWarnMessageText'],
-                                )
-                              }
-                              onReset={() =>
-                                setFieldValue('requiredSubscriptionWarnMessageText', '')
-                              }
-                              onClose={() => setOpenWarnEditorKey(null)}
-                            />
-                          ) : null}
-                        </div>
-
-                        {renderMuteStageToggle({
-                          enabledKey: 'requiredSubscriptionMuteEnabled',
-                          durationKey: 'requiredSubscriptionMuteDurationHours',
-                          title: '3. Ограничение',
-                          onEnable: () => {
-                            setFieldValue('requiredSubscriptionWarnEnabled', true);
-                            setFieldValue('requiredSubscriptionBotMessageEnabled', true);
-                          },
-                        })}
-
-                        <div className="settings-native-toggle settings-native-toggle--nested">
-                          <div className="settings-native-toggle__row">
-                            <span className="settings-native-toggle__title">4. Блокировка</span>
-
-                            <label
-                              className="settings-native-switch"
-                              aria-label="Включить блокировку за сообщения без подписки"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={draft.requiredSubscriptionBanEnabled}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
-                                  setFieldValue('requiredSubscriptionBanEnabled', enabled);
-                                  if (enabled) {
-                                    setFieldValue('requiredSubscriptionWarnEnabled', true);
-                                    setFieldValue('requiredSubscriptionBotMessageEnabled', true);
-                                  }
-                                }}
-                              />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
-                          </div>
-                        </div>
-                        <label className="field settings-text-field required-subscription__button-label">
-                          <span>Текст кнопки</span>
-                          <input
-                            type="text"
-                            value={draft.requiredSubscriptionButtonText}
-                            onChange={(event) =>
-                              setFieldValue('requiredSubscriptionButtonText', event.target.value)
-                            }
-                            maxLength={32}
-                            placeholder="Канал"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+                {expandedSections.requiredSubscription
+                  ? renderSharedChatSection('requiredSubscription')
+                  : null}
               </SettingsDrilldownPanel>
             </GlassCard>
 
             <Suspense fallback={null}>
               <LazySettingsAdminCommandsSection
+                sharedContent={renderSharedChatSection('commands')}
                 draft={draft}
                 expanded={expandedSections.commands}
                 fieldErrors={fieldErrors}
@@ -7115,6 +6149,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </Suspense>
 
             <SettingsStorefrontSection
+              sharedContent={renderSharedChatSection('storefront')}
               draft={draft}
               api={api}
               chatId={chatId}
@@ -7148,6 +6183,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             />
 
             <SettingsExtraSection
+              sharedContent={renderSharedChatSection('extra')}
               draft={draft}
               expanded={expandedSections.extra}
               summary={extraHeaderSummary}

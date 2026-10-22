@@ -3,16 +3,12 @@ import type {
   ApplySettingsTarget,
 } from '@maxim/contracts/settings';
 import type { ManagedEntityFavoriteType } from '@maxim/contracts/managed-entities';
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { HOME_ENTITY_FAVORITE_ICONS, XmarkGlyph } from '../../components/ui/compact-icons';
-import { getMe } from '../../lib/api/me-client';
 import type { ApiTransport } from '../../lib/api/transport';
-import {
-  HOME_ENTITY_FAVORITE_TYPES,
-  resolveHomeEntityFavoriteLabels,
-  type HomeEntityFavoriteLabelOverrides,
-} from '../../lib/home-entity-favorites';
+import { HOME_ENTITY_FAVORITE_TYPES } from '../../lib/home-entity-favorites';
+import { useHomeEntityFavorites } from '../../lib/home-entity-favorites-context';
 import { cn } from '../../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
@@ -27,8 +23,6 @@ type ApplyTargetSheetState = {
   section: ApplySectionKey;
   target: ApplySettingsTarget;
 };
-
-type FavoriteLabelsLoadStatus = 'loading' | 'ready' | 'error';
 
 const HOME_ENTITY_FAVORITE_TITLES: Record<ManagedEntityFavoriteType, string> = {
   important: 'Важные чаты',
@@ -54,7 +48,6 @@ type SettingsApplyTargetSheetProps = {
 };
 
 export function SettingsApplyTargetSheet({
-  api,
   sheet,
   preview,
   previewLoading,
@@ -69,14 +62,14 @@ export function SettingsApplyTargetSheet({
   const panelRef = useRef<HTMLElement | null>(null);
   const isOpen = Boolean(sheet);
   useDialogFocusTrap(isOpen, panelRef, panelRef);
-  const [favoriteLabelOverrides, setFavoriteLabelOverrides] =
-    useState<HomeEntityFavoriteLabelOverrides>({});
-  const [favoriteLabelsStatus, setFavoriteLabelsStatus] =
-    useState<FavoriteLabelsLoadStatus>('loading');
-  const favoriteLabels = useMemo(
-    () => resolveHomeEntityFavoriteLabels(favoriteLabelOverrides),
-    [favoriteLabelOverrides],
-  );
+  const { snapshot: favoritesSnapshot, actions: favoritesActions } = useHomeEntityFavorites();
+  const favoriteLabels = favoritesSnapshot.labels.resolved;
+  const favoriteLabelsStatus =
+    favoritesSnapshot.labels.status === 'idle' ? 'loading' : favoritesSnapshot.labels.status;
+  const compositionEpoch = favoritesSnapshot.byType.chat.compositionEpoch;
+  const previewEpochRef = useRef({ preview, epoch: compositionEpoch });
+  if (previewEpochRef.current.preview !== preview)
+    previewEpochRef.current = { preview, epoch: compositionEpoch };
 
   useNativeBackHandler(
     () => {
@@ -91,42 +84,9 @@ export function SettingsApplyTargetSheet({
   );
 
   useEffect(() => {
-    const controller = new AbortController();
-    setFavoriteLabelOverrides({});
-    setFavoriteLabelsStatus('loading');
-
-    void import('../../lib/home-entity-favorite-label-sync')
-      .then(async (runtime) => {
-        const [me, server] = await Promise.all([
-          getMe(api, { signal: controller.signal }),
-          runtime.loadManagedEntityFavoriteLabels(api, controller.signal),
-        ]);
-        const userId = me.userId.trim();
-        if (!userId) {
-          throw new Error('Invalid favorite label profile identity');
-        }
-
-        const labels = server.initialized
-          ? server.labels
-          : await runtime.hydrateHomeEntityFavoriteLabelMigrationCandidate(`u:${userId}`, {
-              signal: controller.signal,
-              waitForNativeStorage: true,
-            });
-        if (controller.signal.aborted) {
-          return;
-        }
-
-        setFavoriteLabelOverrides(labels);
-        setFavoriteLabelsStatus('ready');
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setFavoriteLabelsStatus('error');
-        }
-      });
-
-    return () => controller.abort();
-  }, [api]);
+    if (isOpen && favoritesSnapshot.labels.status === 'idle')
+      void favoritesActions.refreshLabels().catch(() => undefined);
+  }, [isOpen, favoritesActions, favoritesSnapshot.labels.status]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -160,7 +120,9 @@ export function SettingsApplyTargetSheet({
 
   const { target } = sheet;
   const favoriteTargetSelected = target.mode === 'allFavorites' || target.mode === 'favoriteTypes';
-  const previewMatchesTarget = isApplySettingsTargetPreviewCurrent(target, preview);
+  const previewMatchesTarget =
+    previewEpochRef.current.epoch === compositionEpoch &&
+    isApplySettingsTargetPreviewCurrent(target, preview);
   const canConfirm =
     previewMatchesTarget &&
     !previewLoading &&

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261022120000_add_managed_network_foundation",
-  "baselineNamesSha256": "faf2b17c9097291ec58816fe4613c5cf267eb15f4dcb52724782813a3739ddc7",
-  "baselineContentsSha256": "ccb9bd96e3e30d8bfa992891bbc0dc4c3cfa7e5f119e241d606351e4198bf9c3",
+  "baselineThrough": "20261022130000_network_allowlist_revision",
+  "baselineNamesSha256": "d4296c833a9f24684b4dd574a95134b3e69eade881b0a1ae893ba2a9b9b4c7ab",
+  "baselineContentsSha256": "a9754adf55d086bcddb60a468767e5a177e7b522cd7c0788f276a61de49cda9c",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -131,6 +131,11 @@
       "reason": "Reviewed static additive channel revision trigger. EXECUTE FUNCTION is a parser false positive: no dynamic SQL, DROP, DELETE, table rewrite or historical backfill.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "The constant-zero revision column is additive and the NOT VALID check avoids scanning existing rows. Every update advances exactly once, including old roles. New compare-and-set routes stay hidden until all roles are current. New operation and observation tables have no legacy readers; no historical data is reinterpreted."
+    },
+    "20261022130000_network_allowlist_revision": {
+      "reason": "Manual review approved three static additive statement-level transition-table triggers. EXECUTE FUNCTION is a parser false positive: there is no dynamic SQL, DROP, DELETE, index build or existing-data backfill. The constant-zero integer default does not rewrite retained Chat rows; each DML statement updates only Chat IDs named in its transition rows.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Existing single and legacy allowlist writers remain compatible and automatically advance the independent revision. Updates that only touch unrelated metadata do not advance it. Old readers ignore the additive column; installed list-intent operation journals require the Stage B v2 runner source floor on both rollback paths even when Major networks is off. Scalar-only settings preserve per-recipient lists and do not read oversized lists."
     }
   },
   "nonConcurrentIndexExceptions": {

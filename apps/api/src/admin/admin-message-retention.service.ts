@@ -18,6 +18,7 @@ import { retentionStatus } from '../message-retention/message-retention-status';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
+import type { NetworkSettingsWriteOptions } from './network-settings-write';
 
 @Injectable()
 export class AdminMessageRetentionService {
@@ -34,7 +35,12 @@ export class AdminMessageRetentionService {
     return this.snapshot(chatId);
   }
 
-  async update(chatId: string, user: AuthUser, body: unknown): Promise<MessageRetentionState> {
+  async update(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    networkWrite?: NetworkSettingsWriteOptions,
+  ): Promise<MessageRetentionState> {
     await this.authorize(chatId, user);
     const parsed = updateMessageRetentionSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
@@ -46,7 +52,14 @@ export class AdminMessageRetentionService {
         { permission: 'write', featureKeys: ['messageRetention'] },
       ]);
     }
+    if (networkWrite?.validateOnly) {
+      const current = await this.prisma.messageRetentionPolicy.findUnique({ where: { chatId } });
+      if ((current?.revision ?? 0) !== request.expectedRevision)
+        throw new ConflictException('Настройки удаления сообщений уже изменены.');
+      return this.snapshot(chatId);
+    }
     await this.prisma.$transaction(async (tx) => {
+      await networkWrite?.beforeWrite?.(tx);
       await tx.messageRetentionPolicy.createMany({
         data: [{ chatId, activationId: randomUUID(), quotaShard: retentionQuotaShard(chatId) }],
         skipDuplicates: true,
@@ -92,6 +105,7 @@ export class AdminMessageRetentionService {
           },
         },
       });
+      await networkWrite?.onCommitted?.(tx, String(current.revision + 1));
     });
     return this.snapshot(chatId);
   }

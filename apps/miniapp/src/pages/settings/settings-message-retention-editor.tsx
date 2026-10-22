@@ -1,9 +1,12 @@
 import { lazy, Suspense, useEffect, useReducer, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Clock, RefreshDouble, ShieldCheck } from 'iconoir-react';
+import { Check, Clock, RefreshDouble } from 'iconoir-react';
 import type { MessageRetentionState, UpdateMessageRetention } from '@maxim/contracts/settings';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import { SegmentedControl } from '../../components/ui/segmented-control';
+import {
+  SharedMessageRetentionFields,
+  SharedMessageRetentionExclusions,
+} from './shared-message-retention-fields';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
   getMessageRetention,
@@ -328,40 +331,14 @@ export function SettingsMessageRetentionEditor({
         ) : null}
         {current && state ? (
           <>
-            <div className="message-retention-settings__row">
-              <label htmlFor="message-retention-enabled">Удаление по сроку</label>
-              <label className="settings-native-switch">
-                <input
-                  id="message-retention-enabled"
-                  type="checkbox"
-                  role="switch"
-                  checked={current.enabled}
-                  disabled={closeBlocked || (state.status === 'unavailable' && !current.enabled)}
-                  onChange={(event) => change({ enabled: event.target.checked })}
-                />
-                <span className="toggle-switch" aria-hidden>
-                  <span className="toggle-switch__thumb" />
-                </span>
-              </label>
-            </div>
-            <p className="message-retention-policy">
-              Удаляем только новые сообщения, полученные после включения. Старую историю не очищаем.
-              24 или 48 часов — минимальный возраст. Очистка ждёт периода низкой нагрузки, поэтому
-              сообщения могут оставаться в чате дольше. После повторного включения учёт начинается
-              заново. Удалённые сообщения восстановить нельзя.
-            </p>
-            <fieldset disabled={closeBlocked}>
-              <legend>Минимальный возраст сообщений</legend>
-              <SegmentedControl
-                ariaLabel="Минимальный возраст сообщений"
-                value={current.hours === 24 ? '24' : '48'}
-                options={[
-                  { value: '24', label: '24 часа', disabled: closeBlocked },
-                  { value: '48', label: '48 часов', disabled: closeBlocked },
-                ]}
-                onChange={(value) => change({ hours: value === '24' ? 24 : 48 })}
-              />
-            </fieldset>
+            <SharedMessageRetentionFields
+              enabled={{ kind: 'common', value: current.enabled }}
+              hours={{ kind: 'common', value: current.hours }}
+              disabled={closeBlocked}
+              enableDisabled={state.status === 'unavailable' && !current.enabled}
+              onEnabledChange={(enabled) => change({ enabled })}
+              onHoursChange={(hours) => change({ hours })}
+            />
             {state.enabled && current.enabled && state.hours !== current.hours ? (
               <p className="message-retention-policy" role="status">
                 Новый срок применяется и к уже учтённым сообщениям.
@@ -370,13 +347,7 @@ export function SettingsMessageRetentionEditor({
                   : ' Сообщения будут удаляться не раньше возраста 48 часов, в период низкой нагрузки.'}
               </p>
             ) : null}
-            <div className="message-retention-exclusions">
-              <ShieldCheck aria-hidden />
-              <div>
-                <span>Исключения</span>
-                <p>Администраторы, закрепы, боты</p>
-              </div>
-            </div>
+            <SharedMessageRetentionExclusions />
             <dl className="message-retention-stats">
               {[
                 { label: 'Ожидают', value: state.pendingCount },

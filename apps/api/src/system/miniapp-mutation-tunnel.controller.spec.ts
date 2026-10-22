@@ -63,6 +63,56 @@ describe('MiniappMutationTunnelController', () => {
     controller.onModuleDestroy();
   });
 
+  it('allows only the exact source-free network metadata POST paths', async () => {
+    const controller = new MiniappMutationTunnelController();
+    global.fetch = jest
+      .fn()
+      .mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    try {
+      for (const path of [
+        '/networks/settings/read',
+        '/networks/settings/preview',
+        '/networks/settings/apply',
+        '/networks/settings/navigation-allowlist/read',
+        '/networks/settings/required-subscription/resolve',
+        '/networks/settings/admin-contacts/read',
+        '/networks/settings/admin-contacts/resolve',
+      ])
+        await controller.tunnel(
+          { method: 'POST', path },
+          'InitData auth_date=1&hash=test',
+          TEST_USER,
+          createReply() as never,
+        );
+      expect(global.fetch).toHaveBeenCalledTimes(7);
+      for (const path of [
+        '/networks/settings/admin-contacts/read/extra',
+        '/networks/settings/admin-contacts',
+        '/networks/settings/required-subscription/resolve/extra',
+        '/networks/settings/navigation-allowlist/write',
+      ])
+        await expect(
+          controller.tunnel(
+            { method: 'POST', path },
+            'InitData auth_date=1&hash=test',
+            TEST_USER,
+            createReply() as never,
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        controller.tunnel(
+          { method: 'PUT', path: '/networks/settings/read' },
+          'InitData auth_date=1&hash=test',
+          TEST_USER,
+          createReply() as never,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(global.fetch).toHaveBeenCalledTimes(7);
+    } finally {
+      controller.onModuleDestroy();
+    }
+  });
+
   it('allows only the exact POST channel ban route through the tunnel', async () => {
     const controller = new MiniappMutationTunnelController();
     global.fetch = jest
@@ -553,13 +603,27 @@ describe('MiniappMutationTunnelController', () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();
     const payload = JSON.stringify({ code: 'NETWORK_SETTINGS_CHANGED' });
-    global.fetch = jest.fn().mockResolvedValue(new Response(payload, {
-      status: 409, headers: { 'content-type': 'application/json' },
-    })) as typeof fetch;
-    await controller.tunnel({ method, path, body: Buffer.from('{}').toString('base64url'),
-      contentType: 'application/json' }, 'InitData auth_date=1&hash=test', TEST_USER, reply as never);
-    expect(global.fetch).toHaveBeenCalledWith(`http://127.0.0.1:3001/api/v1${path}`,
-      expect.objectContaining({ method, body: '{}' }));
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(payload, {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as typeof fetch;
+    await controller.tunnel(
+      {
+        method,
+        path,
+        body: Buffer.from('{}').toString('base64url'),
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      TEST_USER,
+      reply as never,
+    );
+    expect(global.fetch).toHaveBeenCalledWith(
+      `http://127.0.0.1:3001/api/v1${path}`,
+      expect.objectContaining({ method, body: '{}' }),
+    );
     expect(reply.status).toHaveBeenCalledWith(409);
   });
 

@@ -11,6 +11,18 @@
       "types": "./dist/network-settings.d.ts",
       "default": "./dist/network-settings.js"
     },
+    "./network-settings-read": {
+      "types": "./dist/network-settings-read.d.ts",
+      "default": "./dist/network-settings-read.js"
+    },
+    "./network-settings-actions": {
+      "types": "./dist/network-settings-actions.d.ts",
+      "default": "./dist/network-settings-actions.js"
+    },
+    "./network-settings-metadata": {
+      "types": "./dist/network-settings-metadata.d.ts",
+      "default": "./dist/network-settings-metadata.js"
+    },
     "./networks-stats": {
       "types": "./dist/networks-stats.d.ts",
       "default": "./dist/networks-stats.js"
@@ -34,6 +46,10 @@
     "./settings": {
       "types": "./dist/settings.d.ts",
       "default": "./dist/settings.js"
+    },
+    "./bot-speech-fields": {
+      "types": "./dist/bot-speech-fields.d.ts",
+      "default": "./dist/bot-speech-fields.js"
     },
     "./bot-speech": {
       "types": "./dist/bot-speech.d.ts",
@@ -130,6 +146,18 @@
     "./marketplace-integration": {
       "types": "./dist/marketplace-integration.d.ts",
       "default": "./dist/marketplace-integration.js"
+    },
+    "./settings-field-schemas": {
+      "types": "./dist/settings-field-schemas.d.ts",
+      "default": "./dist/settings-field-schemas.js"
+    },
+    "./broadcast-buttons": {
+      "types": "./dist/broadcast-buttons.d.ts",
+      "default": "./dist/broadcast-buttons.js"
+    },
+    "./channel-settings": {
+      "types": "./dist/channel-settings.d.ts",
+      "default": "./dist/channel-settings.js"
     }
   },
   "files": [

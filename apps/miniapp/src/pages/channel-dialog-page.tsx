@@ -87,14 +87,8 @@ import {
 } from '../lib/api/comment-moderation-client';
 import { commentRestrictionLabel } from '../lib/comment-restriction';
 import type { CommentModerationTarget } from '../components/comment-moderation-sheet';
-import {
-  formatDialogAttachmentSize,
-  prepareCommentDialogFileAttachment,
-  prepareCommentDialogImageAttachment,
-  prepareSuggestionDialogImageAttachment,
-  resolveSuggestionDialogImageMaxBytes,
-  type PreparedCommentDialogAttachment,
-} from '../lib/dialog-attachments';
+import { formatDialogAttachmentSize } from '../lib/dialog-attachment-size';
+import type { PreparedCommentDialogAttachment } from '../lib/dialog-attachments';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import type { LastEntityType } from '../lib/last-chat';
 import {
@@ -1324,6 +1318,7 @@ export function ChannelDialogPage({
   const pressTimerRef = useRef<number | null>(null);
   const pressPointRef = useRef<{ x: number; y: number } | null>(null);
   const swipeReplyGestureRef = useRef<SwipeReplyGesture | null>(null);
+  const attachmentPreparationGenerationRef = useRef(0);
   const attachmentInputWatchCleanupRef = useRef<Record<AttachmentInputKind, (() => void) | null>>({
     image: null,
     file: null,
@@ -1748,7 +1743,13 @@ export function ChannelDialogPage({
     maxSelectionChanged();
   };
 
+  const cancelAttachmentPreparation = () => {
+    attachmentPreparationGenerationRef.current += 1;
+    setPreparingAttachmentState(null);
+  };
+
   const cancelEditing = (options?: { restoreDraft?: boolean }) => {
+    cancelAttachmentPreparation();
     if (options?.restoreDraft && editRestoreState) {
       setDraft(editRestoreState.draft);
       setReplyToMessageId(editRestoreState.replyToMessageId);
@@ -1825,6 +1826,23 @@ export function ChannelDialogPage({
     }
     setIsNotificationSettingsOpen(false);
   }, [canManageCommentNotifications]);
+
+  useLayoutEffect(() => {
+    cancelAttachmentPreparation();
+    resetAttachmentPickers();
+    return () => {
+      attachmentPreparationGenerationRef.current += 1;
+    };
+  }, [
+    api,
+    currentUserId,
+    profile,
+    entityType,
+    chatId,
+    dialogType,
+    token,
+    canUploadCommentAttachments,
+  ]);
 
   useEffect(() => {
     if (canUploadCommentAttachments) {
@@ -2345,12 +2363,18 @@ export function ChannelDialogPage({
     };
   }, [activeMessageId, reactionPopoverLayout]);
 
-  const appendDraftAttachments = (nextAttachments: CommentDraftAttachment[]) => {
+  const appendDraftAttachments = (
+    nextAttachments: CommentDraftAttachment[],
+    isPreparationCurrent: () => boolean,
+  ) => {
     if (!canUploadCommentAttachments || nextAttachments.length === 0) {
       return;
     }
 
     setDraftAttachments((current) => {
+      if (!isPreparationCurrent()) {
+        return current;
+      }
       const accepted = [...current];
       const totalAttachmentLimit =
         dialogType === 'suggest'
@@ -2499,8 +2523,20 @@ export function ChannelDialogPage({
       return;
     }
 
+    const preparationGeneration = ++attachmentPreparationGenerationRef.current;
+    const isPreparationCurrent = () =>
+      attachmentPreparationGenerationRef.current === preparationGeneration;
     setPreparingAttachmentState({ kind, total: selectableFiles.length, done: 0 });
     try {
+      const {
+        prepareCommentDialogFileAttachment,
+        prepareCommentDialogImageAttachment,
+        prepareSuggestionDialogImageAttachment,
+        resolveSuggestionDialogImageMaxBytes,
+      } = await import('../lib/dialog-attachments');
+      if (!isPreparationCurrent()) {
+        return;
+      }
       const prepared: CommentDraftAttachment[] = [];
       let firstError: string | null = null;
       const suggestionImageMaxBytes =
@@ -2513,16 +2549,22 @@ export function ChannelDialogPage({
 
       for (const file of selectableFiles) {
         try {
-          prepared.push(
+          const attachment =
             kind === 'image'
               ? dialogType === 'suggest'
                 ? await prepareSuggestionDialogImageAttachment(file, {
                     maxBytes: suggestionImageMaxBytes ?? undefined,
                   })
                 : await prepareCommentDialogImageAttachment(file)
-              : await prepareCommentDialogFileAttachment(file),
-          );
+              : await prepareCommentDialogFileAttachment(file);
+          if (!isPreparationCurrent()) {
+            return;
+          }
+          prepared.push(attachment);
         } catch (error: unknown) {
+          if (!isPreparationCurrent()) {
+            return;
+          }
           if (!firstError && error instanceof Error && error.message.trim()) {
             firstError = error.message;
           } else if (!firstError) {
@@ -2530,16 +2572,21 @@ export function ChannelDialogPage({
               kind === 'image' ? 'Не удалось подготовить фото.' : 'Не удалось подготовить файл.';
           }
         } finally {
-          setPreparingAttachmentState((current) =>
-            current?.kind === kind
-              ? { ...current, done: Math.min(current.total, current.done + 1) }
-              : current,
-          );
+          if (isPreparationCurrent()) {
+            setPreparingAttachmentState((current) =>
+              isPreparationCurrent() && current?.kind === kind
+                ? { ...current, done: Math.min(current.total, current.done + 1) }
+                : current,
+            );
+          }
         }
       }
 
+      if (!isPreparationCurrent()) {
+        return;
+      }
       if (prepared.length > 0) {
-        appendDraftAttachments(prepared);
+        appendDraftAttachments(prepared, isPreparationCurrent);
       }
 
       if (firstError) {
@@ -2550,6 +2597,9 @@ export function ChannelDialogPage({
         });
       }
     } catch (error: unknown) {
+      if (!isPreparationCurrent()) {
+        return;
+      }
       pushToast({
         tone: 'danger',
         title: kind === 'image' ? 'Фото не добавлено' : 'Файл не добавлен',
@@ -2561,8 +2611,10 @@ export function ChannelDialogPage({
               : 'Не удалось подготовить файл.',
       });
     } finally {
-      resetAttachmentPickers();
-      setPreparingAttachmentState(null);
+      if (isPreparationCurrent()) {
+        resetAttachmentPickers();
+        setPreparingAttachmentState(null);
+      }
     }
   };
 
@@ -2731,6 +2783,7 @@ export function ChannelDialogPage({
       } else {
         maxNotify('success');
       }
+      cancelAttachmentPreparation();
       setDraft('');
       setReplyToMessageId(null);
       setDraftAttachments([]);
@@ -3156,6 +3209,7 @@ export function ChannelDialogPage({
     }
     if (commentBlocked) return;
 
+    cancelAttachmentPreparation();
     maxImpact('soft');
     setEditRestoreState(
       (current) =>

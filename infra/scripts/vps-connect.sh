@@ -103,7 +103,7 @@ Commands:
   postgres-audit webhook-retry-proof [--explain]
   postgres-audit webhook-queued-proof [--explain]
   postgres-audit commercial-quality [--explain]
-  postgres-audit network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--explain]
+  postgres-audit network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--membership=7d|30d] [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
   recover-publisher-catalog-migration [--apply]
@@ -1556,7 +1556,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_managed_network_foundation \
+    maxim_topology_require_network_settings_v2 \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1571,15 +1571,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback must restore tooling with the installed network journal floor,
+  # FLAG: API rollback must restore tooling with the installed v2 list-intent journal floor,
   # as well as every preceding assignment, activation and permanent-hold reader.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_managed_network_foundation
+    capability_marker=maxim_topology_require_network_settings_v2
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_managed_network_foundation
+        capability_marker=maxim_topology_require_network_settings_v2
         break
       fi
     done

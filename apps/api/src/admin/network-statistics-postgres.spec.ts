@@ -5,6 +5,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 import type { ManagedEntitiesService } from './managed-entities.service';
 import type { ManagedEntityNetworksService } from './managed-entity-networks.service';
 import { NetworkStatisticsObservationService } from './network-statistics-observation.service';
+import { NetworkAuthorizationService } from './network-authorization.service';
 import { NetworkStatisticsService, networkViewIntervalsSql } from './network-statistics.service';
 import { MaxClientService } from '../max/max-client.service';
 
@@ -43,6 +44,7 @@ native('network statistics native PostgreSQL observation and read boundaries', (
       db as PrismaService,
       { assertManagedEntityReadAccess: authorize } as unknown as ManagedEntitiesService,
       { resolveSelection } as unknown as ManagedEntityNetworksService,
+      new NetworkAuthorizationService(db as PrismaService),
     );
   });
   beforeEach(async () => {
@@ -151,6 +153,161 @@ native('network statistics native PostgreSQL observation and read boundaries', (
     expect(observed.series[0]?.netGrowth).toBeNull();
     expect(observed.series.at(-1)?.netGrowth).toBeNull();
     expect(observed.viewsGained).toBeNull();
+  });
+
+  it('keeps internal membership gaps null while retaining explicit zero and cancelling observed deltas', async () => {
+    await db.chat.update({ where: { id: chatId }, data: { entityType: 'CHAT' } });
+    const dayMs = 86400_000;
+    const moscowOffset = 3 * 3600_000;
+    const today = Math.floor((Date.now() + moscowOffset) / dayMs) * dayMs - moscowOffset;
+    const day = (ago: number) => new Date(today - ago * dayMs);
+    const hour = (ago: number, offset = 12) => new Date(day(ago).getTime() + offset * 3600_000);
+    await db.chatMembershipActivityRollup.createMany({
+      data: [
+        { chatId, bucketStart: hour(6), joinedUsers: 5, leftUsers: 2 },
+        { chatId, bucketStart: hour(4), joinedUsers: 0, leftUsers: 0 },
+        { chatId, bucketStart: hour(3), joinedUsers: 2, leftUsers: 0 },
+        { chatId, bucketStart: hour(3, 13), joinedUsers: 0, leftUsers: 2 },
+        { chatId, bucketStart: hour(1), joinedUsers: 1, leftUsers: 4 },
+      ],
+    });
+    const response = await statistics.read(actor, 'chat', {
+      favoriteType: 'important',
+      range: '7d',
+    });
+    const days = new Map(response.series.map((point) => [point.at, point.netGrowth]));
+    expect(days.get(day(6).toISOString())).toBe(3);
+    expect(days.get(day(5).toISOString())).toBeNull();
+    expect(days.get(day(4).toISOString())).toBe(0);
+    expect(days.get(day(3).toISOString())).toBe(0);
+    expect(days.get(day(2).toISOString())).toBeNull();
+    expect(days.get(day(1).toISOString())).toBe(-3);
+    expect(days.get(day(0).toISOString())).toBeNull();
+    expect(response.netGrowth.value).toBe(0);
+    expect(response.items[0]?.netGrowth).toBe(0);
+    expect(response.netGrowth.coverage.status).toBe('partial');
+  });
+
+  it('never turns fresh audience-only polls into membership observations or graph zeros', async () => {
+    const observedFrom = new Date(Date.now() - 3 * 86400_000);
+    await db.channelStatsSyncState.create({
+      data: {
+        chatId,
+        membershipCoverageFrom: observedFrom,
+        lastAudienceSyncAt: new Date(),
+      },
+    });
+    await observations.audience(chatId, 'channel', 123, new Date(), 'native');
+    const result = await statistics.read(actor, 'channel', { favoriteType: 'important' });
+    expect(result.audience.value).toBe(123);
+    expect(result.netGrowth.value).toBeNull();
+    expect(result.netGrowth.coverage).toMatchObject({
+      status: 'unavailable',
+      asOf: null,
+      includedEntities: 0,
+    });
+    expect(result.series.every((point) => point.netGrowth === null)).toBe(true);
+  });
+
+  it('keeps membership freshness independent and conservatively bounded across entities', async () => {
+    const sibling = `${chatId}-membership`;
+    await db.chat.create({
+      data: { id: sibling, title: 'Sibling membership channel', entityType: 'CHANNEL' },
+    });
+    const first = new Date(Math.floor(Date.now() / 3600_000) * 3600_000 - 3 * 86400_000);
+    const second = new Date(first.getTime() + 86400_000);
+    try {
+      await db.chatMembershipActivityRollup.createMany({
+        data: [
+          { chatId, bucketStart: first, joinedUsers: 4, leftUsers: 1 },
+          { chatId: sibling, bucketStart: second, joinedUsers: 1, leftUsers: 3 },
+        ],
+      });
+      await db.channelStatsSyncState.createMany({
+        data: [chatId, sibling].map((id) => ({
+          chatId: id,
+          membershipCoverageFrom: first,
+          lastAudienceSyncAt: new Date(),
+        })),
+      });
+      resolveSelection.mockResolvedValue({
+        entityIds: [chatId, sibling],
+        compositionVersion: version,
+        label: 'Важные',
+      });
+      const result = await statistics.read(actor, 'channel', { favoriteType: 'important' });
+      expect(result.netGrowth.value).toBe(1);
+      expect(result.netGrowth.coverage.asOf).toBe(first.toISOString());
+      expect(result.netGrowth.coverage.includedEntities).toBe(2);
+      await db.channelStatsSyncState.updateMany({
+        where: { chatId: { in: [chatId, sibling] } },
+        data: { lastAudienceSyncAt: new Date() },
+      });
+      const refreshed = await statistics.read(actor, 'channel', { favoriteType: 'important' });
+      expect(refreshed.netGrowth).toEqual(result.netGrowth);
+    } finally {
+      await db.chatMembershipActivityRollup.deleteMany({ where: { chatId: sibling } });
+      await db.chat.delete({ where: { id: sibling } });
+    }
+  });
+
+  it('uses the real canonical trigger once for mirrored membership events and excludes the current-hour rollup mirror', async () => {
+    const hour = Math.floor(Date.now() / 3600_000) * 3600_000;
+    const closed = new Date(hour - 3600_000 + 10_000);
+    const current = new Date(hour);
+    try {
+      await db.chatMembershipActivityEvent.createMany({
+        data: [
+          {
+            dedupeKey: `${chatId}-source-a`,
+            chatId,
+            botId: 'native-a',
+            eventType: 'user_added',
+            userId: 'native-member',
+            eventAt: closed,
+          },
+          {
+            dedupeKey: `${chatId}-source-b`,
+            chatId,
+            botId: 'native-b',
+            eventType: 'user_added',
+            userId: 'native-member',
+            eventAt: closed,
+          },
+          {
+            dedupeKey: `${chatId}-leave-a`,
+            chatId,
+            botId: 'native-a',
+            eventType: 'user_removed',
+            userId: 'native-member',
+            eventAt: current,
+          },
+          {
+            dedupeKey: `${chatId}-leave-b`,
+            chatId,
+            botId: 'native-b',
+            eventType: 'user_removed',
+            userId: 'native-member',
+            eventAt: current,
+          },
+        ],
+      });
+      expect(await db.chatMembershipActivityFeedItem.count({ where: { chatId } })).toBe(2);
+      const rollups = await db.chatMembershipActivityRollup.findMany({
+        where: { chatId },
+        orderBy: { bucketStart: 'asc' },
+      });
+      expect(rollups.map((row) => [row.joinedUsers, row.leftUsers])).toEqual([
+        [1, 0],
+        [0, 1],
+      ]);
+      const result = await statistics.read(actor, 'channel', { favoriteType: 'important' });
+      expect(result.netGrowth.value).toBe(0);
+      expect(result.netGrowth.coverage.asOf).toBe(current.toISOString());
+    } finally {
+      await db.chatMembershipActivityEvent.deleteMany({ where: { chatId } });
+      await db.channelStatsBucketRollup.deleteMany({ where: { chatId } });
+    }
   });
 
   it('keeps a first baseline unavailable and distinguishes an explicit unchanged successful interval', async () => {
@@ -404,14 +561,28 @@ native('network statistics native PostgreSQL observation and read boundaries', (
       await observations.audience(chatId, 'channel', 100, new Date(Date.now() - 60_000), 'native');
       const first = await statistics.read(actor, 'channel', { favoriteType: 'important' });
       expect(first.audience.value).toBe(100);
+      expect(first.netGrowth.value).toBeNull();
+      expect(first.netGrowth.coverage.asOf).toBeNull();
       const updatedAt = new Date();
       await observations.audience(chatId, 'channel', 125, updatedAt, 'native');
+      await db.channelStatsSyncState.upsert({
+        where: { chatId },
+        create: {
+          chatId,
+          membershipCoverageFrom: new Date(Date.now() - 86400_000),
+          lastAudienceSyncAt: updatedAt,
+        },
+        update: { lastAudienceSyncAt: updatedAt },
+      });
       const next = await statistics.read(actor, 'channel', {
         favoriteType: 'important',
         cursor: first.nextCursor,
       });
       expect(next.audience.value).toBe(125);
       expect(next.items.find((item) => item.entityId === chatId)?.audience).toBe(125);
+      expect(next.netGrowth.value).toBeNull();
+      expect(next.netGrowth.coverage.asOf).toBeNull();
+      expect(next.series.every((point) => point.netGrowth === null)).toBe(true);
       expect(new Date(next.period.to).getTime()).toBeGreaterThanOrEqual(updatedAt.getTime());
     } finally {
       await db.chat.deleteMany({ where: { id: { in: ids.slice(1) } } });

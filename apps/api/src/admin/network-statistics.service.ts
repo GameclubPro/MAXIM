@@ -4,7 +4,6 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   managedEntityTypeSchema,
@@ -20,6 +19,10 @@ import {
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { Prisma, type Prisma as PrismaTypes } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  NetworkAuthorizationService,
+  NETWORK_AUTHORIZATION_CONCURRENCY,
+} from './network-authorization.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedEntityNetworksService } from './managed-entity-networks.service';
 
@@ -36,9 +39,7 @@ export function networkStatisticsPeriodStart(to: Date, range: '7d' | '30d'): Dat
   const today = Math.floor((to.getTime() + moscowOffsetMs) / dayMs) * dayMs - moscowOffsetMs;
   return new Date(today - ((range === '7d' ? 7 : 30) - 1) * dayMs);
 }
-const AUTHORIZATION_CONCURRENCY = 2;
-const AUTHORIZATION_QUEUE_TIMEOUT_MS = 2500;
-const MAX_AUTHORIZATION_WAITERS = MAX_GENERATIONS * AUTHORIZATION_CONCURRENCY;
+const AUTHORIZATION_CONCURRENCY = NETWORK_AUTHORIZATION_CONCURRENCY;
 
 type Generation = {
   id: string;
@@ -129,12 +130,11 @@ export function networkViewIntervalsSql(
 @Injectable()
 export class NetworkStatisticsService {
   private readonly generations = new Map<string, Generation>();
-  private authorizationInFlight = 0;
-  private readonly authorizationWaiters: Array<() => void> = [];
   constructor(
     private readonly prisma: PrismaService,
     private readonly managed: ManagedEntitiesService,
     private readonly networks: ManagedEntityNetworksService,
+    private readonly authorization: NetworkAuthorizationService,
   ) {}
 
   async read(
@@ -227,7 +227,7 @@ export class NetworkStatisticsService {
       await Promise.all(
         batch.slice(offset, offset + AUTHORIZATION_CONCURRENCY).map(async (entityId) => {
           try {
-            const release = await this.acquireAuthorizationSlot();
+            const release = await this.authorization.acquireSlot();
             try {
               const probeStartedAt = new Date();
               await this.managed.assertManagedEntityReadAccess(
@@ -239,7 +239,11 @@ export class NetworkStatisticsService {
               // FLAG: The strict guard persists its own exact grant. Capture the epoch
               // after that write and require a fresh surviving grant, so a concurrent
               // denial between MAX success and this SQL read cannot become a proof.
-              const proof = await this.accessEpochs(generation, [entityId], probeStartedAt);
+              const proof = await this.authorization.readEpochs(
+                generation,
+                [entityId],
+                probeStartedAt,
+              );
               if (!proof.has(entityId)) {
                 generation.unavailable += 1;
                 return;
@@ -279,72 +283,8 @@ export class NetworkStatisticsService {
     return response;
   }
 
-  private async acquireAuthorizationSlot(): Promise<() => void> {
-    if (this.authorizationInFlight < AUTHORIZATION_CONCURRENCY) {
-      this.authorizationInFlight += 1;
-    } else {
-      if (this.authorizationWaiters.length >= MAX_AUTHORIZATION_WAITERS)
-        throw new ServiceUnavailableException('Проверка доступа временно занята.');
-      await new Promise<void>((resolve, reject) => {
-        const grant = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        const timer = setTimeout(() => {
-          const index = this.authorizationWaiters.indexOf(grant);
-          if (index >= 0) this.authorizationWaiters.splice(index, 1);
-          reject(new ServiceUnavailableException('Проверка доступа временно занята.'));
-        }, AUTHORIZATION_QUEUE_TIMEOUT_MS);
-        this.authorizationWaiters.push(grant);
-      });
-    }
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const next = this.authorizationWaiters.shift();
-      // FLAG: The in-flight reservation transfers directly to the FIFO waiter.
-      if (next) next();
-      else this.authorizationInFlight -= 1;
-    };
-  }
-
-  private async accessEpochs(
-    g: Generation,
-    ids: string[],
-    freshSince?: Date,
-  ): Promise<Map<string, string>> {
-    if (!ids.length) return new Map();
-    const rows = await this.prisma.$queryRaw<Array<{ id: string; epoch: string }>>`
-      SELECT c.id,md5(c.routing_version::text || ':' ||
-        COALESCE((SELECT jsonb_agg(jsonb_build_array(e.bot_id,e.state,e.user_role,e.bot_role,e.checked_at,e.updated_at)
-          ORDER BY e.bot_id)::text FROM managed_entity_access_edges e
-          WHERE e.chat_id=c.id AND e.user_id=${g.userId}
-            AND e.entity_type=${g.entityType === 'chat' ? 'CHAT' : 'CHANNEL'}::"ChatEntityType"),'[]') || ':' ||
-        COALESCE((SELECT jsonb_agg(jsonb_build_array(m.bot_id,m.status,m.bot_access_state,m.bot_access_checked_at,
-          m.lifecycle_event_at,m.lifecycle_event_type,m.permissions_hash) ORDER BY m.bot_id)::text
-          FROM chat_bot_memberships m WHERE m.chat_id=c.id),'[]')) AS epoch
-      FROM chats c WHERE c.id IN (${Prisma.join(ids)})
-        AND c.entity_type=${g.entityType === 'chat' ? 'CHAT' : 'CHANNEL'}::"ChatEntityType"
-        AND EXISTS (SELECT 1 FROM managed_entity_access_edges grant_edge
-          WHERE grant_edge.chat_id=c.id AND grant_edge.user_id=${g.userId}
-            AND grant_edge.entity_type=c.entity_type AND grant_edge.state='GRANTED'
-            AND grant_edge.source='remote_admin_access'
-            AND grant_edge.user_role IN ('ADMIN','OWNER') AND grant_edge.bot_role IN ('ADMIN','OWNER')
-            AND (${freshSince ?? null}::timestamp IS NULL OR grant_edge.checked_at>=${freshSince ?? null})
-            AND NOT EXISTS (SELECT 1 FROM managed_entity_access_edges denied
-              WHERE denied.chat_id=c.id AND denied.user_id=${g.userId} AND denied.entity_type=c.entity_type
-                AND denied.state='USER_DENIED' AND denied.checked_at>=grant_edge.checked_at)
-            AND NOT EXISTS (SELECT 1 FROM chat_bot_memberships denied_bot
-              WHERE denied_bot.chat_id=c.id AND denied_bot.bot_id=grant_edge.bot_id
-                AND ((denied_bot.status='REMOVED' AND denied_bot.lifecycle_event_at>=grant_edge.checked_at)
-                  OR (denied_bot.bot_access_state IN ('DENIED','LOST') AND denied_bot.bot_access_checked_at>=grant_edge.checked_at))))
-    `;
-    return new Map(rows.map((row) => [row.id, row.epoch]));
-  }
-
   private async assertEpochs(g: Generation): Promise<void> {
-    const current = await this.accessEpochs(g, [...g.allowed]);
+    const current = await this.authorization.readEpochs(g, [...g.allowed]);
     if ([...g.allowed].some((id) => !g.proofs.has(id) || current.get(id) !== g.proofs.get(id))) {
       this.generations.delete(g.id);
       throw new ConflictException({
@@ -418,7 +358,7 @@ export class NetworkStatisticsService {
             const membershipCoverage = await tx.$queryRaw<MembershipCoverageRow[]>`
           SELECT c.id AS chat_id,
             LEAST(s.membership_coverage_from,first_feed.event_at,first_rollup.bucket_start) AS observed_from,
-            GREATEST(s.last_audience_sync_at,last_feed.event_at,last_rollup.bucket_start) AS observed_at
+            GREATEST(last_feed.event_at,last_rollup.bucket_start) AS observed_at
           FROM chats c
           LEFT JOIN channel_stats_sync_states s ON s.chat_id=c.id AND c.entity_type='CHANNEL'
           LEFT JOIN LATERAL (SELECT event_at FROM chat_membership_activity_feed_items f
@@ -506,15 +446,8 @@ export class NetworkStatisticsService {
         },
       ]),
     );
-    for (const row of membership) {
-      if (!row.observed_from || !row.observed_at) continue;
-      for (const point of series.values()) {
-        const start = Math.max(new Date(point.at).getTime(), g.from.getTime());
-        const end = Math.min(new Date(point.at).getTime() + 24 * HOUR_MS, g.to.getTime());
-        if (row.observed_from.getTime() <= start && row.observed_at.getTime() >= end)
-          point.netGrowth ??= 0;
-      }
-    }
+    // FLAG: First/latest timestamps do not prove observations between them. Only
+    // retained bucket/event rows can turn a missing daily value into observed zero.
     for (const row of growth) {
       const entry = values.get(row.chat_id) ?? { growth: 0, views: 0, viewUncertain: false };
       const delta = count(row.joined) - count(row.left_count);

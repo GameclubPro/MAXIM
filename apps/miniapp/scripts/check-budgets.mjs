@@ -6,6 +6,7 @@ import {
   differenceAssets,
   rankContributors,
   resolveBudgetLimit,
+  resolveManifestEntry,
   validateBudgetConfig,
   validateRouteBudgetCoverage,
 } from './budget-utils.mjs';
@@ -29,7 +30,7 @@ function rawAssetsForBudget(budget) {
   if (cached) {
     return cached;
   }
-  const entryKeys = budget.entries.map(resolveManifestEntry);
+  const entryKeys = budget.entries.map((reference) => resolveManifestEntry(manifest, reference));
   const assets = collectManifestAssets(manifest, entryKeys);
   rawAssetsByBudget.set(budget.id, assets);
   return assets;
@@ -41,24 +42,6 @@ function measuredAssetsForBudget(budget) {
     return assets;
   }
   return differenceAssets(assets, rawAssetsForBudget(budgetById.get(budget.baseline)));
-}
-
-function resolveManifestEntry(reference) {
-  if (manifest[reference]) {
-    return reference;
-  }
-
-  const baseName = path.parse(reference).name;
-  const candidate = Object.entries(manifest).find(
-    ([entryKey, chunk]) =>
-      entryKey.endsWith(reference) ||
-      chunk?.name === baseName ||
-      chunk?.file?.includes(`/${baseName}-`),
-  )?.[0];
-  if (!candidate) {
-    throw new Error(`Manifest entry not found for ${reference}`);
-  }
-  return candidate;
 }
 
 function gzipSize(relativePath) {

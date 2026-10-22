@@ -5,9 +5,10 @@ export type NightModeTimeFieldKey = 'nightModeStartTimeMinutes' | 'nightModeEndT
 type SettingsTimeFieldsProps =
   | {
       kind: 'night';
-      startMinutes: number;
-      endMinutes: number;
+      startMinutes: number | null;
+      endMinutes: number | null;
       error?: string;
+      disabled?: boolean;
       onChange: (key: NightModeTimeFieldKey, value: number) => void;
     }
   | {
@@ -17,9 +18,10 @@ type SettingsTimeFieldsProps =
     };
 
 type NightModeTimeFieldsProps = {
-  startMinutes: number;
-  endMinutes: number;
+  startMinutes: number | null;
+  endMinutes: number | null;
   error?: string;
+  disabled?: boolean;
   onChange: (key: NightModeTimeFieldKey, value: number) => void;
 };
 
@@ -28,8 +30,8 @@ type ScheduleTimeFieldProps = {
   onChange: (value: string) => void;
 };
 
-function normalizeDayMinutes(value: number, fallback = 0): number {
-  if (!Number.isInteger(value) || value < 0 || value > 1_439) {
+function normalizeDayMinutes(value: number | null, fallback = 0): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 1_439) {
     return fallback;
   }
 
@@ -66,6 +68,7 @@ function NightModeTimeFields({
   startMinutes,
   endMinutes,
   error,
+  disabled,
   onChange,
 }: NightModeTimeFieldsProps) {
   return (
@@ -73,7 +76,11 @@ function NightModeTimeFields({
       <div className="field night-window-grid__field">
         <TimeField
           label="Закрывать с"
-          value={minutesToTimeInput(startMinutes)}
+          value={startMinutes === null ? '' : minutesToTimeInput(startMinutes)}
+          disabled={disabled}
+          allowEmpty={startMinutes === null}
+          clearable={false}
+          placeholder="Разные значения"
           variant="embedded"
           onChange={(nextValue) =>
             onChange(
@@ -87,7 +94,11 @@ function NightModeTimeFields({
       <div className="field night-window-grid__field">
         <TimeField
           label="Открывать в"
-          value={minutesToTimeInput(endMinutes)}
+          value={endMinutes === null ? '' : minutesToTimeInput(endMinutes)}
+          disabled={disabled}
+          allowEmpty={endMinutes === null}
+          clearable={false}
+          placeholder="Разные значения"
           variant="embedded"
           error={error}
           onChange={(nextValue) =>
@@ -120,6 +131,7 @@ export default function SettingsTimeFields(props: SettingsTimeFieldsProps) {
       startMinutes={props.startMinutes}
       endMinutes={props.endMinutes}
       error={props.error}
+      disabled={props.disabled}
       onChange={props.onChange}
     />
   ) : (

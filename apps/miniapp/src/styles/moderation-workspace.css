@@ -330,6 +330,10 @@
     -webkit-backdrop-filter: none;
   }
 
+  body[data-miniapp-profile='moderation'] .bottom-nav--four {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   body[data-miniapp-profile='moderation'] .bottom-nav__item {
     border-radius: 6px;
     color: var(--major-muted);

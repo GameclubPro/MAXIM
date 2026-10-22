@@ -1,3 +1,4 @@
+import { NetworkSettingsMetadataService } from './network-settings-metadata.service';
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { MiniappProfiles } from '../auth/miniapp-profile';
@@ -9,11 +10,34 @@ import { MajorNetworksGuard } from './major-networks.guard';
 @UseGuards(InitDataGuard)
 @MiniappProfiles('moderation')
 export class NetworkSettingsController {
-  constructor(private readonly settings: NetworkSettingsService) {}
+  constructor(
+    private readonly settings: NetworkSettingsService,
+    private readonly metadata: NetworkSettingsMetadataService,
+  ) {}
+  @Post('required-subscription/resolve')
+  @UseGuards(MajorNetworksGuard)
+  resolveRequiredSubscription(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.metadata.resolveRequiredSubscription(user, body);
+  }
+  @Post('admin-contacts/read')
+  @UseGuards(MajorNetworksGuard)
+  readAdminContacts(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.metadata.readAdminContacts(user, body);
+  }
+  @Post('admin-contacts/resolve')
+  @UseGuards(MajorNetworksGuard)
+  resolveAdminContact(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.metadata.resolveAdminContact(user, body);
+  }
   @Post('read')
   @UseGuards(MajorNetworksGuard)
   read(@CurrentUser() user: AuthUser, @Body() body: unknown) {
     return this.settings.read(user, body);
+  }
+  @Post('navigation-allowlist/read')
+  @UseGuards(MajorNetworksGuard)
+  readAllowlist(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.settings.readNavigationAllowlist(user, body);
   }
   @Post('preview')
   @UseGuards(MajorNetworksGuard)

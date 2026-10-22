@@ -1,18 +1,4 @@
 @layer pages {
-  .duplicate-stage-list {
-    display: grid;
-    gap: 8px;
-  }
-
-  .duplicate-stage-list__caption {
-    margin: 0 2px;
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
   .duplicate-stage {
     border-radius: 12px;
     border: 1px solid rgba(62, 96, 127, 0.16);
@@ -66,6 +52,16 @@
     font-weight: 700;
     padding: 6px 48px 6px 10px;
     background: rgba(255, 255, 255, 0.82);
+  }
+
+  .duplicate-stage__field input[type='number'] {
+    appearance: textfield;
+  }
+
+  .duplicate-stage__field input[type='number']::-webkit-inner-spin-button,
+  .duplicate-stage__field input[type='number']::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
   }
 
   .duplicate-stage__input-wrap {

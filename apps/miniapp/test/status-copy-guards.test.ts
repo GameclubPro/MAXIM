@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { getNetworkSettingsSectionPresentation } from '../src/pages/settings/settings-workspace-sections';
 
 const chatsPageSource = readFileSync(
   new URL('../src/pages/chats-page.tsx', import.meta.url),
@@ -12,6 +13,10 @@ const chatSettingsSource = readFileSync(
 );
 const channelSettingsSource = readFileSync(
   new URL('../src/pages/channel-settings-page.tsx', import.meta.url),
+  'utf8',
+);
+const channelCommentsFieldsSource = readFileSync(
+  new URL('../src/pages/settings/channel-comments-fields.tsx', import.meta.url),
   'utf8',
 );
 const publicationsSource = readFileSync(
@@ -43,8 +48,20 @@ test('settings headers do not expose abbreviated draft or saving statuses', () =
 });
 
 test('channel comments use in-app terminology without a separate button mode', () => {
-  assert.equal(channelSettingsSource.match(/title="Комментарии в приложении"/gu)?.length, 2);
-  assert.match(channelSettingsSource, /placeholder="Например: поделитесь мнением о публикации"/u);
+  assert.equal(
+    getNetworkSettingsSectionPresentation('channel', 'comments').title,
+    'Комментарии в приложении',
+  );
+  assert.equal(
+    channelSettingsSource.match(/title=\{SHARED_CHANNEL_SECTION_PRESENTATIONS\.comments\.title\}/gu)
+      ?.length,
+    2,
+  );
+  assert.match(channelSettingsSource, /<ChannelCommentsFields[\s\S]*?settings: draft/u);
+  assert.match(
+    channelCommentsFieldsSource,
+    /placeholder="Например: поделитесь мнением о публикации"/u,
+  );
   assert.doesNotMatch(
     channelSettingsSource,
     /autoPostButtonsMode|Системные кнопки автопостинга|channel-settings-mode-card--broadcast-buttons/u,

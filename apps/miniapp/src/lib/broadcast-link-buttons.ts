@@ -4,7 +4,7 @@ import {
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   type BroadcastLinkButton,
-} from '@maxim/contracts/broadcast';
+} from '@maxim/contracts/broadcast-buttons';
 
 export type BroadcastLinkButtonFieldErrors = {
   text?: string;

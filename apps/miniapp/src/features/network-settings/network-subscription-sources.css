@@ -1,0 +1,549 @@
+/* Subscription presentation extracted from styles/managed-giveaway.css; keep declarations and cascade aligned. */
+@layer pages {
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway {
+    display: grid;
+    gap: 12px;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway {
+    --managed-giveaway-line: rgba(74, 108, 141, 0.12);
+    gap: 10px;
+    align-items: start;
+    align-content: start;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__title-row,
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__section-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__section-copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__section-copy strong {
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    line-height: 1.16;
+    letter-spacing: 0;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__section-copy small {
+    color: var(--text-secondary);
+    font-size: 0.77rem;
+    line-height: 1.4;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__section {
+    display: grid;
+    gap: 10px;
+    padding: 12px 0;
+    border: 0;
+    border-top: 1px solid var(--color-border);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway .field input,
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway .field textarea,
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway .field select {
+    min-height: 46px;
+    border-radius: 8px;
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    padding-inline: 12px;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway .field textarea {
+    min-height: 100px;
+    padding-block: 12px;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway .field > span {
+    font-size: 0.71rem;
+    line-height: 1.25;
+    font-weight: 750;
+    color: var(--text-secondary);
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__editor-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__section-actions--align-end {
+    align-items: stretch;
+    justify-content: flex-end;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .managed-giveaway__channel-action {
+    min-height: 38px;
+    padding-inline: 14px;
+    border-radius: 8px;
+    font-size: 0.74rem;
+    font-weight: 760;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__board {
+    gap: 14px;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__workspace {
+    gap: 12px;
+    padding-bottom: calc(124px + env(safe-area-inset-bottom, 0px));
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__board {
+    padding: 14px;
+    --network-subscription-board-border: 1px solid rgba(181, 198, 216, 0.72);
+    border: var(--network-subscription-board-border);
+    border-radius: 20px;
+    --network-subscription-board-background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 253, 0.96)),
+      rgba(255, 255, 255, 0.95);
+    background: var(--network-subscription-board-background);
+    --network-subscription-board-box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 10px 24px rgba(20, 44, 68, 0.045);
+    box-shadow: var(--network-subscription-board-box-shadow);
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .managed-giveaway__title-row {
+    align-items: center;
+    min-height: 36px;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .managed-giveaway__section-copy {
+    gap: 3px;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .managed-giveaway__section-copy
+    strong {
+    font-size: 0.94rem;
+    line-height: 1.15;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .managed-giveaway__section-copy
+    small {
+    width: fit-content;
+    min-height: 26px;
+    --network-subscription-heading-hint-border: 1px solid rgba(37, 126, 197, 0.14);
+    border: var(--network-subscription-heading-hint-border);
+    border-radius: 999px;
+    --network-subscription-heading-hint-background: rgba(238, 246, 253, 0.9);
+    background: var(--network-subscription-heading-hint-background);
+    --network-subscription-heading-hint-color: #1b638f;
+    color: var(--network-subscription-heading-hint-color);
+    padding: 3px 9px;
+    font-size: 0.72rem;
+    font-weight: 820;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-list {
+    display: grid;
+    gap: 7px;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    min-width: 0;
+    min-height: 56px;
+    padding: 8px;
+    border-radius: 16px;
+    --network-subscription-selection-card-border: 1px solid rgba(181, 198, 216, 0.72);
+    border: var(--network-subscription-selection-card-border);
+    --network-subscription-selection-card-background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 251, 254, 0.97)),
+      rgba(255, 255, 255, 0.95);
+    background: var(--network-subscription-selection-card-background);
+    --network-subscription-selection-card-box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 6px 16px rgba(20, 44, 68, 0.035);
+    box-shadow: var(--network-subscription-selection-card-box-shadow);
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .required-subscription__selection-card.is-warning {
+    --network-subscription-selection-warning-border-color: rgba(208, 157, 65, 0.22);
+    border-color: var(--network-subscription-selection-warning-border-color);
+    --network-subscription-selection-warning-background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(255, 248, 238, 0.96)),
+      rgba(255, 248, 238, 0.94);
+    background: var(--network-subscription-selection-warning-background);
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-rank {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    min-height: 30px;
+    border-radius: 999px;
+    --network-subscription-selection-rank-border: 1px solid rgba(37, 126, 197, 0.14);
+    border: var(--network-subscription-selection-rank-border);
+    --network-subscription-selection-rank-background: rgba(236, 245, 252, 0.94);
+    background: var(--network-subscription-selection-rank-background);
+    --network-subscription-selection-rank-color: #15679f;
+    color: var(--network-subscription-selection-rank-color);
+    font-size: 0.69rem;
+    font-weight: 820;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .required-subscription__selection-card.is-warning
+    .required-subscription__selection-rank {
+    --network-subscription-selection-warning-rank-border-color: rgba(208, 157, 65, 0.18);
+    border-color: var(--network-subscription-selection-warning-rank-border-color);
+    --network-subscription-selection-warning-rank-background: rgba(255, 245, 225, 0.96);
+    background: var(--network-subscription-selection-warning-rank-background);
+    --network-subscription-selection-warning-rank-color: #a06b10;
+    color: var(--network-subscription-selection-warning-rank-color);
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-body {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-kind {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 21px;
+    padding: 0 7px;
+    border-radius: 999px;
+    --network-subscription-selection-kind-border: 1px solid rgba(185, 203, 220, 0.78);
+    border: var(--network-subscription-selection-kind-border);
+    --network-subscription-selection-kind-background: rgba(255, 255, 255, 0.88);
+    background: var(--network-subscription-selection-kind-background);
+    --network-subscription-selection-kind-color: rgba(43, 75, 103, 0.9);
+    color: var(--network-subscription-selection-kind-color);
+    font-size: 0.61rem;
+    font-weight: 780;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-link {
+    min-width: 0;
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    line-height: 1.25;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-title {
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 0.84rem;
+    font-weight: 820;
+    line-height: 1.2;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-detail {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.35;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    min-height: 40px;
+    border-radius: 14px;
+    --network-subscription-selection-remove-border: 1px solid rgba(188, 205, 220, 0.86);
+    border: var(--network-subscription-selection-remove-border);
+    --network-subscription-selection-remove-background: rgba(255, 255, 255, 0.94);
+    background: var(--network-subscription-selection-remove-background);
+    --network-subscription-selection-remove-color: rgba(88, 110, 130, 0.88);
+    color: var(--network-subscription-selection-remove-color);
+    cursor: pointer;
+    transition:
+      border-color 0.18s ease,
+      background-color 0.18s ease,
+      color 0.18s ease;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-remove svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-remove:hover {
+    --network-subscription-selection-remove-hover-border-color: rgba(54, 125, 198, 0.18);
+    border-color: var(--network-subscription-selection-remove-hover-border-color);
+    --network-subscription-selection-remove-hover-background: rgba(245, 249, 253, 0.98);
+    background: var(--network-subscription-selection-remove-hover-background);
+    --network-subscription-selection-remove-hover-color: #225f8d;
+    color: var(--network-subscription-selection-remove-hover-color);
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-empty {
+    display: grid;
+    gap: 4px;
+    min-height: 52px;
+    align-items: center;
+    padding: 12px 14px;
+    --network-subscription-selection-empty-border: 1px dashed rgba(164, 188, 210, 0.78);
+    border: var(--network-subscription-selection-empty-border);
+    border-radius: 16px;
+    --network-subscription-selection-empty-background: rgba(248, 251, 254, 0.82);
+    background: var(--network-subscription-selection-empty-background);
+    color: var(--text-secondary);
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-empty strong {
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    font-weight: 820;
+  }
+
+  :where(body[data-miniapp-profile='moderation']) .required-subscription__selection-empty span {
+    font-size: 0.75rem;
+    line-height: 1.35;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__button-label {
+    margin: 0;
+    border-radius: 16px;
+    --network-subscription-button-label-border-color: rgba(181, 198, 216, 0.72);
+    border-color: var(--network-subscription-button-label-border-color);
+    --network-subscription-button-label-background: rgba(255, 255, 255, 0.94);
+    background: var(--network-subscription-button-label-background);
+    gap: 8px;
+    padding: 9px;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__button-label
+    input {
+    min-height: 42px;
+    border-radius: 13px;
+  }
+
+  @media (max-width: 640px) {
+    :where(body[data-miniapp-profile='moderation']) .managed-giveaway__title-row {
+      align-items: center;
+    }
+
+    :where(body[data-miniapp-profile='moderation']) .managed-giveaway__section-actions {
+      width: auto;
+      justify-content: flex-end;
+    }
+
+    :where(body[data-miniapp-profile='moderation'])
+      .managed-giveaway__section-actions--align-end
+      .button {
+      width: 100%;
+    }
+
+    :where(body[data-miniapp-profile='moderation']) .managed-giveaway__section-actions--align-end {
+      justify-content: stretch;
+    }
+  }
+
+  @media (min-width: 720px) {
+    :where(body[data-miniapp-profile='moderation']) .managed-giveaway__editor-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__external-source {
+    display: grid;
+    gap: 10px;
+    --network-subscription-external-source-border: 1px solid rgba(185, 203, 220, 0.72);
+    border: var(--network-subscription-external-source-border);
+    border-radius: 20px;
+    --network-subscription-external-source-background:
+      radial-gradient(100% 120% at 100% 0%, rgba(18, 132, 103, 0.09), transparent 58%),
+      rgba(250, 253, 251, 0.92);
+    background: var(--network-subscription-external-source-background);
+    padding: 11px;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-remove {
+    width: 44px;
+    min-height: 44px;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__source-segments.segmented-control {
+    padding: 5px;
+    border-radius: 18px;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__source-segments
+    .segmented-control__item {
+    min-height: 40px;
+    border-radius: 14px;
+    padding: 8px 10px;
+  }
+
+  :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-avatar {
+    width: 38px;
+    height: 38px;
+    border-radius: 14px;
+    font-size: 0.72rem;
+  }
+
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .managed-giveaway__section-copy
+    :is(strong, small) {
+    --network-subscription-dark-heading-hint-border-color: color-mix(
+      in srgb,
+      var(--color-accent) 34%,
+      var(--color-border)
+    );
+    border-color: var(--network-subscription-dark-heading-hint-border-color);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-card {
+    border-color: var(--color-border);
+    background: var(--color-surface-muted);
+    color: var(--text-primary);
+    box-shadow: none;
+  }
+
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-card.is-warning {
+    --network-subscription-dark-selection-warning-border-color: color-mix(
+      in srgb,
+      var(--color-warning) 34%,
+      var(--color-border)
+    );
+    border-color: var(--network-subscription-dark-selection-warning-border-color);
+    --network-subscription-dark-selection-warning-background: color-mix(
+      in srgb,
+      var(--color-warning) 10%,
+      var(--color-surface-muted)
+    );
+    background: var(--network-subscription-dark-selection-warning-background);
+  }
+
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    :is(
+      .required-subscription__selection-rank,
+      .required-subscription__selection-kind,
+      .required-subscription__selection-state
+    ) {
+    --network-subscription-dark-selection-status-border-color: color-mix(
+      in srgb,
+      var(--color-accent) 30%,
+      var(--color-border)
+    );
+    border-color: var(--network-subscription-dark-selection-status-border-color);
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+  }
+
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-card.is-warning
+    :is(.required-subscription__selection-rank, .required-subscription__selection-state) {
+    --network-subscription-dark-warning-status-border-color: color-mix(
+      in srgb,
+      var(--color-warning) 34%,
+      var(--color-border)
+    );
+    border-color: var(--network-subscription-dark-warning-status-border-color);
+    --network-subscription-dark-warning-status-background: color-mix(
+      in srgb,
+      var(--color-warning) 14%,
+      var(--color-surface-muted)
+    );
+    background: var(--network-subscription-dark-warning-status-background);
+    color: var(--color-warning);
+  }
+
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-remove,
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-remove:hover {
+    border-color: var(--color-border);
+    background: var(--color-surface-tint);
+    color: var(--text-secondary);
+  }
+
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__selection-empty,
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__button-label,
+  html[data-max-theme='dark']
+    :where(body[data-miniapp-profile='moderation'])
+    .settings-drilldown__panel--required-subscription
+    .required-subscription__external-source {
+    border-color: var(--color-border);
+    background: var(--color-surface-muted);
+    color: var(--text-secondary);
+  }
+}

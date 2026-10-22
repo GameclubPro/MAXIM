@@ -1,15 +1,13 @@
-import {
-  managedEntityNetworkCompositionResponseSchema,
-  managedEntityNetworkEntriesResponseSchema,
-  managedEntityNetworksResponseSchema,
-} from '@maxim/contracts/managed-entities';
 import type {
   ManagedEntityFavoriteType,
-  ManagedEntityNetworkCompositionChange,
   ManagedEntityNetworkEntry,
   ManagedEntityType,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
+import {
+  parseManagedEntityNetworksResponse,
+  parseManagedEntityNetworkEntriesResponse,
+} from './managed-entity-networks-response';
 
 const prefix = (type: ManagedEntityType) => `/managed-entities/networks/${type}`;
 
@@ -18,7 +16,7 @@ export async function getManagedEntityNetworks(
   type: ManagedEntityType,
   signal?: AbortSignal,
 ) {
-  return managedEntityNetworksResponseSchema.parse(await api.request(prefix(type), { signal }));
+  return parseManagedEntityNetworksResponse(await api.request(prefix(type), { signal }));
 }
 
 export async function getManagedEntityNetworkEntries(
@@ -39,7 +37,7 @@ export async function getManagedEntityNetworkEntries(
   if (options.search) query.set('search', options.search);
   if (options.cursor) query.set('cursor', options.cursor);
   if (options.limit) query.set('limit', String(options.limit));
-  return managedEntityNetworkEntriesResponseSchema.parse(
+  return parseManagedEntityNetworkEntriesResponse(
     await api.request(`${prefix(type)}/entities?${query}`, { signal: options.signal }),
   );
 }
@@ -77,17 +75,10 @@ export async function loadManagedEntityFavoriteAssignments(
 }
 
 export async function updateManagedEntityNetworkComposition(
-  api: ApiTransport,
-  type: ManagedEntityType,
-  changes: ManagedEntityNetworkCompositionChange[],
-  signal?: AbortSignal,
+  ...args: Parameters<
+    typeof import('./managed-entity-network-composition-write-client').updateManagedEntityNetworkComposition
+  >
 ) {
-  return managedEntityNetworkCompositionResponseSchema.parse(
-    await api.request(`${prefix(type)}/composition`, {
-      method: 'PUT',
-      body: JSON.stringify({ changes }),
-      signal,
-      retryMutationOnTransportError: false,
-    }),
-  );
+  const client = await import('./managed-entity-network-composition-write-client');
+  return client.updateManagedEntityNetworkComposition(...args);
 }

@@ -1,0 +1,203 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .network-settings-editor {
+    --network-settings-surface: var(--major-surface);
+    --network-settings-border: var(--major-border);
+    --network-settings-text: var(--major-ink);
+    --network-settings-danger: var(--color-danger);
+  }
+
+  body[data-miniapp-profile='moderation'] .network-settings-editor__content {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-settings-editor__status {
+    margin: 0;
+    color: var(--major-muted);
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(.network-settings-page__changes, .network-settings-page__operation) {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid var(--network-settings-border);
+    border-radius: 18px;
+    background: var(--network-settings-surface);
+    color: var(--network-settings-text);
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(.network-settings-page__changes, .network-settings-page__operation)
+    > :is(h2, p) {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(.network-settings-page__changes, .network-settings-page__operation)
+    > h2 {
+    font-size: 15px;
+    line-height: 1.4;
+    font-weight: 800;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(.network-settings-page__changes, .network-settings-page__operation)
+    > ul {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(.network-settings-page__changes, .network-settings-page__operation)
+    > ul
+    > li {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(.network-settings-page__changes, .network-settings-page__operation)
+    button {
+    min-height: 44px;
+    max-width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--network-settings-border);
+    border-radius: 12px;
+    background: var(--network-settings-surface);
+    color: var(--network-settings-text);
+    font: inherit;
+    font-weight: 650;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(.network-settings-metadata, .network-settings-metadata__picker) {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+    line-height: 1.5;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    .network-settings-metadata
+    > label {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+    font-weight: 600;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    .network-settings-metadata
+    :is(input:not([type='checkbox']), textarea, select) {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    max-width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: var(--color-surface);
+    color: inherit;
+    font: inherit;
+    font-size: 16px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    .network-settings-metadata
+    button {
+    min-height: 44px;
+    max-width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--network-settings-border);
+    border-radius: 12px;
+    background: var(--network-settings-surface);
+    color: var(--network-settings-text);
+    font: inherit;
+    font-weight: 650;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    .network-settings-metadata__selected {
+    color: var(--major-muted);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    .network-settings-metadata__selected
+    strong {
+    color: var(--network-settings-text);
+  }
+
+  body[data-miniapp-profile='moderation'] .network-settings-editor .network-settings-page__error {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    color: var(--network-settings-danger);
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    .network-settings-page__error
+    > p {
+    margin: 0;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(
+      .network-settings-page__changes,
+      .network-settings-page__operation,
+      .network-settings-metadata
+    )
+    button:focus-visible {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 3px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .network-settings-editor
+    :is(
+      .network-settings-page__changes,
+      .network-settings-page__operation,
+      .network-settings-metadata
+    )
+    button:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+}

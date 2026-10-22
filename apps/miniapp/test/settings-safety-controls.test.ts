@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { SettingsSectionSaveFooter } from '../src/pages/settings/settings-section-save-footer';
 
 const stopWordsSource = readFileSync(
-  new URL('../src/pages/settings/settings-stop-words-editor.tsx', import.meta.url),
+  new URL('../src/pages/settings/shared-stop-words-settings-fields.tsx', import.meta.url),
   'utf8',
 );
 const stopWordsSectionSource = readFileSync(
@@ -14,7 +14,23 @@ const stopWordsSectionSource = readFileSync(
   'utf8',
 );
 const commandSource = readFileSync(
-  new URL('../src/pages/settings/settings-admin-commands-section.tsx', import.meta.url),
+  new URL('../src/pages/settings/shared-settings-command-fields.tsx', import.meta.url),
+  'utf8',
+);
+const stopWordsToolsSource = readFileSync(
+  new URL('../src/pages/settings/settings-stop-words-single-tools.tsx', import.meta.url),
+  'utf8',
+);
+const sharedFieldsSource = readFileSync(
+  new URL('../src/pages/settings/shared-chat-settings-fields.tsx', import.meta.url),
+  'utf8',
+);
+const settingsPageSource = readFileSync(
+  new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
+  'utf8',
+);
+const commandConfigSource = readFileSync(
+  new URL('../src/pages/settings/settings-admin-command-config.ts', import.meta.url),
   'utf8',
 );
 const hintSource = readFileSync(
@@ -58,36 +74,47 @@ test('the active save action announces that it is busy', () => {
 test('stop-word catalog mounts the recoverable editor only when its panel is open', () => {
   assert.match(stopWordsSectionSource, /<SettingsSectionToggle/u);
   assert.match(stopWordsSectionSource, /<SettingsDrilldownPanel/u);
+  assert.match(stopWordsSectionSource, /\{expanded \? props\.sharedContent : null\}/u);
+  assert.match(settingsPageSource, /sharedContent=\{renderSharedChatSection\('stopWords'\)\}/u);
   assert.match(
-    stopWordsSectionSource,
-    /recoverableLazyNamedComponent<SettingsStopWordsEditorProps>/u,
+    sharedFieldsSource,
+    /const LazySharedStopWordsSettingsFields = recoverableLazyNamedComponent<BodyProps>/u,
   );
-  assert.match(stopWordsSectionSource, /\(\) => import\('\.\/settings-stop-words-editor'\)/u);
+  assert.match(sharedFieldsSource, /\(\) => import\('\.\/shared-stop-words-settings-fields'\)/u);
   assert.match(
-    stopWordsSectionSource,
-    /\{expanded \? \(\s*<Suspense fallback=\{<Spinner[^>]+\/>\}>\s*<LazySettingsStopWordsEditor \{\.\.\.props\} mode=\{mode\} onModeChange=\{setMode\} \/>/u,
+    sharedFieldsSource,
+    /<Suspense fallback=\{<Spinner label="Загружаем стоп-слова" \/>\}>\s*<LazySharedStopWordsSettingsFields \{\.\.\.props\} \/>/u,
   );
   assert.doesNotMatch(
     stopWordsSectionSource,
     /<input|LazyMessageLimitsBlockedWordPresets|useHintPopoverAutoPosition/u,
   );
-  assert.match(stopWordsSource, /import type \{ SettingsStopWordsEditorProps \}/u);
+  assert.match(stopWordsSource, /import type \{ SharedChatSettingsSectionProps \}/u);
   assert.doesNotMatch(stopWordsSource, /GlassCard/u);
-  assert.match(stopWordsSource, /import.*prepareStopWordsInput/u);
-  assert.match(stopWordsSource, /previewStopWords/u);
+  assert.match(stopWordsSource, /import.*prepareStopWordsLists/u);
+  assert.match(stopWordsSource, /context\.stopWordsTools\?\.preview/u);
+  assert.match(stopWordsToolsSource, /previewStopWords/u);
 });
 
 test('stop-list keyboard submission preserves composition and multiline entry', () => {
   assert.match(stopWordsSource, /!event\.nativeEvent\.isComposing/u);
   assert.match(stopWordsSource, /!event\.shiftKey/u);
   assert.match(stopWordsSource, /prepared\.errors\.length/u);
-  assert.match(stopWordsSource, /aria-describedby="stop-words-input-result"/u);
+  assert.match(stopWordsSource, /const resultId = useId\(\)/u);
+  assert.match(stopWordsSource, /aria-describedby=\{resultId\}/u);
+  assert.match(
+    stopWordsSource,
+    /<div id=\{resultId\} className="stop-words-editor__input-result"/u,
+  );
 });
 
 test('stop-list controls own their sanctions and expose image runtime status', () => {
-  assert.match(stopWordsSource, /const sanctions = policy\.sanctions/u);
-  assert.match(stopWordsSource, /imageScanStatus/u);
-  assert.match(stopWordsSource, /'shadow'/u);
+  for (const field of ['botMessageEnabled', 'warnEnabled', 'muteEnabled', 'banEnabled']) {
+    assert.ok(stopWordsSource.includes(`'stopWordsPolicy.sanctions.${field}'`));
+  }
+  assert.match(stopWordsSource, /context\.stopWordsTools\?\.imageScan/u);
+  assert.match(stopWordsToolsSource, /imageScanStatus/u);
+  assert.match(stopWordsToolsSource, /'shadow'/u);
   assert.doesNotMatch(stopWordsSource, /действия берутся из раздела «Ограничения»/u);
 });
 
@@ -96,7 +123,11 @@ test('command fields preserve case and expose limits, errors, and individual exp
   assert.match(commandSource, /autoCapitalize="none"/u);
   assert.match(commandSource, /autoCorrect="off"/u);
   assert.match(commandSource, /aria-invalid=\{Boolean\(error\)\}/u);
-  assert.equal(commandSource.match(/hintKey: 'admin/gu)?.length, 7);
+  assert.match(
+    commandSource,
+    /import \{ commandCategories[^}]*\} from '\.\/settings-admin-command-config'/u,
+  );
+  assert.equal(commandConfigSource.match(/hintKey: 'admin/gu)?.length, 7);
   assert.match(commandSource, /hintKey=\{item\.hintKey\}/u);
 });
 

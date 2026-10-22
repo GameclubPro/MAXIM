@@ -1,152 +1,24 @@
-import type { ManagedEntityFavoriteLabelsResponse } from '@maxim/contracts';
-import { ApiRequestError } from './api-request-error';
-import {
-  getManagedEntityFavoriteLabels,
-  updateManagedEntityFavoriteLabels,
-} from './api/managed-entity-favorites-client';
+import { getManagedEntityFavoriteLabels } from './api/managed-entity-favorites-client';
 import type { ApiTransport } from './api/transport';
+import { type HomeEntityFavoriteLabelOverrides } from './home-entity-favorites';
 import {
-  HOME_ENTITY_FAVORITE_LABELS,
-  HOME_ENTITY_FAVORITE_TYPES,
-  buildHomeEntityFavoriteLabelsStorageKey,
-  resolveHomeEntityFavoriteLabels,
-  sanitizeHomeEntityFavoriteLabels,
-  type HomeEntityFavoriteLabelOverrides,
-} from './home-entity-favorites';
-import { hydrateMirroredItem } from './native-storage';
-import { waitForNativeStorageRuntime } from './native-storage-runtime';
+  hydrateHomeEntityFavoriteLabelMigrationCandidate,
+  migrateHomeEntityFavoriteLabelsAfterNativeStorage,
+} from './home-entity-favorite-label-migration';
+import { initializeManagedEntityFavoriteLabels } from './home-entity-favorite-label-writes';
 
-async function hydrateHomeEntityFavoriteLabels(
-  scope: string | null | undefined,
-): Promise<HomeEntityFavoriteLabelOverrides> {
-  if (typeof window === 'undefined') {
-    return {};
-  }
-
-  try {
-    const raw = await hydrateMirroredItem(buildHomeEntityFavoriteLabelsStorageKey(scope));
-    return raw ? sanitizeHomeEntityFavoriteLabels(JSON.parse(raw)) : {};
-  } catch {
-    return {};
-  }
-}
-
-export function planHomeEntityFavoriteLabelsSync(
-  cachedLabels: HomeEntityFavoriteLabelOverrides,
-  server: ManagedEntityFavoriteLabelsResponse,
-): {
-  labels: HomeEntityFavoriteLabelOverrides;
-  initializeServer: boolean;
-} {
-  if (server.initialized) {
-    return {
-      labels: sanitizeHomeEntityFavoriteLabels(server.labels),
-      initializeServer: false,
-    };
-  }
-
-  const labels = sanitizeHomeEntityFavoriteLabels(cachedLabels);
-  return {
-    labels,
-    initializeServer: Object.keys(labels).length > 0,
-  };
-}
-
-export async function migrateHomeEntityFavoriteLabelsAfterNativeStorage(
-  server: ManagedEntityFavoriteLabelsResponse,
-  hydrateLabels: () => Promise<HomeEntityFavoriteLabelOverrides>,
-  initializeServer: (
-    labels: HomeEntityFavoriteLabelOverrides,
-  ) => Promise<ManagedEntityFavoriteLabelsResponse>,
-  onCandidate: (labels: HomeEntityFavoriteLabelOverrides) => void,
-): Promise<HomeEntityFavoriteLabelOverrides> {
-  if (server.initialized) {
-    return sanitizeHomeEntityFavoriteLabels(server.labels);
-  }
-
-  const labels = await hydrateLabels();
-  const plan = planHomeEntityFavoriteLabelsSync(labels, server);
-  onCandidate(plan.labels);
-  if (!plan.initializeServer) {
-    return plan.labels;
-  }
-
-  const initialized = await initializeServer(plan.labels);
-  return sanitizeHomeEntityFavoriteLabels(initialized.labels);
-}
-
-export function mergeHomeEntityFavoriteLabelEdits(
-  baseLabels: HomeEntityFavoriteLabelOverrides,
-  draftLabels: HomeEntityFavoriteLabelOverrides,
-  latestServerLabels: HomeEntityFavoriteLabelOverrides,
-): HomeEntityFavoriteLabelOverrides {
-  const base = resolveHomeEntityFavoriteLabels(sanitizeHomeEntityFavoriteLabels(baseLabels));
-  const draft = resolveHomeEntityFavoriteLabels(sanitizeHomeEntityFavoriteLabels(draftLabels));
-  const next = sanitizeHomeEntityFavoriteLabels(latestServerLabels);
-
-  for (const favoriteType of HOME_ENTITY_FAVORITE_TYPES) {
-    if (draft[favoriteType] === base[favoriteType]) {
-      continue;
-    }
-    if (draft[favoriteType] === HOME_ENTITY_FAVORITE_LABELS[favoriteType]) {
-      delete next[favoriteType];
-    } else {
-      next[favoriteType] = draft[favoriteType];
-    }
-  }
-
-  return sanitizeHomeEntityFavoriteLabels(next);
-}
-
-export function isHomeEntityFavoriteLabelsRevisionConflict(error: unknown): boolean {
-  return (
-    error instanceof ApiRequestError &&
-    error.status === 409 &&
-    error.code === 'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT'
-  );
-}
-
-export async function saveHomeEntityFavoriteLabelEditsWithConflictRetry(
-  baseLabels: HomeEntityFavoriteLabelOverrides,
-  draftLabels: HomeEntityFavoriteLabelOverrides,
-  loadLatest: () => Promise<ManagedEntityFavoriteLabelsResponse>,
-  replace: (
-    labels: HomeEntityFavoriteLabelOverrides,
-    expectedRevision: number | null,
-  ) => Promise<ManagedEntityFavoriteLabelsResponse>,
-): Promise<ManagedEntityFavoriteLabelsResponse> {
-  let latest = await loadLatest();
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const labels = latest.initialized
-      ? mergeHomeEntityFavoriteLabelEdits(baseLabels, draftLabels, latest.labels)
-      : sanitizeHomeEntityFavoriteLabels(draftLabels);
-    try {
-      return await replace(labels, latest.revision);
-    } catch (error: unknown) {
-      if (attempt !== 0 || !isHomeEntityFavoriteLabelsRevisionConflict(error)) {
-        throw error;
-      }
-      latest = await loadLatest();
-    }
-  }
-
-  throw new Error('Не удалось согласовать актуальные названия категорий.');
-}
-
-export async function hydrateHomeEntityFavoriteLabelMigrationCandidate(
-  scope: string | null | undefined,
-  options: { signal?: AbortSignal; waitForNativeStorage?: boolean } = {},
-): Promise<HomeEntityFavoriteLabelOverrides> {
-  if (options.waitForNativeStorage) {
-    await waitForNativeStorageRuntime({ signal: options.signal });
-  }
-  if (options.signal?.aborted) {
-    return {};
-  }
-
-  return hydrateHomeEntityFavoriteLabels(scope);
-}
+export {
+  planHomeEntityFavoriteLabelsSync,
+  migrateHomeEntityFavoriteLabelsAfterNativeStorage,
+  hydrateHomeEntityFavoriteLabelMigrationCandidate,
+} from './home-entity-favorite-label-migration';
+export {
+  mergeHomeEntityFavoriteLabelEdits,
+  isHomeEntityFavoriteLabelsRevisionConflict,
+  saveHomeEntityFavoriteLabelEditsWithConflictRetry,
+  initializeManagedEntityFavoriteLabels,
+  saveManagedEntityFavoriteLabelEdits,
+} from './home-entity-favorite-label-writes';
 
 export async function synchronizeManagedEntityFavoriteLabels(
   api: ApiTransport,
@@ -217,27 +89,4 @@ export async function synchronizeManagedEntityFavoriteLabels(
 
 export function loadManagedEntityFavoriteLabels(api: ApiTransport, signal?: AbortSignal) {
   return getManagedEntityFavoriteLabels(api, { signal });
-}
-
-export function initializeManagedEntityFavoriteLabels(
-  api: ApiTransport,
-  labels: HomeEntityFavoriteLabelOverrides,
-  signal?: AbortSignal,
-) {
-  return updateManagedEntityFavoriteLabels(api, labels, { mode: 'initialize', signal });
-}
-
-export function saveManagedEntityFavoriteLabelEdits(
-  api: ApiTransport,
-  baseLabels: HomeEntityFavoriteLabelOverrides,
-  draftLabels: HomeEntityFavoriteLabelOverrides,
-  signal?: AbortSignal,
-) {
-  return saveHomeEntityFavoriteLabelEditsWithConflictRetry(
-    baseLabels,
-    draftLabels,
-    () => getManagedEntityFavoriteLabels(api, { signal }),
-    (labels, expectedRevision) =>
-      updateManagedEntityFavoriteLabels(api, labels, { expectedRevision, signal }),
-  );
 }

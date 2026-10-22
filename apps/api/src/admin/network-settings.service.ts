@@ -1,14 +1,23 @@
 import {
+  NetworkNavigationAllowlist,
+  normalizeNetworkAllowlistIntent,
+} from './network-navigation-allowlist';
+import {
   BadRequestException,
   ConflictException,
   HttpException,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   networkSettingsApplyRequestSchema,
+  networkNavigationAllowlistReadRequestSchema,
+  networkNavigationAllowlistReadResponseSchema,
+  type NetworkNavigationAllowlistImpact,
   networkSettingsOperationResponseSchema,
   networkSettingsPreviewRequestSchema,
   networkSettingsPreviewResponseSchema,
@@ -19,7 +28,12 @@ import {
   type NetworkSettingsReadRequest,
   type NetworkSettingsRecipient,
 } from '@maxim/contracts/network-settings';
-import type { ChannelSettings, ChatSettings } from '@maxim/contracts';
+import {
+  chatRulesSchema,
+  type ChannelSettings,
+  type ChatSettings,
+  type ChatRules,
+} from '@maxim/contracts';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -35,14 +49,49 @@ import {
   networkSettingsPaths,
 } from './network-settings-patch';
 import type { NetworkSettingsWriteOptions } from './network-settings-write';
+import { AdminMessageRetentionService } from './admin-message-retention.service';
+import { AdvertisingPlacementService } from './advertising-placement.service';
+import {
+  mapChatRules,
+  validateChatRulesDraft,
+  writeNetworkChatRulesDraft,
+} from './admin-chat-rules';
 
 const PREVIEW_TTL_MS = 10 * 60_000;
 const LEASE_MS = 5 * 60_000;
 const READ_PAGE_SIZE = 4;
 const WORK_CHUNK_SIZE = 2;
 const ACTIVE_STATUSES = ['PREVIEWING', 'AUTHORIZING', 'RUNNING'];
-type StoredPayload = { request: NetworkSettingsPreviewRequest; expiresAt: string };
+export const NETWORK_SETTINGS_OPERATION_READER_VERSION = 3;
+const V3_SECTIONS = new Set([
+  'speechStyle',
+  'rules',
+  'messageRetention',
+  'advertising',
+  'postSuggestions',
+]);
+type StoredPayload = {
+  readerVersion?: number;
+  request: NetworkSettingsPreviewRequest;
+  expiresAt: string;
+  navigationAllowlistImpacts?: NetworkNavigationAllowlistImpact[];
+};
 
+function assertOperationReader(payload: StoredPayload): void {
+  // FLAG: Unknown persisted readers remain unsettled; never fabricate completion under an incompatible runner.
+  const version = payload.readerVersion ?? 1;
+  if (
+    !Number.isInteger(version) ||
+    version < 1 ||
+    version > NETWORK_SETTINGS_OPERATION_READER_VERSION ||
+    (payload.request.navigationAllowlist && version < 2) ||
+    (V3_SECTIONS.has(payload.request.section) && version < 3)
+  )
+    throw new ConflictException({
+      code: 'NETWORK_SETTINGS_READER_UNSUPPORTED',
+      message: 'Операция ожидает совместимую версию обработки.',
+    });
+}
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value && typeof value === 'object')
@@ -84,6 +133,9 @@ export class NetworkSettingsService {
     private readonly settings: AdminSettingsService,
     private readonly stopWords: AdminStopWordsService,
     private readonly signatures: ChannelPostSignatureService,
+    private readonly allowlist: NetworkNavigationAllowlist,
+    @Optional() private readonly retention?: AdminMessageRetentionService,
+    @Optional() private readonly advertising?: AdvertisingPlacementService,
   ) {}
 
   private async selection(user: AuthUser, request: NetworkSettingsReadRequest) {
@@ -119,6 +171,55 @@ export class NetworkSettingsService {
         select: { title: true, settings: { select: { updatedAt: true } } },
       });
       if (!row.settings || !value.settingsRevision) throw changed();
+      if (request.section === 'rules') {
+        const rules = await this.prisma.chatRules.findUnique({ where: { chatId: entityId } });
+        let generatedText: string | undefined;
+        try {
+          generatedText = await this.settings.buildNetworkRulesText(entityId, user);
+        } catch (error) {
+          if (!(error instanceof BadRequestException)) throw error;
+        }
+        const witness = (await this.allowlist.read(entityId, undefined, false)).witness;
+        return {
+          value: { ...value, rules: rules ? mapChatRules(rules) : chatRulesSchema.parse({}) },
+          recipient: {
+            entityId,
+            title: row.title,
+            revision: value.settingsRevision,
+            rulesRevision: rules?.updatedAt.toISOString() ?? null,
+            ...(generatedText === undefined ? {} : { rulesContextDigest: digest(generatedText) }),
+            navigationAllowlistWitness: witness,
+          } satisfies NetworkSettingsRecipient,
+        };
+      }
+      if (request.section === 'messageRetention') {
+        if (!this.retention)
+          throw new ServiceUnavailableException('Модуль удаления сообщений недоступен.');
+        const policy = await this.retention.read(entityId, user);
+        return {
+          value: { ...value, messageRetention: { enabled: policy.enabled, hours: policy.hours } },
+          recipient: {
+            entityId,
+            title: row.title,
+            revision: value.settingsRevision,
+            messageRetentionRevision: policy.revision,
+          } satisfies NetworkSettingsRecipient,
+        };
+      }
+      if (request.section === 'advertising') {
+        if (!this.advertising)
+          throw new ServiceUnavailableException('Рекламная площадка недоступна.');
+        const policy = await this.advertising.state(entityId, user);
+        return {
+          value: { ...value, advertising: { enabled: policy.enabled } },
+          recipient: {
+            entityId,
+            title: row.title,
+            revision: value.settingsRevision,
+            advertisingRevision: policy.revision,
+          } satisfies NetworkSettingsRecipient,
+        };
+      }
       return {
         value: stop ? { ...value, stopWordsPolicy: stop.policy } : value,
         recipient: {
@@ -211,11 +312,37 @@ export class NetworkSettingsService {
     });
   }
 
+  async readNavigationAllowlist(user: AuthUser, body: unknown) {
+    const request = parse(networkNavigationAllowlistReadRequestSchema, body);
+    if (request.entityType !== 'chat' || request.section !== 'links')
+      throw new BadRequestException('Список доступен только в настройках ссылок чатов.');
+    const selected = await this.selection(user, request);
+    if (
+      selected.compositionVersion !== request.compositionVersion ||
+      !selected.entityIds.includes(request.entityId)
+    )
+      throw changed();
+    await this.managed.assertManagedEntityAdminAccess(request.entityId, user, 'chat');
+    const result = await this.allowlist.read(
+      request.entityId,
+      request.cursor,
+      request.includeEntries ?? true,
+    );
+    const current = await this.selection(user, request);
+    if (current.compositionVersion !== request.compositionVersion) throw changed();
+    return networkNavigationAllowlistReadResponseSchema.parse({
+      ...result,
+      compositionVersion: request.compositionVersion,
+    });
+  }
+
   async preview(user: AuthUser, body: unknown): Promise<NetworkSettingsPreviewResponse> {
     const request = parse(networkSettingsPreviewRequestSchema, body);
     const allowed = networkSettingsPaths(request.entityType, request.section);
     if (request.changes.some((change) => !allowed.includes(change.path)))
       throw new BadRequestException('Поле не входит в выбранный раздел.');
+    if (request.navigationAllowlist)
+      request.navigationAllowlist = normalizeNetworkAllowlistIntent(request.navigationAllowlist);
     const requestHash = digest(request);
     let existing = await this.prisma.networkSettingsOperation.findUnique({
       where: { id: request.operationId },
@@ -233,7 +360,15 @@ export class NetworkSettingsService {
             requestHash,
             section: request.section,
             status: 'PREVIEWING',
-            payload: { request, expiresAt } as unknown as Prisma.InputJsonValue,
+            payload: {
+              readerVersion: V3_SECTIONS.has(request.section)
+                ? 3
+                : request.navigationAllowlist
+                  ? 2
+                  : 1,
+              request,
+              expiresAt,
+            } as unknown as Prisma.InputJsonValue,
             targets: {
               create: request.recipients.map((recipient) => ({
                 entityId: recipient.entityId,
@@ -260,17 +395,26 @@ export class NetworkSettingsService {
       section: request.section,
       recipients: request.recipients,
       changes: request.changes,
+      ...(request.navigationAllowlist
+        ? {
+            navigationAllowlist: request.navigationAllowlist,
+            navigationAllowlistImpacts:
+              (existing.payload as unknown as StoredPayload).navigationAllowlistImpacts ?? [],
+          }
+        : {}),
     });
   }
 
   async apply(user: AuthUser, body: unknown) {
     const input = parse(networkSettingsApplyRequestSchema, body);
     const operation = await this.ownedOperation(user, input.operationId);
+    assertOperationReader(operation.payload as unknown as StoredPayload);
     if (operation.requestHash !== input.previewHash) throw changed();
     if (operation.status === 'PREVIEWING')
       throw new ConflictException('Проверка получателей ещё выполняется.');
     if (operation.status === 'PREPARED') {
       const stored = operation.payload as unknown as StoredPayload;
+      assertOperationReader(stored);
       if (Date.parse(stored.expiresAt) <= Date.now()) throw changed();
       const request = networkSettingsPreviewRequestSchema.parse(stored.request);
       const confirm = async (
@@ -322,6 +466,12 @@ export class NetworkSettingsService {
       section: operation.section,
       status: operation.status,
       expiresAt: (operation.payload as unknown as StoredPayload).expiresAt,
+      ...((operation.payload as unknown as StoredPayload).navigationAllowlistImpacts
+        ? {
+            navigationAllowlistImpacts: (operation.payload as unknown as StoredPayload)
+              .navigationAllowlistImpacts,
+          }
+        : {}),
       outcomes: targets.map((target) => ({
         entityId: target.entityId,
         status: target.status,
@@ -341,9 +491,32 @@ export class NetworkSettingsService {
     const currentRecipient: NetworkSettingsRecipient = snapshot.recipient;
     if (
       currentRecipient.revision !== recipient.revision ||
-      currentRecipient.stopWordsRevision !== recipient.stopWordsRevision
+      currentRecipient.stopWordsRevision !== recipient.stopWordsRevision ||
+      currentRecipient.rulesRevision !== recipient.rulesRevision ||
+      currentRecipient.messageRetentionRevision !== recipient.messageRetentionRevision ||
+      currentRecipient.advertisingRevision !== recipient.advertisingRevision
     )
       throw changed();
+    let impact: NetworkNavigationAllowlistImpact | undefined;
+    if (request.navigationAllowlist) {
+      if (!recipient.navigationAllowlistWitness) throw changed();
+      impact = await this.allowlist.validate(
+        recipient.entityId,
+        request.navigationAllowlist,
+        recipient.navigationAllowlistWitness,
+        user.userId,
+      );
+      if (!request.changes.length) {
+        if (options.validateOnly) return impact;
+        return this.allowlist.commitOnly(
+          recipient.entityId,
+          recipient,
+          request.navigationAllowlist,
+          user.userId,
+          options,
+        );
+      }
+    }
     const next = buildNetworkSettingsPatch(
       snapshot.value,
       request.entityType,
@@ -351,6 +524,85 @@ export class NetworkSettingsService {
       request.changes,
     );
     if (request.entityType === 'chat') {
+      if (request.section === 'messageRetention') {
+        if (!this.retention || recipient.messageRetentionRevision === undefined) throw changed();
+        return this.retention
+          .update(
+            recipient.entityId,
+            user,
+            {
+              ...(next as unknown as { messageRetention: object }).messageRetention,
+              expectedRevision: recipient.messageRetentionRevision,
+            },
+            options,
+          )
+          .then(() => undefined);
+      }
+      if (request.section === 'advertising') {
+        if (!this.advertising || recipient.advertisingRevision === undefined) throw changed();
+        return this.advertising
+          .update(
+            recipient.entityId,
+            user,
+            {
+              ...(next as unknown as { advertising: object }).advertising,
+              revision: recipient.advertisingRevision,
+            },
+            options,
+          )
+          .then(() => undefined);
+      }
+      if (request.section === 'rules') {
+        if (recipient.rulesRevision === undefined) throw changed();
+        let draft = (next as unknown as { rules: ChatRules }).rules;
+        const generate = request.changes.some(
+          (change) =>
+            change.path === 'rules.autoTextEnabled' && change.op === 'set' && change.value === true,
+        );
+        if (generate) {
+          if (
+            !recipient.rulesContextDigest ||
+            currentRecipient.rulesContextDigest !== recipient.rulesContextDigest
+          )
+            throw changed();
+          const text = await this.settings.buildNetworkRulesText(recipient.entityId, user);
+          if (digest(text) !== recipient.rulesContextDigest) throw changed();
+          draft = { ...draft, text, textFormat: 'plain' };
+        }
+        validateChatRulesDraft(draft);
+        return this.settings
+          .updateNetworkChatSettings(recipient.entityId, user, next as ChatSettings, {
+            ...options,
+            authoredKeys: request.changes.some(
+              (change) => change.path === 'rulesAttachViolationsEnabled',
+            )
+              ? ['rulesAttachViolationsEnabled']
+              : [],
+            beforeWrite: async (tx) => {
+              await options.beforeWrite?.(tx);
+              if (generate) {
+                if (!recipient.navigationAllowlistWitness) throw changed();
+                await this.allowlist.assertWitnessInTransaction(
+                  tx,
+                  recipient.entityId,
+                  recipient.navigationAllowlistWitness,
+                );
+              }
+              await writeNetworkChatRulesDraft(
+                tx,
+                recipient.entityId,
+                user.userId,
+                draft,
+                recipient.rulesRevision!,
+                [
+                  ...request.changes.map((change) => change.path),
+                  ...(generate ? ['rules.text', 'rules.textFormat'] : []),
+                ],
+              );
+            },
+          })
+          .then(() => undefined);
+      }
       if (request.section === 'stopWords')
         return this.stopWords.updateNetworkSettings(
           recipient.entityId,
@@ -360,12 +612,30 @@ export class NetworkSettingsService {
           String(recipient.revision),
           options,
         );
-      return this.settings.updateNetworkChatSettings(
+      await this.settings.updateNetworkChatSettings(
         recipient.entityId,
         user,
         next as ChatSettings,
-        { ...options, authoredKeys: networkSettingsAuthoredKeys(request.changes) },
+        {
+          ...options,
+          authoredKeys: networkSettingsAuthoredKeys(request.changes),
+          ...(request.navigationAllowlist && !options.validateOnly
+            ? {
+                beforeWrite: async (tx: Prisma.TransactionClient) => {
+                  impact = await this.allowlist.planInTransaction(
+                    tx,
+                    recipient.entityId,
+                    request.navigationAllowlist!,
+                    recipient.navigationAllowlistWitness!,
+                    user.userId,
+                    false,
+                  );
+                },
+              }
+            : {}),
+        },
       );
+      return impact;
     }
     if (request.section === 'postSignature')
       return this.signatures.updateSettings(
@@ -383,9 +653,8 @@ export class NetworkSettingsService {
         options,
       );
     if (
-      request.section === 'comments'
-        ? (next as ChannelSettings).commentsEnabled
-        : (next as ChannelSettings).quickButtonsEnabled
+      (request.section === 'comments' && (next as ChannelSettings).commentsEnabled) ||
+      (request.section === 'quickButtons' && (next as ChannelSettings).quickButtonsEnabled)
     )
       await this.signatures.assertNetworkSettingsEditingAccess(recipient.entityId);
     return this.settings.updateNetworkChannelSettings(
@@ -454,6 +723,7 @@ export class NetworkSettingsService {
         where: { id: operationId },
       });
       const stored = operation.payload as unknown as StoredPayload;
+      assertOperationReader(stored);
       const request = networkSettingsPreviewRequestSchema.parse(stored.request);
       const user: AuthUser = { userId: operation.actorUserId, username: null, displayName: null };
       const preflight = operation.status !== 'RUNNING';
@@ -482,7 +752,7 @@ export class NetworkSettingsService {
         if (target.status !== 'COMMITTED') {
           const recipient = request.recipients.find((item) => item.entityId === target.entityId)!;
           try {
-            await this.writeOne(
+            const impact = await this.writeOne(
               user,
               request,
               recipient,
@@ -513,6 +783,32 @@ export class NetworkSettingsService {
             );
             if (preflight)
               await this.withLease(operationId, leaseToken, operation.status, async (tx) => {
+                if (
+                  request.navigationAllowlist &&
+                  operation.status === 'PREVIEWING' &&
+                  impact &&
+                  'entityId' in impact
+                ) {
+                  const current = await tx.networkSettingsOperation.findUniqueOrThrow({
+                    where: { id: operationId },
+                  });
+                  const payload = current.payload as unknown as StoredPayload;
+                  const impacts = [
+                    ...(payload.navigationAllowlistImpacts ?? []).filter(
+                      (row) => row.entityId !== target.entityId,
+                    ),
+                    impact as NetworkNavigationAllowlistImpact,
+                  ];
+                  await tx.networkSettingsOperation.update({
+                    where: { id: operationId },
+                    data: {
+                      payload: {
+                        ...payload,
+                        navigationAllowlistImpacts: impacts,
+                      } as unknown as Prisma.InputJsonValue,
+                    },
+                  });
+                }
                 await tx.networkSettingsOperationTarget.updateMany({
                   where: { operationId, entityId: target.entityId, status: from },
                   data: { status: operation.status === 'PREVIEWING' ? 'VALIDATED' : 'AUTHORIZED' },
@@ -528,6 +824,20 @@ export class NetworkSettingsService {
                   ? 'INVALID'
                   : 'TRANSIENT';
             await this.withLease(operationId, leaseToken, operation.status, async (tx) => {
+              if (preflight) {
+                // FLAG: Preflight may settle only proven-unwritten targets. Committed receipts
+                // and unknown states keep the operation unsettled for compatible recovery.
+                const uncertain = await tx.networkSettingsOperationTarget.count({
+                  where: {
+                    operationId,
+                    OR: [
+                      { status: { notIn: ['PENDING', 'VALIDATED', 'AUTHORIZED', 'FAILED'] } },
+                      { committedRevision: { not: null } },
+                    ],
+                  },
+                });
+                if (uncertain) throw changed();
+              }
               await tx.networkSettingsOperationTarget.updateMany({
                 where: { operationId, entityId: target.entityId, status: from },
                 data: {
@@ -537,11 +847,21 @@ export class NetworkSettingsService {
                     'Настройки не применены. Обновите экран и проверьте доступ и значения.',
                 },
               });
-              if (preflight)
+              if (preflight) {
+                await tx.networkSettingsOperationTarget.updateMany({
+                  where: { operationId, status: { in: ['PENDING', 'VALIDATED', 'AUTHORIZED'] } },
+                  data: {
+                    status: 'FAILED',
+                    failureCode: 'PREFLIGHT_ABORTED',
+                    failureMessage:
+                      'Проверка сетки остановлена. Настройки не изменены; проверьте сетку заново.',
+                  },
+                });
                 await tx.networkSettingsOperation.update({
                   where: { id: operationId },
                   data: { status: 'FAILED' },
                 });
+              }
             });
             if (preflight) return;
           }
@@ -592,7 +912,15 @@ export class NetworkSettingsService {
               where: { id: operationId },
               data: {
                 status: operation.status === 'PREVIEWING' ? 'PREPARED' : 'RUNNING',
-                payload: { request, expiresAt } as unknown as Prisma.InputJsonValue,
+                payload: {
+                  ...((
+                    await tx.networkSettingsOperation.findUniqueOrThrow({
+                      where: { id: operationId },
+                    })
+                  ).payload as unknown as StoredPayload),
+                  request,
+                  expiresAt,
+                } as unknown as Prisma.InputJsonValue,
               },
             });
           } else {

@@ -16,6 +16,8 @@ export const networkMetricCoverageSchema = z.object({
   includedEntities: z.number().int().nonnegative(),
   totalEntities: z.number().int().nonnegative(),
   observedFrom: z.string().datetime().nullable(),
+  // FLAG: Each metric owns its observation bound. This is neither response time nor
+  // another metric's poll/heartbeat and does not establish continuous delivery.
   asOf: z.string().datetime().nullable(),
 });
 export type NetworkMetricCoverage = z.infer<typeof networkMetricCoverageSchema>;

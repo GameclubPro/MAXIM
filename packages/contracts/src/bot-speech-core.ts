@@ -1,8 +1,21 @@
 import { z } from 'zod';
+import {
+  BOT_SPEECH_STYLE_VALUES,
+  botSpeechStyleSchema,
+  BOT_SPEECH_EDITABLE_FIELD_KEYS,
+  type BotSpeechStyle,
+  type BotSpeechSettingsSubset,
+} from './bot-speech-fields.js';
+export {
+  BOT_SPEECH_STYLE_VALUES,
+  botSpeechStyleSchema,
+  BOT_SPEECH_EDITABLE_FIELD_KEYS,
+  type BotSpeechStyle,
+  type BotSpeechEditableFieldKey,
+  type BotSpeechSettingsSubset,
+  type BotSpeechMediaFieldKey,
+} from './bot-speech-fields.js';
 
-export const BOT_SPEECH_STYLE_VALUES = ['ROBOT', 'FRIENDLY', 'POLICE', 'IRONIC'] as const;
-export const botSpeechStyleSchema = z.enum(BOT_SPEECH_STYLE_VALUES);
-export type BotSpeechStyle = z.infer<typeof botSpeechStyleSchema>;
 export const updateBotSpeechStyleRequestSchema = z
   .object({ botSpeechStyle: botSpeechStyleSchema })
   .strict();
@@ -23,32 +36,6 @@ export const DEFAULT_BOT_SPEECH_PREVIEW_PROFILE: BotSpeechPreviewProfile = {
   persona: 'neutral',
   characterName: 'Чат-бот',
 };
-
-export const BOT_SPEECH_EDITABLE_FIELD_KEYS = [
-  'greetingBotMessageText',
-  'linkBotMessageText',
-  'linkWarnMessageText',
-  'requiredSubscriptionBotMessageText',
-  'requiredSubscriptionWarnMessageText',
-  'invitationAccessBotMessageText',
-  'invitationAccessWarnMessageText',
-  'textFiltersBotMessageText',
-  'profanityBotMessageText',
-  'textFiltersWarnMessageText',
-  'profanityWarnMessageText',
-  'duplicateBotMessageText',
-  'messageLimitsBotMessageText',
-  'messageLimitsWarnMessageText',
-  'phoneNumbersBotMessageText',
-  'nightModeBotMessageText',
-  'nightModeOpenMessageText',
-] as const;
-export type BotSpeechEditableFieldKey = (typeof BOT_SPEECH_EDITABLE_FIELD_KEYS)[number];
-export type BotSpeechSettingsSubset = {
-  botSpeechStyle: BotSpeechStyle | null;
-} & Record<BotSpeechEditableFieldKey, string>;
-
-export type BotSpeechMediaFieldKey = BotSpeechEditableFieldKey;
 
 export const BOT_SPEECH_SYSTEM_TEMPLATE_KEYS = [
   'linkEdited',

@@ -81,6 +81,7 @@ import {
 import { createPreviewVkParsingFeed } from './preview-transport-vk';
 
 export type PreviewState = {
+  networksScenario: string;
   retentionScenario: string;
   stopWordsWriteError: 'network' | 'conflict' | null;
   advertisingPilot: boolean;
@@ -839,6 +840,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
   };
 
   const state: PreviewState = {
+    networksScenario: searchParams.get('networksScenario') ?? 'normal',
     retentionScenario: searchParams.get('retentionScenario') ?? 'normal',
     stopWordsWriteError:
       searchParams.get('stopWordsWriteError') === 'network'
@@ -864,6 +866,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
             ? 'https://max.ru/id613070470872_6_bot'
             : 'https://max.ru/id613070470872_9_bot',
       canAccessSystem: !publisherProfile,
+      networksEnabled: !publisherProfile && searchParams.get('networks') === '1',
       profile: publisherProfile ? 'publisher' : 'moderation',
       capabilities: publisherProfile
         ? ['publisher_workspace', 'publisher_entities', 'chat_comments', 'publisher_policy_write']

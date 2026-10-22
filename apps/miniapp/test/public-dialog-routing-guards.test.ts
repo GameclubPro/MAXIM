@@ -18,12 +18,22 @@ test('only managed settings and statistics routes can update last-managed state'
   assert.equal(isManagedEntityWorkspacePath('/chat/chat-a/events'), true);
   assert.equal(isManagedEntityWorkspacePath('/channel/channel-a/settings'), true);
   assert.equal(isManagedEntityWorkspacePath('/channel/channel-a/stats'), true);
+  assert.equal(isManagedEntityWorkspacePath('/networks/chat/settings'), true);
+  assert.equal(isManagedEntityWorkspacePath('/networks/chat/settings/links'), true);
+  assert.equal(isManagedEntityWorkspacePath('/networks/channel/settings/'), true);
+  assert.equal(isManagedEntityWorkspacePath('/networks/channel/settings/comments'), true);
 
   assert.equal(isManagedEntityWorkspacePath('/chat/public-b/dialog/comments'), false);
   assert.equal(isManagedEntityWorkspacePath('/channel/public-b/dialog/comments'), false);
   assert.equal(isManagedEntityWorkspacePath('/channel/public-b/dialog/suggest'), false);
   assert.equal(isManagedEntityWorkspacePath('/chat/chat-a/stats'), false);
   assert.equal(isManagedEntityWorkspacePath('/channel/channel-a/events'), false);
+  assert.equal(isManagedEntityWorkspacePath('/networks'), false);
+  assert.equal(isManagedEntityWorkspacePath('/networks/chat'), false);
+  assert.equal(isManagedEntityWorkspacePath('/networks/chat/stats'), false);
+  assert.equal(isManagedEntityWorkspacePath('/networks/user/settings'), false);
+  assert.equal(isManagedEntityWorkspacePath('/networks/chat/settings/links/extra'), false);
+  assert.equal(isManagedEntityWorkspacePath('/networks/channel/dialog/comments'), false);
 
   assert.match(
     shellSource,

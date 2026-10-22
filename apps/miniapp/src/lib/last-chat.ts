@@ -95,7 +95,8 @@ export function buildManagedEntitiesRoute(entityType: LastEntityType): string {
 export function isManagedEntityWorkspacePath(pathname: string): boolean {
   return (
     /^\/chat\/[^/]+\/(?:settings|events)\/?$/u.test(pathname) ||
-    /^\/channel\/[^/]+\/(?:settings|stats)\/?$/u.test(pathname)
+    /^\/channel\/[^/]+\/(?:settings|stats)\/?$/u.test(pathname) ||
+    /^\/networks\/(?:chat|channel)\/settings(?:\/[^/]+)?\/?$/u.test(pathname)
   );
 }
 

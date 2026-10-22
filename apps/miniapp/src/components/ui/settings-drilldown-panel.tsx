@@ -14,6 +14,7 @@ import { cn } from '../../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { useKeyboardOpen } from '../../lib/use-keyboard-open';
+import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';
 
 const LazyActionConfirmSheet = lazy(() =>
   import('./action-confirm-sheet').then((module) => ({ default: module.ActionConfirmSheet })),
@@ -161,6 +162,7 @@ function SettingsDrilldownPanelContent({
   const panelRef = useRef<HTMLElement | null>(null);
   const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
   const isKeyboardOpen = useKeyboardOpen(120, open);
+  const overlayStyle = useVisualViewportOverlayStyle(open);
   useDialogFocusTrap(open, panelRef, initialFocusRef ?? panelRef);
 
   const requestClose = useCallback(() => {
@@ -244,6 +246,7 @@ function SettingsDrilldownPanelContent({
             overlayClassName,
           )}
           aria-hidden={!open}
+          style={overlayStyle}
         >
           <button
             ref={backdropRef}

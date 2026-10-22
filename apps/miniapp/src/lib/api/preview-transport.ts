@@ -23,6 +23,18 @@ export type { PreviewApiTransportOptions, PreviewClock } from './preview-transpo
 
 export const PREVIEW_REQUEST_HANDLERS: readonly PreviewRequestHandler[] = [
   async (context) => {
+    if (
+      context.segments[0] !== 'networks' &&
+      !(
+        context.segments[0] === 'managed-entities' &&
+        (context.segments[1] === 'networks' || context.segments[3] === 'favorites')
+      )
+    )
+      return PREVIEW_NOT_HANDLED;
+    const { handleNetworksPreviewRequest } = await import('./preview-transport-networks');
+    return handleNetworksPreviewRequest(context);
+  },
+  async (context) => {
     if (context.segments[0] !== 'marketplace') return PREVIEW_NOT_HANDLED;
     const { handleMarketplacePreviewRequest } = await import('./preview-transport-marketplace');
     return handleMarketplacePreviewRequest(context);
