@@ -26,24 +26,39 @@ const timestamp = new Intl.DateTimeFormat('ru-RU', {
 export function formatNetworkMetric(value: number | null, signed = false): string {
   return value == null ? '—' : `${signed && value > 0 ? '+' : ''}${number.format(value)}`;
 }
-function Coverage({ value, growth = false }: { value: NetworkMetricCoverage; growth?: boolean }) {
+function Coverage({
+  value,
+  growth = false,
+  sharedCoverage = false,
+  sharedFreshness = false,
+}: {
+  value: NetworkMetricCoverage;
+  growth?: boolean;
+  sharedCoverage?: boolean;
+  sharedFreshness?: boolean;
+}) {
+  if (sharedCoverage && sharedFreshness) return null;
   return (
     <div className="network-metric-coverage">
-      <span className={`network-coverage-badge is-${value.status}`}>
-        {value.status === 'unavailable'
-          ? 'Нет наблюдений'
-          : value.includedEntities < value.totalEntities
-            ? `По ${number.format(value.includedEntities)} из ${number.format(value.totalEntities)}`
-            : value.status === 'partial'
-              ? growth
-                ? 'История может быть неполной'
-                : 'Есть пропуски'
-              : `По ${number.format(value.includedEntities)} сообществам`}
-      </span>
-      <small>
-        {growth ? 'Последние наблюдения' : 'Обновлено'}:{' '}
-        {value.asOf ? `${timestamp.format(new Date(value.asOf))} МСК` : 'нет даты'}
-      </small>
+      {!sharedCoverage ? (
+        <span className={`network-coverage-badge is-${value.status}`}>
+          {value.status === 'unavailable'
+            ? 'Нет наблюдений'
+            : value.includedEntities < value.totalEntities
+              ? `По ${number.format(value.includedEntities)} из ${number.format(value.totalEntities)}`
+              : value.status === 'partial'
+                ? growth
+                  ? 'История может быть неполной'
+                  : 'Есть пропуски'
+                : `Учтено: ${number.format(value.includedEntities)} из ${number.format(value.totalEntities)}`}
+        </span>
+      ) : null}
+      {!sharedFreshness ? (
+        <small>
+          {growth ? 'Последние наблюдения' : 'Обновлено'}:{' '}
+          {value.asOf ? `${timestamp.format(new Date(value.asOf))} МСК` : 'нет даты'}
+        </small>
+      ) : null}
     </div>
   );
 }
@@ -51,10 +66,14 @@ function Metric({
   label,
   metric,
   growth = false,
+  sharedCoverage = false,
+  sharedFreshness = false,
 }: {
   label: string;
   metric: NetworkStatisticsResponse['audience'];
   growth?: boolean;
+  sharedCoverage?: boolean;
+  sharedFreshness?: boolean;
 }) {
   return (
     <article className="network-detail-metric">
@@ -66,7 +85,12 @@ function Metric({
       >
         {formatNetworkMetric(metric.value, growth)}
       </strong>
-      <Coverage value={metric.coverage} growth={growth} />
+      <Coverage
+        value={metric.coverage}
+        growth={growth}
+        sharedCoverage={sharedCoverage}
+        sharedFreshness={sharedFreshness}
+      />
     </article>
   );
 }
@@ -171,11 +195,7 @@ function GrowthChart({
                 {date.format(new Date(selected.at))} ·{' '}
                 {formatNetworkMetric(selected.netGrowth, true)}
               </strong>
-              <span>
-                {selected.netGrowth === null
-                  ? 'Нет наблюдений о приросте'
-                  : 'Наблюдаемый прирост; полнота истории за день не подтверждена.'}
-              </span>
+              {selected.netGrowth === null ? <span>Нет наблюдений о приросте</span> : null}
               {entityType === 'channel' ? (
                 <span>
                   Просмотры: {formatNetworkMetric(selected.viewsGained)}
@@ -251,7 +271,7 @@ export function NetworkStatisticsView({
             ? 'Не удалось загрузить статистику'
             : state.phase === 'stale'
               ? 'Состав сетки изменился'
-              : 'Собираем общую картину'}
+              : 'Загружаем статистику'}
         </strong>
         <p>
           {state.phase === 'error' || state.phase === 'stale'
@@ -266,6 +286,17 @@ export function NetworkStatisticsView({
         ) : null}
       </div>
     );
+  const coverages = [data.audience.coverage, data.netGrowth.coverage];
+  if (entityType === 'channel' && data.viewsGained) coverages.push(data.viewsGained.coverage);
+  const sharedCoverage = coverages.every(
+    (coverage) =>
+      coverage.status === 'ready' &&
+      coverage.includedEntities === data.audience.coverage.includedEntities &&
+      coverage.totalEntities === data.audience.coverage.totalEntities,
+  );
+  const sharedAsOf = coverages.every((coverage) => coverage.asOf === data.audience.coverage.asOf)
+    ? data.audience.coverage.asOf
+    : null;
   return (
     <div
       className={`network-statistics-view ${className ?? ''}`}
@@ -291,15 +322,41 @@ export function NetworkStatisticsView({
           Эти сообщества не включены в показатели.
         </p>
       ) : null}
+      {sharedCoverage || sharedAsOf ? (
+        <div className="network-statistics-summary">
+          {sharedCoverage ? (
+            <span>
+              Сообщества: {number.format(data.audience.coverage.includedEntities)} из{' '}
+              {number.format(data.audience.coverage.totalEntities)}
+            </span>
+          ) : null}
+          {sharedAsOf ? (
+            <span>Наблюдения: {timestamp.format(new Date(sharedAsOf))} МСК</span>
+          ) : null}
+        </div>
+      ) : null}
       <div className={`network-detail-metrics ${entityType === 'channel' ? 'has-views' : ''}`}>
-        <Metric label={entityType === 'chat' ? 'Участники' : 'Подписчики'} metric={data.audience} />
+        <Metric
+          label={entityType === 'chat' ? 'Участники' : 'Подписчики'}
+          metric={data.audience}
+          sharedCoverage={sharedCoverage}
+          sharedFreshness={Boolean(sharedAsOf)}
+        />
         <Metric
           label={`Прирост · ${range === '7d' ? 7 : 30} дней`}
           metric={data.netGrowth}
           growth
+          sharedCoverage={sharedCoverage}
+          sharedFreshness={Boolean(sharedAsOf)}
         />
         {entityType === 'channel' && data.viewsGained ? (
-          <Metric label="Прирост просмотров" metric={data.viewsGained} growth />
+          <Metric
+            label="Прирост просмотров"
+            metric={data.viewsGained}
+            growth
+            sharedCoverage={sharedCoverage}
+            sharedFreshness={Boolean(sharedAsOf)}
+          />
         ) : null}
       </div>
       <GrowthChart

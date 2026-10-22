@@ -32,15 +32,6 @@ export const NETWORK_CHAT_SETTINGS_SECTIONS = [
       'settings-drilldown__panel--campaign settings-drilldown__panel--rules settings-drilldown__panel--broadcast-screen settings-drilldown__panel--rules-screen',
   },
   {
-    section: 'messageRetention',
-    title: 'Удаление старых сообщений',
-    icon: 'clock',
-    tone: 'sky',
-    order: 15,
-    plainEntry: true,
-    panelClassName: 'message-retention-panel',
-  },
-  {
     section: 'advertising',
     entryVariant: 'list',
     title: 'Рекламная площадка',
@@ -79,6 +70,7 @@ export const NETWORK_CHAT_SETTINGS_SECTIONS = [
   },
   {
     section: 'requiredSubscription',
+    entryClassName: 'settings-home-entry--wide',
     entryVariant: 'priority',
     title: 'Подписка',
     icon: 'subscription',
@@ -129,7 +121,17 @@ export const NETWORK_CHAT_SETTINGS_SECTIONS = [
     panelClassName: 'settings-drilldown__panel--ladder settings-drilldown__panel--duplicates',
   },
   {
+    section: 'messageRetention',
+    title: 'Удаление старых сообщений',
+    icon: 'clock',
+    tone: 'sky',
+    order: 15,
+    plainEntry: true,
+    panelClassName: 'message-retention-panel',
+  },
+  {
     section: 'night',
+    entryClassName: 'settings-home-entry--wide',
     title: 'Ночной режим',
     icon: 'moon',
     tone: 'ink',

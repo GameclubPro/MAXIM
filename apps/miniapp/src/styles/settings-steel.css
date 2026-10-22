@@ -284,25 +284,14 @@
     opacity: 0.65;
   }
 
-  body[data-miniapp-profile='moderation'].settings-home-page-open
-    .settings-home-entry:has(
-      :is(
-        [aria-controls='settings-required-subscription-content'],
-        [aria-controls='settings-night-content']
-      )
-    ),
+  body[data-miniapp-profile='moderation'].settings-home-page-open .settings-home-entry--wide,
   body[data-miniapp-profile='moderation'].channel-settings-page-open .channel-post-signature-entry {
     grid-column: 1 / -1;
     min-height: 62px;
   }
 
   body[data-miniapp-profile='moderation'].settings-home-page-open
-    .settings-home-entry:has(
-      :is(
-        [aria-controls='settings-required-subscription-content'],
-        [aria-controls='settings-night-content']
-      )
-    )
+    .settings-home-entry--wide
     > .settings-section__head
     > .settings-section__toggle,
   body[data-miniapp-profile='moderation'].channel-settings-page-open
@@ -318,44 +307,20 @@
   }
 
   body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
-    :is(
-      .settings-home-entry:has(
-        :is(
-          [aria-controls='settings-required-subscription-content'],
-          [aria-controls='settings-night-content']
-        )
-      ),
-      .channel-post-signature-entry
-    )
+    :is(.settings-home-entry--wide, .channel-post-signature-entry)
     .settings-section__toggle-main {
     grid-area: 1 / 2;
   }
 
   body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
-    :is(
-      .settings-home-entry:has(
-        :is(
-          [aria-controls='settings-required-subscription-content'],
-          [aria-controls='settings-night-content']
-        )
-      ),
-      .channel-post-signature-entry
-    )
+    :is(.settings-home-entry--wide, .channel-post-signature-entry)
     .settings-section__state {
     grid-area: 1 / 3;
     align-self: center;
   }
 
   body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
-    :is(
-      .settings-home-entry:has(
-        :is(
-          [aria-controls='settings-required-subscription-content'],
-          [aria-controls='settings-night-content']
-        )
-      ),
-      .channel-post-signature-entry
-    )
+    :is(.settings-home-entry--wide, .channel-post-signature-entry)
     .settings-section__chevron {
     grid-area: 1 / 4;
   }

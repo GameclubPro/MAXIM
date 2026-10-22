@@ -89,6 +89,8 @@ import {
 } from './home-refresh-cooldown';
 import './chats-page.css';
 import './chats-page-native.css';
+import '../styles/moderation-catalogue-palette.css';
+import '../styles/moderation-catalogue-steel.css';
 import './chats-page-signal.css';
 
 type ManagedTab = 'chat' | 'channel';

@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import type { ManagedEntityFavoriteType, ManagedEntityType } from '@maxim/contracts';
-import { AppIcon } from '../../components/ui/app-icon';
+import { CompactStickyHeader } from '../../components/ui/compact-sticky-header';
 import { useHomeEntityFavorites } from '../../lib/home-entity-favorites-context';
 import { HOME_ENTITY_FAVORITE_TYPES } from '../../lib/home-entity-favorites';
 import { useNativeBackHandler } from '../../lib/native-back';
-import { formatNetworkEntityCount, networkCategoryIcons } from './network-identity';
+import { useAutoHideHeader } from '../../lib/use-auto-hide-header';
+import { formatNetworkEntityCount, NetworkCategoryIcon } from './network-identity';
+import '../../components/ui/managed-entity-workspace-tokens.css';
+import '../../components/ui/managed-entity-settings-header.css';
 import './network-workspace.css';
 
 export type NetworkWorkspaceTab = 'overview' | 'settings' | 'communities';
@@ -40,15 +43,7 @@ export function NetworkWorkspaceTabs({
     </nav>
   );
 }
-export function NetworkWorkspaceHeader({
-  entityType,
-  favoriteType,
-  count,
-  title,
-  onBack,
-  onPick,
-  backLabel = 'Все сетки',
-}: {
+type NetworkWorkspaceHeaderProps = {
   entityType: ManagedEntityType;
   favoriteType?: ManagedEntityFavoriteType;
   count?: number;
@@ -56,16 +51,37 @@ export function NetworkWorkspaceHeader({
   onBack: () => void;
   onPick: (type: ManagedEntityType, category: ManagedEntityFavoriteType) => void;
   backLabel?: string;
-}) {
+};
+
+export function NetworkWorkspaceHeader(props: NetworkWorkspaceHeaderProps) {
+  return (
+    <NetworkWorkspaceIdentity
+      key={`${props.entityType}:${props.favoriteType ?? 'selected'}`}
+      {...props}
+    />
+  );
+}
+
+function NetworkWorkspaceIdentity({
+  entityType,
+  favoriteType,
+  count,
+  title,
+  onBack,
+  onPick,
+  backLabel = 'Все сетки',
+}: NetworkWorkspaceHeaderProps) {
   const navigate = useNavigate();
   const { snapshot, actions } = useHomeEntityFavorites();
   const [rename, setRename] = useState<{
+    favoriteType: ManagedEntityFavoriteType;
     value: string;
     base: typeof snapshot.labels.overrides;
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { isCompact } = useAutoHideHeader();
   useNativeBackHandler(
     () => {
       if (!busy) setRename(null);
@@ -82,13 +98,13 @@ export function NetworkWorkspaceHeader({
   );
   const label = favoriteType ? snapshot.labels.resolved[favoriteType] : title;
   const saveName = async () => {
-    if (!rename || !favoriteType || busy || !rename.value.trim()) return;
+    if (!rename || busy || !rename.value.trim()) return;
     setBusy(true);
     setError(null);
     try {
       await actions.saveLabels({
         baseLabels: rename.base,
-        draftLabels: { ...rename.base, [favoriteType]: rename.value.trim() },
+        draftLabels: { ...rename.base, [rename.favoriteType]: rename.value.trim() },
       });
       setRename(null);
     } catch {
@@ -97,88 +113,109 @@ export function NetworkWorkspaceHeader({
       setBusy(false);
     }
   };
+  const pick = (type: ManagedEntityType, category: ManagedEntityFavoriteType) => {
+    setMenuOpen(false);
+    setRename(null);
+    setError(null);
+    onPick(type, category);
+  };
   return (
     <div className="network-workspace-identity">
-      <header className="network-workspace-heading">
-        <button
-          type="button"
-          className="network-workspace-back"
-          aria-label={backLabel}
-          onClick={onBack}
-        >
-          <AppIcon icon="NavArrowLeft" />
-        </button>
-        <span className="network-workspace-icon">
-          <AppIcon icon={favoriteType ? networkCategoryIcons[favoriteType] : 'Group'} />
-        </span>
-        <div>
-          <h1>{label}</h1>
-          <p>
-            {count === undefined
-              ? entityType === 'chat'
-                ? 'Сетка чатов'
-                : 'Сетка каналов'
-              : formatNetworkEntityCount(count, entityType)}
-          </p>
-        </div>
-        {favoriteType ? (
-          <details
-            className="network-workspace-menu"
-            open={menuOpen}
-            onToggle={(event) => setMenuOpen(event.currentTarget.open)}
+      <CompactStickyHeader
+        backTo={`/networks?type=${entityType}`}
+        backLabel={backLabel}
+        onBack={onBack}
+        title={label}
+        subtitle={
+          count === undefined
+            ? entityType === 'chat'
+              ? 'Сетка чатов'
+              : 'Сетка каналов'
+            : formatNetworkEntityCount(count, entityType)
+        }
+        avatar={
+          <span
+            className="network-workspace-icon compact-page-header__entity-avatar"
+            data-network-category={favoriteType}
+            aria-hidden
           >
-            <summary aria-label="Выбрать сетку и действия">
-              <AppIcon icon="NavArrowRight" />
-            </summary>
-            <div>
-              <label>
-                Тип{' '}
-                <select
-                  aria-label="Тип сетки"
-                  value={entityType}
-                  onChange={(event) =>
-                    onPick(event.target.value as ManagedEntityType, favoriteType)
-                  }
+            <NetworkCategoryIcon favoriteType={favoriteType} />
+          </span>
+        }
+        compact={isCompact}
+        className="managed-entity-workspace-header managed-entity-workspace-header--settings network-workspace-heading"
+        aside={
+          favoriteType ? (
+            <details
+              className="network-workspace-menu"
+              open={menuOpen}
+              onToggle={(event) => setMenuOpen(event.currentTarget.open)}
+            >
+              <summary aria-label="Выбрать сетку и действия" aria-expanded={menuOpen}>
+                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden focusable="false">
+                  <circle cx="5" cy="12" r="1.8" fill="currentColor" />
+                  <circle cx="12" cy="12" r="1.8" fill="currentColor" />
+                  <circle cx="19" cy="12" r="1.8" fill="currentColor" />
+                </svg>
+              </summary>
+              <div>
+                <label>
+                  Тип{' '}
+                  <select
+                    aria-label="Тип сетки"
+                    value={entityType}
+                    onChange={(event) =>
+                      pick(event.target.value as ManagedEntityType, favoriteType)
+                    }
+                  >
+                    <option value="chat">Чаты</option>
+                    <option value="channel">Каналы</option>
+                  </select>
+                </label>
+                <label>
+                  Сетка{' '}
+                  <select
+                    aria-label="Переключить сетку"
+                    value={favoriteType}
+                    onChange={(event) =>
+                      pick(entityType, event.target.value as ManagedEntityFavoriteType)
+                    }
+                  >
+                    {HOME_ENTITY_FAVORITE_TYPES.map((type) => (
+                      <option key={type} value={type}>
+                        {snapshot.labels.resolved[type]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setError(null);
+                    setRename({
+                      favoriteType,
+                      value: label,
+                      base: { ...snapshot.labels.overrides },
+                    });
+                  }}
                 >
-                  <option value="chat">Чаты</option>
-                  <option value="channel">Каналы</option>
-                </select>
-              </label>
-              <label>
-                Сетка{' '}
-                <select
-                  aria-label="Переключить сетку"
-                  value={favoriteType}
-                  onChange={(event) =>
-                    onPick(entityType, event.target.value as ManagedEntityFavoriteType)
-                  }
+                  Переименовать
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    navigate(`/networks?type=${entityType}&history=1`);
+                  }}
                 >
-                  {HOME_ENTITY_FAVORITE_TYPES.map((type) => (
-                    <option key={type} value={type}>
-                      {snapshot.labels.resolved[type]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setMenuOpen(false);
-                  setRename({ value: label, base: { ...snapshot.labels.overrides } });
-                }}
-              >
-                Переименовать
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate(`/networks?type=${entityType}&history=1`)}
-              >
-                Последние изменения
-              </button>
-            </div>
-          </details>
-        ) : null}
-      </header>
+                  Последние изменения
+                </button>
+              </div>
+            </details>
+          ) : null
+        }
+      />
       {rename ? (
         <form
           className="network-rename"

@@ -1,13 +1,8 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import type {
-  ManagedEntityFavoriteType,
-  ManagedEntityNetworkCard,
-  ManagedEntityType,
-} from '@maxim/contracts';
+import type { ManagedEntityNetworkCard, ManagedEntityType } from '@maxim/contracts';
 import type { ApiTransport } from '../lib/api/transport';
 import { AppIcon } from '../components/ui/app-icon';
-import type { AppIconName } from '../components/ui/app-icon-names';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { Spinner } from '../components/ui/spinner';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -34,6 +29,9 @@ import {
   NetworkWorkspaceHeader,
   NetworkWorkspaceTabs,
 } from '../features/networks/network-workspace-header';
+import { NetworkCategoryIcon } from '../features/networks/network-identity';
+import '../styles/moderation-catalogue-palette.css';
+import '../styles/moderation-catalogue-steel.css';
 import './networks-page.css';
 
 const NetworkOperationHistory = lazy(async () => ({
@@ -45,14 +43,6 @@ const NetworkStatisticsView = lazy(async () => ({
 const NetworkCompositionSheet = lazy(async () => ({
   default: (await import('../features/networks/network-composition-sheet')).NetworkCompositionSheet,
 }));
-const categoryIcons: Record<ManagedEntityFavoriteType, AppIconName> = {
-  important: 'Star',
-  watch: 'ShieldCheck',
-  broadcast: 'SendDiagonal',
-  test: 'Flask',
-  partner: 'Group',
-  service: 'Wrench',
-};
 const compactNumber = new Intl.NumberFormat('ru-RU', {
   notation: 'compact',
   maximumFractionDigits: 1,
@@ -159,17 +149,18 @@ function SummaryCard({
     >
       <div className="network-summary-card__body">
         <div className="network-summary-card__head">
-          <span className="network-category-icon">
-            <AppIcon icon={categoryIcons[card.favoriteType]} />
-          </span>
-          <div>
-            <h2>
-              <button type="button" className="network-card-title-button" onClick={onOpen}>
-                {card.label}
-              </button>
-            </h2>
-            <small>{formatEntityCount(card.entityCount, type)}</small>
-          </div>
+          <h2>
+            <button type="button" className="network-card-title-button" onClick={onOpen}>
+              <span className="network-category-icon">
+                <NetworkCategoryIcon favoriteType={card.favoriteType} />
+              </span>
+              <span className="network-summary-card__identity">
+                <strong>{card.label}</strong>
+                <small>{formatEntityCount(card.entityCount, type)}</small>
+              </span>
+              <AppIcon icon="NavArrowRight" className="network-card-chevron" />
+            </button>
+          </h2>
         </div>
         <div className="network-summary-card__metrics">
           <Metric
@@ -202,6 +193,10 @@ function SummaryCard({
         ) : null}
       </div>
       <div className="network-summary-card__actions">
+        <button type="button" className="networks-secondary" disabled={stale} onClick={onSettings}>
+          <AppIcon icon="Settings" />
+          Настройки
+        </button>
         <button
           type="button"
           className="networks-secondary network-summary-card__open"
@@ -209,10 +204,6 @@ function SummaryCard({
         >
           <AppIcon icon="StatsUpSquare" />
           Статистика
-        </button>
-        <button type="button" className="networks-primary" disabled={stale} onClick={onSettings}>
-          <AppIcon icon="Settings" />
-          Настройки
         </button>
       </div>
       {(stats.phase === 'error' || stats.phase === 'stale') && stats.error?.retryable !== false ? (
@@ -437,10 +428,13 @@ function NetworkDetail({
         </Suspense>
       ) : (
         <>
-          <div className="network-community-actions">
+          <div className="network-community-heading">
+            <h2>Состав сетки</h2>
             <span className="networks-caption">
               {formatEntityCount(card.entityCount, state.entityType)}
             </span>
+          </div>
+          <div className="network-community-actions">
             <button
               type="button"
               className="networks-secondary"
@@ -470,49 +464,58 @@ function NetworkDetail({
           </label>
           <div className="network-community-list" aria-busy={entries.loading}>
             {entries.items.map((item) => (
-              <div className="network-community-row" key={item.id} data-network-entity-id={item.id}>
+              <button
+                type="button"
+                className="network-community-row"
+                key={item.id}
+                data-network-entity-id={item.id}
+                onClick={() => {
+                  savePosition();
+                  navigate(
+                    buildManagedEntityStatisticsRoute(state.entityType, item.id, {
+                      range: state.range,
+                    }),
+                    {
+                      state: {
+                        chatTitle: item.title,
+                        managedEntityWorkspace: createManagedEntityWorkspaceState({
+                          entityType: state.entityType,
+                          entityId: item.id,
+                          origin: {
+                            locationKey: location.key,
+                            historyIndex: window.history.state?.idx,
+                          },
+                          statsPreference: { range: state.range },
+                        }),
+                      },
+                    },
+                  );
+                }}
+              >
                 <EntityAvatar
                   title={item.title}
                   entityId={item.id}
                   entityType={item.entityType}
                   avatarUrl={item.avatarUrl}
                 />
-                <span className="network-community-row__text">
-                  <button
-                    type="button"
-                    className="networks-text-button"
-                    onClick={() => {
-                      savePosition();
-                      navigate(
-                        buildManagedEntityStatisticsRoute(state.entityType, item.id, {
-                          range: state.range,
-                        }),
-                        {
-                          state: {
-                            chatTitle: item.title,
-                            managedEntityWorkspace: createManagedEntityWorkspaceState({
-                              entityType: state.entityType,
-                              entityId: item.id,
-                              origin: {
-                                locationKey: location.key,
-                                historyIndex: window.history.state?.idx,
-                              },
-                              statsPreference: { range: state.range },
-                            }),
-                          },
-                        },
-                      );
-                    }}
-                  >
-                    {item.title}
-                  </button>
-                </span>
-              </div>
+                <span className="network-community-row__text">{item.title}</span>
+                <AppIcon icon="NavArrowRight" />
+              </button>
             ))}
             {!entries.loading && !entries.error && entries.items.length === 0 ? (
               <div className="networks-empty">
-                <strong>В сетке пока пусто</strong>
-                <p>Отметьте избранное на главной или измените состав здесь.</p>
+                <strong>{memberSearch ? 'Ничего не найдено' : 'В сетке пока пусто'}</strong>
+                {memberSearch ? (
+                  <button
+                    type="button"
+                    className="networks-text-button"
+                    onClick={() => setMemberQuery('')}
+                  >
+                    Сбросить поиск
+                  </button>
+                ) : (
+                  <p>Добавьте {state.entityType === 'chat' ? 'чаты' : 'каналы'} из избранного.</p>
+                )}
               </div>
             ) : null}
             {entries.loading ? (
@@ -562,6 +565,10 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
   const location = useLocation();
   const navigate = useNavigate();
   const { snapshot } = useHomeEntityFavorites();
+  useEffect(() => {
+    document.body.classList.add('networks-page-open');
+    return () => document.body.classList.remove('networks-page-open');
+  }, []);
   const state = useMemo(
     () =>
       readNetworkRoute(location.search, readNetworkViewPreference(snapshot.actor.scope, 'range')),
@@ -730,7 +737,7 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
                       onRoute({ ...state, favoriteType: card.favoriteType, tab: 'communities' })
                     }
                   >
-                    <AppIcon icon={categoryIcons[card.favoriteType]} />
+                    <NetworkCategoryIcon favoriteType={card.favoriteType} />
                     <span>{card.label}</span>
                   </button>
                 ))}

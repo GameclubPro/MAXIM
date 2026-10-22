@@ -21,6 +21,34 @@ const stamp = new Intl.DateTimeFormat('ru-RU', {
 });
 const metric = (value: number | null, signed = false) =>
   value === null ? 'Нет данных' : `${signed && value > 0 ? '+' : ''}${number.format(value)}`;
+function CommunityIdentity({
+  item,
+  entityType,
+  onOpen,
+}: {
+  item: Item;
+  entityType: NetworkStatisticsResponse['entityType'];
+  onOpen?: () => void;
+}) {
+  const identity = (
+    <>
+      <EntityAvatar title={item.title} entityId={item.entityId} entityType={entityType} />
+      <span>{item.title}</span>
+    </>
+  );
+  return onOpen ? (
+    <button
+      type="button"
+      className="network-metrics-row__identity"
+      aria-label={`Открыть статистику: ${item.title}`}
+      onClick={onOpen}
+    >
+      {identity}
+    </button>
+  ) : (
+    <div className="network-metrics-row__identity">{identity}</div>
+  );
+}
 export function selectNetworkStatisticsItems(
   items: readonly Item[],
   view: Pick<View, 'search' | 'sort' | 'missing'>,
@@ -117,19 +145,12 @@ export function NetworkStatisticsCommunities({
             key={item.entityId}
             data-network-entity-id={item.entityId}
           >
-            <EntityAvatar
-              title={item.title}
-              entityId={item.entityId}
+            <CommunityIdentity
+              item={item}
               entityType={data.entityType}
+              onOpen={onOpenCommunity ? () => onOpenCommunity(item.entityId) : undefined}
             />
             <div className="network-metrics-row__body">
-              {onOpenCommunity ? (
-                <button type="button" onClick={() => onOpenCommunity(item.entityId)}>
-                  {item.title}
-                </button>
-              ) : (
-                <strong>{item.title}</strong>
-              )}
               <div className="network-metrics-row__values">
                 <span>
                   {data.entityType === 'chat' ? 'Участники' : 'Подписчики'}{' '}

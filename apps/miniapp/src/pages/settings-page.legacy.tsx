@@ -6083,7 +6083,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             ) : null}
 
             <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+              className="settings-section settings-home-entry settings-home-entry--priority settings-home-entry--wide stagger-in"
               style={{
                 animationDelay: '360ms',
                 order: SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.order,

@@ -1,0 +1,81 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation']:is(.chats-home-page-open, .networks-page-open) {
+    --steel-page: #edf2fa;
+    --steel-panel: #fcfdff;
+    --steel-raised: #ffffff;
+    --steel-inset: #e7edf6;
+    --steel-ink: #15243b;
+    --steel-muted: #5b6b82;
+    --steel-count: #506078;
+    --steel-line: #d9e3f1;
+    --steel-blue: #245fe5;
+    --steel-on-blue: #ffffff;
+    --steel-blue-soft: #e5edfc;
+    --steel-red: #a93245;
+    --steel-glint: #ffffff;
+    --steel-shadow: #16325a16;
+    --steel-head-glow: #b9d0ff6b;
+    --steel-stat-start: #eff4ff;
+    --steel-stat-end: #e7effe;
+    --steel-stat-ink: var(--steel-blue);
+    --steel-scrim: #20395857;
+    --steel-symbol-ink: var(--steel-muted);
+    --steel-symbol-soft: var(--steel-blue-soft);
+    --steel-symbol-bloom: 0%;
+    --steel-blue-lift: color-mix(in srgb, var(--steel-blue) 88%, white);
+    --steel-button-glint: #ffffff60;
+    --steel-button-shadow: color-mix(in srgb, var(--steel-blue) 20%, transparent);
+    --steel-light-core: color-mix(in srgb, var(--steel-blue) 55%, white);
+    --steel-input-shadow: color-mix(in srgb, var(--steel-shadow) 35%, transparent);
+    --steel-row-hover: color-mix(in srgb, var(--steel-blue) 4%, transparent);
+    --steel-avatar-shadow: color-mix(in srgb, var(--steel-shadow) 50%, transparent);
+    --steel-control-shadow: color-mix(in srgb, var(--steel-shadow) 30%, transparent);
+    --steel-stat-border: color-mix(in srgb, var(--steel-blue) 16%, var(--steel-line));
+    background: var(--steel-page);
+    color: var(--steel-ink);
+  }
+  html[data-max-theme='dark']
+    body[data-miniapp-profile='moderation']:is(.chats-home-page-open, .networks-page-open) {
+    --steel-page: #080e19;
+    --steel-panel: #101a2a;
+    --steel-raised: #19263b;
+    --steel-inset: #080f1d;
+    --steel-ink: #eff5ff;
+    --steel-muted: #a4b3cb;
+    --steel-count: var(--steel-muted);
+    --steel-line: #293a53;
+    --steel-blue: #5796ff;
+    --steel-on-blue: #07172f;
+    --steel-blue-soft: #192f50;
+    --steel-red: #d56577;
+    --steel-glint: #c6deff27;
+    --steel-shadow: #00000055;
+    --steel-head-glow: #2457ad3d;
+    --steel-stat-start: #1c3354;
+    --steel-stat-end: #172941;
+    --steel-stat-ink: #6ea6ff;
+    --steel-scrim: #020611a8;
+    --steel-symbol-bloom: 32%;
+  }
+  body[data-miniapp-profile='moderation'].networks-page-open,
+  html[data-max-theme='dark'] body[data-miniapp-profile='moderation'].networks-page-open {
+    --major-page: var(--steel-page);
+    --major-surface: var(--steel-panel);
+    --major-subtle: var(--steel-inset);
+    --major-border: var(--steel-line);
+    --major-ink: var(--steel-ink);
+    --major-muted: var(--steel-muted);
+    --major-accent: var(--steel-blue);
+    --major-accent-soft: var(--steel-blue-soft);
+    --major-on-accent: var(--steel-on-blue);
+    --major-positive: var(--steel-partner-ink);
+    --major-danger: var(--steel-watch-ink);
+    --app-page-background: var(--steel-page);
+    --steel-header-signature: linear-gradient(
+      90deg,
+      var(--steel-blue) 0 62%,
+      transparent 62% 72%,
+      var(--steel-red) 72%
+    );
+  }
+}
