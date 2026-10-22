@@ -27,10 +27,6 @@ function createUnsignedInitData(user, startParam) {
 export async function installMaxBridgeShimInitScript(context, profile, options = {}) {
   await context.addInitScript(
     ({ profile: bridgeProfile, options: bridgeOptions }) => {
-      // Existing-user fixtures keep unrelated screens reachable. First-entry notice checks opt out.
-      if (bridgeOptions.acknowledgeIncidentNotice !== false) {
-        window.localStorage.setItem('maxim:incident:max-2026-10-16:acknowledged:v1', '1');
-      }
       const platform =
         bridgeOptions.platform || (bridgeProfile?.platform === 'ios' ? 'ios' : 'android');
       const colorScheme =
@@ -254,7 +250,6 @@ export async function installMaxBridgeShimInitScript(context, profile, options =
         platform: normalizePlatform(profile),
       },
       options: {
-        acknowledgeIncidentNotice: options.acknowledgeIncidentNotice,
         initData: options.initData || '',
         colorScheme: options.colorScheme || '',
         platform: options.platform || normalizePlatform(profile),
