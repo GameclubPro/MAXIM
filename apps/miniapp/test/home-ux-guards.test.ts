@@ -117,7 +117,7 @@ test('moderation and Publik navigation keep profile-aware publishing labels', ()
   assert.doesNotMatch(shellSource, /bottom-nav__label">\{activityNavLabel\}/u);
   assert.match(
     shellSource,
-    /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute \|\| isNetworksRoute;/u,
+    /const shouldShowBottomNav =\s*isChatsRoute \|\| isPublicationsRoute \|\| isNetworksRoute \|\| isNetworkSettingsHub;/u,
   );
   assert.match(shellSource, /profile === 'publisher' \? '\/'/u);
   assert.match(shellSource, /const isProfileHomeRoute = isChatsRoute;/u);

@@ -1,8 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { ApiTransport } from '../lib/api/transport';
-import { SettingsAdvertisingSoonSection } from './settings/settings-advertising-soon-section';
-import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import { GlassCard } from '../components/ui/glass-card';
 import { SettingsOverviewSearch } from '../components/ui/settings-overview-search';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
@@ -11,7 +9,13 @@ import type { NetworkSettingsSection } from '@maxim/contracts/network-settings-r
 import type { StoredNetworkSettingsScope } from '../lib/network-settings-workspace-state';
 import { useManagedEntityNavigation } from '../lib/managed-entity-navigation';
 import { useNativeBackHandler } from '../lib/native-back';
-import { AppIcon } from '../components/ui/app-icon';
+import {
+  NetworkWorkspaceHeader,
+  NetworkWorkspaceTabs,
+} from '../features/networks/network-workspace-header';
+import { useHomeEntityNetworkCatalogue } from '../lib/home-entity-networks-context';
+import { buildNetworkRoute, readNetworkRoute } from '../features/networks/network-route-state';
+import '../components/ui/managed-entity-workspace-steel.css';
 import './network-settings-page.css';
 import '../styles/settings-home-compact.css';
 import '../styles/settings-home-route-polish.css';
@@ -35,6 +39,17 @@ export function NetworkSettingsOverview({
 }) {
   const { requestNavigation } = useManagedEntityNavigation();
   const { entityType, target } = stored.scope;
+  const catalogue = useHomeEntityNetworkCatalogue(entityType);
+  const card =
+    target.mode === 'category'
+      ? catalogue.cards.find((item) => item.favoriteType === target.favoriteType)
+      : undefined;
+  const route = {
+    ...readNetworkRoute(new URL(stored.returnTo, 'https://miniapp.invalid').search),
+    entityType,
+    favoriteType: target.mode === 'category' ? target.favoriteType : null,
+  };
+
   const advertising = useQuery({
     queryKey: ['advertising-placement-capability', stored.userId],
     enabled: entityType === 'chat',
@@ -66,20 +81,8 @@ export function NetworkSettingsOverview({
   );
   const isChat = entityType === 'chat';
   const containerId = 'network-settings-overview';
-  const statsRoute = new URL(stored.returnTo, 'https://miniapp.invalid');
-  statsRoute.searchParams.set('type', entityType);
-  if (target.mode === 'category') statsRoute.searchParams.set('category', target.favoriteType);
-  statsRoute.searchParams.set('tab', 'overview');
   const sections = getNetworkSettingsSections(entityType).filter(
     (entry) => entry.overview !== false,
-  );
-  const scopeLabel =
-    target.mode === 'category' ? 'Вся сетка' : 'Выбрано: ' + target.entityIds.length;
-  const scopeNote = (
-    <div className="network-settings-scope" role="status">
-      <AppIcon icon="Community" />
-      <span>{scopeLabel}</span>
-    </div>
   );
   const search = (
     <SettingsOverviewSearch
@@ -89,8 +92,7 @@ export function NetworkSettingsOverview({
     />
   );
   const entries = sections.map((entry) => {
-    if (isChat && entry.section === 'advertising' && !advertising.data?.available)
-      return <SettingsAdvertisingSoonSection key={entry.section} />;
+    if (isChat && entry.section === 'advertising' && !advertising.data?.available) return null;
     const head = (
       <div className="settings-section__head settings-section__head--interactive">
         <SettingsSectionToggle
@@ -133,26 +135,42 @@ export function NetworkSettingsOverview({
   return (
     <div
       id={isChat ? undefined : containerId}
-      className={isChat ? 'page-stack page-enter' : 'channel-settings-screen page-enter'}
+      className={
+        (isChat ? 'page-stack page-enter' : 'channel-settings-screen page-enter') +
+        ' network-settings-workspace'
+      }
       data-managed-entity-workspace={isChat ? 'chat-settings' : 'channel-settings'}
       data-network-settings-overview
     >
-      <ManagedEntityWorkspaceHeader
-        entityType={entityType}
-        screen="settings"
+      <NetworkWorkspaceHeader
         title={stored.title}
-        className={
-          isChat ? 'settings-home-sticky-header' : 'channel-settings-screen__sticky-header'
+        entityType={entityType}
+        favoriteType={target.mode === 'category' ? target.favoriteType : undefined}
+        count={target.mode === 'selected' ? target.entityIds.length : card?.entityCount}
+        backLabel="Назад к сетке"
+        onBack={() => requestNavigation(stored.returnTo)}
+        onPick={(type, favoriteType) =>
+          requestNavigation(
+            buildNetworkRoute({ ...route, entityType: type, favoriteType, tab: 'overview' }),
+          )
         }
-        backTo={stored.returnTo}
-        counterpartTo={statsRoute.pathname + statsRoute.search}
       />
-      {isChat ? (
+      <NetworkWorkspaceTabs
+        value="settings"
+        onChange={(tab) => {
+          if (tab !== 'settings') requestNavigation(buildNetworkRoute({ ...route, tab }));
+        }}
+      />
+      {card?.entityCount === 0 ? (
+        <p className="network-settings-editor__status">
+          В сетке пока нет сообществ. Добавьте их в разделе «Состав».
+        </p>
+      ) : null}
+      {card?.entityCount === 0 ? null : isChat ? (
         <section
           className="settings-sections settings-sections--chat-home"
           aria-label="Настройки сетки чатов"
         >
-          {scopeNote}
           {search}
           <div id={containerId} className="settings-sections-shell">
             <div className="settings-home-group-head stagger-in" style={{ order: 10 }}>
@@ -161,14 +179,13 @@ export function NetworkSettingsOverview({
             <div className="settings-home-group-head stagger-in" style={{ order: 20 }}>
               <h2 className="settings-home-group-head__title">Контент</h2>
             </div>
-            {entries}
+            {card?.entityCount !== 0 ? entries : null}
           </div>
         </section>
       ) : (
         <>
-          {scopeNote}
           {search}
-          {entries}
+          {card?.entityCount !== 0 ? entries : null}
         </>
       )}
       {children}

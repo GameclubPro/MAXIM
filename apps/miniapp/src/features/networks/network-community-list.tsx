@@ -37,6 +37,7 @@ export function useNetworkEntries({
   search = '',
   compositionEpoch,
   initialPageCount = 1,
+  enabled = true,
 }: {
   api: ApiTransport;
   scopeKey: string;
@@ -45,6 +46,7 @@ export function useNetworkEntries({
   search?: string;
   compositionEpoch: number;
   initialPageCount?: number;
+  enabled?: boolean;
 }) {
   const identity = JSON.stringify([
     scopeKey,
@@ -128,6 +130,7 @@ export function useNetworkEntries({
     [api, entityType, favoriteType, search],
   );
   useEffect(() => {
+    if (!enabled) return;
     const session = {
       identity,
       controller: new AbortController(),
@@ -146,7 +149,7 @@ export function useNetworkEntries({
       session.controller.abort();
       if (active.current === session) active.current = null;
     };
-  }, [identity, initialPageCount, load, retry]);
+  }, [identity, initialPageCount, load, retry, enabled]);
   const value = state.identity === identity ? state.value : empty();
   return {
     ...value,

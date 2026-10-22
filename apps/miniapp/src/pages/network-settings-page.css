@@ -1,9 +1,23 @@
 @layer workspace {
+  body[data-miniapp-profile='moderation'] .network-settings-workspace {
+    display: grid;
+    gap: 16px;
+    width: min(100%, 860px);
+    margin: 0 auto;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-workspace .settings-sections-shell {
+    grid-auto-flow: row dense;
+  }
+  body[data-miniapp-profile='moderation']
+    .network-settings-workspace
+    .settings-home-entry:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
   body[data-miniapp-profile='moderation'] .network-settings-scope {
     display: flex;
     align-items: center;
     gap: 7px;
-    width: fit-content;
+    width: 100%;
     max-width: 100%;
     padding: 7px 11px;
     border: 1px solid var(--steel-line);
@@ -17,6 +31,36 @@
   body[data-miniapp-profile='moderation'] .network-settings-scope .app-icon {
     width: 16px;
     height: 16px;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-scope > span {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-scope small {
+    font-size: 12px;
+    font-weight: 550;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-scope > b {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-editor .network-settings-scope {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--major-surface);
+    color: var(--major-accent);
+    border-color: var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-stage-title {
+    margin: 0;
+    font-size: 22px;
+    line-height: 1.3;
+    font-weight: 800;
+    overflow-wrap: anywhere;
   }
 
   body[data-miniapp-profile='moderation'] .network-settings-details summary {

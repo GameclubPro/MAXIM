@@ -49,13 +49,29 @@ export function resolveNetworkRouteOperation(input: {
       : { kind: 'none' };
 }
 
-export function readNetworkRoute(search: string): NetworkRouteState {
+export function readNetworkViewPreference(actor: string, name: string): string {
+  try {
+    return window.sessionStorage.getItem(`maxim:networks:view:${actor}:${name}`) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveNetworkViewPreference(actor: string, name: string, value: string): void {
+  try {
+    window.sessionStorage.setItem(`maxim:networks:view:${actor}:${name}`, value);
+  } catch {
+    /* Navigation remains available without browser storage. */
+  }
+}
+
+export function readNetworkRoute(search: string, defaultRange = '7d'): NetworkRouteState {
   const query = new URLSearchParams(search);
   const category = query.get('category');
   return {
     entityType: query.get('type') === 'channel' ? 'channel' : 'chat',
     favoriteType: HOME_ENTITY_FAVORITE_TYPES.find((value) => value === category) ?? null,
-    range: query.get('range') === '30d' ? '30d' : '7d',
+    range: (query.get('range') ?? defaultRange) === '30d' ? '30d' : '7d',
     tab: query.get('tab') === 'communities' ? 'communities' : 'overview',
   };
 }

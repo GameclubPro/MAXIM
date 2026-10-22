@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ManagedEntityFavoriteType, ManagedEntityType } from '@maxim/contracts';
 import type {
   NetworkStatisticsQuery,
@@ -231,65 +232,92 @@ export async function runNetworkStatisticsSession(
   }
 }
 
+const transports = new WeakMap<ApiTransport, number>();
+let nextTransport = 0;
+export function networkStatisticsQueryKey(scope: StatisticsScope) {
+  if (!transports.has(scope.api)) transports.set(scope.api, ++nextTransport);
+  return [
+    'network-statistics',
+    transports.get(scope.api),
+    scope.scopeKey,
+    scope.entityType,
+    scope.favoriteType,
+    scope.range,
+    scope.compositionVersion,
+    Math.floor((Date.now() + 3 * 3_600_000) / 86_400_000),
+  ] as const;
+}
 export function useNetworkStatistics(options: UseNetworkStatisticsOptions): NetworkStatisticsState {
-  const [revision, setRevision] = useState(0);
-  const identity = JSON.stringify([
-    options.scopeKey,
-    options.entityType,
-    options.favoriteType,
-    options.range,
-    options.compositionVersion,
-    options.enabled,
-    revision,
-  ]);
-  const [result, setResult] = useState<{
-    identity: string;
-    data: NetworkStatisticsResponse | null;
-    phase: NetworkStatisticsState['phase'];
-    error: NetworkStatisticsLoadError | null;
-    api: ApiTransport;
-  }>({ identity, data: null, phase: 'idle', error: null, api: options.api });
+  const queryClient = useQueryClient();
+  const queryKey = networkStatisticsQueryKey(options);
   const invalidate = useRef(options.onScopeInvalidated);
   invalidate.current = options.onScopeInvalidated;
-  useEffect(() => {
-    const controller = new AbortController();
-    const update = (
-      data: NetworkStatisticsResponse | null,
-      phase: NetworkStatisticsState['phase'],
-      error: NetworkStatisticsLoadError | null = null,
-    ) => {
-      if (!controller.signal.aborted) setResult({ identity, data, phase, error, api: options.api });
-    };
-    update(null, options.enabled ? 'loading' : 'idle');
-    if (options.enabled) {
-      void runNetworkStatisticsSession(options, {
-        signal: controller.signal,
-        onResponse: (data) => update(data, data.nextCursor ? 'checking' : 'settled'),
-        onReset: () => update(null, 'loading'),
+  const query = useQuery<NetworkStatisticsResponse | null>({
+    queryKey,
+    enabled: options.enabled,
+    retry: false,
+    // FLAG: Only a complete, actor/transport/version-bound display snapshot can be reused.
+    // Cached statistics never authorize a settings mutation or replace its fresh checks.
+    staleTime: (query) => (query.state.data && !query.state.data.nextCursor ? 15_000 : 0),
+    gcTime: 60_000,
+    queryFn: async ({ signal }) => {
+      let latest: NetworkStatisticsResponse | null = null;
+      await runNetworkStatisticsSession(options, {
+        signal,
+        onResponse: (data) => {
+          latest = data;
+          queryClient.setQueryData(queryKey, data);
+        },
+        onReset: () => queryClient.setQueryData(queryKey, null),
         onScopeInvalidated: (reason) => invalidate.current?.(reason),
-      }).catch((error: unknown) => {
-        update(null, error instanceof NetworkStatisticsScopeChanged ? 'stale' : 'error', {
-          code:
-            error instanceof ApiRequestError
-              ? (error.code ?? 'NETWORK_STATISTICS_UNAVAILABLE')
-              : 'NETWORK_STATISTICS_INCOMPLETE',
-          message: 'Не удалось завершить проверку статистики. Обновите данные.',
-          retryable: !(error instanceof ApiRequestError && [401, 403].includes(error.status)),
-        });
       });
+      return latest;
+    },
+  });
+  useEffect(() => {
+    if (
+      !options.enabled &&
+      !queryClient.getQueryCache().find({ queryKey, exact: true })?.isActive()
+    ) {
+      void queryClient.cancelQueries({ queryKey, exact: true });
     }
-    return () => controller.abort();
-    // FLAG: identity includes every actor, composition and request scope; api identity is separate.
-  }, [identity, options.api]);
+  }, [options.enabled, queryClient, ...queryKey]);
+  const cause = query.error;
+  const status = cause instanceof ApiRequestError ? cause.status : null;
+  const reason = cause instanceof NetworkStatisticsScopeChanged ? cause.reason : null;
+  const error: NetworkStatisticsLoadError | null = cause
+    ? {
+        code:
+          cause instanceof ApiRequestError
+            ? (cause.code ?? 'NETWORK_STATISTICS_UNAVAILABLE')
+            : 'NETWORK_STATISTICS_INCOMPLETE',
+        message:
+          status === 401
+            ? 'Сессия истекла. Откройте приложение заново.'
+            : status === 403 || reason === 'access'
+              ? 'Доступ к сообществам изменился. Обновите сетку.'
+              : reason === 'composition'
+                ? 'Состав сетки изменился. Обновите данные.'
+                : 'Не удалось обновить статистику. Повторите попытку.',
+        retryable: status !== 401 && status !== 403,
+      }
+    : null;
   return {
-    data: result.identity === identity && result.api === options.api ? result.data : null,
-    phase:
-      result.identity === identity && result.api === options.api
-        ? result.phase
-        : options.enabled
-          ? 'loading'
-          : 'idle',
-    error: result.identity === identity && result.api === options.api ? result.error : null,
-    refresh: () => setRevision((value) => value + 1),
+    data: cause ? null : (query.data ?? null),
+    phase: cause
+      ? reason
+        ? 'stale'
+        : 'error'
+      : !options.enabled
+        ? 'idle'
+        : query.data?.nextCursor
+          ? 'checking'
+          : query.data
+            ? 'settled'
+            : 'loading',
+    error,
+    refresh: () => {
+      void query.refetch();
+    },
   };
 }

@@ -10,6 +10,25 @@ const request = {
   target: { mode: 'category', favoriteType: 'important' },
   section: 'links',
 } as const;
+test('leaving during a read aborts the remaining pages and never publishes a partial field fold', async () => {
+  const controller = new AbortController();
+  let requests = 0;
+  const base = fake(() => {});
+  const api: ApiTransport = {
+    ...base,
+    request: async (path, options) => {
+      requests++;
+      assert.equal(options?.signal, controller.signal);
+      const response = await base.request(path, options);
+      controller.abort();
+      return response;
+    },
+  };
+  await assert.rejects(readCompleteNetworkSettings(api, request, undefined, controller.signal), {
+    name: 'AbortError',
+  });
+  assert.equal(requests, 1);
+});
 function fake(mutate: (value: Record<string, unknown>, index: number) => void) {
   let count = 0;
   const api: ApiTransport = {

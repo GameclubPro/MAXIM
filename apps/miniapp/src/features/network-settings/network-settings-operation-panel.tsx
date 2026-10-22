@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { NetworkSettingsOperationResponse } from '@maxim/contracts/network-settings';
 import type { useNetworkSettingsController } from './network-settings-controller';
 
@@ -49,6 +50,7 @@ export function NetworkSettingsOperationPanel({
   onStartAgain,
   onRetry,
 }: NetworkSettingsOperationPanelProps) {
+  const [limit, setLimit] = useState(50);
   const applied = operation.outcomes.filter(
     (row) => row.status === 'COMMITTED' || row.status === 'COMPLETE',
   ).length;
@@ -56,7 +58,7 @@ export function NetworkSettingsOperationPanel({
   const otherOutcomes = operation.outcomes.filter((row) => row.status !== 'FAILED');
   const outcomes = (rows: typeof operation.outcomes) => (
     <ul className="network-settings-outcomes">
-      {rows.map((row) => (
+      {rows.slice(0, limit).map((row) => (
         <li key={row.entityId}>
           <strong>{recipientTitles.get(row.entityId) || 'Сообщество'}</strong>
           <span>{outcomeLabel(row)}</span>
@@ -68,37 +70,47 @@ export function NetworkSettingsOperationPanel({
   return (
     <section className="network-settings-page__operation" aria-live="polite">
       <h2>{STATUS[operation.status]}</h2>
-      <p>
-        Сохранено: {applied} из {operation.outcomes.length}
-      </p>
+      {!['PREVIEWING', 'PREPARED'].includes(operation.status) ? (
+        <p>
+          {operation.outcomes.some((row) => row.status === 'COMMITTED') ? 'Записано' : 'Применено'}:{' '}
+          {applied} из {operation.outcomes.length}
+        </p>
+      ) : null}
       {resumeOperationId && !controller.preview && operation.status === 'PREPARED' ? (
         <p>
-          Предпросмотр восстановлен для просмотра статуса. Для применения заново выберите и
-          проверьте изменения.
+          {controller.canStartAgain
+            ? 'Эта проверка не применялась. Откройте настройки и задайте изменения заново.'
+            : 'Подтверждаем состояние операции. Результат пока неизвестен.'}
         </p>
       ) : null}
       {failures.length ? outcomes(failures) : null}
       <details className="network-settings-details">
         <summary>Подробности применения</summary>
         {otherOutcomes.length ? outcomes(otherOutcomes) : null}
+        {Math.max(failures.length, otherOutcomes.length) > limit ? (
+          <button type="button" onClick={() => setLimit((value) => value + 50)}>
+            Показать ещё результаты
+          </button>
+        ) : null}
         <small>Номер операции: {operation.operationId}</small>
       </details>
       {controller.canStartAgain ? (
         <button type="button" onClick={onStartAgain}>
-          Изменить настройки снова
+          {operation.status === 'PREPARED' ? 'Открыть новые настройки' : 'Изменить настройки'}
         </button>
       ) : null}
-      {controller.failedRecipients.length > 0 && controller.failedRecipients.length <= 500 ? (
+      {controller.failedRecipients.length > 0 ? (
         <button type="button" onClick={onRetry}>
           {controller.retryChanges.length || controller.navigationAllowlist
             ? 'Проверить повтор для неприменённых'
             : 'Открыть настройки неприменённых'}{' '}
-          ({controller.failedRecipients.length})
+          ({Math.min(500, controller.failedRecipients.length)})
         </button>
-      ) : controller.failedRecipients.length > 500 ? (
+      ) : null}
+      {controller.failedRecipients.length > 500 ? (
         <p>
-          Для повторной проверки выберите до 500 неприменённых сообществ или заново проверьте всю
-          категорию.
+          Следующий пакет — 500 сообществ. Оставшиеся {controller.failedRecipients.length - 500}{' '}
+          будут доступны здесь отдельно.
         </p>
       ) : null}
     </section>

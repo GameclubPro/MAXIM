@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { NetworkStatisticsCommunities } from './network-statistics-communities';
 import type { ManagedEntityType } from '@maxim/contracts';
 import type {
   NetworkMetricCoverage,
@@ -28,17 +30,19 @@ function Coverage({ value, growth = false }: { value: NetworkMetricCoverage; gro
   return (
     <div className="network-metric-coverage">
       <span className={`network-coverage-badge is-${value.status}`}>
-        {value.status === 'ready'
-          ? 'Данные собраны'
-          : value.status === 'partial'
-            ? 'Частичные данные'
-            : 'Нет наблюдений'}
-        {' · '}
-        {number.format(value.includedEntities)}/{number.format(value.totalEntities)}
+        {value.status === 'unavailable'
+          ? 'Нет наблюдений'
+          : value.includedEntities < value.totalEntities
+            ? `По ${number.format(value.includedEntities)} из ${number.format(value.totalEntities)}`
+            : value.status === 'partial'
+              ? growth
+                ? 'История может быть неполной'
+                : 'Есть пропуски'
+              : `По ${number.format(value.includedEntities)} сообществам`}
       </span>
       <small>
         {growth ? 'Последние наблюдения' : 'Обновлено'}:{' '}
-        {value.asOf ? `${timestamp.format(new Date(value.asOf))} МСК` : '—'}
+        {value.asOf ? `${timestamp.format(new Date(value.asOf))} МСК` : 'нет даты'}
       </small>
     </div>
   );
@@ -66,7 +70,22 @@ function Metric({
     </article>
   );
 }
-function GrowthChart({ series }: { series: NetworkStatisticsResponse['series'] }) {
+function GrowthChart({
+  series,
+  entityType,
+}: {
+  series: NetworkStatisticsResponse['series'];
+  entityType: ManagedEntityType;
+}) {
+  const [selectedIndex, setSelectedIndex] = useState(Math.max(0, series.length - 1));
+  const selected = series[Math.min(selectedIndex, series.length - 1)];
+  const dayKey = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const today = dayKey.format(new Date());
   const max = Math.max(1, ...series.map((point) => Math.abs(point.netGrowth ?? 0)));
   const observed = series.some((point) => point.netGrowth != null);
   return (
@@ -84,7 +103,19 @@ function GrowthChart({ series }: { series: NetworkStatisticsResponse['series'] }
             viewBox="0 0 600 170"
             preserveAspectRatio="none"
             role="img"
-            aria-label="Дневной прирост. Пропуски означают отсутствие наблюдений; точные значения доступны в таблице ниже."
+            aria-label="Дневной прирост. Коснитесь дня или выберите его ползунком ниже."
+            onPointerDown={(event) => {
+              const bounds = event.currentTarget.getBoundingClientRect();
+              setSelectedIndex(
+                Math.max(
+                  0,
+                  Math.min(
+                    series.length - 1,
+                    Math.floor(((event.clientX - bounds.left) / bounds.width) * series.length),
+                  ),
+                ),
+              );
+            }}
           >
             <line className="network-growth-baseline" x1="0" x2="600" y1="85" y2="85" />
             {series.map((point, index) => {
@@ -97,7 +128,7 @@ function GrowthChart({ series }: { series: NetworkStatisticsResponse['series'] }
               return (
                 <g
                   key={point.at}
-                  className={`network-growth-day ${point.netGrowth == null ? 'is-missing' : point.netGrowth < 0 ? 'is-negative' : 'is-positive'}`}
+                  className={`network-growth-day ${index === selectedIndex ? 'is-selected' : ''} ${point.netGrowth == null ? 'is-missing' : point.netGrowth < 0 ? 'is-negative' : 'is-positive'}`}
                 >
                   <title>{label}</title>
                   {point.netGrowth != null ? (
@@ -120,12 +151,49 @@ function GrowthChart({ series }: { series: NetworkStatisticsResponse['series'] }
             <span>Пропуск — нет данных</span>
             <span>{series.at(-1) ? date.format(new Date(series.at(-1)!.at)) : ''}</span>
           </div>
+          <input
+            className="network-chart-slider"
+            type="range"
+            aria-label="День графика"
+            min={0}
+            max={series.length - 1}
+            value={Math.min(selectedIndex, series.length - 1)}
+            aria-valuetext={
+              selected
+                ? `${date.format(new Date(selected.at))}: ${formatNetworkMetric(selected.netGrowth, true)}`
+                : undefined
+            }
+            onChange={(event) => setSelectedIndex(Number(event.target.value))}
+          />
+          {selected ? (
+            <div className="network-chart-selection" role="status" aria-live="polite">
+              <strong>
+                {date.format(new Date(selected.at))} ·{' '}
+                {formatNetworkMetric(selected.netGrowth, true)}
+              </strong>
+              <span>
+                {selected.netGrowth === null
+                  ? 'Нет наблюдений о приросте'
+                  : 'Наблюдаемый прирост; полнота истории за день не подтверждена.'}
+              </span>
+              {entityType === 'channel' ? (
+                <span>
+                  Просмотры: {formatNetworkMetric(selected.viewsGained)}
+                  {selected.viewsGained !== null && !selected.viewsComplete
+                    ? ' · Есть пропуски'
+                    : ''}
+                </span>
+              ) : null}
+              {dayKey.format(new Date(selected.at)) === today ? (
+                <small>Текущий день ещё не завершён</small>
+              ) : null}
+            </div>
+          ) : null}
         </>
       ) : (
         <div className="network-chart-empty">
           <AppIcon icon="StatsUpSquare" />
           <strong>Пока нет наблюдений о приросте</strong>
-          <span>Данные появятся по мере наблюдений за сообществами.</span>
         </div>
       )}
       <details className="network-daily-details">
@@ -153,106 +221,19 @@ function GrowthChart({ series }: { series: NetworkStatisticsResponse['series'] }
     </section>
   );
 }
-function Communities({
-  data,
-  entityType,
-  onOpenCommunities,
-  onOpenCommunity,
-}: {
-  data: NetworkStatisticsResponse;
-  entityType: ManagedEntityType;
-  onOpenCommunities?: () => void;
-  onOpenCommunity?: (entityId: string) => void;
-}) {
-  const limit = 8;
-  const items = [...data.items].sort(
-    (a, b) =>
-      (b.netGrowth ?? -Infinity) - (a.netGrowth ?? -Infinity) ||
-      a.title.localeCompare(b.title, 'ru'),
-  );
-  return (
-    <section className="network-stats-communities">
-      <div className="network-panel-heading">
-        <h2>По сообществам</h2>
-        <span>{number.format(items.length)}</span>
-      </div>
-      <p className="network-statistics-caption">Сначала наибольший прирост за период</p>
-      {items.length ? (
-        <div className="network-statistics-table-scroll">
-          <table>
-            <caption className="sr-only">Статистика доступных сообществ сетки</caption>
-            <thead>
-              <tr>
-                <th scope="col">{entityType === 'chat' ? 'Чат' : 'Канал'}</th>
-                <th scope="col">{entityType === 'chat' ? 'Участники' : 'Подписчики'}</th>
-                <th scope="col">Прирост</th>
-                {entityType === 'channel' ? <th scope="col">Просмотры</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {items.slice(0, limit).map((item) => (
-                <tr key={item.entityId}>
-                  <th scope="row">
-                    {onOpenCommunity ? (
-                      <button
-                        type="button"
-                        className="networks-text-button"
-                        onClick={() => onOpenCommunity(item.entityId)}
-                      >
-                        {item.title}
-                      </button>
-                    ) : (
-                      <span>{item.title}</span>
-                    )}
-                    {item.audienceObservedAt ? (
-                      <small>{timestamp.format(new Date(item.audienceObservedAt))} МСК</small>
-                    ) : null}
-                  </th>
-                  <td>{formatNetworkMetric(item.audience)}</td>
-                  <td>{formatNetworkMetric(item.netGrowth, true)}</td>
-                  {entityType === 'channel' ? (
-                    <td>{formatNetworkMetric(item.viewsGained)}</td>
-                  ) : null}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="network-statistics-caption">
-          Нет сообществ с подтверждённым доступом к статистике.
-        </p>
-      )}
-      <div className="network-statistics-actions">
-        {limit < items.length ? (
-          <span className="network-statistics-caption">
-            Показаны {limit} из {number.format(items.length)}
-          </span>
-        ) : null}
-        {onOpenCommunities ? (
-          <button type="button" className="networks-secondary" onClick={onOpenCommunities}>
-            <AppIcon icon="Group" />
-            Все сообщества
-          </button>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
 export interface NetworkStatisticsViewProps {
   state: NetworkStatisticsState;
   entityType: ManagedEntityType;
   range: NetworkStatisticsRange;
   onOpenCommunity?: (entityId: string) => void;
-  onOpenCommunities?: () => void;
+  viewKey?: string;
   className?: string;
 }
 export function NetworkStatisticsView({
   state,
   entityType,
   range,
-  onOpenCommunities,
+  viewKey = 'network-statistics',
   onOpenCommunity,
   className,
 }: NetworkStatisticsViewProps) {
@@ -274,10 +255,11 @@ export function NetworkStatisticsView({
         </strong>
         <p>
           {state.phase === 'error' || state.phase === 'stale'
-            ? 'Обновите данные, чтобы продолжить.'
+            ? (state.error?.message ?? 'Обновите данные, чтобы продолжить.')
             : 'Проверяем доступ к статистике сообществ.'}
         </p>
-        {state.phase === 'error' || state.phase === 'stale' ? (
+        {(state.phase === 'error' || state.phase === 'stale') &&
+        state.error?.retryable !== false ? (
           <button type="button" className="networks-secondary" onClick={state.refresh}>
             Повторить
           </button>
@@ -298,11 +280,19 @@ export function NetworkStatisticsView({
           </span>
         </div>
       ) : null}
+      {data.authorization.denied || data.authorization.unavailable ? (
+        <p className="network-statistics-caption" role="status">
+          {data.authorization.denied
+            ? `Нет доступа: ${number.format(data.authorization.denied)}. `
+            : ''}
+          {data.authorization.unavailable
+            ? `Не удалось проверить: ${number.format(data.authorization.unavailable)}. `
+            : ''}
+          Эти сообщества не включены в показатели.
+        </p>
+      ) : null}
       <div className={`network-detail-metrics ${entityType === 'channel' ? 'has-views' : ''}`}>
-        <Metric
-          label={entityType === 'chat' ? 'Участники сейчас' : 'Подписчики сейчас'}
-          metric={data.audience}
-        />
+        <Metric label={entityType === 'chat' ? 'Участники' : 'Подписчики'} metric={data.audience} />
         <Metric
           label={`Прирост · ${range === '7d' ? 7 : 30} дней`}
           metric={data.netGrowth}
@@ -312,12 +302,17 @@ export function NetworkStatisticsView({
           <Metric label="Прирост просмотров" metric={data.viewsGained} growth />
         ) : null}
       </div>
-      <p className="network-statistics-caption">
-        Суммарная аудитория · участники разных сообществ могут повторяться
-      </p>
-      <GrowthChart series={data.series} />
+      <GrowthChart
+        key={`${data.favoriteType}:${range}`}
+        series={data.series}
+        entityType={entityType}
+      />
       <details className="network-statistics-method network-daily-details">
         <summary>О данных</summary>
+        <p>
+          Аудитория — сумма участников учтённых сообществ. Один человек может учитываться в
+          нескольких сообществах.
+        </p>
         <p>
           Период: {date.format(new Date(data.period.from))} —{' '}
           {timestamp.format(new Date(data.period.to))} МСК. Расчёт по текущему составу сетки.
@@ -326,17 +321,19 @@ export function NetworkStatisticsView({
           Прирост — наблюдаемые вступления минус выходы. Пропуски означают отсутствие данных.
           Текущий день ещё не завершён.
         </p>
-        <p>
-          Частичные данные охватывают только доступные наблюдения. Первые наблюдения об аудитории:{' '}
-          {data.audience.coverage.observedFrom
-            ? date.format(new Date(data.audience.coverage.observedFrom))
-            : '—'}
-          ; о приросте:{' '}
-          {data.netGrowth.coverage.observedFrom
-            ? date.format(new Date(data.netGrowth.coverage.observedFrom))
-            : '—'}
-          .
-        </p>
+        <p>Неполные наблюдения не подтверждают непрерывную историю за период.</p>
+        {data.audience.coverage.observedFrom ? (
+          <p>
+            Начало наблюдений аудитории:{' '}
+            {date.format(new Date(data.audience.coverage.observedFrom))}.
+          </p>
+        ) : null}
+        {data.netGrowth.coverage.observedFrom ? (
+          <p>
+            Начало наблюдений прироста:{' '}
+            {date.format(new Date(data.netGrowth.coverage.observedFrom))}.
+          </p>
+        ) : null}
         {entityType === 'channel' ? (
           <p>
             Просмотры — прирост за период, включая старые публикации. MAX возвращает периодические
@@ -347,11 +344,10 @@ export function NetworkStatisticsView({
           </p>
         ) : null}
       </details>
-      <Communities
+      <NetworkStatisticsCommunities
         key={`${data.entityType}:${data.favoriteType}:${data.period.range}`}
         data={data}
-        entityType={entityType}
-        onOpenCommunities={onOpenCommunities}
+        viewKey={viewKey}
         onOpenCommunity={onOpenCommunity}
       />
       <button

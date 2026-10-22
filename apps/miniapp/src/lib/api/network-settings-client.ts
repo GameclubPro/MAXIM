@@ -16,18 +16,20 @@ import type {
   NetworkSettingsApplyRequest,
 } from '@maxim/contracts/network-settings';
 import type { ApiTransport } from './transport';
-const post = (api: ApiTransport, path: string, body: unknown) =>
+const post = (api: ApiTransport, path: string, body: unknown, signal?: AbortSignal) =>
   api.request('/networks/settings/' + path, {
     method: 'POST',
     body: JSON.stringify(body),
     retryMutationOnTransportError: false,
+    signal,
   });
 export async function readNetworkSettingsPage(
   api: ApiTransport,
   input: NetworkSettingsReadRequest,
+  signal?: AbortSignal,
 ) {
   return networkSettingsReadResponseSchema.parse(
-    await post(api, 'read', networkSettingsReadRequestSchema.parse(input)),
+    await post(api, 'read', networkSettingsReadRequestSchema.parse(input), signal),
   );
 }
 export async function previewNetworkSettings(

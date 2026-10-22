@@ -356,18 +356,29 @@ test('conflict retains desired draft, requires a confirmed read plus explicit re
   assert.equal(f.writes.length, 2);
 });
 
-test('500 distinct changes is an atomic edit limit; returning to original removes a change', () => {
-  const session = new HomeEntityFavoritesSession(fixture().api, 'actor');
+test('large composition drafts retain remaining choices and save at most 500 per explicit action', async () => {
+  const f = fixture();
+  const session = new HomeEntityFavoritesSession(f.api, 'actor');
   const draft = new ManagedEntityNetworkCompositionDraft(session, {
     entityType: 'chat',
     favoriteType: 'important',
   });
   for (let i = 0; i < 500; i += 1) draft.stage({ id: String(i), favoriteType: null }, 'important');
-  assert.throws(() => draft.stage({ id: '501', favoriteType: null }, 'important'));
-  draft.stage({ id: '1', favoriteType: null }, null);
-  assert.equal(draft.getSnapshot().count, 499);
   draft.stage({ id: '501', favoriteType: null }, 'important');
+  draft.stage({ id: '1', favoriteType: null }, null);
   assert.equal(draft.getSnapshot().count, 500);
+  draft.stage({ id: '502', favoriteType: null }, 'important');
+  await draft.save();
+  assert.equal(f.writes.length, 1);
+  assert.equal(JSON.parse(f.writes[0].options?.body as string).changes.length, 500);
+  assert.deepEqual(draft.getSnapshot().changes, [
+    { entityId: '502', expectedFavoriteType: null, favoriteType: 'important' },
+  ]);
+  f.rejectWrites(true);
+  await assert.rejects(draft.save());
+  assert.equal(draft.getSnapshot().count, 1);
+  assert.equal(draft.getSnapshot().phase, 'review-required');
+  assert.equal(f.members.get('502'), undefined);
 });
 
 test('rename preserves a dirty composition draft; a newly observed membership version requires review', async () => {

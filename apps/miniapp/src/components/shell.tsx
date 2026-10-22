@@ -56,6 +56,8 @@ export function Shell({
     profile === 'moderation' && networksEnabled && location.pathname === '/networks';
   const isNetworkSettingsRoute =
     profile === 'moderation' && location.pathname.startsWith('/networks/');
+  const isNetworkSettingsHub =
+    isNetworkSettingsRoute && /^\/networks\/(chat|channel)\/settings\/?$/u.test(location.pathname);
   const isPublicationsRoute =
     location.pathname === '/publications' || location.pathname === '/autoposts';
   const isProfileHomeRoute = isChatsRoute;
@@ -150,7 +152,8 @@ export function Shell({
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
   const isPublisherEntityModulesRoute =
     profile === 'publisher' && /^\/publisher\/(?:chat|channel)\/[^/]+\/?$/u.test(location.pathname);
-  const shouldShowBottomNav = isChatsRoute || isPublicationsRoute || isNetworksRoute;
+  const shouldShowBottomNav =
+    isChatsRoute || isPublicationsRoute || isNetworksRoute || isNetworkSettingsHub;
   const hasTopbar =
     !isChatsRoute &&
     !isPublicationsRoute &&
@@ -305,8 +308,11 @@ export function Shell({
           {profile === 'moderation' && networksEnabled ? (
             <Link
               to="/networks"
-              className={cn('bottom-nav__item', isNetworksRoute && 'is-active')}
-              aria-current={isNetworksRoute ? 'page' : undefined}
+              className={cn(
+                'bottom-nav__item',
+                (isNetworksRoute || isNetworkSettingsHub) && 'is-active',
+              )}
+              aria-current={isNetworksRoute || isNetworkSettingsHub ? 'page' : undefined}
             >
               <span className="bottom-nav__icon" aria-hidden>
                 <AppIcon icon="Community" className="bottom-nav__icon-svg" />
