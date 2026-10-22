@@ -100,15 +100,71 @@ async function back(page) {
   await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
 }
 
-const sectionFieldLabels = {
-  links: ['Режим проверки ссылок', 'Срок ограничения, ч', 'Период учёта нарушений, ч'],
-  greeting: [
-    'Приветствовать новых участников',
-    'Добавить кнопку правил',
-    'Удалять приветствие бота',
-    'Удалять через',
+const LINK_POLICY_LABEL = 'Режим модерации ссылок';
+const LINK_PERIOD_LABEL = 'Повторные ссылки: период';
+const LINK_PERIOD_ERROR = 'Укажите число от 1 до 168.';
+const GREETING_LABEL = 'Включить приветствие новых участников';
+const nativeToggle = (label) => ({
+  label,
+  selector: `label[aria-label="${label}"] input[type="checkbox"]`,
+  wrapper: '.settings-native-toggle',
+  labelSelector: '.settings-native-toggle__title',
+});
+const sectionFields = {
+  links: [
+    {
+      label: LINK_POLICY_LABEL,
+      selector: `[role="radiogroup"][aria-label="${LINK_POLICY_LABEL}"]`,
+      wrapper: '.settings-policy',
+      labelSelector: '.field__label',
+    },
+    ...['период', 'предупреждение', 'ограничение', 'блокировка'].map((label) => ({
+      label: `Повторные ссылки: ${label}`,
+      selector: `input[aria-label="Повторные ссылки: ${label}"]`,
+      wrapper: '.duplicate-stage__field',
+      labelSelector: '.duplicate-stage__field-label',
+    })),
+    nativeToggle('Включить объяснение для модерации ссылок'),
+    nativeToggle('Включить предупреждение за повторные ссылки'),
+    nativeToggle('3. Ограничение'),
+    nativeToggle('Включить блокировку за повторные ссылки'),
+  ],
+  greeting: [nativeToggle(GREETING_LABEL)],
+  greetingExpanded: [
+    nativeToggle(GREETING_LABEL),
+    {
+      label: 'Редактировать текст приветствия',
+      selector: 'button[aria-label="Редактировать текст приветствия"]',
+      wrapper: '.settings-native-toggle',
+      labelSelector: '.settings-native-toggle__title',
+    },
+    nativeToggle('Включить автоудаление приветственных сообщений бота'),
+    {
+      label: 'Задержка удаления приветствия',
+      selector: '[role="group"][aria-label="Задержка удаления приветствия"]',
+      wrapper: '.settings-native-toggle',
+      labelSelector: '.settings-native-toggle__title',
+    },
+    nativeToggle('Добавить кнопку в приветственное сообщение'),
+    nativeToggle('Кнопка Правила в приветствии'),
   ],
 };
+const sectionReady = (panel, section) =>
+  section === 'links'
+    ? panel.getByRole('radiogroup', { name: LINK_POLICY_LABEL, exact: true })
+    : panel.getByLabel(GREETING_LABEL, { exact: true });
+function linkPolicy(panel) {
+  return panel.getByRole('radiogroup', { name: LINK_POLICY_LABEL, exact: true });
+}
+async function policyValue(policy) {
+  const selected = policy.getByRole('radio', { checked: true });
+  assert.ok((await selected.count()) <= 1, 'policy has at most one selected segment');
+  return (await selected.count()) ? selected.getAttribute('data-segmented-value') : null;
+}
+async function selectBlockingPolicy(policy) {
+  await policy.getByRole('radio', { name: 'Удалять все', exact: true }).click();
+  assert.equal(await policyValue(policy), 'BLOCKLIST_ONLY');
+}
 
 async function tileAppearance(root) {
   return root.locator('.settings-section__toggle').evaluateAll((buttons) =>
@@ -162,25 +218,53 @@ async function sectionAppearance(panel, section) {
         ].map((key) => [key, style[key]]),
       );
     };
-    const fields = labels.map((label) => {
-      const control = [...root.querySelectorAll('input, select, textarea')].find(
-        (node) => node.getAttribute('aria-label') === label,
-      );
-      if (!control) throw new Error('Missing shared field: ' + label);
-      const wrapper = control.closest('.network-settings-field');
+    const fields = labels.map((spec) => {
+      const control = root.querySelector(spec.selector);
+      if (!control) throw new Error('Missing canonical field: ' + spec.label);
+      const wrapper = control.closest(spec.wrapper);
+      if (!wrapper) throw new Error('Missing canonical field wrapper: ' + spec.label);
+      const fieldLabel = wrapper.querySelector(spec.labelSelector);
+      const classes = (node) => [...node.classList].filter((name) => name !== 'is-active').sort();
       return {
-        label,
+        label: spec.label,
+        labelText: fieldLabel.textContent.trim(),
         tag: control.tagName,
         type: control.getAttribute('type'),
+        role: control.getAttribute('role'),
+        min: control.getAttribute('min'),
+        max: control.getAttribute('max'),
+        step: control.getAttribute('step'),
+        classes: classes(control),
+        wrapperTag: wrapper.tagName,
+        wrapperClasses: classes(wrapper),
+        toggleTrack:
+          control.type === 'checkbox'
+            ? Boolean(
+                control.closest('label').querySelector('.toggle-switch > .toggle-switch__thumb'),
+              )
+            : null,
         options:
-          control.tagName === 'SELECT'
-            ? [...control.options]
-                .filter((option) => option.value !== '')
-                .map((option) => ({ value: option.value, label: option.textContent.trim() }))
+          control.getAttribute('role') === 'radiogroup'
+            ? [...control.querySelectorAll('[role="radio"]')].map((option) => ({
+                value: option.dataset.segmentedValue,
+                label: option.textContent.trim(),
+                tag: option.tagName,
+                type: option.getAttribute('type'),
+                classes: classes(option),
+              }))
+            : null,
+        children:
+          control.getAttribute('role') === 'group'
+            ? [...control.querySelectorAll('button, input, select')].map((child) => ({
+                tag: child.tagName,
+                type: child.getAttribute('type'),
+                label: child.getAttribute('aria-label'),
+                classes: classes(child),
+              }))
             : null,
         control: appearance(control),
         wrapper: appearance(wrapper),
-        labelStyle: appearance(wrapper.querySelector('.network-settings-field__label')),
+        labelStyle: appearance(fieldLabel),
       };
     });
     return {
@@ -188,14 +272,17 @@ async function sectionAppearance(panel, section) {
       classes: [...root.classList].filter((name) => name !== 'network-settings-editor').sort(),
       icon: root.querySelector('.settings-drilldown__symbol')?.innerHTML ?? null,
       titleStyle: appearance(root.querySelector('.settings-drilldown__title')),
-      groups: [...root.querySelectorAll('.shared-chat-settings-group')].map((group) => ({
-        title: group.querySelector('.settings-subsection-title').textContent.trim(),
-        style: appearance(group),
-      })),
+      groups: [...root.querySelectorAll('.settings-subsection-divider, .duplicate-stage__top')].map(
+        (group) => ({
+          title: group.textContent.trim(),
+          classes: [...group.classList].sort(),
+          style: appearance(group),
+        }),
+      ),
       fields,
       hasBody: Boolean(root.querySelector('.settings-drilldown__body')),
     };
-  }, sectionFieldLabels[section]);
+  }, sectionFields[section]);
 }
 
 async function singleSettingsAppearance(context, profile, errors) {
@@ -215,9 +302,28 @@ async function singleSettingsAppearance(context, profile, errors) {
     ]) {
       await clickSettingsOverviewEntry(single, title);
       const panel = single.getByRole('dialog', { name: title, exact: true });
-      await panel.getByLabel(sectionFieldLabels[section][0], { exact: true }).waitFor();
+      await sectionReady(panel, section).waitFor();
       await settleVisualFrame(single);
       sections[section] = await sectionAppearance(panel, section);
+      if (section === 'greeting') {
+        assert.equal(
+          await panel
+            .getByLabel('Включить автоудаление приветственных сообщений бота', { exact: true })
+            .count(),
+          0,
+          'disabled greeting hides its dependent controls',
+        );
+        await panel.getByLabel(GREETING_LABEL, { exact: true }).check();
+        await panel
+          .getByLabel('Включить автоудаление приветственных сообщений бота', { exact: true })
+          .check();
+        await panel
+          .getByRole('group', { name: 'Задержка удаления приветствия', exact: true })
+          .waitFor();
+        await settleVisualFrame(single);
+        sections.greetingExpanded = await sectionAppearance(panel, 'greetingExpanded');
+        continue;
+      }
       await back(single);
       await panel.waitFor({ state: 'hidden' });
     }
@@ -268,7 +374,7 @@ async function openSettingsSection(page, section, single) {
   const title = section === 'links' ? 'Ссылки' : 'Приветствие';
   await clickSettingsOverviewEntry(page, title);
   const panel = page.locator('.network-settings-editor');
-  await panel.getByLabel(sectionFieldLabels[section][0], { exact: true }).waitFor();
+  await sectionReady(panel, section).waitFor();
   await settleVisualFrame(page);
   assert.equal(await panel.getAttribute('role'), 'dialog');
   assert.equal(
@@ -556,12 +662,10 @@ for (const profile of [
       return scope;
     };
     const selectedScope = await openSelectedSettings('uncertain');
-    const policy = page
-      .locator('.network-settings-editor')
-      .getByLabel('Режим проверки ссылок', { exact: true });
-    assert.equal(await policy.inputValue(), '', 'different settings remain mixed');
-    await policy.focus();
-    await policy.blur();
+    const policy = linkPolicy(page.locator('.network-settings-editor'));
+    assert.equal(await policyValue(policy), null, 'different settings remain mixed');
+    await policy.getByRole('radio').first().focus();
+    await policy.getByRole('radio').first().blur();
     assert.equal(
       await page.getByRole('button', { name: 'Проверить изменения', exact: true }).isDisabled(),
       true,
@@ -570,10 +674,10 @@ for (const profile of [
     const leaveDialog = page.getByRole('dialog', { name: 'Выйти без сохранения?', exact: true });
     const invalidNumber = page
       .locator('.network-settings-editor')
-      .getByRole('spinbutton', { name: 'Срок ограничения, ч', exact: true });
+      .getByRole('spinbutton', { name: LINK_PERIOD_LABEL, exact: true });
     const originalNumber = await invalidNumber.inputValue();
     await invalidNumber.fill('0');
-    await page.getByText('Укажите допустимое число.', { exact: true }).waitFor();
+    await page.getByText(LINK_PERIOD_ERROR, { exact: true }).waitFor();
     assert.equal(
       await page.locator('.network-settings-editor .network-settings-page__changes').count(),
       0,
@@ -590,7 +694,7 @@ for (const profile of [
     await leaveDialog.waitFor({ state: 'hidden' });
     assert.equal(await invalidNumber.inputValue(), '0', 'cancel leaving keeps invalid raw number');
     assert.equal(
-      await page.getByText('Укажите допустимое число.', { exact: true }).isVisible(),
+      await page.getByText(LINK_PERIOD_ERROR, { exact: true }).isVisible(),
       true,
       'cancel leaving keeps field error',
     );
@@ -608,10 +712,10 @@ for (const profile of [
       originalNumber,
       'discarding invalid-only draft restores original field value',
     );
-    assert.equal(await page.getByText('Укажите допустимое число.', { exact: true }).count(), 0);
+    assert.equal(await page.getByText(LINK_PERIOD_ERROR, { exact: true }).count(), 0);
     assert.equal(
-      await policy.inputValue(),
-      '',
+      await policyValue(policy),
+      null,
       'invalid-only discard does not author mixed policy',
     );
     assert.equal(
@@ -623,19 +727,19 @@ for (const profile of [
     await settingsHub(page, { scope: selectedScope, readCount: (await readRequests(page)).length });
     assert.equal(await leaveDialog.count(), 0, 'discarded errors do not leave a stale dirty guard');
     await openSettingsSection(page, 'links', single);
-    await policy.selectOption('ALERT_ONLY');
+    await selectBlockingPolicy(policy);
     await back(page);
     await leaveDialog.waitFor();
     await back(page);
     await leaveDialog.waitFor({ state: 'hidden' });
-    assert.equal(await policy.inputValue(), 'ALERT_ONLY', 'cancel leaving keeps draft');
+    assert.equal(await policyValue(policy), 'BLOCKLIST_ONLY', 'cancel leaving keeps draft');
     await back(page);
     await leaveDialog.waitFor();
     await leaveDialog.getByRole('button', { name: 'Выйти без сохранения', exact: true }).click();
     await settingsHub(page, { scope: selectedScope, readCount: (await readRequests(page)).length });
     await openSettingsSection(page, 'greeting', single);
     assert.equal(
-      await page.getByLabel('Режим проверки ссылок', { exact: true }).count(),
+      await page.getByRole('radiogroup', { name: LINK_POLICY_LABEL, exact: true }).count(),
       0,
       'new section does not retain old fields',
     );
@@ -649,11 +753,39 @@ for (const profile of [
       path: join(output, `${profile.name}-greeting-settings.png`),
       animations: 'disabled',
     });
+    const greetingPanel = page.locator('.network-settings-editor');
+    assert.equal(
+      await greetingPanel
+        .getByLabel('Включить автоудаление приветственных сообщений бота', { exact: true })
+        .count(),
+      0,
+      'disabled greeting hides the same dependent controls in group mode',
+    );
+    await greetingPanel.getByLabel(GREETING_LABEL, { exact: true }).check();
+    await greetingPanel
+      .getByLabel('Включить автоудаление приветственных сообщений бота', { exact: true })
+      .check();
+    await greetingPanel
+      .getByRole('group', { name: 'Задержка удаления приветствия', exact: true })
+      .waitFor();
+    await settleVisualFrame(page);
+    assert.deepEqual(
+      await sectionAppearance(greetingPanel, 'greetingExpanded'),
+      single.sections.greetingExpanded,
+      'expanded greeting uses the same original editor buttons, toggles and delay stepper',
+    );
+    assert.equal(
+      await page.getByRole('button', { name: 'Проверить изменения', exact: true }).isEnabled(),
+      true,
+      'explicit greeting changes create a reviewable draft',
+    );
     const readCountAfterGreeting = (await readRequests(page)).length;
     await back(page);
+    await leaveDialog.waitFor();
+    await leaveDialog.getByRole('button', { name: 'Выйти без сохранения', exact: true }).click();
     await settingsHub(page, { scope: selectedScope, readCount: readCountAfterGreeting });
     await openSettingsSection(page, 'links', single);
-    assert.equal(await policy.inputValue(), '', 'discarded draft restores original mixed state');
+    assert.equal(await policyValue(policy), null, 'discarded draft restores original mixed state');
     assert.equal(
       await page.evaluate(
         () =>
@@ -664,14 +796,14 @@ for (const profile of [
       0,
       'discard and section navigation never prepare or save',
     );
-    await policy.selectOption('ALERT_ONLY');
+    await selectBlockingPolicy(policy);
     await back(page);
     await leaveDialog.waitFor();
     await back(page);
     await leaveDialog.waitFor({ state: 'hidden' });
     assert.equal(
-      await policy.inputValue(),
-      'ALERT_ONLY',
+      await policyValue(policy),
+      'BLOCKLIST_ONLY',
       'cancel leaving after section change keeps new draft',
     );
     await fits(page, `${profile.name} mixed settings`);
@@ -679,7 +811,7 @@ for (const profile of [
       path: join(output, `${profile.name}-mixed-settings.png`),
       animations: 'disabled',
     });
-    await page.getByRole('spinbutton', { name: 'Срок ограничения, ч', exact: true }).focus();
+    await page.getByRole('spinbutton', { name: LINK_PERIOD_LABEL, exact: true }).focus();
     await setPhoneKeyboard(page, { mode: 'resize', height: 230 });
     await fits(page, `${profile.name} settings keyboard`);
     const reviewBox = await page
@@ -703,7 +835,7 @@ for (const profile of [
       window.__networkRequests.find((row) => row.path.endsWith('/preview')),
     );
     assert.deepEqual(previewRequest.body.changes, [
-      { path: 'linkPolicy', op: 'set', value: 'ALERT_ONLY' },
+      { path: 'linkPolicy', op: 'set', value: 'BLOCKLIST_ONLY' },
     ]);
     assert.equal(previewRequest.body.recipients.length, 2);
     assert.equal('source' in previewRequest.body, false);
@@ -720,7 +852,7 @@ for (const profile of [
     );
 
     await openSelectedSettings('prepared-reload');
-    await page.getByLabel('Режим проверки ссылок', { exact: true }).selectOption('ALERT_ONLY');
+    await selectBlockingPolicy(linkPolicy(page.locator('.network-settings-editor')));
     await page.getByRole('button', { name: 'Проверить изменения', exact: true }).click();
     await page
       .getByRole('heading', { name: 'Изменения готовы к подтверждению', exact: true })
@@ -760,7 +892,7 @@ for (const profile of [
 
     if (profile.name === 'iphone-se-dark') {
       await openSelectedSettings('receipt-denied');
-      await page.getByLabel('Режим проверки ссылок', { exact: true }).selectOption('ALERT_ONLY');
+      await selectBlockingPolicy(linkPolicy(page.locator('.network-settings-editor')));
       await page.getByRole('button', { name: 'Проверить изменения', exact: true }).click();
       await page.waitForFunction(() =>
         [...document.querySelectorAll('button')].some(

@@ -4,10 +4,12 @@ export default function SettingsDuplicateMessageControls({
   mode,
   value,
   onChange,
+  disabled = false,
 }: {
-  mode: 'OFF' | 'OBSERVE' | 'DELETE_ONLY' | 'FULL';
-  value: ChatSettings['duplicateCompareMode'];
+  mode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY' | 'FULL';
+  value: ChatSettings['duplicateCompareMode'] | null;
   onChange: (value: ChatSettings['duplicateCompareMode']) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="settings-policy">
@@ -15,10 +17,15 @@ export default function SettingsDuplicateMessageControls({
         <span className="field__label">Сравнение сообщений</span>
         <select
           aria-label="Сравнение сообщений"
-          value={value}
-          disabled={mode === 'OFF'}
+          value={value ?? ''}
+          disabled={disabled || mode === 'OFF'}
           onChange={(event) => onChange(event.target.value === 'TEXT' ? 'TEXT' : 'MESSAGE')}
         >
+          {value === null ? (
+            <option value="" disabled>
+              Разные значения
+            </option>
+          ) : null}
           <option value="MESSAGE">Текст и картинки</option>
           <option value="TEXT">Только текст</option>
         </select>
@@ -30,7 +37,9 @@ export default function SettingsDuplicateMessageControls({
             ? 'Только удаление'
             : mode === 'OBSERVE'
               ? 'Наблюдение'
-              : 'Проверка недоступна'}
+              : mode === 'OFF'
+                ? 'Проверка недоступна'
+                : 'Доступность проверки зависит от каждого чата'}
       </span>
     </div>
   );

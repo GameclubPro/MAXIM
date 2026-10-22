@@ -105,14 +105,7 @@ export function SettingsLimitsSection(props: SettingsLimitsSectionProps) {
         footer={renderSectionSaveFooter('limits')}
       >
         {props.sharedContent ? (
-          <>
-            {expanded ? (
-              <>
-                <p role="status">{props.deleteSpammersRuntimeStatus}</p>
-                {props.sharedContent}
-              </>
-            ) : null}
-          </>
+          <>{expanded ? <>{props.sharedContent}</> : null}</>
         ) : (
           <>
             <div

@@ -1,16 +1,13 @@
 import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
-import { Suspense } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import {
   SettingsSectionIcon,
   SettingsSectionToggle,
 } from '../../components/ui/settings-section-toggle';
-import { Spinner } from '../../components/ui/spinner';
 import type { ApiTransport } from '../../lib/api/transport';
 import type { BroadcastLinkButtonFieldErrors } from '../../lib/broadcast-link-buttons';
 import { cn } from '../../lib/cn';
-import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
 import type {
   SettingsSectionEditorProps,
   SettingsSectionHintProps,
@@ -40,12 +37,6 @@ export type SettingsCommercialFilterSectionProps = SettingsSectionShellProps &
     hasTextFiltersBotButtonError: boolean;
     textFiltersBotButtonErrors: BroadcastLinkButtonFieldErrors[];
   };
-
-const LazySettingsCommercialFilterEditor =
-  recoverableLazyNamedComponent<SettingsCommercialFilterSectionProps>(
-    () => import('./settings-commercial-filter-editor'),
-    'SettingsCommercialFilterEditor',
-  );
 
 const SECTION_PRESENTATION = getNetworkSettingsSectionPresentation('chat', 'commercialFilter');
 
@@ -95,22 +86,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
         onDiscardChanges={() => discardSectionChanges('commercialFilter')}
         footer={renderSectionSaveFooter('commercialFilter')}
       >
-        {props.sharedContent ? (
-          <>{expanded ? props.sharedContent : null}</>
-        ) : (
-          <>
-            <div
-              id="settings-commercial-filter-content"
-              className={cn('settings-section__collapse', expanded && 'is-open')}
-            >
-              {expanded ? (
-                <Suspense fallback={<Spinner label="Загружаем фильтр рекламы" />}>
-                  <LazySettingsCommercialFilterEditor {...props} />
-                </Suspense>
-              ) : null}
-            </div>
-          </>
-        )}
+        {expanded ? props.sharedContent : null}
       </SettingsDrilldownPanel>
     </GlassCard>
   );

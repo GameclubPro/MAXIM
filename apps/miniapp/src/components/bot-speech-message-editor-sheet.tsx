@@ -27,6 +27,8 @@ type BotSpeechMessageEditorSheetProps = {
   value: string;
   defaultValue: string;
   image?: BotSpeechMediaImage | null;
+  imageMixed?: boolean;
+  textMixed?: boolean;
   onChange: (value: string) => void;
   onImageChange?: (image: BotSpeechMediaImage | null) => void;
   onReset: () => void;
@@ -99,6 +101,8 @@ export function BotSpeechMessageEditorSheet({
   value,
   defaultValue,
   image = null,
+  imageMixed = false,
+  textMixed = false,
   onChange,
   onImageChange,
   onReset,
@@ -121,7 +125,12 @@ export function BotSpeechMessageEditorSheet({
   const overlayStyle = useVisualViewportOverlayStyle(true);
   const hasImage = Boolean(image?.base64 && image.mimeType);
   const imagePreviewUrl = hasImage ? `data:${image?.mimeType};base64,${image?.base64}` : '';
-  const canReset = hasCustomBotSpeechText(value) || editorValue !== defaultValue || hasImage;
+  const canReset =
+    hasCustomBotSpeechText(value) ||
+    editorValue !== defaultValue ||
+    hasImage ||
+    imageMixed ||
+    textMixed;
   const remainingLength = BOT_MESSAGE_EDITOR_MAX_LENGTH - editorValue.length;
   const isNearLimit =
     remainingLength >= 0 && remainingLength <= Math.min(100, BOT_MESSAGE_EDITOR_MAX_LENGTH * 0.08);
@@ -283,6 +292,11 @@ export function BotSpeechMessageEditorSheet({
         </header>
 
         <div className="bot-message-editor-sheet__body">
+          {textMixed ? (
+            <p className="field__hint" role="status">
+              В сообществах разные тексты. Изменение заменит текст у выбранных сообществ.
+            </p>
+          ) : null}
           <MaxRichTextEditor
             ref={editorRef}
             value={editorValue}
@@ -290,7 +304,7 @@ export function BotSpeechMessageEditorSheet({
             disabled={isPreparingImage}
             onNormalizationReadyChange={setNormalizationReady}
             maxLength={BOT_MESSAGE_EDITOR_MAX_LENGTH}
-            placeholder="Свой текст"
+            placeholder={textMixed ? 'Введите общий текст' : 'Свой текст'}
             preserveCurlyBracePlaceholders
             ariaLabel={title}
             className="bot-message-editor-sheet__rich-editor"
@@ -299,9 +313,13 @@ export function BotSpeechMessageEditorSheet({
 
           {onImageChange ? (
             <div className="bot-message-editor-sheet__media" aria-busy={isPreparingImage}>
-              {hasImage ? (
+              {hasImage || imageMixed ? (
                 <div className="bot-message-editor-sheet__media-preview">
-                  <img src={imagePreviewUrl} alt="" />
+                  {hasImage ? (
+                    <img src={imagePreviewUrl} alt="" />
+                  ) : (
+                    <span>Разные изображения</span>
+                  )}
                   <button
                     type="button"
                     className="bot-message-editor-sheet__media-remove"
@@ -426,7 +444,7 @@ export function BotSpeechMessageEditorSheet({
               disabled={isPreparingImage}
               onClick={() => {
                 setImageError('');
-                if (hasImage) {
+                if (hasImage || imageMixed) {
                   onImageChange?.(null);
                 }
                 setEditorValue(defaultValue);

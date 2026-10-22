@@ -7,7 +7,6 @@ import {
   type BotSpeechMediaImage,
   type ChatSettings,
   type ChatSettingsScreenResponse,
-  formatDeleteBotMessagesDelayLabel,
 } from '@maxim/contracts/settings';
 import { type BroadcastImage, type SendBroadcastResult } from '@maxim/contracts/broadcast';
 import type { BotSpeechMediaFieldKey } from '@maxim/contracts/bot-speech';
@@ -29,7 +28,6 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../../lib/broadcast-schedule';
 import type { SendBroadcastPayload } from '../../lib/api/shared-types';
-import { cn } from '../../lib/cn';
 import type { SettingsWorkspaceState } from '../../lib/settings-workspace-state';
 import type { ApplySectionKey } from '../settings-page-state';
 import {
@@ -133,15 +131,7 @@ export function areBroadcastImagesReady(images: BroadcastImage[]): boolean {
   );
 }
 
-export type DeleteDelayStepperProps = {
-  title: string;
-  value: number;
-  fieldError?: string;
-  groupAriaLabel: string;
-  decreaseAriaLabel: string;
-  increaseAriaLabel: string;
-  onAdjust: (direction: number) => void;
-};
+export { DeleteDelayStepper, type DeleteDelayStepperProps } from './settings-delete-delay-stepper';
 export type ChatSettingsButtonGroup = {
   buttonsKey:
     | 'linkBotButtons'
@@ -411,61 +401,6 @@ export const DESKTOP_TOGGLE_ROW_BLOCKERS = [
   '.channel-settings-hint-popover',
   '.settings-native-toggle__hint',
 ].join(', ');
-
-export function DeleteDelayStepper({
-  title,
-  value,
-  fieldError,
-  groupAriaLabel,
-  decreaseAriaLabel,
-  increaseAriaLabel,
-  onAdjust,
-}: DeleteDelayStepperProps) {
-  return (
-    <div
-      className={cn(
-        'settings-native-toggle',
-        'settings-native-toggle--nested',
-        fieldError && 'field--error',
-      )}
-    >
-      <div className="settings-native-toggle__row">
-        <span className="settings-native-toggle__title">{title}</span>
-
-        <div className="ban-duration-stepper" role="group" aria-label={groupAriaLabel}>
-          <button
-            type="button"
-            className="ban-duration-stepper__button"
-            onClick={() => onAdjust(-1)}
-            disabled={value <= BOT_MESSAGES_DELETE_DELAY_OPTIONS[0]}
-            aria-label={decreaseAriaLabel}
-          >
-            -
-          </button>
-
-          <output className="ban-duration-stepper__value" aria-live="polite">
-            {formatDeleteBotMessagesDelayLabel(value)}
-          </output>
-
-          <button
-            type="button"
-            className="ban-duration-stepper__button"
-            onClick={() => onAdjust(1)}
-            disabled={
-              value >=
-              BOT_MESSAGES_DELETE_DELAY_OPTIONS[BOT_MESSAGES_DELETE_DELAY_OPTIONS.length - 1]
-            }
-            aria-label={increaseAriaLabel}
-          >
-            +
-          </button>
-        </div>
-      </div>
-
-      {fieldError ? <small className="field__hint">{fieldError}</small> : null}
-    </div>
-  );
-}
 
 export function PublishedRulesButtonToggleSlot(props: PublishedRulesButtonToggleProps) {
   return (

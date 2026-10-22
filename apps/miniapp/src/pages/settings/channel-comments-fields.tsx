@@ -1,43 +1,49 @@
 import type { ChannelSettingsFieldAdapter } from '../../features/network-settings/field-model';
-import { FieldToggle, FieldText } from '../../features/network-settings/settings-field-controls';
-const toggles = [
-  ['commentsEnabled', 'Комментарии под постами'],
-  ['commentsModerationEnabled', 'Проверять комментарии'],
-  ['commentsBlockLinksEnabled', 'Запрещать ссылки'],
-  ['commentsAntiSpamEnabled', 'Защита от повторов'],
-  ['commentsLimitTwoInRowEnabled', 'Не больше двух подряд'],
-] as const;
+import { ChannelSettingsToggleCard } from './channel-settings-toggle-card';
+import { ChannelSettingsTextField } from './channel-settings-text-field';
 export function ChannelCommentsFields({ fields }: { fields: ChannelSettingsFieldAdapter }) {
-  const enabled = fields.read('commentsEnabled'),
-    moderation = fields.read('commentsModerationEnabled');
+  const enabled = fields.read('commentsEnabled');
+  const moderation = fields.read('commentsModerationEnabled');
+  const toggle = (
+    path:
+      | 'commentsEnabled'
+      | 'commentsModerationEnabled'
+      | 'commentsBlockLinksEnabled'
+      | 'commentsAntiSpamEnabled'
+      | 'commentsLimitTwoInRowEnabled',
+    title: string,
+  ) => (
+    <ChannelSettingsToggleCard
+      title={title}
+      state={fields.read(path)}
+      disabled={fields.readOnly}
+      onChange={(value) => fields.setScalar(path, value)}
+      error={fields.error(path)}
+    />
+  );
   return (
-    <div className="channel-settings-stack channel-settings-stack--form">
-      {toggles.map(([path, label], index) => {
-        if (index > 0 && enabled.kind === 'common' && !enabled.value) return null;
-        if (index > 1 && moderation.kind === 'common' && !moderation.value) return null;
-        return (
-          <FieldToggle
-            key={path}
-            label={label}
-            state={fields.read(path)}
-            onChange={(value) => fields.setScalar(path, value)}
-            disabled={fields.readOnly}
-            error={fields.error(path)}
-          />
-        );
-      })}
+    <>
+      {toggle('commentsEnabled', 'Комментарии под постами')}
       {enabled.kind !== 'common' || enabled.value ? (
-        <FieldText
-          label="Сообщение перед комментариями"
-          placeholder="Например: поделитесь мнением о публикации"
-          multiline
-          state={fields.read('commentsMessageText')}
-          onChange={(value) => fields.setScalar('commentsMessageText', value)}
-          onError={(error) => fields.setError('commentsMessageText', error)}
-          disabled={fields.readOnly}
-          error={fields.error('commentsMessageText')}
-        />
+        <div className="channel-settings-stack channel-settings-stack--form">
+          <ChannelSettingsTextField
+            fields={fields}
+            path="commentsMessageText"
+            label="Сообщение перед комментариями"
+            placeholder="Например: поделитесь мнением о публикации"
+            rows={2}
+            className="channel-settings-field--wide"
+          />
+          {toggle('commentsModerationEnabled', 'Проверять комментарии')}
+          {moderation.kind !== 'common' || moderation.value ? (
+            <div className="channel-settings-stack channel-settings-toggle-grid">
+              {toggle('commentsBlockLinksEnabled', 'Запрещать ссылки')}
+              {toggle('commentsAntiSpamEnabled', 'Защита от повторов')}
+              {toggle('commentsLimitTwoInRowEnabled', 'Не больше двух подряд')}
+            </div>
+          ) : null}
+        </div>
       ) : null}
-    </div>
+    </>
   );
 }

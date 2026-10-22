@@ -1,8 +1,7 @@
-import { NavArrowRight } from 'iconoir-react';
 import { lazy, Suspense, useCallback, useState } from 'react';
 import { getAdminContactLabel } from '../lib/admin-contact-profile-url';
 import type { ApiTransport } from '../lib/api/transport';
-import { cn } from '../lib/cn';
+import { AdminContactToggleField } from './admin-contact-toggle-field';
 
 const LazyAdminContactPicker = lazy(() =>
   import('./admin-contact-picker').then((module) => ({
@@ -43,47 +42,17 @@ export default function AdminContactToggle({
   const selectedName =
     (selectedContact?.url === url ? selectedContact.name : null) ?? getAdminContactLabel(url);
   return (
-    <div
-      className={cn(
-        'settings-native-toggle',
-        nested && 'settings-native-toggle--nested',
-        className,
-      )}
+    <AdminContactToggleField
+      title={title}
+      checked={checked}
+      selectedName={selectedName}
+      onChange={(enabled) => (enabled ? setOpen(true) : onChange(false, ''))}
+      onOpen={() => setOpen(true)}
+      ariaLabel={ariaLabel}
+      meta={meta}
+      nested={nested}
+      className={className}
     >
-      <div className="settings-native-toggle__row">
-        {meta ? (
-          <div className="settings-native-toggle__title-wrap">
-            <div className="rules-native-card__copy">
-              <span className="settings-native-toggle__title">{title}</span>
-              <span className="rules-native-card__meta">{meta}</span>
-            </div>
-          </div>
-        ) : (
-          <span className="settings-native-toggle__title">{title}</span>
-        )}
-        <label className="settings-native-switch" aria-label={ariaLabel}>
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={(event) => (event.target.checked ? setOpen(true) : onChange(false, ''))}
-          />
-          <span className="toggle-switch" aria-hidden>
-            <span className="toggle-switch__thumb" />
-          </span>
-        </label>
-      </div>
-      {checked ? (
-        <button
-          type="button"
-          className="admin-contact-selection"
-          onClick={() => setOpen(true)}
-          aria-label={`Выбрать администратора: ${selectedName}`}
-          aria-haspopup="dialog"
-        >
-          <span>{selectedName}</span>
-          <NavArrowRight aria-hidden />
-        </button>
-      ) : null}
       {open ? (
         <Suspense fallback={<p role="status">Загрузка администраторов...</p>}>
           <LazyAdminContactPicker
@@ -99,6 +68,6 @@ export default function AdminContactToggle({
           />
         </Suspense>
       ) : null}
-    </div>
+    </AdminContactToggleField>
   );
 }

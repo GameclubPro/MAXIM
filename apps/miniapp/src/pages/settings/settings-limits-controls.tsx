@@ -36,6 +36,7 @@ export type MaxMessageLengthSliderProps = {
   max: number;
   step: number;
   onCommit: (value: ChatSettings['maxMessageLength']) => void;
+  disabled?: boolean;
 };
 
 export function MaxMessageLengthSlider({
@@ -44,6 +45,7 @@ export function MaxMessageLengthSlider({
   max,
   step,
   onCommit,
+  disabled,
 }: MaxMessageLengthSliderProps) {
   const [localValue, setLocalValue] = useState(value);
   const [isDragging, setIsDragging] = useState(false);
@@ -88,6 +90,7 @@ export function MaxMessageLengthSlider({
         max={max}
         step={step}
         value={localValue}
+        disabled={disabled}
         onPointerDown={() => {
           isDraggingRef.current = true;
           setIsDragging(true);

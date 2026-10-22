@@ -7,11 +7,14 @@ import type {
 } from '../../features/network-settings/field-model';
 import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
 import { Spinner } from '../../components/ui/spinner';
+import type { DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 
 export type SharedChatSettingsContext = {
   mode: 'single' | 'network';
+  hasPublishedRules?: boolean;
   api: ApiTransport;
   sectionTools?: Partial<Record<ApplySectionKey, ReactNode>>;
+  stopWordsTools?: Partial<Record<'toolbar' | 'notice' | 'preview' | 'imageScan', ReactNode>>;
   navigationAllowlist?: ReactNode;
   requiredSubscriptionSources?: ReactNode;
   renderAdminContact?: (input: {
@@ -24,6 +27,14 @@ export type SharedChatSettingsContext = {
   runtimeNotes?: Partial<Record<ApplySectionKey, ReactNode>>;
   invitationActivationAvailable?: boolean;
   reportsActivationAvailable?: boolean;
+  limitsRuntime?: {
+    deleteSpammersStatus: string;
+    enforcementMode?: string;
+  };
+  duplicatePresentation?: {
+    messageMode: 'OFF' | 'OBSERVE' | 'DELETE_ONLY' | 'FULL';
+    photoPolicy: DuplicatePhotoEffectivePolicy;
+  };
 };
 
 export type SharedChatSettingsSectionProps = {

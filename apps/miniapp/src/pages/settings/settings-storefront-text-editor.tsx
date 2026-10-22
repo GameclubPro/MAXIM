@@ -1,37 +1,136 @@
 import { ArrowUpRight, Undo } from 'iconoir-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH,
   KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH,
   KARAVAN_STOREFRONT_TEXT_DEFAULTS,
-  resolveKaravanStorefrontTexts,
   type KaravanStorefrontTextField,
   type KaravanStorefrontTexts,
 } from '@maxim/contracts/karavan-storefront';
+import type {
+  ChatSettingsFieldAdapter,
+  SettingsFieldState,
+} from '../../features/network-settings/field-model';
 
 const buttonFields = [
   ['karavanStorefrontOpenButtonText', 'Кнопка продавца'],
   ['karavanStorefrontCatalogButtonText', 'Кнопка каталога'],
   ['karavanStorefrontCreateButtonText', 'Кнопка создания витрины'],
 ] as const;
-
-export function SettingsStorefrontTextEditor({
-  draft,
+type Props =
+  | {
+      draft: KaravanStorefrontTexts;
+      onChange: (field: KaravanStorefrontTextField, value: string) => void;
+      fields?: never;
+    }
+  | { fields: ChatSettingsFieldAdapter; draft?: never; onChange?: never };
+function StorefrontTextField({
+  field,
+  label,
+  state,
+  disabled,
   onChange,
+  error,
+  onError,
+  multiline = false,
 }: {
-  draft: KaravanStorefrontTexts;
-  onChange: (field: KaravanStorefrontTextField, value: string) => void;
+  field: KaravanStorefrontTextField;
+  label: string;
+  state: SettingsFieldState<string>;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  error?: string | null;
+  onError: (error: string | null) => void;
+  multiline?: boolean;
 }) {
-  const [variant, setVariant] = useState<'storefront' | 'directory'>('storefront');
-  const texts = resolveKaravanStorefrontTexts(draft);
-  const hasCustomText = Object.keys(KARAVAN_STOREFRONT_TEXT_DEFAULTS).some((field) =>
-    Boolean(draft[field as KaravanStorefrontTextField]),
+  const key = state.kind === 'common' ? state.value : state.kind;
+  const [buffer, setBuffer] = useState<string | null>(null);
+  useEffect(() => setBuffer(null), [key]);
+  const value = buffer ?? (state.kind === 'common' ? state.value : '');
+  const maxLength = multiline
+    ? KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH
+    : KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH;
+  const props = {
+    id: field,
+    value,
+    placeholder:
+      state.kind === 'mixed' ? 'Разные значения' : KARAVAN_STOREFRONT_TEXT_DEFAULTS[field],
+    maxLength,
+    disabled: disabled || state.kind === 'loading',
+    'aria-invalid': Boolean(error),
+    onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      const next = multiline
+        ? event.target.value
+        : event.target.value.replace(/[\r\n\u2028\u2029]+/gu, ' ');
+      setBuffer(next);
+      try {
+        onChange(next);
+        onError(null);
+      } catch (cause) {
+        onError(cause instanceof Error ? cause.message : 'Проверьте значение.');
+      }
+    },
+  };
+  return (
+    <label className="settings-storefront-editor__field" htmlFor={field}>
+      <span className="settings-storefront-editor__label">
+        <span>{label}</span>
+        <span className="settings-storefront-editor__counter">
+          {buffer !== null || state.kind === 'common' ? value.length : '—'}/{maxLength}
+        </span>
+      </span>
+      {multiline ? <textarea {...props} rows={3} /> : <input {...props} type="text" />}
+      {error ? (
+        <small className="field__hint" role="alert">
+          {error}
+        </small>
+      ) : null}
+    </label>
   );
+}
+export function SettingsStorefrontTextEditor(props: Props) {
+  const [variant, setVariant] = useState<'storefront' | 'directory'>('storefront');
+  const [resetVersion, setResetVersion] = useState(0);
+  const state = (field: KaravanStorefrontTextField): SettingsFieldState<string> =>
+    props.fields ? props.fields.read(field) : { kind: 'common', value: props.draft[field] };
+  const change = (field: KaravanStorefrontTextField, value: string) => {
+    if (props.fields) props.fields.setScalar(field, value);
+    else props.onChange(field, value);
+  };
+  const preview = (field: KaravanStorefrontTextField) => {
+    const value = state(field);
+    return value.kind === 'common'
+      ? value.value.trim() || KARAVAN_STOREFRONT_TEXT_DEFAULTS[field]
+      : value.kind === 'mixed'
+        ? 'Разные значения'
+        : 'Загрузка…';
+  };
+  const paths = Object.keys(KARAVAN_STOREFRONT_TEXT_DEFAULTS) as KaravanStorefrontTextField[];
+  const hasCustomText = paths.some((field) => {
+    const value = state(field);
+    return value.kind === 'mixed' || (value.kind === 'common' && Boolean(value.value));
+  });
   const previewButtons =
     variant === 'storefront'
-      ? [texts.karavanStorefrontOpenButtonText]
-      : [texts.karavanStorefrontCatalogButtonText, texts.karavanStorefrontCreateButtonText];
-
+      ? [preview('karavanStorefrontOpenButtonText')]
+      : [
+          preview('karavanStorefrontCatalogButtonText'),
+          preview('karavanStorefrontCreateButtonText'),
+        ];
+  const disabled = Boolean(props.fields?.readOnly);
+  const textField = (field: KaravanStorefrontTextField, label: string, multiline = false) => (
+    <StorefrontTextField
+      key={`${field}-${resetVersion}`}
+      field={field}
+      label={label}
+      state={state(field)}
+      disabled={disabled}
+      onChange={(value) => change(field, value)}
+      error={props.fields?.error(field)}
+      onError={(error) => props.fields?.setError(field, error)}
+      multiline={multiline}
+    />
+  );
   return (
     <section className="settings-storefront-editor" aria-labelledby="storefront-text-title">
       <div className="settings-storefront-editor__head">
@@ -41,57 +140,24 @@ export function SettingsStorefrontTextEditor({
           className="settings-storefront-editor__reset"
           aria-label="Вернуть стандартные тексты витрины"
           title="Вернуть стандартные тексты"
-          disabled={!hasCustomText}
+          disabled={
+            disabled || !hasCustomText || paths.some((field) => state(field).kind === 'loading')
+          }
           onClick={() => {
-            for (const field of Object.keys(KARAVAN_STOREFRONT_TEXT_DEFAULTS)) {
-              onChange(field as KaravanStorefrontTextField, '');
-            }
+            if (props.fields)
+              props.fields.transact(paths.map((path) => ({ op: 'set', path, value: '' })));
+            else for (const field of paths) props.onChange(field, '');
+            for (const field of paths) props.fields?.setError(field, null);
+            setResetVersion((version) => version + 1);
           }}
         >
           <Undo aria-hidden />
         </button>
       </div>
-
-      <label className="settings-storefront-editor__field" htmlFor="karavanStorefrontMessageText">
-        <span className="settings-storefront-editor__label">
-          <span>Текст сообщения</span>
-          <span className="settings-storefront-editor__counter">
-            {draft.karavanStorefrontMessageText.length}/{KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH}
-          </span>
-        </span>
-        <textarea
-          id="karavanStorefrontMessageText"
-          value={draft.karavanStorefrontMessageText}
-          placeholder={KARAVAN_STOREFRONT_TEXT_DEFAULTS.karavanStorefrontMessageText}
-          maxLength={KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH}
-          rows={3}
-          onChange={(event) => onChange('karavanStorefrontMessageText', event.target.value)}
-        />
-      </label>
-
+      {textField('karavanStorefrontMessageText', 'Текст сообщения', true)}
       <div className="settings-storefront-editor__buttons">
-        {buttonFields.map(([field, label]) => (
-          <label key={field} className="settings-storefront-editor__field" htmlFor={field}>
-            <span className="settings-storefront-editor__label">
-              <span>{label}</span>
-              <span className="settings-storefront-editor__counter">
-                {draft[field].length}/{KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH}
-              </span>
-            </span>
-            <input
-              id={field}
-              type="text"
-              value={draft[field]}
-              placeholder={KARAVAN_STOREFRONT_TEXT_DEFAULTS[field]}
-              maxLength={KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH}
-              onChange={(event) =>
-                onChange(field, event.target.value.replace(/[\r\n\u2028\u2029]+/gu, ' '))
-              }
-            />
-          </label>
-        ))}
+        {buttonFields.map(([field, label]) => textField(field, label))}
       </div>
-
       <div className="settings-storefront-editor__preview-head">
         <h4>Предпросмотр</h4>
         <div
@@ -122,7 +188,7 @@ export function SettingsStorefrontTextEditor({
       >
         <div className="settings-storefront-editor__message">
           <span className="settings-storefront-editor__sender">Бот</span>
-          <p>{texts.karavanStorefrontMessageText}</p>
+          <p>{preview('karavanStorefrontMessageText')}</p>
         </div>
         <div className="settings-storefront-editor__preview-buttons">
           {previewButtons.map((label, index) => (

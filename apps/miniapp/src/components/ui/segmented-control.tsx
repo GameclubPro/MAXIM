@@ -10,7 +10,7 @@ export type SegmentedOption<T extends string> = {
 };
 
 type SegmentedControlProps<T extends string> = {
-  value: T;
+  value: T | null;
   options: Array<SegmentedOption<T>>;
   onChange: (value: T) => void;
   className?: string;
@@ -106,7 +106,11 @@ export function SegmentedControl<T extends string>({
             onKeyDown={(event) => moveSelection(event, option)}
             role="radio"
             aria-checked={active}
-            tabIndex={active ? 0 : -1}
+            tabIndex={
+              active || (value === null && option === options.find((item) => !item.disabled))
+                ? 0
+                : -1
+            }
             data-segmented-value={option.value}
             disabled={option.disabled}
           >

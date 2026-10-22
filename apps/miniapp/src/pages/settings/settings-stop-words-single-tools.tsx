@@ -5,6 +5,7 @@ import type { ApiTransport } from '../../lib/api/transport';
 import { getStopWordsStatus, previewStopWords } from '../../lib/api/stop-words-client';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import { ActionConfirmSheet } from '../../components/ui/action-confirm-sheet';
+import { AppIcon } from '../../components/ui/app-icon';
 
 // FLAG: Exact-chat capabilities stay outside source-free shared settings forms.
 export function SettingsStopWordsSingleTools({
@@ -13,12 +14,20 @@ export function SettingsStopWordsSingleTools({
   policy,
   reloadPolicy,
   busy,
+  slot,
+  revision,
+  dirty,
+  invalid = false,
 }: {
   api: ApiTransport;
   chatId: string;
   policy?: StopWordsPolicy;
   reloadPolicy: () => Promise<void>;
   busy: boolean;
+  slot: 'toolbar' | 'notice' | 'preview' | 'imageScan';
+  revision?: number;
+  dirty: boolean;
+  invalid?: boolean;
 }) {
   const [text, setText] = useState('');
   const [confirmReload, setConfirmReload] = useState(false);
@@ -28,7 +37,7 @@ export function SettingsStopWordsSingleTools({
     staleTime: 5000,
     refetchInterval: 15000,
     retry: false,
-    enabled: Boolean(chatId),
+    enabled: Boolean(chatId) && (slot === 'notice' || slot === 'imageScan'),
   });
   const key = JSON.stringify({
     chatId,
@@ -64,70 +73,81 @@ export function SettingsStopWordsSingleTools({
           : availability === 'unavailable'
             ? 'Состояние недоступно'
             : 'Проверяем доступность';
-  return (
-    <>
-      <p role="status">Распознавание текста на изображениях: {availabilityText}</p>
-      <details className="stop-words-editor__section">
-        <summary>Проверка сообщения</summary>
-        <textarea
-          rows={3}
-          maxLength={4000}
-          value={text}
-          aria-label="Сообщение для проверки"
-          onChange={(event) => setText(event.target.value)}
-        />
+  if (slot === 'imageScan') return <p role="status">{availabilityText}</p>;
+  if (slot === 'notice')
+    return (status.data?.revision ?? 0) > (revision ?? 0) ? (
+      <p role="status">Список изменён другим администратором.</p>
+    ) : null;
+  if (slot === 'toolbar')
+    return (
+      <>
         <button
           type="button"
-          className="button button--accent"
-          disabled={!policy || !text.trim() || tester.isPending || busy}
-          onClick={() => policy && tester.mutate({ key, chatId, policy, text })}
+          className="stop-words-editor__icon"
+          title="Загрузить сохранённый список"
+          aria-label="Загрузить сохранённый список"
+          disabled={busy || reload.isPending}
+          onClick={() => (dirty ? setConfirmReload(true) : reload.mutate())}
         >
-          {tester.isPending ? 'Проверяем' : 'Проверить'}
+          <AppIcon icon="Refresh" />
         </button>
-        {tester.isError && tester.variables.key === key ? (
-          <p role="alert">
-            {describeUserFacingError(tester.error, 'Не удалось проверить сообщение.')}
-          </p>
+        {reload.isError ? (
+          <p role="alert">{describeUserFacingError(reload.error, 'Не удалось обновить список.')}</p>
         ) : null}
-        {tester.data?.key === key ? (
-          <div role="status">
-            {!tester.data.result.enabled
-              ? 'Модуль выключен'
-              : !tester.data.result.matches.length
-                ? 'Совпадений нет'
-                : tester.data.result.matches.map((match) => (
-                    <p key={match.ruleId}>
-                      <strong>{match.value}</strong>: <mark>{match.fragment}</mark> ·{' '}
-                      {match.matchKind === 'masked'
-                        ? 'маскировка'
-                        : match.matchKind === 'domain'
-                          ? 'запрещённый сайт'
-                          : 'точное совпадение'}
-                    </p>
-                  ))}
-          </div>
-        ) : null}
-      </details>
+        <ActionConfirmSheet
+          id="shared-stop-words-reload"
+          open={confirmReload}
+          title="Загрузить сохранённый список?"
+          summary="Несохранённые изменения будут отменены."
+          confirmLabel="Загрузить"
+          isBusy={reload.isPending}
+          onClose={() => setConfirmReload(false)}
+          onConfirm={() => reload.mutate()}
+        />
+      </>
+    );
+  return (
+    <details className="stop-words-editor__section">
+      <summary>Проверка сообщения</summary>
+      <textarea
+        rows={3}
+        maxLength={4000}
+        value={text}
+        aria-label="Сообщение для проверки"
+        onChange={(event) => setText(event.target.value)}
+      />
       <button
         type="button"
-        disabled={busy || reload.isPending}
-        onClick={() => setConfirmReload(true)}
+        className="button button--accent"
+        disabled={!policy || !text.trim() || tester.isPending || busy || invalid}
+        onClick={() => policy && tester.mutate({ key, chatId, policy, text })}
       >
-        Загрузить сохранённый список
+        <AppIcon icon="Play" />
+        {tester.isPending ? 'Проверяем' : 'Проверить'}
       </button>
-      {reload.isError ? (
-        <p role="alert">{describeUserFacingError(reload.error, 'Не удалось загрузить список.')}</p>
+      {tester.isError && tester.variables.key === key ? (
+        <p role="alert">
+          {describeUserFacingError(tester.error, 'Не удалось проверить сообщение.')}
+        </p>
       ) : null}
-      <ActionConfirmSheet
-        id="shared-stop-words-reload"
-        open={confirmReload}
-        title="Загрузить сохранённый список?"
-        summary="Несохранённые изменения будут отменены."
-        confirmLabel="Загрузить"
-        isBusy={reload.isPending}
-        onClose={() => setConfirmReload(false)}
-        onConfirm={() => reload.mutate()}
-      />
-    </>
+      {tester.data?.key === key ? (
+        <div role="status">
+          {!tester.data.result.enabled
+            ? 'Модуль выключен'
+            : !tester.data.result.matches.length
+              ? 'Совпадений нет'
+              : tester.data.result.matches.map((match) => (
+                  <p key={match.ruleId}>
+                    <strong>{match.value}</strong>: <mark>{match.fragment}</mark> ·{' '}
+                    {match.matchKind === 'masked'
+                      ? 'маскировка'
+                      : match.matchKind === 'domain'
+                        ? 'запрещённый сайт'
+                        : 'точное совпадение'}
+                  </p>
+                ))}
+        </div>
+      ) : null}
+    </details>
   );
 }

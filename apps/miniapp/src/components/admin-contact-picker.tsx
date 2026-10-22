@@ -1,13 +1,10 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { Check, RefreshDouble, Search, Xmark } from 'iconoir-react';
-import { useEffect, useId, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { AppIcon } from './ui/app-icon';
+import { useEffect, useState } from 'react';
 import { buildAdminContactOptions } from '../lib/admin-contact-profile-url';
 import type { ApiTransport } from '../lib/api/transport';
-import { isTopmostModalDialog, useDialogFocusTrap } from '../lib/dialog-focus';
-import { useNativeBackHandler } from '../lib/native-back';
-import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 import { PersonAvatar } from './ui/person-avatar';
+import { AdminContactPickerPanel } from './admin-contact-picker-panel';
 import './admin-contact-toggle.css';
 
 type AdminContactPickerProps = {
@@ -29,19 +26,6 @@ export function AdminContactPicker({
 }: AdminContactPickerProps) {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const panelRef = useRef<HTMLElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const titleId = useId();
-  const overlayStyle = useVisualViewportOverlayStyle(true);
-  useDialogFocusTrap(true, panelRef, closeButtonRef);
-  useNativeBackHandler(
-    () => {
-      close();
-      return true;
-    },
-    { priority: 740 },
-  );
-
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 250);
     return () => window.clearTimeout(timer);
@@ -67,131 +51,87 @@ export function AdminContactPicker({
   });
   const options = buildAdminContactOptions(admins.data?.pages.flatMap((page) => page.items) ?? []);
 
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && panelRef.current && isTopmostModalDialog(panelRef.current)) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        close();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [close]);
-
-  const portalTarget = document.querySelector('.design-preview__device-screen') ?? document.body;
-  return createPortal(
-    <div className="admin-contact-picker" style={overlayStyle}>
-      <button
-        type="button"
-        className="admin-contact-picker__backdrop"
-        tabIndex={-1}
-        aria-label="Закрыть выбор администратора"
-        onClick={close}
-      />
-      <section
-        ref={panelRef}
-        className="admin-contact-picker__panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        tabIndex={-1}
-      >
-        <header className="admin-contact-picker__header">
-          <strong id={titleId}>Администраторы чата</strong>
-          <button
-            ref={closeButtonRef}
-            type="button"
-            onClick={close}
-            aria-label="Закрыть"
-            title="Закрыть"
-          >
-            <Xmark aria-hidden />
-          </button>
-        </header>
-        <label className="admin-contact-picker__search">
-          <Search aria-hidden />
-          <input
-            type="search"
-            value={search}
-            maxLength={100}
-            placeholder="Поиск по имени"
-            aria-label="Поиск администратора"
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </label>
-        <div className="admin-contact-picker__list" aria-busy={admins.isFetching}>
-          {admins.isPending ? <p role="status">Загрузка администраторов...</p> : null}
-          {admins.isError ? (
-            <div className="admin-contact-picker__status" role="alert">
-              <p>Не удалось загрузить администраторов.</p>
-              <button
-                type="button"
-                disabled={admins.isFetching}
-                onClick={() => {
-                  if (admins.isFetchNextPageError) void admins.fetchNextPage();
-                  else void admins.refetch();
-                }}
-              >
-                <RefreshDouble aria-hidden />
-                Повторить
-              </button>
-            </div>
-          ) : null}
-          {!admins.isPending && !admins.isError && options.length === 0 ? (
-            <p role="status">
-              {admins.hasNextPage ? 'Поиск администраторов...' : 'Администраторы не найдены.'}
-            </p>
-          ) : null}
-          {options.map((option) => (
+  return (
+    <AdminContactPickerPanel search={search} onSearch={setSearch} onClose={close}>
+      <div className="admin-contact-picker__list" aria-busy={admins.isFetching}>
+        {admins.isPending ? <p role="status">Загрузка администраторов...</p> : null}
+        {admins.isError ? (
+          <div className="admin-contact-picker__status" role="alert">
+            <p>Не удалось загрузить администраторов.</p>
             <button
-              key={option.userId}
               type="button"
-              className="admin-contact-picker__option"
-              disabled={!option.contactUrl || search.trim() !== debouncedSearch}
-              aria-pressed={checked && option.contactUrl === url}
+              disabled={admins.isFetching}
               onClick={() => {
-                if (!option.contactUrl) return;
-                onSelect(option.contactUrl, option.userDisplayName);
-                close();
+                if (admins.isFetchNextPageError) void admins.fetchNextPage();
+                else void admins.refetch();
               }}
             >
-              <PersonAvatar
-                avatarUrl={option.avatarUrl}
-                fallback={option.userDisplayName.slice(0, 1)}
-                className="admin-contact-picker__avatar"
+              <AppIcon
+                icon="RefreshDouble"
+                width="1.5em"
+                height="1.5em"
+                style={{ strokeWidth: 1.5 }}
+                aria-hidden
               />
-              <span className="admin-contact-picker__copy">
-                <span>{option.userDisplayName}</span>
-                <small>
-                  {!option.contactUrl
-                    ? 'Профиль недоступен'
-                    : option.role === 'owner'
-                      ? 'Владелец'
-                      : 'Администратор'}
-                </small>
-              </span>
-              {checked && option.contactUrl === url ? <Check aria-hidden /> : null}
+              Повторить
             </button>
-          ))}
-          {admins.hasNextPage && !admins.isError ? (
-            <button
-              type="button"
-              className="admin-contact-picker__more"
-              disabled={admins.isFetching}
-              onClick={() => void admins.fetchNextPage()}
-            >
-              {admins.isFetchingNextPage ? 'Загрузка...' : 'Показать ещё'}
-            </button>
-          ) : null}
-        </div>
-      </section>
-    </div>,
-    portalTarget,
+          </div>
+        ) : null}
+        {!admins.isPending && !admins.isError && options.length === 0 ? (
+          <p role="status">
+            {admins.hasNextPage ? 'Поиск администраторов...' : 'Администраторы не найдены.'}
+          </p>
+        ) : null}
+        {options.map((option) => (
+          <button
+            key={option.userId}
+            type="button"
+            className="admin-contact-picker__option"
+            disabled={!option.contactUrl || search.trim() !== debouncedSearch}
+            aria-pressed={checked && option.contactUrl === url}
+            onClick={() => {
+              if (!option.contactUrl) return;
+              onSelect(option.contactUrl, option.userDisplayName);
+              close();
+            }}
+          >
+            <PersonAvatar
+              avatarUrl={option.avatarUrl}
+              fallback={option.userDisplayName.slice(0, 1)}
+              className="admin-contact-picker__avatar"
+            />
+            <span className="admin-contact-picker__copy">
+              <span>{option.userDisplayName}</span>
+              <small>
+                {!option.contactUrl
+                  ? 'Профиль недоступен'
+                  : option.role === 'owner'
+                    ? 'Владелец'
+                    : 'Администратор'}
+              </small>
+            </span>
+            {checked && option.contactUrl === url ? (
+              <AppIcon
+                icon="Check"
+                width="1.5em"
+                height="1.5em"
+                style={{ strokeWidth: 1.5 }}
+                aria-hidden
+              />
+            ) : null}
+          </button>
+        ))}
+        {admins.hasNextPage && !admins.isError ? (
+          <button
+            type="button"
+            className="admin-contact-picker__more"
+            disabled={admins.isFetching}
+            onClick={() => void admins.fetchNextPage()}
+          >
+            {admins.isFetchingNextPage ? 'Загрузка...' : 'Показать ещё'}
+          </button>
+        ) : null}
+      </div>
+    </AdminContactPickerPanel>
   );
 }

@@ -8,7 +8,7 @@
       "label": "Startup",
       "entries": ["index.html", "src/pages/chats-page.tsx"],
       "limits": {
-        "jsGzipBytes": 130688,
+        "jsGzipBytes": 131584,
         "cssGzipBytes": 43008
       },
       "allowances": [
@@ -36,7 +36,7 @@
       "entries": ["src/pages/settings-page.tsx"],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 155648,
+        "jsGzipBytes": 157696,
         "cssGzipBytes": 79872
       }
     },
@@ -77,12 +77,15 @@
         "src/pages/settings/channel-post-signature-fields.tsx",
         "src/pages/settings/channel-post-suggestions-fields.tsx",
         "src/pages/settings/shared-supplementary-chat-settings-fields.tsx",
-        "src/pages/settings/shared-speech-style-fields.tsx"
+        "src/pages/settings/shared-speech-style-fields.tsx",
+        "src/pages/settings/shared-duplicate-settings-fields.tsx",
+        "src/pages/settings/shared-stop-words-settings-fields.tsx",
+        "src/features/network-settings/network-subscription-sources.tsx"
       ],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 114688,
-        "cssGzipBytes": 52224
+        "jsGzipBytes": 168960,
+        "cssGzipBytes": 67584
       }
     },
     {
@@ -96,16 +99,19 @@
         "packages/contracts/dist/network-settings-metadata.js",
         "src/pages/settings/shared-stop-words-preset-buttons.tsx",
         "src/components/max-rich-text-editor.tsx",
+        "src/pages/settings/shared-bot-speech-editor.tsx",
         "src/lib/max-rich-text-clipboard.ts",
         "src/components/ui/action-confirm-sheet.tsx",
         "src/pages/settings/shared-network-rules-fields.tsx",
         "src/components/broadcast-content-composer.tsx",
-        "src/components/broadcast-buttons-sheet.tsx"
+        "src/components/broadcast-buttons-sheet.tsx",
+        "src/pages/settings/night-mode-time-fields.tsx",
+        "src/components/ui/time-field-exact-input.tsx"
       ],
       "baseline": "network-settings",
       "limits": {
-        "jsGzipBytes": 45056,
-        "cssGzipBytes": 32768
+        "jsGzipBytes": 50176,
+        "cssGzipBytes": 33792
       }
     },
     {
@@ -126,6 +132,7 @@
         "packages/contracts/dist/network-settings-metadata.js",
         "src/pages/settings/shared-stop-words-preset-buttons.tsx",
         "src/components/max-rich-text-editor.tsx",
+        "src/pages/settings/shared-bot-speech-editor.tsx",
         "src/lib/max-rich-text-clipboard.ts",
         "src/components/ui/action-confirm-sheet.tsx",
         "src/pages/settings/channel-post-suggestions-fields.tsx",
@@ -133,12 +140,17 @@
         "src/pages/settings/shared-speech-style-fields.tsx",
         "src/pages/settings/shared-network-rules-fields.tsx",
         "src/components/broadcast-content-composer.tsx",
-        "src/components/broadcast-buttons-sheet.tsx"
+        "src/components/broadcast-buttons-sheet.tsx",
+        "src/pages/settings/night-mode-time-fields.tsx",
+        "src/components/ui/time-field-exact-input.tsx",
+        "src/pages/settings/shared-duplicate-settings-fields.tsx",
+        "src/pages/settings/shared-stop-words-settings-fields.tsx",
+        "src/features/network-settings/network-subscription-sources.tsx"
       ],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 159744,
-        "cssGzipBytes": 83968
+        "jsGzipBytes": 219136,
+        "cssGzipBytes": 102400
       }
     },
     {
@@ -209,7 +221,7 @@
       "entries": ["src/pages/events-page.tsx"],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 47104,
+        "jsGzipBytes": 48128,
         "cssGzipBytes": 35840
       }
     },

@@ -12,7 +12,7 @@ import { createPreviewState } from '../src/lib/api/preview-transport-state';
 
 const source = (name: string) =>
   readFileSync(new URL(`../src/pages/${name}`, import.meta.url), 'utf8');
-const section = source('settings/settings-duplicates-section.tsx');
+const section = source('settings/shared-duplicate-settings-fields.tsx');
 const photo = source('settings/settings-duplicate-photo-controls.tsx');
 const state = source('settings-page-state.ts');
 const full = {
@@ -26,15 +26,29 @@ test('image comparison offers only the administrator-selected author scope', () 
     DUPLICATE_PHOTO_SCOPE_OPTIONS.map((option) => option.value),
     ['SAME_AUTHOR', 'CHAT'],
   );
-  assert.match(section, /setFieldValue\('duplicatePhotoScope', value\)/u);
+  assert.match(section, /scope=\{value\(fields\.read\('duplicatePhotoScope'\)\)\}/u);
+  assert.match(
+    section,
+    /onScopeChange=\{\(next\) => fields\.setScalar\('duplicatePhotoScope', next\)\}/u,
+  );
   assert.doesNotMatch(photo, /onEnabledChange|matchPreset|MINOR_EDITS|pdq|onMatchPresetChange/u);
   assert.doesNotMatch(state, /'duplicatePhotoEnabled'|'duplicatePhotoMatchPreset'/u);
-  assert.doesNotMatch(section, /draft\.duplicatePhotoEnabled|draft\.duplicatePhotoMatchPreset/u);
+  assert.doesNotMatch(section, /duplicatePhotoEnabled|duplicatePhotoMatchPreset/u);
 });
 
 test('the main comparison mode owns images without an independent hidden toggle', () => {
-  assert.match(section, /draft\.antiDuplicateEnabled && draft\.duplicateCompareMode !== 'TEXT'/u);
-  assert.match(section, /value=\{draft\.duplicateCompareMode\}/u);
+  assert.match(section, /const master = fields\.read\('antiDuplicateEnabled'\)/u);
+  assert.match(section, /const compare = fields\.read\('duplicateCompareMode'\)/u);
+  assert.match(section, /\{shown\(master\) \? \([\s\S]*<SettingsDuplicateMessageControls/u);
+  assert.match(
+    section,
+    /\{compare\.kind !== 'common' \|\| compare\.value !== 'TEXT' \? \(\s*<SettingsDuplicatePhotoControls/u,
+  );
+  assert.match(section, /value=\{value\(compare\)\}/u);
+  assert.match(
+    section,
+    /onChange=\{\(next\) => fields\.setScalar\('duplicateCompareMode', next\)\}/u,
+  );
   const message = source('settings/settings-duplicate-message-controls.tsx');
   assert.match(message, /value="MESSAGE"/u);
   assert.match(message, /value="TEXT"/u);
@@ -80,11 +94,22 @@ test('the preview uses the same exact full policy for both author scopes', () =>
 });
 
 test('disabling the master switch does not rewrite the configured reaction ladder', () => {
-  const start = section.indexOf('>Включить антидубль</span>');
+  const start = section.indexOf('title="Включить антидубль"');
   const end = section.indexOf('>Что проверять</h3>');
   const master = section.slice(start, end);
   assert.ok(start >= 0 && end > start);
-  assert.match(master, /setFieldValue\('antiDuplicateEnabled', event\.target\.checked\)/u);
-  assert.doesNotMatch(master, /applyDuplicateFlowConfig/u);
-  assert.match(section, /<LazySettingsDuplicateActionPreview/u);
+  assert.match(master, /state=\{master\}/u);
+  assert.match(
+    master,
+    /onChange=\{\(enabled\) => fields\.setScalar\('antiDuplicateEnabled', enabled\)\}/u,
+  );
+  assert.doesNotMatch(master, /applyDuplicateFlowConfig|setChatBoolean|fields\.transact/u);
+  assert.match(
+    section,
+    /buildDuplicateTextActionPreview\(\s*\{ \.\.\.flow, duplicateMuteDurationHours: duration \},\s*allowedCount,/u,
+  );
+  assert.match(
+    section,
+    /previewRows\.map\(\(row\) => \([\s\S]*<dt>\{row\.label\}<\/dt>\s*<dd>\{row\.action\}<\/dd>/u,
+  );
 });

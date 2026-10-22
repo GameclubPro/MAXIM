@@ -3257,8 +3257,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   })}
                   onBlur={() => savePostSignature(latestPostSignatureRef.current ?? postSignature)}
                   fallbackUrl={fallbackPostSignatureUrl}
-                />
-                <div className="channel-post-signature__workspace">
+                >
                   <div
                     className={cn(
                       'channel-post-signature__preview',
@@ -3322,7 +3321,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         'Ссылка канала недоступна'}
                     </small>
                   </div>
-                </div>
+                </ChannelPostSignatureFields>
 
                 {postSignatureSaveState !== 'idle' || isPostSignatureDirty ? (
                   <div

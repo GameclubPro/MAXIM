@@ -68,7 +68,7 @@ export function setChatBoolean(
     );
   if (path === 'greetingBotMessageEnabled' && !enabled)
     changes.push(set('greetingBotButtonEnabled', false), set('greetingRulesButtonEnabled', false));
-  const buttonGroup = /^(link|textFilters|messageLimits)BotMessageEnabled$/.exec(path);
+  const buttonGroup = /^(link|textFilters|messageLimits|duplicate)BotMessageEnabled$/.exec(path);
   if (buttonGroup && !enabled) changes.push(set(buttonGroup[1] + 'BotButtonEnabled', false));
   const limitActivation = [
     'slowModeEnabled',

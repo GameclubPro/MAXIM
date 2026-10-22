@@ -9,9 +9,12 @@ import type { ApiTransport } from '../../src/lib/api/transport';
 import { ApiRequestError } from '../../src/lib/api-request-error';
 import { runNativeBackHandlers } from '../../src/lib/native-back';
 import { ManagedEntityNavigationProvider } from '../../src/lib/managed-entity-navigation';
+import { HomeEntityFavoritesProvider } from '../../src/lib/home-entity-favorites-context';
+import { getPreviewApiPrincipalUserId } from '../../src/lib/api/preview-principal';
 import '../../src/styles.css';
 
 const preview = createPreviewApiTransport();
+const verifiedUserId = getPreviewApiPrincipalUserId(preview)!;
 const screen = (await preview.request(
   '/chats/chat-a/settings-screen',
 )) as ChatSettingsScreenResponse;
@@ -59,22 +62,24 @@ createRoot(document.getElementById('root')!).render(
       })
     }
   >
-    <ToastProvider>
-      <MemoryRouter initialEntries={['/chat/chat-a/settings']}>
-        {/* Host route changes may arrive while the workspace's own navigation is guarded. */}
-        <nav
-          aria-label="Тестовая навигация между чатами"
-          style={{ position: 'fixed', top: 0, right: 0, zIndex: 10000, background: 'white' }}
-        >
-          <Link to="/chat/chat-a/settings">Чат A</Link>{' '}
-          <Link to="/chat/chat-b/settings">Чат B</Link>
-        </nav>
-        <ManagedEntityNavigationProvider>
-          <Routes>
-            <Route path="/chat/:chatId/settings" element={<SettingsPage api={api} />} />
-          </Routes>
-        </ManagedEntityNavigationProvider>
-      </MemoryRouter>
-    </ToastProvider>
+    <HomeEntityFavoritesProvider api={api} verifiedUserId={verifiedUserId}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/chat/chat-a/settings']}>
+          {/* Host route changes may arrive while the workspace's own navigation is guarded. */}
+          <nav
+            aria-label="Тестовая навигация между чатами"
+            style={{ position: 'fixed', top: 0, right: 0, zIndex: 10000, background: 'white' }}
+          >
+            <Link to="/chat/chat-a/settings">Чат A</Link>{' '}
+            <Link to="/chat/chat-b/settings">Чат B</Link>
+          </nav>
+          <ManagedEntityNavigationProvider>
+            <Routes>
+              <Route path="/chat/:chatId/settings" element={<SettingsPage api={api} />} />
+            </Routes>
+          </ManagedEntityNavigationProvider>
+        </MemoryRouter>
+      </ToastProvider>
+    </HomeEntityFavoritesProvider>
   </QueryClientProvider>,
 );

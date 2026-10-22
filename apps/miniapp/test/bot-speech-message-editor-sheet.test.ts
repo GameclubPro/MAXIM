@@ -34,6 +34,10 @@ const sharedChatSettingsSource = readFileSync(
   new URL('../src/pages/settings/shared-chat-settings-fields.tsx', import.meta.url),
   'utf8',
 );
+const sharedSpeechFieldSource = readFileSync(
+  new URL('../src/pages/settings/shared-bot-speech-field.tsx', import.meta.url),
+  'utf8',
+);
 
 test('bot speech editor keeps focus inside the topmost named dialog', () => {
   assert.match(editorSheetSource, /useDialogFocusTrap\(true, panelRef, closeButtonRef\);/u);
@@ -216,8 +220,28 @@ test('required subscription explanation cannot be disabled while enforcement is 
 
   assert.notEqual(sectionStart, -1);
   assert.match(
+    sharedChatSettingsSource,
+    /import \{ SharedSpeechField as Speech \} from '\.\/shared-bot-speech-field'/u,
+  );
+  assert.match(
     sectionSource,
-    /mandatoryMessage \? \([\s\S]*?Пояснение о подписке включается автоматически[\s\S]*?\) : \([\s\S]*?c\.toggle\(boolean\('BotMessageEnabled'\)[\s\S]*?\)\}\s*<Speech[\s\S]*?path=\{message\}/u,
+    /<Speech\s+fields=\{fields\}\s+path=\{speech\('BotMessageText'\)\}[\s\S]*?enabledPath=\{mandatoryMessage \? undefined : boolean\('BotMessageEnabled'\)\}[\s\S]*?disableEditorWhenOff=\{!mandatoryMessage\}/u,
+  );
+  assert.match(
+    sharedSpeechFieldSource,
+    /const enabled = enabledPath \? fields\.read\(enabledPath\) : null/u,
+  );
+  assert.match(
+    sharedSpeechFieldSource,
+    /const editorDisabled =\s*fields\.readOnly \|\|\s*text\.kind === 'loading' \|\|\s*\(disableEditorWhenOff && enabled\?\.kind === 'common' && !enabled\.value\)/u,
+  );
+  assert.match(
+    sharedSpeechFieldSource,
+    /enabled && enabledPath \? \([\s\S]*?<input[\s\S]*?type="checkbox"[\s\S]*?onChange=\{\(event\) => setChatBoolean\(fields, enabledPath, event\.target\.checked\)\}/u,
+  );
+  assert.match(
+    sharedSpeechFieldSource,
+    /open && !editorDisabled \? \([\s\S]*?<LazySharedBotSpeechEditor[\s\S]*?path=\{path\}/u,
   );
   assert.doesNotMatch(sectionSource, /mandatoryMessage[^?]*&&[\s\S]*?<Speech/u);
 });

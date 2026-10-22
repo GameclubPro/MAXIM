@@ -1,11 +1,20 @@
-import { NavArrowRight } from 'iconoir-react';
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { AppIcon } from '../../components/ui/app-icon';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type {
   NetworkNavigationAllowlistIntent,
   NetworkSettingsReadResponse,
 } from '@maxim/contracts/network-settings';
 import { networkNavigationAllowlistIntentSchema } from '@maxim/contracts/network-settings-read';
-import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS } from '@maxim/contracts/settings-field-schemas';
 import {
   normalizeStoredAllowlistEntry,
   parseStoredAllowlistEntry,
@@ -16,7 +25,6 @@ import { getAdminContactLabel } from '../../lib/admin-contact-profile-url';
 import {
   readNetworkAdminContacts,
   resolveNetworkAdminContact,
-  resolveNetworkRequiredSubscription,
   readNetworkNavigationAllowlist,
 } from '../../lib/api/network-settings-client';
 import type { SharedChatSettingsContext } from '../../pages/settings/shared-chat-settings-section';
@@ -25,9 +33,22 @@ import type {
   ChatScalarFieldPath,
   SettingsFieldState,
 } from './field-model';
-import { FieldText, FieldToggle } from './settings-field-controls';
+import { PersonAvatar } from '../../components/ui/person-avatar';
+import { DateField } from '../../components/ui/date-field';
+import { TimeField } from '../../components/ui/time-field';
+import { AdminContactToggleField } from '../../components/admin-contact-toggle-field';
+import { AdminContactPickerPanel } from '../../components/admin-contact-picker-panel';
+import {
+  NAVIGATION_ALLOWLIST_TARGET_OPTIONS,
+  getNavigationAllowlistTargetOption,
+} from '../../pages/settings/settings-link-allowlist';
 import { canonicalNetworkValue } from './network-settings-controller';
-type Scope = {
+const SubscriptionSources = lazy(() =>
+  import('./network-subscription-sources').then((module) => ({
+    default: module.NetworkSubscriptionSources,
+  })),
+);
+export type Scope = {
   entityType: 'chat';
   target: NetworkSettingsReadResponse['target'];
   section: NetworkSettingsReadResponse['section'];
@@ -70,7 +91,9 @@ export function NetworkSettingsMetadataFields(props: Props) {
       props.read.section === 'links' ? <Allowlist key={key} {...props} scope={scope} /> : undefined,
     requiredSubscriptionSources:
       props.read.section === 'requiredSubscription' ? (
-        <SubscriptionSources key={key} api={props.api} scope={scope} fields={props.fields} />
+        <Suspense fallback={<p role="status">Загружаем источники...</p>}>
+          <SubscriptionSources key={key} api={props.api} scope={scope} fields={props.fields} />
+        </Suspense>
       ) : undefined,
     renderAdminContact: (input) => (
       <AdminContact
@@ -86,161 +109,7 @@ export function NetworkSettingsMetadataFields(props: Props) {
   };
   return <>{props.children(context)}</>;
 }
-function SubscriptionSources({
-  api,
-  scope,
-  fields,
-}: {
-  api: ApiTransport;
-  scope: Scope;
-  fields: ChatSettingsFieldAdapter;
-}) {
-  const latestFields = useRef(fields);
-  latestFields.current = fields;
-  const state = fields.read('requiredSubscriptionChannelIds');
-  const listKey = canonicalNetworkValue(state);
-  const latestListKey = useRef(listKey);
-  const listVersion = useRef(0);
-  if (latestListKey.current !== listKey) listVersion.current++;
-  latestListKey.current = listKey;
-  const [authored, setAuthored] = useState(false);
-  const [value, setValue] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const generation = useRef(0);
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-      generation.current++;
-    };
-  }, []);
-  const items = state.kind === 'common' ? state.value : [];
-  const invalidateLookup = () => {
-    generation.current++;
-    setBusy(false);
-    setError(null);
-  };
-  const resolve = async () => {
-    const revision = ++generation.current;
-    const originalListVersion = listVersion.current;
-    const query = value.trim();
-    if (!query || fields.readOnly) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await resolveNetworkRequiredSubscription(api, { ...scope, value: query });
-      if (!alive.current || generation.current !== revision) return;
-      if (
-        result.requestId !== scope.requestId ||
-        result.compositionVersion !== scope.compositionVersion
-      )
-        throw new Error('Состав изменился. Откройте поиск заново.');
-      const current = latestFields.current;
-      if (current.readOnly) return;
-      if (listVersion.current !== originalListVersion)
-        throw new Error('Список каналов изменился. Повторите поиск.');
-      const currentList = current.read('requiredSubscriptionChannelIds');
-      const next = [
-        ...new Set([
-          ...(currentList.kind === 'common' ? currentList.value : []),
-          result.channel.id,
-        ]),
-      ];
-      if (next.length > REQUIRED_SUBSCRIPTION_MAX_CHANNELS)
-        throw new Error('Достигнут предел обязательных каналов.');
-      current.replaceList('requiredSubscriptionChannelIds', next);
-      setValue('');
-      setAuthored(true);
-    } catch (cause) {
-      if (alive.current && generation.current === revision) setError(message(cause));
-    } finally {
-      if (alive.current && generation.current === revision) setBusy(false);
-    }
-  };
-  return (
-    <section className="network-settings-metadata" aria-label="Каналы обязательной подписки">
-      <p>
-        {state.kind === 'mixed'
-          ? 'Списки каналов различаются. Для замены составьте общий список.'
-          : 'Обязательных каналов: ' + items.length}
-      </p>
-      {state.kind === 'mixed' && !authored ? (
-        <button type="button" disabled={fields.readOnly} onClick={() => setAuthored(true)}>
-          Составить общий список каналов
-        </button>
-      ) : (
-        <>
-          <ul>
-            {items.map((id) => (
-              <li key={id}>
-                <span>Канал · {id}</span>
-                <button
-                  type="button"
-                  disabled={fields.readOnly}
-                  onClick={() => {
-                    invalidateLookup();
-                    fields.replaceList(
-                      'requiredSubscriptionChannelIds',
-                      items.filter((item) => item !== id),
-                    );
-                  }}
-                >
-                  Убрать из общего списка
-                </button>
-              </li>
-            ))}
-          </ul>
-          <label>
-            Ссылка или ID чата/канала
-            <input
-              value={value}
-              disabled={fields.readOnly || busy}
-              onChange={(event) => {
-                generation.current++;
-                setBusy(false);
-                setValue(event.target.value);
-                setError(null);
-              }}
-            />
-          </label>
-          <button
-            type="button"
-            disabled={fields.readOnly || busy || !value.trim()}
-            onClick={() => void resolve()}
-          >
-            {busy ? 'Проверяем канал…' : 'Проверить и добавить'}
-          </button>
-        </>
-      )}
-      <button
-        type="button"
-        disabled={fields.readOnly}
-        onClick={() => {
-          invalidateLookup();
-          fields.replaceList('requiredSubscriptionChannelIds', []);
-        }}
-      >
-        Очистить обязательные каналы у выбранных
-      </button>
-      {fields.isDirty('requiredSubscriptionChannelIds') ? (
-        <button
-          type="button"
-          disabled={fields.readOnly}
-          onClick={() => {
-            invalidateLookup();
-            fields.revert('requiredSubscriptionChannelIds');
-            setAuthored(false);
-          }}
-        >
-          Отменить изменение списка
-        </button>
-      ) : null}
-      {error ? <p role="alert">{error}</p> : null}
-    </section>
-  );
-}
+
 type Contact = Awaited<ReturnType<typeof readNetworkAdminContacts>>['items'][number];
 function AdminContact({
   api,
@@ -267,17 +136,18 @@ function AdminContact({
   latestFields.current = fields;
   const enabled = fields.read(enabledPath) as SettingsFieldState<boolean>;
   const url = fields.read(urlPath) as SettingsFieldState<string>;
-  const toggle = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (toggle.current) toggle.current.indeterminate = enabled.kind === 'mixed';
-  }, [enabled.kind]);
+  const [selectedContact, setSelectedContact] = useState<{ url: string; name: string } | null>(
+    null,
+  );
   const contactLabel =
     url.kind === 'mixed'
       ? 'Разные администраторы'
       : url.kind === 'loading'
         ? 'Загрузка…'
         : url.value
-          ? getAdminContactLabel(url.value)
+          ? selectedContact?.url === url.value
+            ? selectedContact.name
+            : getAdminContactLabel(url.value)
           : 'Администратор не выбран';
   const enabledSummary =
     enabled.kind === 'mixed'
@@ -293,6 +163,7 @@ function AdminContact({
   if (latestUrlKey.current !== urlKey) urlVersion.current++;
   latestUrlKey.current = urlKey;
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const [items, setItems] = useState<Contact[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -311,6 +182,11 @@ function AdminContact({
     },
     [],
   );
+  const close = useCallback(() => {
+    generation.current++;
+    setBusy(false);
+    setOpen(false);
+  }, []);
   const load = async () => {
     if (fields.readOnly || busy) return;
     const revision = ++generation.current;
@@ -369,7 +245,14 @@ function AdminContact({
       if (current.readOnly) return;
       if (urlVersion.current !== originalUrlVersion)
         throw new Error('Ссылка изменена. Выберите администратора заново.');
-      current.setScalar(urlPath, result.contact.url as never);
+      current.transact([
+        { op: 'set', path: urlPath, value: result.contact.url },
+        { op: 'set', path: enabledPath, value: true },
+      ]);
+      setSelectedContact({
+        url: result.contact.url,
+        name: result.contact.displayName || 'Администратор',
+      });
       setOpen(false);
     } catch (cause) {
       if (generation.current === revision) setError(message(cause));
@@ -377,136 +260,164 @@ function AdminContact({
       if (generation.current === revision) setBusy(false);
     }
   };
-  const urlField = (
-    <FieldText
-      label="Ссылка для связи с администратором"
-      state={url}
-      onChange={(value) => fields.setScalar(urlPath, value as never)}
-      onError={(value) => fields.setError(urlPath, value)}
-      error={fields.error(urlPath)}
-      disabled={fields.readOnly}
-    />
+  const visibleItems = items.filter((item) =>
+    (item.displayName ?? item.userId)
+      .toLocaleLowerCase('ru-RU')
+      .includes(search.trim().toLocaleLowerCase('ru-RU')),
   );
   return (
-    <section
-      className={
-        presentation === 'rules'
-          ? 'settings-native-toggle rules-native-card'
-          : 'network-settings-metadata'
-      }
+    <AdminContactToggleField
+      title={label}
+      ariaLabel={ariaLabel}
+      checked={enabled.kind === 'mixed' ? 'mixed' : enabled.kind === 'common' && enabled.value}
+      selectedName={contactLabel}
+      disabled={fields.readOnly || busy || enabled.kind === 'loading' || url.kind === 'loading'}
+      meta={presentation === 'rules' ? enabledSummary : undefined}
+      className={presentation === 'rules' ? 'rules-native-card' : undefined}
+      onChange={(next) => {
+        if (next) void load();
+        else fields.setScalar(enabledPath, false as never);
+      }}
+      onOpen={() => void load()}
     >
-      {presentation === 'rules' ? (
-        <>
-          <div className="settings-native-toggle__row">
-            <div className="settings-native-toggle__title-wrap">
-              <div className="rules-native-card__copy">
-                <span className="settings-native-toggle__title">{label}</span>
-                <span className="rules-native-card__meta">{enabledSummary}</span>
-              </div>
-            </div>
-            <label className="settings-native-switch" aria-label={ariaLabel}>
-              <input
-                ref={toggle}
-                type="checkbox"
-                checked={enabled.kind === 'common' && enabled.value}
-                aria-checked={
-                  enabled.kind === 'mixed' ? 'mixed' : enabled.kind === 'common' && enabled.value
-                }
-                disabled={fields.readOnly || enabled.kind === 'loading'}
-                onChange={(event) => fields.setScalar(enabledPath, event.target.checked as never)}
-              />
-              <span className="toggle-switch" aria-hidden>
-                <span className="toggle-switch__thumb" />
-              </span>
-            </label>
-          </div>
-          {enabled.kind === 'mixed' || (enabled.kind === 'common' && enabled.value) ? (
-            <button
-              type="button"
-              className="admin-contact-selection"
-              disabled={fields.readOnly || busy || url.kind === 'loading'}
-              onClick={() => void load()}
-              aria-label={`Выбрать администратора: ${contactLabel}`}
-              aria-haspopup="dialog"
-            >
-              <span>{contactLabel}</span>
-              <NavArrowRight aria-hidden />
-            </button>
-          ) : null}
-        </>
-      ) : (
-        <>
-          <FieldToggle
-            label={label}
-            state={enabled}
-            onChange={(value) => fields.setScalar(enabledPath, value as never)}
-            disabled={fields.readOnly}
-          />
-          {urlField}
-          <button type="button" disabled={fields.readOnly || busy} onClick={() => void load()}>
-            Выбрать администратора сетки
-          </button>
-        </>
-      )}
       {open ? (
-        <div className="network-settings-metadata__picker">
-          {presentation === 'rules' ? urlField : null}
-          <p>
-            Показываем подтверждённых администраторов выбранных чатов. Список может быть неполным.
-          </p>
-          {progress ? (
-            <p>
-              Проверено чатов: {progress.scanned} из {progress.total}. Неполные ответы:{' '}
-              {progress.incomplete}; недоступно: {progress.unavailable}.
+        <AdminContactPickerPanel
+          title="Администраторы чатов"
+          search={search}
+          onSearch={setSearch}
+          onClose={close}
+        >
+          <div className="admin-contact-picker__list" aria-busy={busy}>
+            <p className="field__hint">
+              Показываем подтверждённых администраторов выбранных чатов. Список может быть неполным.
             </p>
-          ) : null}
-          <ul>
-            {items.map((item) => (
-              <li key={item.userId}>
-                <strong>{item.displayName ?? 'Администратор'}</strong>
-                {item.sources.map((source) => (
-                  <button
-                    type="button"
-                    key={source}
-                    disabled={fields.readOnly || busy}
-                    onClick={() => void choose(item, source)}
-                  >
-                    Выбрать ·{' '}
-                    {recipients.find((recipient) => recipient.entityId === source)?.title ||
-                      'Подтверждённый чат'}
-                  </button>
-                ))}
-              </li>
+            {progress ? (
+              <p className="field__hint">
+                Проверено чатов: {progress.scanned} из {progress.total}. Неполные ответы:{' '}
+                {progress.incomplete}; недоступно: {progress.unavailable}.
+              </p>
+            ) : null}
+            {busy ? <p role="status">Загрузка администраторов...</p> : null}
+            {error ? (
+              <div className="admin-contact-picker__status" role="alert">
+                <p>{error}</p>
+                <button
+                  type="button"
+                  disabled={busy || fields.readOnly}
+                  onClick={() => void load()}
+                >
+                  <AppIcon
+                    icon="RefreshDouble"
+                    width="1.5em"
+                    height="1.5em"
+                    style={{ strokeWidth: 1.5 }}
+                    aria-hidden
+                  />
+                  Повторить
+                </button>
+              </div>
+            ) : null}
+            {!busy && !error && !visibleItems.length ? (
+              <p role="status">
+                {search.trim()
+                  ? 'Ничего не найдено.'
+                  : cursor
+                    ? 'Поиск администраторов...'
+                    : 'Администраторы не найдены.'}
+              </p>
+            ) : null}
+            {visibleItems.map((item) => (
+              <button
+                key={item.userId}
+                type="button"
+                className="admin-contact-picker__option"
+                disabled={busy || fields.readOnly || !item.sources.length}
+                aria-pressed={
+                  enabled.kind === 'common' &&
+                  enabled.value &&
+                  url.kind === 'common' &&
+                  url.value === item.url
+                }
+                onClick={() => {
+                  if (item.sources[0]) void choose(item, item.sources[0]);
+                }}
+              >
+                <PersonAvatar
+                  avatarUrl={null}
+                  fallback={(item.displayName ?? 'Администратор').slice(0, 1)}
+                  className="admin-contact-picker__avatar"
+                />
+                <span className="admin-contact-picker__copy">
+                  <span>{item.displayName ?? 'Администратор'}</span>
+                  <small>
+                    {item.sources
+                      .map(
+                        (source) =>
+                          recipients.find((recipient) => recipient.entityId === source)?.title ||
+                          'Подтверждённый чат',
+                      )
+                      .join(', ')}
+                  </small>
+                </span>
+                {enabled.kind === 'common' &&
+                enabled.value &&
+                url.kind === 'common' &&
+                url.value === item.url ? (
+                  <AppIcon
+                    icon="Check"
+                    width="1.5em"
+                    height="1.5em"
+                    style={{ strokeWidth: 1.5 }}
+                    aria-hidden
+                  />
+                ) : null}
+              </button>
             ))}
-          </ul>
-          {cursor ? (
-            <button type="button" disabled={fields.readOnly || busy} onClick={() => void load()}>
-              Проверить следующие чаты
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => {
-              generation.current++;
-              setBusy(false);
-              setOpen(false);
-            }}
-          >
-            Закрыть выбор
-          </button>
-        </div>
+            {cursor ? (
+              <button
+                type="button"
+                className="admin-contact-picker__more"
+                disabled={fields.readOnly || busy}
+                onClick={() => void load()}
+              >
+                {busy ? 'Загрузка...' : 'Показать ещё'}
+              </button>
+            ) : null}
+          </div>
+        </AdminContactPickerPanel>
       ) : null}
-      {error ? <p role="alert">{error}</p> : null}
-    </section>
+      {!open && error ? (
+        <small className="field__hint" role="alert">
+          {error}
+        </small>
+      ) : null}
+      {fields.error(urlPath) ? (
+        <small className="field__hint" role="alert">
+          {fields.error(urlPath)}
+        </small>
+      ) : null}
+    </AdminContactToggleField>
   );
 }
-const KINDS: Record<NavigationAllowlistKind, string> = {
-  WEB_EXACT: 'Точная веб-ссылка',
-  WEB_DOMAIN: 'Веб-домен',
-  MAX_PROFILE: 'Профиль MAX',
-  MAX_ENTITY: 'Чат или канал MAX',
-  MINI_APP: 'Мини-приложение',
-};
+
+type AllowlistEntry = Awaited<ReturnType<typeof readNetworkNavigationAllowlist>>['entries'][number];
+function entryTargetLabel(entry: AllowlistEntry) {
+  if (entry.kind === 'MAX_PROFILE' && entry.value.startsWith('user-id:'))
+    return `max://user/${entry.value.slice(8)}`;
+  if (entry.kind === 'MAX_PROFILE' && entry.value.startsWith('username:'))
+    return `@${entry.value.slice(9)}`;
+  if (entry.value.startsWith('url:')) return entry.value.slice(4);
+  if (entry.kind === 'MAX_ENTITY' && entry.value.startsWith('chat-id:'))
+    return `Старый ID чата: ${entry.value.slice(8)}`;
+  if (entry.kind === 'MINI_APP' && entry.value.startsWith('bot:'))
+    return `Бот MAX: ${entry.value.slice(4)}`;
+  if (entry.kind === 'MINI_APP' && entry.value.startsWith('contact-id:'))
+    return `Приложение MAX: ${entry.value.slice(11)}`;
+  return entry.value;
+}
+function localDate(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+}
 function Allowlist({
   api,
   read,
@@ -517,10 +428,9 @@ function Allowlist({
 }: Props & { scope: Scope }) {
   const [entityId, setEntityId] = useState(read.recipients[0]?.entityId ?? '');
   const selectedEntityId = useId();
+  const errorId = useId();
   const selectedEntity = read.recipients.find((recipient) => recipient.entityId === entityId);
-  const [entries, setEntries] = useState<
-    Awaited<ReturnType<typeof readNetworkNavigationAllowlist>>['entries']
-  >([]);
+  const [entries, setEntries] = useState<AllowlistEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [total, setTotal] = useState(0);
@@ -528,7 +438,9 @@ function Allowlist({
   const [error, setError] = useState<string | null>(null);
   const [value, setValue] = useState('');
   const [kind, setKind] = useState<NavigationAllowlistKind>('WEB_DOMAIN');
-  const [expiry, setExpiry] = useState('');
+  const [scheduleTarget, setScheduleTarget] = useState<AllowlistEntry | null>(null);
+  const [scheduleDate, setScheduleDate] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('');
   const generation = useRef(0);
   useEffect(
     () => () => {
@@ -537,6 +449,7 @@ function Allowlist({
     [],
   );
   const load = async () => {
+    if (busy || !entityId) return;
     const revision = ++generation.current;
     setBusy(true);
     setError(null);
@@ -549,7 +462,15 @@ function Allowlist({
       if (generation.current !== revision) return;
       if (result.entityId !== entityId || result.compositionVersion !== scope.compositionVersion)
         throw new Error('Состав изменился. Загрузите список заново.');
-      setEntries((old) => (cursor ? [...old, ...result.entries] : result.entries));
+      setEntries((old) =>
+        cursor
+          ? [
+              ...new Map(
+                [...old, ...result.entries].map((entry) => [entry.kind + entry.value, entry]),
+              ).values(),
+            ]
+          : result.entries,
+      );
       setCursor(result.nextCursor);
       setTotal(result.totalEntries);
       setLoaded(true);
@@ -559,13 +480,19 @@ function Allowlist({
       if (generation.current === revision) setBusy(false);
     }
   };
-  const author = (op: 'add' | 'remove' | 'setExpiry' | 'replace') => {
+  const authorEntry = (
+    op: 'add' | 'remove' | 'setExpiry' | 'replace',
+    target: { value: string; kind: NavigationAllowlistKind },
+    removeAfterAt: string | null = null,
+  ) => {
+    if (fields.readOnly) return false;
     try {
-      const removeAfterAt = expiry ? new Date(expiry).toISOString() : null;
-      const stored = normalizeStoredAllowlistEntry(value, kind);
-      const normalized = stored ? parseStoredAllowlistEntry(stored) : null;
-      if (!normalized) throw new Error('Укажите корректную ссылку выбранного вида.');
-      const target = { value: normalized.target, kind };
+      if (
+        removeAfterAt &&
+        (!Number.isFinite(Date.parse(removeAfterAt)) ||
+          Date.parse(removeAfterAt) <= Date.now() + 30_000)
+      )
+        throw new Error('Выберите время удаления хотя бы на 30 секунд позже текущего.');
       const next =
         op === 'replace'
           ? {
@@ -583,136 +510,393 @@ function Allowlist({
               ],
             };
       onNavigationAllowlist(networkNavigationAllowlistIntentSchema.parse(next));
-      setValue('');
       setError(null);
+      return true;
+    } catch (cause) {
+      setError(message(cause));
+      return false;
+    }
+  };
+  const scheduledAt = () => {
+    if (!scheduleDate && !scheduleTime) return null;
+    if (!scheduleDate || !scheduleTime) throw new Error('Укажите день и время удаления.');
+    return new Date(`${scheduleDate}T${scheduleTime}`).toISOString();
+  };
+  const author = (op: 'add' | 'remove' | 'setExpiry' | 'replace') => {
+    try {
+      const stored = normalizeStoredAllowlistEntry(value, kind);
+      const normalized = stored ? parseStoredAllowlistEntry(stored) : null;
+      if (!normalized) throw new Error(getNavigationAllowlistTargetOption(kind).invalidMessage);
+      if (
+        authorEntry(op, { value: normalized.target, kind }, op === 'remove' ? null : scheduledAt())
+      ) {
+        setValue('');
+        setScheduleDate('');
+        setScheduleTime('');
+      }
     } catch (cause) {
       setError(message(cause));
     }
   };
-  return (
-    <section className="network-settings-metadata" aria-label="Разрешённые ссылки">
-      <h3>Разрешённые ссылки</h3>
-      <p>
-        Добавление и удаление сохраняют остальные записи каждого чата. Полная замена задаёт
-        одинаковый список всем получателям.
-      </p>
-      <label>
-        Просмотреть сохранённый список
-        <select
-          value={entityId}
-          aria-describedby={selectedEntityId}
-          disabled={busy}
-          onChange={(event) => {
-            generation.current++;
-            setBusy(false);
-            setEntityId(event.target.value);
-            setEntries([]);
-            setCursor(null);
-            setLoaded(false);
+  const scheduleFields = (
+    <div className="allowlist-item__schedule-fields">
+      <DateField
+        className="allowlist-item__schedule-field"
+        label="День удаления"
+        value={scheduleDate}
+        min={localDate(new Date())}
+        disabled={fields.readOnly}
+        onChange={(next) => {
+          setScheduleDate(next);
+          setError(null);
+        }}
+      />
+      <div className="field allowlist-item__schedule-field">
+        <TimeField
+          className="allowlist-item__schedule-time"
+          label="Время удаления"
+          variant="embedded"
+          value={scheduleTime}
+          disabled={fields.readOnly}
+          allowEmpty
+          clearable
+          onChange={(next) => {
+            setScheduleTime(next);
             setError(null);
           }}
-        >
-          {read.recipients.map((row) => (
-            <option key={row.entityId} value={row.entityId}>
-              {row.title}
-            </option>
-          ))}
-        </select>
-      </label>
-      <p id={selectedEntityId} className="network-settings-metadata__selected">
-        Выбранный чат: <strong>{selectedEntity?.title || 'Чат'}</strong>
-      </p>
-      <button type="button" disabled={busy || !entityId} onClick={() => void load()}>
-        {cursor ? 'Загрузить следующие записи' : loaded ? 'Обновить список' : 'Показать список'}
-      </button>
-      {loaded ? (
-        <>
-          <p>
-            Записей: {total}. Загружено: {entries.length}.
-          </p>
-          <ul>
-            {entries.map((entry) => (
-              <li key={entry.kind + entry.value}>
-                {KINDS[entry.kind]} · {entry.value} ·{' '}
-                {entry.removeAfterAt
-                  ? 'до ' + new Date(entry.removeAfterAt).toLocaleString('ru-RU')
-                  : 'без срока'}
-              </li>
+        />
+      </div>
+    </div>
+  );
+  return (
+    <div className="allowlist-workspace" aria-label="Разрешённые ссылки">
+      <div className={`field allowlist-panel${error ? ' allowlist-panel--error' : ''}`}>
+        <div className="allowlist-panel__head">
+          <span className="field__label">Разрешённые ссылки</span>
+        </div>
+        <div className="allowlist-composer">
+          <label className="allowlist-composer__head">
+            <span className="field__label allowlist-composer__label">Что разрешить</span>
+            <select
+              className="button button--ghost"
+              value={kind}
+              disabled={fields.readOnly}
+              onChange={(event) => {
+                setKind(event.target.value as NavigationAllowlistKind);
+                setError(null);
+              }}
+              aria-label="Что разрешить"
+            >
+              {NAVIGATION_ALLOWLIST_TARGET_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="allowlist-add-row">
+            <input
+              type="text"
+              inputMode={getNavigationAllowlistTargetOption(kind).inputMode}
+              value={value}
+              disabled={fields.readOnly}
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? errorId : undefined}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="done"
+              onChange={(event) => {
+                setValue(event.target.value);
+                setError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  if (value.trim()) author('add');
+                }
+              }}
+              placeholder={getNavigationAllowlistTargetOption(kind).placeholder}
+              aria-label={getNavigationAllowlistTargetOption(kind).ariaLabel}
+            />
+            {value.trim() ? (
+              <button
+                type="button"
+                className="button button--accent allowlist-add-row__button"
+                disabled={fields.readOnly}
+                onClick={() => author('add')}
+              >
+                Добавить
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {error ? (
+          <small id={errorId} className="field__hint" role="alert">
+            {error}
+          </small>
+        ) : null}
+        <p className="settings-native-toggle__hint">
+          Добавление и удаление сохраняют остальные записи каждого чата. Полная замена задаёт
+          одинаковый список всем получателям.
+        </p>
+        <label className="field">
+          <span>Просмотреть сохранённый список</span>
+          <select
+            value={entityId}
+            aria-describedby={selectedEntityId}
+            disabled={busy}
+            onChange={(event) => {
+              generation.current++;
+              setBusy(false);
+              setEntityId(event.target.value);
+              setEntries([]);
+              setCursor(null);
+              setLoaded(false);
+              setError(null);
+              setScheduleTarget(null);
+            }}
+          >
+            {read.recipients.map((row) => (
+              <option key={row.entityId} value={row.entityId}>
+                {row.title}
+              </option>
             ))}
-          </ul>
-        </>
-      ) : null}
-      <label>
-        Вид ссылки
-        <select
-          value={kind}
-          disabled={fields.readOnly}
-          onChange={(event) => setKind(event.target.value as NavigationAllowlistKind)}
-        >
-          {Object.entries(KINDS).map(([key, label]) => (
-            <option key={key} value={key}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Значение
-        <input
-          value={value}
-          disabled={fields.readOnly}
-          onChange={(event) => setValue(event.target.value)}
-        />
-      </label>
-      <label>
-        Удалить после (пусто — без срока)
-        <input
-          type="datetime-local"
-          value={expiry}
-          disabled={fields.readOnly}
-          onChange={(event) => setExpiry(event.target.value)}
-        />
-      </label>
-      {(['add', 'remove', 'setExpiry', 'replace'] as const).map((op) => (
-        <button
-          type="button"
-          key={op}
-          disabled={fields.readOnly || !value.trim()}
-          onClick={() => author(op)}
-        >
-          {op === 'add'
-            ? 'Добавить во все списки'
-            : op === 'remove'
-              ? 'Удалить из всех списков'
-              : op === 'setExpiry'
-                ? 'Изменить срок во всех списках'
-                : 'Добавить в список для полной замены'}
-        </button>
-      ))}
-      <button
-        type="button"
-        disabled={fields.readOnly}
-        onClick={() => onNavigationAllowlist({ mode: 'replace', entries: [] })}
-      >
-        Заменить все списки пустым
-      </button>
-      {navigationAllowlist ? (
-        <>
-          <p>
-            {navigationAllowlist.mode === 'replace'
-              ? 'Полная замена · записей: ' + navigationAllowlist.entries.length
-              : 'Выбрано действий: ' + navigationAllowlist.actions.length}
-          </p>
+          </select>
+        </label>
+        <p id={selectedEntityId} className="field__hint">
+          Выбранный чат: <strong>{selectedEntity?.title || 'Чат'}</strong>
+        </p>
+        <div className="managed-giveaway__section-actions">
           <button
             type="button"
-            disabled={fields.readOnly}
-            onClick={() => onNavigationAllowlist(undefined)}
+            className="button button--ghost"
+            disabled={busy || !entityId}
+            onClick={() => void load()}
           >
-            Отменить все изменения разрешённых ссылок
+            {cursor ? 'Загрузить следующие записи' : loaded ? 'Обновить список' : 'Показать список'}
           </button>
-        </>
-      ) : null}
-      {error ? <p role="alert">{error}</p> : null}
-    </section>
+        </div>
+        {busy ? (
+          <p className="allowlist-empty" role="status">
+            Загрузка...
+          </p>
+        ) : null}
+        {loaded ? (
+          <>
+            <p className="field__hint">
+              Записей: {total}. Загружено: {entries.length}.
+            </p>
+            {entries.length ? (
+              <div className="allowlist-results">
+                <ul className="allowlist-list" aria-label="Разрешённые навигационные цели">
+                  {entries.map((entry) => {
+                    const targetLabel = entryTargetLabel(entry);
+                    const isScheduleOpen =
+                      scheduleTarget?.kind === entry.kind && scheduleTarget.value === entry.value;
+                    const scheduledAtLabel = entry.removeAfterAt
+                      ? new Date(entry.removeAfterAt).toLocaleString('ru-RU')
+                      : '';
+                    return (
+                      <li
+                        key={entry.kind + entry.value}
+                        className="allowlist-item allowlist-item--domain"
+                      >
+                        <div className="allowlist-item__stack">
+                          <div className="allowlist-item__header">
+                            <div className="allowlist-item__lead">
+                              <span className="allowlist-item__domain" title={targetLabel}>
+                                {targetLabel}
+                              </span>
+                              <small className="allowlist-item__type">
+                                {getNavigationAllowlistTargetOption(entry.kind).label} ·{' '}
+                                {scheduledAtLabel ? `до ${scheduledAtLabel}` : 'без срока'}
+                              </small>
+                            </div>
+                            <div className="allowlist-item__actions">
+                              <button
+                                type="button"
+                                className={`allowlist-item__action allowlist-item__action--schedule${isScheduleOpen ? ' is-open' : ''}`}
+                                disabled={fields.readOnly}
+                                aria-label={
+                                  isScheduleOpen
+                                    ? `Закрыть выбор срока для ${targetLabel}`
+                                    : scheduledAtLabel
+                                      ? `Изменить срок для ${targetLabel}`
+                                      : `Задать срок для ${targetLabel}`
+                                }
+                                title={
+                                  isScheduleOpen
+                                    ? 'Закрыть'
+                                    : scheduledAtLabel
+                                      ? 'Изменить срок'
+                                      : 'Задать срок'
+                                }
+                                onClick={() => {
+                                  if (isScheduleOpen) {
+                                    setScheduleTarget(null);
+                                    return;
+                                  }
+                                  const when = new Date(
+                                    entry.removeAfterAt || Date.now() + 3_600_000,
+                                  );
+                                  setScheduleTarget(entry);
+                                  setScheduleDate(localDate(when));
+                                  setScheduleTime(
+                                    `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`,
+                                  );
+                                  setError(null);
+                                }}
+                              >
+                                <AppIcon
+                                  icon="Calendar"
+                                  width="1.5em"
+                                  height="1.5em"
+                                  style={{ strokeWidth: 1.5 }}
+                                  aria-hidden
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                className="allowlist-item__action allowlist-item__action--remove"
+                                disabled={fields.readOnly}
+                                aria-label={`Удалить ${targetLabel}`}
+                                title="Удалить"
+                                onClick={() =>
+                                  authorEntry('remove', { kind: entry.kind, value: entry.value })
+                                }
+                              >
+                                <AppIcon
+                                  icon="Trash"
+                                  width="1.5em"
+                                  height="1.5em"
+                                  style={{ strokeWidth: 1.5 }}
+                                  aria-hidden
+                                />
+                              </button>
+                            </div>
+                          </div>
+                          {isScheduleOpen ? (
+                            <div
+                              className="allowlist-item__schedule-editor"
+                              role="group"
+                              aria-label={`План удаления ${targetLabel}`}
+                            >
+                              {scheduleFields}
+                              <div className="allowlist-item__schedule-actions">
+                                <button
+                                  type="button"
+                                  className="button button--accent"
+                                  disabled={fields.readOnly}
+                                  onClick={() => {
+                                    try {
+                                      const when = scheduledAt();
+                                      if (!when) throw new Error('Укажите день и время удаления.');
+                                      if (
+                                        authorEntry(
+                                          'setExpiry',
+                                          { kind: entry.kind, value: entry.value },
+                                          when,
+                                        )
+                                      ) {
+                                        setScheduleTarget(null);
+                                        setScheduleDate('');
+                                        setScheduleTime('');
+                                      }
+                                    } catch (cause) {
+                                      setError(message(cause));
+                                    }
+                                  }}
+                                >
+                                  Сохранить
+                                </button>
+                                {entry.removeAfterAt ? (
+                                  <button
+                                    type="button"
+                                    className="button button--ghost"
+                                    disabled={fields.readOnly}
+                                    onClick={() => {
+                                      if (
+                                        authorEntry(
+                                          'setExpiry',
+                                          { kind: entry.kind, value: entry.value },
+                                          null,
+                                        )
+                                      ) {
+                                        setScheduleTarget(null);
+                                        setScheduleDate('');
+                                        setScheduleTime('');
+                                      }
+                                    }}
+                                  >
+                                    Убрать таймер
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : (
+              <p className="allowlist-empty">Пока пусто</p>
+            )}
+          </>
+        ) : null}
+        <details className="allowlist-panel">
+          <summary>Действия со списками всей сетки</summary>
+          <p className="field__hint">
+            Используется значение из поля «Что разрешить». Изменения сначала появятся в
+            предпросмотре.
+          </p>
+          {!scheduleTarget ? scheduleFields : null}
+          <div className="managed-giveaway__section-actions">
+            {(['remove', 'setExpiry', 'replace'] as const).map((op) => (
+              <button
+                type="button"
+                className="button button--ghost"
+                key={op}
+                disabled={fields.readOnly || !value.trim()}
+                onClick={() => author(op)}
+              >
+                {op === 'remove'
+                  ? 'Удалить из всех списков'
+                  : op === 'setExpiry'
+                    ? 'Изменить срок во всех списках'
+                    : 'Добавить в список для полной замены'}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="button button--ghost"
+            disabled={fields.readOnly}
+            onClick={() => onNavigationAllowlist({ mode: 'replace', entries: [] })}
+          >
+            Заменить все списки пустым
+          </button>
+        </details>
+        {navigationAllowlist ? (
+          <div className="allowlist-panel">
+            <p className="field__hint">
+              {navigationAllowlist.mode === 'replace'
+                ? 'Полная замена · записей: ' + navigationAllowlist.entries.length
+                : 'Выбрано действий: ' + navigationAllowlist.actions.length}
+            </p>
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={fields.readOnly}
+              onClick={() => onNavigationAllowlist(undefined)}
+            >
+              Отменить все изменения разрешённых ссылок
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }

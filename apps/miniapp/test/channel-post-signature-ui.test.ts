@@ -53,9 +53,17 @@ test('post action offers signature and button modes with a real button preview',
   assert.match(postSignatureFieldsSource, /const presentation = fields\.read\('presentation'\)/u);
   assert.match(
     postSignatureFieldsSource,
-    /<FieldSelect[\s\S]*?state=\{presentation\}[\s\S]*?value: 'signature'[\s\S]*?value: 'button'[\s\S]*?fields\.setScalar\('presentation', value\)/u,
+    /<SegmentedControl[\s\S]*?value=\{presentation\.kind === 'common' \? presentation\.value : ''\}[\s\S]*?value: 'signature'[\s\S]*?value: 'button'[\s\S]*?value === 'signature' \|\| value === 'button'[\s\S]*?fields\.setScalar\('presentation', value\)/u,
   );
   assert.match(channelSettingsSource, /className="channel-post-signature__message-button"/u);
+  assert.match(
+    postSignatureFieldsSource,
+    /isButton \? \(\s*<button type="button" className="channel-post-signature__message-button" disabled>\s*\{label\}/u,
+  );
+  assert.match(
+    postSignatureFieldsSource,
+    /disabled: fields\.readOnly \|\| presentation\.kind === 'loading'/u,
+  );
 });
 
 test('settings search includes post action terminology', () => {

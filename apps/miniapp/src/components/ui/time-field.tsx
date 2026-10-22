@@ -26,6 +26,7 @@ type TimeFieldProps = {
   disabled?: boolean;
   error?: string;
   allowEmpty?: boolean;
+  clearable?: boolean;
   clearLabel?: string;
   placeholder?: string;
   variant?: 'default' | 'embedded' | 'compact';
@@ -103,6 +104,7 @@ export function TimeField({
   disabled = false,
   error,
   allowEmpty = false,
+  clearable = true,
   clearLabel = 'Очистить',
   placeholder = 'Не задано',
   variant = 'default',
@@ -435,10 +437,10 @@ export function TimeField({
               <div
                 className={cn(
                   'time-field-sheet__actions',
-                  allowEmpty && 'time-field-sheet__actions--with-clear',
+                  allowEmpty && clearable && 'time-field-sheet__actions--with-clear',
                 )}
               >
-                {allowEmpty ? (
+                {allowEmpty && clearable ? (
                   <button
                     type="button"
                     className="time-field-sheet__button time-field-sheet__button--clear"

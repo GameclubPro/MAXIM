@@ -1,5 +1,5 @@
 import type { ManagedEntityHeader } from '@maxim/contracts/managed-entities';
-import { Plus, RefreshCircle, Search, Xmark } from 'iconoir-react';
+import { AppIcon } from './ui/app-icon';
 import {
   useEffect,
   useDeferredValue,
@@ -25,6 +25,7 @@ export type RequiredSubscriptionSourcePickerProps = {
   maxSelectedCount: number;
   loading: boolean;
   syncing: boolean;
+  disabled?: boolean;
   error: string | null;
   backoffActive: boolean;
   emptyState: string;
@@ -136,7 +137,7 @@ const RequiredSubscriptionSourceRow = memo(function RequiredSubscriptionSourceRo
           </span>
         </span>
         <span className="required-subscription__source-add" aria-hidden="true">
-          <Plus />
+          <AppIcon icon="Plus" width="1.5em" height="1.5em" style={{ strokeWidth: 1.5 }} />
         </span>
       </button>
     </div>
@@ -149,6 +150,7 @@ export function RequiredSubscriptionSourcePicker({
   maxSelectedCount,
   loading,
   syncing,
+  disabled = false,
   error,
   backoffActive,
   emptyState,
@@ -278,7 +280,14 @@ export function RequiredSubscriptionSourcePicker({
     <div className="required-subscription__source-picker">
       <div className="required-subscription__source-toolbar">
         <div className="required-subscription__source-search">
-          <Search aria-hidden focusable="false" />
+          <AppIcon
+            icon="Search"
+            width="1.5em"
+            height="1.5em"
+            style={{ strokeWidth: 1.5 }}
+            aria-hidden
+            focusable="false"
+          />
           <input
             type="search"
             value={query}
@@ -289,18 +298,32 @@ export function RequiredSubscriptionSourcePicker({
           />
           {trimmedQuery ? (
             <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
-              <Xmark aria-hidden focusable="false" />
+              <AppIcon
+                icon="Xmark"
+                width="1.5em"
+                height="1.5em"
+                style={{ strokeWidth: 1.5 }}
+                aria-hidden
+                focusable="false"
+              />
             </button>
           ) : null}
           <button
             type="button"
             className={cn(syncing && 'is-syncing')}
-            disabled={loading || syncing}
+            disabled={disabled || loading || syncing}
             onClick={onRefresh}
             aria-label={syncing ? 'Обновляем список' : 'Обновить список'}
             title={syncing ? 'Обновляем список' : 'Обновить список'}
           >
-            <RefreshCircle aria-hidden focusable="false" />
+            <AppIcon
+              icon="RefreshCircle"
+              width="1.5em"
+              height="1.5em"
+              style={{ strokeWidth: 1.5 }}
+              aria-hidden
+              focusable="false"
+            />
           </button>
         </div>
       </div>
@@ -362,7 +385,7 @@ export function RequiredSubscriptionSourcePicker({
                   <RequiredSubscriptionSourceRow
                     key={`required-subscription-source-${choice.id}`}
                     choice={choice}
-                    disabled={hasReachedLimit}
+                    disabled={disabled || hasReachedLimit}
                     onAdd={onAdd}
                   />
                 ))}
@@ -373,7 +396,7 @@ export function RequiredSubscriptionSourcePicker({
               <RequiredSubscriptionSourceRow
                 key={`required-subscription-source-${choice.id}`}
                 choice={choice}
-                disabled={hasReachedLimit}
+                disabled={disabled || hasReachedLimit}
                 onAdd={onAdd}
               />
             ))

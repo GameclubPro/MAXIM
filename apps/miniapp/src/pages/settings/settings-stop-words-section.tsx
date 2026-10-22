@@ -1,15 +1,13 @@
 import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
-import { Suspense, useState, type Dispatch, type SetStateAction } from 'react';
+import { type Dispatch, type SetStateAction } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import {
   SettingsSectionIcon,
   SettingsSectionToggle,
 } from '../../components/ui/settings-section-toggle';
-import { Spinner } from '../../components/ui/spinner';
 import { cn } from '../../lib/cn';
 import type { ApiTransport } from '../../lib/api/transport';
-import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
 import type {
   SettingsSectionEditorProps,
   SettingsSectionMutationProps,
@@ -37,20 +35,9 @@ export type SettingsStopWordsEditorProps = SettingsStopWordsSectionProps & {
   onModeChange: (mode: 'words' | 'domains') => void;
 };
 
-const LazySettingsStopWordsEditor = recoverableLazyNamedComponent<SettingsStopWordsEditorProps>(
-  () => import('./settings-stop-words-editor'),
-  'SettingsStopWordsEditor',
-);
-const LazySettingsStopWordsSingleTools = recoverableLazyNamedComponent<
-  import('react').ComponentProps<
-    typeof import('./settings-stop-words-single-tools').SettingsStopWordsSingleTools
-  >
->(() => import('./settings-stop-words-single-tools'), 'SettingsStopWordsSingleTools');
-
 const SECTION_PRESENTATION = getNetworkSettingsSectionPresentation('chat', 'stopWords');
 
 export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
-  const [mode, setMode] = useState<'words' | 'domains'>('words');
   const {
     discardSectionChanges,
     expanded,
@@ -104,37 +91,7 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
         onDiscardChanges={() => discardSectionChanges('stopWords')}
         footer={renderSectionSaveFooter('stopWords')}
       >
-        {props.sharedContent ? (
-          <>
-            {expanded ? (
-              <>
-                {props.sharedContent}
-                <Suspense fallback={null}>
-                  <LazySettingsStopWordsSingleTools
-                    api={props.api}
-                    chatId={props.chatId}
-                    policy={policy}
-                    busy={props.busy}
-                    reloadPolicy={props.reloadPolicy}
-                  />
-                </Suspense>
-              </>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <div
-              id="settings-stop-words-content"
-              className={cn('settings-section__collapse', expanded && 'is-open')}
-            >
-              {expanded ? (
-                <Suspense fallback={<Spinner label="Загружаем стоп-слова" />}>
-                  <LazySettingsStopWordsEditor {...props} mode={mode} onModeChange={setMode} />
-                </Suspense>
-              ) : null}
-            </div>
-          </>
-        )}
+        {expanded ? props.sharedContent : null}
       </SettingsDrilldownPanel>
     </GlassCard>
   );

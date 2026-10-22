@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { ShieldCheck } from 'iconoir-react';
+import { AppIcon } from '../../components/ui/app-icon';
 import { SegmentedControl } from '../../components/ui/segmented-control';
 import type { SettingsFieldState } from '../../features/network-settings/field-model';
 import './settings-message-retention.css';
@@ -74,7 +74,13 @@ export function SharedMessageRetentionFields({
 export function SharedMessageRetentionExclusions() {
   return (
     <div className="message-retention-exclusions">
-      <ShieldCheck aria-hidden />
+      <AppIcon
+        icon="ShieldCheck"
+        width="1.5em"
+        height="1.5em"
+        style={{ strokeWidth: 1.5 }}
+        aria-hidden
+      />
       <div>
         <span>Исключения</span>
         <p>Администраторы, закрепы, боты</p>

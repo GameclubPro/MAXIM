@@ -1,7 +1,11 @@
+import { useEffect, useRef } from 'react';
+
 export type PublishedRulesButtonToggleProps = {
   ariaLabel: string;
   enabled: boolean;
-  hasRules: boolean;
+  hasRules?: boolean;
+  mixed?: boolean;
+  disabled?: boolean;
   onChange: (enabled: boolean) => void;
 };
 
@@ -9,9 +13,15 @@ export default function PublishedRulesButtonToggle({
   ariaLabel,
   enabled,
   hasRules,
+  mixed = false,
+  disabled = false,
   onChange,
 }: PublishedRulesButtonToggleProps) {
-  if (!hasRules && !enabled) {
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (input.current) input.current.indeterminate = mixed;
+  }, [mixed]);
+  if (hasRules === false && !enabled && !mixed) {
     return (
       <div className="settings-native-toggle settings-native-toggle--nested">
         <div className="settings-native-toggle__row">
@@ -31,8 +41,11 @@ export default function PublishedRulesButtonToggle({
 
         <label className="settings-native-switch" aria-label={ariaLabel}>
           <input
+            ref={input}
             type="checkbox"
             checked={enabled}
+            disabled={disabled}
+            aria-checked={mixed ? 'mixed' : enabled}
             onChange={(event) => onChange(event.target.checked)}
           />
           <span className="toggle-switch" aria-hidden>
@@ -40,7 +53,8 @@ export default function PublishedRulesButtonToggle({
           </span>
         </label>
       </div>
-      {!hasRules ? (
+      {mixed ? <p className="field__hint">Разные значения</p> : null}
+      {hasRules === false ? (
         <p className="settings-native-toggle__hint">Сначала опубликуйте правила.</p>
       ) : null}
     </div>

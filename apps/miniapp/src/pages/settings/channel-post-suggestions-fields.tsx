@@ -1,60 +1,7 @@
-import { useEffect, useRef } from 'react';
-import type {
-  ChannelSettingsFieldAdapter,
-  SettingsFieldState,
-} from '../../features/network-settings/field-model';
+import type { ChannelSettingsFieldAdapter } from '../../features/network-settings/field-model';
+import { ChannelSettingsToggleCard } from './channel-settings-toggle-card';
+import { ChannelSettingsTextField } from './channel-settings-text-field';
 import { SegmentedControl } from '../../components/ui/segmented-control';
-
-function SuggestionToggle({
-  title,
-  state,
-  disabled,
-  onChange,
-}: {
-  title: string;
-  state: SettingsFieldState<boolean>;
-  disabled: boolean;
-  onChange: (enabled: boolean) => void;
-}) {
-  const input = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (input.current) input.current.indeterminate = state.kind === 'mixed';
-  }, [state.kind]);
-  const checked = state.kind === 'common' && state.value;
-  const blocked = disabled || state.kind === 'loading';
-  return (
-    <div
-      className={
-        'channel-settings-toggle-card' + (checked ? ' is-on' : '') + (blocked ? ' is-disabled' : '')
-      }
-      onClick={(event) => {
-        if (!blocked && !(event.target as HTMLElement).closest('button, input, label'))
-          onChange(!checked);
-      }}
-    >
-      <div className="channel-settings-toggle-card__copy">
-        <div className="channel-settings-toggle-card__title-row">
-          <strong>{title}</strong>
-        </div>
-        {state.kind === 'mixed' ? <span>Разные значения</span> : null}
-      </div>
-      <label className="settings-native-switch">
-        <input
-          ref={input}
-          type="checkbox"
-          checked={checked}
-          aria-label={title}
-          aria-checked={state.kind === 'mixed' ? 'mixed' : checked}
-          disabled={blocked}
-          onChange={(event) => onChange(event.target.checked)}
-        />
-        <span className="toggle-switch" aria-hidden>
-          <span className="toggle-switch__thumb" />
-        </span>
-      </label>
-    </div>
-  );
-}
 
 export function ChannelPostSuggestionsFields({ fields }: { fields: ChannelSettingsFieldAdapter }) {
   const enabled = fields.read('postSuggestionsEnabled');
@@ -67,7 +14,7 @@ export function ChannelPostSuggestionsFields({ fields }: { fields: ChannelSettin
       | 'postSuggestionsDeleteOnUnsubscribe',
     title: string,
   ) => (
-    <SuggestionToggle
+    <ChannelSettingsToggleCard
       title={title}
       state={fields.read(path)}
       disabled={fields.readOnly}
@@ -79,34 +26,17 @@ export function ChannelPostSuggestionsFields({ fields }: { fields: ChannelSettin
     label: string,
     placeholder: string,
     rows?: number,
-  ) => {
-    const state = fields.read(path);
-    const props = {
-      value: state.kind === 'common' ? state.value : '',
-      placeholder: state.kind === 'mixed' ? 'Разные значения' : placeholder,
-      'aria-label': label,
-      disabled: fields.readOnly || state.kind === 'loading',
-      onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        try {
-          fields.setScalar(path, event.target.value);
-          fields.setError(path, null);
-        } catch (cause) {
-          fields.setError(path, cause instanceof Error ? cause.message : 'Проверьте значение.');
-        }
-      },
-    };
-    return (
-      <label className={'field' + (rows ? ' channel-settings-field--wide' : '')}>
-        <span>{label}</span>
-        {rows ? (
-          <textarea {...props} rows={rows} />
-        ) : (
-          <input {...props} type="text" maxLength={32} />
-        )}
-        {fields.error(path) ? <small role="alert">{fields.error(path)}</small> : null}
-      </label>
-    );
-  };
+  ) => (
+    <ChannelSettingsTextField
+      fields={fields}
+      path={path}
+      label={label}
+      placeholder={placeholder}
+      rows={rows}
+      maxLength={rows ? undefined : 32}
+      className={rows ? 'channel-settings-field--wide' : undefined}
+    />
+  );
   return (
     <>
       {toggle('postSuggestionsEnabled', 'Принимать предложения')}
@@ -120,8 +50,16 @@ export function ChannelPostSuggestionsFields({ fields }: { fields: ChannelSettin
             <SegmentedControl
               value={mode.kind === 'common' ? mode.value : ''}
               options={[
-                { value: 'MINIAPP', label: 'В приложении', disabled: fields.readOnly },
-                { value: 'BOT', label: 'В боте', disabled: fields.readOnly },
+                {
+                  value: 'MINIAPP',
+                  label: 'В приложении',
+                  disabled: fields.readOnly || mode.kind === 'loading',
+                },
+                {
+                  value: 'BOT',
+                  label: 'В боте',
+                  disabled: fields.readOnly || mode.kind === 'loading',
+                },
               ]}
               onChange={(value) => {
                 if (value === 'MINIAPP' || value === 'BOT')
