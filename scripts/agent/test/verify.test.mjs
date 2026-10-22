@@ -75,13 +75,13 @@ test('deduplicates only checks guaranteed by the current aggregate npm scripts',
   );
 });
 
-test('keeps complete tooling coverage once with or without selected infrastructure', () => {
+test('runs local tooling once and includes infrastructure only when selected', () => {
   for (const checks of [
     ['repo-static', 'agent-tools'],
     ['agent-tools', 'repo-static'],
   ]) {
     assert.deepEqual(selectVerificationScripts({ config, plan: { checks } }), [
-      { id: 'repo-static', script: 'check:static' },
+      { id: 'repo-static', script: 'check:static:ci' },
     ]);
   }
   for (const checks of [
@@ -93,6 +93,9 @@ test('keeps complete tooling coverage once with or without selected infrastructu
       { id: 'infra', script: 'check:infra' },
     ]);
   }
+  assert.deepEqual(selectVerificationScripts({ config, plan: { checks: ['agent-tools'] } }), [
+    { id: 'agent-tools', script: 'test:agent-tools:core' },
+  ]);
   assert.deepEqual(
     selectVerificationScripts({ config, plan: { checks: ['agent-tools', 'infra'] } }),
     [

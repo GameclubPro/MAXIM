@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { CI_LANES, ciOutputs } from '../../scripts/ci/impact.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 
@@ -257,29 +258,26 @@ test('bakes the production API URL into only the Major mini app image', () => {
   assert.notEqual(dockerJobStart, -1);
   assert.notEqual(dockerJobEnd, -1);
   const dockerJob = workflow.slice(dockerJobStart, dockerJobEnd);
-  const apiMatrixStart = dockerJob.indexOf('          - component: api\n');
-  const miniappMatrixStart = dockerJob.indexOf('          - component: miniapp\n');
-  const adminMatrixStart = dockerJob.indexOf('          - component: admin\n');
-  const stepsStart = dockerJob.indexOf('    steps:\n');
-
-  assert.ok(apiMatrixStart < miniappMatrixStart);
-  assert.ok(miniappMatrixStart < adminMatrixStart);
-  assert.ok(adminMatrixStart < stepsStart);
-  assert.match(dockerJob.slice(apiMatrixStart, miniappMatrixStart), /vite_api_base: ''/u);
-  assert.match(
-    dockerJob.slice(miniappMatrixStart, adminMatrixStart),
-    /vite_api_base: https:\/\/major-maksimov\.ru\/api\/v1/u,
+  const matrix = JSON.parse(
+    ciOutputs({
+      lanes: Object.fromEntries(CI_LANES.map((lane) => [lane, true])),
+      dockerComponents: ['api', 'miniapp', 'admin'],
+    }).docker_matrix,
+  ).include;
+  assert.deepEqual(
+    matrix.map(({ component, vite_api_base }) => [component, vite_api_base]),
+    [
+      ['api', ''],
+      ['miniapp', 'https://major-maksimov.ru/api/v1'],
+      ['admin', ''],
+    ],
   );
-  assert.match(dockerJob.slice(adminMatrixStart, stepsStart), /vite_api_base: ''/u);
+  assert.match(dockerJob, /matrix: \$\{\{ fromJSON\(needs\.impact\.outputs\.docker_matrix\) \}\}/u);
   assert.match(dockerJob, /VITE_API_BASE: \$\{\{ matrix\.vite_api_base \}\}/u);
   assert.match(dockerJob, /build_args=\(\)/u);
   assert.match(dockerJob, /if \[\[ -n "\$VITE_API_BASE" \]\]; then/u);
   assert.match(dockerJob, /build_args\+=\(--build-arg "VITE_API_BASE=\$VITE_API_BASE"\)/u);
   assert.match(dockerJob, /"\$\{build_args\[@\]\}"/u);
-  assert.equal(
-    dockerJob.match(/vite_api_base: https:\/\/major-maksimov\.ru\/api\/v1/gu)?.length,
-    1,
-  );
 });
 
 test('runs the compiled native OCR raster smoke through an isolated UDS sidecar', () => {
