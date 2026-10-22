@@ -47,6 +47,7 @@ export interface StoredNetworkSettingsScope {
   title: string;
   returnTo: string;
   origin?: NetworkSettingsWorkspaceOrigin;
+  retryOfOperationId?: string;
   createdAt: string;
 }
 const scopeSchema = z
@@ -71,6 +72,7 @@ const scopeSchema = z
         .strict(),
     ]),
     title: z.string().max(256),
+    retryOfOperationId: z.string().uuid().optional(),
     returnTo: z.string().regex(/^\/networks(?:\/(?:chat|channel))?(?:\?[^#]*)?$/),
     origin: z
       .object({

@@ -13,8 +13,11 @@ import { Spinner } from '../components/ui/spinner';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useHomeEntityFavorites } from '../lib/home-entity-favorites-context';
 import { useHomeEntityNetworkCatalogue } from '../lib/home-entity-networks-context';
-import type { NetworkSettingsOperationReceipt } from '../lib/network-settings-operation-storage';
 import { useNativeBackHandler } from '../lib/native-back';
+import {
+  createManagedEntityWorkspaceState,
+  buildManagedEntityStatisticsRoute,
+} from '../lib/managed-entity-workspace';
 import { useNetworkStatistics } from '../features/networks/network-statistics';
 import { useNetworkEntries } from '../features/networks/network-community-list';
 import {
@@ -23,10 +26,19 @@ import {
   readNetworkListPosition,
   readNetworkRoute,
   saveNetworkListPosition,
+  readNetworkViewPreference,
+  saveNetworkViewPreference,
   type NetworkRouteState,
 } from '../features/networks/network-route-state';
+import {
+  NetworkWorkspaceHeader,
+  NetworkWorkspaceTabs,
+} from '../features/networks/network-workspace-header';
 import './networks-page.css';
 
+const NetworkOperationHistory = lazy(async () => ({
+  default: (await import('../features/networks/network-operation-history')).NetworkOperationHistory,
+}));
 const NetworkStatisticsView = lazy(async () => ({
   default: (await import('../features/networks/network-statistics-view')).NetworkStatisticsView,
 }));
@@ -113,6 +125,20 @@ function SummaryCard({
   onSettings: () => void;
   onRefresh: () => Promise<void>;
 }) {
+  const cardRef = useRef<HTMLElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!cardRef.current) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), {
+      rootMargin: '100px',
+    });
+    observer.observe(cardRef.current);
+    return () => observer.disconnect();
+  }, []);
   const stats = useNetworkStatistics({
     api,
     scopeKey,
@@ -120,20 +146,28 @@ function SummaryCard({
     favoriteType: card.favoriteType,
     range,
     compositionVersion: card.compositionVersion,
-    enabled: !stale && card.entityCount > 0,
+    enabled: visible && !stale && card.entityCount > 0,
     onScopeInvalidated: () => {
       void onRefresh().catch(() => undefined);
     },
   });
   return (
-    <article className="network-summary-card" data-network-category={card.favoriteType}>
+    <article
+      ref={cardRef}
+      className="network-summary-card"
+      data-network-category={card.favoriteType}
+    >
       <div className="network-summary-card__body">
         <div className="network-summary-card__head">
           <span className="network-category-icon">
             <AppIcon icon={categoryIcons[card.favoriteType]} />
           </span>
           <div>
-            <h2>{card.label}</h2>
+            <h2>
+              <button type="button" className="network-card-title-button" onClick={onOpen}>
+                {card.label}
+              </button>
+            </h2>
             <small>{formatEntityCount(card.entityCount, type)}</small>
           </div>
         </div>
@@ -160,7 +194,9 @@ function SummaryCard({
                   ? 'Данные временно недоступны'
                   : stats.data?.audience.coverage.status !== 'ready' ||
                       stats.data?.netGrowth.coverage.status !== 'ready'
-                    ? 'Частичные данные'
+                    ? stats.data?.audience.coverage.includedEntities !== card.entityCount
+                      ? `Аудитория по ${stats.data?.audience.coverage.includedEntities ?? 0} из ${card.entityCount}`
+                      : 'История прироста может быть неполной'
                     : null}
           </p>
         ) : null}
@@ -179,77 +215,12 @@ function SummaryCard({
           Настройки
         </button>
       </div>
-      {stats.phase === 'error' || stats.phase === 'stale' ? (
+      {(stats.phase === 'error' || stats.phase === 'stale') && stats.error?.retryable !== false ? (
         <button type="button" className="networks-text-button" onClick={stats.refresh}>
           Обновить сводку
         </button>
       ) : null}
     </article>
-  );
-}
-
-function OperationResumes({ userId }: { userId: string }) {
-  const navigate = useNavigate();
-  const [receipts, setReceipts] = useState<NetworkSettingsOperationReceipt[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    void import('../lib/network-settings-operation-storage')
-      .then(({ hydrateNetworkSettingsOperationReceipts }) =>
-        hydrateNetworkSettingsOperationReceipts(userId),
-      )
-      .then((value) => {
-        if (active) setReceipts(value);
-      });
-    return () => {
-      active = false;
-    };
-  }, [userId]);
-  const open = async (receipt: NetworkSettingsOperationReceipt) => {
-    setError(null);
-    const { hydrateNetworkSettingsScope } = await import('../lib/network-settings-workspace-state');
-    const scope = await hydrateNetworkSettingsScope({
-      userId,
-      scopeId: receipt.scopeId,
-      entityType: receipt.entityType,
-    });
-    if (!scope) {
-      setError('Не удалось восстановить выбор сообществ. Результат операции не изменён.');
-      return;
-    }
-    navigate(
-      `/networks/${receipt.entityType}/settings/${receipt.section}?${new URLSearchParams({ scope: receipt.scopeId, operation: receipt.operationId })}`,
-    );
-  };
-  const pending = receipts.filter((receipt) => receipt.lastKnownStatus !== 'COMPLETE').slice(0, 5);
-  if (!pending.length) return null;
-  return (
-    <section className="networks-resumes" aria-label="Сохранённые операции">
-      <h2>Изменения настроек</h2>
-      {pending.map((receipt) => (
-        <button
-          type="button"
-          key={receipt.operationId}
-          onClick={() =>
-            void open(receipt).catch(() =>
-              setError('Не удалось открыть результат. Повторите попытку.'),
-            )
-          }
-        >
-          <AppIcon icon="RefreshDouble" />
-          <span>
-            <strong>{receipt.title}</strong>
-            <small>
-              {receipt.launchState === 'unconfirmed'
-                ? 'Проверить предпросмотр'
-                : 'Посмотреть ход применения'}
-            </small>
-          </span>
-          <AppIcon icon="NavArrowRight" />
-        </button>
-      ))}
-      {error ? <p role="alert">{error}</p> : null}
-    </section>
   );
 }
 
@@ -271,7 +242,22 @@ function NetworkDetail({
   onSettings: (pageCount: number) => void;
 }) {
   const { snapshot } = useHomeEntityFavorites();
-  const [compositionOpen, setCompositionOpen] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [compositionOpen, setCompositionOpen] = useState<'members' | 'add' | null>(null);
+  const searchKey = `members:${state.entityType}:${state.favoriteType}`;
+  const [memberQuery, setMemberQuery] = useState(() =>
+    readNetworkViewPreference(snapshot.actor.scope, searchKey),
+  );
+  const [memberSearch, setMemberSearch] = useState(memberQuery);
+  useEffect(
+    () => saveNetworkViewPreference(snapshot.actor.scope, searchKey, memberQuery),
+    [snapshot.actor.scope, searchKey, memberQuery],
+  );
+  useEffect(() => {
+    const timer = setTimeout(() => setMemberSearch(memberQuery.trim()), 220);
+    return () => clearTimeout(timer);
+  }, [memberQuery]);
   const [notice, setNotice] = useState<string | null>(null);
   const compositionEpoch = snapshot.byType[state.entityType].compositionEpoch;
   const initialPosition = useRef(readNetworkListPosition(snapshot.actor.scope, state));
@@ -281,6 +267,8 @@ function NetworkDetail({
     entityType: state.entityType,
     favoriteType: card.favoriteType,
     compositionEpoch,
+    search: memberSearch,
+    enabled: state.tab === 'communities',
     initialPageCount: initialPosition.current.loadedPageCount,
   });
   const latest = useRef({ state, pageCount: entries.pageCount });
@@ -293,7 +281,10 @@ function NetworkDetail({
     range: state.range,
     compositionVersion: card.compositionVersion,
     enabled: !stale && state.tab === 'overview',
-    onScopeInvalidated: () => {
+    onScopeInvalidated: (reason) => {
+      setNotice(
+        reason === 'access' ? 'Доступ к сообществам изменился.' : 'Состав сетки изменился.',
+      );
       void refresh().catch(() => setNotice('Состав изменился. Обновите сетку.'));
     },
   });
@@ -317,11 +308,12 @@ function NetworkDetail({
   useLayoutEffect(() => {
     if (
       restored.current ||
-      state.tab !== 'communities' ||
-      entries.loading ||
-      entries.error ||
-      entries.pageCount === 0 ||
-      (entries.pageCount < initialPosition.current.loadedPageCount && entries.nextCursor)
+      (state.tab === 'communities'
+        ? entries.loading ||
+          entries.error ||
+          entries.pageCount === 0 ||
+          (entries.pageCount < initialPosition.current.loadedPageCount && entries.nextCursor)
+        : !stats.data)
     )
       return;
     restored.current = true;
@@ -341,7 +333,14 @@ function NetworkDetail({
       });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [entries.error, entries.loading, entries.nextCursor, entries.pageCount, state.tab]);
+  }, [
+    entries.error,
+    entries.loading,
+    entries.nextCursor,
+    entries.pageCount,
+    state.tab,
+    stats.data,
+  ]);
   useNativeBackHandler(
     () => {
       savePosition();
@@ -360,47 +359,26 @@ function NetworkDetail({
   };
   return (
     <>
-      <div className="network-detail-navigation">
-        <button
-          type="button"
-          className="networks-back"
-          onClick={() => route({ ...state, favoriteType: null, tab: 'overview' })}
-        >
-          <AppIcon icon="NavArrowLeft" />
-          Все сетки
-        </button>
-        <SegmentedControl
-          value={state.range}
-          options={[
-            { value: '7d', label: '7 дней' },
-            { value: '30d', label: '30 дней' },
-          ]}
-          onChange={(range) => route({ ...state, range })}
-          ariaLabel="Период статистики"
-          className="network-range"
-        />
-      </div>
-      <div className="network-detail-toolbar">
-        <SegmentedControl
-          value={state.tab}
-          options={[
-            { value: 'overview', label: 'Статистика' },
-            { value: 'communities', label: 'Состав', count: card.entityCount },
-          ]}
-          onChange={(tab) => route({ ...state, tab })}
-          ariaLabel="Раздел сетки"
-          className="network-tabs"
-        />
-        <button
-          type="button"
-          className="networks-primary network-detail-settings"
-          disabled={stale || card.entityCount === 0}
-          onClick={openSettings}
-        >
-          <AppIcon icon="Settings" />
-          Настройки
-        </button>
-      </div>
+      <NetworkWorkspaceTabs
+        value={state.tab}
+        settingsDisabled={stale || card.entityCount === 0}
+        onChange={(tab) => (tab === 'settings' ? openSettings() : route({ ...state, tab }))}
+      />
+      {state.tab === 'overview' ? (
+        <div className="network-detail-navigation">
+          <span className="networks-caption">Период статистики</span>
+          <SegmentedControl
+            value={state.range}
+            options={[
+              { value: '7d', label: '7 дней' },
+              { value: '30d', label: '30 дней' },
+            ]}
+            onChange={(range) => route({ ...state, range })}
+            ariaLabel="Период статистики"
+            className="network-range"
+          />
+        </div>
+      ) : null}
       {notice ? (
         <div className="networks-notice" role="status">
           {notice}
@@ -432,22 +410,64 @@ function NetworkDetail({
             state={stats}
             entityType={state.entityType}
             range={state.range}
-            onOpenCommunities={() => route({ ...state, tab: 'communities' })}
+            viewKey={`${snapshot.actor.scope}:${state.entityType}:${card.favoriteType}:${state.range}`}
+            onOpenCommunity={(entityId) => {
+              savePosition();
+              navigate(
+                buildManagedEntityStatisticsRoute(state.entityType, entityId, {
+                  range: state.range,
+                }),
+                {
+                  state: {
+                    chatTitle: stats.data?.items.find((item) => item.entityId === entityId)?.title,
+                    managedEntityWorkspace: createManagedEntityWorkspaceState({
+                      entityType: state.entityType,
+                      entityId,
+                      origin: {
+                        locationKey: location.key,
+                        historyIndex: window.history.state?.idx,
+                      },
+                      statsPreference: { range: state.range },
+                    }),
+                  },
+                },
+              );
+            }}
           />
         </Suspense>
       ) : (
         <>
           <div className="network-community-actions">
-            <span className="networks-caption">Те же избранные, что на главной</span>
+            <span className="networks-caption">
+              {formatEntityCount(card.entityCount, state.entityType)}
+            </span>
             <button
               type="button"
               className="networks-secondary"
-              onClick={() => setCompositionOpen(true)}
+              onClick={() => setCompositionOpen('members')}
             >
               <AppIcon icon="Group" />
               Изменить состав
             </button>
+            <button
+              type="button"
+              className="networks-primary"
+              onClick={() => setCompositionOpen('add')}
+            >
+              <AppIcon icon="Plus" />
+              Добавить
+            </button>
           </div>
+          <label className="networks-search">
+            <AppIcon icon="Search" />
+            <input
+              type="search"
+              aria-label="Поиск в составе"
+              placeholder="Найти сообщество"
+              value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)}
+            />
+          </label>
           <div className="network-community-list" aria-busy={entries.loading}>
             {entries.items.map((item) => (
               <div className="network-community-row" key={item.id} data-network-entity-id={item.id}>
@@ -458,8 +478,34 @@ function NetworkDetail({
                   avatarUrl={item.avatarUrl}
                 />
                 <span className="network-community-row__text">
-                  <strong>{item.title}</strong>
-                  <small>{item.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
+                  <button
+                    type="button"
+                    className="networks-text-button"
+                    onClick={() => {
+                      savePosition();
+                      navigate(
+                        buildManagedEntityStatisticsRoute(state.entityType, item.id, {
+                          range: state.range,
+                        }),
+                        {
+                          state: {
+                            chatTitle: item.title,
+                            managedEntityWorkspace: createManagedEntityWorkspaceState({
+                              entityType: state.entityType,
+                              entityId: item.id,
+                              origin: {
+                                locationKey: location.key,
+                                historyIndex: window.history.state?.idx,
+                              },
+                              statsPreference: { range: state.range },
+                            }),
+                          },
+                        },
+                      );
+                    }}
+                  >
+                    {item.title}
+                  </button>
                 </span>
               </div>
             ))}
@@ -503,7 +549,8 @@ function NetworkDetail({
             api={api}
             entityType={state.entityType}
             favoriteType={card.favoriteType}
-            onClose={() => setCompositionOpen(false)}
+            initialMode={compositionOpen}
+            onClose={() => setCompositionOpen(null)}
           />
         </Suspense>
       ) : null}
@@ -514,8 +561,16 @@ function NetworkDetail({
 export function NetworksPage({ api, userId }: { api: ApiTransport; userId: string }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const state = useMemo(() => readNetworkRoute(location.search), [location.search]);
   const { snapshot } = useHomeEntityFavorites();
+  const state = useMemo(
+    () =>
+      readNetworkRoute(location.search, readNetworkViewPreference(snapshot.actor.scope, 'range')),
+    [location.search, snapshot.actor.scope],
+  );
+  useEffect(
+    () => saveNetworkViewPreference(snapshot.actor.scope, 'range', state.range),
+    [snapshot.actor.scope, state.range],
+  );
   const catalogue = useHomeEntityNetworkCatalogue(state.entityType);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const onRoute = (next: NetworkRouteState) => navigate(buildNetworkRoute(next));
@@ -548,7 +603,7 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
         userId,
         scope,
         title: card.label,
-        returnTo: buildNetworkRoute(returnState),
+        returnTo: buildNetworkRoute({ ...returnState, favoriteType: card.favoriteType }),
         origin: {
           locationKey: location.key,
           historyIndex:
@@ -565,39 +620,23 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
   };
   return (
     <section className="networks-page">
-      <header className="networks-heading">
-        <div>
-          <h1>{selectedCard ? selectedCard.label : 'Сетки'}</h1>
-          <p>
-            {selectedCard
-              ? formatEntityCount(selectedCard.entityCount, state.entityType)
-              : 'Ваши избранные с главной'}
-          </p>
-        </div>
-        {selectedCard ? (
-          <label className="network-picker" data-network-category={selectedCard.favoriteType}>
-            <AppIcon icon={categoryIcons[selectedCard.favoriteType]} />
-            <AppIcon icon="NavArrowRight" />
-            <select
-              aria-label="Переключить сетку"
-              value={selectedCard.favoriteType}
-              onChange={(event) =>
-                onRoute({ ...state, favoriteType: event.target.value as ManagedEntityFavoriteType })
-              }
-            >
-              {catalogue.cards.map((item) => (
-                <option key={item.favoriteType} value={item.favoriteType}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
+      {selectedCard ? (
+        <NetworkWorkspaceHeader
+          title={selectedCard.label}
+          entityType={state.entityType}
+          favoriteType={selectedCard.favoriteType}
+          count={selectedCard.entityCount}
+          onBack={() => onRoute({ ...state, favoriteType: null, tab: 'overview' })}
+          onPick={(entityType, favoriteType) => onRoute({ ...state, entityType, favoriteType })}
+        />
+      ) : (
+        <header className="networks-heading">
+          <h1>Сетки</h1>
           <span className="networks-heading__icon">
             <AppIcon icon="Community" />
           </span>
-        )}
-      </header>
+        </header>
+      )}
       {!selectedCard ? (
         <div className="networks-controls">
           <SegmentedControl
@@ -643,7 +682,7 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
       ) : null}
       {state.favoriteType && selectedCard ? (
         <NetworkDetail
-          key={`${state.entityType}:${state.favoriteType}`}
+          key={`${snapshot.actor.scope}:${state.entityType}:${state.favoriteType}:${state.tab}`}
           api={api}
           state={state}
           card={selectedCard}
@@ -654,7 +693,9 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
         />
       ) : !state.favoriteType ? (
         <>
-          <OperationResumes key={userId} userId={userId} />
+          <Suspense fallback={null}>
+            <NetworkOperationHistory key={userId} api={api} userId={userId} />
+          </Suspense>
           <div className="networks-catalogue">
             {populated.map((card) => (
               <SummaryCard
@@ -675,7 +716,7 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
           </div>
           {emptyCards.length ? (
             <details className="networks-empty-categories" open={!populated.length}>
-              <summary>{populated.length ? 'Пустые сетки' : 'Добавьте избранное в сетку'}</summary>
+              <summary>{populated.length ? 'Другие категории' : 'Выберите избранное'}</summary>
               {!populated.length ? (
                 <p>Отметьте чаты и каналы на главной — они появятся здесь.</p>
               ) : null}

@@ -23,7 +23,7 @@
     box-shadow: var(--major-overlay-shadow);
   }
   body[data-miniapp-profile='moderation'] .network-detail-metric > span {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--major-muted);
     font-weight: 700;
   }
@@ -44,7 +44,7 @@
     display: grid;
     gap: 6px;
     margin-top: auto;
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1.5;
     color: var(--major-muted);
   }
@@ -70,7 +70,7 @@
     :is(.network-statistics-caption, .network-statistics-method) {
     margin: 0;
     color: var(--major-muted);
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.7;
   }
   body[data-miniapp-profile='moderation'] :is(.network-growth-panel, .network-stats-communities) {
@@ -129,7 +129,7 @@
     justify-content: space-between;
     gap: 6px;
     margin: 6px 0 16px;
-    font-size: 9px;
+    font-size: 11px;
     color: var(--major-muted);
   }
   body[data-miniapp-profile='moderation'] :is(.network-chart-empty, .network-statistics-empty) {
@@ -225,6 +225,123 @@
     align-items: center;
     gap: 8px;
     min-height: 44px;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-filters {
+    display: grid;
+    gap: 12px;
+    margin: 14px 0;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-filters > label {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-filters select {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: 9px 12px;
+    border: 1px solid var(--network-edge);
+    border-radius: 12px;
+    background: var(--network-surface);
+    color: var(--major-ink);
+    font: inherit;
+    font-size: 16px;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-missing input {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--major-accent);
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row {
+    display: flex;
+    gap: 10px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--network-edge);
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row:last-child {
+    border-bottom: 0;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row > .entity-avatar {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row__body {
+    min-width: 0;
+    flex: 1;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row__body > button {
+    display: block;
+    min-height: 44px;
+    margin: -8px 0 0;
+    max-width: 100%;
+    padding: 8px 0;
+    border: 0;
+    background: transparent;
+    color: var(--major-ink);
+    text-align: left;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 750;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row__body small {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row__values {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row__values > span {
+    display: grid;
+    gap: 3px;
+    color: var(--major-muted);
+    font-size: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row__values b {
+    color: var(--major-ink);
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row__values b.is-positive {
+    color: var(--major-positive);
+  }
+  body[data-miniapp-profile='moderation'] .network-metrics-row__values b.is-negative {
+    color: var(--major-danger);
+  }
+  body[data-miniapp-profile='moderation'] .network-chart-slider {
+    width: 100%;
+    min-height: 44px;
+    accent-color: var(--major-accent);
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .network-chart-selection {
+    display: grid;
+    gap: 6px;
+    padding: 12px;
+    border-radius: 12px;
+    background: var(--major-accent-soft);
+    font-size: 13px;
+    color: var(--major-ink);
+  }
+  body[data-miniapp-profile='moderation'] .network-chart-selection strong {
+    font-variant-numeric: tabular-nums;
+  }
+  body[data-miniapp-profile='moderation'] .network-chart-selection small {
+    font-size: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .network-growth-day.is-selected {
+    stroke: var(--major-ink);
+    stroke-width: 2;
   }
   @media (min-width: 560px) {
     body[data-miniapp-profile='moderation'] .network-detail-metrics.has-views > * {

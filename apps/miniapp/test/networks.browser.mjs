@@ -426,7 +426,11 @@ async function settingsHub(page, { scope, readCount = 0, single } = {}) {
   const url = new URL(page.url());
   assert.match(url.pathname, /\/networks\/chat\/settings\/?$/u, 'configure opens section hub');
   if (scope) assert.equal(url.searchParams.get('scope'), scope, 'hub keeps target scope');
-  assert.equal(await hub.locator('select').count(), 0, 'section hub has no native section select');
+  assert.equal(
+    await hub.locator('.settings-sections select').count(),
+    0,
+    'section hub has no native section select',
+  );
   assert.equal(
     (await readRequests(page)).length,
     readCount,
@@ -564,6 +568,7 @@ for (const profile of [
       'card Settings targets the complete favorite category without selecting recipients',
     );
     await back(page);
+    await page.getByRole('button', { name: 'Все сетки', exact: true }).click();
     await importantCard.waitFor();
 
     await page.locator('.network-summary-card__open').first().click();
@@ -574,11 +579,54 @@ for (const profile of [
       path: join(output, `${profile.name}-statistics.png`),
       animations: 'disabled',
     });
+    if (profile.name === 'android-light') {
+      await page.locator('.network-statistics-progress').waitFor({ state: 'hidden' });
+      await page.getByRole('button', { name: /^Все показатели/u }).click();
+      assert.equal(await page.locator('.network-metrics-row').count(), 50);
+      await page.getByRole('button', { name: /^Показать ещё ·/u }).click();
+      assert.ok((await page.locator('.network-metrics-row').count()) > 50);
+      const metricsSearch = page.getByRole('searchbox', {
+        name: 'Поиск по показателям',
+        exact: true,
+      });
+      await metricsSearch.fill('Районный чат 62');
+      await page
+        .locator('.network-metrics-row')
+        .first()
+        .getByRole('button', { name: 'Районный чат 62', exact: true })
+        .waitFor();
+      assert.equal(
+        await page.locator('.network-metrics-row').count(),
+        1,
+        'metrics beyond the first page remain searchable',
+      );
+      await page.locator('.network-metrics-row').first().getByRole('button').click();
+      await page.waitForURL(/\/chat\/[^/]+\/events/u);
+      await page.locator('[data-managed-entity-workspace]').waitFor();
+      assert.equal(
+        new URL(page.url()).searchParams.get('range'),
+        '7d',
+        'community statistics retains the network period',
+      );
+      await back(page);
+      await metricsSearch.waitFor();
+      assert.equal(
+        await metricsSearch.inputValue(),
+        'Районный чат 62',
+        'statistics return retains filters',
+      );
+      await page.getByRole('slider', { name: 'День графика' }).fill('0');
+      assert.ok((await page.locator('.network-chart-selection').innerText()).length > 10);
+      await page.screenshot({
+        path: join(output, `${profile.name}-all-metrics.png`),
+        fullPage: true,
+      });
+    }
     const configure = page.getByRole('button', { name: 'Настройки', exact: true });
     assert.equal(await configure.isEnabled(), true);
     await configure.click();
     const categoryScope = await settingsHub(page, { single });
-    assert.equal(await page.locator('.bottom-nav').count(), 0);
+    assert.equal(await page.locator('.bottom-nav').count(), 1);
     await fits(page, `${profile.name} settings hub`);
     await page.screenshot({
       path: join(output, `${profile.name}-settings-hub.png`),
@@ -595,8 +643,8 @@ for (const profile of [
     assert.ok(
       Number(
         (
-          await page.locator('.network-settings-editor .settings-drilldown__summary').innerText()
-        ).match(/(?:Выбрано|Вся сетка): (\d+)/u)?.[1],
+          await page.locator('.network-settings-editor .network-settings-scope small').innerText()
+        ).match(/(\d+)/u)?.[1],
       ) > 50,
     );
     const writesBefore = await page.evaluate(
@@ -608,9 +656,14 @@ for (const profile of [
     await back(page);
     await settingsHub(page, { scope: categoryScope, readCount: reads.length });
     await back(page);
+    await page
+      .locator('.networks-page .network-workspace-tabs button[aria-current="page"]')
+      .waitFor();
     assert.equal(
-      await page.getByRole('radio', { name: 'Статистика', exact: true }).isChecked(),
-      true,
+      await page
+        .getByRole('button', { name: 'Статистика', exact: true })
+        .getAttribute('aria-current'),
+      'page',
       'Back restores the Statistics tab that opened Settings',
     );
     assert.equal(
@@ -624,8 +677,8 @@ for (const profile of [
       'opening and closing settings cannot save changes',
     );
 
-    await page.getByRole('radio', { name: /^Состав/u }).click();
-    await page.locator('[data-network-entity-id]').first().waitFor();
+    await page.getByRole('button', { name: 'Состав', exact: true }).click();
+    await page.locator('.network-community-list [data-network-entity-id]').first().waitFor();
     assert.equal(await page.locator('[data-network-entity-id]').count(), 50);
     assert.equal(
       await page.locator('.network-community-list input').count(),
@@ -670,8 +723,8 @@ for (const profile of [
       'Back restores loaded pages',
     );
     assert.equal(
-      await page.getByRole('radio', { name: /^Состав/u }).isChecked(),
-      true,
+      await page.getByRole('button', { name: 'Состав', exact: true }).getAttribute('aria-current'),
+      'page',
       'Back restores the Composition tab that opened Settings',
     );
     assert.ok(
@@ -718,10 +771,10 @@ for (const profile of [
       window.__networkLostComposition = true;
     });
     await sheet.getByRole('button', { name: 'Сохранить состав', exact: true }).click();
-    await sheet.getByText('Нужно согласовать состав', { exact: true }).waitFor();
+    await sheet.getByText('Состав изменился', { exact: true }).waitFor();
     assert.equal(await sheet.isVisible(), true, 'lost write response preserves composition draft');
-    await sheet.getByRole('button', { name: 'Прочитать актуальный состав', exact: true }).click();
-    await sheet.getByRole('button', { name: 'Принять актуальную основу', exact: true }).click();
+    await sheet.getByRole('button', { name: 'Обновить состав', exact: true }).click();
+    await sheet.getByRole('button', { name: 'Подтвердить изменения', exact: true }).click();
     assert.equal(
       await sheet.getByRole('button', { name: 'Сохранить состав', exact: true }).isDisabled(),
       true,
@@ -751,9 +804,11 @@ for (const profile of [
       'composition changes keep Settings targeted at the whole network',
     );
     await back(page);
+    await page.locator('.networks-page .network-workspace-menu summary').click();
     await page
       .getByRole('combobox', { name: 'Переключить сетку', exact: true })
       .selectOption('watch');
+    await page.locator('.network-workspace-menu summary').click();
     await configure.click();
     const switchedScope = await settingsHub(page, { readCount: (await readRequests(page)).length });
     assert.deepEqual(
@@ -765,8 +820,11 @@ for (const profile of [
       'switching networks never carries recipients from the previous category',
     );
     await back(page);
+    await page.locator('.networks-page').waitFor();
     assert.equal(
-      await page.getByRole('combobox', { name: 'Переключить сетку', exact: true }).inputValue(),
+      await page
+        .getByRole('combobox', { name: 'Переключить сетку', exact: true, includeHidden: true })
+        .inputValue(),
       'watch',
     );
     await settleVisualFrame(page);
@@ -991,10 +1049,10 @@ for (const profile of [
     );
     await setPhoneKeyboard(page, { mode: 'resize', open: false });
     await page.getByRole('button', { name: 'Проверить изменения', exact: true }).click();
-    const apply = page.getByRole('button', { name: 'Применить к выбранным', exact: true });
+    const apply = page.getByRole('button', { name: /^Применить ·/u });
     await page.waitForFunction(() => {
-      const button = [...document.querySelectorAll('button')].find(
-        (node) => node.textContent === 'Применить к выбранным',
+      const button = [...document.querySelectorAll('button')].find((node) =>
+        node.textContent.trim().startsWith('Применить ·'),
       );
       return button && !button.disabled;
     });
@@ -1023,7 +1081,7 @@ for (const profile of [
     await page.getByRole('button', { name: 'Проверить изменения', exact: true }).click();
     await page.waitForFunction(() =>
       [...document.querySelectorAll('button')].some(
-        (node) => node.textContent.trim() === 'Применить к выбранным' && !node.disabled,
+        (node) => node.textContent.trim().startsWith('Применить ·') && !node.disabled,
       ),
     );
     const preparedOperation = await page.evaluate(
@@ -1035,11 +1093,9 @@ for (const profile of [
     reloadUrl.searchParams.set('networks', '1');
     reloadUrl.searchParams.set('networksScenario', 'prepared-reload');
     await page.goto(reloadUrl.href);
-    await page
-      .getByText('Предпросмотр восстановлен для просмотра статуса.', { exact: false })
-      .waitFor();
+    await page.getByText('Эта проверка не применялась.', { exact: false }).waitFor();
     assert.equal(
-      await page.getByRole('button', { name: 'Применить к выбранным', exact: true }).count(),
+      await page.getByRole('button', { name: /^Применить ·/u }).count(),
       0,
       'restored PREPARED stays status-only',
     );
@@ -1047,6 +1103,13 @@ for (const profile of [
     assert.match(
       await page.locator('.network-settings-page__operation').innerText(),
       new RegExp(preparedOperation),
+    );
+    await page.getByRole('button', { name: 'Открыть новые настройки', exact: true }).click();
+    await sectionReady(page.locator('.network-settings-editor'), 'links').waitFor();
+    assert.equal(
+      await page.locator('.network-settings-page__operation').count(),
+      0,
+      'restored prepared operation has a working fresh-editor exit',
     );
 
     await openSelectedSettings('prepared-reload');
@@ -1067,7 +1130,7 @@ for (const profile of [
       await page.getByRole('button', { name: 'Проверить изменения', exact: true }).click();
       await page.waitForFunction(() =>
         [...document.querySelectorAll('button')].some(
-          (node) => node.textContent === 'Применить к выбранным' && !node.disabled,
+          (node) => node.textContent.trim().startsWith('Применить ·') && !node.disabled,
         ),
       );
       await page.evaluate(() => {
@@ -1090,7 +1153,7 @@ for (const profile of [
           return originalNativeSet.call(device, key, value);
         };
       });
-      await page.getByRole('button', { name: 'Применить к выбранным', exact: true }).click();
+      await page.getByRole('button', { name: /^Применить ·/u }).click();
       await page
         .getByRole('alert')
         .filter({ hasText: /сохранить операцию/u })
@@ -1125,8 +1188,8 @@ for (const profile of [
       assert.ok(
         Number(
           (
-            await page.locator('.network-settings-editor .settings-drilldown__summary').innerText()
-          ).match(/(?:Выбрано|Вся сетка): (\d+)/u)?.[1],
+            await page.locator('.network-settings-editor .network-settings-scope small').innerText()
+          ).match(/(\d+)/u)?.[1],
         ) > 500,
         'whole category has no selected-recipient cap',
       );

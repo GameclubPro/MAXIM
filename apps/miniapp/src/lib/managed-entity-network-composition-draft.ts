@@ -89,8 +89,6 @@ export class ManagedEntityNetworkCompositionDraft {
     const expectedFavoriteType = existing ? existing.expectedFavoriteType : entity.favoriteType;
     if (favoriteType === expectedFavoriteType) this.changes.delete(entity.id);
     else {
-      if (!this.changes.has(entity.id) && this.changes.size >= 500)
-        throw new Error('За одно сохранение можно изменить до 500 сообществ.');
       this.changes.set(entity.id, { entityId: entity.id, expectedFavoriteType, favoriteType });
     }
     this.notify();
@@ -105,6 +103,8 @@ export class ManagedEntityNetworkCompositionDraft {
   save = async () => {
     const snapshot = this.getSnapshot();
     if (!snapshot.dirty || snapshot.phase === 'saving') return null;
+    if (snapshot.phase === 'saved-refresh-pending')
+      throw new Error('Состав сохранён. Сначала обновите список.');
     if (snapshot.phase === 'review-required')
       throw new Error('Сначала проверьте актуальный состав сетки.');
     this.phase = 'saving';
@@ -112,9 +112,10 @@ export class ManagedEntityNetworkCompositionDraft {
     try {
       const result = await this.session.commitComposition({
         entityType: this.key.entityType,
-        changes: snapshot.changes,
+        changes: snapshot.changes.slice(0, 500),
       });
-      this.changes.clear();
+      // FLAG: Each confirmed batch removes only its own edits; remaining choices need a separate save.
+      for (const change of snapshot.changes.slice(0, 500)) this.changes.delete(change.entityId);
       this.baselineEpoch = this.session.getSnapshot().byType[this.key.entityType].compositionEpoch;
       this.phase = result.refresh === 'pending' ? 'saved-refresh-pending' : 'editing';
       this.notify();

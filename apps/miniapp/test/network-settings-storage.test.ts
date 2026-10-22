@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { networkSettingsRetryCandidates } from '../src/features/network-settings/network-settings-retry';
 import {
   createNetworkSettingsScope,
   readNetworkSettingsScope,
@@ -10,6 +11,7 @@ import {
   listNetworkSettingsOperationReceipts,
   hydrateNetworkSettingsOperationReceipts,
   mergeNetworkSettingsReceipt,
+  removeNetworkSettingsOperationReceipt,
   type NetworkSettingsOperationReceipt,
 } from '../src/lib/network-settings-operation-storage';
 function environment(fail = false, native?: Map<string, string>) {
@@ -117,6 +119,128 @@ function historyReceipt(
   };
 }
 const historyKey = 'maxim.network.settings.receipts.v1:actor';
+test('large retry batches preserve launched ownership after child archive and stale parent reads', async () => {
+  const env = environment();
+  try {
+    const ids = Array.from({ length: 503 }, (_, index) => `chat-${index}`);
+    const parent = historyReceipt(1, {
+      lastKnownStatus: 'FAILED',
+      recipientIds: ids,
+      completionConfirmedAt: undefined,
+    });
+    await persistNetworkSettingsOperationReceipt(parent);
+    const child = historyReceipt(2, {
+      retryOfOperationId: parent.operationId,
+      recipientIds: ids.slice(0, 500),
+      launchState: 'uncertain',
+      lastKnownStatus: 'RUNNING',
+      completionConfirmedAt: undefined,
+    });
+    await persistNetworkSettingsOperationReceipt(child);
+    assert.deepEqual(
+      networkSettingsRetryCandidates(ids, parent, listNetworkSettingsOperationReceipts('actor')),
+      ids.slice(500),
+    );
+    await assert.rejects(
+      persistNetworkSettingsOperationReceipt({ ...child, operationId: crypto.randomUUID() }),
+      /уже создан повтор/u,
+    );
+    await persistNetworkSettingsOperationReceipt({
+      ...child,
+      launchState: 'submitted',
+      lastKnownStatus: 'COMPLETE',
+      completionConfirmedAt: new Date().toISOString(),
+    });
+    await removeNetworkSettingsOperationReceipt('actor', child.operationId);
+    await assert.rejects(
+      persistNetworkSettingsOperationReceipt({ ...child, operationId: crypto.randomUUID() }),
+      /уже создан повтор/u,
+    );
+    await persistNetworkSettingsOperationReceipt({
+      ...parent,
+      updatedAt: new Date().toISOString(),
+    });
+    assert.deepEqual(
+      networkSettingsRetryCandidates(ids, parent, listNetworkSettingsOperationReceipts('actor')),
+      ids.slice(500),
+    );
+    assert.deepEqual(
+      networkSettingsRetryCandidates(
+        ids,
+        { ...parent, userId: 'someone-else' },
+        listNetworkSettingsOperationReceipts('actor'),
+      ),
+      [],
+    );
+  } finally {
+    env.restore();
+  }
+});
+test('archiving preserves terminal operations with unsettled outcomes until settlement is verified', async () => {
+  const env = environment();
+  try {
+    const receipt = historyReceipt(1, {
+      lastKnownStatus: 'PARTIAL',
+      completionConfirmedAt: undefined,
+    });
+    await persistNetworkSettingsOperationReceipt(receipt);
+    await removeNetworkSettingsOperationReceipt('actor', receipt.operationId);
+    assert.equal(listNetworkSettingsOperationReceipts('actor').length, 1);
+    await persistNetworkSettingsOperationReceipt({
+      ...receipt,
+      settlementConfirmedAt: new Date().toISOString(),
+    });
+    await removeNetworkSettingsOperationReceipt('actor', receipt.operationId);
+    assert.equal(listNetworkSettingsOperationReceipts('actor').length, 0);
+  } finally {
+    env.restore();
+  }
+});
+
+test('a prepared retry retains its parent until it can no longer dispatch', async () => {
+  const env = environment();
+  try {
+    const parent = historyReceipt(1, {
+      lastKnownStatus: 'FAILED',
+      completionConfirmedAt: undefined,
+      settlementConfirmedAt: new Date().toISOString(),
+    });
+    await persistNetworkSettingsOperationReceipt(parent);
+    const child = historyReceipt(2, {
+      retryOfOperationId: parent.operationId,
+      launchState: 'unconfirmed',
+      lastKnownStatus: 'PREPARED',
+      completionConfirmedAt: undefined,
+    });
+    await persistNetworkSettingsOperationReceipt(child);
+    await assert.rejects(
+      removeNetworkSettingsOperationReceipt('actor', parent.operationId),
+      /повторной операции/u,
+    );
+    await persistNetworkSettingsOperationReceipt({ ...child, launchState: 'launching' });
+    await persistNetworkSettingsOperationReceipt({
+      ...child,
+      launchState: 'submitted',
+      lastKnownStatus: 'COMPLETE',
+      completionConfirmedAt: new Date().toISOString(),
+    });
+    await removeNetworkSettingsOperationReceipt('actor', parent.operationId);
+    assert.equal(
+      listNetworkSettingsOperationReceipts('actor').some(
+        (receipt) => receipt.operationId === parent.operationId,
+      ),
+      false,
+    );
+    assert.equal(
+      listNetworkSettingsOperationReceipts('actor').some(
+        (receipt) => receipt.operationId === child.operationId,
+      ),
+      true,
+    );
+  } finally {
+    env.restore();
+  }
+});
 
 test('more than 100 proven completed receipts make space for a new operation by pruning oldest only', async () => {
   const env = environment();

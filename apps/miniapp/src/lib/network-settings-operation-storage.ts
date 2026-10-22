@@ -21,6 +21,8 @@ const receiptSchema = z
     section: networkSettingsSectionSchema,
     title: z.string().max(256),
     operationId: z.string().uuid(),
+    retryOfOperationId: z.string().uuid().optional(),
+    retriedRecipientIds: z.array(z.string().min(1)).optional(),
     launchState: z.enum(['unconfirmed', 'launching', 'submitted', 'uncertain']),
     lastKnownStatus: networkSettingsOperationStatusSchema.optional(),
     updatedAt: z.string().datetime(),
@@ -30,6 +32,7 @@ const receiptSchema = z
       .refine((ids) => new Set(ids).size === ids.length)
       .optional(),
     completionConfirmedAt: z.string().datetime().optional(),
+    settlementConfirmedAt: z.string().datetime().optional(),
     previewHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -151,7 +154,10 @@ export function mergeNetworkSettingsReceipt(
     previous.userId !== next.userId ||
     previous.scopeId !== next.scopeId ||
     previous.entityType !== next.entityType ||
-    previous.section !== next.section
+    previous.section !== next.section ||
+    (previous.retryOfOperationId &&
+      next.retryOfOperationId &&
+      previous.retryOfOperationId !== next.retryOfOperationId)
   )
     throw new Error('Номер операции уже связан с другим выбором.');
   if (
@@ -175,6 +181,19 @@ export function mergeNetworkSettingsReceipt(
       previous.lastKnownStatus,
       next.lastKnownStatus,
     ),
+    ...(previous.retryOfOperationId || next.retryOfOperationId
+      ? { retryOfOperationId: previous.retryOfOperationId ?? next.retryOfOperationId }
+      : {}),
+    ...(previous.retriedRecipientIds || next.retriedRecipientIds
+      ? {
+          retriedRecipientIds: [
+            ...new Set([
+              ...(previous.retriedRecipientIds ?? []),
+              ...(next.retriedRecipientIds ?? []),
+            ]),
+          ],
+        }
+      : {}),
     ...(previous.recipientIds || next.recipientIds
       ? { recipientIds: previous.recipientIds ?? next.recipientIds }
       : {}),
@@ -183,6 +202,9 @@ export function mergeNetworkSettingsReceipt(
       : {}),
     ...(previous.completionConfirmedAt || next.completionConfirmedAt
       ? { completionConfirmedAt: previous.completionConfirmedAt ?? next.completionConfirmedAt }
+      : {}),
+    ...(previous.settlementConfirmedAt || next.settlementConfirmedAt
+      ? { settlementConfirmedAt: previous.settlementConfirmedAt ?? next.settlementConfirmedAt }
       : {}),
   };
 }
@@ -196,12 +218,52 @@ export async function persistNetworkSettingsOperationReceipt(
     .catch(() => undefined)
     .then(async () => {
       const current = listNetworkSettingsOperationReceipts(value.userId);
-      value = mergeNetworkSettingsReceipt(
-        current.find((row) => row.operationId === value.operationId),
-        incoming,
-      );
+      const existing = current.find((row) => row.operationId === value.operationId);
+      value = mergeNetworkSettingsReceipt(existing, incoming);
+      if (value.retryOfOperationId && (!existing || existing.launchState === 'unconfirmed')) {
+        const parent = current.find((row) => row.operationId === value.retryOfOperationId);
+        const claimed = new Set([
+          ...(parent?.retriedRecipientIds ?? []),
+          ...current
+            .filter(
+              (row) =>
+                row.operationId !== value.operationId &&
+                row.retryOfOperationId === value.retryOfOperationId,
+            )
+            .flatMap((row) => row.recipientIds ?? []),
+        ]);
+        if (
+          !parent ||
+          parent.entityType !== value.entityType ||
+          parent.section !== value.section ||
+          !value.recipientIds?.length ||
+          value.recipientIds.some((id) => !parent.recipientIds?.includes(id) || claimed.has(id))
+        )
+          throw new Error(
+            'Для этих сообществ уже создан повтор. Откройте его в истории изменений.',
+          );
+      }
       const values = pruneCompletedReceipts(
-        [value, ...current.filter((r) => r.operationId !== value.operationId)],
+        [
+          value,
+          ...current
+            .filter((r) => r.operationId !== value.operationId)
+            .map((row) => {
+              // FLAG: Record launched retry ownership with its receipt before dispatch. The parent
+              // retains this proof even when a completed child's history entry is archived/pruned.
+              if (
+                row.operationId !== value.retryOfOperationId ||
+                value.launchState === 'unconfirmed'
+              )
+                return row;
+              return {
+                ...row,
+                retriedRecipientIds: [
+                  ...new Set([...(row.retriedRecipientIds ?? []), ...(value.recipientIds ?? [])]),
+                ],
+              };
+            }),
+        ],
         value.operationId,
       );
       if (
@@ -246,6 +308,17 @@ export async function persistNetworkSettingsOperationReceipt(
     if (queues.get(value.userId) === work) queues.delete(value.userId);
   }
 }
+export function hasUnsettledNetworkSettingsRetry(
+  operationId: string,
+  receipts: readonly NetworkSettingsOperationReceipt[],
+): boolean {
+  return receipts.some(
+    (receipt) =>
+      receipt.retryOfOperationId === operationId &&
+      !(receipt.settlementConfirmedAt || receipt.completionConfirmedAt),
+  );
+}
+
 export async function removeNetworkSettingsOperationReceipt(
   userId: string,
   operationId: string,
@@ -256,10 +329,14 @@ export async function removeNetworkSettingsOperationReceipt(
     .then(async () => {
       const list = listNetworkSettingsOperationReceipts(userId);
       const receipt = list.find((r) => r.operationId === operationId);
+      // FLAG: An unfinished retry still needs its parent witness before dispatch.
+      if (hasUnsettledNetworkSettingsRetry(operationId, list))
+        throw new Error('Сначала проверьте результат повторной операции.');
       if (
         receipt &&
         receipt.launchState !== 'unconfirmed' &&
-        !['COMPLETE', 'PARTIAL', 'FAILED'].includes(receipt.lastKnownStatus ?? '')
+        (!['COMPLETE', 'PARTIAL', 'FAILED'].includes(receipt.lastKnownStatus ?? '') ||
+          !(receipt.settlementConfirmedAt || receipt.completionConfirmedAt))
       )
         return;
       const serialized = JSON.stringify(list.filter((r) => r.operationId !== operationId));

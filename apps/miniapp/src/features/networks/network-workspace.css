@@ -1,0 +1,160 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .network-workspace-identity {
+    position: relative;
+    z-index: 5;
+    min-width: 0;
+    color: var(--major-ink);
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-heading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0;
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-heading > div {
+    flex: 1;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-heading h1 {
+    margin: 0;
+    font-size: clamp(24px, 6vw, 28px);
+    line-height: 1.2;
+    font-weight: 850;
+    letter-spacing: -0.035em;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-heading p {
+    margin: 5px 0 0;
+    font-size: 12px;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.network-workspace-back, .network-workspace-menu > summary) {
+    display: grid;
+    place-items: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 6px;
+    border: 0;
+    border-radius: 13px;
+    background: transparent;
+    color: var(--major-ink);
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-icon {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border-radius: 13px;
+    color: var(--major-accent);
+    background: var(--major-accent-soft);
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-menu summary {
+    list-style: none;
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-menu summary::-webkit-details-marker {
+    display: none;
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-menu > div {
+    position: absolute;
+    inset: calc(100% - 4px) 0 auto auto;
+    display: grid;
+    gap: 14px;
+    width: min(280px, 100%);
+    padding: 16px;
+    border: 1px solid var(--major-border);
+    border-radius: 18px;
+    background: var(--major-surface);
+    box-shadow: var(--major-overlay-shadow);
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.network-workspace-menu label, .network-rename label) {
+    display: grid;
+    gap: 6px;
+    font-size: 13px;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.network-workspace-menu select, .network-rename input) {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 9px 12px;
+    border: 1px solid var(--major-border);
+    border-radius: 12px;
+    color: var(--major-ink);
+    background: var(--major-surface);
+    font: inherit;
+    font-size: 16px;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.network-workspace-menu button, .network-rename button) {
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 12px;
+    color: var(--major-accent);
+    background: var(--major-accent-soft);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  body[data-miniapp-profile='moderation'] .network-rename {
+    display: grid;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 18px;
+    background: var(--major-surface);
+  }
+  body[data-miniapp-profile='moderation'] .network-rename p {
+    margin: 0;
+    font-size: 12px;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation'] .network-rename > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-tabs {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    padding: 4px;
+    border-radius: 17px;
+    background: var(--major-surface);
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-tabs button {
+    flex: 1;
+    min-width: 0;
+    min-height: 46px;
+    padding: 10px 4px;
+    border: 0;
+    border-radius: 13px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 750;
+    color: var(--major-muted);
+    background: transparent;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-tabs button[aria-current='page'] {
+    color: var(--major-surface);
+    background: var(--major-ink);
+    box-shadow: var(--major-overlay-shadow);
+  }
+  body[data-miniapp-profile='moderation'] .network-workspace-tabs button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  @media (max-width: 360px) {
+    body[data-miniapp-profile='moderation'] .network-workspace-heading {
+      gap: 6px;
+    }
+    body[data-miniapp-profile='moderation'] .network-workspace-icon {
+      width: 32px;
+      height: 32px;
+    }
+  }
+}

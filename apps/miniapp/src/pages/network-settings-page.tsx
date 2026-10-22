@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import type { NetworkSettingsOperationResponse } from '@maxim/contracts/network-settings';
 import type { ApiTransport } from '../lib/api/transport';
 import {
@@ -27,6 +27,12 @@ import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-pane
 import { SettingsSectionIcon } from '../components/ui/settings-section-toggle';
 import { getNetworkSettingsSectionPresentation } from './settings/settings-workspace-sections';
 import { isSupplementaryChatSettingsSection } from '../features/network-settings/field-paths';
+import { NetworkScopeBadge, formatNetworkEntityCount } from '../features/networks/network-identity';
+import { networkSettingsRetryCandidates } from '../features/network-settings/network-settings-retry';
+import {
+  listNetworkSettingsOperationReceipts,
+  removeNetworkSettingsOperationReceipt,
+} from '../lib/network-settings-operation-storage';
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-policy-controls.css';
 import '../styles/settings-native-controls.css';
@@ -48,6 +54,7 @@ export interface NetworkSettingsPageProps {
   title: string;
   returnTo: string;
   resumeOperationId?: string;
+  retryOfOperationId?: string;
   onOperationChange?: (operation: NetworkSettingsOperationResponse | null) => void;
   onClose: () => void;
 }
@@ -103,6 +110,24 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
   const scope = props.scope;
   const section = scope.initialSection;
   const presentation = getNetworkSettingsSectionPresentation(scope.entityType, section);
+  const resultVisible = Boolean(
+    controller.operation &&
+    (controller.operation.status !== 'PREPARED' ||
+      props.resumeOperationId ||
+      controller.receipt?.launchState !== 'unconfirmed'),
+  );
+  const reviewVisible = Boolean(controller.preview && !resultVisible);
+  const stage = resultVisible
+    ? 'result'
+    : reviewVisible
+      ? 'review'
+      : controller.phase === 'preview'
+        ? 'preparing'
+        : 'editor';
+  const stageHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (stage !== 'editor') stageHeading.current?.focus();
+  }, [stage]);
   const binding = {
     entityType: scope.entityType,
     section,
@@ -123,7 +148,13 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
     discard: controller.discard,
   });
   const retry = () => {
-    if (!controller.failedRecipients.length || controller.failedRecipients.length > 500) return;
+    if (!controller.operation) return;
+    const recipients = networkSettingsRetryCandidates(
+      controller.failedRecipients,
+      { ...controller.operation, userId: props.userId },
+      listNetworkSettingsOperationReceipts(props.userId),
+    );
+    if (!recipients.length) return;
     const previous = readNetworkSettingsScope({
       userId: props.userId,
       scopeId: props.scopeId,
@@ -134,7 +165,8 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
       title: props.title,
       returnTo: props.returnTo,
       origin: previous?.origin,
-      scope: { ...scope, target: { mode: 'selected', entityIds: controller.failedRecipients } },
+      retryOfOperationId: controller.operation.operationId,
+      scope: { ...scope, target: { mode: 'selected', entityIds: recipients.slice(0, 500) } },
     });
     carryNetworkSettingsRetryDraft(
       newScope.scopeId,
@@ -145,7 +177,7 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
       '/networks/' + scope.entityType + '/settings/' + section + '?scope=' + newScope.scopeId,
     );
   };
-  const startAgain = () => {
+  const startAgain = async () => {
     if (!controller.canStartAgain) return;
     try {
       const previous = readNetworkSettingsScope({
@@ -153,13 +185,23 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
         scopeId: props.scopeId,
         entityType: scope.entityType,
       });
+      const unconfirmed = controller.operation?.status === 'PREPARED';
+      if (unconfirmed && controller.operation)
+        await removeNetworkSettingsOperationReceipt(props.userId, controller.operation.operationId);
       const fresh = createNetworkSettingsScope({
         userId: props.userId,
         title: props.title,
         returnTo: props.returnTo,
         origin: previous?.origin,
+        retryOfOperationId: unconfirmed ? previous?.retryOfOperationId : undefined,
         scope,
       });
+      if (!props.resumeOperationId && controller.operation?.status === 'PREPARED')
+        carryNetworkSettingsRetryDraft(
+          fresh.scopeId,
+          controller.retryChanges,
+          controller.navigationAllowlist,
+        );
       setFreshEditorError(null);
       navigation.requestNavigation(
         '/networks/' + scope.entityType + '/settings/' + section + '?scope=' + fresh.scopeId,
@@ -176,10 +218,28 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
       row.title,
     ]) ?? [],
   );
+  const retryReceipts = listNetworkSettingsOperationReceipts(props.userId).filter(
+    (receipt) => receipt.retryOfOperationId === controller.operation?.operationId,
+  );
+  const retryRecipients = controller.operation
+    ? networkSettingsRetryCandidates(
+        controller.failedRecipients,
+        { ...controller.operation, userId: props.userId },
+        listNetworkSettingsOperationReceipts(props.userId),
+      )
+    : [];
   const footer = (
     <>
       <div className="settings-drilldown__footer-actions is-single-action">
-        {controller.preview ? (
+        {resultVisible ? (
+          <button type="button" className="button button--accent" onClick={props.onClose}>
+            {controller.operation?.status === 'COMPLETE' ? 'Готово' : 'К настройкам сетки'}
+          </button>
+        ) : reviewVisible && controller.canStartAgain ? (
+          <button type="button" className="button button--accent" onClick={startAgain}>
+            Проверить заново
+          </button>
+        ) : controller.preview ? (
           <button
             type="button"
             className="button button--accent"
@@ -187,7 +247,8 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
             aria-busy={controller.phase === 'apply' || undefined}
             onClick={() => void controller.apply()}
           >
-            {scope.target.mode === 'category' ? 'Применить ко всей сетке' : 'Применить к выбранным'}
+            Применить ·{' '}
+            {formatNetworkEntityCount(controller.preview.recipients.length, scope.entityType)}
           </button>
         ) : (
           <button
@@ -205,6 +266,11 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
           </button>
         )}
       </div>
+      {reviewVisible && !controller.readOnly ? (
+        <button type="button" className="button button--ghost" onClick={controller.editPreview}>
+          Изменить
+        </button>
+      ) : null}
     </>
   );
   return (
@@ -220,21 +286,34 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
       tone={presentation.tone}
       variant={presentation.variant}
       overlayClassName={presentation.overlayClassName}
-      summary={
-        controller.read
-          ? props.title +
-            ' · ' +
-            (scope.target.mode === 'category' ? 'Вся сетка: ' : 'Выбрано: ') +
-            controller.read.recipientCount
-          : props.title
-      }
       className={presentation.panelClassName + ' network-settings-editor'}
-      onClose={props.onClose}
+      onClose={reviewVisible && !controller.readOnly ? controller.editPreview : props.onClose}
       confirmCloseWhen={false}
       footer={footer}
       keepFooterVisibleWhenKeyboardOpen
     >
       <div className="network-settings-editor__content" aria-busy={controller.phase !== 'idle'}>
+        <NetworkScopeBadge
+          title={props.title}
+          entityType={scope.entityType}
+          target={scope.target}
+          count={
+            controller.operation?.outcomes.length ??
+            controller.preview?.recipients.length ??
+            controller.read?.recipientCount
+          }
+        />
+        {stage !== 'editor' ? (
+          <h2 ref={stageHeading} tabIndex={-1} className="network-settings-stage-title">
+            {stage === 'review'
+              ? controller.canStartAgain
+                ? 'Проверка устарела'
+                : 'Применить изменения?'
+              : stage === 'preparing'
+                ? 'Проверяем изменения'
+                : 'Результат применения'}
+          </h2>
+        ) : null}
         {controller.phase === 'loading' ? (
           <p className="network-settings-editor__status" role="status">
             Загружаем настройки: {controller.progress.loaded}
@@ -261,7 +340,7 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
             В выбранной категории пока нет сообществ.
           </p>
         ) : null}
-        {controller.read && controller.read.recipientCount > 0 ? (
+        {stage === 'editor' && controller.read && controller.read.recipientCount > 0 ? (
           <Suspense fallback={<p role="status">Загружаем раздел…</p>}>
             {scope.entityType === 'chat' ? (
               <NetworkSettingsMetadataFields
@@ -309,23 +388,41 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
             )}
           </Suspense>
         ) : null}
-        {controller.preview && (controller.changes.length > 0 || controller.navigationAllowlist) ? (
+        {reviewVisible && (controller.changes.length > 0 || controller.navigationAllowlist) ? (
           <Suspense fallback={<p role="status">Загружаем список изменений…</p>}>
             <NetworkSettingsReview controller={controller} recipientTitles={recipientTitles} />
           </Suspense>
         ) : null}
-        {controller.operation &&
-        (!controller.preview || controller.operation.status !== 'PREPARED') ? (
+        {controller.operation && resultVisible ? (
           <Suspense fallback={<p role="status">Загружаем результат операции…</p>}>
             <NetworkSettingsOperationPanel
               operation={controller.operation}
-              controller={controller}
+              controller={{ ...controller, failedRecipients: retryRecipients }}
               recipientTitles={recipientTitles}
               resumeOperationId={props.resumeOperationId}
               onStartAgain={startAgain}
               onRetry={retry}
             />
           </Suspense>
+        ) : null}
+        {resultVisible && retryReceipts.length ? (
+          <details className="network-settings-details">
+            <summary>Повторные применения · {retryReceipts.length}</summary>
+            {retryReceipts.map((receipt) => (
+              <button
+                type="button"
+                key={receipt.operationId}
+                className="button button--ghost"
+                onClick={() =>
+                  navigation.requestNavigation(
+                    `/networks/${receipt.entityType}/settings/${receipt.section}?${new URLSearchParams({ scope: receipt.scopeId, operation: receipt.operationId })}`,
+                  )
+                }
+              >
+                Открыть повтор · {receipt.recipientIds?.length ?? 0}
+              </button>
+            ))}
+          </details>
         ) : null}
       </div>
     </SettingsDrilldownPanel>

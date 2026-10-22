@@ -53,6 +53,54 @@
     margin: 0 auto;
     padding: 12px 0 28px;
   }
+  body[data-miniapp-profile='moderation'] .network-card-title-button {
+    min-height: 44px;
+    max-width: 100%;
+    margin: -8px 0;
+    padding: 8px 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .networks-resumes > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 48px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 750;
+    color: var(--major-ink);
+  }
+  body[data-miniapp-profile='moderation'] .network-history-entry {
+    display: grid;
+    gap: 6px;
+    padding: 14px 0;
+    border-top: 1px solid var(--network-edge);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .network-history-entry .network-statistics-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .network-history-entry button {
+    width: auto;
+    flex: 1;
+    font-size: 13px;
+  }
+  body[data-miniapp-profile='moderation'] .network-composition-row > input {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    accent-color: var(--major-accent);
+  }
   body[data-miniapp-profile='moderation'] .networks-heading {
     display: flex;
     align-items: center;

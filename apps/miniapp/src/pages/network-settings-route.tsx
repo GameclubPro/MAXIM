@@ -4,6 +4,7 @@ import { networkChannelSettingsSectionSchema } from '@maxim/contracts/network-se
 import type { ApiTransport } from '../lib/api/transport';
 import {
   hydrateNetworkSettingsScope,
+  createNetworkSettingsScope,
   networkChatWorkspaceSectionSchema,
   type StoredNetworkSettingsScope,
 } from '../lib/network-settings-workspace-state';
@@ -17,11 +18,13 @@ import {
   listNetworkSettingsOperationReceipts,
 } from '../lib/network-settings-operation-storage';
 import { resolveNetworkRouteOperation } from '../features/networks/network-route-state';
+import { useHomeEntityFavorites } from '../lib/home-entity-favorites-context';
 
 export function NetworkSettingsRoute({ api, userId }: { api: ApiTransport; userId: string }) {
   const { type, section } = useParams();
   const location = useLocation();
   const { requestNavigation } = useManagedEntityNavigation();
+  const { snapshot } = useHomeEntityFavorites();
   const query = new URLSearchParams(location.search);
   const scopeId = query.get('scope') ?? '';
   const operationId = query.get('operation') ?? undefined;
@@ -90,18 +93,36 @@ export function NetworkSettingsRoute({ api, userId }: { api: ApiTransport; userI
         <p>
           {operationUnavailable
             ? 'Откройте сохранённую операцию из раздела «Сетки».'
-            : 'Откройте сетку и заново выберите сообщества.'}
+            : 'Откройте сетку ещё раз.'}
         </p>
         <Link to="/networks">К сеткам</Link>
       </div>
     );
   const hubPath = `/networks/${type}/settings?${new URLSearchParams({ scope: scopeId })}`;
+  const liveTitle =
+    stored.scope.target.mode === 'category'
+      ? snapshot.labels.resolved[stored.scope.target.favoriteType]
+      : stored.title;
   const openSection = (
     nextSection: import('@maxim/contracts/network-settings-read').NetworkSettingsSection,
-  ) =>
-    requestNavigation(
-      `/networks/${type}/settings/${nextSection}?${new URLSearchParams({ scope: scopeId })}`,
+  ) => {
+    const last = listNetworkSettingsOperationReceipts(userId).find(
+      (receipt) => receipt.scopeId === scopeId && receipt.section === nextSection,
     );
+    const fresh =
+      last && (last.settlementConfirmedAt || last.completionConfirmedAt)
+        ? createNetworkSettingsScope({
+            userId,
+            title: liveTitle,
+            returnTo: stored.returnTo,
+            origin: stored.origin,
+            scope: { ...stored.scope, initialSection: nextSection } as NetworkSettingsEditorScope,
+          })
+        : null;
+    requestNavigation(
+      `/networks/${type}/settings/${nextSection}?${new URLSearchParams({ scope: fresh?.scopeId ?? scopeId })}`,
+    );
+  };
   const scope = parsed?.success
     ? ({ ...stored.scope, initialSection: parsed.data } as NetworkSettingsEditorScope)
     : null;
@@ -119,7 +140,8 @@ export function NetworkSettingsRoute({ api, userId }: { api: ApiTransport; userI
           userId={userId}
           scopeId={scopeId}
           scope={scope}
-          title={stored.title}
+          title={recovered.kind === 'resume' ? stored.title : liveTitle}
+          retryOfOperationId={stored.retryOfOperationId}
           returnTo={stored.returnTo}
           resumeOperationId={recovered.kind === 'resume' ? recovered.operationId : undefined}
           onClose={() => requestNavigation(hubPath, { replace: true })}

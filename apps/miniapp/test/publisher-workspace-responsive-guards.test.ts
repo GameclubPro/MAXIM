@@ -51,7 +51,7 @@ test('Publik launches into its own entity catalog with Posts as a peer module', 
   assert.match(shellSource, /profile === 'publisher' \? '\/'/u);
   assert.match(
     shellSource,
-    /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute \|\| isNetworksRoute;/u,
+    /const shouldShowBottomNav =\s*isChatsRoute \|\| isPublicationsRoute \|\| isNetworksRoute \|\| isNetworkSettingsHub;/u,
   );
   assert.match(
     shellSource,

@@ -49,6 +49,7 @@ export async function readCompleteNetworkSettings(
   api: ApiTransport,
   input: Omit<NetworkSettingsReadRequest, 'cursor'>,
   onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<NetworkSettingsReadResponse> {
   const paths = settingsSectionPaths(input.entityType, input.section);
   const expected = new Set(paths);
@@ -59,7 +60,13 @@ export async function readCompleteNetworkSettings(
   let first: NetworkSettingsReadResponse | undefined;
   const recipients: NetworkSettingsReadResponse['recipients'] = [];
   do {
-    const page = await readNetworkSettingsPage(api, { ...input, ...(cursor ? { cursor } : {}) });
+    signal?.throwIfAborted();
+    const page = await readNetworkSettingsPage(
+      api,
+      { ...input, ...(cursor ? { cursor } : {}) },
+      signal,
+    );
+    signal?.throwIfAborted();
     if (
       page.entityType !== input.entityType ||
       page.section !== input.section ||
@@ -211,6 +218,7 @@ export function networkSettingsReceiptForStatus(
       ? { launchState: 'submitted' as const }
       : {}),
     ...(complete ? { completionConfirmedAt: observedAt } : {}),
+    ...(isNetworkSettingsOperationSettled(value) ? { settlementConfirmedAt: observedAt } : {}),
   });
 }
 function frozenRecipientIds(
@@ -263,6 +271,7 @@ export function useNetworkSettingsController(input: {
   scopeId: string;
   scope: NetworkSettingsEditorScope;
   title: string;
+  retryOfOperationId?: string;
   resumeOperationId?: string;
   onOperationChange?: (operation: NetworkSettingsOperationResponse | null) => void;
 }) {
@@ -337,14 +346,23 @@ export function useNetworkSettingsController(input: {
       section: input.scope.initialSection,
       title: input.title,
       operationId,
+      ...(input.retryOfOperationId ? { retryOfOperationId: input.retryOfOperationId } : {}),
       launchState,
       updatedAt: new Date().toISOString(),
       ...extra,
     }),
-    [input.scopeId, input.userId, input.scope.entityType, input.scope.initialSection, input.title],
+    [
+      input.scopeId,
+      input.userId,
+      input.scope.entityType,
+      input.scope.initialSection,
+      input.title,
+      input.retryOfOperationId,
+    ],
   );
   useEffect(() => {
     const revision = ++generation.current;
+    const readAbort = new AbortController();
     setRead(null);
     setProgress({ loaded: 0, total: 0 });
     setPhase('loading');
@@ -379,6 +397,7 @@ export function useNetworkSettingsController(input: {
       (loaded, total) => {
         if (generation.current === revision) setProgress({ loaded, total });
       },
+      readAbort.signal,
     )
       .then((value) => {
         if (generation.current === revision) setRead(value);
@@ -412,6 +431,7 @@ export function useNetworkSettingsController(input: {
             setError(cause instanceof Error ? cause.message : 'Не удалось проверить операцию.');
         });
     return () => {
+      readAbort.abort();
       generation.current++;
     };
     // FLAG: The immutable actor/scope/section identity owns all asynchronous responses.
@@ -476,6 +496,7 @@ export function useNetworkSettingsController(input: {
     setPreview(null);
     frozen.current = null;
     if (old?.launchState === 'unconfirmed') {
+      generation.current++;
       void removeNetworkSettingsOperationReceipt(old.userId, old.operationId);
       setReceipt(null);
       setOperation(null);
@@ -636,6 +657,7 @@ export function useNetworkSettingsController(input: {
       setPreview(null);
       frozen.current = null;
       if (state.receipt?.launchState === 'unconfirmed') {
+        generation.current++;
         void removeNetworkSettingsOperationReceipt(state.receipt.userId, state.receipt.operationId);
         setReceipt(null);
         setOperation(null);
@@ -665,10 +687,18 @@ export function useNetworkSettingsController(input: {
       (changes.length > 0 || Boolean(navigationAllowlist) || Object.keys(errors).length > 0) &&
       !resultReadOnly,
     canStartAgain:
-      resultReadOnly &&
       phase === 'idle' &&
       !statusIssue &&
-      Boolean(operation && isNetworkSettingsOperationSettled(operation)),
+      Boolean(
+        operation &&
+        (isNetworkSettingsOperationSettled(operation) ||
+          (operation.status === 'PREPARED' &&
+            receipt?.launchState === 'unconfirmed' &&
+            (Boolean(input.resumeOperationId) || Date.parse(operation.expiresAt) <= Date.now()))),
+      ),
+    editPreview: () => {
+      if (phase === 'idle' && !statusIssue && !resultReadOnly) setChanges([...changes]);
+    },
     discard: () => {
       setChanges([]);
       setNavigationAllowlist(undefined);

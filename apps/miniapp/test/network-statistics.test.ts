@@ -12,6 +12,7 @@ import {
   getNetworkStatistics,
   NetworkStatisticsScopeChanged,
   runNetworkStatisticsSession,
+  networkStatisticsQueryKey,
 } from '../src/features/networks/network-statistics';
 
 const cursor = '00000000-0000-4000-8000-000000000001';
@@ -70,6 +71,20 @@ const scope = (api: ApiTransport) => ({
   compositionVersion: 'v1',
 });
 const immediate = async () => undefined;
+test('statistics display cache binds actor, transport, composition, category, type and period', () => {
+  const api = transport(async () => response(3, null));
+  const initial = scope(api);
+  assert.deepEqual(networkStatisticsQueryKey(initial), networkStatisticsQueryKey({ ...initial }));
+  for (const changed of [
+    { ...initial, api: transport(api.request) },
+    { ...initial, scopeKey: 'other' },
+    { ...initial, compositionVersion: 'v2' },
+    { ...initial, entityType: 'channel' as const },
+    { ...initial, favoriteType: 'watch' as const },
+    { ...initial, range: '30d' as const },
+  ])
+    assert.notDeepEqual(networkStatisticsQueryKey(initial), networkStatisticsQueryKey(changed));
+});
 
 test('progressive statistics accepts the same cursor and replaces complete snapshots', async () => {
   const paths: string[] = [];

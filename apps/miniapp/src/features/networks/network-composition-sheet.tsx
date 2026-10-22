@@ -11,6 +11,7 @@ import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus
 import { ActionConfirmSheet } from '../../components/ui/action-confirm-sheet';
 import { AppIcon } from '../../components/ui/app-icon';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
+import { SegmentedControl } from '../../components/ui/segmented-control';
 import {
   HOME_ENTITY_FAVORITE_TYPES,
   getHomeEntityFavoriteTypes,
@@ -22,15 +23,19 @@ export function NetworkCompositionSheet({
   entityType,
   favoriteType,
   onClose,
+  initialMode = 'members',
 }: {
   api: ApiTransport;
   entityType: ManagedEntityType;
   favoriteType: ManagedEntityFavoriteType;
   onClose: () => void;
+  initialMode?: 'members' | 'add';
 }) {
   const { snapshot, actions } = useHomeEntityFavorites();
   const draft = useManagedEntityNetworkCompositionDraft({ entityType, favoriteType });
   const [query, setQuery] = useState('');
+  const [mode, setMode] = useState<'members' | 'add'>(initialMode);
+  const [batchNotice, setBatchNotice] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [discardOpen, setDiscardOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +50,7 @@ export function NetworkCompositionSheet({
     api,
     scopeKey: snapshot.actor.scope,
     entityType,
+    favoriteType: mode === 'members' ? favoriteType : undefined,
     search,
     compositionEpoch: snapshot.byType[entityType].compositionEpoch,
   });
@@ -52,6 +58,27 @@ export function NetworkCompositionSheet({
     () => new Map(draft.changes.map((change) => [change.entityId, change])),
     [draft.changes],
   );
+  const visibleEntries = entries.items.filter(
+    (item) => mode === 'members' || item.favoriteType !== favoriteType,
+  );
+  useEffect(() => {
+    // Continue past pages containing only current members, stopping at the first candidates.
+    if (
+      mode === 'add' &&
+      !visibleEntries.length &&
+      entries.nextCursor &&
+      !entries.loading &&
+      !entries.error
+    )
+      entries.loadMore();
+  }, [
+    mode,
+    visibleEntries.length,
+    entries.nextCursor,
+    entries.loading,
+    entries.error,
+    entries.loadMore,
+  ]);
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(query.trim()), 220);
     return () => window.clearTimeout(timer);
@@ -97,7 +124,11 @@ export function NetworkCompositionSheet({
     setError(null);
     try {
       const result = await draft.save();
-      if (result?.refresh === 'complete') onClose();
+      if (result?.refresh === 'complete' && draft.count <= 500) onClose();
+      else if (result && draft.count > 500) {
+        setBatchNotice(`Сохранено 500 изменений. Осталось ${draft.count - 500}.`);
+        entries.refresh();
+      }
     } catch {
       setError(
         'Не удалось подтвердить сохранение. Черновик сохранён — обновите состав и проверьте изменения.',
@@ -156,9 +187,19 @@ export function NetworkCompositionSheet({
             </button>
           </header>
           <div className="network-composition-sheet__body">
-            <p className="networks-caption">
-              Перенос изменяет категорию. «Не в избранном» убирает сообщество из сетки.
-            </p>
+            <SegmentedControl
+              value={mode}
+              options={[
+                { value: 'members', label: 'В сетке' },
+                { value: 'add', label: 'Добавить' },
+              ]}
+              onChange={(value) => {
+                setMode(value);
+                setQuery('');
+                setSearch('');
+              }}
+              ariaLabel="Редактирование состава"
+            />
             <label className="networks-search">
               <AppIcon icon="Search" />
               <input
@@ -171,13 +212,10 @@ export function NetworkCompositionSheet({
             </label>
             {requiresReview ? (
               <div className="networks-notice" role="alert">
-                <strong>Нужно согласовать состав</strong>
-                <p>
-                  Состав изменился или ответ на сохранение не получен. Проверьте актуальные
-                  назначения перед новой записью.
-                </p>
+                <strong>Состав изменился</strong>
+                <p>Обновите состав и проверьте свои изменения перед сохранением.</p>
                 <button type="button" disabled={reviewing || saving} onClick={() => void review()}>
-                  {reviewing ? 'Обновляем…' : 'Прочитать актуальный состав'}
+                  {reviewing ? 'Обновляем…' : 'Обновить состав'}
                 </button>
                 {reviewReady ? (
                   <>
@@ -218,18 +256,35 @@ export function NetworkCompositionSheet({
                         }
                       }}
                     >
-                      Принять актуальную основу
+                      Подтвердить изменения
                     </button>
                     <small>После проверки нажмите «Сохранить» отдельно.</small>
                   </>
                 ) : null}
               </div>
             ) : null}
-            {entries.items.map((item) => {
+            {visibleEntries.map((item) => {
               const change = changes.get(item.id);
               const value = change ? change.favoriteType : item.favoriteType;
               return (
-                <label className="network-community-row network-composition-row" key={item.id}>
+                <div className="network-community-row network-composition-row" key={item.id}>
+                  <input
+                    type="checkbox"
+                    aria-label={`${mode === 'members' ? 'Оставить' : 'Добавить'} ${item.title}`}
+                    checked={value === favoriteType}
+                    disabled={saving || requiresReview}
+                    onChange={(event) => {
+                      setError(null);
+                      draft.stage(
+                        item,
+                        event.target.checked
+                          ? favoriteType
+                          : mode === 'add'
+                            ? item.favoriteType
+                            : null,
+                      );
+                    }}
+                  />
                   <EntityAvatar
                     title={item.title}
                     entityId={item.id}
@@ -240,37 +295,56 @@ export function NetworkCompositionSheet({
                     <strong>{item.title}</strong>
                     <small>
                       {change
-                        ? 'Назначение изменено'
+                        ? change.favoriteType === favoriteType
+                          ? item.favoriteType
+                            ? `Перенести из «${labels[item.favoriteType]}»`
+                            : 'Добавить в сетку'
+                          : change.favoriteType
+                            ? `Перенести в «${labels[change.favoriteType]}»`
+                            : 'Убрать из сетки'
                         : item.favoriteType
                           ? labels[item.favoriteType]
                           : 'Не в избранном'}
                     </small>
-                    <select
-                      aria-label={`Категория: ${item.title}`}
-                      value={value ?? ''}
-                      disabled={saving || requiresReview || (draft.count >= 500 && !change)}
-                      onChange={(event) => {
-                        setError(null);
-                        draft.stage(
-                          item,
-                          (event.target.value || null) as ManagedEntityFavoriteType | null,
-                        );
-                      }}
-                    >
-                      <option value="">Не в избранном</option>
-                      {HOME_ENTITY_FAVORITE_TYPES.map((type) => (
-                        <option key={type} value={type}>
-                          {labels[type]}
+                    {mode === 'members' ? (
+                      <select
+                        aria-label={`Категория: ${item.title}`}
+                        value={value && value !== favoriteType ? value : ''}
+                        disabled={saving || requiresReview}
+                        onChange={(event) => {
+                          setError(null);
+                          draft.stage(
+                            item,
+                            (event.target.value || null) as ManagedEntityFavoriteType | null,
+                          );
+                        }}
+                      >
+                        <option value="" disabled>
+                          Перенести в другую сетку
                         </option>
-                      ))}
-                    </select>
+                        {HOME_ENTITY_FAVORITE_TYPES.filter((type) => type !== favoriteType).map(
+                          (type) => (
+                            <option key={type} value={type}>
+                              {labels[type]}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    ) : null}
                   </span>
-                </label>
+                </div>
               );
             })}
             {entries.loading ? <p role="status">Загружаем…</p> : null}
-            {!entries.loading && !entries.error && entries.items.length === 0 ? (
-              <p className="networks-caption">Сообщества не найдены.</p>
+            {!entries.loading &&
+            !entries.error &&
+            !entries.nextCursor &&
+            visibleEntries.length === 0 ? (
+              <p className="networks-caption">
+                {entries.items.length
+                  ? 'Все найденные сообщества уже в этой сетке.'
+                  : 'Сообщества не найдены.'}
+              </p>
             ) : null}
             {entries.error ? (
               <div role="alert" className="networks-notice">
@@ -288,9 +362,42 @@ export function NetworkCompositionSheet({
           </div>
           <footer>
             <span aria-live="polite">
-              {draft.count} изменений{draft.count >= 500 ? ' · лимит пакета' : ''}
+              {draft.count
+                ? [
+                    [
+                      'Добавить',
+                      draft.changes.filter(
+                        (change) =>
+                          !change.expectedFavoriteType && change.favoriteType === favoriteType,
+                      ).length,
+                    ],
+                    [
+                      'Убрать',
+                      draft.changes.filter((change) => change.favoriteType === null).length,
+                    ],
+                    [
+                      'Перенести',
+                      draft.changes.filter(
+                        (change) =>
+                          change.expectedFavoriteType &&
+                          change.favoriteType &&
+                          change.expectedFavoriteType !== change.favoriteType,
+                      ).length,
+                    ],
+                  ]
+                    .filter(([, count]) => count)
+                    .map(([label, count]) => `${label} ${count}`)
+                    .join(' · ')
+                : 'Выберите изменения'}
             </span>
             {error ? <p role="alert">{error}</p> : null}
+            {batchNotice ? <p role="status">{batchNotice}</p> : null}
+            {draft.count > 500 ? (
+              <p>
+                Изменения сохраняются пакетами по 500. Остальной выбор сохранится для следующего
+                пакета.
+              </p>
+            ) : null}
             {draft.phase === 'saved-refresh-pending' ? (
               <div className="networks-notice" role="status">
                 <p>Состав сохранён. Осталось обновить отображение.</p>
@@ -298,8 +405,12 @@ export function NetworkCompositionSheet({
                   type="button"
                   onClick={() =>
                     void actions
-                      .refreshCatalogue(entityType)
-                      .then(onClose)
+                      .refreshAssignments(entityType)
+                      .then(() => actions.refreshCatalogue(entityType))
+                      .then(() => {
+                        if (!draft.count) onClose();
+                        else entries.refresh();
+                      })
                       .catch(() =>
                         setError('Сохранение подтверждено. Обновить отображение пока не удалось.'),
                       )
@@ -312,10 +423,20 @@ export function NetworkCompositionSheet({
             <button
               type="button"
               className="networks-primary"
-              disabled={!draft.dirty || saving || reviewing || requiresReview}
+              disabled={
+                !draft.dirty ||
+                saving ||
+                reviewing ||
+                requiresReview ||
+                draft.phase === 'saved-refresh-pending'
+              }
               onClick={() => void save()}
             >
-              {saving ? 'Сохраняем…' : 'Сохранить состав'}
+              {saving
+                ? 'Сохраняем…'
+                : draft.count > 500
+                  ? 'Сохранить первые 500'
+                  : 'Сохранить состав'}
             </button>
           </footer>
         </section>
