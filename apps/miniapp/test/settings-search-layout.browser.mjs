@@ -122,8 +122,8 @@ async function assertModulePresentation(page, name, entity, title, panelSelector
   const panel = page.locator(panelSelector);
   await (
     entity === 'chat'
-      ? panel.getByRole('checkbox', { name: 'Проверять повторы сообщений', exact: true })
-      : panel.getByRole('checkbox', { name: 'Добавлять действие', exact: true })
+      ? panel.getByRole('checkbox', { name: 'Включить антидубль', exact: true })
+      : panel.getByRole('checkbox', { name: 'Действие под публикацией', exact: true })
   ).waitFor({ state: 'attached' });
   await settledBox(panel);
   assert.equal(await page.getByRole('dialog', { name: title, exact: true }).count(), 1);
@@ -166,7 +166,9 @@ async function assertModulePresentation(page, name, entity, title, panelSelector
       return getComputedStyle(probe).color;
     };
     try {
-      const card = element.querySelector('.settings-native-toggle');
+      const card = element.querySelector(
+        '.settings-native-toggle, .channel-post-signature__activation',
+      );
       const field = element.querySelector(
         '.field input, .field select, .field textarea, .network-settings-field input:not([type="checkbox"]):not([type="file"]), .network-settings-field select, .network-settings-field textarea',
       );
@@ -208,8 +210,8 @@ async function assertModulePresentation(page, name, entity, title, panelSelector
     `${label} module surfaces and local roles must match the steel overview palette`,
   );
   if (entity === 'chat') {
-    const longTitle = panel.locator('.network-settings-field__label', {
-      hasText: 'Проверять повторы сообщений',
+    const longTitle = panel.locator('.settings-native-toggle__title', {
+      hasText: 'Включить антидубль',
     });
     assert.equal(await longTitle.count(), 1, 'The real duplicate action label must be covered');
     assert.equal(
@@ -485,8 +487,8 @@ try {
         await assertModulePresentation(page, name, entity, title, panelSelector, palette);
         const moduleSwitch =
           entity === 'chat'
-            ? page.getByRole('checkbox', { name: 'Проверять повторы сообщений', exact: true })
-            : page.getByRole('checkbox', { name: 'Добавлять действие', exact: true });
+            ? page.getByRole('checkbox', { name: 'Включить антидубль', exact: true })
+            : page.getByRole('checkbox', { name: 'Действие под публикацией', exact: true });
         assert.equal(
           await moduleSwitch.isChecked(),
           enabled === 'true',

@@ -353,9 +353,9 @@ try {
     if (name === 'iphone-se-light') {
       await page.goto(new URL('chat/preview-chat/settings?preview=1', base).href);
       for (const [title, suffix, label] of [
-        ['Ночной режим', 'night', 'Закрывать чат по расписанию'],
-        ['Антидубль', 'duplicates', 'Проверять повторы сообщений'],
-        ['Сообщения и боты', 'extra', 'Удалять сообщения бота'],
+        ['Ночной режим', 'night', 'Включить закрытие чата на ночь'],
+        ['Антидубль', 'duplicates', 'Включить антидубль'],
+        ['Сообщения и боты', 'extra', 'Включить удаление собственных сообщений бота'],
       ]) {
         await clickSettingsOverviewEntry(page, title);
         const lazyPanel = page.locator(`.settings-drilldown__panel--${suffix}`);
