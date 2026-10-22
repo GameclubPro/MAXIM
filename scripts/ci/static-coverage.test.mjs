@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { validateImpactConfig } from '../agent/impact-config.mjs';
+import { selectVerificationScripts } from '../agent/verify.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const scripts = JSON.parse(read('package.json')).scripts;
+const impactConfig = validateImpactConfig(JSON.parse(read('config/change-impact.json')));
 const workflow = read('.github/workflows/ci.yml');
 const testPrefix = 'node --test --test-concurrency=2 ';
 const staticPrefix = 'npm run lint && npm run check:refactor-guards && ';
@@ -52,7 +55,7 @@ function jobBody(id) {
   return workflow.slice(jobs[index].index, jobs[index + 1]?.index ?? workflow.length);
 }
 
-test('preserves full public aggregates while adding the CI-only core selection', () => {
+test('preserves full public aggregates and the bounded core selection', () => {
   assert.equal(scripts['test:agent-tools'], `${testPrefix}${fullGlobs.join(' ')}`);
   assert.equal(scripts['check:static'], `${staticPrefix}npm run test:agent-tools`);
   assert.equal(scripts['check:static:ci'], `${staticPrefix}npm run test:agent-tools:core`);
@@ -78,6 +81,35 @@ test('CI core and standalone infrastructure select the full inventory exactly on
   );
   assert.deepEqual([...core, ...infrastructure].sort(), full);
   assert.ok(core.includes('scripts/ci/static-coverage.test.mjs'), 'This guard must run in CI');
+});
+
+test('local selection preserves complete tooling coverage without executing infrastructure twice', () => {
+  const full = expandTestGlobs(parseTestGlobs(scripts['test:agent-tools']));
+  const core = expandTestGlobs(parseTestGlobs(scripts['test:agent-tools:core']));
+  const infrastructure = expandTestGlobs(['infra/scripts/*.test.mjs']);
+  const inventories = new Map([
+    ['check:static', full],
+    ['check:static:ci', core],
+    ['test:agent-tools', full],
+    ['test:agent-tools:core', core],
+    ['check:infra', infrastructure],
+  ]);
+  for (const [checks, expected] of [
+    [['repo-static'], core],
+    [['agent-tools'], full],
+    [['repo-static', 'agent-tools'], full],
+    [['repo-static', 'infra'], full],
+    [['repo-static', 'agent-tools', 'infra'], full],
+    [['agent-tools', 'infra'], full],
+  ]) {
+    const selected = selectVerificationScripts({ config: impactConfig, plan: { checks } });
+    const files = selected.flatMap(({ script }) => {
+      assert.ok(inventories.has(script), `Unreviewed local tooling aggregate: ${script}`);
+      return inventories.get(script);
+    });
+    assert.equal(new Set(files).size, files.length, `${checks}: repeated test files`);
+    assert.deepEqual(files.sort(), expected, checks.join(', '));
+  }
 });
 
 test('inventory parser rejects shell wrappers, skip flags and unsupported globs', () => {

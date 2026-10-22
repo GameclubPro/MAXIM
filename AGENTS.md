@@ -32,15 +32,15 @@
 
 ## Validate And Deliver
 
-1. Inspect the branch, diff and scoped notes. On environment setup use
-   `node scripts/agent/doctor.mjs --browser`; run `node scripts/agent/preflight.mjs` early.
+1. Inspect the branch, diff and scoped notes. Use `node scripts/agent/doctor.mjs --browser` only
+   for environment setup; run `node scripts/agent/preflight.mjs` before expensive checks.
 2. For changed methods, find callers and test doubles with `rg` before broad tests. Keep doubles
    typed against the real contract. Run the affected unit and native integration cases first.
-3. Select local checks/components with `node scripts/agent/plan.mjs --worktree`; `agent:verify`
-   runs that plan (also in the commit helper). Miniapp-only UI needs no API/Prisma/admin or native
-   store suites without a changed boundary or concrete regression; see scoped miniapp notes.
-   Shared contracts/dependencies and unknown paths expand checks; use `npm run check` for broad/risky
-   work. Do not duplicate included checks or repeat green suites without changed inputs/failure/gap.
+3. Select checks/components with `node scripts/agent/plan.mjs --worktree`. Use focused cases during
+   editing; the mandatory commit helper runs the final aggregate once, without a separate pre-run.
+   Full checks require planner `full` or a named cross-boundary risk/coverage gap. Markdown-only
+   changes use `check:docs`; environment inputs retain their own scope. See
+   [check selection](docs/development-reliability-plan.md#boundaries-and-follow-up).
 4. Public API scripts own generator locks. Do not invoke `*:unlocked`, `*:source` or raw Prisma
    generation to bypass them. Native stores: `node scripts/agent/with-test-stores.mjs --migrate --`
    followed by the public validation command. Report store-dependent skips; mocks are not native

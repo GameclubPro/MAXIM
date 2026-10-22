@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "checks": [
-    { "id": "repo-static", "label": "Repository static checks", "script": "check:static" },
+    { "id": "repo-static", "label": "Repository static checks", "script": "check:static:ci" },
     { "id": "agent-tools", "label": "Agent tooling tests", "script": "test:agent-tools" },
     { "id": "docs", "label": "Documentation checks", "script": "check:docs" },
     { "id": "infra", "label": "Infrastructure checks", "script": "check:infra" },
@@ -54,21 +54,28 @@
   "rules": [
     {
       "id": "agent-notes-and-docs",
-      "include": [
-        "AGENTS.md",
-        "**/AGENTS.md",
-        "**/*.md",
-        "README.md",
-        "docs/**",
-        ".env.example",
-        "infra/env/**"
-      ],
+      "include": ["AGENTS.md", "**/AGENTS.md", "**/*.md", "README.md"],
+      "checks": ["docs"],
+      "deployComponents": []
+    },
+    {
+      "id": "documentation-assets",
+      "include": ["docs/**"],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "docs"],
+      "deployComponents": []
+    },
+    {
+      "id": "environment-templates",
+      "include": [".env.example", "infra/env/**"],
+      "exclude": ["**/*.md"],
+      "checks": ["repo-static", "docs", "infra"],
       "deployComponents": []
     },
     {
       "id": "agent-impact-tooling",
       "include": ["config/change-impact.json", "scripts/agent/**"],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "agent-tools"],
       "deployComponents": []
     },
@@ -91,8 +98,8 @@
         ".husky/**",
         "scripts/**"
       ],
-      "exclude": ["scripts/agent/**"],
-      "checks": ["repo-static"],
+      "exclude": ["scripts/agent/**", "**/*.md"],
+      "checks": ["repo-static", "agent-tools"],
       "deployComponents": []
     },
     {
@@ -145,6 +152,7 @@
         "packages/contracts/test/**",
         "packages/contracts/**/__tests__/**"
       ],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "contracts"],
       "deployComponents": []
     },
@@ -178,6 +186,7 @@
         "apps/api/test/**",
         "apps/api/**/__tests__/**"
       ],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "api"],
       "deployComponents": []
     },
@@ -191,6 +200,7 @@
     {
       "id": "prisma-migrations",
       "include": ["apps/api/prisma/migrations/**"],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "api", "prisma"],
       "deployComponents": ["api-shared"],
       "migrationImpact": "migration"
@@ -226,6 +236,7 @@
         "apps/miniapp/test/**",
         "apps/miniapp/**/__tests__/**"
       ],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "miniapp-css", "miniapp"],
       "deployComponents": []
     },
@@ -261,6 +272,7 @@
         "apps/admin/test/**",
         "apps/admin/**/__tests__/**"
       ],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "admin"],
       "deployComponents": []
     },
@@ -283,6 +295,7 @@
     {
       "id": "api-runtime-certificates",
       "include": ["infra/certs/**"],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "infra", "api"],
       "deployComponents": ["api-shared"]
     },
@@ -305,6 +318,7 @@
     {
       "id": "major-nginx",
       "include": ["infra/nginx/major-maksimov.ru.conf", "infra/www/major-maksimov/**"],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "infra"],
       "deployComponents": [],
       "manualOperations": ["apply-major-nginx"]
@@ -326,6 +340,7 @@
     {
       "id": "vk-proxy",
       "include": ["infra/vk-proxy/**"],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "infra"],
       "deployComponents": [],
       "manualOperations": ["review-vk-proxy"]
@@ -336,7 +351,8 @@
       "exclude": [
         "infra/nginx/major-maksimov.ru.conf",
         "infra/nginx/admin.major-maksimov.ru.conf",
-        "infra/nginx/maxim.play-team.ru.conf"
+        "infra/nginx/maxim.play-team.ru.conf",
+        "**/*.md"
       ],
       "checks": ["repo-static", "infra"],
       "deployComponents": [],
@@ -345,6 +361,7 @@
     {
       "id": "deploy-tooling",
       "include": ["infra/scripts/**"],
+      "exclude": ["**/*.md"],
       "checks": ["repo-static", "infra"],
       "deployComponents": [],
       "manualOperations": ["review-deploy-tooling"]
@@ -361,7 +378,8 @@
         "infra/nginx/**",
         "infra/scripts/**",
         "infra/vk-proxy/**",
-        "infra/www/major-maksimov/**"
+        "infra/www/major-maksimov/**",
+        "**/*.md"
       ],
       "checks": ["repo-static", "infra"],
       "deployComponents": []

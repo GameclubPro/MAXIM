@@ -6,10 +6,11 @@ import { parseVerifyArgs, selectVerificationScripts } from '../verify.mjs';
 
 const config = {
   checkById: {
-    'repo-static': { id: 'repo-static', script: 'check:static' },
+    'repo-static': { id: 'repo-static', script: 'check:static:ci' },
     api: { id: 'api', script: 'check:api' },
     full: { id: 'full', script: 'check' },
     'agent-tools': { id: 'agent-tools', script: 'test:agent-tools' },
+    infra: { id: 'infra', script: 'check:infra' },
     miniapp: { id: 'miniapp', script: 'check:miniapp' },
     'miniapp-css': { id: 'miniapp-css', script: 'check:miniapp-css' },
     'miniapp-visual-local': { id: 'miniapp-visual-local', script: 'screenshots:miniapp:smoke' },
@@ -23,7 +24,7 @@ test('selects mapped checks in plan order', () => {
       plan: { checks: ['repo-static', 'api'] },
     }),
     [
-      { id: 'repo-static', script: 'check:static' },
+      { id: 'repo-static', script: 'check:static:ci' },
       { id: 'api', script: 'check:api' },
     ],
   );
@@ -52,6 +53,7 @@ test('deduplicates only checks guaranteed by the current aggregate npm scripts',
   ).scripts;
   for (const [aggregate, nested] of [
     ['check:static', 'test:agent-tools'],
+    ['check:static:ci', 'test:agent-tools:core'],
     ['check:miniapp', 'check:miniapp-css'],
   ]) {
     assert.ok(scripts[aggregate].split(/\s*&&\s*/u).includes(`npm run ${nested}`));
@@ -70,6 +72,33 @@ test('deduplicates only checks guaranteed by the current aggregate npm scripts',
       (check) => check.id,
     ),
     ['agent-tools', 'miniapp-css'],
+  );
+});
+
+test('keeps complete tooling coverage once with or without selected infrastructure', () => {
+  for (const checks of [
+    ['repo-static', 'agent-tools'],
+    ['agent-tools', 'repo-static'],
+  ]) {
+    assert.deepEqual(selectVerificationScripts({ config, plan: { checks } }), [
+      { id: 'repo-static', script: 'check:static' },
+    ]);
+  }
+  for (const checks of [
+    ['repo-static', 'infra'],
+    ['repo-static', 'agent-tools', 'infra'],
+  ]) {
+    assert.deepEqual(selectVerificationScripts({ config, plan: { checks } }), [
+      { id: 'repo-static', script: 'check:static:ci' },
+      { id: 'infra', script: 'check:infra' },
+    ]);
+  }
+  assert.deepEqual(
+    selectVerificationScripts({ config, plan: { checks: ['agent-tools', 'infra'] } }),
+    [
+      { id: 'agent-tools', script: 'test:agent-tools:core' },
+      { id: 'infra', script: 'check:infra' },
+    ],
   );
 });
 
