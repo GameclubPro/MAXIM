@@ -5,6 +5,7 @@ import type {
 } from '@maxim/contracts/network-settings';
 import type { SettingsFieldAdapter, FieldPath, SettingsFieldState } from './field-model';
 import { parseSettingsField, settingsSectionPaths } from './field-registry';
+import { canonicalNetworkValue } from './network-settings-operation-state';
 
 export function createNetworkSettingsFieldAdapter<T>(options: {
   entityType: 'chat' | 'channel';
@@ -36,7 +37,14 @@ export function createNetworkSettingsFieldAdapter<T>(options: {
           throw new Error('Для списка требуется явная замена.');
         parseSettingsField(options.entityType, options.section, change.path, change.value);
       }
-      next.set(change.path, structuredClone(change));
+      const baseline = options.fields[change.path];
+      const value = change.op === 'clear' ? null : change.value;
+      if (
+        baseline?.kind === 'common' &&
+        canonicalNetworkValue(baseline.value) === canonicalNetworkValue(value)
+      )
+        next.delete(change.path);
+      else next.set(change.path, structuredClone(change));
     }
     options.onChanges([...next.values()]);
   };

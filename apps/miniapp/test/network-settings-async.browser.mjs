@@ -21,6 +21,9 @@ try {
     const React = ReactModule.default ?? ReactModule;
     const ReactDOM = await import(moduleUrl('react-dom_client.js'));
     const createRoot = ReactDOM.createRoot ?? ReactDOM.default.createRoot;
+    const { QueryClient, QueryClientProvider } = await import(
+      moduleUrl('@tanstack_react-query.js')
+    );
     const { NetworkSettingsMetadataFields } =
       await import('/app/src/features/network-settings/network-settings-metadata-fields.tsx');
     const { FieldMedia } =
@@ -29,18 +32,25 @@ try {
       await import('/app/src/features/network-settings/network-settings-field-bindings.ts');
     const { settingsSectionPaths } =
       await import('/app/src/features/network-settings/field-registry.ts');
+    const { ReportsSettingsFields } =
+      await import('/app/src/pages/settings/reports-settings-fields.tsx');
     const host = document.createElement('div');
     host.id = 'async-settings-fixture';
     document.body.replaceChildren(host);
     const root = createRoot(host);
     const h = React.createElement;
-    window.__mountAsyncSettings = (kind) => {
+    window.__mountAsyncSettings = (kind, options = {}) => {
       window.__pendingMetadata = null;
       window.__pendingMedia = null;
+      window.__pendingReportAvailability = null;
+      window.__reportAvailabilityRequests = [];
       window.__changes = [];
       const token = crypto.randomUUID();
       const scopeId = crypto.randomUUID();
-      const section = kind === 'subscription' ? 'requiredSubscription' : 'links';
+      const section =
+        kind === 'subscription' ? 'requiredSubscription' : kind === 'reports' ? 'reports' : 'links';
+      const recipientIds =
+        kind === 'reports' ? ['chat-a', 'chat-b', 'chat-c', 'chat-d', 'chat-e'] : ['chat-a'];
       const listPath = 'requiredSubscriptionChannelIds';
       const textPath =
         kind === 'subscription' ? 'requiredSubscriptionBotMessageText' : 'linkBotMessageText';
@@ -54,6 +64,23 @@ try {
       const api = {
         requestKeepalive() {},
         async request(path, init) {
+          if (path.endsWith('/reports/availability')) {
+            window.__reportAvailabilityRequests.push(path);
+            if (options.availability === 'error') throw new Error('Availability unavailable');
+            if (options.availability === 'pending')
+              return new Promise((resolve, reject) => {
+                window.__pendingReportAvailability = (available) =>
+                  resolve({ reportsAvailable: available, observedAt: new Date().toISOString() });
+                init.signal.addEventListener('abort', () => {
+                  window.__reportAvailabilityAborted = true;
+                  reject(new DOMException('Scope changed', 'AbortError'));
+                });
+              });
+            return {
+              reportsAvailable: options.availability !== 'paused' || !path.includes('/chat-e/'),
+              observedAt: new Date().toISOString(),
+            };
+          }
           const body = JSON.parse(init.body);
           const bound = { requestId: body.requestId, compositionVersion: body.compositionVersion };
           if (path.endsWith('admin-contacts/read'))
@@ -97,6 +124,10 @@ try {
         );
         fields[listPath] = { kind: 'common', value: ['channel-old'] };
         fields[mediaPath] = { kind: 'common', value: null };
+        fields.reportsEnabled =
+          options.enabled === 'mixed'
+            ? { kind: 'mixed' }
+            : { kind: 'common', value: options.enabled === true };
         const adapter = createNetworkSettingsFieldAdapter({
           entityType: 'chat',
           section,
@@ -113,10 +144,10 @@ try {
           adapter.setScalar('linkAdminContactButtonUrl', 'https://max.ru/later');
         const read = {
           entityType: 'chat',
-          target: { mode: 'selected', entityIds: ['chat-a'] },
+          target: { mode: 'selected', entityIds: recipientIds },
           section,
           compositionVersion: 'version-1',
-          recipients: [{ entityId: 'chat-a', title: 'Чат', revision: 1 }],
+          recipients: recipientIds.map((entityId) => ({ entityId, title: entityId, revision: 1 })),
           fields,
         };
         if (kind === 'media')
@@ -136,39 +167,64 @@ try {
           children: (context) =>
             kind === 'subscription'
               ? context.requiredSubscriptionSources
-              : context.renderAdminContact({
-                  enabledPath: 'linkAdminContactButtonEnabled',
-                  urlPath: 'linkAdminContactButtonUrl',
-                  label: 'Контакт администратора',
-                }),
+              : kind === 'reports'
+                ? h(
+                    React.Fragment,
+                    null,
+                    context.runtimeNotes?.reports,
+                    h(ReportsSettingsFields, {
+                      fields: adapter,
+                      activationAvailable: context.reportsActivationAvailable,
+                    }),
+                  )
+                : context.renderAdminContact({
+                    enabledPath: 'linkAdminContactButtonEnabled',
+                    urlPath: 'linkAdminContactButtonUrl',
+                    label: 'Контакт администратора',
+                  }),
         });
       }
-      root.render(h(Fixture, { key: token }));
+      const queryClient = new QueryClient();
+      root.render(h(QueryClientProvider, { client: queryClient }, h(Fixture, { key: token })));
       return token;
     };
   });
   const fixture = page.locator('#async-settings-fixture');
-  const mount = async (kind) => {
-    const token = await page.evaluate((value) => window.__mountAsyncSettings(value), kind);
+  const mount = async (kind, options = {}) => {
+    const token = await page.evaluate(
+      ({ kind, options }) => window.__mountAsyncSettings(kind, options),
+      { kind, options },
+    );
     await page.waitForFunction(
       (expected) =>
         document.querySelector('#async-settings-fixture')?.dataset.mountToken === expected,
       token,
     );
     await fixture
-      .locator(kind === 'media' ? 'input[type=file]' : 'section')
+      .locator(
+        kind === 'media'
+          ? 'input[type=file]'
+          : kind === 'reports'
+            ? '.reports-settings'
+            : kind === 'subscription'
+              ? '.required-subscription__board'
+              : '.settings-native-toggle',
+      )
       .first()
       .waitFor();
   };
   const startSubscription = async () => {
     await mount('subscription');
-    await fixture.getByLabel('Ссылка или ID чата/канала').fill('https://max.ru/new');
-    await fixture.getByRole('button', { name: 'Проверить и добавить', exact: true }).click();
+    await fixture.getByRole('button', { name: 'Добавить источник', exact: true }).click();
+    await fixture.getByLabel('Добавить по ссылке').fill('https://max.ru/new');
+    await fixture.getByRole('button', { name: 'Добавить', exact: true }).click();
     await page.waitForFunction(() => window.__pendingMetadata !== null);
   };
   const finishMetadata = async () => {
     await page.evaluate(() => window.__pendingMetadata());
-    await fixture.getByText('Проверяем канал…', { exact: true }).waitFor({ state: 'hidden' });
+    await fixture
+      .getByRole('button', { name: 'Проверяем...', exact: true })
+      .waitFor({ state: 'hidden' });
   };
   await startSubscription();
   await page.evaluate(() => window.__editUnrelated());
@@ -194,7 +250,9 @@ try {
         .getByRole('button', { name: 'Очистить обязательные каналы у выбранных', exact: true })
         .click();
     if (action === 'remove')
-      await fixture.getByRole('button', { name: 'Убрать из общего списка', exact: true }).click();
+      await fixture
+        .getByRole('button', { name: 'Удалить сохранённый источник 1', exact: true })
+        .click();
     if (action === 'revert') {
       await fixture
         .getByRole('button', { name: 'Очистить обязательные каналы у выбранных', exact: true })
@@ -212,10 +270,8 @@ try {
   }
   const startContact = async () => {
     await mount('contact');
-    await fixture
-      .getByRole('button', { name: 'Выбрать администратора сетки', exact: true })
-      .click();
-    await fixture.getByRole('button', { name: 'Выбрать · Чат', exact: true }).click();
+    await fixture.getByRole('button', { name: /^Выбрать администратора:/ }).click();
+    await page.locator('.admin-contact-picker').getByRole('button', { name: /Анна/ }).click();
     await page.waitForFunction(() => window.__pendingMetadata !== null);
   };
   await startContact();
@@ -224,8 +280,9 @@ try {
     window.__changes.some((row) => row.value === 'Более поздний текст'),
   );
   await page.evaluate(() => window.__pendingMetadata());
-  await fixture
-    .getByRole('button', { name: 'Закрыть выбор', exact: true })
+  await page
+    .locator('.admin-contact-picker')
+    .getByRole('button', { name: 'Закрыть', exact: true })
     .waitFor({ state: 'hidden' });
   changes = await page.evaluate(() => window.__changes);
   assert.ok(
@@ -241,7 +298,7 @@ try {
     window.__changes.some((row) => row.value === 'https://max.ru/later'),
   );
   await page.evaluate(() => window.__pendingMetadata());
-  await fixture.getByRole('alert').waitFor();
+  await page.locator('.admin-contact-picker').getByRole('alert').waitFor();
   assert.equal(
     (await page.evaluate(() => window.__changes)).find(
       (row) => row.path === 'linkAdminContactButtonUrl',
@@ -289,8 +346,58 @@ try {
       `${action} invalidates pending file`,
     );
   }
+  await mount('reports', { availability: 'pending', enabled: false });
+  await page.waitForFunction(() => window.__pendingReportAvailability !== null);
+  assert.equal(await fixture.getByLabel('Жалобы участников', { exact: true }).isDisabled(), true);
+  await mount('contact');
+  await page.waitForFunction(() => window.__reportAvailabilityAborted === true);
+  assert.deepEqual(await page.evaluate(() => window.__reportAvailabilityRequests), []);
+
+  await mount('reports', { availability: 'paused', enabled: false });
+  await fixture
+    .getByText('Приём жалоб доступен не во всех чатах сетки.', { exact: true })
+    .waitFor();
+  assert.equal(await fixture.getByLabel('Жалобы участников', { exact: true }).isDisabled(), true);
+  assert.equal((await page.evaluate(() => window.__reportAvailabilityRequests)).length, 5);
+  assert.ok(
+    (await page.evaluate(() => window.__reportAvailabilityRequests)).at(-1).includes('/chat-e/'),
+    'availability checks include recipients beyond the first four-entry settings page',
+  );
+
+  for (const enabled of [true, 'mixed']) {
+    await mount('reports', { availability: 'paused', enabled });
+    await fixture
+      .getByText('Приём жалоб доступен не во всех чатах сетки.', { exact: true })
+      .waitFor();
+    if (enabled === true) await fixture.getByLabel('Жалобы участников', { exact: true }).click();
+    else {
+      assert.equal(
+        await fixture.getByLabel('Жалобы участников', { exact: true }).isDisabled(),
+        true,
+      );
+      await fixture.getByRole('button', { name: 'Выключить во всей сетке', exact: true }).click();
+    }
+    await page.waitForFunction(() =>
+      window.__changes.some((row) => row.path === 'reportsEnabled' && row.value === false),
+    );
+    const reportsToggle = fixture.getByLabel('Жалобы участников', { exact: true });
+    assert.equal(await reportsToggle.isDisabled(), enabled !== true);
+    if (enabled === true) {
+      await reportsToggle.click();
+      await page.waitForFunction(() => window.__changes.length === 0);
+      assert.equal(await reportsToggle.isChecked(), true);
+    }
+  }
+
+  await mount('reports', { availability: 'error', enabled: false });
+  await fixture.getByText('Не удалось проверить доступность жалоб.', { exact: true }).waitFor();
+  assert.equal(await fixture.getByLabel('Жалобы участников', { exact: true }).isDisabled(), true);
+  await mount('reports', { availability: 'available', enabled: false });
+  await page.waitForFunction(
+    () => !document.querySelector('[aria-label="Жалобы участников"]').disabled,
+  );
   console.log(
-    'PASS delayed subscription/contact/media preserve later fields and respect clear/remove/revert',
+    'PASS delayed metadata/media preserve edits; reports check every recipient and fail closed',
   );
 } catch (error) {
   console.error('FIXTURE BODY', await page.locator('body').innerText());
