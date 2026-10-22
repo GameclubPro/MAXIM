@@ -78,6 +78,19 @@ const LazyManagedEntityNavigationProvider = lazy(async () => {
   return { default: module.ManagedEntityNavigationProvider };
 });
 
+const LazyHomeEntityFavoritesProvider = lazy(async () => {
+  const module = await import('./lib/home-entity-favorites-context');
+  return { default: module.HomeEntityFavoritesProvider };
+});
+const LazyNetworksPage = lazy(async () => {
+  const module = await import('./pages/networks-page');
+  return { default: module.NetworksPage };
+});
+const LazyNetworkSettingsRoute = lazy(async () => {
+  const module = await import('./pages/network-settings-route');
+  return { default: module.NetworkSettingsRoute };
+});
+
 const LazyAppStartupState = lazy(async () => {
   const module = await import('./components/app-startup-state');
   return { default: module.AppStartupState };
@@ -459,12 +472,14 @@ function AppRouteShell({
   launchRouteResolver,
   managedEntityWorkspace = false,
   profile,
+  networksEnabled = false,
 }: {
   launchInitData: string | null;
   launchRouteAppliedRef: RefObject<string | null>;
   launchRouteResolver: (initData: string) => string | null;
   managedEntityWorkspace?: boolean;
   profile: MiniappProfile;
+  networksEnabled?: boolean;
 }) {
   const content = (
     <>
@@ -475,7 +490,7 @@ function AppRouteShell({
           launchRouteResolver={launchRouteResolver}
         />
       ) : null}
-      <Shell profile={profile} />
+      <Shell profile={profile} networksEnabled={networksEnabled} />
     </>
   );
 
@@ -517,6 +532,7 @@ function AppRoutes({
               launchRouteAppliedRef={launchRouteAppliedRef}
               launchRouteResolver={launchRouteResolver}
               profile={me.profile}
+              networksEnabled={moderationProfile && me.networksEnabled}
             />
           }
         >
@@ -583,9 +599,22 @@ function AppRoutes({
                 launchRouteResolver={launchRouteResolver}
                 managedEntityWorkspace
                 profile="moderation"
+                networksEnabled={me.networksEnabled}
               />
             }
           >
+            {me.networksEnabled ? (
+              <>
+                <Route
+                  path="/networks"
+                  element={<LazyNetworksPage api={apiClient} userId={me.userId} />}
+                />
+                <Route
+                  path="/networks/:type/settings/:section?"
+                  element={<LazyNetworkSettingsRoute api={apiClient} userId={me.userId} />}
+                />
+              </>
+            ) : null}
             <Route
               path="/chat/:chatId/settings"
               element={
@@ -711,13 +740,27 @@ function ProfiledAppRoutes({
       </Suspense>
     );
   }
-  return (
+  const routes = (
     <AppRoutes
       apiClient={apiClient}
       launchInitData={launchInitData}
       launchRouteResolver={launchRouteResolver}
       me={me}
     />
+  );
+  const needsFavorites =
+    location.pathname === '/' ||
+    location.pathname === '/networks' ||
+    location.pathname.startsWith('/networks/') ||
+    /^\/(?:chat|channel)\/[^/]+\/settings\/?$/u.test(location.pathname);
+  return me.profile === 'moderation' && needsFavorites ? (
+    <Suspense fallback={<RouteLoadingFallback />}>
+      <LazyHomeEntityFavoritesProvider api={apiClient} verifiedUserId={me.userId}>
+        {routes}
+      </LazyHomeEntityFavoritesProvider>
+    </Suspense>
+  ) : (
+    routes
   );
 }
 

@@ -1,10 +1,13 @@
 import { BadRequestException } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
+import { messageRetentionHoursSchema } from '@maxim/contracts/settings-field-schemas';
 import {
   channelPostSignatureSettingsSchema,
   channelSettingsSchema,
   chatSettingsSchema,
   stopWordsPolicySchema,
+  updateChatRulesRequestSchema,
   DEFAULT_BROADCAST_BUTTON_TEXT,
   type ChatSettings,
 } from '@maxim/contracts';
@@ -26,6 +29,27 @@ const DERIVED_CHAT_PATHS = new Set<string>([
   ...CHAT_SETTINGS_BUTTON_GROUPS.flatMap((group) => [group.url, group.text]),
 ]);
 
+const CHAT_SUPPLEMENTAL_SECTIONS = {
+  speechStyle: ['botSpeechStyle'],
+  rules: [
+    'rules.text',
+    'rules.textFormat',
+    'rules.autoTextEnabled',
+    'rules.imageBase64',
+    'rules.imageMimeType',
+    'rules.imageFileName',
+    'rules.buttons',
+    'rules.buttonEnabled',
+    'rules.adminContactButtonEnabled',
+    'rules.adminContactButtonUrl',
+    'rulesAttachViolationsEnabled',
+  ],
+  messageRetention: ['messageRetention.enabled', 'messageRetention.hours'],
+  advertising: ['advertising.enabled'],
+} as const;
+const retentionPatchSchema = z.object({ enabled: z.boolean(), hours: messageRetentionHoursSchema });
+const advertisingPatchSchema = z.object({ enabled: z.boolean() });
+
 const CHANNEL_SECTIONS = {
   quickButtons: ['quickButtonsEnabled'],
   comments: [
@@ -37,6 +61,16 @@ const CHANNEL_SECTIONS = {
     'commentsMessageText',
   ],
   postSignature: ['enabled', 'presentation', 'text', 'url'],
+  postSuggestions: [
+    'postSuggestionsEnabled',
+    'postSuggestionsRequireSubscription',
+    'postSuggestionsDeleteOnUnsubscribe',
+    'postSuggestionsEntryMode',
+    'postSuggestionsButtonText',
+    'postSuggestionsText',
+    'engagementMessageText',
+    'postSuggestionsDailyLimit',
+  ],
 } as const;
 const STOP_WORD_PATHS = [
   'enabled',
@@ -68,6 +102,8 @@ export function networkSettingsPaths(
       throw new BadRequestException('Раздел недоступен для каналов.');
     return [...CHANNEL_SECTIONS[section as keyof typeof CHANNEL_SECTIONS]];
   }
+  if (Object.hasOwn(CHAT_SUPPLEMENTAL_SECTIONS, section))
+    return [...CHAT_SUPPLEMENTAL_SECTIONS[section as keyof typeof CHAT_SUPPLEMENTAL_SECTIONS]];
   if (!Object.hasOwn(SETTINGS_SECTION_KEYS, section))
     throw new BadRequestException('Раздел недоступен для чатов.');
   if (section === 'stopWords') return STOP_WORD_PATHS.map((path) => `stopWordsPolicy.${path}`);
@@ -129,11 +165,17 @@ export function buildNetworkSettingsPatch<T extends object>(
     }
     const key = keys.at(-1)!;
     const optionalMedia =
-      change.path.startsWith('botSpeechMedia.') || change.path.includes('.media.');
+      change.path.startsWith('botSpeechMedia.') ||
+      change.path.includes('.media.') ||
+      change.path === 'rules.imageBase64';
     if (change.op === 'clear') {
       if (!optionalMedia)
         throw new BadRequestException('Удалять можно только выбранное изображение.');
-      delete parent[key];
+      if (change.path === 'rules.imageBase64') {
+        parent.imageBase64 = '';
+        parent.imageMimeType = '';
+        parent.imageFileName = '';
+      } else delete parent[key];
     } else {
       const existing = getPath(current, change.path);
       if ((Array.isArray(existing) || Array.isArray(change.value)) && change.op !== 'replace')
@@ -145,6 +187,12 @@ export function buildNetworkSettingsPatch<T extends object>(
     }
   }
   if (entityType === 'chat') {
+    if (section === 'rules' && changes.some((change) => change.path === 'rules.buttons')) {
+      const rules = next.rules as Record<string, unknown>;
+      const first = (rules.buttons as Array<{ url?: string; text?: string }>)[0];
+      rules.buttonUrl = first?.url ?? '';
+      rules.buttonText = first?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT;
+    }
     for (const group of CHAT_SETTINGS_BUTTON_GROUPS) {
       if (!changes.some((change) => change.path === group.buttons)) continue;
       const primary = (next[group.buttons] as Array<{ url?: unknown; text?: unknown }>)[0];
@@ -153,6 +201,20 @@ export function buildNetworkSettingsPatch<T extends object>(
       next[group.url] = primary?.url ?? '';
       next[group.text] = primary?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT;
     }
+  }
+  if (entityType === 'chat' && section === 'rules') {
+    const rules = updateChatRulesRequestSchema.safeParse(next.rules);
+    const settings = chatSettingsSchema.safeParse(next);
+    if (!rules.success || !settings.success)
+      throw new BadRequestException('Проверьте настройки правил каждого получателя.');
+    return { ...settings.data, rules: rules.data } as T;
+  }
+  if (entityType === 'chat' && (section === 'messageRetention' || section === 'advertising')) {
+    const result = (
+      section === 'messageRetention' ? retentionPatchSchema : advertisingPatchSchema
+    ).safeParse(next[section]);
+    if (!result.success) throw new BadRequestException(result.error.format());
+    return { ...next, [section]: result.data } as T;
   }
   const result =
     entityType === 'channel'

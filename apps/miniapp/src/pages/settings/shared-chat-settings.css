@@ -1,0 +1,165 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-fields {
+    --shared-chat-settings-group-surface: linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-accent) 5%, var(--color-surface)),
+      var(--color-surface)
+    );
+    --shared-chat-settings-group-shadow: 0 6px 20px
+      color-mix(in srgb, var(--text-primary) 4%, transparent);
+    display: grid;
+    gap: 18px;
+    min-width: 0;
+    padding: 4px 0 24px;
+    color: var(--text-primary);
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-group {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+    padding: 18px;
+    border: 1px solid var(--color-border);
+    border-radius: 18px;
+    background: var(--shared-chat-settings-group-surface);
+    box-shadow: var(--shared-chat-settings-group-shadow);
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-group > h3 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-fields .network-settings-field {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-fields
+    .network-settings-field__label {
+    font-weight: 650;
+    line-height: 1.4;
+  }
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-fields
+    .network-settings-field__toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+  }
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-fields
+    input:not([type='checkbox']):not([type='file']),
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-fields textarea,
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-fields select {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: var(--color-surface);
+    color: inherit;
+    font: inherit;
+    font-size: 16px;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-fields button {
+    max-width: 100%;
+    min-height: 44px;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-speech {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-speech
+    > .settings-native-toggle__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-speech
+    > .settings-native-toggle__row
+    > strong {
+    flex: 1 1 160px;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-speech > button,
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-speech
+    :is(.settings-info-button, [role='toolbar'] button) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--color-accent-soft);
+    color: var(--text-primary);
+    font: inherit;
+    font-weight: 650;
+    line-height: 1.25;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-speech .settings-info-button {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 96px;
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-speech button:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-speech button:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-fields [role='toolbar'] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-fields [role='toolbar'] button {
+    min-width: 44px;
+  }
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-fields
+    .network-settings-media-input {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    overflow: hidden;
+  }
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-fields
+    .network-settings-media-input
+    input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation']
+    .shared-chat-settings-fields
+    .network-settings-media-input:focus-within {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+  }
+  body[data-miniapp-profile='moderation'] .shared-chat-settings-fields [role='alert'] {
+    margin: 0;
+    color: var(--color-danger);
+  }
+}

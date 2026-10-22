@@ -1,8 +1,10 @@
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Clock } from 'iconoir-react';
 import type { MessageRetentionState, MessageRetentionSummary } from '@maxim/contracts/settings';
-import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
+import {
+  SettingsSectionToggle,
+  SettingsSectionIcon,
+} from '../../components/ui/settings-section-toggle';
 import type { ApiTransport } from '../../lib/api/transport';
 import { messageRetentionStatusLabels } from './settings-message-retention-model';
 import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
@@ -72,7 +74,7 @@ export function SettingsMessageRetentionSection({
           enabled={state?.enabled}
           summary={state?.enabled ? `Старше ${state.hours} ч` : ''}
           status={state ? messageRetentionStatusLabels[state.status] : undefined}
-          icon={<Clock />}
+          icon={<SettingsSectionIcon name="clock" />}
           tone="sky"
           open={open}
           controls="settings-message-retention"

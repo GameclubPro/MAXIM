@@ -100,14 +100,3 @@ export class HomeEntityFavoritesStore {
     this.publish(next);
   }
 }
-
-const stores = new Map<string, HomeEntityFavoritesStore>();
-export function getHomeEntityFavoritesStore(userId: string): HomeEntityFavoritesStore {
-  const scope = `u:${userId.trim()}`;
-  let store = stores.get(scope);
-  if (!store) {
-    store = new HomeEntityFavoritesStore(scope);
-    stores.set(scope, store);
-  }
-  return store;
-}

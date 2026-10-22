@@ -325,6 +325,7 @@ import {
   type MarkManagedEntityAccessEdgesDeniedForUserParams,
 } from './admin-managed-entity-access-runtime-context';
 import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
+import { listCanonicalFavoriteChatIdsForSettingsTarget } from './managed-entity-favorite-settings-targets';
 import { createAdminManagedEntitiesRuntimeContext } from './admin-managed-entities-runtime-context';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
 import { createAdminParticipantsRuntimeContext } from './admin-participants-runtime-context';
@@ -523,7 +524,6 @@ import {
   PRIVATE_CONTROL_CALLBACK_PREFIX,
   DEFAULT_CHANNEL_SETTINGS,
   MANAGED_ENTITY_FAVORITE_TYPE_ORDER,
-  PRISMA_FAVORITE_TYPE_BY_CONTRACT,
   CONTRACT_FAVORITE_TYPE_BY_PRISMA,
   CHANNEL_COMMENT_DUPLICATE_WINDOW_MS,
   CHANNEL_COMMENT_MAX_CONSECUTIVE,
@@ -8314,25 +8314,7 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     favoriteTypes: readonly ManagedEntityFavoriteType[],
   ): Promise<string[]> {
-    if (favoriteTypes.length === 0) {
-      return [];
-    }
-
-    const rows = await this.prisma.managedEntityFavorite.findMany({
-      where: {
-        userId,
-        entityType: ChatEntityType.CHAT,
-        favoriteType: {
-          in: favoriteTypes.map((favoriteType) => PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType]),
-        },
-      },
-      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
-      select: {
-        chatId: true,
-      },
-    });
-
-    return Array.from(new Set(rows.map((row) => row.chatId)));
+    return listCanonicalFavoriteChatIdsForSettingsTarget(this.prisma, userId, favoriteTypes);
   }
 
   private normalizeStoredLinkButtons(

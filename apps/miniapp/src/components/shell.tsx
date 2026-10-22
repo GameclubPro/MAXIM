@@ -31,7 +31,13 @@ const MaxIncidentNotice = lazy(() =>
   import('./max-incident-notice').catch(() => ({ default: () => null })),
 );
 
-export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) {
+export function Shell({
+  profile = 'moderation',
+  networksEnabled = false,
+}: {
+  profile?: MiniappProfile;
+  networksEnabled?: boolean;
+}) {
   useEffect(() => {
     document.body.dataset.miniappProfile = profile;
     return () => {
@@ -46,6 +52,10 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
   const isKeyboardOpen = useKeyboardOpen();
   const hasNativeBackHandlers = useNativeBackHandlersAvailable();
   const isChatsRoute = location.pathname === '/';
+  const isNetworksRoute =
+    profile === 'moderation' && networksEnabled && location.pathname === '/networks';
+  const isNetworkSettingsRoute =
+    profile === 'moderation' && location.pathname.startsWith('/networks/');
   const isPublicationsRoute =
     location.pathname === '/publications' || location.pathname === '/autoposts';
   const isProfileHomeRoute = isChatsRoute;
@@ -140,10 +150,12 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
   const isPublisherEntityModulesRoute =
     profile === 'publisher' && /^\/publisher\/(?:chat|channel)\/[^/]+\/?$/u.test(location.pathname);
-  const shouldShowBottomNav = isChatsRoute || isPublicationsRoute;
+  const shouldShowBottomNav = isChatsRoute || isPublicationsRoute || isNetworksRoute;
   const hasTopbar =
     !isChatsRoute &&
     !isPublicationsRoute &&
+    !isNetworksRoute &&
+    !isNetworkSettingsRoute &&
     !isSettingsRoute &&
     !isEventsRoute &&
     !isDialogRoute &&
@@ -257,6 +269,7 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
         <nav
           className={cn(
             'bottom-nav bottom-nav--primary glass-card',
+            profile === 'moderation' && networksEnabled && 'bottom-nav--four',
             isKeyboardOpen && 'is-keyboard-open',
           )}
           aria-label={profile === 'publisher' ? 'Навигация Публика' : 'Навигация Майора'}
@@ -288,6 +301,19 @@ export function Shell({ profile = 'moderation' }: { profile?: MiniappProfile }) 
             </span>
             <span className="bottom-nav__label">Каналы</span>
           </Link>
+
+          {profile === 'moderation' && networksEnabled ? (
+            <Link
+              to="/networks"
+              className={cn('bottom-nav__item', isNetworksRoute && 'is-active')}
+              aria-current={isNetworksRoute ? 'page' : undefined}
+            >
+              <span className="bottom-nav__icon" aria-hidden>
+                <AppIcon icon="Community" className="bottom-nav__icon-svg" />
+              </span>
+              <span className="bottom-nav__label">Сетки</span>
+            </Link>
+          ) : null}
 
           {profile === 'publisher' ? (
             <NavLink

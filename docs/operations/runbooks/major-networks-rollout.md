@@ -77,6 +77,20 @@ durable group-operation journals and uncertain effects. Once migration
 `20261022120000_add_managed_network_foundation` is applied, both API rollback paths retain the
 compatible foundation source floor even while the gate is `off`.
 
+Stage B migration `20261022130000_network_allowlist_revision` also installs an independent
+allowlist revision, maintained for existing writers by statement triggers. Group list intents
+are stored with operation reader version 2; the original scalar operations retain version 1
+and legacy operations without a version are read as version 1. Speech style, rules,
+message retention, advertising and channel suggestions require reader version 3. Independent
+policy revisions and recipient-specific rules generation remain part of their retained intent.
+The runner rejects unsupported versions before target writes or settlement. Both API rollback
+paths require the compatible Stage B v3 reader, list and policy writers, rules revision checks
+and atomic COMMITTED receipt handling, even after the interface is disabled.
+Use a release that passes `assert-network-settings-v2-source.mjs`; do not roll back the API to
+the earlier scalar-only foundation or remove the installed revision/operation data. Static-only
+rollback remains independent. An older checked-out rollback entrypoint must restore the current
+reviewed tooling through its v2 capability marker before selecting the target.
+
 If a command fails, inspect the exact running image, dotenv/readbacks, audit record, existing
 pause and deploy journal before acting. A failed wrapper does not establish that the mode
 reverted. The setter refuses interrupted-pause adoption; use the existing guarded recovery

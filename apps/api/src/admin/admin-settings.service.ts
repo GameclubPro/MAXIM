@@ -251,6 +251,16 @@ export class AdminSettingsService {
     }
   }
 
+  resolveRequiredSubscriptionChannelReference(value: string) {
+    return this.legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue(value);
+  }
+
+  resolveLocalChatUserProfiles(chatId: string, userIds: readonly string[]) {
+    return this.legacyAdminService.resolveUserProfilesForAdminSurface(chatId, 'chat', userIds, {
+      allowRemoteLookup: false,
+    });
+  }
+
   async resolveRequiredSubscriptionChannel(
     chatId: string,
     user: AuthUser,
@@ -520,6 +530,10 @@ export class AdminSettingsService {
       requiredSubscriptionChannels,
       duplicatePhotoModerationMode,
     });
+  }
+
+  async buildNetworkRulesText(chatId: string, user: AuthUser): Promise<string> {
+    return this.buildAutofilledRulesText(chatId, user);
   }
 
   async resetPublishedRules(

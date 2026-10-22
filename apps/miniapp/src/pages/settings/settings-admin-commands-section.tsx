@@ -1,3 +1,4 @@
+import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
@@ -45,6 +46,7 @@ type AdminCommandCategory = {
 };
 
 type SettingsAdminCommandsSectionProps = {
+  sharedContent?: ReactNode;
   draft: ChatSettings;
   expanded: boolean;
   fieldErrors: FieldErrors;
@@ -127,7 +129,10 @@ const commandCategories: AdminCommandCategory[] = [
   },
 ];
 
+const SECTION_PRESENTATION = getNetworkSettingsSectionPresentation('chat', 'commands');
+
 export function SettingsAdminCommandsSection({
+  sharedContent,
   draft,
   expanded,
   fieldErrors,
@@ -159,16 +164,16 @@ export function SettingsAdminCommandsSection({
   return (
     <GlassCard
       className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-      style={{ animationDelay: '344ms', order: 30 }}
+      style={{ animationDelay: '344ms', order: SECTION_PRESENTATION.order }}
       aria-label="Команды"
     >
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
-          title="Команды"
+          title={SECTION_PRESENTATION.title}
           summary={headerSummary}
           status={cardStatus}
-          icon="commands"
-          tone="ink"
+          icon={SECTION_PRESENTATION.icon}
+          tone={SECTION_PRESENTATION.tone}
           open={expanded}
           controls="settings-commands-content"
           onClick={onToggleSection}
@@ -177,87 +182,95 @@ export function SettingsAdminCommandsSection({
 
       <SettingsDrilldownPanel
         id="settings-commands-content"
-        icon={<SettingsSectionIcon name="commands" />}
+        icon={<SettingsSectionIcon name={SECTION_PRESENTATION.icon} />}
         open={expanded}
-        title="Команды"
+        title={SECTION_PRESENTATION.title}
         summary={headerSummary}
-        tone="ink"
-        className="settings-drilldown__panel--notice settings-drilldown__panel--commands"
+        tone={SECTION_PRESENTATION.tone}
+        className={SECTION_PRESENTATION.panelClassName}
         onClose={onToggleSection}
         headerAction={headerAction}
         confirmCloseWhen={hasChanges}
         onDiscardChanges={onDiscardChanges}
         footer={hasChanges ? footer : null}
       >
-        <div
-          id="settings-commands-content"
-          className={cn('settings-section__collapse', expanded && 'is-open')}
-        >
-          {expanded ? (
-            <div className="settings-section__collapse-inner settings-admin-commands">
-              {commandCategories.map((category) => (
-                <section className="settings-admin-commands__category" key={category.title}>
-                  <h3>{category.title}</h3>
-                  <div className="settings-admin-commands__grid">
-                    {category.items.map((item) => {
-                      const error = fieldErrors[item.key];
+        {sharedContent ? (
+          expanded ? (
+            sharedContent
+          ) : null
+        ) : (
+          <>
+            <div
+              id="settings-commands-content"
+              className={cn('settings-section__collapse', expanded && 'is-open')}
+            >
+              {expanded ? (
+                <div className="settings-section__collapse-inner settings-admin-commands">
+                  {commandCategories.map((category) => (
+                    <section className="settings-admin-commands__category" key={category.title}>
+                      <h3>{category.title}</h3>
+                      <div className="settings-admin-commands__grid">
+                        {category.items.map((item) => {
+                          const error = fieldErrors[item.key];
 
-                      return (
-                        <div
-                          className={cn('settings-command-card', error && 'field--error')}
-                          key={item.key}
-                        >
-                          <div className="settings-command-card__row">
-                            <span className="settings-command-card__copy">
-                              <span className="settings-native-toggle__title-wrap">
-                                <label htmlFor={`settings-command-${item.key}`}>
-                                  <strong>{item.title}</strong>
-                                </label>
-                                <SettingsHintAnchor
-                                  hintKey={item.hintKey}
-                                  openHintKey={activeHintKey}
-                                  onToggleHint={toggleHint}
-                                  label={`Что делает команда «${item.title}»`}
-                                >
-                                  {item.caption}
-                                </SettingsHintAnchor>
-                              </span>
-                            </span>
-                            <input
-                              id={`settings-command-${item.key}`}
-                              value={draft[item.key]}
-                              onChange={(event) => onFieldChange(item.key, event.target.value)}
-                              placeholder={item.defaultValue}
-                              aria-label={`Команда «${item.title}»`}
-                              aria-invalid={Boolean(error)}
-                              aria-describedby={
-                                error ? `settings-command-${item.key}-error` : undefined
-                              }
-                              maxLength={ADMIN_COMMAND_NAME_MAX_LENGTH}
-                              autoCapitalize="none"
-                              autoCorrect="off"
-                              spellCheck={false}
-                            />
-                          </div>
-
-                          {error ? (
-                            <small
-                              id={`settings-command-${item.key}-error`}
-                              className="field__hint"
-                              role="alert"
+                          return (
+                            <div
+                              className={cn('settings-command-card', error && 'field--error')}
+                              key={item.key}
                             >
-                              {error}
-                            </small>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
+                              <div className="settings-command-card__row">
+                                <span className="settings-command-card__copy">
+                                  <span className="settings-native-toggle__title-wrap">
+                                    <label htmlFor={`settings-command-${item.key}`}>
+                                      <strong>{item.title}</strong>
+                                    </label>
+                                    <SettingsHintAnchor
+                                      hintKey={item.hintKey}
+                                      openHintKey={activeHintKey}
+                                      onToggleHint={toggleHint}
+                                      label={`Что делает команда «${item.title}»`}
+                                    >
+                                      {item.caption}
+                                    </SettingsHintAnchor>
+                                  </span>
+                                </span>
+                                <input
+                                  id={`settings-command-${item.key}`}
+                                  value={draft[item.key]}
+                                  onChange={(event) => onFieldChange(item.key, event.target.value)}
+                                  placeholder={item.defaultValue}
+                                  aria-label={`Команда «${item.title}»`}
+                                  aria-invalid={Boolean(error)}
+                                  aria-describedby={
+                                    error ? `settings-command-${item.key}-error` : undefined
+                                  }
+                                  maxLength={ADMIN_COMMAND_NAME_MAX_LENGTH}
+                                  autoCapitalize="none"
+                                  autoCorrect="off"
+                                  spellCheck={false}
+                                />
+                              </div>
+
+                              {error ? (
+                                <small
+                                  id={`settings-command-${item.key}-error`}
+                                  className="field__hint"
+                                  role="alert"
+                                >
+                                  {error}
+                                </small>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              ) : null}
             </div>
-          ) : null}
-        </div>
+          </>
+        )}
       </SettingsDrilldownPanel>
     </GlassCard>
   );

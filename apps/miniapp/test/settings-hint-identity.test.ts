@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import ts from 'typescript';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { SettingsHintAnchor } from '../src/pages/settings/settings-hint-anchor';
 
 test('every inline settings explanation has the identity used by dismissal handlers', () => {
   const directory = new URL('../src/pages/settings/', import.meta.url);
@@ -21,6 +24,14 @@ test('every inline settings explanation has the identity used by dismissal handl
       ts.ScriptKind.TSX,
     );
     const visit = (node: ts.Node) => {
+      if (ts.isJsxOpeningElement(node) && node.tagName.getText(source) === 'SettingsHintAnchor') {
+        const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
+        for (const name of ['hintKey', 'openHintKey', 'onToggleHint']) {
+          const attribute = attributes.find((item) => item.name.getText(source) === name);
+          assert.ok(attribute?.initializer, `${file.pathname}: shared hint ${name}`);
+        }
+        checked += 1;
+      }
       if (ts.isJsxOpeningElement(node) && node.tagName.getText(source) === 'button') {
         const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
         const expanded = attributes.find(
@@ -52,4 +63,29 @@ test('every inline settings explanation has the identity used by dismissal handl
     visit(source);
   }
   assert.ok(checked >= 24, `Expected all inline explanations, found ${checked}`);
+});
+
+test('shared settings explanations bind their trigger and dismissal identity to each hint key', () => {
+  for (const hintKey of ['duplicateTextMode', 'nightComments']) {
+    const props = {
+      hintKey,
+      openHintKey: hintKey,
+      onToggleHint: () => undefined,
+      label: 'Пояснение настройки',
+      children: 'Как работает настройка',
+    };
+    const open = renderToStaticMarkup(createElement(SettingsHintAnchor, props));
+    assert.ok(open.includes(`data-hint-key="${hintKey}"`));
+    assert.ok(open.includes(`aria-controls="settings-hint-${hintKey}"`));
+    assert.ok(open.includes(`aria-describedby="settings-hint-${hintKey}"`));
+    assert.ok(open.includes(`id="settings-hint-${hintKey}"`));
+    assert.ok(open.includes('aria-expanded="true"'));
+    const closed = renderToStaticMarkup(
+      createElement(SettingsHintAnchor, { ...props, openHintKey: null }),
+    );
+    assert.ok(closed.includes(`data-hint-key="${hintKey}"`));
+    assert.ok(closed.includes('aria-expanded="false"'));
+    assert.ok(!closed.includes('role="note"'));
+    assert.ok(!closed.includes('aria-describedby='));
+  }
 });

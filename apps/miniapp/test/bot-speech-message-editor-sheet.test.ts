@@ -30,6 +30,10 @@ const settingsPageSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
 );
+const sharedChatSettingsSource = readFileSync(
+  new URL('../src/pages/settings/shared-chat-settings-fields.tsx', import.meta.url),
+  'utf8',
+);
 
 test('bot speech editor keeps focus inside the topmost named dialog', () => {
   assert.match(editorSheetSource, /useDialogFocusTrap\(true, panelRef, closeButtonRef\);/u);
@@ -192,28 +196,28 @@ test('bot speech placeholders move a tapped mobile caret outside the protected t
 });
 
 test('required subscription explanation editor remains available without an action toggle', () => {
-  const editorStart = settingsPageSource.indexOf("openBotEditorKey === 'requiredSubscription' ?");
-  const editorSource = settingsPageSource.slice(
-    editorStart,
-    settingsPageSource.indexOf('/>', editorStart) + 2,
+  const sectionStart = sharedChatSettingsSource.indexOf('function RequiredSubscription(');
+  const sectionSource = sharedChatSettingsSource.slice(
+    sectionStart,
+    sharedChatSettingsSource.indexOf('function Invitation(', sectionStart),
   );
-
-  assert.notEqual(editorStart, -1);
-  assert.match(editorSource, /<LazyBotMessageEditor/u);
-  assert.doesNotMatch(editorSource, /requiredSubscriptionBotMessageEnabled/u);
+  assert.notEqual(sectionStart, -1);
+  assert.match(settingsPageSource, /renderSharedChatSection\('requiredSubscription'\)/u);
+  assert.match(sectionSource, /<Sanctions[^>]*prefix="requiredSubscription"[^>]*mandatoryMessage/u);
+  assert.doesNotMatch(sectionSource, /requiredSubscriptionBotMessageEnabled/u);
 });
 
 test('required subscription explanation cannot be disabled while enforcement is active', () => {
-  const sectionStart = settingsPageSource.indexOf(
-    'aria-label="Действия бота для обязательной подписки"',
-  );
-  const sectionSource = settingsPageSource.slice(
+  const sectionStart = sharedChatSettingsSource.indexOf('function Sanctions(');
+  const sectionSource = sharedChatSettingsSource.slice(
     sectionStart,
-    settingsPageSource.indexOf("title: '3. Ограничение'", sectionStart),
+    sharedChatSettingsSource.indexOf('function Reports(', sectionStart),
   );
 
   assert.notEqual(sectionStart, -1);
-  assert.match(sectionSource, /Редактировать объяснение об обязательной подписке/u);
-  assert.doesNotMatch(sectionSource, /Включить объяснение для обязательной подписки/u);
-  assert.doesNotMatch(sectionSource, /checked=\{draft\.requiredSubscriptionBotMessageEnabled\}/u);
+  assert.match(
+    sectionSource,
+    /mandatoryMessage \? \([\s\S]*?Пояснение о подписке включается автоматически[\s\S]*?\) : \([\s\S]*?c\.toggle\(boolean\('BotMessageEnabled'\)[\s\S]*?\)\}\s*<Speech[\s\S]*?path=\{message\}/u,
+  );
+  assert.doesNotMatch(sectionSource, /mandatoryMessage[^?]*&&[\s\S]*?<Speech/u);
 });

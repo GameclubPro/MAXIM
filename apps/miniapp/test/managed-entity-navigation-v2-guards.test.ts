@@ -170,7 +170,7 @@ test('navigation coordinator blocks dirty exits and exposes the exact confirmati
   );
   assert.match(
     navigationSource,
-    /useLayoutEffect\(\(\) => \{\s*context\?\.notifyLeaveGuardChanged\(\);\s*\}, \[context, guard\.dirty, guard\.saving\]\);/u,
+    /useLayoutEffect\(\(\) => \{\s*context\?\.notifyLeaveGuardChanged\(\);\s*\}, \[context, guard\.dirty, guard\.saving, guard\.discardOnly\]\);/u,
   );
   assert.match(navigationContextSource, /notifyLeaveGuardChanged: \(\) => void;/u);
   assert.match(
@@ -381,7 +381,7 @@ test('chat and channel settings register save and discard leave guards', () => {
   );
   assert.match(
     chatSettingsSource,
-    /useChatSettingsWorkspaceLeaveGuard\(\{[\s\S]*?settingsDirty: hasChanges,[\s\S]*?rulesDirty: hasRulesChanges,[\s\S]*?saving:\s*isHeaderSaving \|\|\s*isApplyingSectionToAll \|\|\s*isPublishingRules \|\|\s*isResettingPublishedRules,[\s\S]*?saveRules: \(\) => saveRulesDraftNow\(\{ forceButtonErrors: true \}\)/u,
+    /useChatSettingsWorkspaceLeaveGuard\(\{[\s\S]*?settingsDirty: hasChanges \|\| Object\.keys\(sharedFieldErrors\)\.length > 0,[\s\S]*?rulesDirty: hasRulesChanges,[\s\S]*?saving:\s*isHeaderSaving \|\|\s*isApplyingSectionToAll \|\|\s*isPublishingRules \|\|\s*isResettingPublishedRules,[\s\S]*?saveRules: \(\) => saveRulesDraftNow\(\{ forceButtonErrors: true \}\)/u,
   );
   assert.match(
     chatSettingsWorkspaceSource,

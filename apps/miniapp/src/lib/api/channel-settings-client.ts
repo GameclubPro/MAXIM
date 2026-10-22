@@ -1,26 +1,15 @@
-import {
-  broadcastHandoffRequestSchema,
-  broadcastHandoffResponseSchema,
-  broadcastHandoffStateSchema,
-  managedBroadcastCalendarResponseSchema,
-  managedBroadcastDetailsSchema,
-  managedBroadcastSummarySchema,
-  createManagedAutopostRuleRequestSchema,
-  managedAutopostRuleDetailsSchema,
-  managedAutopostRuleSummarySchema,
-  updateManagedAutopostRuleRequestSchema,
-  sendBroadcastResultSchema,
-  sendBroadcastRequestSchema,
-  sendBroadcastTestResultSchema,
-  type BroadcastHandoffState,
-  type ManagedBroadcastCalendarResponse,
-  type ManagedBroadcastDetails,
-  type ManagedBroadcastSummary,
-  type CreateManagedAutopostRuleRequest,
-  type ManagedAutopostRuleDetails,
-  type ManagedAutopostRuleSummary,
-  type SendBroadcastTestResult,
-  type UpdateManagedAutopostRuleRequest,
+import type {
+  BroadcastHandoffState,
+  ManagedBroadcastCalendarResponse,
+  ManagedBroadcastDetails,
+  ManagedBroadcastSummary,
+  CreateManagedAutopostRuleRequest,
+  ManagedAutopostRuleDetails,
+  ManagedAutopostRuleSummary,
+  SendBroadcastTestResult,
+  UpdateManagedAutopostRuleRequest,
+  BroadcastHandoffResponse,
+  SendBroadcastResult,
 } from '@maxim/contracts/broadcast';
 import {
   channelPostSignatureSettingsSchema,
@@ -28,11 +17,9 @@ import {
   type ChannelPostSignatureSettings,
   type UpdateChannelPostSignatureRequest,
 } from '@maxim/contracts/channel-post-signature';
-import {
-  publishChannelEngagementRequestSchema,
-  publishChannelEngagementResultSchema,
-  type PublishChannelEngagementRequest,
-  type PublishChannelEngagementResult,
+import type {
+  PublishChannelEngagementRequest,
+  PublishChannelEngagementResult,
 } from '@maxim/contracts/channel-dialog';
 import {
   managedEntityAccessRecheckResponseSchema,
@@ -50,7 +37,7 @@ import {
   channelSettingsScreenResponseSchema,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
-} from '@maxim/contracts/settings';
+} from '@maxim/contracts/channel-settings';
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from './shared-types';
 import type { ApiTransport } from './transport';
 
@@ -58,26 +45,7 @@ export type ChannelBroadcastComposerClientResetState = {
   resetAt: string | null;
 };
 
-function parseChannelBroadcastComposerClientResetState(
-  response: unknown,
-): ChannelBroadcastComposerClientResetState {
-  if (!response || typeof response !== 'object' || Array.isArray(response)) {
-    return { resetAt: null };
-  }
-
-  const resetAt = (response as Record<string, unknown>).resetAt;
-  return {
-    resetAt: typeof resetAt === 'string' && resetAt.trim().length > 0 ? resetAt.trim() : null,
-  };
-}
-
-export function createBroadcastRequestId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID().replace(/-/gu, '');
-  }
-
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
-}
+export { createBroadcastRequestId } from './channel-broadcast-request-id';
 
 export async function getChannelHeader(
   api: ApiTransport,
@@ -208,21 +176,17 @@ export async function handoffChannelBroadcast(
   api: ApiTransport,
   chatId: string,
   payload: BroadcastHandoffPayload,
-) {
-  const requestBody = broadcastHandoffRequestSchema.parse(payload);
-  const response = await api.request(`/channels/${chatId}/broadcast/handoff`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-  return broadcastHandoffResponseSchema.parse(response);
+): Promise<BroadcastHandoffResponse> {
+  const client = await import('./channel-publishing-client');
+  return client.handoffChannelBroadcast(api, chatId, payload);
 }
 
 export async function getChannelBroadcastHandoffState(
   api: ApiTransport,
   chatId: string,
 ): Promise<BroadcastHandoffState> {
-  const response = await api.request(`/channels/${chatId}/broadcast/handoff`);
-  return broadcastHandoffStateSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.getChannelBroadcastHandoffState(api, chatId);
 }
 
 export async function getChannelBroadcastComposerClientResetState(
@@ -230,36 +194,25 @@ export async function getChannelBroadcastComposerClientResetState(
   chatId: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<ChannelBroadcastComposerClientResetState> {
-  const response = await api.request(`/channels/${chatId}/broadcast/client-reset`, {
-    signal: options.signal,
-  });
-  return parseChannelBroadcastComposerClientResetState(response);
+  const client = await import('./channel-publishing-client');
+  return client.getChannelBroadcastComposerClientResetState(api, chatId, options);
 }
 
 export async function clearChannelBroadcastHandoffState(
   api: ApiTransport,
   chatId: string,
 ): Promise<BroadcastHandoffState> {
-  const response = await api.request(`/channels/${chatId}/broadcast/handoff`, {
-    method: 'DELETE',
-  });
-  return broadcastHandoffStateSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.clearChannelBroadcastHandoffState(api, chatId);
 }
 
 export async function sendChannelBroadcast(
   api: ApiTransport,
   chatId: string,
   payload: SendBroadcastPayload,
-) {
-  const requestBody = sendBroadcastRequestSchema.parse({
-    ...payload,
-    requestId: payload.requestId ?? createBroadcastRequestId(),
-  });
-  const response = await api.request(`/channels/${chatId}/broadcast`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-  return sendBroadcastResultSchema.parse(response);
+): Promise<SendBroadcastResult> {
+  const client = await import('./channel-publishing-client');
+  return client.sendChannelBroadcast(api, chatId, payload);
 }
 
 export async function sendChannelBroadcastTest(
@@ -267,35 +220,16 @@ export async function sendChannelBroadcastTest(
   chatId: string,
   payload: SendBroadcastPayload,
 ): Promise<SendBroadcastTestResult> {
-  const requestBody = sendBroadcastRequestSchema.parse({
-    ...payload,
-    targetMode: 'current',
-    targetChatIds: [chatId],
-    applyToAllChats: false,
-    scheduleMode: 'legacy',
-    scheduledSlots: [],
-    sendAt: null,
-    cycleEnabled: false,
-    cycleEveryHours: 1,
-    cycleCount: 1,
-  });
-  const response = await api.request(`/channels/${chatId}/broadcast/test`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-  return sendBroadcastTestResultSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.sendChannelBroadcastTest(api, chatId, payload);
 }
 
 export async function getChannelManagedBroadcasts(
   api: ApiTransport,
   chatId: string,
 ): Promise<ManagedBroadcastSummary[]> {
-  const response = await api.request(`/channels/${chatId}/broadcasts`);
-  if (!Array.isArray(response)) {
-    throw new Error('Invalid managed broadcasts response');
-  }
-
-  return response.map((item: unknown) => managedBroadcastSummarySchema.parse(item));
+  const client = await import('./channel-publishing-client');
+  return client.getChannelManagedBroadcasts(api, chatId);
 }
 
 export async function getChannelManagedBroadcastCalendar(
@@ -308,24 +242,8 @@ export async function getChannelManagedBroadcastCalendar(
     targetChatIds?: readonly string[];
   } = {},
 ): Promise<ManagedBroadcastCalendarResponse> {
-  const search = new URLSearchParams();
-  if (params.from) {
-    search.set('from', params.from);
-  }
-  if (params.to) {
-    search.set('to', params.to);
-  }
-  if (params.targetMode) {
-    search.set('targetMode', params.targetMode);
-  }
-  if (params.targetChatIds && params.targetChatIds.length > 0) {
-    search.set('targetChatIds', params.targetChatIds.join(','));
-  }
-
-  const response = await api.request(
-    `/channels/${chatId}/broadcast-calendar${search.toString() ? `?${search.toString()}` : ''}`,
-  );
-  return managedBroadcastCalendarResponseSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.getChannelManagedBroadcastCalendar(api, chatId, params);
 }
 
 export async function getChannelManagedBroadcast(
@@ -333,8 +251,8 @@ export async function getChannelManagedBroadcast(
   chatId: string,
   broadcastId: string,
 ): Promise<ManagedBroadcastDetails> {
-  const response = await api.request(`/channels/${chatId}/broadcasts/${broadcastId}`);
-  return managedBroadcastDetailsSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.getChannelManagedBroadcast(api, chatId, broadcastId);
 }
 
 export async function updateChannelManagedBroadcast(
@@ -343,12 +261,8 @@ export async function updateChannelManagedBroadcast(
   broadcastId: string,
   payload: SendBroadcastPayload,
 ): Promise<ManagedBroadcastDetails> {
-  const requestBody = sendBroadcastRequestSchema.parse(payload);
-  const response = await api.request(`/channels/${chatId}/broadcasts/${broadcastId}`, {
-    method: 'PUT',
-    body: JSON.stringify(requestBody),
-  });
-  return managedBroadcastDetailsSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.updateChannelManagedBroadcast(api, chatId, broadcastId, payload);
 }
 
 export async function cancelChannelManagedBroadcast(
@@ -356,10 +270,8 @@ export async function cancelChannelManagedBroadcast(
   chatId: string,
   broadcastId: string,
 ): Promise<ManagedBroadcastDetails> {
-  const response = await api.request(`/channels/${chatId}/broadcasts/${broadcastId}`, {
-    method: 'DELETE',
-  });
-  return managedBroadcastDetailsSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.cancelChannelManagedBroadcast(api, chatId, broadcastId);
 }
 
 export async function retryChannelManagedBroadcast(
@@ -367,22 +279,16 @@ export async function retryChannelManagedBroadcast(
   chatId: string,
   broadcastId: string,
 ): Promise<ManagedBroadcastDetails> {
-  const response = await api.request(`/channels/${chatId}/broadcasts/${broadcastId}/retry`, {
-    method: 'POST',
-  });
-  return managedBroadcastDetailsSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.retryChannelManagedBroadcast(api, chatId, broadcastId);
 }
 
 export async function getChannelManagedAutopostRules(
   api: ApiTransport,
   chatId: string,
 ): Promise<ManagedAutopostRuleSummary[]> {
-  const response = await api.request(`/channels/${chatId}/autopost-rules`);
-  if (!Array.isArray(response)) {
-    throw new Error('Invalid channel managed autopost rules response');
-  }
-
-  return response.map((item: unknown) => managedAutopostRuleSummarySchema.parse(item));
+  const client = await import('./channel-publishing-client');
+  return client.getChannelManagedAutopostRules(api, chatId);
 }
 
 export async function getChannelManagedAutopostRule(
@@ -390,8 +296,8 @@ export async function getChannelManagedAutopostRule(
   chatId: string,
   ruleId: string,
 ): Promise<ManagedAutopostRuleDetails> {
-  const response = await api.request(`/channels/${chatId}/autopost-rules/${ruleId}`);
-  return managedAutopostRuleDetailsSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.getChannelManagedAutopostRule(api, chatId, ruleId);
 }
 
 export async function createChannelManagedAutopostRule(
@@ -399,12 +305,8 @@ export async function createChannelManagedAutopostRule(
   chatId: string,
   payload: CreateManagedAutopostRuleRequest,
 ): Promise<ManagedAutopostRuleDetails> {
-  const requestBody = createManagedAutopostRuleRequestSchema.parse(payload);
-  const response = await api.request(`/channels/${chatId}/autopost-rules`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-  return managedAutopostRuleDetailsSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.createChannelManagedAutopostRule(api, chatId, payload);
 }
 
 export async function updateChannelManagedAutopostRule(
@@ -413,12 +315,8 @@ export async function updateChannelManagedAutopostRule(
   ruleId: string,
   payload: UpdateManagedAutopostRuleRequest,
 ): Promise<ManagedAutopostRuleDetails> {
-  const requestBody = updateManagedAutopostRuleRequestSchema.parse(payload);
-  const response = await api.request(`/channels/${chatId}/autopost-rules/${ruleId}`, {
-    method: 'PUT',
-    body: JSON.stringify(requestBody),
-  });
-  return managedAutopostRuleDetailsSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.updateChannelManagedAutopostRule(api, chatId, ruleId, payload);
 }
 
 export async function deleteChannelManagedAutopostRule(
@@ -426,10 +324,8 @@ export async function deleteChannelManagedAutopostRule(
   chatId: string,
   ruleId: string,
 ): Promise<ManagedAutopostRuleDetails> {
-  const response = await api.request(`/channels/${chatId}/autopost-rules/${ruleId}`, {
-    method: 'DELETE',
-  });
-  return managedAutopostRuleDetailsSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.deleteChannelManagedAutopostRule(api, chatId, ruleId);
 }
 
 export async function publishChannelEngagement(
@@ -437,10 +333,6 @@ export async function publishChannelEngagement(
   chatId: string,
   payload: PublishChannelEngagementRequest,
 ): Promise<PublishChannelEngagementResult> {
-  const requestBody = publishChannelEngagementRequestSchema.parse(payload);
-  const response = await api.request(`/channels/${chatId}/engagement-publish`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
-  return publishChannelEngagementResultSchema.parse(response);
+  const client = await import('./channel-publishing-client');
+  return client.publishChannelEngagement(api, chatId, payload);
 }

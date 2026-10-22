@@ -6,6 +6,7 @@ import {
   differenceAssets,
   rankContributors,
   resolveBudgetLimit,
+  resolveManifestEntry,
   validateBudgetConfig,
   validateRouteBudgetCoverage,
 } from '../scripts/budget-utils.mjs';
@@ -129,4 +130,46 @@ test('budget allowances and top contributors are deterministic', () => {
       { file: 'small.js', gzipBytes: 8 },
     ],
   );
+});
+
+test('script source references select JavaScript before a same-named CSS chunk', () => {
+  const manifest = {
+    '_confirm-hash.css': {
+      file: 'assets/action-confirm-sheet-hash.css',
+      name: 'action-confirm-sheet',
+    },
+    '_confirm-hash.js': {
+      file: 'assets/action-confirm-sheet-hash.js',
+      name: 'action-confirm-sheet',
+      imports: ['_focus.js'],
+      css: ['assets/action-confirm-sheet-hash.css'],
+    },
+    '_focus.js': { file: 'assets/dialog-focus.js' },
+  };
+  const entry = resolveManifestEntry(manifest, 'src/components/ui/action-confirm-sheet.tsx');
+  assert.equal(entry, '_confirm-hash.js');
+  assert.deepEqual(
+    [...collectManifestAssets(manifest, [entry]).js],
+    ['assets/action-confirm-sheet-hash.js', 'assets/dialog-focus.js'],
+  );
+});
+
+test('a CSS-only match cannot satisfy a required script body', () => {
+  assert.throws(
+    () =>
+      resolveManifestEntry(
+        { '_confirm.css': { file: 'assets/action-confirm-sheet-hash.css' } },
+        'src/components/ui/action-confirm-sheet.tsx',
+      ),
+    /Manifest entry not found/u,
+  );
+});
+
+test('an exact script manifest key takes priority over fallback names', () => {
+  const key = 'src/components/ui/action-confirm-sheet.tsx';
+  const manifest = {
+    '_confirm.js': { file: 'assets/action-confirm-sheet-old.js', name: 'action-confirm-sheet' },
+    [key]: { file: 'assets/action-confirm-sheet-current.js' },
+  };
+  assert.equal(resolveManifestEntry(manifest, key), key);
 });

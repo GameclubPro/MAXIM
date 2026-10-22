@@ -1,5 +1,8 @@
 import { createElement, type ComponentProps } from 'react';
 import { createRoot } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { HomeEntityFavoritesProvider } from '../../src/lib/home-entity-favorites-context';
+import { getPreviewApiPrincipalUserId } from '../../src/lib/api/preview-principal';
 import { SettingsApplyTargetSheet } from '../../src/pages/settings/settings-apply-target-sheet';
 import { createDefaultApplySettingsTarget } from '../../src/pages/settings/settings-apply-target';
 import { createPreviewApiTransport } from '../../src/lib/api/preview-transport';
@@ -13,6 +16,8 @@ type Options = Partial<Pick<Props, 'sheet' | 'preview' | 'previewLoading' | 'isA
 type Target = NonNullable<Props['sheet']>['target'];
 
 const api = createPreviewApiTransport();
+const queryClient = new QueryClient();
+const verifiedUserId = getPreviewApiPrincipalUserId(api)!;
 const sourceState = createPreviewState({});
 const actions: Array<{ kind: string; target?: Target }> = [];
 const root = createRoot(document.getElementById('root')!);
@@ -37,29 +42,33 @@ let options: Options = {
 const render = (next: Options = {}) => {
   options = { ...options, ...next };
   root.render(
-    createElement(SettingsApplyTargetSheet, {
-      api,
-      sheet: null,
-      preview: null,
-      previewLoading: false,
-      previewError: null,
-      sectionLabel: 'Ссылки',
-      overlayStyle: undefined,
-      isApplying: false,
-      ...options,
-      onClose: () => {
-        actions.push({ kind: 'close' });
-        render({ sheet: null });
-      },
-      onTargetChange: (target) => {
-        actions.push({ kind: 'target', target });
-        render({ sheet: { section: 'links', target } });
-      },
-      onConfirm: () => {
-        actions.push({ kind: 'confirm', target: options.sheet!.target });
-        render({ isApplying: true });
-      },
-    }),
+    <QueryClientProvider client={queryClient}>
+      <HomeEntityFavoritesProvider api={api} verifiedUserId={verifiedUserId}>
+        {createElement(SettingsApplyTargetSheet, {
+          api,
+          sheet: null,
+          preview: null,
+          previewLoading: false,
+          previewError: null,
+          sectionLabel: 'Ссылки',
+          overlayStyle: undefined,
+          isApplying: false,
+          ...options,
+          onClose: () => {
+            actions.push({ kind: 'close' });
+            render({ sheet: null });
+          },
+          onTargetChange: (target) => {
+            actions.push({ kind: 'target', target });
+            render({ sheet: { section: 'links', target } });
+          },
+          onConfirm: () => {
+            actions.push({ kind: 'confirm', target: options.sheet!.target });
+            render({ isApplying: true });
+          },
+        })}
+      </HomeEntityFavoritesProvider>
+    </QueryClientProvider>,
   );
 };
 

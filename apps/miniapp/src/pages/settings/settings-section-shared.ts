@@ -20,6 +20,7 @@ export type SetChatSettingsField = <K extends keyof ChatSettings>(
 ) => void;
 
 export type SettingsSectionShellProps = {
+  sharedContent?: ReactNode;
   expanded: boolean;
   toggleSection: (section: SettingsSectionKey) => void;
   isSectionDirty: (section: ApplySectionKey) => boolean;

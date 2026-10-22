@@ -7,8 +7,263 @@ import {
   buildNetworkStatisticsObservationPrivilegesSql,
   NETWORK_STATISTICS_AUDIT_COLUMNS,
   NETWORK_STATISTICS_OBSERVATION_AUDIT_COLUMNS,
+  NETWORK_STATISTICS_MEMBERSHIP_AUDIT_COLUMNS,
+  buildNetworkStatisticsMembershipPrivilegesSql,
 } from './network-statistics-audit.mjs';
 import { readFileSync } from 'node:fs';
+
+const membershipFixture = readFileSync(
+  new URL('./test-fixtures/network-statistics.sql', import.meta.url),
+  'utf8',
+);
+const grants = (columns) =>
+  Object.entries(columns)
+    .map(([table, fields]) => `GRANT SELECT (${fields.join(',')}) ON ${table} TO maxim_audit;`)
+    .join('\n');
+const readinessQuery = (sql, key) => sql.split(` AS ${key}`)[0] + ' AS ready';
+
+test('membership audit strict options preserve independently optional groups and physical probe caps', () => {
+  for (const flags of [
+    ['--membership=7d'],
+    ['--membership=30d', '--observations'],
+    ['--explain', '--membership=30d', '--observations'],
+  ]) {
+    const sql = buildNetworkStatisticsAuditSql(['-1,-2', ...flags]);
+    assert.match(sql, /'schema_version',3/u);
+    assert.match(sql, /LIMIT 721/u);
+    assert.match(sql, /LIMIT 720/u);
+    assert.match(sql, /LIMIT 1001/u);
+    assert.match(sql, /LIMIT 1000/u);
+    assert.match(sql, /event_type='user_added' AND event_at>=p.complete_to/u);
+    assert.match(sql, /event_type='user_removed' AND event_at>=p.complete_to/u);
+    assert.doesNotMatch(
+      sql,
+      /SELECT \*|EXPLAIN ANALYZE|source_created_at|user_id|bot_id|sender_name/u,
+    );
+  }
+  for (const flags of [
+    ['--membership'],
+    ['--membership=1d'],
+    ['--membership=7d', '--membership=30d'],
+    ['--membership=7d', '--membership=7d'],
+    ['--membership=30d', '--until=now'],
+  ])
+    assert.throws(() => buildNetworkStatisticsAuditSql(['-1', ...flags]));
+  assert.equal(Object.values(NETWORK_STATISTICS_MEMBERSHIP_AUDIT_COLUMNS).flat().length, 8);
+  assert.match(buildNetworkStatisticsMembershipPrivilegesSql(), /IN \(0,8\)/u);
+  assert.match(buildNetworkStatisticsMembershipPrivilegesSql(true), /IN \(8\)/u);
+  const indexes = buildNetworkStatisticsIndexReadinessSql(true, true);
+  assert.equal((indexes.match(/::smallint\[\],(?:true|false)\)/gu) ?? []).length, 14);
+  assert.match(indexes, /chat_membership_activity_rollups_pkey/u);
+  assert.match(indexes, /chat_membership_activity_feed_items_chat_event_idx/u);
+});
+
+test('membership evidence distinguishes missing/observed zero, calendar edges, corruption and asymmetric saturation under exact role grants', async () => {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const db = new PGlite();
+  try {
+    await db.exec(
+      membershipFixture +
+        `
+      CREATE ROLE maxim_audit;
+      GRANT SELECT (id,entity_type) ON chats TO maxim_audit;
+      ${grants(NETWORK_STATISTICS_AUDIT_COLUMNS)}
+      ${grants(NETWORK_STATISTICS_OBSERVATION_AUDIT_COLUMNS)}
+      ${grants(NETWORK_STATISTICS_MEMBERSHIP_AUDIT_COLUMNS)}
+      INSERT INTO chats VALUES('-1','CHAT','Chat'),('-2','CHANNEL','Channel');
+      INSERT INTO channel_stats_sync_states(chat_id,membership_coverage_from,last_audience_sync_at)
+        VALUES('-1',now()-interval '30 days',now());
+    `,
+    );
+    const ready = readinessQuery(
+      buildNetworkStatisticsIndexReadinessSql(true, true),
+      'network_statistics_indexes_ready',
+    );
+    assert.equal((await db.query(ready)).rows[0].ready, true);
+    const report = async () => {
+      await db.exec('SET ROLE maxim_audit');
+      try {
+        return Object.values(
+          (
+            await db.query(
+              buildNetworkStatisticsAuditSql(['-1,-2', '--observations', '--membership=30d']),
+            )
+          ).rows[0],
+        )[0];
+      } finally {
+        await db.exec('RESET ROLE');
+      }
+    };
+    const missing = await report();
+    assert.equal(missing.entities[0].membership.observed_net, null);
+    assert.equal(missing.entities[0].membership.basis, 'none');
+    assert.deepEqual(missing.entities[0].membership.days, []);
+    const period = missing.entities[0].membership.period;
+    const at = new Date(period.complete_to + 'Z');
+    const from = new Date(period.from + 'Z');
+    assert.equal(from.getUTCHours(), 21);
+    await db.query(
+      `INSERT INTO chat_membership_activity_rollups VALUES('-1',$1,5,2,now()),('-1',$2,1,4,now())`,
+      [from, new Date(at.getTime() - 3600_000)],
+    );
+    let value = (await report()).entities[0].membership;
+    assert.equal(value.observed_net, 0);
+    assert.equal(value.days[0].net, 3);
+    assert.equal(value.days.at(-1).net, -3);
+    assert.equal(value.continuous_delivery_verified, false);
+    assert.ok(value.days.length <= 30);
+    await db.query(
+      `INSERT INTO chat_membership_activity_feed_items(chat_id,event_type,event_at,canonical_key)
+      SELECT '-1','user_added',$1,'join-'||n FROM generate_series(1,1000) n`,
+      [at],
+    );
+    value = (await report()).entities[0].membership;
+    assert.equal(value.current_hour_added.sample_count, 1000);
+    assert.equal(value.current_hour_added.capped, false);
+    assert.equal(value.observed_net, 1000);
+    await db.query(
+      `INSERT INTO chat_membership_activity_feed_items(chat_id,event_type,event_at,canonical_key) VALUES('-1','user_added',$1,'join-sentinel')`,
+      [at],
+    );
+    value = (await report()).entities[0].membership;
+    assert.equal(value.current_hour_added.capped, true);
+    assert.equal(value.current_hour_removed.capped, false);
+    assert.equal(
+      value.observed_net,
+      null,
+      'subtracting two sampled lower bounds is not a net bound',
+    );
+    assert.ok(value.days.every((day) => day.net === null));
+    await db.exec(
+      `DELETE FROM chat_membership_activity_feed_items; DELETE FROM chat_membership_activity_rollups;`,
+    );
+    await db.query(
+      `INSERT INTO chat_membership_activity_rollups SELECT '-1',$1::timestamp+n*interval '1 millisecond',-1,2,now() FROM generate_series(1,721) n`,
+      [new Date(at.getTime() - 3600_000)],
+    );
+    value = (await report()).entities[0].membership;
+    assert.equal(value.rollup_sample.sample_count, 720);
+    assert.equal(value.rollup_sample.capped, true);
+    assert.equal(value.rollup_sample.misaligned_bucket_count, 721);
+    assert.equal(value.rollup_sample.invalid_counter_count, 721);
+    assert.equal(value.observed_net, null);
+    assert.equal(
+      (await report()).entities[1].membership.observed_net,
+      null,
+      'other type never inherits evidence',
+    );
+    await db.exec(
+      `DROP INDEX chat_membership_activity_feed_items_chat_event_idx; CREATE INDEX chat_membership_activity_feed_items_chat_event_idx ON chat_membership_activity_feed_items(chat_id,event_type,event_at,source_event_id);`,
+    );
+    assert.equal((await db.query(ready)).rows[0].ready, false);
+  } finally {
+    await db.close();
+  }
+});
+
+test('membership optional grant guard rejects partial, inherited private, table and mutation access', async () => {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const db = new PGlite();
+  try {
+    await db.exec(
+      membershipFixture +
+        'CREATE ROLE maxim_audit; CREATE ROLE network_reader; GRANT network_reader TO maxim_audit;',
+    );
+    const optional = readinessQuery(
+      buildNetworkStatisticsMembershipPrivilegesSql(),
+      'network_statistics_membership_privileges_ready',
+    );
+    const required = readinessQuery(
+      buildNetworkStatisticsMembershipPrivilegesSql(true),
+      'network_statistics_membership_privileges_ready',
+    );
+    assert.equal((await db.query(optional)).rows[0].ready, true);
+    assert.equal((await db.query(required)).rows[0].ready, false);
+    await db.exec('GRANT SELECT (chat_id) ON chat_membership_activity_rollups TO maxim_audit;');
+    assert.equal((await db.query(optional)).rows[0].ready, false);
+    await db.exec(grants(NETWORK_STATISTICS_MEMBERSHIP_AUDIT_COLUMNS));
+    assert.equal((await db.query(required)).rows[0].ready, true);
+    for (const [grant, revoke] of [
+      [
+        'SELECT (user_id) ON chat_membership_activity_feed_items TO PUBLIC',
+        'SELECT (user_id) ON chat_membership_activity_feed_items FROM PUBLIC',
+      ],
+      [
+        'SELECT (source_event_id) ON chat_membership_activity_feed_items TO network_reader',
+        'SELECT (source_event_id) ON chat_membership_activity_feed_items FROM network_reader',
+      ],
+      [
+        'SELECT ON chat_membership_activity_rollups TO maxim_audit',
+        'SELECT ON chat_membership_activity_rollups FROM maxim_audit',
+      ],
+      [
+        'UPDATE (event_at) ON chat_membership_activity_feed_items TO maxim_audit',
+        'UPDATE (event_at) ON chat_membership_activity_feed_items FROM maxim_audit',
+      ],
+      [
+        'REFERENCES (event_at) ON chat_membership_activity_feed_items TO maxim_audit',
+        'REFERENCES (event_at) ON chat_membership_activity_feed_items FROM maxim_audit',
+      ],
+    ]) {
+      await db.exec('GRANT ' + grant);
+      assert.equal((await db.query(required)).rows[0].ready, false, grant);
+      await db.exec('REVOKE ' + revoke);
+      await db.exec(grants(NETWORK_STATISTICS_MEMBERSHIP_AUDIT_COLUMNS));
+      assert.equal((await db.query(required)).rows[0].ready, true);
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+test('membership provisioning grants all eight only with the complete schema and rejects effective private overgrants', async () => {
+  const { PGlite } = await import('@electric-sql/pglite');
+  const db = new PGlite();
+  const provision = readFileSync(
+    new URL('./vps-provision-postgres-audit-role.sh', import.meta.url),
+    'utf8',
+  );
+  const block = provision.match(
+    /DO \$network_statistics_membership_grants\$[\s\S]*?\$network_statistics_membership_grants\$;/u,
+  )?.[0];
+  assert.ok(block);
+  const ready = readinessQuery(
+    buildNetworkStatisticsMembershipPrivilegesSql(true),
+    'network_statistics_membership_privileges_ready',
+  );
+  try {
+    await db.exec('CREATE ROLE maxim_audit;');
+    await db.exec(block);
+    assert.equal((await db.query(ready)).rows[0].ready, false);
+    await db.exec(
+      `CREATE TABLE chat_membership_activity_rollups(chat_id text,bucket_start timestamp,joined_users int,left_users int,updated_at timestamp);`,
+    );
+    await db.exec(block);
+    assert.equal(
+      (await db.query(ready)).rows[0].ready,
+      false,
+      'one complete table cannot receive a partial group',
+    );
+    await db.exec('DROP TABLE chat_membership_activity_rollups;');
+    await db.exec(membershipFixture);
+    await db.exec(block);
+    await db.exec(block);
+    assert.equal((await db.query(ready)).rows[0].ready, true);
+    await db.exec(
+      'REVOKE SELECT (event_at) ON chat_membership_activity_feed_items FROM maxim_audit;',
+    );
+    await db.exec(block);
+    assert.equal(
+      (await db.query(ready)).rows[0].ready,
+      true,
+      'reprovision converges exact direct grants',
+    );
+    await db.exec('GRANT SELECT (user_id) ON chat_membership_activity_feed_items TO PUBLIC;');
+    await assert.rejects(db.exec(block), /membership metadata privileges are not exact/u);
+  } finally {
+    await db.close();
+  }
+});
 
 test('network audit validates and bounds exact entity input before emitting SQL', () => {
   for (const args of [

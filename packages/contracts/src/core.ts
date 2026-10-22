@@ -1,10 +1,88 @@
+import {
+  broadcastScheduleTimezoneSchema,
+  isValidIanaTimeZone,
+  broadcastDateTimeSchema,
+  inferBroadcastScheduleMode,
+} from './broadcast-schedule-fields.js';
+import { broadcastLinkButtonSchema, type BroadcastLinkButton } from './broadcast-buttons.js';
+import {
+  managedBroadcastTargetPreviewSchema,
+  managedBroadcastStatusSchema,
+  managedBroadcastFailureBreakdownSchema,
+  managedBroadcastSummarySchema,
+} from './managed-broadcast-summary.js';
+export {
+  managedBroadcastTargetPreviewSchema,
+  type ManagedBroadcastTargetPreview,
+  managedBroadcastStatusSchema,
+  type ManagedBroadcastStatus,
+  managedBroadcastFailureBreakdownSchema,
+  type ManagedBroadcastFailureBreakdown,
+  managedBroadcastSummarySchema,
+  type ManagedBroadcastSummary,
+} from './managed-broadcast-summary.js';
+export {
+  channelSettingsScreenResponseSchema,
+  type ChannelSettingsScreenResponse,
+} from './channel-settings.js';
+export {
+  channelSettingsSchema,
+  channelSuggestionEntryModeSchema,
+  type ChannelSettings,
+  type ChannelSuggestionEntryMode,
+} from './channel-settings-field-schemas.js';
+export { broadcastLinkButtonSchema, type BroadcastLinkButton } from './broadcast-buttons.js';
+import {
+  chatSettingsFieldsSchema,
+  botButtonUrlSchema,
+  botButtonTextSchema,
+  isValidBotButtonUrl,
+  parseHttpButtonUrl,
+  isValidBotButtonText,
+} from './settings-field-schemas.js';
+export {
+  chatSettingsFieldsSchema,
+  linkPolicySchema,
+  botSpeechMediaSchema,
+  BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH,
+  MAX_BOT_SPEECH_TEXT_LENGTH,
+  REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
+  INVITATION_ACCESS_REQUIRED_COUNT_MIN,
+  INVITATION_ACCESS_REQUIRED_COUNT_MAX,
+  MAX_MESSAGE_LENGTH_MIN,
+  MAX_MESSAGE_LENGTH_MAX,
+  MAX_MESSAGE_LENGTH_DEFAULT,
+  MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
+  MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
+  profanitySensitivitySchema,
+  commercialAdsSensitivitySchema,
+  ADMIN_COMMAND_NAME_MAX_LENGTH,
+  ADMIN_BAN_COMMAND_NAME_DEFAULT,
+  ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
+  ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_RULES_COMMAND_NAME_DEFAULT,
+  ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
+  ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
+  ADMIN_COMMAND_ALIASES_MAX,
+  ADMIN_COMMAND_ALIAS_MAX_LENGTH,
+  ADMIN_MUTE_COMMAND_ALIASES_DEFAULT,
+  ADMIN_RULES_COMMAND_ALIASES_DEFAULT,
+  type ProfanitySensitivity,
+  type BotSpeechMedia,
+  type BotSpeechMediaImage,
+} from './settings-field-schemas.js';
+import { applySettingsSectionSchema } from './settings-sections.js';
+export { applySettingsSectionSchema, type ApplySettingsSection } from './settings-sections.js';
 import { chatClosureStatusSchema } from './chat-closure-status.js';
+import { chatRulesFieldsSchema } from './chat-rules-field-schemas.js';
+export { chatRulesFieldsSchema, MAX_CHAT_RULES_TEXT_LENGTH } from './chat-rules-field-schemas.js';
 import { z } from 'zod';
 import * as sectionApply from './settings-apply-error.js';
-import { reportSettingsShape, addReportCommandIssues } from './report-settings.js';
-import { MAX_HTTP_BUTTON_URL_LENGTH, normalizeHttpButtonUrl } from './button-url.js';
-import { channelPostSignatureSettingsSchema } from './channel-post-signature.js';
-import { karavanStorefrontTextSettingsShape } from './karavan-storefront-texts.js';
+import { addReportCommandIssues } from './report-settings.js';
 export * from './bot-speech.js';
 export * from './broadcast-common.js';
 export * from './chat-rules-publication.js';
@@ -14,11 +92,7 @@ export * from './giveaway.js';
 export * from './managed-entities.js';
 export { logsDashboardRangeSchema, type LogsDashboardRange } from './dashboard-common.js';
 export * from './membership-activity.js';
-import {
-  BOT_SPEECH_EDITABLE_FIELD_KEYS,
-  botSpeechPreviewProfileSchema,
-  botSpeechStyleSchema,
-} from './bot-speech.js';
+import { botSpeechPreviewProfileSchema } from './bot-speech.js';
 import {
   DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_IMAGES,
@@ -32,11 +106,9 @@ import {
   broadcastTextFormatSchema,
   type BroadcastImage,
   type BroadcastMediaType,
-  type BroadcastScheduleMode,
 } from './broadcast-common.js';
 import { booleanQueryFlagSchema, logsDashboardRangeSchema } from './dashboard-common.js';
 import * as dupe from './duplicate-settings.js';
-import { stopWordsPolicySchema } from './stop-words.js';
 import { messageRetentionSummarySchema } from './message-retention-summary.js';
 import {
   normalizeMessageLimitsBlockedWordCandidate,
@@ -63,12 +135,6 @@ import {
   managedEntityTypeSchema,
 } from './managed-entities.js';
 export { meSchema, type Me } from './miniapp-session.js';
-import {
-  DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES,
-  DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES,
-  DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES,
-  isValidDeleteBotMessagesDelayMinutes,
-} from './settings-utils.js';
 export * from './navigation-allowlist.js';
 export * from './settings-utils.js';
 export * from './vk-parsing.js';
@@ -82,135 +148,8 @@ export const sanctionActionSchema = z.enum([
   'BAN',
 ]);
 export type SanctionAction = z.infer<typeof sanctionActionSchema>;
-
-export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
-export const profanitySensitivitySchema = z.enum(['CORE_ONLY', 'BALANCED', 'STRICT']);
-export type ProfanitySensitivity = z.infer<typeof profanitySensitivitySchema>;
-export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
-export const applySettingsSectionSchema = z.enum([
-  'reports',
-  'links',
-  'greeting',
-  'profanityFilter',
-  'commercialFilter',
-  'duplicates',
-  'limits',
-  'stopWords',
-  'phones',
-  'night',
-  'requiredSubscription',
-  'invitationAccess',
-  'commands',
-  'storefront',
-  'extra',
-]);
-export const channelSuggestionEntryModeSchema = z.enum(['BOT', 'MINIAPP']);
-export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
-export type ChannelSuggestionEntryMode = z.infer<typeof channelSuggestionEntryModeSchema>;
-
-export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
-export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN = 1;
-export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX = 14;
-export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT = 7;
-export const INVITATION_ACCESS_REQUIRED_COUNT_MIN = 1;
-export const INVITATION_ACCESS_REQUIRED_COUNT_MAX = 10;
-export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 999;
-export const MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX = 300;
-export const ADMIN_COMMAND_ALIASES_MAX = 8;
-export const ADMIN_COMMAND_ALIAS_MAX_LENGTH = 32;
-export const ADMIN_MUTE_COMMAND_ALIASES_DEFAULT = 'мут, мьют, мью, mute';
-export const ADMIN_RULES_COMMAND_ALIASES_DEFAULT = 'правило, правила, rule, rules';
-export const ADMIN_COMMAND_NAME_MAX_LENGTH = 32;
-export const ADMIN_BAN_COMMAND_NAME_DEFAULT = 'бан';
-export const ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT = 'Бан!';
-export const ADMIN_MUTE_COMMAND_NAME_DEFAULT = 'мут';
-export const ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT = 'мут 88';
-export const ADMIN_RULES_COMMAND_NAME_DEFAULT = 'правило';
-export const ADMIN_SILENCE_COMMAND_NAME_DEFAULT = 'тишина';
-export const ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT = 'тишина выкл';
 const RESERVED_ADMIN_COMMAND_NAMES = new Set(['супер бан', 'супер-бан', 'super ban', 'super-ban']);
-export const MAX_MESSAGE_LENGTH_MIN = 50;
-export const MAX_MESSAGE_LENGTH_MAX = 1500;
-export const MAX_MESSAGE_LENGTH_DEFAULT = MAX_MESSAGE_LENGTH_MAX;
 const BROADCAST_CYCLE_MAX_WINDOW_HOURS = 31 * 24;
-export const BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH = MAX_BROADCAST_IMAGE_BASE64_LENGTH;
-const duplicateWindowSecSchema = dupe.duplicateWindowSecSchema;
-const duplicateMaxCountSchema = z.number().int().min(1).max(dupe.DUPLICATE_THRESHOLD_MAX);
-const escalationWindowHoursSchema = z.number().int().min(1).max(168);
-const escalationMaxCountSchema = z.number().int().min(1).max(20);
-const autoMuteDurationHoursSchema = z.number().int().min(1).max(168).default(6);
-const requiredSubscriptionMuteDurationHoursSchema = z.number().int().min(1).max(336).default(6);
-const requiredSubscriptionDurationDaysSchema = z
-  .number()
-  .int()
-  .min(REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN)
-  .max(REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX)
-  .default(REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT);
-const requiredSubscriptionExpiresAtSchema = z.string().trim().max(64).default('');
-const invitationAccessRequiredCountSchema = z
-  .number()
-  .int()
-  .min(INVITATION_ACCESS_REQUIRED_COUNT_MIN)
-  .max(INVITATION_ACCESS_REQUIRED_COUNT_MAX)
-  .default(INVITATION_ACCESS_REQUIRED_COUNT_MIN);
-const deleteBotMessagesDelayMinutesSchema = z
-  .number()
-  .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
-  .max(DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES)
-  .refine(isValidDeleteBotMessagesDelayMinutes, {
-    message: 'Допустимо 30 сек или целое число минут от 1 до 60.',
-  })
-  .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES);
-const botButtonUrlSchema = z.string().trim().max(MAX_HTTP_BUTTON_URL_LENGTH).default('');
-const botButtonTextSchema = z.string().trim().max(32).default(DEFAULT_BROADCAST_BUTTON_TEXT);
-export const MAX_BOT_SPEECH_TEXT_LENGTH = 1_000;
-const botMessageTextSchema = z.string().max(MAX_BOT_SPEECH_TEXT_LENGTH).default('');
-const adminCommandNameSchema = z
-  .string()
-  .trim()
-  .min(1, { message: 'Введите название команды.' })
-  .max(ADMIN_COMMAND_NAME_MAX_LENGTH, {
-    message: `Команда должна быть не длиннее ${ADMIN_COMMAND_NAME_MAX_LENGTH} символов.`,
-  })
-  .transform((value) => value.replace(/\s+/g, ' '));
-const adminCommandAliasesTextSchema = z
-  .string()
-  .trim()
-  .max(256)
-  .refine(
-    (value) => {
-      const aliases = value
-        .split(',')
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0);
-      return aliases.length > 0 && aliases.length <= ADMIN_COMMAND_ALIASES_MAX;
-    },
-    {
-      message: `Укажите от 1 до ${ADMIN_COMMAND_ALIASES_MAX} команд через запятую.`,
-    },
-  )
-  .refine(
-    (value) =>
-      value
-        .split(',')
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0)
-        .every((item) => item.length <= ADMIN_COMMAND_ALIAS_MAX_LENGTH),
-    {
-      message: `Каждая команда должна быть не длиннее ${ADMIN_COMMAND_ALIAS_MAX_LENGTH} символов.`,
-    },
-  )
-  .transform((value) => {
-    const aliases = Array.from(
-      new Set(
-        value
-          .split(',')
-          .map((item) => item.trim().replace(/\s+/g, ' '))
-          .filter((item) => item.length > 0),
-      ),
-    );
-    return aliases.join(', ');
-  });
 function buildAdminCommandRuntimeVariants(commandName: string): string[] {
   if (/[.!]$/u.test(commandName)) {
     return [commandName];
@@ -222,68 +161,6 @@ function isReservedAdminCommandName(commandName: string): boolean {
   const normalized = commandName.replace(/[.!]$/u, '');
   return RESERVED_ADMIN_COMMAND_NAMES.has(normalized);
 }
-const botSpeechMediaFieldKeySchema = z.enum(BOT_SPEECH_EDITABLE_FIELD_KEYS);
-const botSpeechMediaImageSchema = z
-  .object({
-    base64: z.string().trim().max(BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH).default(''),
-    mimeType: z.string().trim().max(128).default(''),
-    fileName: z.string().trim().max(128).default(''),
-  })
-  .superRefine((value, ctx) => {
-    const hasImage = value.base64.trim().length > 0;
-    if (!hasImage) {
-      return;
-    }
-
-    if (!value.mimeType.trim().toLowerCase().startsWith('image/')) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['mimeType'],
-        message: 'Неверный формат фото.',
-      });
-    }
-  })
-  .transform((value) =>
-    value.base64.trim()
-      ? {
-          base64: value.base64.trim(),
-          mimeType: value.mimeType.trim(),
-          fileName: value.fileName.trim(),
-        }
-      : {
-          base64: '',
-          mimeType: '',
-          fileName: '',
-        },
-  );
-export const botSpeechMediaSchema = z
-  .partialRecord(botSpeechMediaFieldKeySchema, botSpeechMediaImageSchema)
-  .default({});
-export type BotSpeechMedia = z.infer<typeof botSpeechMediaSchema>;
-export type BotSpeechMediaImage = z.infer<typeof botSpeechMediaImageSchema>;
-export const broadcastLinkButtonSchema = z
-  .object({
-    text: botButtonTextSchema,
-    url: botButtonUrlSchema,
-  })
-  .superRefine((value, ctx) => {
-    if (!isValidBotButtonUrl(value.url)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['url'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (!isValidBotButtonText(value.text)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['text'],
-        message: 'Введите название кнопки.',
-      });
-    }
-  });
-export type BroadcastLinkButton = z.infer<typeof broadcastLinkButtonSchema>;
 function isRecordPayload(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -389,11 +266,6 @@ function normalizeBroadcastImages(value: {
 function getBroadcastImagesTotalBase64Length(images: BroadcastImage[]): number {
   return images.reduce((total, image) => total + image.base64.trim().length, 0);
 }
-
-const storedLinkButtonDraftSchema = z.object({
-  text: botButtonTextSchema,
-  url: botButtonUrlSchema,
-});
 
 function normalizeStoredLinkButtons(values: BroadcastLinkButton[]): BroadcastLinkButton[] {
   return values.map((value) => ({
@@ -507,52 +379,8 @@ function addStoredBotButtonGroupIssues(
     });
   }
 }
-const messageLimitsBlockedWordSchema = z.string().trim().max(32);
-const messageLimitsBlockedWordsSchema = z
-  .array(messageLimitsBlockedWordSchema)
-  .max(MESSAGE_LIMITS_BLOCKED_WORDS_MAX, `До ${MESSAGE_LIMITS_BLOCKED_WORDS_MAX} слов.`)
-  .default([]);
-const messageLimitsBlockedDomainSchema = z.string().trim().max(253);
-const messageLimitsBlockedDomainsSchema = z
-  .array(messageLimitsBlockedDomainSchema)
-  .max(MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX, `До ${MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX} доменов.`)
-  .default([]);
-const nightModeForceCloseUntilSchema = z.string().trim().max(64).default('');
-const requiredSubscriptionChannelIdsSchema = z
-  .array(z.string().trim().min(1).max(128))
-  .max(REQUIRED_SUBSCRIPTION_MAX_CHANNELS)
-  .default([]);
-export const MAX_CHAT_RULES_TEXT_LENGTH = 4_000;
-const chatRulesTextSchema = z.string().max(MAX_CHAT_RULES_TEXT_LENGTH).default('');
-const chatRulesImageBase64Schema = z
-  .string()
-  .trim()
-  .max(MAX_BROADCAST_IMAGE_BASE64_LENGTH)
-  .default('');
-const chatRulesImageMimeTypeSchema = z.string().trim().max(128).default('');
-const chatRulesImageFileNameSchema = z.string().trim().max(128).default('');
-
-function parseHttpButtonUrl(value: string): URL | null {
-  const normalized = normalizeHttpButtonUrl(value);
-  return normalized ? new URL(normalized) : null;
-}
-
 function isValidAdminContactButtonUrl(value: string): boolean {
   return parseHttpButtonUrl(value) !== null;
-}
-
-function isProfileHandoffStartPayload(value: string): boolean {
-  const normalized = value.trim();
-  return normalized.startsWith('pmh-') || normalized.startsWith('pm2_');
-}
-
-function isValidBotButtonUrl(value: string): boolean {
-  const parsed = parseHttpButtonUrl(value);
-  if (!parsed) {
-    return false;
-  }
-
-  return !isProfileHandoffStartPayload(parsed.searchParams.get('start') ?? '');
 }
 
 const CHAT_ADMIN_CONTACT_BUTTON_GROUPS = [
@@ -566,33 +394,6 @@ const CHAT_ADMIN_CONTACT_BUTTON_GROUPS = [
   ['duplicateAdminContactButtonEnabled', 'duplicateAdminContactButtonUrl'],
 ] as const;
 
-function isValidBotButtonText(value: string): boolean {
-  const normalized = value.trim();
-  return normalized.length > 0 && normalized.length <= 32;
-}
-
-function isValidIanaTimeZone(value: string): boolean {
-  const normalized = value.trim();
-  if (!normalized) {
-    return false;
-  }
-
-  try {
-    Intl.DateTimeFormat('ru-RU', { timeZone: normalized }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const broadcastScheduleTimezoneSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(64)
-  .default('Europe/Moscow')
-  .refine(isValidIanaTimeZone, 'Некорректный часовой пояс.');
-
 const AUTO_MUTE_DURATION_FIELD_KEYS = [
   'duplicateMuteDurationHours',
   'linkMuteDurationHours',
@@ -605,289 +406,30 @@ const AUTO_MUTE_DURATION_FIELD_KEYS = [
 ] as const;
 
 export const chatSettingsSchema = z
-  .preprocess(
-    (input) => {
-      if (!input || typeof input !== 'object' || Array.isArray(input)) {
-        return input;
+  .preprocess((input) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return input;
+    }
+
+    const value = input as Record<string, unknown>;
+    const legacyMuteDurationHours =
+      typeof value.muteDurationHours === 'number' && Number.isFinite(value.muteDurationHours)
+        ? value.muteDurationHours
+        : null;
+
+    if (legacyMuteDurationHours === null) {
+      return value;
+    }
+
+    const nextValue = { ...value };
+    for (const key of AUTO_MUTE_DURATION_FIELD_KEYS) {
+      if (nextValue[key] === undefined) {
+        nextValue[key] = legacyMuteDurationHours;
       }
+    }
 
-      const value = input as Record<string, unknown>;
-      const legacyMuteDurationHours =
-        typeof value.muteDurationHours === 'number' && Number.isFinite(value.muteDurationHours)
-          ? value.muteDurationHours
-          : null;
-
-      if (legacyMuteDurationHours === null) {
-        return value;
-      }
-
-      const nextValue = { ...value };
-      for (const key of AUTO_MUTE_DURATION_FIELD_KEYS) {
-        if (nextValue[key] === undefined) {
-          nextValue[key] = legacyMuteDurationHours;
-        }
-      }
-
-      return nextValue;
-    },
-    z.object({
-      duplicateWarnEnabled: z.boolean().default(false),
-      duplicateMuteEnabled: z.boolean().default(false),
-      duplicateBanEnabled: z.boolean().default(false),
-      antiDuplicateEnabled: z.boolean().default(false),
-      duplicatePhotoEnabled: z.boolean().default(false),
-      duplicatePhotoMatchPreset: dupe.duplicatePhotoMatchPresetSchema.default('SAME_IMAGE'),
-      duplicatePhotoScope: dupe.duplicatePhotoScopeSchema.default('SAME_AUTHOR'),
-      duplicateDetectionPreset: dupe.duplicateDetectionPresetSchema.default('STRICT'),
-      duplicateCompareMode: dupe.duplicateCompareModeSchema.default('MESSAGE'),
-      ...dupe.duplicateScheduleSettingsShape,
-      duplicateTimezone: broadcastScheduleTimezoneSchema,
-      duplicateIgnoreLinksEnabled: z.boolean().default(false),
-      duplicateIgnorePhonesEnabled: z.boolean().default(false),
-      duplicateNearMatchEnabled: z.boolean().default(false),
-      duplicateWarnWindowSec: duplicateWindowSecSchema.default(43_200),
-      duplicateWarnMaxCount: duplicateMaxCountSchema.default(2),
-      duplicateMuteWindowSec: duplicateWindowSecSchema.default(86_400),
-      duplicateMuteMaxCount: duplicateMaxCountSchema.default(3),
-      duplicateMuteDurationHours: autoMuteDurationHoursSchema,
-      duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
-      duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
-      linkPolicy: linkPolicySchema.default('ALERT_ONLY'),
-      linkEscalationWindowHours: escalationWindowHoursSchema.default(24),
-      linkWarnMaxCount: escalationMaxCountSchema.default(2),
-      linkMuteMaxCount: escalationMaxCountSchema.default(3),
-      linkBanMaxCount: escalationMaxCountSchema.default(4),
-      botSpeechStyle: botSpeechStyleSchema.nullable().default('FRIENDLY'),
-      botSpeechMedia: botSpeechMediaSchema,
-      greetingEnabled: z.boolean().default(false),
-      greetingBotMessageEnabled: z.boolean().default(false),
-      greetingDeleteBotMessageEnabled: z.boolean().default(false),
-      greetingDeleteBotMessageDelayMinutes: deleteBotMessagesDelayMinutesSchema,
-      greetingBotMessageText: botMessageTextSchema,
-      greetingBotButtonEnabled: z.boolean().default(false),
-      greetingBotButtonUrl: botButtonUrlSchema,
-      greetingBotButtonText: botButtonTextSchema,
-      greetingBotButtons: z
-        .array(storedLinkButtonDraftSchema)
-        .max(MAX_BROADCAST_LINK_BUTTONS)
-        .default([]),
-      greetingRulesButtonEnabled: z.boolean().default(false),
-      requiredSubscriptionEnabled: z.boolean().default(false),
-      requiredSubscriptionChannelIds: requiredSubscriptionChannelIdsSchema,
-      requiredSubscriptionDurationDays: requiredSubscriptionDurationDaysSchema,
-      requiredSubscriptionExpiresAt: requiredSubscriptionExpiresAtSchema,
-      requiredSubscriptionBotMessageEnabled: z.boolean().default(false),
-      requiredSubscriptionBotMessageText: botMessageTextSchema,
-      requiredSubscriptionButtonText: z.string().trim().max(32).default(''),
-      requiredSubscriptionAdminContactButtonEnabled: z.boolean().default(false),
-      requiredSubscriptionAdminContactButtonUrl: botButtonUrlSchema,
-      requiredSubscriptionWarnEnabled: z.boolean().default(false),
-      requiredSubscriptionWarnMessageText: botMessageTextSchema,
-      requiredSubscriptionBanEnabled: z.boolean().default(false),
-      requiredSubscriptionMuteEnabled: z.boolean().default(false),
-      requiredSubscriptionMuteDurationHours: requiredSubscriptionMuteDurationHoursSchema,
-      invitationAccessEnabled: z.boolean().default(false),
-      invitationAccessRequiredCount: invitationAccessRequiredCountSchema,
-      invitationAccessBotMessageEnabled: z.boolean().default(false),
-      invitationAccessBotMessageText: botMessageTextSchema,
-      invitationAccessAdminContactButtonEnabled: z.boolean().default(false),
-      invitationAccessAdminContactButtonUrl: botButtonUrlSchema,
-      invitationAccessWarnEnabled: z.boolean().default(false),
-      invitationAccessWarnMessageText: botMessageTextSchema,
-      invitationAccessBanEnabled: z.boolean().default(false),
-      invitationAccessMuteEnabled: z.boolean().default(false),
-      invitationAccessMuteDurationHours: autoMuteDurationHoursSchema,
-      commentsEnabled: z.boolean().default(false),
-      commentsAdminsEnabled: z.boolean().default(false),
-      commentsAllEnabled: z.boolean().default(false),
-      commentsChatBroadcastsEnabled: z.boolean().default(false),
-      karavanStorefrontEnabled: z.boolean().default(true),
-      karavanStorefrontAdminsOnly: z.boolean().default(false),
-      ...karavanStorefrontTextSettingsShape,
-      deleteBotMessagesEnabled: z.boolean().default(false),
-      deleteBotMessagesDelayMinutes: deleteBotMessagesDelayMinutesSchema,
-      removeBotsFromGroupEnabled: z.boolean().default(false),
-      deleteSpammersEnabled: z.boolean().default(false),
-      ...reportSettingsShape,
-      antiSpamEnabled: z.boolean().default(false),
-      slowModeEnabled: z.boolean().default(false),
-      slowModeIntervalSeconds: z.number().int().min(10).max(86400).default(30),
-      mediaMessageCooldownEnabled: z.boolean().default(false),
-      mediaMessageCooldownSeconds: z.number().int().min(10).max(86400).default(30),
-      stickerMessagesEnabled: z.boolean().default(true),
-      messageCountLimitEnabled: z.boolean().default(false),
-      messageCountLimitMessages: z.number().int().min(1).max(10).default(5),
-      messageCountLimitWindowHours: z.number().int().min(1).max(24).default(1),
-      maxMessageLengthEnabled: z.boolean().default(false),
-      maxMessageLength: z
-        .number()
-        .int()
-        .min(MAX_MESSAGE_LENGTH_MIN)
-        .max(MAX_MESSAGE_LENGTH_MAX)
-        .default(MAX_MESSAGE_LENGTH_DEFAULT),
-      photoMessageCooldownEnabled: z.boolean().default(false),
-      photoMessageCooldownHours: z.number().int().min(1).max(24).default(1),
-      stickerMessageCooldownEnabled: z.boolean().default(false),
-      stickerMessageCooldownMinutes: z.number().int().min(1).max(60).default(5),
-      photoMessagesEnabled: z.boolean().default(true),
-      videoMessagesEnabled: z.boolean().default(true),
-      fileMessagesEnabled: z.boolean().default(true),
-      voiceMessagesEnabled: z.boolean().default(true),
-      forwardedMessagesEnabled: z.boolean().default(true),
-      phoneNumbersEnabled: z.boolean().default(true),
-      phoneNumbersBotMessageEnabled: z.boolean().default(false),
-      phoneNumbersBotMessageText: botMessageTextSchema,
-      phoneNumbersWarnEnabled: z.boolean().default(false),
-      phoneNumbersMuteEnabled: z.boolean().default(false),
-      phoneNumbersMuteDurationHours: autoMuteDurationHoursSchema,
-      phoneNumbersBanEnabled: z.boolean().default(false),
-      phoneNumbersEscalationWindowHours: escalationWindowHoursSchema.default(12),
-      phoneNumbersWarnMaxCount: escalationMaxCountSchema.default(2),
-      phoneNumbersMuteMaxCount: escalationMaxCountSchema.default(3),
-      phoneNumbersBanMaxCount: escalationMaxCountSchema.default(4),
-      phoneNumbersAdminContactButtonEnabled: z.boolean().default(false),
-      phoneNumbersAdminContactButtonUrl: botButtonUrlSchema,
-      messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
-      stopWordsPolicy: z.preprocess(
-        (value) => value ?? undefined,
-        stopWordsPolicySchema.optional(),
-      ),
-      stopWordsRevision: z.number().int().nonnegative().optional(),
-      messageLimitsBlockedDomains: messageLimitsBlockedDomainsSchema,
-      messageLimitsImageTextScanEnabled: z.boolean().default(false),
-      messageLimitsBotMessageEnabled: z.boolean().default(false),
-      messageLimitsBotMessageText: botMessageTextSchema,
-      messageLimitsWarnEnabled: z.boolean().default(false),
-      messageLimitsWarnMessageText: botMessageTextSchema,
-      messageLimitsBanEnabled: z.boolean().default(false),
-      messageLimitsMuteEnabled: z.boolean().default(false),
-      messageLimitsMuteDurationHours: autoMuteDurationHoursSchema,
-      messageLimitsAdminContactButtonEnabled: z.boolean().default(false),
-      messageLimitsAdminContactButtonUrl: botButtonUrlSchema,
-      messageLimitsBotButtonEnabled: z.boolean().default(false),
-      messageLimitsBotButtonUrl: botButtonUrlSchema,
-      messageLimitsBotButtonText: botButtonTextSchema,
-      messageLimitsBotButtons: z
-        .array(storedLinkButtonDraftSchema)
-        .max(MAX_BROADCAST_LINK_BUTTONS)
-        .default([]),
-      russianProfanityFilterEnabled: z.boolean().default(false),
-      profanitySensitivity: profanitySensitivitySchema.default('BALANCED'),
-      commercialAdsFilterEnabled: z.boolean().default(false),
-      commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
-      commercialAdsWarnThreshold: z.number().int().min(10).max(90).default(45),
-      commercialAdsDeleteThreshold: z.number().int().min(20).max(100).default(65),
-      settingsRevision: z.string().datetime().optional(),
-      profanityBotMessageEnabled: z.boolean().default(false),
-      profanityBotMessageText: botMessageTextSchema,
-      profanityWarnEnabled: z.boolean().default(false),
-      profanityWarnMessageText: botMessageTextSchema,
-      profanityBanEnabled: z.boolean().default(false),
-      profanityMuteEnabled: z.boolean().default(false),
-      profanityMuteDurationHours: autoMuteDurationHoursSchema,
-      profanityAdminContactButtonEnabled: z.boolean().default(false),
-      profanityAdminContactButtonUrl: botButtonUrlSchema,
-      textFiltersBotMessageEnabled: z.boolean().default(false),
-      textFiltersBotMessageText: botMessageTextSchema,
-      textFiltersWarnEnabled: z.boolean().default(false),
-      textFiltersWarnMessageText: botMessageTextSchema,
-      textFiltersBanEnabled: z.boolean().default(false),
-      textFiltersMuteEnabled: z.boolean().default(false),
-      textFiltersMuteDurationHours: autoMuteDurationHoursSchema,
-      textFiltersAdminContactButtonEnabled: z.boolean().default(false),
-      textFiltersAdminContactButtonUrl: botButtonUrlSchema,
-      textFiltersBotButtonEnabled: z.boolean().default(false),
-      textFiltersBotButtonUrl: botButtonUrlSchema,
-      textFiltersBotButtonText: botButtonTextSchema,
-      textFiltersBotButtons: z
-        .array(storedLinkButtonDraftSchema)
-        .max(MAX_BROADCAST_LINK_BUTTONS)
-        .default([]),
-      textFiltersRulesButtonEnabled: z.boolean().default(false),
-      nightModeEnabled: z.boolean().default(false),
-      nightModeStartTimeMinutes: z
-        .number()
-        .int()
-        .min(0)
-        .max(1_439)
-        .default(23 * 60),
-      nightModeEndTimeMinutes: z
-        .number()
-        .int()
-        .min(0)
-        .max(1_439)
-        .default(8 * 60),
-      nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
-      nightModeBotMessageEnabled: z.boolean().default(false),
-      nightModeBotMessageText: botMessageTextSchema,
-      nightModeCommentsEnabled: z.boolean().default(false),
-      nightModeOpenMessageEnabled: z.boolean().default(false),
-      nightModeOpenMessageText: botMessageTextSchema,
-      nightModeBotButtonEnabled: z.boolean().default(false),
-      nightModeBotButtonUrl: botButtonUrlSchema,
-      nightModeBotButtonText: botButtonTextSchema,
-      nightModeBotButtons: z
-        .array(storedLinkButtonDraftSchema)
-        .max(MAX_BROADCAST_LINK_BUTTONS)
-        .default([]),
-      nightModeRulesButtonEnabled: z.boolean().default(false),
-      nightModeForceCloseEnabled: z.boolean().default(false),
-      nightModeForceCloseForever: z.boolean().default(false),
-      nightModeForceCloseHours: z.number().int().min(0).max(23).default(8),
-      nightModeForceCloseDays: z.number().int().min(0).max(30).default(0),
-      nightModeForceCloseUntil: nightModeForceCloseUntilSchema,
-      linkBotMessageEnabled: z.boolean().default(false),
-      linkBotMessageText: botMessageTextSchema,
-      linkWarnEnabled: z.boolean().default(false),
-      linkWarnMessageText: botMessageTextSchema,
-      linkBanEnabled: z.boolean().default(false),
-      linkMuteEnabled: z.boolean().default(false),
-      linkMuteDurationHours: autoMuteDurationHoursSchema,
-      linkAdminContactButtonEnabled: z.boolean().default(false),
-      linkAdminContactButtonUrl: botButtonUrlSchema,
-      linkBotButtonEnabled: z.boolean().default(false),
-      linkBotButtonUrl: botButtonUrlSchema,
-      linkBotButtonText: botButtonTextSchema,
-      linkBotButtons: z
-        .array(storedLinkButtonDraftSchema)
-        .max(MAX_BROADCAST_LINK_BUTTONS)
-        .default([]),
-      linkRulesButtonEnabled: z.boolean().default(false),
-      duplicateBotMessageEnabled: z.boolean().default(false),
-      duplicateBotMessageText: botMessageTextSchema,
-      duplicateAdminContactButtonEnabled: z.boolean().default(false),
-      duplicateAdminContactButtonUrl: botButtonUrlSchema,
-      duplicateBotButtonEnabled: z.boolean().default(false),
-      duplicateBotButtonUrl: botButtonUrlSchema,
-      duplicateBotButtonText: botButtonTextSchema,
-      duplicateBotButtons: z
-        .array(storedLinkButtonDraftSchema)
-        .max(MAX_BROADCAST_LINK_BUTTONS)
-        .default([]),
-      duplicateRulesButtonEnabled: z.boolean().default(false),
-      messageLimitsRulesButtonEnabled: z.boolean().default(false),
-      rulesAttachViolationsEnabled: z.boolean().default(false),
-      adminBanCommandName: adminCommandNameSchema.default(ADMIN_BAN_COMMAND_NAME_DEFAULT),
-      adminBanAllCommandName: adminCommandNameSchema.default(ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT),
-      adminMuteCommandName: adminCommandNameSchema.default(ADMIN_MUTE_COMMAND_NAME_DEFAULT),
-      adminPermanentMuteCommandName: adminCommandNameSchema.default(
-        ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
-      ),
-      adminRulesCommandName: adminCommandNameSchema.default(ADMIN_RULES_COMMAND_NAME_DEFAULT),
-      adminSilenceCommandName: adminCommandNameSchema.default(ADMIN_SILENCE_COMMAND_NAME_DEFAULT),
-      adminOpenChatCommandName: adminCommandNameSchema.default(
-        ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
-      ),
-      adminMuteCommandAliases: adminCommandAliasesTextSchema.default(
-        ADMIN_MUTE_COMMAND_ALIASES_DEFAULT,
-      ),
-      adminRulesCommandAliases: adminCommandAliasesTextSchema.default(
-        ADMIN_RULES_COMMAND_ALIASES_DEFAULT,
-      ),
-      muteDurationHours: autoMuteDurationHoursSchema,
-      warnThreshold: z.number().int().min(1).max(10).default(3),
-    }),
-  )
+    return nextValue;
+  }, chatSettingsFieldsSchema)
   .superRefine((value, ctx) => {
     const linkBotButtons = resolveStoredLinkButtons({
       buttons: value.linkBotButtons,
@@ -1224,23 +766,7 @@ export const chatSettingsSchema = z
   });
 export type ChatSettings = z.infer<typeof chatSettingsSchema>;
 
-const chatRulesObjectSchema = z.object({
-  text: chatRulesTextSchema,
-  textFormat: broadcastTextFormatSchema.default('markdown'),
-  imageBase64: chatRulesImageBase64Schema,
-  imageMimeType: chatRulesImageMimeTypeSchema,
-  imageFileName: chatRulesImageFileNameSchema,
-  autoTextEnabled: z.boolean().default(false),
-  buttons: z.array(storedLinkButtonDraftSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
-  buttonEnabled: z.boolean().default(false),
-  buttonUrl: botButtonUrlSchema,
-  buttonText: botButtonTextSchema,
-  adminContactButtonEnabled: z.boolean().default(false),
-  adminContactButtonUrl: botButtonUrlSchema,
-  publishedMessageId: z.string().trim().min(1).nullable().default(null),
-  publishedUrl: z.string().trim().max(2_048).nullable().default(null),
-  publishedAt: z.string().datetime().nullable().default(null),
-});
+const chatRulesObjectSchema = chatRulesFieldsSchema;
 
 function addChatRulesDraftIssues(
   value: Pick<
@@ -1338,6 +864,7 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema
     adminContactButtonEnabled: true,
     adminContactButtonUrl: true,
   })
+  .extend({ expectedRevision: z.string().datetime().nullable().optional() })
   .superRefine(addChatRulesDraftIssues)
   .transform((value) => {
     const buttonState = buildStoredLinkButtonState(value);
@@ -1368,56 +895,6 @@ export const publishChatRulesResultSchema = z.object({
   publishedAt: z.string().datetime(),
 });
 export type PublishChatRulesResult = z.infer<typeof publishChatRulesResultSchema>;
-
-export const channelSettingsSchema = z
-  .object({
-    revision: z.number().int().nonnegative().optional(),
-    quickButtonsEnabled: z.boolean().default(false),
-    postSuggestionsEnabled: z.boolean().default(false),
-    postSuggestionsRequireSubscription: z.boolean().default(false),
-    postSuggestionsDeleteOnUnsubscribe: z.boolean().default(false),
-    postSuggestionsText: botMessageTextSchema,
-    postSuggestionsDailyLimit: z.number().int().min(1).max(10).default(10),
-    postSuggestionsEntryMode: channelSuggestionEntryModeSchema.default('BOT'),
-    engagementMessageText: botMessageTextSchema.default(
-      'Есть идея или обратная связь? Нажмите кнопку ниже.',
-    ),
-    postSuggestionsButtonEnabled: z.boolean().default(false),
-    postSuggestionsButtonText: z.string().trim().max(32).default('Предложить пост'),
-    postSuggestionsButtonUrl: botButtonUrlSchema,
-    commentsEnabled: z.boolean().default(false),
-    commentsModerationEnabled: z.boolean().default(false),
-    commentsBlockLinksEnabled: z.boolean().default(false),
-    commentsAntiSpamEnabled: z.boolean().default(false),
-    commentsLimitTwoInRowEnabled: z.boolean().default(false),
-    commentsMessageText: botMessageTextSchema,
-  })
-  .superRefine((value, ctx) => {
-    if (
-      value.postSuggestionsEnabled &&
-      value.postSuggestionsButtonEnabled &&
-      !isValidBotButtonUrl(value.postSuggestionsButtonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['postSuggestionsButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.postSuggestionsEnabled &&
-      value.postSuggestionsButtonEnabled &&
-      !isValidBotButtonText(value.postSuggestionsButtonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['postSuggestionsButtonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
-  });
-export type ChannelSettings = z.infer<typeof channelSettingsSchema>;
 
 export const moderationEventSchema = z.object({
   id: z.string(),
@@ -1952,33 +1429,6 @@ export const addAdminRequestSchema = z.object({
 });
 
 const MAX_BROADCAST_CALENDAR_SLOTS = 186;
-const BROADCAST_ISO_DATE_TIME_WITH_OFFSET_RE =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
-
-const broadcastDateTimeSchema = z.preprocess((value) => {
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (typeof value !== 'string') {
-    return value;
-  }
-  const trimmed = value.trim();
-  if (!BROADCAST_ISO_DATE_TIME_WITH_OFFSET_RE.test(trimmed)) {
-    return trimmed;
-  }
-  const parsed = new Date(trimmed);
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : trimmed;
-}, z.string().datetime());
-
-function inferBroadcastScheduleMode(value: {
-  scheduleMode?: BroadcastScheduleMode;
-  scheduledSlots?: string[];
-}): BroadcastScheduleMode {
-  if (value.scheduleMode) {
-    return value.scheduleMode;
-  }
-  return (value.scheduledSlots?.length ?? 0) > 0 ? 'calendar' : 'legacy';
-}
 
 function normalizeBroadcastLinkButtons(values: BroadcastLinkButton[]): BroadcastLinkButton[] {
   return values.map((value) => ({
@@ -2300,15 +1750,6 @@ export const broadcastHandoffStateSchema = z
   }));
 export type BroadcastHandoffState = z.infer<typeof broadcastHandoffStateSchema>;
 
-export const managedBroadcastTargetPreviewSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  entityType: managedEntityTypeSchema.default('chat'),
-  link: z.string().trim().max(2048).nullable().optional().default(null),
-  avatarUrl: z.string().trim().url().nullable().optional().default(null),
-});
-export type ManagedBroadcastTargetPreview = z.infer<typeof managedBroadcastTargetPreviewSchema>;
-
 export const sendBroadcastResultSchema = z
   .object({
     sourceChatId: z.string(),
@@ -2346,69 +1787,6 @@ export const sendBroadcastTestResultSchema = z.object({
   url: z.string().url().nullable(),
 });
 export type SendBroadcastTestResult = z.infer<typeof sendBroadcastTestResultSchema>;
-
-export const managedBroadcastStatusSchema = z.enum([
-  'ACTIVE',
-  'PARTIAL',
-  'FAILED',
-  'COMPLETED',
-  'CANCELED',
-]);
-export type ManagedBroadcastStatus = z.infer<typeof managedBroadcastStatusSchema>;
-
-export const managedBroadcastFailureBreakdownSchema = z.object({
-  transient: z.number().int().min(0),
-  permanentTarget: z.number().int().min(0),
-  quarantined: z.number().int().min(0),
-  unknown: z.number().int().min(0),
-});
-export type ManagedBroadcastFailureBreakdown = z.infer<
-  typeof managedBroadcastFailureBreakdownSchema
->;
-
-export const managedBroadcastSummarySchema = z
-  .object({
-    id: z.string(),
-    autopostRuleId: z.string().nullable().default(null),
-    status: managedBroadcastStatusSchema,
-    textPreview: z.string(),
-    textLength: z.number().int().min(0),
-    targetMode: broadcastTargetModeSchema.default('current'),
-    applyToAllChats: z.boolean(),
-    targetChatIds: z.array(z.string()).default([]),
-    targetChats: z.number().int().min(1),
-    targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
-    targetOverflowCount: z.number().int().min(0).default(0),
-    hasImage: z.boolean(),
-    imageCount: z.number().int().min(0).default(0),
-    hasVideo: z.boolean().default(false),
-    buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
-    buttonEnabled: z.boolean(),
-    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
-    scheduleTimezone: broadcastScheduleTimezoneSchema,
-    scheduledSlots: z.array(broadcastDateTimeSchema).default([]),
-    nextSendAt: broadcastDateTimeSchema.nullable(),
-    cycleEnabled: z.boolean(),
-    cycleEveryHours: z.number().int().min(1),
-    cycleCount: z.number().int().min(1),
-    sentCount: z.number().int().min(0),
-    currentOccurrence: z.number().int().min(1),
-    deliveredChats: z.number().int().min(0),
-    failedChats: z.number().int().min(0),
-    pendingChats: z.number().int().min(0),
-    blockedChats: z.number().int().min(0),
-    failureBreakdown: managedBroadcastFailureBreakdownSchema,
-    canRetry: z.boolean(),
-    remainingCount: z.number().int().min(0),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
-    lastError: z.string().nullable(),
-  })
-  .transform((value) => ({
-    ...value,
-    scheduleMode: inferBroadcastScheduleMode(value),
-  }));
-export type ManagedBroadcastSummary = z.infer<typeof managedBroadcastSummarySchema>;
 
 export const managedBroadcastDetailsSchema = z
   .object({
@@ -2666,14 +2044,6 @@ export const chatSettingsScreenResponseSchema = z.object({
   managedBroadcasts: z.array(managedBroadcastSummarySchema).default([]),
 });
 export type ChatSettingsScreenResponse = z.infer<typeof chatSettingsScreenResponseSchema>;
-
-export const channelSettingsScreenResponseSchema = z.object({
-  settings: channelSettingsSchema,
-  postSignature: channelPostSignatureSettingsSchema,
-  header: managedEntityHeaderSchema,
-  managedBroadcasts: z.array(managedBroadcastSummarySchema),
-});
-export type ChannelSettingsScreenResponse = z.infer<typeof channelSettingsScreenResponseSchema>;
 
 export const maxMessagePayloadSchema = z.object({
   messageId: z.string(),

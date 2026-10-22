@@ -1,3 +1,4 @@
+import { NetworkNavigationAllowlist } from './network-navigation-allowlist';
 import { randomUUID } from 'node:crypto';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { channelSettingsSchema, chatSettingsSchema, type ChannelSettings } from '@maxim/contracts';
@@ -14,7 +15,10 @@ import type { AdminSettingsService } from './admin-settings.service';
 import type { AdminStopWordsService } from './admin-stop-words.service';
 import type { ChannelPostSignatureService } from './channel-post-signature.service';
 import { ManagedEntityNetworksService } from './managed-entity-networks.service';
-import { NetworkSettingsService } from './network-settings.service';
+import {
+  NETWORK_SETTINGS_OPERATION_READER_VERSION,
+  NetworkSettingsService,
+} from './network-settings.service';
 import { readChannelSettings, saveChannelSettings } from './admin-channel-settings';
 import { saveChatSettings, sanitizeStoredChatSettings } from './admin-chat-settings';
 import { buildNetworkSettingsPatch, networkSettingsAuthoredKeys } from './network-settings-patch';
@@ -136,6 +140,7 @@ integration('network settings durable writes with PostgreSQL', () => {
       settings as unknown as AdminSettingsService,
       {} as AdminStopWordsService,
       {} as ChannelPostSignatureService,
+      new NetworkNavigationAllowlist(db as PrismaService),
     );
   });
 
@@ -335,6 +340,7 @@ integration('network settings durable writes with PostgreSQL', () => {
     await service.tick();
     const operation = await service.status(user, preview.operationId);
     expect(operation.status).toBe('FAILED');
+    expect(operation.outcomes.every((target) => target.status === 'FAILED')).toBe(true);
     expect(operation.outcomes.find((target) => target.entityId === ids[1])?.failureCode).toBe(
       'DENIED',
     );
@@ -346,6 +352,129 @@ integration('network settings durable writes with PostgreSQL', () => {
     ).toEqual(before);
     expect(followup).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { phase: 'PREVIEWING', failure: new ConflictException(), code: 'CONFLICT' },
+    { phase: 'AUTHORIZING', failure: new ForbiddenException(), code: 'DENIED' },
+  ])(
+    'atomically settles every unwritten target after a later $phase chunk fails',
+    async ({ phase, failure, code }) => {
+      const selected = ids.slice(0, 5);
+      const target = { mode: 'selected', entityIds: selected } as const;
+      const request = { entityType: 'channel', target, section: 'comments' } as const;
+      const first = await service.read(user, request);
+      const recipients = [...first.recipients];
+      let cursor = first.nextCursor;
+      while (cursor) {
+        const page = await service.read(user, { ...request, cursor });
+        recipients.push(...page.recipients);
+        cursor = page.nextCursor;
+      }
+      const operationId = randomUUID();
+      ownedOperations.push(operationId);
+      const preview = await service.preview(user, {
+        ...request,
+        operationId,
+        compositionVersion: first.compositionVersion,
+        recipients,
+        changes: [{ path: 'commentsMessageText', op: 'set', value: 'Must remain unwritten' }],
+      });
+      if (phase === 'AUTHORIZING') {
+        for (let chunk = 0; chunk < 3; chunk++) await service.tick(1);
+        expect((await service.status(user, operationId)).status).toBe('PREPARED');
+        await service.apply(user, { operationId, previewHash: preview.previewHash });
+      }
+      await service.tick(1);
+      const partial = await service.status(user, operationId);
+      expect(partial.status).toBe(phase);
+      expect(
+        partial.outcomes.filter(
+          (row) => row.status === (phase === 'PREVIEWING' ? 'VALIDATED' : 'AUTHORIZED'),
+        ),
+      ).toHaveLength(2);
+      const before = await db.channelSettings.findMany({
+        where: { chatId: { in: selected } },
+        orderBy: { chatId: 'asc' },
+      });
+      const auditBefore = await db.auditLog.count({ where: { chatId: { in: selected } } });
+      access.mockImplementation(async (id) => {
+        if (id === selected[3]) throw failure;
+      });
+      writes.mockClear();
+      await service.tick(1);
+      const failed = await service.status(user, operationId);
+      expect(failed.status).toBe('FAILED');
+      expect(failed.outcomes).toHaveLength(selected.length);
+      expect(failed.outcomes.every((row) => row.status === 'FAILED')).toBe(true);
+      expect(failed.outcomes.find((row) => row.entityId === selected[3])?.failureCode).toBe(code);
+      expect(
+        failed.outcomes.filter((row) => row.entityId !== selected[3]).map((row) => row.failureCode),
+      ).toEqual(Array(4).fill('PREFLIGHT_ABORTED'));
+      expect(
+        await db.channelSettings.findMany({
+          where: { chatId: { in: selected } },
+          orderBy: { chatId: 'asc' },
+        }),
+      ).toEqual(before);
+      expect(await db.auditLog.count({ where: { chatId: { in: selected } } })).toBe(auditBefore);
+      expect(writes.mock.calls.every(([, , , , options]) => options.validateOnly)).toBe(true);
+      expect(followup).not.toHaveBeenCalled();
+      writes.mockClear();
+      access.mockClear();
+      for (let repeat = 0; repeat < 3; repeat++) await service.tick(1);
+      expect(writes).not.toHaveBeenCalled();
+      expect(access).not.toHaveBeenCalled();
+      expect(
+        (await service.apply(user, { operationId, previewHash: preview.previewHash })).status,
+      ).toBe('FAILED');
+    },
+  );
+
+  it.each(['COMMITTED', 'COMPLETE', 'UNKNOWN'])(
+    'preserves $0 preflight evidence instead of fabricating unwritten failure',
+    async (protectedStatus) => {
+      const preview = await prepare();
+      await service.apply(user, {
+        operationId: preview.operationId,
+        previewHash: preview.previewHash,
+      });
+      const data = {
+        status: protectedStatus,
+        ...(protectedStatus === 'UNKNOWN' ? {} : { committedRevision: 'observed-commit' }),
+      };
+      await db.networkSettingsOperationTarget.update({
+        where: { operationId_entityId: { operationId: preview.operationId, entityId: ids[0] } },
+        data,
+      });
+      access.mockImplementation(async (id) => {
+        if (id === ids[1]) throw new ForbiddenException();
+      });
+      const before = await db.networkSettingsOperationTarget.findMany({
+        where: { operationId: preview.operationId },
+        orderBy: { entityId: 'asc' },
+      });
+      try {
+        await service.tick(1);
+        expect(
+          (
+            await db.networkSettingsOperation.findUniqueOrThrow({
+              where: { id: preview.operationId },
+            })
+          ).status,
+        ).toBe('AUTHORIZING');
+        expect(
+          await db.networkSettingsOperationTarget.findMany({
+            where: { operationId: preview.operationId },
+            orderBy: { entityId: 'asc' },
+          }),
+        ).toEqual(before);
+        expect(followup).not.toHaveBeenCalled();
+        expect(writes.mock.calls.every(([, , , , options]) => options.validateOnly)).toBe(true);
+      } finally {
+        await db.networkSettingsOperation.delete({ where: { id: preview.operationId } });
+      }
+    },
+  );
 
   it('fences a category mutation between preview and launch under the favorites writer lock', async () => {
     await networks.updateComposition(user, 'channel', {
@@ -406,6 +535,34 @@ integration('network settings durable writes with PostgreSQL', () => {
     expect(
       (await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[0] } })).revision,
     ).toBe(written.revision);
+  });
+
+  it('preserves the journal and target when a future operation reader is installed', async () => {
+    const preview = await prepare({ mode: 'selected', entityIds: [ids[3]] });
+    const row = await db.networkSettingsOperation.findUniqueOrThrow({
+      where: { id: preview.operationId },
+    });
+    await db.networkSettingsOperation.update({
+      where: { id: row.id },
+      data: {
+        payload: {
+          ...(row.payload as object),
+          readerVersion: NETWORK_SETTINGS_OPERATION_READER_VERSION + 1,
+        },
+      },
+    });
+    await expect(
+      service.apply(user, { operationId: row.id, previewHash: preview.previewHash }),
+    ).rejects.toMatchObject({ response: { code: 'NETWORK_SETTINGS_READER_UNSUPPORTED' } });
+    expect((await service.status(user, row.id)).status).toBe('PREPARED');
+    await db.networkSettingsOperation.update({
+      where: { id: row.id },
+      data: { status: 'RUNNING' },
+    });
+    writes.mockClear();
+    await service.tick();
+    expect(writes).not.toHaveBeenCalled();
+    expect((await service.status(user, row.id)).outcomes[0].status).toBe('VALIDATED');
   });
 
   it('rolls back a settings update when its receipt callback fails', async () => {

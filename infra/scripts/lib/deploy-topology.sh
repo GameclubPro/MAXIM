@@ -379,6 +379,13 @@ maxim_topology_require_managed_network_foundation() {
   node "$(dirname "${BASH_SOURCE[0]}")/../assert-managed-network-foundation-source.mjs" "$commit_sha"
 }
 
+maxim_topology_require_network_settings_v2() {
+  local commit_sha="$1"
+  # FLAG: The stable v2 entrypoint retains v2 list intents and v3 supplementary
+  # revisions, atomic policy/rules writes and COMMITTED settlement after UI disablement.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-network-settings-v2-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_managed_entity_activation() {
   local commit_sha="$1"
   # FLAG: Known denials, pending activation, capability ceilings and receipt-only

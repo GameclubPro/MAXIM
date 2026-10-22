@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { getNetworkSettingsSectionPresentation } from '../src/pages/settings/settings-workspace-sections';
 
 const channelSettingsSource = readFileSync(
   new URL('../src/pages/channel-settings-page.tsx', import.meta.url),
+  'utf8',
+);
+const postSignatureFieldsSource = readFileSync(
+  new URL('../src/pages/settings/channel-post-signature-fields.tsx', import.meta.url),
   'utf8',
 );
 const settingsSectionToggleSource = readFileSync(
@@ -12,13 +17,20 @@ const settingsSectionToggleSource = readFileSync(
 );
 
 test('channel post action stays compact on the overview and opens in a drilldown', () => {
+  const presentation = getNetworkSettingsSectionPresentation('channel', 'postSignature');
+  assert.equal(presentation.title, 'Действие под публикацией');
+  assert.equal(presentation.panelClassName, 'settings-drilldown__panel--signature');
   assert.match(
     channelSettingsSource,
-    /<SettingsSectionToggle[\s\S]*?title="Действие под публикацией"[\s\S]*?controls="channel-settings-post-signature"/u,
+    /postSignature: getNetworkSettingsSectionPresentation\('channel', 'postSignature'\)/u,
   );
   assert.match(
     channelSettingsSource,
-    /<SettingsDrilldownPanel[\s\S]*?id="channel-settings-post-signature"[\s\S]*?className="settings-drilldown__panel--signature"/u,
+    /<SettingsSectionToggle[\s\S]*?title=\{SHARED_CHANNEL_SECTION_PRESENTATIONS\.postSignature\.title\}[\s\S]*?controls="channel-settings-post-signature"/u,
+  );
+  assert.match(
+    channelSettingsSource,
+    /<SettingsDrilldownPanel[\s\S]*?id="channel-settings-post-signature"[\s\S]*?title=\{SHARED_CHANNEL_SECTION_PRESENTATIONS\.postSignature\.title\}[\s\S]*?className=\{SHARED_CHANNEL_SECTION_PRESENTATIONS\.postSignature\.panelClassName\}/u,
   );
   assert.doesNotMatch(
     channelSettingsSource,
@@ -36,7 +48,12 @@ test('closing the post action drilldown blocks invalid fields and flushes a vali
 test('post action offers signature and button modes with a real button preview', () => {
   assert.match(
     channelSettingsSource,
-    /value=\{postSignature\.presentation\}[\s\S]*?value: 'signature'[\s\S]*?value: 'button'/u,
+    /<ChannelPostSignatureFields[\s\S]*?settings: postSignature/u,
+  );
+  assert.match(postSignatureFieldsSource, /const presentation = fields\.read\('presentation'\)/u);
+  assert.match(
+    postSignatureFieldsSource,
+    /<FieldSelect[\s\S]*?state=\{presentation\}[\s\S]*?value: 'signature'[\s\S]*?value: 'button'[\s\S]*?fields\.setScalar\('presentation', value\)/u,
   );
   assert.match(channelSettingsSource, /className="channel-post-signature__message-button"/u);
 });

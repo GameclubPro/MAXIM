@@ -8,19 +8,25 @@
       "label": "Startup",
       "entries": ["index.html", "src/pages/chats-page.tsx"],
       "limits": {
-        "jsGzipBytes": 126592,
+        "jsGzipBytes": 130688,
         "cssGzipBytes": 43008
       },
       "allowances": [
         {
           "asset": "js",
           "bytes": 512,
-          "when": { "env": "VITE_ROUTER_MODE", "equals": "hash" }
+          "when": {
+            "env": "VITE_ROUTER_MODE",
+            "equals": "hash"
+          }
         },
         {
           "asset": "js",
           "bytes": 512,
-          "when": { "env": "VITE_API_BASE", "matches": "^https?://" }
+          "when": {
+            "env": "VITE_API_BASE",
+            "matches": "^https?://"
+          }
         }
       ]
     },
@@ -29,21 +35,138 @@
       "label": "Chat settings",
       "entries": ["src/pages/settings-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 149120, "cssGzipBytes": 77824 }
+      "limits": {
+        "jsGzipBytes": 155648,
+        "cssGzipBytes": 79872
+      }
     },
     {
       "id": "channel-settings",
       "label": "Channel settings",
       "entries": ["src/pages/channel-settings-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 108032, "cssGzipBytes": 77824 }
+      "limits": {
+        "jsGzipBytes": 108032,
+        "cssGzipBytes": 77824
+      }
+    },
+    {
+      "id": "networks",
+      "label": "Networks catalogue and overview",
+      "entries": [
+        "src/pages/networks-page.tsx",
+        "src/features/networks/network-statistics-view.tsx",
+        "src/features/networks/network-composition-sheet.tsx"
+      ],
+      "baseline": "startup",
+      "limits": {
+        "jsGzipBytes": 32768,
+        "cssGzipBytes": 12288
+      }
+    },
+    {
+      "id": "network-settings",
+      "label": "Shared network settings",
+      "entries": [
+        "src/pages/network-settings-route.tsx",
+        "src/pages/settings/shared-chat-settings-section.tsx",
+        "src/features/network-settings/network-settings-metadata-fields.tsx",
+        "src/pages/settings/shared-chat-settings-fields.tsx",
+        "src/pages/settings/channel-quick-buttons-fields.tsx",
+        "src/pages/settings/channel-comments-fields.tsx",
+        "src/pages/settings/channel-post-signature-fields.tsx",
+        "src/pages/settings/channel-post-suggestions-fields.tsx",
+        "src/pages/settings/shared-supplementary-chat-settings-fields.tsx",
+        "src/pages/settings/shared-speech-style-fields.tsx"
+      ],
+      "baseline": "startup",
+      "limits": {
+        "jsGzipBytes": 114688,
+        "cssGzipBytes": 49152
+      }
+    },
+    {
+      "id": "network-settings-actions",
+      "label": "Network settings preview, apply and advanced editors",
+      "entries": [
+        "src/features/network-settings/network-settings-review.tsx",
+        "src/features/network-settings/network-settings-operation-panel.tsx",
+        "src/features/network-settings/network-settings-operation-runtime.ts",
+        "packages/contracts/dist/network-settings-actions.js",
+        "packages/contracts/dist/network-settings-metadata.js",
+        "src/pages/settings/shared-stop-words-preset-buttons.tsx",
+        "src/components/max-rich-text-editor.tsx",
+        "src/lib/max-rich-text-clipboard.ts",
+        "src/components/ui/action-confirm-sheet.tsx",
+        "src/pages/settings/shared-network-rules-fields.tsx",
+        "src/components/broadcast-content-composer.tsx",
+        "src/components/broadcast-buttons-sheet.tsx"
+      ],
+      "baseline": "network-settings",
+      "limits": {
+        "jsGzipBytes": 45056,
+        "cssGzipBytes": 32768
+      }
+    },
+    {
+      "id": "network-settings-full",
+      "label": "Network settings complete editing flow",
+      "entries": [
+        "src/pages/network-settings-route.tsx",
+        "src/pages/settings/shared-chat-settings-section.tsx",
+        "src/features/network-settings/network-settings-metadata-fields.tsx",
+        "src/pages/settings/shared-chat-settings-fields.tsx",
+        "src/pages/settings/channel-quick-buttons-fields.tsx",
+        "src/pages/settings/channel-comments-fields.tsx",
+        "src/pages/settings/channel-post-signature-fields.tsx",
+        "src/features/network-settings/network-settings-review.tsx",
+        "src/features/network-settings/network-settings-operation-panel.tsx",
+        "src/features/network-settings/network-settings-operation-runtime.ts",
+        "packages/contracts/dist/network-settings-actions.js",
+        "packages/contracts/dist/network-settings-metadata.js",
+        "src/pages/settings/shared-stop-words-preset-buttons.tsx",
+        "src/components/max-rich-text-editor.tsx",
+        "src/lib/max-rich-text-clipboard.ts",
+        "src/components/ui/action-confirm-sheet.tsx",
+        "src/pages/settings/channel-post-suggestions-fields.tsx",
+        "src/pages/settings/shared-supplementary-chat-settings-fields.tsx",
+        "src/pages/settings/shared-speech-style-fields.tsx",
+        "src/pages/settings/shared-network-rules-fields.tsx",
+        "src/components/broadcast-content-composer.tsx",
+        "src/components/broadcast-buttons-sheet.tsx"
+      ],
+      "baseline": "startup",
+      "limits": {
+        "jsGzipBytes": 159744,
+        "cssGzipBytes": 81920
+      }
+    },
+    {
+      "id": "network-settings-recovery-cold",
+      "label": "Network operation cold recovery",
+      "entries": [
+        "index.html",
+        "src/lib/api/me-client.ts",
+        "src/lib/api/miniapp-server-session.ts",
+        "src/pages/network-settings-route.tsx",
+        "src/features/network-settings/network-settings-operation-panel.tsx",
+        "src/features/network-settings/network-settings-operation-runtime.ts",
+        "packages/contracts/dist/network-settings-actions.js"
+      ],
+      "limits": {
+        "jsGzipBytes": 196608,
+        "cssGzipBytes": 67584
+      }
     },
     {
       "id": "comments",
       "label": "Comments dialog",
       "entries": ["src/pages/channel-dialog-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 68608, "cssGzipBytes": 20480 }
+      "limits": {
+        "jsGzipBytes": 68608,
+        "cssGzipBytes": 20480
+      }
     },
     {
       "id": "comments-cold",
@@ -55,70 +178,100 @@
         "src/lib/comment-dialog-startup.ts",
         "src/pages/channel-dialog-page.tsx"
       ],
-      "limits": { "jsGzipBytes": 176128, "cssGzipBytes": 41984 }
+      "limits": {
+        "jsGzipBytes": 176128,
+        "cssGzipBytes": 41984
+      }
     },
     {
       "id": "suggest",
       "label": "Suggestion dialog",
       "entries": ["src/pages/channel-suggest-dialog-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 24576, "cssGzipBytes": 10240 }
+      "limits": {
+        "jsGzipBytes": 24576,
+        "cssGzipBytes": 10240
+      }
     },
     {
       "id": "stats",
       "label": "Channel stats",
       "entries": ["src/pages/channel-stats-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 26624, "cssGzipBytes": 24576 }
+      "limits": {
+        "jsGzipBytes": 26624,
+        "cssGzipBytes": 24576
+      }
     },
     {
       "id": "events",
       "label": "Chat events",
       "entries": ["src/pages/events-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 47104, "cssGzipBytes": 35840 }
+      "limits": {
+        "jsGzipBytes": 47104,
+        "cssGzipBytes": 35840
+      }
     },
     {
       "id": "publications",
       "label": "Publications",
       "entries": ["src/pages/publications-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 146496, "cssGzipBytes": 28672 }
+      "limits": {
+        "jsGzipBytes": 146496,
+        "cssGzipBytes": 28672
+      }
     },
     {
       "id": "publisher-entities",
       "label": "Publisher entities",
       "entries": ["src/pages/publisher-entities-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 45312, "cssGzipBytes": 12288 }
+      "limits": {
+        "jsGzipBytes": 45312,
+        "cssGzipBytes": 12288
+      }
     },
     {
       "id": "publisher-entity-modules",
       "label": "Publisher entity modules",
       "entries": ["src/pages/publisher-entity-modules-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 51200, "cssGzipBytes": 6144 }
+      "limits": {
+        "jsGzipBytes": 51200,
+        "cssGzipBytes": 6144
+      }
     },
     {
       "id": "publisher-auto-replies",
       "label": "Publisher auto replies",
       "entries": ["src/pages/publisher-auto-replies-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 104448, "cssGzipBytes": 10240 }
+      "limits": {
+        "jsGzipBytes": 104448,
+        "cssGzipBytes": 10240
+      }
     },
     {
       "id": "giveaway",
       "label": "Giveaway",
       "entries": ["src/pages/giveaway-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 59392, "cssGzipBytes": 9216 }
+      "limits": {
+        "jsGzipBytes": 59392,
+        "cssGzipBytes": 9216
+      }
     },
     {
       "id": "legal",
       "label": "Legal",
       "entries": ["src/pages/legal-page.tsx"],
       "baseline": "startup",
-      "limits": { "jsGzipBytes": 10240, "cssGzipBytes": 3072 }
+      "limits": {
+        "jsGzipBytes": 10240,
+        "cssGzipBytes": 3072
+      }
     },
     {
       "id": "vk-parsing-card",
@@ -126,7 +279,9 @@
       "entries": ["src/components/vk-parsing-card.tsx"],
       "baseline": "startup",
       "coversRouteEntry": false,
-      "limits": { "jsGzipBytes": 88064 }
+      "limits": {
+        "jsGzipBytes": 88064
+      }
     }
   ]
 }

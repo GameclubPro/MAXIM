@@ -7,7 +7,11 @@ import {
   type SVGProps,
 } from 'react';
 import { createPortal } from 'react-dom';
-import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
+import type {
+  ChatSummary,
+  ManagedEntityFavoriteLabelsResponse,
+  ManagedEntityFavoriteType,
+} from '@maxim/contracts';
 import { EditPencil, Undo } from 'iconoir-react';
 import { AppIcon } from '../components/ui/app-icon';
 import {
@@ -32,6 +36,7 @@ import {
   sanitizeHomeEntityFavoriteLabels,
   type HomeEntityFavoriteLabelOverrides,
 } from '../lib/home-entity-favorites';
+import { useHomeEntityFavorites } from '../lib/home-entity-favorites-context';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
@@ -63,7 +68,7 @@ type HomeEntitySheetsProps = {
   onStartCategoryEdit: () => void;
   onOpenLabelsEditor: () => void;
   onFavoriteChange: (favoriteType: ManagedEntityFavoriteType | null) => void;
-  onFavoriteLabelsSaved: (labels: HomeEntityFavoriteLabelOverrides) => void;
+  onFavoriteLabelsSaved: (response: ManagedEntityFavoriteLabelsResponse) => void;
 };
 
 function CheckGlyph(props: SVGProps<SVGSVGElement>) {
@@ -267,18 +272,17 @@ function limitFavoriteLabelInput(value: string): string {
 }
 
 function HomeFavoriteLabelsEditor({
-  api,
   favoriteLabelOverrides,
   overlayStyle,
   onClose,
   onSaved,
 }: {
-  api: ApiTransport;
   favoriteLabelOverrides: HomeEntityFavoriteLabelOverrides;
   overlayStyle: CSSProperties | undefined;
   onClose: () => void;
-  onSaved: (labels: HomeEntityFavoriteLabelOverrides) => void;
+  onSaved: (response: ManagedEntityFavoriteLabelsResponse) => void;
 }) {
+  const { actions } = useHomeEntityFavorites();
   const { pushToast } = useToast();
   const baseLabelsRef = useRef(sanitizeHomeEntityFavoriteLabels(favoriteLabelOverrides));
   const saveControllerRef = useRef<AbortController | null>(null);
@@ -348,16 +352,12 @@ function HomeFavoriteLabelsEditor({
     setSaving(true);
 
     try {
-      const { saveManagedEntityFavoriteLabelEdits } =
-        await import('../lib/home-entity-favorite-label-sync');
-      const saved = await saveManagedEntityFavoriteLabelEdits(
-        api,
-        baseLabelsRef.current,
-        sanitizedDraft,
-        controller.signal,
-      );
+      const saved = await actions.saveLabels({
+        baseLabels: baseLabelsRef.current,
+        draftLabels: sanitizedDraft,
+      });
       if (!controller.signal.aborted && saveControllerRef.current === controller) {
-        onSaved(sanitizeHomeEntityFavoriteLabels(saved.labels));
+        onSaved(saved);
       }
     } catch (error: unknown) {
       if (!controller.signal.aborted && saveControllerRef.current === controller) {
@@ -458,7 +458,6 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
     return (
       <HomeFavoriteLabelsEditor
         key={`${props.favoriteStorageScope}:labels`}
-        api={props.api}
         favoriteLabelOverrides={props.favoriteLabelOverrides}
         overlayStyle={overlayStyle}
         onClose={props.onClose}

@@ -27,6 +27,7 @@ export default defineConfig(({ mode, command }) => {
       },
     ],
     resolve: {
+      dedupe: ['zod'],
       alias: contractsSourceAliases(fileURLToPath(new URL('../../', import.meta.url)), command),
     },
     define: {
@@ -40,6 +41,21 @@ export default defineConfig(({ mode, command }) => {
     base,
     build: {
       manifest: true,
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              { name: 'initial', tags: ['$initial'], priority: 10 },
+              ...Object.entries(routeChunkSources).map(([name, sources]) => ({
+                name,
+                test: (id: string) =>
+                  sources.some((source) => id.replaceAll('\\', '/').endsWith(source)),
+                includeDependenciesRecursively: false,
+              })),
+            ],
+          },
+        },
+      },
     },
   };
 });
@@ -53,3 +69,38 @@ function normalizeBasePath(value: string): string {
   const withLeadingSlash = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
   return withLeadingSlash.endsWith('/') ? withLeadingSlash : `${withLeadingSlash}/`;
 }
+
+const routeChunkSources = {
+  'managed-favorites': [
+    '/src/lib/home-entity-favorites-context.tsx',
+    '/src/lib/home-entity-favorites-session.ts',
+    '/src/lib/home-entity-favorites.ts',
+    '/src/lib/home-entity-favorite-label-sync.ts',
+    '/src/lib/api/managed-entity-favorites-client.ts',
+    '/src/lib/api/managed-entity-favorite-labels-response.ts',
+    '/src/lib/api/managed-entity-networks-client.ts',
+    '/src/lib/api/managed-entity-networks-response.ts',
+  ],
+  'single-chat-settings': [
+    '/src/pages/settings-page.tsx',
+    '/src/pages/settings-page.legacy.tsx',
+    '/src/pages/settings/settings-page-helpers.tsx',
+    '/src/pages/settings/settings-limits-controls.tsx',
+    '/src/pages/settings/settings-edit-toggle-button.tsx',
+    '/src/pages/settings/settings-hint-anchor.tsx',
+    '/src/pages/settings/settings-apply-target.ts',
+    '/src/pages/settings/settings-duplicate-photo-status.ts',
+    '/src/lib/api/chat-settings-client.ts',
+    '/src/lib/api/stop-words-client.ts',
+  ],
+  'network-settings-editor': [
+    '/src/pages/network-settings-route.tsx',
+    '/src/lib/api/network-settings-client.ts',
+    '/src/pages/network-settings-page.tsx',
+    '/src/features/network-settings/network-settings-controller.ts',
+    '/src/features/network-settings/network-settings-operation-state.ts',
+    '/src/lib/network-settings-operation-storage.ts',
+    '/src/lib/network-settings-workspace-state.ts',
+    '/src/features/network-settings/network-settings-field-bindings.ts',
+  ],
+};

@@ -1,4 +1,4 @@
-import { chatSettingsSchema, stopWordsPolicySchema } from '@maxim/contracts';
+import { chatRulesSchema, chatSettingsSchema, stopWordsPolicySchema } from '@maxim/contracts';
 import {
   buildNetworkSettingsPatch,
   commonNetworkSettingsFields,
@@ -7,6 +7,61 @@ import {
 } from './network-settings-patch';
 
 describe('source-free network settings patches', () => {
+  it('changes speech style without copying individual messages or media', () => {
+    const current = chatSettingsSchema.parse({
+      botSpeechStyle: 'FRIENDLY',
+      greetingBotMessageText: 'Own greeting',
+    });
+    const next = buildNetworkSettingsPatch(current, 'chat', 'speechStyle', [
+      { path: 'botSpeechStyle', op: 'set', value: 'IRONIC' },
+    ]);
+    expect(next.botSpeechStyle).toBe('IRONIC');
+    expect(next.greetingBotMessageText).toBe('Own greeting');
+  });
+  it('retains rules recipient data and rejects publication and accidental list changes', () => {
+    const current = {
+      ...chatSettingsSchema.parse({}),
+      rules: chatRulesSchema.parse({
+        text: 'Own rules',
+        buttons: [{ text: 'Own', url: 'https://own.example' }],
+      }),
+    };
+    const next = buildNetworkSettingsPatch(current, 'chat', 'rules', [
+      { path: 'rulesAttachViolationsEnabled', op: 'set', value: true },
+    ]);
+    expect(next.rules.text).toBe('Own rules');
+    expect(next.rules.buttons).toEqual(current.rules.buttons);
+    expect(next.rulesAttachViolationsEnabled).toBe(true);
+    expect(() =>
+      buildNetworkSettingsPatch(current, 'chat', 'rules', [
+        { path: 'rules.publishedMessageId', op: 'set', value: 'foreign' },
+      ]),
+    ).toThrow();
+    expect(() =>
+      buildNetworkSettingsPatch(current, 'chat', 'rules', [
+        { path: 'rules.buttons', op: 'set', value: [] },
+      ]),
+    ).toThrow();
+    const cleared = buildNetworkSettingsPatch(current, 'chat', 'rules', [
+      { path: 'rules.buttons', op: 'replace', value: [] },
+    ]);
+    expect(cleared.rules.buttons).toEqual([]);
+  });
+  it('validates retention separately and preserves a recipient duration when toggling', () => {
+    const current = { messageRetention: { enabled: false, hours: 24 } };
+    expect(
+      buildNetworkSettingsPatch(current, 'chat', 'messageRetention', [
+        { path: 'messageRetention.enabled', op: 'set', value: true },
+      ]),
+    ).toEqual({ messageRetention: { enabled: true, hours: 24 } });
+    expect(() =>
+      buildNetworkSettingsPatch(current, 'chat', 'messageRetention', [
+        { path: 'messageRetention.hours', op: 'set', value: 12 },
+      ]),
+    ).toThrow();
+    expect(networkSettingsPaths('chat', 'advertising')).toEqual(['advertising.enabled']);
+    expect(() => networkSettingsPaths('channel', 'messageRetention')).toThrow();
+  });
   it('retains each target own unrelated values and requires explicit array replacement', () => {
     const first = chatSettingsSchema.parse({
       antiSpamEnabled: false,

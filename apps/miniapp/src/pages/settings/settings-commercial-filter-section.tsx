@@ -1,3 +1,4 @@
+import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 import { Suspense } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
@@ -46,6 +47,8 @@ const LazySettingsCommercialFilterEditor =
     'SettingsCommercialFilterEditor',
   );
 
+const SECTION_PRESENTATION = getNetworkSettingsSectionPresentation('chat', 'commercialFilter');
+
 export function SettingsCommercialFilterSection(props: SettingsCommercialFilterSectionProps) {
   const {
     commercialFilterCardStatus,
@@ -61,17 +64,17 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
   return (
     <GlassCard
       className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-      style={{ animationDelay: '135ms', order: 12 }}
+      style={{ animationDelay: '135ms', order: SECTION_PRESENTATION.order }}
       aria-label="Коммерческая реклама"
     >
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
-          title="Коммерческая реклама"
+          title={SECTION_PRESENTATION.title}
           enabled={props.draft.commercialAdsFilterEnabled}
           summary={commercialFilterHeaderSummary}
           status={commercialFilterCardStatus}
-          icon="ads"
-          tone="amber"
+          icon={SECTION_PRESENTATION.icon}
+          tone={SECTION_PRESENTATION.tone}
           open={expanded}
           controls="settings-commercial-filter-content"
           onClick={() => toggleSection('commercialFilter')}
@@ -80,28 +83,34 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
 
       <SettingsDrilldownPanel
         id="settings-commercial-filter-content"
-        icon={<SettingsSectionIcon name="ads" />}
+        icon={<SettingsSectionIcon name={SECTION_PRESENTATION.icon} />}
         open={expanded}
-        title="Коммерческая реклама"
+        title={SECTION_PRESENTATION.title}
         summary={commercialFilterHeaderSummary}
-        tone="amber"
-        className="settings-drilldown__panel--ladder settings-drilldown__panel--commercial"
+        tone={SECTION_PRESENTATION.tone}
+        className={SECTION_PRESENTATION.panelClassName}
         onClose={() => toggleSection('commercialFilter')}
         headerAction={renderApplyTargetHeaderAction('commercialFilter')}
         confirmCloseWhen={isSectionDirty('commercialFilter')}
         onDiscardChanges={() => discardSectionChanges('commercialFilter')}
         footer={renderSectionSaveFooter('commercialFilter')}
       >
-        <div
-          id="settings-commercial-filter-content"
-          className={cn('settings-section__collapse', expanded && 'is-open')}
-        >
-          {expanded ? (
-            <Suspense fallback={<Spinner label="Загружаем фильтр рекламы" />}>
-              <LazySettingsCommercialFilterEditor {...props} />
-            </Suspense>
-          ) : null}
-        </div>
+        {props.sharedContent ? (
+          <>{expanded ? props.sharedContent : null}</>
+        ) : (
+          <>
+            <div
+              id="settings-commercial-filter-content"
+              className={cn('settings-section__collapse', expanded && 'is-open')}
+            >
+              {expanded ? (
+                <Suspense fallback={<Spinner label="Загружаем фильтр рекламы" />}>
+                  <LazySettingsCommercialFilterEditor {...props} />
+                </Suspense>
+              ) : null}
+            </div>
+          </>
+        )}
       </SettingsDrilldownPanel>
     </GlassCard>
   );

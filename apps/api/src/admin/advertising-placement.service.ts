@@ -18,6 +18,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { AdvertisingPlacementSend } from '../prisma/prisma-client';
 import { MaxClientService, wasMaxMessageSendAttempted } from '../max/max-client.service';
 import { ManagedEntitiesService } from './managed-entities.service';
+import type { NetworkSettingsWriteOptions } from './network-settings-write';
 
 const PILOT_USER_ID = '323459159';
 const MARKET_BOT = 'https://max.ru/id613000037577_3_bot';
@@ -128,13 +129,25 @@ export class AdvertisingPlacementService {
     };
   }
 
-  async update(chatId: string, user: AuthUser, body: unknown) {
+  async update(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    networkWrite?: NetworkSettingsWriteOptions,
+  ) {
     await this.authorize(chatId, user);
     const input = advertisingSettingsInputSchema.parse(body);
     const listing = input.enabled ? await this.lookup(chatId) : null;
     if (input.enabled && !listing)
       throw new ConflictException('Сначала подключите активную площадку в Связке');
+    if (networkWrite?.validateOnly) {
+      const current = await this.prisma.advertisingPlacement.findUnique({ where: { chatId } });
+      if ((current?.revision ?? 0) !== input.revision)
+        throw new ConflictException('Настройки площадки изменились. Обновите экран');
+      return;
+    }
     await this.prisma.$transaction(async (tx) => {
+      await networkWrite?.beforeWrite?.(tx);
       await tx.advertisingPlacement.upsert({ where: { chatId }, create: { chatId }, update: {} });
       const changed = await tx.advertisingPlacement.updateMany({
         where: { chatId, revision: input.revision },
@@ -153,8 +166,9 @@ export class AdvertisingPlacementService {
           payload: { enabled: input.enabled, revision: input.revision + 1 },
         },
       });
+      await networkWrite?.onCommitted?.(tx, String(input.revision + 1));
     });
-    return this.state(chatId, user);
+    if (!networkWrite?.deferFollowup) return this.state(chatId, user);
   }
 
   async send(chatId: string, user: AuthUser, body: unknown): Promise<AdvertisingSend> {

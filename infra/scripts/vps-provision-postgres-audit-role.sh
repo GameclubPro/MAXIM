@@ -35,6 +35,8 @@ local Docker-socket access under the production pg_hba rules, with:
   - fifteen channel-statistics metadata columns; no post bodies, authors or reactions
   - forty-five optional network-observation/archive/collector metadata columns;
     no actor/bot/binding IDs, cursor signatures or lease tokens
+  - eight optional network-membership rollup/feed metadata columns;
+    no canonical/source, actor, user or bot identities
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported
   - 25 owner-proof columns across execution claims and action ledger; source keys,
     lease/dispatch tokens and command journal are join/check-only and never report output
@@ -141,7 +143,7 @@ BEGIN
         'webhook_execution_claims', 'max_action_ledger'
         , 'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
         'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
-        'channel_view_archive_states', 'marketplace_bindings'
+        'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items'
       )
     GROUP BY table_name
   LOOP
@@ -380,6 +382,48 @@ BEGIN
   END IF;
 END
 $network_statistics_observation_grants$;
+-- FLAG: Membership evidence is an independent eight-column group. A partial
+-- schema grants nothing; inherited/private/table/mutation access fails closed.
+DO $network_statistics_membership_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES
+      ('chat_membership_activity_rollups', ARRAY['chat_id','bucket_start','joined_users','left_users','updated_at']),
+      ('chat_membership_activity_feed_items', ARRAY['chat_id','event_type','event_at'])
+    ) required(table_name,columns) CROSS JOIN LATERAL unnest(required.columns) AS expected(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid=to_regclass('public.'||required.table_name)
+      AND attribute.attname=expected.column_name AND attribute.attnum>0 AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (chat_id,bucket_start,joined_users,left_users,updated_at)
+      ON TABLE public.chat_membership_activity_rollups TO maxim_audit;
+    GRANT SELECT (chat_id,event_type,event_at)
+      ON TABLE public.chat_membership_activity_feed_items TO maxim_audit;
+  END IF;
+  IF EXISTS (
+    WITH required(table_name,columns) AS (VALUES
+      ('chat_membership_activity_rollups', ARRAY['chat_id','bucket_start','joined_users','left_users','updated_at']),
+      ('chat_membership_activity_feed_items', ARRAY['chat_id','event_type','event_at'])
+    ), allowed AS (SELECT table_name,unnest(columns) AS column_name FROM required), effective AS (
+      SELECT relation.relname AS table_name,attribute.attname AS column_name
+      FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+      WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM required)
+        AND attribute.attnum>0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'SELECT')
+    ) SELECT 1 WHERE EXISTS (SELECT * FROM effective EXCEPT SELECT * FROM allowed)
+      OR (SELECT count(*) FROM effective) NOT IN (0,8)
+      OR EXISTS (SELECT 1 FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
+        WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM required)
+          AND (has_table_privilege('maxim_audit',relation.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+            OR EXISTS (SELECT 1 FROM pg_attribute attribute WHERE attribute.attrelid=relation.oid
+              AND attribute.attnum>0 AND NOT attribute.attisdropped
+              AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'INSERT,UPDATE,REFERENCES'))))
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit network-statistics membership metadata privileges are not exact';
+  END IF;
+END
+$network_statistics_membership_grants$;
 -- FLAG: Existing catalogs remain compatible before the additive review migration. The new
 -- mode requires all eight columns; no partial grant or evidence/text access is permitted.
 DO $commercial_quality_grants$
@@ -886,7 +930,7 @@ BEGIN
               'webhook_execution_claims', 'max_action_ledger',
               'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
               'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
-              'channel_view_archive_states', 'marketplace_bindings',
+              'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'

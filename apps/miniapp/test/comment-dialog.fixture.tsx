@@ -90,8 +90,13 @@ const api: ApiTransport = {
   },
 };
 
+const root = createRoot(document.getElementById('root')!);
+
 Object.assign(window, {
   commentTest: {
+    setUserId(userId: string) {
+      renderFixture(userId);
+    },
     failNotificationSave() {
       failNotificationSave = true;
     },
@@ -123,22 +128,26 @@ Object.assign(window, {
   },
 });
 
-syncMaxNativeEnvironment();
-createRoot(document.getElementById('root')!).render(
-  <QueryClientProvider client={client}>
-    <ToastProvider>
-      <MemoryRouter initialEntries={[`/channel/preview-channel/dialog/comments?token=${token}`]}>
-        <div className="app-shell app-shell--no-topbar app-shell--immersive app-shell--comments-dialog">
-          <div className="shell-content">
-            <Routes>
-              <Route
-                path="/channel/:chatId/dialog/comments"
-                element={<ChannelDialogPage api={api} profile={profile} userId="preview-admin" />}
-              />
-            </Routes>
+function renderFixture(userId = 'preview-admin') {
+  root.render(
+    <QueryClientProvider client={client}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={[`/channel/preview-channel/dialog/comments?token=${token}`]}>
+          <div className="app-shell app-shell--no-topbar app-shell--immersive app-shell--comments-dialog">
+            <div className="shell-content">
+              <Routes>
+                <Route
+                  path="/channel/:chatId/dialog/comments"
+                  element={<ChannelDialogPage api={api} profile={profile} userId={userId} />}
+                />
+              </Routes>
+            </div>
           </div>
-        </div>
-      </MemoryRouter>
-    </ToastProvider>
-  </QueryClientProvider>,
-);
+        </MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
+}
+
+syncMaxNativeEnvironment();
+renderFixture();

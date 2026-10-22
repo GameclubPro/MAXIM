@@ -1173,6 +1173,10 @@ export async function saveChatSettings(params: {
   let savedRevision: string | undefined;
   try {
     await params.prisma.$transaction(async (tx) => {
+      if (params.networkWrite?.beforeWrite) {
+        await tx.$queryRaw`SELECT id FROM chats WHERE id=${params.chatId} FOR UPDATE`;
+        await params.networkWrite.beforeWrite(tx);
+      }
       const lockedChat = await tx.chat.upsert({
         where: { id: params.chatId },
         create: {

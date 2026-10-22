@@ -21,6 +21,7 @@ import {
   buildPublisherPublicationsAuditSql,
   buildPublisherPublicationPrivilegesSql,
 } from './publisher-publications-audit.mjs';
+import { buildNetworkStatisticsAuditSql } from './network-statistics-audit.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const audit = resolve(root, 'infra/scripts/vps-postgres-audit.sh');
@@ -298,8 +299,8 @@ function extractProvisionVerificationSql() {
 }
 
 test(
-  'native provision and generic session allow only zero or eight effective receipt metadata grants',
-  { skip: !nativePostgresUrl, timeout: 30_000 },
+  'native provision and generic session allow only exact receipt grants and bound combined network membership work',
+  { skip: !nativePostgresUrl, timeout: 90_000 },
   async (t) => {
     const address = new URL(nativePostgresUrl);
     assert.ok(
@@ -335,7 +336,7 @@ test(
     // exit propagation. Only Docker transport and disposable role/schema differ.
     writeFileSync(
       nativeBridge,
-      `import { readFileSync, writeFileSync } from 'node:fs';
+      `import { readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 const namespace = ${JSON.stringify(namespace)};
 const role = ${JSON.stringify(role)};
@@ -346,14 +347,19 @@ const sql = readFileSync(0).toString('utf8')
 writeFileSync(process.env.MOCK_AUDIT_SQL, sql);
 const pgOptions = process.argv.slice(2).find((argument) => argument.startsWith('PGOPTIONS='));
 if (!pgOptions) throw new Error('Native wrapper bridge requires actual PGOPTIONS');
+const psqlStarted = performance.now();
 const result = spawnSync('psql', ['-X', '--no-password', '-qAt', '-v', 'ON_ERROR_STOP=1',
   '-v', 'ECHO=none', '-v', 'VERBOSITY=terse', '-v', 'SHOW_CONTEXT=never'], {
-  env: { ...process.env, PGOPTIONS: pgOptions.slice('PGOPTIONS='.length) },
+  env: { ...process.env, PGOPTIONS: pgOptions.slice('PGOPTIONS='.length)
+    .replace('search_path=pg_catalog,public,pg_temp', 'search_path=pg_catalog,' + namespace + ',pg_temp') },
   input: "SET temp_file_limit='8MB'; SET SESSION AUTHORIZATION " + role + ";\\n" + sql,
   encoding: 'utf8', timeout: 7000,
 });
-process.stdout.write(result.stdout || '');
-process.stderr.write(result.stderr || '');
+if (process.env.MOCK_NATIVE_TIMING) writeFileSync(process.env.MOCK_NATIVE_TIMING, JSON.stringify({
+  psqlMs: performance.now() - psqlStarted, status: result.status, pgOptions,
+}));
+writeSync(1, result.stdout || '');
+writeSync(2, result.stderr || '');
 process.exit(result.status ?? 1);
 `,
     );
@@ -549,6 +555,177 @@ process.exit(result.status ?? 1);
         assert.equal(result.status, 3, result.stderr);
         assert.equal(result.stdout.trim(), 'MAXIM_POSTGRES_DUPLICATE_AUDIT_UNAVAILABLE');
       }
+      assert.match(identity.rows[0].version, /^PostgreSQL 16\./u);
+      await client.query(
+        readFileSync(resolve(root, 'infra/scripts/test-fixtures/network-statistics.sql'), 'utf8'),
+      );
+      const provisionSource = readFileSync(provision, 'utf8');
+      const grantBlock = (name) => {
+        const start = provisionSource.indexOf(`DO $${name}$`);
+        const endMarker = `$${name}$;`;
+        const end = provisionSource.indexOf(endMarker, start) + endMarker.length;
+        assert.ok(start >= 0 && end >= endMarker.length);
+        return localSql(provisionSource.slice(start, end));
+      };
+      await client.query(resetSql);
+      for (const name of [
+        'network_statistics_grants',
+        'network_statistics_observation_grants',
+        'network_statistics_membership_grants',
+      ])
+        await client.query(grantBlock(name));
+      await client.query(`
+        INSERT INTO chats(id,entity_type) SELECT (-100-i)::text,CASE WHEN i%2=0 THEN 'CHANNEL' ELSE 'CHAT' END FROM generate_series(1,12) i;
+        INSERT INTO chats(id,entity_type) VALUES('-999','CHANNEL');
+        INSERT INTO channel_audience_snapshots SELECT id,1000,now() FROM chats;
+        INSERT INTO channel_stats_sync_states(chat_id,membership_coverage_from,last_audience_sync_at)
+          SELECT id,now()-interval '40 days',now() FROM chats;
+        INSERT INTO channel_posts SELECT e.id||'-post-'||n,e.id,now()-n*interval '1 day',now(),NULL
+          FROM chats e CROSS JOIN generate_series(1,30) n;
+        INSERT INTO channel_post_view_snapshots SELECT id,now() FROM channel_posts;
+        INSERT INTO managed_entity_audience_observations SELECT id,entity_type,1000,now(),'major' FROM chats;
+        INSERT INTO channel_view_observation_states SELECT id,now()-interval '2 days',now(),100,100,NULL,'major' FROM channel_posts;
+        INSERT INTO channel_view_observed_intervals SELECT id,chat_id,now()-interval '1 day',now(),10,'ready','major' FROM channel_posts;
+        INSERT INTO channel_view_archive_states(chat_id,observed_post_count) SELECT id,30 FROM chats;
+        INSERT INTO marketplace_bindings(entity_id,kind,profile,state,collection_metrics)
+          SELECT id,entity_type,'moderation','ACTIVE','["AUDIENCE"]'::jsonb FROM chats CROSS JOIN generate_series(1,12) n;
+        INSERT INTO chat_membership_activity_rollups
+          SELECT (-100-i)::text,date_trunc('hour',now() AT TIME ZONE 'UTC')-n*interval '1 hour',i+1,i,now()
+          FROM generate_series(1,12) i CROSS JOIN generate_series(1,720) n WHERE n%(i+1)=0;
+        INSERT INTO chat_membership_activity_rollups
+          SELECT (-100-i)::text,date_trunc('hour',now() AT TIME ZONE 'UTC')-n*interval '1 hour',1,0,now()
+          FROM generate_series(1,12) i CROSS JOIN generate_series(800,4000) n;
+        INSERT INTO chat_membership_activity_rollups
+          SELECT '-999',date_trunc('hour',now() AT TIME ZONE 'UTC')-n*interval '1 hour',1,0,now() FROM generate_series(1,120000) n;
+        INSERT INTO chat_membership_activity_rollups
+          SELECT '-112',date_trunc('hour',now() AT TIME ZONE 'UTC')-interval '1 hour'+n*interval '1 millisecond',-1,2,now()
+          FROM generate_series(1,721) n;
+        INSERT INTO chat_membership_activity_feed_items(chat_id,event_type,event_at,source_event_id,canonical_key)
+          SELECT (-100-i)::text,kind,date_trunc('hour',now() AT TIME ZONE 'UTC'),i||'-'||n,i||'-'||kind||'-'||n
+          FROM generate_series(1,12) i CROSS JOIN (VALUES('user_added'),('user_removed')) types(kind)
+          CROSS JOIN generate_series(1,1002) n WHERE n<=CASE WHEN i IN (1,12) THEN 1002 ELSE i*17 END;
+        INSERT INTO chat_membership_activity_feed_items(chat_id,event_type,event_at,source_event_id,canonical_key)
+          SELECT '-999','user_added',now()-n*interval '1 hour','private-history-'||n,'private-history-'||n FROM generate_series(1,120000) n;
+        ANALYZE chats; ANALYZE channel_posts; ANALYZE marketplace_bindings;
+        ANALYZE chat_membership_activity_rollups; ANALYZE chat_membership_activity_feed_items;
+      `);
+      await client.query(verificationSql);
+      const entityCsv = Array.from({ length: 12 }, (_, index) => `-${101 + index}`).join(',');
+      const nativeTiming = join(data.directory, 'network-native-timing.json');
+      const runCombined = (explain) =>
+        runAudit(
+          data,
+          [
+            'network-statistics',
+            entityCsv,
+            '--observations',
+            '--membership=30d',
+            ...(explain ? ['--explain'] : []),
+          ],
+          {
+            MOCK_NATIVE_PSQL_BRIDGE: nativeBridge,
+            MOCK_NATIVE_TIMING: nativeTiming,
+            PGHOST: address.hostname,
+            PGPORT: address.port || '5432',
+            PGUSER: decodeURIComponent(address.username),
+            PGPASSWORD: decodeURIComponent(address.password),
+            PGDATABASE: decodeURIComponent(address.pathname.slice(1)),
+          },
+        );
+      for (const explain of [true, false]) {
+        const started = performance.now();
+        const result = runCombined(explain);
+        const wrapperMs = performance.now() - started;
+        assert.equal(result.status, 0, result.stderr + result.stdout);
+        const timing = JSON.parse(readFileSync(nativeTiming, 'utf8'));
+        assert.equal(timing.status, 0);
+        assert.ok(timing.psqlMs < 8000, JSON.stringify(timing));
+        assert.match(timing.pgOptions, /statement_timeout=2500ms/u);
+        assert.match(timing.pgOptions, /work_mem=1MB/u);
+        assert.match(timing.pgOptions, /max_parallel_workers_per_gather=0/u);
+        t.diagnostic(
+          JSON.stringify({
+            audit: 'network-statistics-protected-native-session',
+            explain,
+            wrapperMs,
+            psqlMs: timing.psqlMs,
+            entities: 12,
+            range: '30d',
+          }),
+        );
+        const report = JSON.parse(result.stdout);
+        if (!explain) {
+          assert.equal(report.entities.length, 12);
+          assert.equal(report.schema_version, 3);
+          assert.equal(
+            report.entities.find((item) => item.id === '-101').membership.current_hour_added.capped,
+            true,
+          );
+          const malformed = report.entities.find((item) => item.id === '-112').membership;
+          assert.equal(malformed.rollup_sample.capped, true);
+          assert.equal(malformed.rollup_sample.misaligned_bucket_count, 721);
+          assert.equal(malformed.observed_net, null);
+        }
+      }
+      // FLAG: EXPLAIN ANALYZE is confined to this disposable native fixture. The
+      // production CLI above still emits only plain EXPLAIN with fixed budgets.
+      await client.query(`SET ROLE ${role}; BEGIN READ ONLY; SET LOCAL statement_timeout=2500;`);
+      let nativePlan;
+      try {
+        nativePlan = (
+          await client.query(
+            'EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ' +
+              buildNetworkStatisticsAuditSql([entityCsv, '--observations', '--membership=30d']),
+          )
+        ).rows[0]['QUERY PLAN'][0];
+      } finally {
+        await client.query('ROLLBACK; RESET ROLE;');
+      }
+      const walk = (node) => [node, ...(node.Plans ?? []).flatMap(walk)];
+      const nodes = walk(nativePlan.Plan);
+      const probes = nodes.filter((node) =>
+        ['chat_membership_activity_rollups', 'chat_membership_activity_feed_items'].includes(
+          node['Relation Name'],
+        ),
+      );
+      assert.equal(probes.length, 9);
+      for (const probe of probes) {
+        assert.match(probe['Node Type'], /^Index (Only )?Scan$/u, JSON.stringify(probe));
+        assert.match(probe['Index Cond'], /chat_id/u);
+        assert.match(probe['Index Cond'], /bucket_start|event_at/u);
+        if (probe['Relation Name'] === 'chat_membership_activity_feed_items')
+          assert.match(probe['Index Cond'], /event_type/u);
+        assert.ok(
+          probe['Actual Rows'] <=
+            (probe['Relation Name'] === 'chat_membership_activity_rollups' ? 721 : 1001),
+          JSON.stringify(probe),
+        );
+        assert.ok(probe['Actual Loops'] <= 12, JSON.stringify(probe));
+        assert.equal(probe['Rows Removed by Filter'] ?? 0, 0);
+      }
+      const cappedProbes = nodes.filter(
+        (node) =>
+          node['Node Type'] === 'Limit' && node.Plans?.some((child) => probes.includes(child)),
+      );
+      assert.equal(
+        cappedProbes.length,
+        9,
+        'all history reads have their own Limit before aggregates/joins',
+      );
+      assert.equal(nativePlan.Plan['Temp Written Blocks'], 0);
+      assert.ok(nodes.every((node) => node['Sort Space Type'] !== 'Disk'));
+      t.diagnostic(
+        JSON.stringify({
+          audit: 'network-statistics-native-work',
+          executionMs: nativePlan['Execution Time'],
+          planningMs: nativePlan['Planning Time'],
+          probes: probes.map((probe) => ({
+            index: probe['Index Name'],
+            rows: probe['Actual Rows'],
+            loops: probe['Actual Loops'],
+          })),
+        }),
+      );
     } finally {
       await client
         .query('SET SESSION AUTHORIZATION DEFAULT; SET default_transaction_read_only=off;')
@@ -3942,13 +4119,23 @@ test('monitor delegates its database sample to the fixed bounded audit', () => {
 test('network statistics mode validates exact scope and preserves private bounded audit admission', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
-  for (const options of [[], ['--explain'], ['--observations'], ['--observations', '--explain']]) {
+  for (const options of [
+    [],
+    ['--explain'],
+    ['--observations'],
+    ['--observations', '--explain'],
+    ['--membership=7d'],
+    ['--membership=30d', '--explain'],
+    ['--observations', '--membership=7d'],
+    ['--observations', '--membership=30d', '--explain'],
+  ]) {
     const result = runAudit(data, ['network-statistics', '-1,-2', ...options]);
     assert.equal(result.status, 0, result.stderr);
     const sql = readFileSync(data.sql, 'utf8');
     assert.match(sql, /BEGIN READ ONLY/u);
     assert.match(sql, /network_statistics_privileges_ready/u);
     assert.match(sql, /network_statistics_observations_privileges_ready/u);
+    assert.match(sql, /network_statistics_membership_privileges_ready/u);
     assert.match(sql, /network_statistics_indexes_ready/u);
     assert.match(sql, /'audit','network_statistics'/u);
     assert.match(sql, /LIMIT 25/u);
@@ -3972,6 +4159,14 @@ test('network statistics mode validates exact scope and preserves private bounde
     assert.notEqual(runConnect(data, ['postgres-audit', 'network-statistics', value]).status, 0);
   }
   assert.notEqual(runAudit(data, ['network-statistics', '-1', '--apply']).status, 0);
+  assert.notEqual(
+    runAudit(data, ['network-statistics', '-1', '--membership=7d', '--membership=30d']).status,
+    0,
+  );
+  assert.notEqual(
+    runConnect(data, ['postgres-audit', 'network-statistics', '-1', '--membership=all']).status,
+    0,
+  );
   assert.notEqual(
     runConnect(data, ['postgres-audit', 'network-statistics', '-1', '--explain', 'extra']).status,
     0,

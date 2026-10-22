@@ -125,4 +125,4 @@ export type UpdateChatRulesPayload = Pick<
   | 'buttonText'
   | 'adminContactButtonEnabled'
   | 'adminContactButtonUrl'
->;
+> & { expectedRevision?: string | null };

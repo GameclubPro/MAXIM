@@ -154,17 +154,13 @@ test('target counts use the correct Russian form including teens', () => {
   }
 });
 
-test('settings target picker validates cached labels without claiming legacy storage', () => {
-  assert.match(applyTargetSheetSource, /loadManagedEntityFavoriteLabels/u);
-  assert.match(applyTargetSheetSource, /getMe\(api,/u);
-  assert.match(
+test('settings target picker shares authenticated labels and invalidates stale membership previews', () => {
+  assert.match(applyTargetSheetSource, /useHomeEntityFavorites\(\)/u);
+  assert.doesNotMatch(
     applyTargetSheetSource,
-    /server\.initialized[\s\S]*?hydrateHomeEntityFavoriteLabelMigrationCandidate\(`u:\$\{userId\}`[\s\S]*?waitForNativeStorage: true/u,
+    /getMe|hydrateHomeEntityFavoriteLabelMigrationCandidate/u,
   );
-  assert.match(
-    applyTargetSheetSource,
-    /import\('\.\.\/\.\.\/lib\/home-entity-favorite-label-sync'\)/u,
-  );
+  assert.match(applyTargetSheetSource, /previewEpochRef\.current\.epoch === compositionEpoch/u);
   assert.doesNotMatch(
     applyTargetSheetSource,
     /updateManagedEntityFavoriteLabels|mode: 'initialize'/u,

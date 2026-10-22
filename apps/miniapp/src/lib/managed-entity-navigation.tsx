@@ -29,7 +29,11 @@ import {
   type ManagedEntityLeaveGuard,
   type ManagedEntityNavigationContextValue,
 } from './managed-entity-navigation-context';
-import { combineManagedEntityLeaveGuards } from './managed-entity-leave-guards';
+import {
+  combineManagedEntityLeaveGuards,
+  managedEntityNavigationIdentity,
+  managedEntityNavigationTargetIdentity,
+} from './managed-entity-leave-guards';
 
 export { useManagedEntityNavigation } from './managed-entity-navigation-context';
 export type { ManagedEntityLeaveGuard } from './managed-entity-navigation-context';
@@ -50,19 +54,6 @@ function readHistoryIndex(state: unknown = window.history.state): number | null 
 
   const value = state.idx;
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
-}
-
-function readTargetPathname(to: To, currentPathname: string): string | null {
-  if (typeof to !== 'string') {
-    return to.pathname ?? currentPathname;
-  }
-
-  const pathname = to.split(/[?#]/u, 1)[0];
-  if (!pathname) {
-    return currentPathname;
-  }
-
-  return pathname.startsWith('/') ? pathname : null;
 }
 
 export function ManagedEntityNavigationProvider({ children }: { children: ReactNode }) {
@@ -171,9 +162,12 @@ export function ManagedEntityNavigationProvider({ children }: { children: ReactN
   }, []);
 
   const runOrQueueNavigation = useCallback(
-    (run: () => void, targetPathname: string | null) => {
+    (run: () => void, targetIdentity: string | null) => {
       const guard = guardGetterRef.current?.();
-      if (!guard?.dirty || targetPathname === location.pathname) {
+      if (
+        !guard?.dirty ||
+        targetIdentity === managedEntityNavigationIdentity(location.pathname, location.search)
+      ) {
         run();
         return true;
       }
@@ -184,12 +178,15 @@ export function ManagedEntityNavigationProvider({ children }: { children: ReactN
       }
       return false;
     },
-    [location.pathname],
+    [location.pathname, location.search],
   );
 
   const requestNavigation = useCallback(
     (to: To, options?: NavigateOptions) =>
-      runOrQueueNavigation(() => navigate(to, options), readTargetPathname(to, location.pathname)),
+      runOrQueueNavigation(
+        () => navigate(to, options),
+        managedEntityNavigationTargetIdentity(to, location.pathname),
+      ),
     [location.pathname, navigate, runOrQueueNavigation],
   );
 
@@ -232,13 +229,13 @@ export function ManagedEntityNavigationProvider({ children }: { children: ReactN
       push: (to, state, options) => {
         runOrQueueNavigation(
           () => navigator.push(to, state, options),
-          readTargetPathname(to, location.pathname),
+          managedEntityNavigationTargetIdentity(to, location.pathname),
         );
       },
       replace: (to, state, options) => {
         runOrQueueNavigation(
           () => navigator.replace(to, state, options),
-          readTargetPathname(to, location.pathname),
+          managedEntityNavigationTargetIdentity(to, location.pathname),
         );
       },
     };
@@ -266,7 +263,7 @@ export function ManagedEntityNavigationProvider({ children }: { children: ReactN
   const saveAndProceed = async () => {
     const guard = guardGetterRef.current?.();
     const pendingNavigation = pendingNavigationRef.current;
-    if (!guard || !pendingNavigation) {
+    if (!guard || !pendingNavigation || guard.discardOnly) {
       return;
     }
 
@@ -302,23 +299,38 @@ export function ManagedEntityNavigationProvider({ children }: { children: ReactN
       </UNSAFE_NavigationContext.Provider>
       {confirmationOpen ? (
         <Suspense fallback={null}>
-          <LazyActionConfirmSheet
-            id="managed-entity-leave-confirm"
-            open
-            title="Сохранить изменения?"
-            summary="Перед переходом можно сохранить текущие настройки или выйти без изменений."
-            confirmLabel="Сохранить и перейти"
-            confirmBusyLabel="Сохраняем..."
-            cancelLabel="Отмена"
-            tone="accent"
-            isBusy={busy}
-            extraActionLabel="Выйти без сохранения"
-            extraActionTone="danger"
-            actionOrder="confirm-extra-cancel"
-            onClose={closeConfirmation}
-            onConfirm={() => void saveAndProceed()}
-            onExtraAction={discardAndProceed}
-          />
+          {activeGuard?.discardOnly ? (
+            <LazyActionConfirmSheet
+              id="managed-entity-leave-confirm"
+              open
+              title="Выйти без сохранения?"
+              summary="Изменения ещё не применены. При выходе черновик будет сброшен."
+              confirmLabel="Выйти без сохранения"
+              cancelLabel="Остаться"
+              tone="danger"
+              isBusy={busy}
+              onClose={closeConfirmation}
+              onConfirm={discardAndProceed}
+            />
+          ) : (
+            <LazyActionConfirmSheet
+              id="managed-entity-leave-confirm"
+              open
+              title="Сохранить изменения?"
+              summary="Перед переходом можно сохранить текущие настройки или выйти без изменений."
+              confirmLabel="Сохранить и перейти"
+              confirmBusyLabel="Сохраняем..."
+              cancelLabel="Отмена"
+              tone="accent"
+              isBusy={busy}
+              extraActionLabel="Выйти без сохранения"
+              extraActionTone="danger"
+              actionOrder="confirm-extra-cancel"
+              onClose={closeConfirmation}
+              onConfirm={() => void saveAndProceed()}
+              onExtraAction={discardAndProceed}
+            />
+          )}
         </Suspense>
       ) : null}
     </ManagedEntityNavigationContext.Provider>
@@ -340,5 +352,5 @@ export function useManagedEntityLeaveGuard(guard: ManagedEntityLeaveGuard): void
 
   useLayoutEffect(() => {
     context?.notifyLeaveGuardChanged();
-  }, [context, guard.dirty, guard.saving]);
+  }, [context, guard.dirty, guard.saving, guard.discardOnly]);
 }

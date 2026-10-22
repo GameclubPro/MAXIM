@@ -1,3 +1,4 @@
+import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 import type { ChatSettings, DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
 import { lazy, Suspense } from 'react';
 import { Minus, Plus } from 'iconoir-react';
@@ -102,6 +103,8 @@ const LazySettingsDuplicateWindowControls = lazy(
 );
 const LazySettingsDuplicateDiagnostics = lazy(() => import('./settings-duplicate-diagnostics'));
 
+const SECTION_PRESENTATION = getNetworkSettingsSectionPresentation('chat', 'duplicates');
+
 export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps) {
   const photoPresentationPolicy = resolveDuplicatePhotoPresentationPolicy(
     props.duplicatePhotoModerationPolicy,
@@ -148,17 +151,17 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
   return (
     <GlassCard
       className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-      style={{ animationDelay: '180ms', order: 15 }}
+      style={{ animationDelay: '180ms', order: SECTION_PRESENTATION.order }}
       aria-label="Антидубль"
     >
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
-          title="Антидубль"
+          title={SECTION_PRESENTATION.title}
           enabled={draft.antiDuplicateEnabled}
           summary={duplicatesHeaderSummary}
           status={draft.antiDuplicateEnabled ? 'Вкл' : 'Выкл'}
-          icon="repeat"
-          tone="rose"
+          icon={SECTION_PRESENTATION.icon}
+          tone={SECTION_PRESENTATION.tone}
           open={expanded}
           controls="settings-duplicates-content"
           onClick={() => toggleSection('duplicates')}
@@ -167,482 +170,514 @@ export function SettingsDuplicatesSection(props: SettingsDuplicatesSectionProps)
 
       <SettingsDrilldownPanel
         id="settings-duplicates-content"
-        icon={<SettingsSectionIcon name="repeat" />}
+        icon={<SettingsSectionIcon name={SECTION_PRESENTATION.icon} />}
         open={expanded}
-        title="Антидубль"
+        title={SECTION_PRESENTATION.title}
         summary={duplicatesHeaderSummary}
-        tone="rose"
-        className="settings-drilldown__panel--ladder settings-drilldown__panel--duplicates"
+        tone={SECTION_PRESENTATION.tone}
+        className={SECTION_PRESENTATION.panelClassName}
         onClose={() => toggleSection('duplicates')}
         headerAction={renderApplyTargetHeaderAction('duplicates')}
         confirmCloseWhen={isSectionDirty('duplicates')}
         onDiscardChanges={() => discardSectionChanges('duplicates')}
         footer={renderSectionSaveFooter('duplicates')}
       >
-        <div className={cn('settings-section__collapse', expanded && 'is-open')}>
-          {expanded ? (
-            <div className="settings-section__collapse-inner">
-              <div className="settings-native-toggle">
-                <div className="settings-native-toggle__row">
-                  <div className="settings-native-toggle__title-wrap">
-                    <span className="settings-native-toggle__title">Включить антидубль</span>
-                    <SettingsHintAnchor
-                      hintKey="antiDuplicate"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      label="Пояснение для антидубля"
-                    >
-                      Повторы текста ищутся у одного участника в этом чате. Первое сообщение не
-                      является дублем. Проверяются также короткие сообщения, пересылки и подписи.
-                      Действия зависят от настроек ниже и текущего режима проверки.
-                    </SettingsHintAnchor>
-                  </div>
-                  <label className="settings-native-switch" aria-label="Включить антидубль">
-                    <input
-                      type="checkbox"
-                      checked={draft.antiDuplicateEnabled}
-                      onChange={(event) =>
-                        setFieldValue('antiDuplicateEnabled', event.target.checked)
-                      }
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              <dl className="duplicate-diagnostics__facts duplicate-scope">
-                <div>
-                  <dt>Повторы текста</dt>
-                  <dd>У одного участника в этом чате</dd>
-                </div>
-                <div>
-                  <dt>Исключения</dt>
-                  <dd>Администраторы, боты и участники с иммунитетом</dd>
-                </div>
-              </dl>
-              <Suspense
-                fallback={
-                  <p className="field__hint" role="status">
-                    Загружаем состояние бота
-                  </p>
-                }
-              >
-                <LazySettingsDuplicateDiagnostics
-                  key={`${props.userId}:${props.chatId}`}
-                  api={api}
-                  chatId={props.chatId}
-                  userId={props.userId}
-                />
-              </Suspense>
-
-              {draft.antiDuplicateEnabled ? (
-                <>
-                  <h3 className="duplicate-settings-group__title">Что проверять</h3>
-
-                  <Suspense fallback={null}>
-                    <LazySettingsDuplicateMessageControls
-                      mode={duplicateMessageModerationMode}
-                      value={draft.duplicateCompareMode}
-                      onChange={(value) => setFieldValue('duplicateCompareMode', value)}
-                    />
-                  </Suspense>
-
-                  <div className="settings-policy">
-                    <div className="settings-policy__label-row">
-                      <span className="field__label">Текст</span>
-                      <SettingsHintAnchor
-                        hintKey="duplicateTextMode"
-                        openHintKey={openHintKey}
-                        onToggleHint={toggleHint}
-                        label="Пояснение для режима сравнения текста"
-                      >
-                        {draft.duplicateDetectionPreset === 'STANDARD'
-                          ? 'Одинаковый текст без учёта регистра и пробелов. Числа, слова и ссылки должны совпадать.'
-                          : draft.duplicateDetectionPreset === 'STRICT'
-                            ? 'Также проверяется длинный текст с изменённой пунктуацией или заменёнными открытыми ссылками и телефонами. Порядок слов и числа сохраняются; скрытые ссылки и кнопки сравниваются точно.'
-                            : 'Точное сравнение всегда включено. Дополнительные совпадения по ссылке, телефону или длинному тексту выбираются ниже.'}
-                      </SettingsHintAnchor>
-                    </div>
-                    <SegmentedControl
-                      value={draft.duplicateDetectionPreset}
-                      options={DUPLICATE_DETECTION_OPTIONS}
-                      onChange={applyDuplicateDetectionPreset}
-                      className="settings-mode-segments"
-                      ariaLabel="Как сравнивать текст"
-                    />
-                  </div>
-                </>
-              ) : null}
-
-              {draft.antiDuplicateEnabled && draft.duplicateDetectionPreset === 'CUSTOM' ? (
-                <Suspense fallback={null}>
-                  <LazySettingsDuplicateCustomControls
-                    draft={draft}
-                    setFieldValue={setFieldValue}
-                    openHintKey={openHintKey}
-                    toggleHint={toggleHint}
+        {props.sharedContent ? (
+          <>
+            {expanded ? (
+              <>
+                <Suspense fallback={<p role="status">Загружаем состояние бота</p>}>
+                  <LazySettingsDuplicateDiagnostics
+                    key={`${props.userId}:${props.chatId}`}
+                    api={api}
+                    chatId={props.chatId}
+                    userId={props.userId}
                   />
                 </Suspense>
-              ) : null}
-
-              {draft.antiDuplicateEnabled && draft.duplicateCompareMode !== 'TEXT' ? (
-                <Suspense fallback={null}>
-                  <LazySettingsDuplicatePhotoControls
-                    moderationPolicy={photoPresentationPolicy}
-                    scope={draft.duplicatePhotoScope}
-                    onScopeChange={(value) => setFieldValue('duplicatePhotoScope', value)}
-                  />
-                </Suspense>
-              ) : null}
-
-              {draft.antiDuplicateEnabled ? (
-                <>
-                  <h3 className="duplicate-settings-group__title">Когда срабатывать</h3>
-
-                  <article
-                    className={cn(
-                      'duplicate-stage',
-                      (fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount) &&
-                        'field--error',
-                    )}
-                  >
-                    <div className="duplicate-stage__top">
+                {props.sharedContent}
+              </>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div className={cn('settings-section__collapse', expanded && 'is-open')}>
+              {expanded ? (
+                <div className="settings-section__collapse-inner">
+                  <div className="settings-native-toggle">
+                    <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="duplicate-stage__title">Период проверки</span>
+                        <span className="settings-native-toggle__title">Включить антидубль</span>
                         <SettingsHintAnchor
-                          hintKey="duplicateModerationStart"
+                          hintKey="antiDuplicate"
                           openHintKey={openHintKey}
                           onToggleHint={toggleHint}
-                          label="Пояснение для условий удаления дублей"
+                          label="Пояснение для антидубля"
                         >
-                          {draft.duplicateWindowMode === 'DAILY'
-                            ? 'Повторы учитываются только внутри выбранного периода. Каждый день история начинается заново. Время «По» не включается.'
-                            : 'Интервал начинается с разрешённого оригинала. Удалённые повторы и правки без изменения содержания не продлевают его.'}
+                          Повторы текста ищутся у одного участника в этом чате. Первое сообщение не
+                          является дублем. Проверяются также короткие сообщения, пересылки и
+                          подписи. Действия зависят от настроек ниже и текущего режима проверки.
                         </SettingsHintAnchor>
                       </div>
-                    </div>
-
-                    <Suspense fallback={null}>
-                      <LazySettingsDuplicateWindowControls
-                        draft={draft}
-                        setFieldValue={setFieldValue}
-                        fieldErrors={fieldErrors}
-                        windowHours={duplicateSharedWindowHours}
-                        inputValue={duplicateWindowInputValue}
-                        onHoursChange={handleDuplicateWindowHoursChange}
-                        onHoursBlur={handleDuplicateWindowHoursBlur}
-                      />
-                    </Suspense>
-                    <div className="duplicate-trigger-count">
-                      <div
-                        className={cn(
-                          'duplicate-stage__field',
-                          fieldErrors.duplicateWarnMaxCount && 'field--error',
-                        )}
-                      >
-                        <span className="duplicate-stage__field-label">Удалять начиная с</span>
-                        <div
-                          className="duplicate-count-stepper"
-                          role="group"
-                          aria-label="Номер первого удаляемого одинакового сообщения"
-                          aria-invalid={Boolean(fieldErrors.duplicateWarnMaxCount) || undefined}
-                          aria-describedby={
-                            fieldErrors.duplicateWarnMaxCount
-                              ? 'duplicate-allowed-count-error'
-                              : undefined
+                      <label className="settings-native-switch" aria-label="Включить антидубль">
+                        <input
+                          type="checkbox"
+                          checked={draft.antiDuplicateEnabled}
+                          onChange={(event) =>
+                            setFieldValue('antiDuplicateEnabled', event.target.checked)
                           }
-                        >
-                          <button
-                            type="button"
-                            className="duplicate-count-stepper__button"
-                            onClick={() => adjustDuplicateAllowedCount(duplicateAllowedCount, -1)}
-                            disabled={duplicateAllowedCount <= DUPLICATE_ALLOWED_COUNT_MIN}
-                            aria-label="Начинать удаление раньше"
-                          >
-                            <Minus aria-hidden />
-                          </button>
-
-                          <output className="duplicate-count-stepper__value" aria-live="polite">
-                            {duplicateAllowedCount + 2}-го
-                          </output>
-
-                          <button
-                            type="button"
-                            className="duplicate-count-stepper__button"
-                            onClick={() => adjustDuplicateAllowedCount(duplicateAllowedCount, 1)}
-                            disabled={
-                              duplicateAllowedCount >= resolveDuplicateAllowedCountMax(draft)
-                            }
-                            aria-label="Начинать удаление позже"
-                          >
-                            <Plus aria-hidden />
-                          </button>
-                        </div>
-                        <span className="field__hint">одинакового сообщения</span>
-                      </div>
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
                     </div>
+                  </div>
 
-                    {fieldErrors.duplicateWarnMaxCount ? (
-                      <small
-                        id="duplicate-allowed-count-error"
-                        className="field__hint"
-                        role="alert"
-                      >
-                        {fieldErrors.duplicateWarnMaxCount}
-                      </small>
-                    ) : null}
-                  </article>
-
-                  <Suspense fallback={null}>
-                    <LazySettingsDuplicateActionPreview
-                      draft={draft}
-                      allowedCount={duplicateAllowedCount}
-                      windowHours={duplicateSharedWindowHours}
-                      photoPolicy={photoPresentationPolicy}
-                      openHintKey={openHintKey}
-                      toggleHint={toggleHint}
+                  <dl className="duplicate-diagnostics__facts duplicate-scope">
+                    <div>
+                      <dt>Повторы текста</dt>
+                      <dd>У одного участника в этом чате</dd>
+                    </div>
+                    <div>
+                      <dt>Исключения</dt>
+                      <dd>Администраторы, боты и участники с иммунитетом</dd>
+                    </div>
+                  </dl>
+                  <Suspense
+                    fallback={
+                      <p className="field__hint" role="status">
+                        Загружаем состояние бота
+                      </p>
+                    }
+                  >
+                    <LazySettingsDuplicateDiagnostics
+                      key={`${props.userId}:${props.chatId}`}
+                      api={api}
+                      chatId={props.chatId}
+                      userId={props.userId}
                     />
                   </Suspense>
 
-                  <h3 className="duplicate-settings-group__title">Что делать</h3>
-                </>
-              ) : null}
+                  {draft.antiDuplicateEnabled ? (
+                    <>
+                      <h3 className="duplicate-settings-group__title">Что проверять</h3>
 
-              {draft.antiDuplicateEnabled ? (
-                <div className="settings-native-toggle">
-                  <div className="settings-native-toggle__row">
-                    <div className="settings-native-toggle__title-wrap">
-                      <span className="settings-native-toggle__title">
-                        Сначала объяснить удаление
-                      </span>
-                      <div className="settings-native-toggle__title-actions">
-                        <EditToggleButton
-                          label="Текст о дублях"
-                          onClick={() => toggleBotMessageEditor('duplicate')}
-                          disabled={!draft.duplicateBotMessageEnabled}
-                          isOpen={openBotEditorKey === 'duplicate'}
+                      <Suspense fallback={null}>
+                        <LazySettingsDuplicateMessageControls
+                          mode={duplicateMessageModerationMode}
+                          value={draft.duplicateCompareMode}
+                          onChange={(value) => setFieldValue('duplicateCompareMode', value)}
+                        />
+                      </Suspense>
+
+                      <div className="settings-policy">
+                        <div className="settings-policy__label-row">
+                          <span className="field__label">Текст</span>
+                          <SettingsHintAnchor
+                            hintKey="duplicateTextMode"
+                            openHintKey={openHintKey}
+                            onToggleHint={toggleHint}
+                            label="Пояснение для режима сравнения текста"
+                          >
+                            {draft.duplicateDetectionPreset === 'STANDARD'
+                              ? 'Одинаковый текст без учёта регистра и пробелов. Числа, слова и ссылки должны совпадать.'
+                              : draft.duplicateDetectionPreset === 'STRICT'
+                                ? 'Также проверяется длинный текст с изменённой пунктуацией или заменёнными открытыми ссылками и телефонами. Порядок слов и числа сохраняются; скрытые ссылки и кнопки сравниваются точно.'
+                                : 'Точное сравнение всегда включено. Дополнительные совпадения по ссылке, телефону или длинному тексту выбираются ниже.'}
+                          </SettingsHintAnchor>
+                        </div>
+                        <SegmentedControl
+                          value={draft.duplicateDetectionPreset}
+                          options={DUPLICATE_DETECTION_OPTIONS}
+                          onChange={applyDuplicateDetectionPreset}
+                          className="settings-mode-segments"
+                          ariaLabel="Как сравнивать текст"
                         />
                       </div>
-                    </div>
+                    </>
+                  ) : null}
 
-                    <label className="settings-native-switch" aria-label="Сообщение о дублях">
-                      <input
-                        type="checkbox"
-                        checked={draft.duplicateBotMessageEnabled}
-                        onChange={(event) => {
-                          const enabled = event.target.checked;
-                          applyDuplicateFlowConfig({
-                            duplicateBotMessageEnabled: enabled,
-                          });
-                          if (!enabled) {
-                            setFieldValue('duplicateBotButtonEnabled', false);
-                            clearButtonGroupErrors(DUPLICATE_BOT_BUTTON_GROUP);
-                          }
-                        }}
+                  {draft.antiDuplicateEnabled && draft.duplicateDetectionPreset === 'CUSTOM' ? (
+                    <Suspense fallback={null}>
+                      <LazySettingsDuplicateCustomControls
+                        draft={draft}
+                        setFieldValue={setFieldValue}
+                        openHintKey={openHintKey}
+                        toggleHint={toggleHint}
                       />
-                      <span className="toggle-switch" aria-hidden>
-                        <span className="toggle-switch__thumb" />
-                      </span>
-                    </label>
-                  </div>
+                    </Suspense>
+                  ) : null}
 
-                  {draft.duplicateBotMessageEnabled && openBotEditorKey === 'duplicate' ? (
-                    <LazyBotMessageEditor
-                      editorKey="duplicate"
-                      {...botSpeechEditorProps!}
-                      botSpeechPreviewContext={botSpeechPreviewContext}
-                      value={draft.duplicateBotMessageText}
-                      onChange={(nextValue) =>
-                        setFieldValue(
-                          'duplicateBotMessageText',
-                          nextValue as ChatSettings['duplicateBotMessageText'],
-                        )
-                      }
-                      onReset={() => setFieldValue('duplicateBotMessageText', '')}
-                      onClose={() => setOpenBotEditorKey(null)}
-                    />
+                  {draft.antiDuplicateEnabled && draft.duplicateCompareMode !== 'TEXT' ? (
+                    <Suspense fallback={null}>
+                      <LazySettingsDuplicatePhotoControls
+                        moderationPolicy={photoPresentationPolicy}
+                        scope={draft.duplicatePhotoScope}
+                        onScopeChange={(value) => setFieldValue('duplicatePhotoScope', value)}
+                      />
+                    </Suspense>
+                  ) : null}
+
+                  {draft.antiDuplicateEnabled ? (
+                    <>
+                      <h3 className="duplicate-settings-group__title">Когда срабатывать</h3>
+
+                      <article
+                        className={cn(
+                          'duplicate-stage',
+                          (fieldErrors.duplicateWarnWindowSec ||
+                            fieldErrors.duplicateWarnMaxCount) &&
+                            'field--error',
+                        )}
+                      >
+                        <div className="duplicate-stage__top">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="duplicate-stage__title">Период проверки</span>
+                            <SettingsHintAnchor
+                              hintKey="duplicateModerationStart"
+                              openHintKey={openHintKey}
+                              onToggleHint={toggleHint}
+                              label="Пояснение для условий удаления дублей"
+                            >
+                              {draft.duplicateWindowMode === 'DAILY'
+                                ? 'Повторы учитываются только внутри выбранного периода. Каждый день история начинается заново. Время «По» не включается.'
+                                : 'Интервал начинается с разрешённого оригинала. Удалённые повторы и правки без изменения содержания не продлевают его.'}
+                            </SettingsHintAnchor>
+                          </div>
+                        </div>
+
+                        <Suspense fallback={null}>
+                          <LazySettingsDuplicateWindowControls
+                            draft={draft}
+                            setFieldValue={setFieldValue}
+                            fieldErrors={fieldErrors}
+                            windowHours={duplicateSharedWindowHours}
+                            inputValue={duplicateWindowInputValue}
+                            onHoursChange={handleDuplicateWindowHoursChange}
+                            onHoursBlur={handleDuplicateWindowHoursBlur}
+                          />
+                        </Suspense>
+                        <div className="duplicate-trigger-count">
+                          <div
+                            className={cn(
+                              'duplicate-stage__field',
+                              fieldErrors.duplicateWarnMaxCount && 'field--error',
+                            )}
+                          >
+                            <span className="duplicate-stage__field-label">Удалять начиная с</span>
+                            <div
+                              className="duplicate-count-stepper"
+                              role="group"
+                              aria-label="Номер первого удаляемого одинакового сообщения"
+                              aria-invalid={Boolean(fieldErrors.duplicateWarnMaxCount) || undefined}
+                              aria-describedby={
+                                fieldErrors.duplicateWarnMaxCount
+                                  ? 'duplicate-allowed-count-error'
+                                  : undefined
+                              }
+                            >
+                              <button
+                                type="button"
+                                className="duplicate-count-stepper__button"
+                                onClick={() =>
+                                  adjustDuplicateAllowedCount(duplicateAllowedCount, -1)
+                                }
+                                disabled={duplicateAllowedCount <= DUPLICATE_ALLOWED_COUNT_MIN}
+                                aria-label="Начинать удаление раньше"
+                              >
+                                <Minus aria-hidden />
+                              </button>
+
+                              <output className="duplicate-count-stepper__value" aria-live="polite">
+                                {duplicateAllowedCount + 2}-го
+                              </output>
+
+                              <button
+                                type="button"
+                                className="duplicate-count-stepper__button"
+                                onClick={() =>
+                                  adjustDuplicateAllowedCount(duplicateAllowedCount, 1)
+                                }
+                                disabled={
+                                  duplicateAllowedCount >= resolveDuplicateAllowedCountMax(draft)
+                                }
+                                aria-label="Начинать удаление позже"
+                              >
+                                <Plus aria-hidden />
+                              </button>
+                            </div>
+                            <span className="field__hint">одинакового сообщения</span>
+                          </div>
+                        </div>
+
+                        {fieldErrors.duplicateWarnMaxCount ? (
+                          <small
+                            id="duplicate-allowed-count-error"
+                            className="field__hint"
+                            role="alert"
+                          >
+                            {fieldErrors.duplicateWarnMaxCount}
+                          </small>
+                        ) : null}
+                      </article>
+
+                      <Suspense fallback={null}>
+                        <LazySettingsDuplicateActionPreview
+                          draft={draft}
+                          allowedCount={duplicateAllowedCount}
+                          windowHours={duplicateSharedWindowHours}
+                          photoPolicy={photoPresentationPolicy}
+                          openHintKey={openHintKey}
+                          toggleHint={toggleHint}
+                        />
+                      </Suspense>
+
+                      <h3 className="duplicate-settings-group__title">Что делать</h3>
+                    </>
+                  ) : null}
+
+                  {draft.antiDuplicateEnabled ? (
+                    <div className="settings-native-toggle">
+                      <div className="settings-native-toggle__row">
+                        <div className="settings-native-toggle__title-wrap">
+                          <span className="settings-native-toggle__title">
+                            Сначала объяснить удаление
+                          </span>
+                          <div className="settings-native-toggle__title-actions">
+                            <EditToggleButton
+                              label="Текст о дублях"
+                              onClick={() => toggleBotMessageEditor('duplicate')}
+                              disabled={!draft.duplicateBotMessageEnabled}
+                              isOpen={openBotEditorKey === 'duplicate'}
+                            />
+                          </div>
+                        </div>
+
+                        <label className="settings-native-switch" aria-label="Сообщение о дублях">
+                          <input
+                            type="checkbox"
+                            checked={draft.duplicateBotMessageEnabled}
+                            onChange={(event) => {
+                              const enabled = event.target.checked;
+                              applyDuplicateFlowConfig({
+                                duplicateBotMessageEnabled: enabled,
+                              });
+                              if (!enabled) {
+                                setFieldValue('duplicateBotButtonEnabled', false);
+                                clearButtonGroupErrors(DUPLICATE_BOT_BUTTON_GROUP);
+                              }
+                            }}
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+
+                      {draft.duplicateBotMessageEnabled && openBotEditorKey === 'duplicate' ? (
+                        <LazyBotMessageEditor
+                          editorKey="duplicate"
+                          {...botSpeechEditorProps!}
+                          botSpeechPreviewContext={botSpeechPreviewContext}
+                          value={draft.duplicateBotMessageText}
+                          onChange={(nextValue) =>
+                            setFieldValue(
+                              'duplicateBotMessageText',
+                              nextValue as ChatSettings['duplicateBotMessageText'],
+                            )
+                          }
+                          onReset={() => setFieldValue('duplicateBotMessageText', '')}
+                          onClose={() => setOpenBotEditorKey(null)}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {draft.antiDuplicateEnabled && draft.duplicateBotMessageEnabled ? (
+                    <>
+                      <div
+                        className={cn(
+                          'settings-native-toggle',
+                          'settings-native-toggle--nested',
+                          hasDuplicateBotButtonError && 'field--error',
+                        )}
+                      >
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">Добавить кнопку</span>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Кнопка в сообщении о дублях"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.duplicateBotButtonEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
+                                  enabled,
+                                  ...(enabled && draft.duplicateBotButtons.length === 0
+                                    ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                    : {}),
+                                });
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {draft.duplicateBotButtonEnabled ? (
+                          <BroadcastLinkButtonsEditor
+                            api={api}
+                            buttons={draft.duplicateBotButtons}
+                            errors={duplicateBotButtonErrors}
+                            onChange={(nextButtons) =>
+                              updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
+                                buttons: nextButtons,
+                                enabled: nextButtons.length > 0,
+                              })
+                            }
+                            urlPlaceholder="https://max.ru/profile/..."
+                            textPlaceholder="Открыть"
+                            title="Кнопки сообщения"
+                            subtitle="Название и ссылка"
+                          />
+                        ) : null}
+                      </div>
+
+                      {renderAdminContactToggle(
+                        DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
+                        'Добавить связь с админом в сообщения о дублях',
+                      )}
+                    </>
+                  ) : null}
+
+                  {draft.antiDuplicateEnabled ? (
+                    <>
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">Предупредить</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить предупреждение за повторы"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.duplicateWarnEnabled}
+                              onChange={(event) =>
+                                applyDuplicateFlowConfig({
+                                  duplicateWarnEnabled: event.target.checked,
+                                })
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div
+                        className={cn(
+                          'settings-native-toggle',
+                          'settings-native-toggle--nested',
+                          fieldErrors.duplicateMuteDurationHours && 'field--error',
+                        )}
+                      >
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">
+                              Ограничить отправку
+                            </span>
+                            <div className="settings-native-toggle__title-actions">
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-duration-editor__preset settings-duration-editor__preset--trigger',
+                                  openMuteDurationKey === 'duplicateMuteDurationHours' &&
+                                    'is-active',
+                                )}
+                                onClick={() =>
+                                  toggleMuteDurationEditor('duplicateMuteDurationHours')
+                                }
+                                aria-label={`Срок: ${formatMuteDurationCompact(
+                                  Number(draft.duplicateMuteDurationHours),
+                                )}`}
+                                aria-expanded={openMuteDurationKey === 'duplicateMuteDurationHours'}
+                              >
+                                <ClockIcon />
+                                <span>
+                                  {formatMuteDurationCompact(
+                                    Number(draft.duplicateMuteDurationHours),
+                                  )}
+                                </span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить ограничение сообщений за повторы"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.duplicateMuteEnabled}
+                              onChange={(event) =>
+                                applyDuplicateFlowConfig({
+                                  duplicateMuteEnabled: event.target.checked,
+                                })
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {renderMuteDurationEditor('duplicateMuteDurationHours', 'Срок ограничения')}
+
+                        {fieldErrors.duplicateMuteDurationHours ? (
+                          <small className="field__hint">
+                            {fieldErrors.duplicateMuteDurationHours}
+                          </small>
+                        ) : null}
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">Заблокировать</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить блокировку за повторы"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.duplicateBanEnabled}
+                              onChange={(event) =>
+                                applyDuplicateFlowConfig({
+                                  duplicateBanEnabled: event.target.checked,
+                                })
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    </>
                   ) : null}
                 </div>
               ) : null}
-
-              {draft.antiDuplicateEnabled && draft.duplicateBotMessageEnabled ? (
-                <>
-                  <div
-                    className={cn(
-                      'settings-native-toggle',
-                      'settings-native-toggle--nested',
-                      hasDuplicateBotButtonError && 'field--error',
-                    )}
-                  >
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Добавить кнопку</span>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Кнопка в сообщении о дублях"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.duplicateBotButtonEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
-                              enabled,
-                              ...(enabled && draft.duplicateBotButtons.length === 0
-                                ? { buttons: [createEmptyBroadcastLinkButton()] }
-                                : {}),
-                            });
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {draft.duplicateBotButtonEnabled ? (
-                      <BroadcastLinkButtonsEditor
-                        api={api}
-                        buttons={draft.duplicateBotButtons}
-                        errors={duplicateBotButtonErrors}
-                        onChange={(nextButtons) =>
-                          updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
-                            buttons: nextButtons,
-                            enabled: nextButtons.length > 0,
-                          })
-                        }
-                        urlPlaceholder="https://max.ru/profile/..."
-                        textPlaceholder="Открыть"
-                        title="Кнопки сообщения"
-                        subtitle="Название и ссылка"
-                      />
-                    ) : null}
-                  </div>
-
-                  {renderAdminContactToggle(
-                    DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
-                    'Добавить связь с админом в сообщения о дублях',
-                  )}
-                </>
-              ) : null}
-
-              {draft.antiDuplicateEnabled ? (
-                <>
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Предупредить</span>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить предупреждение за повторы"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.duplicateWarnEnabled}
-                          onChange={(event) =>
-                            applyDuplicateFlowConfig({
-                              duplicateWarnEnabled: event.target.checked,
-                            })
-                          }
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div
-                    className={cn(
-                      'settings-native-toggle',
-                      'settings-native-toggle--nested',
-                      fieldErrors.duplicateMuteDurationHours && 'field--error',
-                    )}
-                  >
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Ограничить отправку</span>
-                        <div className="settings-native-toggle__title-actions">
-                          <button
-                            type="button"
-                            className={cn(
-                              'settings-duration-editor__preset settings-duration-editor__preset--trigger',
-                              openMuteDurationKey === 'duplicateMuteDurationHours' && 'is-active',
-                            )}
-                            onClick={() => toggleMuteDurationEditor('duplicateMuteDurationHours')}
-                            aria-label={`Срок: ${formatMuteDurationCompact(
-                              Number(draft.duplicateMuteDurationHours),
-                            )}`}
-                            aria-expanded={openMuteDurationKey === 'duplicateMuteDurationHours'}
-                          >
-                            <ClockIcon />
-                            <span>
-                              {formatMuteDurationCompact(Number(draft.duplicateMuteDurationHours))}
-                            </span>
-                          </button>
-                        </div>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить ограничение сообщений за повторы"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.duplicateMuteEnabled}
-                          onChange={(event) =>
-                            applyDuplicateFlowConfig({
-                              duplicateMuteEnabled: event.target.checked,
-                            })
-                          }
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {renderMuteDurationEditor('duplicateMuteDurationHours', 'Срок ограничения')}
-
-                    {fieldErrors.duplicateMuteDurationHours ? (
-                      <small className="field__hint">
-                        {fieldErrors.duplicateMuteDurationHours}
-                      </small>
-                    ) : null}
-                  </div>
-
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Заблокировать</span>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить блокировку за повторы"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.duplicateBanEnabled}
-                          onChange={(event) =>
-                            applyDuplicateFlowConfig({
-                              duplicateBanEnabled: event.target.checked,
-                            })
-                          }
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                </>
-              ) : null}
             </div>
-          ) : null}
-        </div>
+          </>
+        )}
       </SettingsDrilldownPanel>
     </GlassCard>
   );

@@ -1,3 +1,4 @@
+import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 import { Suspense, useState, type Dispatch, type SetStateAction } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
@@ -40,6 +41,13 @@ const LazySettingsStopWordsEditor = recoverableLazyNamedComponent<SettingsStopWo
   () => import('./settings-stop-words-editor'),
   'SettingsStopWordsEditor',
 );
+const LazySettingsStopWordsSingleTools = recoverableLazyNamedComponent<
+  import('react').ComponentProps<
+    typeof import('./settings-stop-words-single-tools').SettingsStopWordsSingleTools
+  >
+>(() => import('./settings-stop-words-single-tools'), 'SettingsStopWordsSingleTools');
+
+const SECTION_PRESENTATION = getNetworkSettingsSectionPresentation('chat', 'stopWords');
 
 export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
   const [mode, setMode] = useState<'words' | 'domains'>('words');
@@ -65,17 +73,17 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
   return (
     <GlassCard
       className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-      style={{ animationDelay: '214ms', order: 13 }}
+      style={{ animationDelay: '214ms', order: SECTION_PRESENTATION.order }}
       aria-label="Стоп-слова"
     >
       <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
         <SettingsSectionToggle
-          title="Стоп-слова"
+          title={SECTION_PRESENTATION.title}
           enabled={policy?.enabled}
           summary={stopWordsHeaderSummary}
           status={stopWordsCardStatus}
-          icon="keywords"
-          tone="rose"
+          icon={SECTION_PRESENTATION.icon}
+          tone={SECTION_PRESENTATION.tone}
           open={expanded}
           controls="settings-stop-words-content"
           onClick={() => toggleSection('stopWords')}
@@ -84,28 +92,49 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
 
       <SettingsDrilldownPanel
         id="settings-stop-words-content"
-        icon={<SettingsSectionIcon name="keywords" />}
+        icon={<SettingsSectionIcon name={SECTION_PRESENTATION.icon} />}
         open={expanded}
-        title="Стоп-слова"
+        title={SECTION_PRESENTATION.title}
         summary={stopWordsHeaderSummary}
-        tone="rose"
-        className="settings-drilldown__panel--board settings-drilldown__panel--stop-words"
+        tone={SECTION_PRESENTATION.tone}
+        className={SECTION_PRESENTATION.panelClassName}
         onClose={() => toggleSection('stopWords')}
         headerAction={renderApplyTargetHeaderAction('stopWords')}
         confirmCloseWhen={isSectionDirty('stopWords')}
         onDiscardChanges={() => discardSectionChanges('stopWords')}
         footer={renderSectionSaveFooter('stopWords')}
       >
-        <div
-          id="settings-stop-words-content"
-          className={cn('settings-section__collapse', expanded && 'is-open')}
-        >
-          {expanded ? (
-            <Suspense fallback={<Spinner label="Загружаем стоп-слова" />}>
-              <LazySettingsStopWordsEditor {...props} mode={mode} onModeChange={setMode} />
-            </Suspense>
-          ) : null}
-        </div>
+        {props.sharedContent ? (
+          <>
+            {expanded ? (
+              <>
+                {props.sharedContent}
+                <Suspense fallback={null}>
+                  <LazySettingsStopWordsSingleTools
+                    api={props.api}
+                    chatId={props.chatId}
+                    policy={policy}
+                    busy={props.busy}
+                    reloadPolicy={props.reloadPolicy}
+                  />
+                </Suspense>
+              </>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div
+              id="settings-stop-words-content"
+              className={cn('settings-section__collapse', expanded && 'is-open')}
+            >
+              {expanded ? (
+                <Suspense fallback={<Spinner label="Загружаем стоп-слова" />}>
+                  <LazySettingsStopWordsEditor {...props} mode={mode} onModeChange={setMode} />
+                </Suspense>
+              ) : null}
+            </div>
+          </>
+        )}
       </SettingsDrilldownPanel>
     </GlassCard>
   );

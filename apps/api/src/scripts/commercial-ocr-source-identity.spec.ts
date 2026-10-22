@@ -34,4 +34,35 @@ describe('commercial OCR source identity', () => {
       ]),
     );
   });
+  it('binds the canonical settings leaves used by the runtime', () => {
+    const repositoryRoot = resolve(__dirname, '../../../..');
+    const generatorUrl = pathToFileURL(
+      resolve(repositoryRoot, 'scripts/generate-commercial-ocr-detector-source.mjs'),
+    ).href;
+    const sourceFiles = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `import { resolveCommercialOcrRuntimeSourceFiles } from ${JSON.stringify(generatorUrl)};
+         process.stdout.write(JSON.stringify(resolveCommercialOcrRuntimeSourceFiles(${JSON.stringify(repositoryRoot)})));`,
+        ],
+        { encoding: 'utf8' },
+      ),
+    ) as unknown;
+    expect(sourceFiles).toEqual(
+      expect.arrayContaining([
+        'packages/contracts/src/settings-field-schemas.ts',
+        'packages/contracts/src/channel-settings-field-schemas.ts',
+        'packages/contracts/src/settings-message-field-schemas.ts',
+        'packages/contracts/src/bot-speech-fields.ts',
+        'packages/contracts/src/broadcast-buttons.ts',
+        'packages/contracts/src/broadcast-schedule-fields.ts',
+        'packages/contracts/src/managed-broadcast-summary.ts',
+        'packages/contracts/src/channel-settings.ts',
+        'packages/contracts/src/settings-sections.ts',
+      ]),
+    );
+  });
 });

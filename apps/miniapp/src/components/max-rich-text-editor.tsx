@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
+import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from '../lib/max-markdown-tools';
 import { cn } from '../lib/cn';
 import { renderPlainTextAsEditorHtml, renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
 import { parseEditorLinkHref, serializeEditorLinkMarkdown } from '../lib/max-rich-text-link';

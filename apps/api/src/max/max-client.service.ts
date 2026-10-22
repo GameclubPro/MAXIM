@@ -3577,6 +3577,48 @@ export class MaxClientService implements OnModuleDestroy {
    * administrators, while private human-recipient flows must be able to exclude
    * bot-to-bot deliveries.
    */
+  // FLAG: Official admins GET documents only chatId input. A response marker means incomplete;
+  // never invent a continuation/count request or cache this page as a complete authorization roster.
+  async getChatAdminMembersPage(
+    chatId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<{
+    members: Array<MaxChatMemberProfile & { isBot: boolean | null }>;
+    complete: boolean;
+  }> {
+    chatId = chatId.trim();
+    if (!chatId) throw new Error('MAX chat ID is required');
+    const data = await this.executeChatRequest(
+      chatId,
+      () =>
+        this.request<Record<string, unknown>>(
+          'get',
+          `/chats/${encodeURIComponent(chatId)}/members/admins`,
+          { ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) },
+        ),
+      options,
+    );
+    if (!Array.isArray(data?.members) || data.members.some((row) => !this.readMemberUserId(row)))
+      throw new Error('Invalid MAX chat admin members response');
+    const marker = data.marker;
+    if (
+      marker !== null &&
+      marker !== undefined &&
+      ((typeof marker !== 'string' && typeof marker !== 'number') ||
+        (typeof marker === 'number' && (!Number.isFinite(marker) || !Number.isInteger(marker))) ||
+        String(marker).trim().length === 0)
+    )
+      throw new Error('Invalid MAX chat admin pagination marker');
+    return {
+      members: data.members.flatMap((row) => {
+        if (!this.isChatAdminMemberRow(row as Record<string, unknown>)) return [];
+        const profile = this.parseChatMemberProfile(row);
+        return profile ? [{ ...profile, isBot: this.readExplicitChatMemberBotState(row) }] : [];
+      }),
+      complete: marker === null || marker === undefined,
+    };
+  }
+
   async getChatAdminMembers(
     chatId: string,
     options: MaxApiRequestOptions = {},

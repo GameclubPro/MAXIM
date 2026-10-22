@@ -55,7 +55,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh webhook-retry-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-queued-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
-  ./infra/scripts/vps-postgres-audit.sh network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--explain]
+  ./infra/scripts/vps-postgres-audit.sh network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--membership=7d|30d] [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -517,7 +517,7 @@ SELECT CASE
               'webhook_execution_claims', 'max_action_ledger',
               'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
               'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
-              'channel_view_archive_states', 'marketplace_bindings',
+              'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -2376,6 +2376,7 @@ emit_sql() {
   local network_argument
   for network_argument in "${NETWORK_STATISTICS_ARGS[@]}"; do
     if [[ "$network_argument" == '--observations' ]]; then network_privilege_args+=(--observations); fi
+    if [[ "$network_argument" == --membership=* ]]; then network_privilege_args+=(--membership); fi
   done
   node "$ROOT_DIR/infra/scripts/network-statistics-audit.mjs" "${network_privilege_args[@]}"
   local publication_privilege_args=(--privileges)

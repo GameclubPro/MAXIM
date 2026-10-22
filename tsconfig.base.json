@@ -10,13 +10,23 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
+      "@maxim/contracts/broadcast-buttons": ["packages/contracts/src/broadcast-buttons.ts"],
+      "@maxim/contracts/channel-settings": ["packages/contracts/src/channel-settings.ts"],
       "@maxim/contracts/network-settings": ["packages/contracts/src/network-settings.ts"],
+      "@maxim/contracts/network-settings-read": ["packages/contracts/src/network-settings-read.ts"],
+      "@maxim/contracts/network-settings-actions": [
+        "packages/contracts/src/network-settings-actions.ts"
+      ],
+      "@maxim/contracts/network-settings-metadata": [
+        "packages/contracts/src/network-settings-metadata.ts"
+      ],
       "@maxim/contracts/networks-stats": ["packages/contracts/src/networks-stats.ts"],
       "@maxim/contracts/marketplace-integration": [
         "packages/contracts/src/marketplace-integration.ts"
       ],
       "@maxim/contracts/advertising-placement": ["packages/contracts/src/advertising-placement.ts"],
       "@maxim/contracts": ["packages/contracts/src/index.ts"],
+      "@maxim/contracts/bot-speech-fields": ["packages/contracts/src/bot-speech-fields.ts"],
       "@maxim/contracts/bot-speech": ["packages/contracts/src/bot-speech.ts"],
       "@maxim/contracts/broadcast": ["packages/contracts/src/broadcast.ts"],
       "@maxim/contracts/channel-dialog": ["packages/contracts/src/channel-dialog.ts"],
@@ -48,7 +58,10 @@
       "@maxim/contracts/settings": ["packages/contracts/src/settings.ts"],
       "@maxim/contracts/support-requests": ["packages/contracts/src/support-requests.ts"],
       "@maxim/contracts/system": ["packages/contracts/src/system.ts"],
-      "@maxim/contracts/vk-parsing": ["packages/contracts/src/vk-parsing.ts"]
+      "@maxim/contracts/vk-parsing": ["packages/contracts/src/vk-parsing.ts"],
+      "@maxim/contracts/settings-field-schemas": [
+        "packages/contracts/src/settings-field-schemas.ts"
+      ]
     }
   }
 }

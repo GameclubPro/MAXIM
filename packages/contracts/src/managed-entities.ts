@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { botSpeechPersonaSchema } from './bot-speech.js';
 import { managedEntityTypeSchema } from './managed-entity-type.js';
+import { managedEntityFavoriteTypeSchema } from './managed-entity-favorite-type.js';
 export { managedEntityTypeSchema, type ManagedEntityType } from './managed-entity-type.js';
+export {
+  managedEntityFavoriteTypeSchema,
+  type ManagedEntityFavoriteType,
+} from './managed-entity-favorite-type.js';
 
 export const publicModeratorSchema = z
   .object({
@@ -75,14 +80,6 @@ export const managedEntitySharedModeSchema = z.enum([
   'shared-assist',
   'shared-failover',
 ]);
-export const managedEntityFavoriteTypeSchema = z.enum([
-  'important',
-  'watch',
-  'broadcast',
-  'test',
-  'partner',
-  'service',
-]);
 export const MANAGED_ENTITY_FAVORITE_LABEL_MAX_LENGTH = 24;
 export const managedEntityFavoriteLabelSchema = z
   .string()
@@ -117,7 +114,6 @@ export type ManagedEntityBotMembershipStatus = z.infer<
 export type ManagedEntityBotLifecycleState = z.infer<typeof managedEntityBotLifecycleStateSchema>;
 export type ManagedEntityBotCapability = z.infer<typeof managedEntityBotCapabilitySchema>;
 export type ManagedEntitySharedMode = z.infer<typeof managedEntitySharedModeSchema>;
-export type ManagedEntityFavoriteType = z.infer<typeof managedEntityFavoriteTypeSchema>;
 export type ManagedEntityFavoriteLabelOverrides = z.infer<
   typeof managedEntityFavoriteLabelOverridesSchema
 >;

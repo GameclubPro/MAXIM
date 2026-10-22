@@ -24,6 +24,7 @@ if (typeof window !== 'undefined') {
 export type ManagedEntityLeaveGuard = {
   dirty: boolean;
   saving?: boolean;
+  discardOnly?: boolean;
   save: () => Promise<boolean>;
   discard: () => void;
 };
@@ -61,7 +62,9 @@ export function useManagedEntityNavigation(): Omit<
 > {
   const context = useContext(ManagedEntityNavigationContext);
   if (!context) {
-    throw new Error('useManagedEntityNavigation must be used inside ManagedEntityNavigationProvider');
+    throw new Error(
+      'useManagedEntityNavigation must be used inside ManagedEntityNavigationProvider',
+    );
   }
 
   return context;

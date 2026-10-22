@@ -13,6 +13,10 @@ const settingsPageSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
 );
+const sharedFieldsSource = readFileSync(
+  new URL('../src/pages/settings/shared-chat-settings-fields.tsx', import.meta.url),
+  'utf8',
+);
 
 test('profanity sensitivity exposes the three product modes in display order', () => {
   assert.deepEqual(PROFANITY_SENSITIVITY_OPTIONS, [
@@ -34,9 +38,10 @@ test('profanity sensitivity defaults and preview transport stay balanced', () =>
 });
 
 test('profanity sensitivity selection is wired into section dirty, save, and discard state', () => {
+  assert.match(settingsPageSource, /renderSharedChatSection\('profanityFilter'\)/u);
   assert.match(
-    settingsPageSource,
-    /onChange=\{\(value\) => setFieldValue\('profanitySensitivity', value\)\}/u,
+    sharedFieldsSource,
+    /c\.select\('profanitySensitivity', 'Чувствительность', PROFANITY_SENSITIVITY_OPTIONS\)/u,
   );
   assert.match(settingsPageSource, /footer=\{renderSectionSaveFooter\('profanityFilter'\)\}/u);
   assert.match(

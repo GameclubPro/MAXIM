@@ -14399,6 +14399,129 @@ describe('MaxClientService inline keyboard guardrails', () => {
     }
   });
 
+  describe('initial admin page for source-free settings metadata', () => {
+    it('rejects an empty chat identifier before sending a request', async () => {
+      const request = jest.fn();
+      const service = createService({ request });
+      try {
+        await expect(service.getChatAdminMembersPage('   ')).rejects.toThrow(
+          'MAX chat ID is required',
+        );
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('makes exactly one documented GET without marker or count query parameters', async () => {
+      const request = jest.fn().mockReturnValue(
+        of({
+          status: 200,
+          data: { members: [{ user_id: 'human', role: 'admin', is_bot: false }], marker: null },
+        }),
+      );
+      const service = createService({ request });
+      try {
+        const page = await service.getChatAdminMembersPage('chat-1', {
+          botId: '777000_bot',
+          timeoutMs: 1234,
+          trafficClass: 'interactive',
+          bypassCache: true,
+        });
+        expect(page.complete).toBe(true);
+        expect(page.members).toEqual([expect.objectContaining({ userId: 'human', isBot: false })]);
+        expect(request).toHaveBeenCalledTimes(1);
+        const config = request.mock.calls[0][0];
+        expect(config).toEqual(
+          expect.objectContaining({
+            method: 'get',
+            url: 'https://platform-api2.max.ru/chats/chat-1/members/admins',
+            timeout: 1234,
+            headers: { Authorization: 'test-token' },
+          }),
+        );
+        expect(config.params).toBeUndefined();
+        expect(new URL(config.url).search).toBe('');
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each([0, 42, 'next-page'])(
+      'marks response marker %p incomplete without inventing a continuation request',
+      async (marker) => {
+        const request = jest.fn().mockReturnValue(
+          of({
+            status: 200,
+            data: { members: [{ user_id: 'human', role: 'admin', is_bot: false }], marker },
+          }),
+        );
+        const service = createService({ request });
+        try {
+          await expect(service.getChatAdminMembersPage('chat-1')).resolves.toEqual({
+            complete: false,
+            members: [expect.objectContaining({ userId: 'human', isBot: false })],
+          });
+          expect(request).toHaveBeenCalledTimes(1);
+          expect(request.mock.calls[0][0].params).toBeUndefined();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each([true, false, {}, [], '', '   ', Number.NaN, Number.POSITIVE_INFINITY, 0.5])(
+      'rejects malformed response marker %p after one request',
+      async (marker) => {
+        const request = jest
+          .fn()
+          .mockReturnValue(of({ status: 200, data: { members: [], marker } }));
+        const service = createService({ request });
+        try {
+          await expect(service.getChatAdminMembersPage('chat-1')).rejects.toThrow(
+            'Invalid MAX chat admin pagination marker',
+          );
+          expect(request).toHaveBeenCalledTimes(1);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('preserves unknown bot flags and explicit false for humans with a bot-looking username', async () => {
+      const request = jest.fn().mockReturnValue(
+        of({
+          status: 200,
+          data: {
+            members: [
+              { user_id: 'unknown', username: 'unknown_bot', role: 'admin' },
+              { user_id: 'string-flag', role: 'admin', is_bot: 'false' },
+              {
+                user: { user_id: 'human_bot', username: 'human_bot', is_bot: false },
+                role: 'owner',
+              },
+              { user_id: 'explicit-bot', role: 'admin', is_bot: true },
+            ],
+          },
+        }),
+      );
+      const service = createService({ request });
+      try {
+        const page = await service.getChatAdminMembersPage('chat-1');
+        expect(page.complete).toBe(true);
+        expect(page.members.map(({ userId, isBot }) => ({ userId, isBot }))).toEqual([
+          { userId: 'unknown', isBot: null },
+          { userId: 'string-flag', isBot: null },
+          { userId: 'human_bot', isBot: false },
+          { userId: 'explicit-bot', isBot: true },
+        ]);
+        expect(request).toHaveBeenCalledTimes(1);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+  });
+
   it('preserves explicit bot markers for the narrow admin roster lookup', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

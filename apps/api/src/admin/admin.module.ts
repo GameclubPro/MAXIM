@@ -39,6 +39,9 @@ import { ManagedEntityPresentationController } from './managed-entity-presentati
 import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
 import { ManagedEntityNetworksController } from './managed-entity-networks.controller';
 import { ManagedEntityNetworksService } from './managed-entity-networks.service';
+import { NetworkSettingsMetadataService } from './network-settings-metadata.service';
+import { NetworkNavigationAllowlist } from './network-navigation-allowlist';
+import { NetworkAuthorizationService } from './network-authorization.service';
 import { NetworkSettingsController } from './network-settings.controller';
 import { MajorNetworksGuard } from './major-networks.guard';
 import { NetworkSettingsService } from './network-settings.service';
@@ -274,6 +277,9 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     ManagedEntityPresentationService,
     ManagedEntityNetworksService,
     MajorNetworksGuard,
+    NetworkAuthorizationService,
+    NetworkNavigationAllowlist,
+    NetworkSettingsMetadataService,
     NetworkSettingsService,
     NetworkStatisticsService,
     NetworkStatisticsObservationService,

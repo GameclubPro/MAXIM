@@ -30346,6 +30346,7 @@ describe('AdminService chat rules', () => {
     });
 
     expect(result).toEqual({
+      revision: '2026-03-09T10:00:00.000Z',
       text: 'Пишите по теме.',
       textFormat: 'markdown',
       imageBase64: '',
@@ -30543,6 +30544,7 @@ describe('AdminService chat rules', () => {
     });
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
     expect(result).toEqual({
+      revision: '2026-03-09T10:00:00.000Z',
       text: '1. Без спама.\n2. Без ссылок.',
       textFormat: 'markdown',
       imageBase64: '',
@@ -31585,6 +31587,7 @@ describe('AdminService chat rules', () => {
       }),
     );
     expect(result).toEqual({
+      revision: '2026-03-09T11:00:00.000Z',
       text: 'Правила чата',
       textFormat: 'markdown',
       imageBase64: '',

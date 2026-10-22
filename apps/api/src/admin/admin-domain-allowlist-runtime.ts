@@ -1,3 +1,5 @@
+import { NETWORK_ALLOWLIST_PLAN_ROW_LIMIT } from '@maxim/contracts/network-settings';
+import { assertBoundedAllowlistRows } from './network-navigation-allowlist';
 import {
   addDomainRequestSchema,
   inferAllowlistMatchType,
@@ -298,13 +300,15 @@ export class AdminDomainAllowlistRuntime {
     targetChatIds: readonly string[],
   ): Promise<void> {
     const rows = await this.prisma.domainAllowlist.findMany({
+      take: NETWORK_ALLOWLIST_PLAN_ROW_LIMIT + 1,
+      orderBy: { domain: 'asc' },
       where: this.activeDomainWhere(sourceChatId),
-      orderBy: [{ removeAfterAt: 'asc' }, { domain: 'asc' }],
       select: {
         domain: true,
         removeAfterAt: true,
       },
     });
+    assertBoundedAllowlistRows(rows);
     const sourceEntries = this.canonicalizeActiveAllowlistRows(rows);
 
     await mapWithConcurrencyLimit(
@@ -312,6 +316,14 @@ export class AdminDomainAllowlistRuntime {
       APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY,
       async (chatId) => {
         await this.withAllowlistWrite(chatId, async (tx) => {
+          assertBoundedAllowlistRows(
+            await tx.domainAllowlist.findMany({
+              where: { chatId },
+              orderBy: { domain: 'asc' },
+              take: NETWORK_ALLOWLIST_PLAN_ROW_LIMIT + 1,
+              select: { domain: true },
+            }),
+          );
           await tx.domainAllowlist.deleteMany({
             where: {
               chatId,
@@ -349,6 +361,8 @@ export class AdminDomainAllowlistRuntime {
     normalizedDomain: string,
   ) {
     const rows = await tx.domainAllowlist.findMany({
+      take: NETWORK_ALLOWLIST_PLAN_ROW_LIMIT + 1,
+      orderBy: { domain: 'asc' },
       where: {
         chatId,
       },
@@ -357,6 +371,7 @@ export class AdminDomainAllowlistRuntime {
         removeAfterAt: true,
       },
     });
+    assertBoundedAllowlistRows(rows);
 
     const obsoleteDomains: string[] = rows
       .map((row: { domain: string }) => row.domain)
@@ -411,11 +426,14 @@ export class AdminDomainAllowlistRuntime {
     activeOnly = false,
   ): Promise<string[]> {
     const rows = await tx.domainAllowlist.findMany({
+      take: NETWORK_ALLOWLIST_PLAN_ROW_LIMIT + 1,
+      orderBy: { domain: 'asc' },
       where: activeOnly ? this.activeDomainWhere(chatId) : { chatId },
       select: {
         domain: true,
       },
     });
+    assertBoundedAllowlistRows(rows);
 
     return rows
       .map((row: { domain: string }) => row.domain)

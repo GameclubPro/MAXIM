@@ -4,6 +4,7 @@ export const APP_ICON_NAMES = [
   'ChatLines',
   'Check',
   'CheckSquare',
+  'Clock',
   'Community',
   'Copy',
   'FilterList',

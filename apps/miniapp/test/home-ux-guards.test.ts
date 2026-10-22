@@ -98,11 +98,14 @@ test('entity cards expose settings, favorite, statistics and category edit targe
 test('moderation and Publik navigation keep profile-aware publishing labels', () => {
   const labels = shellSource.match(/className="bottom-nav__label"/gu) ?? [];
 
-  assert.equal(labels.length, 4);
+  assert.equal(labels.length, 5);
   assert.match(shellSource, /buildManagedEntitiesRoute\('chat'\)/u);
   assert.match(shellSource, /buildManagedEntitiesRoute\('channel'\)/u);
   assert.match(shellSource, />Чаты</u);
   assert.match(shellSource, />Каналы</u);
+  assert.match(shellSource, /profile === 'moderation' && networksEnabled/u);
+  assert.match(shellSource, /to="\/networks"/u);
+  assert.match(shellSource, />Сетки</u);
   assert.match(shellSource, /href=\{PUBLIK_BOT_URL\}/u);
   assert.match(shellSource, /onClick=\{openPublikBot\}/u);
   assert.match(shellSource, />Публик</u);
@@ -112,7 +115,10 @@ test('moderation and Publik navigation keep profile-aware publishing labels', ()
   assert.doesNotMatch(chatsPageSource, /chats-command__tabs/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">Настройки/u);
   assert.doesNotMatch(shellSource, /bottom-nav__label">\{activityNavLabel\}/u);
-  assert.match(shellSource, /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute;/u);
+  assert.match(
+    shellSource,
+    /const shouldShowBottomNav = isChatsRoute \|\| isPublicationsRoute \|\| isNetworksRoute;/u,
+  );
   assert.match(shellSource, /profile === 'publisher' \? '\/'/u);
   assert.match(shellSource, /const isProfileHomeRoute = isChatsRoute;/u);
   assert.match(shellSource, /if \(!isChatsRoute \|\| profile !== 'moderation'\)/u);
@@ -187,10 +193,8 @@ test('home sheets preserve accessible categories and authenticated label persist
     favoritesRuntimeSource,
     /getMe\(api, \{ signal \}\)[\s\S]*?onUserId\(userId\)[\s\S]*?initDataUserId !== null[\s\S]*?initDataUserId !== userId[\s\S]*?getPreviewApiPrincipalUserId\(api\) !== userId/u,
   );
-  assert.match(
-    chatsPageSource,
-    /useState<HomeEntityFavoriteLabelOverrides>\(\{\}\)[\s\S]*?setHomeEntityFavoriteLabels\(\{\}\)[\s\S]*?synchronizeAuthenticatedHomeEntityFavoriteLabels/u,
-  );
+  assert.match(chatsPageSource, /useHomeEntityFavorites\(\)/u);
+  assert.doesNotMatch(chatsPageSource, /getInitDataUserId|hydrateHomeEntityFavorites/u);
   assert.match(
     favoriteLabelSyncSource,
     /applyLabels\(cachedLabels, false\)[\s\S]*?waitForNativeStorage: true[\s\S]*?applyLabels\(lateLabels, false\)/u,
@@ -199,19 +203,8 @@ test('home sheets preserve accessible categories and authenticated label persist
     favoriteLabelSyncSource,
     /migrateHomeEntityFavoriteLabelsAfterNativeStorage\([\s\S]*?serverProfileConfirmed \|\| Object\.keys\(labels\)\.length > 0/u,
   );
-  assert.match(chatsPageSource, /import\('\.\.\/lib\/home-entity-favorites-runtime'\)/u);
-  assert.match(
-    chatsPageSource,
-    /reloadAfterLazyPageLoadFailure\('HomeEntityFavoritesRuntime', cause\)/u,
-  );
-  assert.match(
-    chatsPageSource,
-    /setFavoriteLabelsStatus\('api'\)[\s\S]*?setFavoriteLabelsStatus\('chunk'\)/u,
-  );
-  assert.match(
-    chatsPageSource,
-    /favoriteLabelsStatus === 'chunk'[\s\S]*?window\.location\.reload\(\)[\s\S]*?favoriteLabelsStatus === 'api'[\s\S]*?setFavoriteLabelsRetryNonce/u,
-  );
+  assert.match(chatsPageSource, /favoritesActions\.refreshLabels\(\)/u);
+  assert.match(sheetsSource, /actions\.saveLabels\(/u);
   assert.match(sheetsSource, /disabled=\{props\.favoriteLabelsStatus === 'loading'\}/u);
   assert.match(sheetsSource, /saveControllerRef\.current\?\.abort\(\)/u);
   assert.match(
@@ -241,7 +234,7 @@ test('home connection flow is always available and opens the signed launch bot d
   );
   assert.doesNotMatch(chatsPageSource, /<span>Подключить<\/span>/u);
   assert.doesNotMatch(chatsPageSource, /botDialogUrl|setBotDialogUrl/u);
-  assert.match(chatsPageSource, /import\('\.\.\/lib\/home-entity-favorites-runtime'\)/u);
+  assert.match(chatsPageSource, /useHomeEntityFavorites\(\)/u);
   assert.doesNotMatch(chatsPageSource, /from '\.\.\/lib\/api\/me-client'/u);
   assert.match(favoritesRuntimeSource, /from '\.\/api\/me-client'/u);
   assert.doesNotMatch(rootClientSource, /\bgetMe\b|\bparseMe\b|botDialogUrl/u);
@@ -307,7 +300,7 @@ test('category assignment is explicit, exclusive and stable while editing', () =
   assert.match(chatsPageSource, /enabled: categoryEditMode && !homeOverlayOpen, priority: 600/u);
   assert.match(chatsPageSource, />\s*Готово\s*<\/button>/u);
   assert.match(chatsPageSource, /handleSetHomeEntityFavoriteType/u);
-  assert.match(chatsPageSource, /setHomeEntityFavoriteTypes/u);
+  assert.match(chatsPageSource, /favoritesActions\.setFavorite/u);
   assert.doesNotMatch(chatsPageSource, /toggleHomeEntityFavoriteType/u);
   assert.match(sheetsSource, /<fieldset className="favorite-picker__fieldset"/u);
   assert.match(sheetsSource, /type="radio"/u);

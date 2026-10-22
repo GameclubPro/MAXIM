@@ -17,18 +17,20 @@ export type StopWordsInputPreview = {
   errors: string[];
 };
 
-export function prepareStopWordsInput(
-  policy: StopWordsPolicy,
+/** Parse an explicitly authored list without manufacturing a complete chat policy. */
+export function prepareStopWordsLists(
+  current: Pick<StopWordsPolicy, 'rules' | 'domains'>,
   words: string,
   domains = '',
   createId: () => string = () => createClientRequestId('stop'),
-): StopWordsInputPreview {
-  const next: StopWordsPolicy = {
-    ...policy,
-    rules: [...policy.rules],
-    domains: [...policy.domains],
+): Omit<StopWordsInputPreview, 'policy'> & { lists: Pick<StopWordsPolicy, 'rules' | 'domains'> } {
+  const next = {
+    rules: [...current.rules],
+    domains: [...current.domains],
   };
-  const result: StopWordsInputPreview = { policy: next, added: [], duplicates: [], errors: [] };
+  const result: Omit<StopWordsInputPreview, 'policy'> & {
+    lists: Pick<StopWordsPolicy, 'rules' | 'domains'>;
+  } = { lists: next, added: [], duplicates: [], errors: [] };
   const wordEntries = words
     .split(/[,;\r\n]+/u)
     .map((entry) => entry.trim())
@@ -40,7 +42,7 @@ export function prepareStopWordsInput(
   if (wordEntries.length > STOP_WORDS_RULES_MAX || domainEntries.length > STOP_WORDS_DOMAINS_MAX) {
     return {
       ...result,
-      policy,
+      lists: current,
       errors: ['За один раз можно добавить до 999 слов и фраз и до 300 сайтов.'],
     };
   }
@@ -80,9 +82,24 @@ export function prepareStopWordsInput(
   }
   const checked = stopWordsPolicySchema.safeParse({ rules: next.rules, domains: next.domains });
   if (!checked.success) result.errors.push(...checked.error.issues.map((issue) => issue.message));
-  if (result.errors.length) result.policy = policy;
+  if (result.errors.length) result.lists = current;
   result.errors = result.errors.slice(0, 20);
   return result;
+}
+
+export function prepareStopWordsInput(
+  policy: StopWordsPolicy,
+  words: string,
+  domains = '',
+  createId: () => string = () => createClientRequestId('stop'),
+): StopWordsInputPreview {
+  const parsed = prepareStopWordsLists(policy, words, domains, createId);
+  return {
+    policy: parsed.errors.length ? policy : { ...policy, ...parsed.lists },
+    added: parsed.added,
+    duplicates: parsed.duplicates,
+    errors: parsed.errors,
+  };
 }
 
 export function replaceStopWordsRule(

@@ -23,7 +23,6 @@ import {
 } from '../lib/api/publisher-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type { BotPermissionBlocker } from '../lib/bot-permission-error';
-import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
 import {
   canPreparePublisherPublicationTarget,
   getPublisherReadinessPollingInterval,
@@ -131,7 +130,10 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
   });
   const vkCapabilityQuery = useQuery({
     queryKey: ['publisher-vk-capability', entityType, entityId],
-    queryFn: () => getVkParsingCapability(api, entityType!, entityId),
+    queryFn: async () => {
+      const { getVkParsingCapability } = await import('../lib/api/vk-parsing-client');
+      return getVkParsingCapability(api, entityType!, entityId);
+    },
     enabled: vkOpen && entityType !== null && entityId.length > 0 && Boolean(entityQuery.data),
     staleTime: 30_000,
     refetchOnWindowFocus: false,

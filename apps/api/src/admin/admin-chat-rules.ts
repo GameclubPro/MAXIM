@@ -12,7 +12,7 @@ import {
   type UpdateChatRulesRequest,
   updateChatRulesRequestSchema,
 } from '@maxim/contracts';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import type { Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
@@ -25,7 +25,7 @@ import type {
 } from '../max/max-client.service';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { isAmbiguousMaxSendError } from '../max/max-send-ambiguity.util';
-import type { ChatRules as PersistedChatRules } from '../prisma/prisma-client';
+import type { ChatRules as PersistedChatRules, Prisma } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { advanceChatMutationOrder } from '../common/group-command-authority.service';
 import { normalizeLegacyProfileButtonUrl } from './admin-profile-links';
@@ -402,6 +402,7 @@ export function mapChatRules(rules: PersistedChatRules): ChatRules {
   const adminContactButtonState = normalizeRulesAdminContactButton(rules);
 
   return chatRulesSchema.parse({
+    revision: rules.updatedAt?.toISOString(),
     text: rules.text,
     textFormat: normalizeChatRulesTextFormat(rules.textFormat),
     imageBase64: rules.imageBase64,
@@ -735,6 +736,10 @@ export async function readChatRules(params: {
     });
     if (repaired.count > 0) {
       await params.chatContextCache.invalidate(params.chatId);
+      const current = await params.prisma.chatRules.findUnique({
+        where: { chatId: params.chatId },
+      });
+      if (current) return mapChatRules(current);
     }
   }
 
@@ -1501,6 +1506,66 @@ export async function resetPublishedChatRules(params: {
   return mapChatRules(updatedRules);
 }
 
+export function validateChatRulesDraft(body: unknown): UpdateChatRulesRequest {
+  const parsed = updateChatRulesRequestSchema.safeParse(body);
+  if (!parsed.success) throw new BadRequestException(parsed.error.format());
+  const normalized = normalizeChatRulesDraft(parsed.data);
+  if (normalized.imageBase64) {
+    if (decodeRulesImageBase64(normalized.imageBase64).length > RULES_IMAGE_MAX_BYTES)
+      throw new BadRequestException('Фото правил слишком большое.');
+    if (!normalized.imageMimeType.toLowerCase().startsWith('image/'))
+      throw new BadRequestException('Поддерживаются только изображения.');
+  }
+  return normalized;
+}
+
+export async function writeNetworkChatRulesDraft(
+  tx: Prisma.TransactionClient,
+  chatId: string,
+  actorUserId: string,
+  draft: unknown,
+  expectedRevision: string | null,
+  paths: readonly string[],
+): Promise<void> {
+  const normalized = validateChatRulesDraft(draft);
+  const current = await tx.chatRules.findUnique({ where: { chatId } });
+  if ((current?.updatedAt.toISOString() ?? null) !== expectedRevision)
+    throw new ConflictException('Правила уже изменены. Проверьте изменения заново.');
+  const authored = new Set(
+    paths.filter((path) => path.startsWith('rules.')).map((path) => path.slice(6)),
+  );
+  if (!authored.size) return;
+  if (authored.has('buttons')) {
+    authored.add('buttonUrl');
+    authored.add('buttonText');
+  }
+  if (authored.has('imageBase64') && !normalized.imageBase64) {
+    authored.add('imageMimeType');
+    authored.add('imageFileName');
+  }
+  const data = Object.fromEntries(Object.entries(normalized).filter(([key]) => authored.has(key)));
+  // FLAG: Rules draft, ordinary settings flag, audit and durable operation receipt share
+  // the caller's transaction. Publication ownership and published receipts are never copied.
+  await advanceChatMutationOrder(tx, chatId, 'RULES');
+  if (current) {
+    const saved = await tx.chatRules.updateMany({
+      where: { chatId, updatedAt: current.updatedAt },
+      data,
+    });
+    if (saved.count !== 1) throw new ConflictException('Правила уже изменены.');
+  } else {
+    await tx.chatRules.create({ data: { chatId, ...data } });
+  }
+  await tx.auditLog.create({
+    data: {
+      chatId,
+      actorUserId,
+      action: 'UPDATE_CHAT_RULES',
+      payload: { source: 'miniapp', settingKeys: [...authored], group: true },
+    },
+  });
+}
+
 export async function saveChatRulesDraft(params: {
   prisma: PrismaService;
   chatContextCache: Pick<ChatContextCacheService, 'invalidate'>;
@@ -1514,16 +1579,7 @@ export async function saveChatRulesDraft(params: {
     throw new BadRequestException(parsed.error.format());
   }
 
-  const normalizedDraft = normalizeChatRulesDraft(parsed.data);
-  if (normalizedDraft.imageBase64) {
-    const imageBuffer = decodeRulesImageBase64(normalizedDraft.imageBase64);
-    if (imageBuffer.length > RULES_IMAGE_MAX_BYTES) {
-      throw new BadRequestException('Фото правил слишком большое.');
-    }
-    if (!normalizedDraft.imageMimeType.toLowerCase().startsWith('image/')) {
-      throw new BadRequestException('Поддерживаются только изображения.');
-    }
-  }
+  const normalizedDraft = validateChatRulesDraft(parsed.data);
 
   const rulesUpdate = {
     ...normalizedDraft,
@@ -1534,11 +1590,26 @@ export async function saveChatRulesDraft(params: {
       await advanceChatMutationOrder(tx, params.chatId, 'RULES');
       let rules: PersistedChatRules;
       try {
-        rules = await tx.chatRules.upsert({
-          where: { chatId: params.chatId },
-          create: { chatId: params.chatId, ...normalizedDraft },
-          update: rulesUpdate,
-        });
+        if (parsed.data.expectedRevision === null) {
+          if (await tx.chatRules.findUnique({ where: { chatId: params.chatId } }))
+            throw new ConflictException('Правила уже изменены. Обновите экран.');
+          rules = await tx.chatRules.create({
+            data: { chatId: params.chatId, ...normalizedDraft },
+          });
+        } else if (parsed.data.expectedRevision) {
+          const saved = await tx.chatRules.updateMany({
+            where: { chatId: params.chatId, updatedAt: new Date(parsed.data.expectedRevision) },
+            data: rulesUpdate,
+          });
+          if (saved.count !== 1)
+            throw new ConflictException('Правила уже изменены. Обновите экран.');
+          rules = await tx.chatRules.findUniqueOrThrow({ where: { chatId: params.chatId } });
+        } else
+          rules = await tx.chatRules.upsert({
+            where: { chatId: params.chatId },
+            create: { chatId: params.chatId, ...normalizedDraft },
+            update: rulesUpdate,
+          });
       } catch (error: unknown) {
         if (isPrismaKnownError(error, 'P2002')) upsertUniqueConflict = error;
         throw error;

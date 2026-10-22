@@ -34,6 +34,10 @@ const speechStyleSource = readFileSync(
   new URL('../src/pages/settings/settings-speech-style-panel.tsx', import.meta.url),
   'utf8',
 );
+const sharedSpeechStyleFieldsSource = readFileSync(
+  new URL('../src/pages/settings/shared-speech-style-fields.tsx', import.meta.url),
+  'utf8',
+);
 const settingsNightSectionSource = readFileSync(
   new URL('../src/pages/settings/settings-night-section.tsx', import.meta.url),
   'utf8',
@@ -219,6 +223,27 @@ test('stop-word image scanning is an explicit persisted switch', () => {
 test('speech style opens on the selected radio and supports arrow navigation', () => {
   assert.match(settingsDrilldownSource, /initialFocusRef \?\? panelRef/u);
   assert.match(speechStyleSource, /initialFocusRef=\{selectedOptionRef\}/u);
-  assert.match(speechStyleSource, /tabIndex=\{selectedStyle === option\.value \? 0 : -1\}/u);
-  assert.match(speechStyleSource, /resolveRadioGroupNavigationIndex\(/u);
+  assert.match(
+    speechStyleSource,
+    /<SharedSpeechStyleFields[\s\S]*?selectedStyle=\{selectedStyle\}[\s\S]*?onSelect=\{onSelect\}[\s\S]*?initialFocusRef=\{selectedOptionRef\}/u,
+  );
+  assert.match(
+    sharedSpeechStyleFieldsSource,
+    /const selectedOptionRef = initialFocusRef \?\? ownSelectedOptionRef/u,
+  );
+  assert.match(sharedSpeechStyleFieldsSource, /role="radiogroup" aria-label="Стиль речи бота"/u);
+  assert.match(sharedSpeechStyleFieldsSource, /role="radio"/u);
+  assert.match(sharedSpeechStyleFieldsSource, /aria-checked=\{selectedStyle === option\.value\}/u);
+  assert.match(
+    sharedSpeechStyleFieldsSource,
+    /if \(selectedStyle === option\.value\) \{\s*selectedOptionRef\.current = node;/u,
+  );
+  assert.match(
+    sharedSpeechStyleFieldsSource,
+    /tabIndex=\{selectedStyle === option\.value \|\| \(!selectedStyle && index === 0\) \? 0 : -1\}/u,
+  );
+  assert.match(
+    sharedSpeechStyleFieldsSource,
+    /onKeyDown=\{\(event\) => \{[\s\S]*?resolveRadioGroupNavigationIndex\(\s*index,\s*BOT_SPEECH_STYLE_OPTIONS\.length,\s*event\.key,\s*\)[\s\S]*?if \(nextIndex === null\)[\s\S]*?event\.preventDefault\(\)[\s\S]*?onSelect\(nextOption\.value\)[\s\S]*?optionRefs\.current\[nextIndex\]\?\.focus\(\)/u,
+  );
 });

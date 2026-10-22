@@ -479,6 +479,7 @@ model Chat {
   catalogKind    ChatCatalogKind  @default(UNKNOWN) @map("catalog_kind")
   routingState   ChatRoutingState @default(NO_ELIGIBLE_BOT) @map("routing_state")
   routingVersion Int              @default(0) @map("routing_version")
+  navigationAllowlistRevision Int @default(0) @map("navigation_allowlist_revision")
   chatControlOrderAt DateTime?     @map("chat_control_order_at")
   chatControlOrderKey String?      @map("chat_control_order_key")
   rulesOrderAt DateTime?           @map("rules_order_at")
