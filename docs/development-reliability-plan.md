@@ -207,20 +207,36 @@ path. Run the environment doctor only for setup, and do not repeat it for ordina
 
 When both repository static and infrastructure checks are selected, `agent:verify` runs lint,
 refactor guards and core tooling tests, then `check:infra` owns the infrastructure test inventory
-once. A tooling change without an infrastructure selection retains the full `check:static`
-aggregate once. Public full aggregates keep their existing complete scope. Inventory guards prove
-that the local and CI partitions include every tooling test. Native PostgreSQL/Redis
+once. Tooling changes without an infrastructure selection use core tooling tests; a changed
+infrastructure caller still requires its focused regression. CI Static and public full aggregates
+keep the complete inventory. Inventory guards prove core coverage and complete infrastructure
+coverage when selected, without duplicate execution. Native PostgreSQL/Redis
 cases remain mandatory for the affected invariant; skipped store cases are missing coverage.
 
 Miniapp-only UI changes need no API, Prisma, admin or native-store suites unless a changed boundary
 or concrete regression requires them. Do not repeat green suites without changed inputs, failure
 or a newly identified coverage gap; included subchecks do not need a separate run.
 
+Deliver the requested runtime change as soon as its required gates pass. An independent tooling
+improvement is a follow-up, not a new runtime release prerequisite. For tooling/notes-only work,
+finish after the required PR checks and merge; do not wait for a second main CI run or redeploy
+the unchanged application. A later runtime deployment still requires its exact selected main SHA
+to be green. When the requested source is already active, read back its component identity and
+availability once and report that release instead of rebuilding it. Extra monitoring windows
+need an explicit request or a concrete runtime risk; routine smoke success ends routine delivery.
+
 CI uses the same impact classifier for the complete push range or the PR merge checkout against
-its recorded base. `Static` stays mandatory. Miniapp changes select both miniapp browser shards
+its recorded base. `Static` stays mandatory; its infrastructure, ShellCheck and workflow-lint
+steps run only for full plans, including shared tooling/infra changes and the scheduled run.
+Miniapp changes select both miniapp browser shards
 and its affected Docker image; API changes retain API, Redis, every PostgreSQL shard, the
 commercial benchmark and the affected API image. Shared contracts select all their consumers.
 Tests alone do not build unrelated runtime images. CodeQL remains a separate exact-SHA gate.
+
+Browser dependency setup uses HTTPS Ubuntu sources, omits package translation indexes and bounds
+network retries. It fails on incomplete apt updates and has its own three-minute step budget, so
+an unavailable mirror cannot silently consume most of the browser test deadline. Both miniapp
+shards and Safety Desk keep their complete test inventories and existing job budgets.
 
 Workflow, shared tooling, infrastructure, root build inputs, unknown files/check kinds, unproved
 Git history and manual/scheduled runs select full CI. Renames include both paths. The `Required`

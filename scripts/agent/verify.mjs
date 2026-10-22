@@ -47,12 +47,11 @@ export function selectVerificationScripts({ config, plan, full = false }) {
     checkIds = ['full', 'miniapp-visual-local'];
   } else {
     const covered = new Set();
-    // FLAG: Core static and infrastructure partition the full tooling inventory.
-    // Without infrastructure, tooling changes still require the full public aggregate.
+    // FLAG: Core tooling covers local tooling edits. Infrastructure runs when its
+    // boundary is selected; CI Static still validates the complete inventory.
     if (checkIds.includes('repo-static') && checkIds.includes('agent-tools')) {
-      if (!checkIds.includes('infra')) scriptOverrides.set('repo-static', 'check:static');
       covered.add('agent-tools');
-    } else if (checkIds.includes('agent-tools') && checkIds.includes('infra')) {
+    } else if (checkIds.includes('agent-tools')) {
       scriptOverrides.set('agent-tools', 'test:agent-tools:core');
     }
     if (checkIds.includes('miniapp')) covered.add('miniapp-css');

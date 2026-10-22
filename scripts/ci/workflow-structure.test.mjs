@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -7,6 +8,43 @@ import { parse } from 'yaml';
 
 const root = resolve(import.meta.dirname, '../..');
 const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
+
+test('browser setup avoids slow HTTP mirror retries in both browser lanes', () => {
+  const jobs = parse(workflow).jobs;
+  for (const id of ['miniapp', 'admin']) {
+    const steps = jobs[id].steps;
+    const index = steps.findIndex((step) => step.name === 'Use HTTPS for browser dependencies');
+    assert.ok(index > 0, `${id} must prepare apt before installing Chromium`);
+    const setup = steps[index];
+    assert.equal(setup.if, undefined);
+    assert.equal(setup['continue-on-error'], undefined);
+    assert.match(setup.run, /Acquire::Languages "none"/u);
+    assert.match(setup.run, /APT::Update::Error-Mode "any"/u);
+    assert.equal(steps[index + 1].run, 'npx playwright install --with-deps chromium');
+    assert.equal(steps[index + 1]['timeout-minutes'], 3);
+    const expression = setup.run.match(/sudo sed -i -E '([^']+)'/u)?.[1];
+    assert.ok(expression, 'Expected a literal, reviewable apt source rewrite');
+    const input = [
+      'http://azure.archive.ubuntu.com/ubuntu/',
+      'https://azure.archive.ubuntu.com/ubuntu/',
+      'deb http://archive.ubuntu.com/ubuntu noble main',
+      'URIs: http://security.ubuntu.com/ubuntu/',
+      'URIs: https://archive.ubuntu.com/ubuntu/',
+      'URIs: https://packages.microsoft.com/ubuntu/24.04/prod',
+      'URIs: mirror+file:/etc/apt/apt-mirrors.txt',
+    ].join('\n');
+    const expected = [
+      'https://archive.ubuntu.com/ubuntu/',
+      'https://archive.ubuntu.com/ubuntu/',
+      'deb https://archive.ubuntu.com/ubuntu noble main',
+      'URIs: https://security.ubuntu.com/ubuntu/',
+      'URIs: https://archive.ubuntu.com/ubuntu/',
+      'URIs: https://packages.microsoft.com/ubuntu/24.04/prod',
+      'URIs: mirror+file:/etc/apt/apt-mirrors.txt',
+    ].join('\n');
+    assert.equal(execFileSync('sed', ['-E', expression], { input, encoding: 'utf8' }), expected);
+  }
+});
 
 function jobBody(id, nextId) {
   const start = workflow.indexOf(`  ${id}:\n`);

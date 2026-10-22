@@ -280,7 +280,7 @@ test('real CLI emits bounded job outputs and independently rejects a substituted
 test('workflow consumes the verified plan without weakening individual lane steps', () => {
   const { jobs } = workflow;
   assert.deepEqual([...jobs.required.needs].sort(), ['impact', ...CI_LANES].sort());
-  assert.equal(jobs.static.needs, undefined);
+  assert.equal(jobs.static.needs, 'impact');
   assert.equal(jobs.static.if, undefined);
   for (const lane of CI_LANES.filter((name) => name !== 'static')) {
     assert.equal(jobs[lane].needs, 'impact');

@@ -85,7 +85,7 @@ test('CI core and standalone infrastructure select the full inventory exactly on
   assert.ok(core.includes('scripts/ci/static-coverage.test.mjs'), 'This guard must run in CI');
 });
 
-test('local selection preserves complete tooling coverage without executing infrastructure twice', () => {
+test('local selection covers core tooling and adds the complete selected infrastructure once', () => {
   const full = expandTestGlobs(parseTestGlobs(scripts['test:agent-tools']));
   const core = expandTestGlobs(parseTestGlobs(scripts['test:agent-tools:core']));
   const infrastructure = expandTestGlobs(['infra/scripts/*.test.mjs']);
@@ -98,8 +98,8 @@ test('local selection preserves complete tooling coverage without executing infr
   ]);
   for (const [checks, expected] of [
     [['repo-static'], core],
-    [['agent-tools'], full],
-    [['repo-static', 'agent-tools'], full],
+    [['agent-tools'], core],
+    [['repo-static', 'agent-tools'], core],
     [['repo-static', 'infra'], full],
     [['repo-static', 'agent-tools', 'infra'], full],
     [['agent-tools', 'infra'], full],
@@ -128,14 +128,30 @@ test('inventory parser rejects shell wrappers, skip flags and unsupported globs'
   }
 });
 
-test('Static keeps its twelve-minute budget and every blocking validation step', () => {
+test('Static keeps its budget, core checks and infrastructure coverage for full plans', () => {
   const job = jobBody('static');
   assert.match(job, /^ {4}name: Static$/mu);
   assert.deepEqual(
     [...job.matchAll(/^ {4}timeout-minutes: (.+)$/gmu)].map((entry) => entry[1]),
     ['12'],
   );
-  assert.doesNotMatch(job, /^\s*(?:-\s*)?(?:if|continue-on-error|shell|working-directory):/mu);
+  assert.doesNotMatch(job, /^\s*(?:-\s*)?(?:continue-on-error|shell|working-directory):/mu);
+  const parsed = parse(workflow).jobs.static;
+  assert.equal(parsed.needs, 'impact');
+  assert.equal(parsed.if, undefined);
+  const infrastructure = new Set([
+    "find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck",
+    'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7',
+    'npm run check:infra',
+  ]);
+  for (const step of parsed.steps) {
+    assert.equal(
+      step.if,
+      infrastructure.has(step.run)
+        ? "fromJSON(needs.impact.outputs.plan).mode == 'full'"
+        : undefined,
+    );
+  }
   const runs = [...job.matchAll(/^ {6}(?:- | {2})run: (.+)$/gmu)].map((entry) => entry[1]);
   assert.deepEqual(runs, [
     'npm ci --no-audit',

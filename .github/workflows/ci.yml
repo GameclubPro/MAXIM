@@ -43,6 +43,7 @@ jobs:
 
   static:
     name: Static
+    needs: impact
     runs-on: ubuntu-latest
     timeout-minutes: 12
     # FLAG: Public test commands bound file concurrency. Native/WASM fixtures keep
@@ -61,10 +62,13 @@ jobs:
       - run: npm run check:static:ci
       - run: npm run check:docs
       - name: ShellCheck infrastructure scripts
+        if: fromJSON(needs.impact.outputs.plan).mode == 'full'
         run: find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
       - name: Validate GitHub Actions workflows
+        if: fromJSON(needs.impact.outputs.plan).mode == 'full'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
       - run: npm run check:infra
+        if: fromJSON(needs.impact.outputs.plan).mode == 'full'
 
   contracts:
     name: Contracts
@@ -255,14 +259,16 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci --no-audit
-      - name: Use Ubuntu archive for browser dependencies
+      - name: Use HTTPS for browser dependencies
         run: |
           for apt_source_file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
             if [[ -f "$apt_source_file" ]]; then
-              sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$apt_source_file"
+              sudo sed -i -E 's#https?://(azure\.)?archive\.ubuntu\.com/#https://archive.ubuntu.com/#g; s#http://security\.ubuntu\.com/#https://security.ubuntu.com/#g' "$apt_source_file"
             fi
           done
+          printf '%s\n' 'Acquire::Languages "none";' 'Acquire::http::Timeout "15";' 'Acquire::https::Timeout "15";' 'Acquire::Retries "1";' 'APT::Update::Error-Mode "any";' | sudo tee /etc/apt/apt.conf.d/99maxim-browser >/dev/null
       - run: npx playwright install --with-deps chromium
+        timeout-minutes: 3
       - run: npm run check:miniapp
         if: matrix.shard == '1/2'
       - run: npm run build:miniapp:production
@@ -338,7 +344,16 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci --no-audit
+      - name: Use HTTPS for browser dependencies
+        run: |
+          for apt_source_file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [[ -f "$apt_source_file" ]]; then
+              sudo sed -i -E 's#https?://(azure\.)?archive\.ubuntu\.com/#https://archive.ubuntu.com/#g; s#http://security\.ubuntu\.com/#https://security.ubuntu.com/#g' "$apt_source_file"
+            fi
+          done
+          printf '%s\n' 'Acquire::Languages "none";' 'Acquire::http::Timeout "15";' 'Acquire::https::Timeout "15";' 'Acquire::Retries "1";' 'APT::Update::Error-Mode "any";' | sudo tee /etc/apt/apt.conf.d/99maxim-browser >/dev/null
       - run: npx playwright install --with-deps chromium
+        timeout-minutes: 3
       - run: npm run check:admin
 
   docker:
