@@ -4807,10 +4807,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             reportsAvailable || settingsQuery.data?.reportsEnabled === true,
           runtimeNotes: {
             reports: reportsAvailable ? null : (
-              <p role="status">
+              <p className="reports-availability" role="status">
                 {reportsAvailabilityQuery.isPending
                   ? 'Проверяем приём жалоб…'
-                  : 'Приём жалоб сейчас недоступен.'}
+                  : 'Приём жалоб приостановлен оператором.'}
               </p>
             ),
             commercialFilter: (

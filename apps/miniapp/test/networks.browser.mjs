@@ -567,8 +567,63 @@ for (const profile of [
       true,
       'focus cannot create a draft',
     );
-    await policy.selectOption('ALERT_ONLY');
     const leaveDialog = page.getByRole('dialog', { name: 'Выйти без сохранения?', exact: true });
+    const invalidNumber = page
+      .locator('.network-settings-editor')
+      .getByRole('spinbutton', { name: 'Срок ограничения, ч', exact: true });
+    const originalNumber = await invalidNumber.inputValue();
+    await invalidNumber.fill('0');
+    await page.getByText('Укажите допустимое число.', { exact: true }).waitFor();
+    assert.equal(
+      await page.locator('.network-settings-editor .network-settings-page__changes').count(),
+      0,
+      'invalid raw number alone creates no valid field change',
+    );
+    assert.equal(
+      await page.getByRole('button', { name: 'Проверить изменения', exact: true }).isDisabled(),
+      true,
+      'invalid-only draft cannot prepare changes',
+    );
+    await back(page);
+    await leaveDialog.waitFor();
+    await back(page);
+    await leaveDialog.waitFor({ state: 'hidden' });
+    assert.equal(await invalidNumber.inputValue(), '0', 'cancel leaving keeps invalid raw number');
+    assert.equal(
+      await page.getByText('Укажите допустимое число.', { exact: true }).isVisible(),
+      true,
+      'cancel leaving keeps field error',
+    );
+    const readCountBeforeInvalidDiscard = (await readRequests(page)).length;
+    await back(page);
+    await leaveDialog.waitFor();
+    await leaveDialog.getByRole('button', { name: 'Выйти без сохранения', exact: true }).click();
+    await settingsHub(page, {
+      scope: selectedScope,
+      readCount: readCountBeforeInvalidDiscard,
+    });
+    await openSettingsSection(page, 'links', single);
+    assert.equal(
+      await invalidNumber.inputValue(),
+      originalNumber,
+      'discarding invalid-only draft restores original field value',
+    );
+    assert.equal(await page.getByText('Укажите допустимое число.', { exact: true }).count(), 0);
+    assert.equal(
+      await policy.inputValue(),
+      '',
+      'invalid-only discard does not author mixed policy',
+    );
+    assert.equal(
+      await page.getByRole('button', { name: 'Проверить изменения', exact: true }).isDisabled(),
+      true,
+      'invalid-only discard clears error state and all changes',
+    );
+    await back(page);
+    await settingsHub(page, { scope: selectedScope, readCount: (await readRequests(page)).length });
+    assert.equal(await leaveDialog.count(), 0, 'discarded errors do not leave a stale dirty guard');
+    await openSettingsSection(page, 'links', single);
+    await policy.selectOption('ALERT_ONLY');
     await back(page);
     await leaveDialog.waitFor();
     await back(page);

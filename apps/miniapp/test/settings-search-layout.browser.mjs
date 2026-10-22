@@ -120,6 +120,11 @@ async function assertReachableControl(locator, label, { touchTarget = false } = 
 async function assertModulePresentation(page, name, entity, title, panelSelector, palette) {
   const label = `${name}/${entity}`;
   const panel = page.locator(panelSelector);
+  await (
+    entity === 'chat'
+      ? panel.getByRole('checkbox', { name: 'Проверять повторы сообщений', exact: true })
+      : panel.getByRole('checkbox', { name: 'Добавлять действие', exact: true })
+  ).waitFor({ state: 'attached' });
   await settledBox(panel);
   assert.equal(await page.getByRole('dialog', { name: title, exact: true }).count(), 1);
   assert.equal(
@@ -151,7 +156,7 @@ async function assertModulePresentation(page, name, entity, title, panelSelector
   const body = panel.locator('.settings-drilldown__body');
   const bodyBox = await settledBox(body);
   assert.ok(bodyBox.y >= headerBox.y + headerBox.height - 0.5, `${label} body overlaps its header`);
-  const actual = await panel.evaluate((element, entity) => {
+  const actual = await panel.evaluate((element) => {
     const color = (target, property) => getComputedStyle(target).getPropertyValue(property);
     const probe = document.createElement('span');
     probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none';
@@ -161,10 +166,10 @@ async function assertModulePresentation(page, name, entity, title, panelSelector
       return getComputedStyle(probe).color;
     };
     try {
-      const card = element.querySelector(
-        entity === 'chat' ? '.settings-native-toggle' : '.channel-post-signature__activation',
+      const card = element.querySelector('.settings-native-toggle');
+      const field = element.querySelector(
+        '.field input, .field select, .field textarea, .network-settings-field input:not([type="checkbox"]):not([type="file"]), .network-settings-field select, .network-settings-field textarea',
       );
-      const field = element.querySelector('.field input, .field select, .field textarea');
       return {
         panel: color(element, 'background-color'),
         body: color(element.querySelector('.settings-drilldown__body'), 'background-color'),
@@ -179,7 +184,7 @@ async function assertModulePresentation(page, name, entity, title, panelSelector
     } finally {
       probe.remove();
     }
-  }, entity);
+  });
   if (entity === 'channel') {
     assert.notEqual(
       actual.field,
@@ -203,8 +208,8 @@ async function assertModulePresentation(page, name, entity, title, panelSelector
     `${label} module surfaces and local roles must match the steel overview palette`,
   );
   if (entity === 'chat') {
-    const longTitle = panel.locator('.settings-native-toggle__title', {
-      hasText: 'Ограничить отправку',
+    const longTitle = panel.locator('.network-settings-field__label', {
+      hasText: 'Проверять повторы сообщений',
     });
     assert.equal(await longTitle.count(), 1, 'The real duplicate action label must be covered');
     assert.equal(
@@ -213,12 +218,12 @@ async function assertModulePresentation(page, name, entity, title, panelSelector
         return style.whiteSpace !== 'nowrap' && element.scrollWidth <= element.clientWidth + 1;
       }),
       true,
-      `${label} duplicate action title must wrap completely beside duration and switch`,
+      `${label} duplicate activation title must wrap completely beside its switch`,
     );
   }
   const lastControl = body
     .locator(
-      '.settings-native-switch:visible, .field input:visible, .field select:visible, .field textarea:visible, .settings-duration-editor__preset:visible, .segmented-control__item:visible',
+      '.settings-native-switch:visible, .field input:visible, .field select:visible, .field textarea:visible, .network-settings-field input:not([type="checkbox"]):not([type="file"]):visible, .network-settings-field select:visible, .network-settings-field textarea:visible, .settings-duration-editor__preset:visible, .segmented-control__item:visible',
     )
     .last();
   await assertReachableControl(lastControl, `${label} final module control`);
@@ -480,8 +485,8 @@ try {
         await assertModulePresentation(page, name, entity, title, panelSelector, palette);
         const moduleSwitch =
           entity === 'chat'
-            ? page.getByRole('checkbox', { name: 'Включить антидубль', exact: true })
-            : page.locator('.channel-post-signature__activation input[type="checkbox"]');
+            ? page.getByRole('checkbox', { name: 'Проверять повторы сообщений', exact: true })
+            : page.getByRole('checkbox', { name: 'Добавлять действие', exact: true });
         assert.equal(
           await moduleSwitch.isChecked(),
           enabled === 'true',

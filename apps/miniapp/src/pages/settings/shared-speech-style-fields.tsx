@@ -4,7 +4,7 @@ import {
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
 import { useRef, type RefObject } from 'react';
-import botSpeechRobotImage from '../../../../../bot.webp';
+import botSpeechRobotImage from '../../../../../bot.webp?no-inline';
 import botSpeechFriendlyImage from '../../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../../police.webp';

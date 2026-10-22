@@ -82,7 +82,7 @@
       "baseline": "startup",
       "limits": {
         "jsGzipBytes": 114688,
-        "cssGzipBytes": 49152
+        "cssGzipBytes": 52224
       }
     },
     {
@@ -138,7 +138,7 @@
       "baseline": "startup",
       "limits": {
         "jsGzipBytes": 159744,
-        "cssGzipBytes": 81920
+        "cssGzipBytes": 83968
       }
     },
     {

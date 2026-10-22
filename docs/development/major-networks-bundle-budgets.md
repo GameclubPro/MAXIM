@@ -16,14 +16,14 @@ explicit measurements of the complete shared interface:
 | Path                                           |      Previous limit |      Release limit |            Production measurement |
 | ---------------------------------------------- | ------------------: | -----------------: | --------------------------------: |
 | Startup JS                                     |           126,592 B | 130,688 B (+4 KiB) | 128.2 KiB including API allowance |
-| Individual chat settings JS, incremental       |           149,120 B |          155,648 B |                         150.9 KiB |
+| Individual chat settings JS, incremental       |           149,120 B |          155,648 B |                         151.0 KiB |
 | Individual chat settings CSS, incremental      |              76 KiB |             78 KiB |                          76.9 KiB |
-| Network forms JS, incremental                  |  provisional 80 KiB |            112 KiB |                         109.6 KiB |
-| Network forms CSS, incremental                 |  provisional 16 KiB |             48 KiB |                          47.3 KiB |
+| Network forms JS, incremental                  |  provisional 80 KiB |            112 KiB |                         110.8 KiB |
+| Network forms CSS, incremental                 |              48 KiB |             51 KiB |                          50.4 KiB |
 | Network actions and advanced editors JS        |  provisional 32 KiB |             44 KiB |                          42.4 KiB |
 | Network actions and advanced editors CSS       |  provisional 12 KiB |             32 KiB |                          30.7 KiB |
-| Complete network editing flow JS, incremental  | provisional 104 KiB |            156 KiB |                         152.1 KiB |
-| Complete network editing flow CSS, incremental |  provisional 24 KiB |             80 KiB |                          78.1 KiB |
+| Complete network editing flow JS, incremental  | provisional 104 KiB |            156 KiB |                         153.2 KiB |
+| Complete network editing flow CSS, incremental |              80 KiB |             82 KiB |                          81.1 KiB |
 | Network operation cold recovery JS             |             192 KiB |            192 KiB |                         184.2 KiB |
 | Network operation cold recovery CSS            |  provisional 56 KiB |             66 KiB |                          64.3 KiB |
 
@@ -38,6 +38,15 @@ Keeping the shared speech preview context out of the forced individual-settings 
 about 96 KiB gzip from the aggregate network forms graph. A single section loads lazily; the
 complete-flow measurement is the union of all supported forms and actions. Canonical settings
 and rules styles account for the CSS increase required to render the same interface.
+
+The canonical Reports fields retain their original switches, steppers, presets and commands
+rather than a reduced generic form. Their shared stylesheet adds about 2.7 KiB gzip; the
+journal and tabs stay exclusive to the individual Reports screen. This measured addition
+sets the forms CSS limit to 51 KiB and the complete-flow CSS limit to 82 KiB. The robot
+portrait is a separate cacheable image instead of base64 in JavaScript, keeping both forms
+and complete-flow JavaScript inside their existing limits. CSS rules are preserved exactly;
+combining unrelated public-component styles to improve gzip would broaden their loading
+boundaries and is deliberately avoided.
 
 No comments, channel-settings or Publisher limit is increased. Network cold recovery keeps its
 192 KiB JavaScript cap without a home-baseline subtraction. These are build measurements,

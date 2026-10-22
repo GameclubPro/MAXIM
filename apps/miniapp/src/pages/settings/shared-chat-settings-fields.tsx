@@ -56,6 +56,7 @@ import {
 import { prepareStopWordsLists } from '../../lib/stop-words-editor';
 import { parseSettingsField } from '../../features/network-settings/field-registry';
 import { RUSSIAN_TIMEZONE_OPTIONS } from './settings-timezones';
+import { ReportsSettingsFields } from './reports-settings-fields';
 import type { SharedChatSettingsSectionProps } from './shared-chat-settings-section';
 import './shared-chat-settings.css';
 import {
@@ -415,69 +416,11 @@ function Sanctions({
 }
 
 function Reports({ fields, context }: BodyProps) {
-  const c = controls(fields);
   return (
-    <>
-      <Group
-        title="Жалобы участников"
-        hint="Отправьте /report или «жалоба» ответом на сообщение. Бот применит выбранные меры, когда наберётся порог голосов."
-      >
-        {c.toggle(
-          'reportsEnabled',
-          'Жалобы участников',
-          undefined,
-          context.reportsActivationAvailable === false,
-        )}
-        <div className="reports-threshold-buttons" role="group" aria-label="Сколько голосов нужно">
-          {[2, 3, 4, 5, 6].map((value) => (
-            <button
-              type="button"
-              key={value}
-              disabled={fields.readOnly}
-              aria-pressed={
-                fields.read('reportsThreshold').kind === 'common' &&
-                (fields.read('reportsThreshold') as { kind: 'common'; value: number }).value ===
-                  value
-              }
-              onClick={() => fields.setScalar('reportsThreshold', value)}
-            >
-              {value}
-            </button>
-          ))}
-        </div>
-        {c.number('reportsThreshold', 'Порог жалоб', 2, 6)}
-        <FieldList<string>
-          label="Дополнительные команды жалобы"
-          state={fields.read('reportsAliases')}
-          disabled={fields.readOnly}
-          error={fields.error('reportsAliases')}
-          onChange={(value) => fields.replaceList('reportsAliases', value)}
-        >
-          {(items, replace) => (
-            <StringList
-              items={items}
-              onChange={replace}
-              disabled={fields.readOnly}
-              label="Команды через запятую"
-              onPending={(pending) =>
-                fields.setError(
-                  'reportsAliases',
-                  pending ? 'Примените команды или отмените ввод.' : null,
-                )
-              }
-            />
-          )}
-        </FieldList>
-      </Group>
-      <Group title="Меры по жалобе">
-        {c.select('reportsDeleteMode', 'Удаление сообщения', [
-          { value: 'MESSAGE', label: 'Сообщение с жалобами' },
-          { value: 'HISTORY_24H', label: 'Сообщения автора за 24 часа' },
-        ])}
-        {c.toggle('reportsMuteEnabled', 'Ограничить автора сообщения')}
-        {c.number('reportsMuteDurationHours', 'Срок ограничения, ч', 1, 24)}
-      </Group>
-    </>
+    <ReportsSettingsFields
+      fields={fields}
+      activationAvailable={context.reportsActivationAvailable}
+    />
   );
 }
 

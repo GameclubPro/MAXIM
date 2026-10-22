@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import type { SettingsFieldState } from './field-model';
 import type { BotSpeechMediaImage } from '@maxim/contracts/settings';
+import './settings-field-controls.css';
 
 type FieldProps<T> = {
   state: SettingsFieldState<T>;
@@ -23,8 +24,8 @@ function FieldFrame({
   children: ReactNode;
 }) {
   return (
-    <div className="network-settings-field">
-      <span className="network-settings-field__label">{label}</span>
+    <div className="field network-settings-field">
+      <span className="field__label network-settings-field__label">{label}</span>
       {children}
       {description ? <small>{description}</small> : null}
       {error ? <p role="alert">{error}</p> : null}
@@ -39,33 +40,63 @@ export function FieldToggle({
   error,
   description,
 }: FieldProps<boolean>) {
+  const id = useId();
   const ref = useRef<HTMLInputElement>(null);
+  const statusId = `${id}-status`;
+  const descriptionId = `${id}-description`;
+  const errorId = `${id}-error`;
+  const status =
+    state.kind === 'mixed' ? 'Разные значения' : state.kind === 'loading' ? 'Загрузка…' : null;
+  const describedBy = [status && statusId, description && descriptionId, error && errorId]
+    .filter(Boolean)
+    .join(' ');
   useEffect(() => {
     if (ref.current) ref.current.indeterminate = state.kind === 'mixed';
   }, [state.kind]);
   return (
-    <FieldFrame label={label} error={error} description={description}>
-      <label className="network-settings-field__toggle">
-        <input
-          ref={ref}
-          type="checkbox"
-          checked={state.kind === 'common' && state.value}
-          aria-label={label}
-          aria-checked={state.kind === 'mixed' ? 'mixed' : state.kind === 'common' && state.value}
-          disabled={disabled || state.kind === 'loading'}
-          onChange={(e) => onChange(e.target.checked)}
-        />
-        <span>
-          {state.kind === 'mixed'
-            ? 'Разные значения'
-            : state.kind === 'loading'
-              ? 'Загрузка…'
-              : state.value
-                ? 'Включено'
-                : 'Выключено'}
-        </span>
-      </label>
-    </FieldFrame>
+    <div className="network-settings-field network-settings-field--toggle settings-native-toggle">
+      <div className="network-settings-field__toggle settings-native-toggle__row">
+        <div className="settings-native-toggle__title-wrap">
+          <label
+            className="network-settings-field__label settings-native-toggle__title"
+            htmlFor={id}
+          >
+            {label}
+          </label>
+        </div>
+        <label className="settings-native-switch" htmlFor={id}>
+          <input
+            id={id}
+            ref={ref}
+            type="checkbox"
+            checked={state.kind === 'common' && state.value}
+            aria-label={label}
+            aria-checked={state.kind === 'mixed' ? 'mixed' : state.kind === 'common' && state.value}
+            aria-describedby={describedBy || undefined}
+            disabled={disabled || state.kind === 'loading'}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+          <span className="toggle-switch" aria-hidden="true">
+            <span className="toggle-switch__thumb" />
+          </span>
+        </label>
+      </div>
+      {status ? (
+        <small className="field__hint" id={statusId}>
+          {status}
+        </small>
+      ) : null}
+      {description ? (
+        <small className="field__hint" id={descriptionId}>
+          {description}
+        </small>
+      ) : null}
+      {error ? (
+        <p role="alert" id={errorId}>
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }
 export function FieldText({

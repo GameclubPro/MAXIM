@@ -111,6 +111,64 @@ try {
       );
       await panel.getByRole('button', { name: '24 ч', exact: true }).click();
     }
+    if (name === 'iphone-se-light') {
+      await page.evaluate(async () => {
+        const { PREVIEW_REQUEST_HANDLERS } = await import('/app/src/lib/api/preview-transport.ts');
+        const { PREVIEW_NOT_HANDLED } =
+          await import('/app/src/lib/api/preview-transport-runtime.ts');
+        window.__REPORTS_KEYBOARD_WRITES__ = [];
+        PREVIEW_REQUEST_HANDLERS.unshift(({ method, init }) => {
+          if (method !== 'GET')
+            window.__REPORTS_KEYBOARD_WRITES__.push(JSON.parse(String(init.body ?? '{}')));
+          return PREVIEW_NOT_HANDLED;
+        });
+      });
+      const duration = panel.getByRole('spinbutton', { name: 'Длительность ограничения, ч' });
+      const aliases = panel.getByRole('textbox', { name: 'Дополнительные команды, до 5' });
+      await duration.fill('');
+      assert.equal(await duration.inputValue(), '');
+      assert.equal(await duration.getAttribute('aria-invalid'), 'true');
+      await panel.getByRole('alert').waitFor({ state: 'visible' });
+      assert.equal(await aliases.inputValue(), 'спам, /alert');
+      assert.equal(
+        await panel
+          .getByRole('radio', { name: '6 голосов', exact: true })
+          .getAttribute('aria-checked'),
+        'true',
+      );
+      await duration.fill('24');
+      assert.equal(await duration.getAttribute('aria-invalid'), null);
+
+      // The threshold uses buttons on mobile; widen this same draft to exercise its keyboard field.
+      await page.setViewportSize({ width: 1024, height: 900 });
+      const threshold = panel.getByRole('spinbutton', { name: 'Порог жалоб' });
+      await threshold.fill('');
+      assert.equal(await threshold.inputValue(), '');
+      assert.equal(await threshold.getAttribute('aria-invalid'), 'true');
+      await panel.getByRole('alert').waitFor({ state: 'visible' });
+      assert.equal(await duration.inputValue(), '24');
+      assert.equal(await aliases.inputValue(), 'спам, /alert');
+      await threshold.fill('6');
+      assert.equal(await threshold.getAttribute('aria-invalid'), null);
+      await page.setViewportSize({ width, height });
+      await applyNativeVisualMode(page, { safeTop: 47, safeBottom: 34 });
+
+      const invalidAliases = 'one, two, three, four, five, six';
+      await aliases.fill(invalidAliases);
+      assert.equal(await aliases.inputValue(), invalidAliases);
+      assert.equal(await aliases.getAttribute('aria-invalid'), 'true');
+      await panel.getByRole('alert').waitFor({ state: 'visible' });
+      assert.equal(await duration.inputValue(), '24');
+      await aliases.fill('спам, /alert');
+      assert.equal(await aliases.getAttribute('aria-invalid'), null);
+      assert.equal(await panel.getByRole('alert').count(), 0);
+      assert.equal(
+        await panel.getByRole('button', { name: 'Сохранить', exact: true }).isEnabled(),
+        true,
+      );
+      assert.deepEqual(await page.evaluate(() => window.__REPORTS_KEYBOARD_WRITES__), []);
+      assert.deepEqual(errors, []);
+    }
     await panel.getByRole('spinbutton', { name: 'Длительность ограничения, ч' }).blur();
     await scroller.evaluate((node) => {
       node.scrollTop = 0;
@@ -151,6 +209,24 @@ try {
     await page.waitForFunction(
       () => !document.querySelector('.settings-drilldown__footer-actions [aria-busy="true"]'),
     );
+    if (name === 'iphone-se-light') {
+      assert.equal(
+        await page.evaluate(() => {
+          const hasAuthoredZero = (value) =>
+            value &&
+            typeof value === 'object' &&
+            Object.entries(value).some(
+              ([key, child]) =>
+                ((key === 'reportsThreshold' || key === 'reportsMuteDurationHours') &&
+                  child === 0) ||
+                hasAuthoredZero(child),
+            );
+          return window.__REPORTS_KEYBOARD_WRITES__.some(hasAuthoredZero);
+        }),
+        false,
+        'Empty keyboard buffers must never author zero into the settings request',
+      );
+    }
     if (await panel.isVisible())
       await panel.getByRole('button', { name: 'Закрыть панель' }).click();
     await page.getByRole('button', { name: 'Система жалоб', exact: true }).click();
@@ -277,13 +353,13 @@ try {
     if (name === 'iphone-se-light') {
       await page.goto(new URL('chat/preview-chat/settings?preview=1', base).href);
       for (const [title, suffix, label] of [
-        ['Ночной режим', 'night', 'Включить закрытие чата на ночь'],
-        ['Антидубль', 'duplicates', 'Включить антидубль'],
-        ['Сообщения и боты', 'extra', 'Включить удаление собственных сообщений бота'],
+        ['Ночной режим', 'night', 'Закрывать чат по расписанию'],
+        ['Антидубль', 'duplicates', 'Проверять повторы сообщений'],
+        ['Сообщения и боты', 'extra', 'Удалять сообщения бота'],
       ]) {
         await clickSettingsOverviewEntry(page, title);
         const lazyPanel = page.locator(`.settings-drilldown__panel--${suffix}`);
-        const toggle = lazyPanel.locator(`label[aria-label="${label}"] input`);
+        const toggle = lazyPanel.getByRole('checkbox', { name: label, exact: true });
         await toggle.waitFor();
         const initial = await toggle.isChecked();
         await toggle.setChecked(!initial);

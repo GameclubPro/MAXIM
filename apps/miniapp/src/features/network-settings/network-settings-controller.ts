@@ -661,7 +661,9 @@ export function useNetworkSettingsController(input: {
     setChanges,
     setFieldError,
     readOnly: phase !== 'idle' || !read || statusIssue || resultReadOnly,
-    dirty: (changes.length > 0 || Boolean(navigationAllowlist)) && !resultReadOnly,
+    dirty:
+      (changes.length > 0 || Boolean(navigationAllowlist) || Object.keys(errors).length > 0) &&
+      !resultReadOnly,
     canStartAgain:
       resultReadOnly &&
       phase === 'idle' &&
