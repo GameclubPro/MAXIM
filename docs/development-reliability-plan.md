@@ -25,7 +25,7 @@ that the preview scaffold is absent before saving. A scenario reload must not pr
 emulator image labeled as a native-layout success.
 
 1. Read the scoped notes and inspect the worktree. Keep unrelated changes separate.
-   Check `node scripts/agent/doctor.mjs --browser` when preparing a machine. The
+   Use `node scripts/agent/doctor.mjs --browser` only when setting up the environment. The
    [local environment guide](development/agent-local-environment.md) includes disposable native
    PostgreSQL/Redis validation when a Docker daemon is unavailable.
 2. Run `node scripts/agent/preflight.mjs` before expensive suites. It is an early error check, not
@@ -33,10 +33,12 @@ emulator image labeled as a native-layout success.
 3. Use focused tests while editing. Run the indicated generator if preflight reports stale
    output, then inspect the generated diff.
 4. Use `node scripts/agent/plan.mjs --worktree` to determine checks, migrations and deployment
-   scope. Stage only intended paths, with their tests and generated output.
+   scope. Finish focused regressions before staging only intended paths, with their tests and
+   generated output.
 5. Submit with `./infra/scripts/local-commit-push.sh "<message>" main`. Staged verification allows
-   unrelated Markdown notes but refuses different executable inputs. If other runtime work must
-   remain unstaged, validate and submit from a separate worktree; do not stash someone else's work.
+   unrelated Markdown notes but refuses different executable inputs. This mandatory helper owns
+   the final impact aggregate: run it once after the edit stabilizes. If other runtime work must
+   remain unstaged, submit from a separate worktree; do not stash someone else's work.
 6. Wait for both exact-SHA `Required` and `Analyze JavaScript and TypeScript`. Use the normal
    scoped deploy wrapper, then verify its strict smokes and release manifest.
 7. Queue, effect or recovery changes require the affected native fault experiments, including
@@ -164,9 +166,12 @@ Before the expensive validation:
    runbook. Run focused type/static checks and native PostgreSQL/Redis regressions first.
    Keep cold connection/setup budgets separate from short queue-wait assertions; do not raise
    production deadlines to accommodate a test fixture.
-4. Run the impact-selected checks once after the edit stabilizes. Repeat a broader check only
-   after changed inputs, a failure or a newly identified coverage gap. This does not reuse a
-   different revision's result as exact-SHA CI or weaken the public validation wrappers.
+4. Let the mandatory commit helper run the final impact-selected aggregate once after the edit
+   stabilizes. During editing use the relevant focused cases instead of pre-running that
+   aggregate. Run full validation only when the planner selects `full` or a named cross-boundary
+   risk or coverage gap requires it; record that reason in the task record. Repeat an aggregate
+   only after changed inputs, failure or new missing coverage. This does not reuse a different
+   revision's result as exact-SHA CI or weaken public validation wrappers.
 
 Maintain a small private task record outside Git with the current stage, checkout and SHA, next
 action, checks and their log paths, production controller/runtime identities, and open acceptance
@@ -196,9 +201,25 @@ tests alone do not demonstrate more productive work.
 
 ## Boundaries And Follow-Up
 
-`agent:verify` avoids running agent-tool tests or CSS checks twice when their aggregate command
-already includes them. Full verification also runs the browser smoke, which the root `check`
-script does not include. Tests pin these aggregate-command assumptions.
+Markdown-only changes select `check:docs` without runtime, browser or native-store setup. Environment
+examples and `infra/env/**` are classified independently; they do not inherit the Markdown-only
+path. Run the environment doctor only for setup, and do not repeat it for ordinary edits.
+
+When both repository static and infrastructure checks are selected, `agent:verify` runs lint,
+refactor guards and core tooling tests, then `check:infra` owns the infrastructure test inventory
+once. A tooling change without an infrastructure selection retains the full `check:static`
+aggregate once. Public full aggregates keep their existing complete scope. Inventory guards prove
+that the local and CI partitions include every tooling test. Native PostgreSQL/Redis
+cases remain mandatory for the affected invariant; skipped store cases are missing coverage.
+
+Miniapp-only UI changes need no API, Prisma, admin or native-store suites unless a changed boundary
+or concrete regression requires them. Do not repeat green suites without changed inputs, failure
+or a newly identified coverage gap; included subchecks do not need a separate run.
+
+`agent:verify` also avoids repeating included CSS checks. Full verification adds the browser smoke,
+which the root `check` script does not include. Focused local selection changes neither exact-SHA
+`Required` and `Analyze JavaScript and TypeScript` nor guarded deploy, strict smokes and manifest
+verification. Tests pin these aggregate-command assumptions.
 
 No verification cache is introduced: a green result from different inputs is not reusable release
 evidence. The preflight and staged checks shorten feedback and catch mismatches; the exact committed

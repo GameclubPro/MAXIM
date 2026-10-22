@@ -41,12 +41,20 @@ export function parseVerifyArgs(argv) {
 
 export function selectVerificationScripts({ config, plan, full = false }) {
   let checkIds = full ? ['full'] : [...plan.checks];
+  const scriptOverrides = new Map();
   if (checkIds.includes('full')) {
     // The root check script covers builds/tests, but not the browser smoke.
     checkIds = ['full', 'miniapp-visual-local'];
   } else {
     const covered = new Set();
-    if (checkIds.includes('repo-static')) covered.add('agent-tools');
+    // FLAG: Core static and infrastructure partition the full tooling inventory.
+    // Without infrastructure, tooling changes still require the full public aggregate.
+    if (checkIds.includes('repo-static') && checkIds.includes('agent-tools')) {
+      if (!checkIds.includes('infra')) scriptOverrides.set('repo-static', 'check:static');
+      covered.add('agent-tools');
+    } else if (checkIds.includes('agent-tools') && checkIds.includes('infra')) {
+      scriptOverrides.set('agent-tools', 'test:agent-tools:core');
+    }
     if (checkIds.includes('miniapp')) covered.add('miniapp-css');
     checkIds = checkIds.filter((id) => !covered.has(id));
   }
@@ -56,7 +64,7 @@ export function selectVerificationScripts({ config, plan, full = false }) {
     if (!definition?.script) {
       throw new Error(`Impact check ${id} has no npm script mapping.`);
     }
-    return Object.freeze({ id, script: definition.script });
+    return Object.freeze({ id, script: scriptOverrides.get(id) ?? definition.script });
   });
 }
 

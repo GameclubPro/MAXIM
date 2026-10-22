@@ -237,12 +237,53 @@ test('keeps docs and agent notes deployment-free', () => {
     { status: 'M', path: 'apps/api/AGENTS.md' },
     { status: 'M', path: 'apps/api/README.md' },
     { status: 'M', path: 'packages/contracts/README.md' },
+    { status: 'M', path: 'packages/contracts/test/README.md' },
+    { status: 'M', path: 'apps/api/test/README.md' },
+    { status: 'M', path: 'apps/api/prisma/migrations/README.md' },
+    { status: 'M', path: 'apps/miniapp/test/README.md' },
+    { status: 'M', path: 'apps/admin/test/README.md' },
     { status: 'M', path: 'docs/runbook.md' },
+    { status: 'M', path: 'scripts/agent/README.md' },
+    { status: 'M', path: 'scripts/README.md' },
+    { status: 'M', path: '.github/README.md' },
+    { status: 'M', path: 'infra/scripts/README.md' },
+    { status: 'M', path: 'infra/env/README.md' },
+    { status: 'M', path: 'infra/nginx/README.md' },
+    { status: 'M', path: 'infra/certs/README.md' },
+    { status: 'M', path: 'infra/vk-proxy/README.md' },
+    { status: 'M', path: 'infra/www/major-maksimov/README.md' },
+    { status: 'M', path: 'infra/README.md' },
+    { status: 'M', path: 'apps/api/src/__tests__/README.md' },
   ]);
 
   assert.deepEqual(plan.deploy.components, []);
   assert.deepEqual(plan.unknownPaths, []);
-  assert.ok(plan.checks.includes('docs'));
+  assert.deepEqual(plan.checks, ['docs']);
+});
+
+test('keeps environment templates and non-Markdown documentation out of the notes-only shortcut', () => {
+  for (const path of ['.env.example', 'infra/env/vps.env.example']) {
+    const plan = planFor([{ status: 'M', path }]);
+    assert.deepEqual(plan.checks, ['repo-static', 'docs', 'infra'], path);
+    assert.deepEqual(plan.deploy.components, [], path);
+    assert.deepEqual(plan.unknownPaths, [], path);
+  }
+  const asset = planFor([{ status: 'M', path: 'docs/operations/example.json' }]);
+  assert.deepEqual(asset.checks, ['repo-static', 'docs']);
+  assert.deepEqual(asset.deploy.components, []);
+  assert.deepEqual(asset.unknownPaths, []);
+});
+
+test('actual repository tools retain complete tooling checks while application changes use core static', () => {
+  for (const path of ['scripts/check-docs.mjs', '.github/workflows/ci.yml']) {
+    const plan = planFor([{ status: 'M', path }]);
+    assert.deepEqual(plan.checks, ['repo-static', 'agent-tools'], path);
+    assert.deepEqual(plan.deploy.components, [], path);
+  }
+  assert.equal(config.checkById['repo-static'].script, 'check:static:ci');
+  const infra = planFor([{ status: 'M', path: 'infra/scripts/deploy.sh' }]);
+  assert.deepEqual(infra.checks, ['repo-static', 'infra']);
+  assert.deepEqual(infra.deploy.components, []);
 });
 
 test('unknown paths fail closed with full validation, all components, and a warning', () => {

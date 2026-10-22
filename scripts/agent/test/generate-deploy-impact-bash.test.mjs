@@ -30,6 +30,20 @@ test('classifies deploy components in Bash and fails closed for unknown paths', 
   assert.deepEqual(classify('packages/contracts/src/core.ts'), [1, 1, 1, 0]);
   assert.deepEqual(classify('config/prisma-migration-policy.json'), [0, 0, 0, 0]);
   assert.deepEqual(classify('config/prisma-drift-baseline.json'), [0, 0, 0, 0]);
+  for (const path of [
+    'AGENTS.md',
+    'apps/api/prisma/migrations/README.md',
+    'apps/api/test/README.md',
+    'scripts/agent/README.md',
+    'infra/scripts/README.md',
+    'infra/env/README.md',
+    'infra/certs/README.md',
+    '.env.example',
+    'infra/env/vps.env.example',
+    'docs/operations/example.json',
+  ]) {
+    assert.deepEqual(classify(path), [0, 0, 0, 0], path);
+  }
   assert.deepEqual(classify('future/unclassified.file'), [1, 1, 1, 1]);
 });
 
