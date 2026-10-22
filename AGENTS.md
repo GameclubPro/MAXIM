@@ -36,10 +36,10 @@
    for environment setup; run `node scripts/agent/preflight.mjs` before expensive checks.
 2. For changed methods, find callers and test doubles with `rg` before broad tests. Keep doubles
    typed against the real contract. Run the affected unit and native integration cases first.
-3. Select checks/components with `node scripts/agent/plan.mjs --worktree`. Use focused cases during
-   editing; the mandatory commit helper runs the final aggregate once, without a separate pre-run.
-   Full checks require planner `full` or a named cross-boundary risk/coverage gap. Markdown-only
-   changes use `check:docs`; environment inputs retain their own scope. See
+3. Select scope with `node scripts/agent/plan.mjs --worktree`. Use focused tests; the commit helper
+   owns one final aggregate. No duplicate green suites or subchecks.
+   Full runs need planner `full` or a concrete coverage gap. UI needs no unrelated API/native/admin
+   suites; local tooling uses core plus affected callers; Markdown uses `check:docs`. See
    [check selection](docs/development-reliability-plan.md#boundaries-and-follow-up).
 4. Public API scripts own generator locks. Do not invoke `*:unlocked`, `*:source` or raw Prisma
    generation to bypass them. Native stores: `node scripts/agent/with-test-stores.mjs --migrate --`
@@ -54,9 +54,10 @@
    `./infra/scripts/vps-connect.sh deploy main --auto`; read `infra/AGENTS.md`
    first. Verify the synchronized VPS SHA, strict smokes and immutable component manifest.
    Do not use an old green commit's checks for a new release. Emergency bypass needs explicit reason.
-7. Unless the user says not to deploy, runtime API/UI/contracts/Prisma/Docker/MAX changes finish
-   with validation and the affected VPS deploy. Docs, notes, tests and tooling-only changes do not
-   require a runtime deploy. Recreate every API role for the shared image; do not recreate stores.
+7. Unless the user says otherwise, validated runtime changes finish with the affected VPS deploy,
+   before independent tooling follow-ups. Recreate all roles for a shared API image, never stores.
+   Docs/tests/tooling need no deploy or second main CI wait after green PR merge. Active
+   runtime needs one identity/availability readback, no rebuild or unrequested watch.
 
 Contract changes affect API, mini app and admin. Keep exports, TypeScript paths and Jest mappers
 aligned. Unknown paths fail closed in the impact planner; renames include old and new scopes.
