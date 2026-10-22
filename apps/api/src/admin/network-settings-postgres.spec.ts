@@ -257,6 +257,8 @@ integration('network settings durable writes with PostgreSQL', () => {
         })),
       }),
     ]);
+    // Fresh disposable stores need statistics for the category cardinality seeded above.
+    await db.$executeRaw`ANALYZE "chats", "managed_entity_access_edges", "managed_entity_favorites"`;
     const request = {
       entityType: 'channel',
       target: { mode: 'category', favoriteType: 'watch' },
