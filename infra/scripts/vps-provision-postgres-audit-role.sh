@@ -32,6 +32,9 @@ local Docker-socket access under the production pg_hba rules, with:
   - thirty-one additive scheduled-slot metadata columns when the complete group exists;
     recipient IDs and lock tokens are join/check-only and never report output
   - eight commercial-review metadata columns only; no evidence, captions or user/message IDs
+  - fifteen channel-statistics metadata columns; no post bodies, authors or reactions
+  - forty-five optional network-observation/archive/collector metadata columns;
+    no actor/bot/binding IDs, cursor signatures or lease tokens
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported
   - 25 owner-proof columns across execution claims and action ledger; source keys,
     lease/dispatch tokens and command journal are join/check-only and never report output
@@ -136,6 +139,9 @@ BEGIN
         'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
         'managed_broadcast_deliveries', 'managed_broadcasts', 'chats', 'commercial_review_samples', '_prisma_migrations',
         'webhook_execution_claims', 'max_action_ledger'
+        , 'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
+        'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
+        'channel_view_archive_states', 'marketplace_bindings'
       )
     GROUP BY table_name
   LOOP
@@ -288,6 +294,92 @@ BEGIN
 END
 $publisher_slot_grants$;
 GRANT SELECT (id, entity_type) ON TABLE public.chats TO maxim_audit;
+-- FLAG: The pre-release statistics collector works on the existing schema. Only
+-- the complete fifteen-column metadata group is granted; partial catalogs get none.
+DO $network_statistics_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES
+      ('channel_audience_snapshots', ARRAY['chat_id','participants_count','captured_at']),
+      ('channel_stats_sync_states', ARRAY['chat_id','membership_coverage_from','views_coverage_from',
+        'last_audience_sync_at','last_views_sync_at','last_views_discovery_at']),
+      ('channel_posts', ARRAY['id','chat_id','published_at','latest_snapshot_at']),
+      ('channel_post_view_snapshots', ARRAY['channel_post_id','captured_at'])
+    ) required(table_name,columns)
+    CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid=to_regclass('public.'||required.table_name)
+      AND attribute.attname=expected.column_name AND attribute.attnum>0 AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (chat_id, participants_count, captured_at) ON TABLE public.channel_audience_snapshots TO maxim_audit;
+    GRANT SELECT (chat_id, membership_coverage_from, views_coverage_from, last_audience_sync_at,
+      last_views_sync_at, last_views_discovery_at) ON TABLE public.channel_stats_sync_states TO maxim_audit;
+    GRANT SELECT (id, chat_id, published_at, latest_snapshot_at) ON TABLE public.channel_posts TO maxim_audit;
+    GRANT SELECT (channel_post_id, captured_at) ON TABLE public.channel_post_view_snapshots TO maxim_audit;
+  END IF;
+END
+$network_statistics_grants$;
+-- FLAG: Observation evidence is optional until the additive foundation is installed.
+-- Grant this complete metadata group or none, and reject inherited/public overgrants.
+DO $network_statistics_observation_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES
+      ('managed_entity_audience_observations', ARRAY['chat_id','entity_type','participants_count','observed_at','source']),
+      ('channel_view_observation_states', ARRAY['channel_post_id','baseline_at','observed_at','observed_views','high_water_views','anomaly_at','source']),
+      ('channel_view_observed_intervals', ARRAY['channel_post_id','chat_id','from_at','to_at','delta','quality','source']),
+      ('channel_view_archive_states', ARRAY['chat_id','cursor_at','discovered_from','discovery_complete_at','last_attempt_at','last_success_at',
+        'full_refresh_at','stalled_at','observed_post_count','first_observed_at','last_observed_at']),
+      ('marketplace_bindings', ARRAY['entity_id','kind','profile','state','statistics_consent','collection_owner','collection_metrics',
+        'checked_at','valid_until','lease_until','history_complete','history_anomaly','native_history_checked_at','native_full_checked_at','native_audience_checked_at'])
+    ) required(table_name,columns)
+    CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid=to_regclass('public.'||required.table_name)
+      AND attribute.attname=expected.column_name AND attribute.attnum>0 AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (chat_id,entity_type,participants_count,observed_at,source)
+      ON TABLE public.managed_entity_audience_observations TO maxim_audit;
+    GRANT SELECT (channel_post_id,baseline_at,observed_at,observed_views,high_water_views,anomaly_at,source)
+      ON TABLE public.channel_view_observation_states TO maxim_audit;
+    GRANT SELECT (channel_post_id,chat_id,from_at,to_at,delta,quality,source)
+      ON TABLE public.channel_view_observed_intervals TO maxim_audit;
+    GRANT SELECT (chat_id,cursor_at,discovered_from,discovery_complete_at,last_attempt_at,last_success_at,
+      full_refresh_at,stalled_at,observed_post_count,first_observed_at,last_observed_at)
+      ON TABLE public.channel_view_archive_states TO maxim_audit;
+    GRANT SELECT (entity_id,kind,profile,state,statistics_consent,collection_owner,collection_metrics,
+      checked_at,valid_until,lease_until,history_complete,history_anomaly,native_history_checked_at,native_full_checked_at,native_audience_checked_at)
+      ON TABLE public.marketplace_bindings TO maxim_audit;
+  END IF;
+  IF EXISTS (
+    WITH required(table_name,columns) AS (VALUES
+      ('managed_entity_audience_observations', ARRAY['chat_id','entity_type','participants_count','observed_at','source']),
+      ('channel_view_observation_states', ARRAY['channel_post_id','baseline_at','observed_at','observed_views','high_water_views','anomaly_at','source']),
+      ('channel_view_observed_intervals', ARRAY['channel_post_id','chat_id','from_at','to_at','delta','quality','source']),
+      ('channel_view_archive_states', ARRAY['chat_id','cursor_at','discovered_from','discovery_complete_at','last_attempt_at','last_success_at',
+        'full_refresh_at','stalled_at','observed_post_count','first_observed_at','last_observed_at']),
+      ('marketplace_bindings', ARRAY['entity_id','kind','profile','state','statistics_consent','collection_owner','collection_metrics',
+        'checked_at','valid_until','lease_until','history_complete','history_anomaly','native_history_checked_at','native_full_checked_at','native_audience_checked_at'])
+    ), allowed AS (SELECT table_name,unnest(columns) AS column_name FROM required), effective AS (
+      SELECT relation.relname AS table_name,attribute.attname AS column_name
+      FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+      WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM required)
+        AND attribute.attnum>0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'SELECT')
+    ) SELECT 1 WHERE EXISTS (SELECT * FROM effective EXCEPT SELECT * FROM allowed)
+      OR (SELECT count(*) FROM effective) NOT IN (0,45)
+      OR EXISTS (SELECT 1 FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
+        WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM required)
+          AND (has_table_privilege('maxim_audit',relation.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+            OR EXISTS (SELECT 1 FROM pg_attribute attribute WHERE attribute.attrelid=relation.oid
+              AND attribute.attnum>0 AND NOT attribute.attisdropped
+              AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'INSERT,UPDATE,REFERENCES'))))
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit network-statistics observation metadata privileges are not exact';
+  END IF;
+END
+$network_statistics_observation_grants$;
 -- FLAG: Existing catalogs remain compatible before the additive review migration. The new
 -- mode requires all eight columns; no partial grant or evidence/text access is permitted.
 DO $commercial_quality_grants$
@@ -742,6 +834,34 @@ BEGIN
     RAISE EXCEPTION 'maxim_audit commercial-review metadata privileges are not exact';
   END IF;
 
+  -- FLAG: This opt-in group is zero or all fifteen metadata SELECTs. Table-level,
+  -- inherited/public overgrants and any mutation privilege fail provisioning.
+  IF EXISTS (
+    WITH allowed(table_name,column_name) AS (VALUES
+      ('channel_audience_snapshots','chat_id'),('channel_audience_snapshots','participants_count'),('channel_audience_snapshots','captured_at'),
+      ('channel_stats_sync_states','chat_id'),('channel_stats_sync_states','membership_coverage_from'),('channel_stats_sync_states','views_coverage_from'),
+      ('channel_stats_sync_states','last_audience_sync_at'),('channel_stats_sync_states','last_views_sync_at'),('channel_stats_sync_states','last_views_discovery_at'),
+      ('channel_posts','id'),('channel_posts','chat_id'),('channel_posts','published_at'),('channel_posts','latest_snapshot_at'),
+      ('channel_post_view_snapshots','channel_post_id'),('channel_post_view_snapshots','captured_at')
+    ), effective AS (
+      SELECT relation.relname AS table_name,attribute.attname AS column_name
+      FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+      WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM allowed)
+        AND attribute.attnum>0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'SELECT')
+    ) SELECT 1 WHERE EXISTS (SELECT * FROM effective EXCEPT SELECT * FROM allowed)
+      OR (SELECT count(*) FROM effective) NOT IN (0,15)
+      OR EXISTS (SELECT 1 FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
+        WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM allowed)
+          AND (has_table_privilege('maxim_audit',relation.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+            OR EXISTS (SELECT 1 FROM pg_attribute attribute WHERE attribute.attrelid=relation.oid
+              AND attribute.attnum>0 AND NOT attribute.attisdropped
+              AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'INSERT,UPDATE,REFERENCES'))))
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit network-statistics metadata privileges are not exact';
+  END IF;
+
   IF EXISTS (
     SELECT 1
     FROM pg_class relation
@@ -764,6 +884,9 @@ BEGIN
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
               'managed_broadcast_deliveries', 'managed_broadcasts', 'chats', 'commercial_review_samples', '_prisma_migrations',
               'webhook_execution_claims', 'max_action_ledger',
+              'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
+              'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
+              'channel_view_archive_states', 'marketplace_bindings',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'

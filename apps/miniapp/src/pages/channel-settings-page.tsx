@@ -191,7 +191,13 @@ type PendingBroadcastPublishReview = {
 };
 
 function postSignatureSettingsKey(value: ChannelPostSignatureSettings): string {
-  return JSON.stringify(normalizePostSignatureSettings(value));
+  return JSON.stringify(normalizePostSignatureSettings(value), (key, field) =>
+    key === 'revision' ? undefined : field,
+  );
+}
+
+function channelSettingsDraftKey(value: ChannelSettings): string {
+  return JSON.stringify(value, (key, field) => (key === 'revision' ? undefined : field));
 }
 
 function normalizeBroadcastImageList(images: BroadcastImage[]): BroadcastImage[] {
@@ -1597,12 +1603,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   );
 
   const normalizedDraftKey = useMemo(
-    () => (normalizedDraft ? JSON.stringify(normalizedDraft) : ''),
+    () => (normalizedDraft ? channelSettingsDraftKey(normalizedDraft) : ''),
     [normalizedDraft],
   );
 
   const normalizedSavedSnapshotKey = useMemo(
-    () => (normalizedSavedSnapshot ? JSON.stringify(normalizedSavedSnapshot) : ''),
+    () => (normalizedSavedSnapshot ? channelSettingsDraftKey(normalizedSavedSnapshot) : ''),
     [normalizedSavedSnapshot],
   );
 
@@ -1660,6 +1666,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         latestPostSignatureRef.current &&
         latestPostSignatureKeyRef.current !== savedPostSignatureKeyRef.current
       ) {
+        // FLAG: The signature and general editor serialize their own writes so a
+        // successful local save cannot make the other local draft stale.
+        if (saveInFlightRef.current) await saveInFlightRef.current;
+        if (activePostSignatureChatIdRef.current !== operationChatId) return;
         const validated = validatePostSignatureSettings(latestPostSignatureRef.current);
         if (!validated.success) {
           setPostSignatureSaveState('error');
@@ -1681,6 +1691,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           if (activePostSignatureChatIdRef.current !== operationChatId) {
             return;
           }
+          // FLAG: Both editors share a settings row. Preserve unsaved field edits while
+          // adopting the revision returned by this screen's confirmed write.
+          setSavedSnapshot((current) =>
+            current ? { ...current, revision: saved.revision } : current,
+          );
+          setDraft((current) => (current ? { ...current, revision: saved.revision } : current));
+          if (latestNormalizedDraftRef.current)
+            latestNormalizedDraftRef.current = {
+              ...latestNormalizedDraftRef.current,
+              revision: saved.revision,
+            };
           savedPostSignatureKeyRef.current = savedKey;
           savedPostSignatureRef.current = saved;
           const reconciled = reconcilePostSignatureSave(
@@ -1771,6 +1792,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }: {
     force?: boolean;
   } = {}): Promise<ChannelSettings | null> => {
+    if (postSignatureSaveInFlightRef.current?.chatId === chatId) {
+      await postSignatureSaveInFlightRef.current.promise;
+    }
     const payload = latestNormalizedDraftRef.current;
     const payloadKey = latestDraftKeyRef.current;
 
@@ -1793,13 +1817,27 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       .then((saved) => {
         lastFailedDraftKeyRef.current = null;
         setSavedSnapshot(saved);
+        const signatureSaved = savedPostSignatureRef.current;
+        const signatureDraft = latestPostSignatureRef.current;
+        if (signatureSaved)
+          savedPostSignatureRef.current = { ...signatureSaved, revision: saved.revision };
+        if (signatureDraft)
+          latestPostSignatureRef.current = { ...signatureDraft, revision: saved.revision };
+        setSavedPostSignature((current) =>
+          current ? { ...current, revision: saved.revision } : current,
+        );
+        setPostSignatureDraft((current) =>
+          current ? { ...current, revision: saved.revision } : current,
+        );
         setDraft((current) => {
           if (!current) {
             return current;
           }
 
           const currentNormalized = normalizeChannelSettingsDraft(current, resolvedChannelLink);
-          return JSON.stringify(currentNormalized) === payloadKey ? saved : current;
+          return channelSettingsDraftKey(currentNormalized) === payloadKey
+            ? saved
+            : { ...current, revision: saved.revision };
         });
         setAutosaveState('saved');
         void queryClient.invalidateQueries({
@@ -1835,7 +1873,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return await saveUntilLatestDraftIsPersisted({
         getCurrentKey: () => latestDraftKeyRef.current,
         getSavedKey: (saved) =>
-          JSON.stringify(normalizeChannelSettingsDraft(saved, resolvedChannelLink)),
+          channelSettingsDraftKey(normalizeChannelSettingsDraft(saved, resolvedChannelLink)),
         save: () => {
           const force = latestDraftKeyRef.current === lastFailedDraftKeyRef.current;
           return saveCurrentDraft({ force });

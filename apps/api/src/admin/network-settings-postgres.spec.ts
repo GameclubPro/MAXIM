@@ -1,0 +1,567 @@
+import { randomUUID } from 'node:crypto';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { channelSettingsSchema, chatSettingsSchema, type ChannelSettings } from '@maxim/contracts';
+import type {
+  NetworkSettingsRecipient,
+  NetworkSettingsTarget,
+} from '@maxim/contracts/network-settings';
+import { createPrismaAdapter, PrismaClient } from '../prisma/prisma-client';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { buildResolvedMaxBotConfigs } from '../max/max-bot-config.util';
+import type { ManagedEntitiesService } from './managed-entities.service';
+import type { AdminSettingsService } from './admin-settings.service';
+import type { AdminStopWordsService } from './admin-stop-words.service';
+import type { ChannelPostSignatureService } from './channel-post-signature.service';
+import { ManagedEntityNetworksService } from './managed-entity-networks.service';
+import { NetworkSettingsService } from './network-settings.service';
+import { readChannelSettings, saveChannelSettings } from './admin-channel-settings';
+import { saveChatSettings, sanitizeStoredChatSettings } from './admin-chat-settings';
+import { buildNetworkSettingsPatch, networkSettingsAuthoredKeys } from './network-settings-patch';
+
+const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL ?? '';
+const integration = databaseUrl ? describe : describe.skip;
+
+integration('network settings durable writes with PostgreSQL', () => {
+  let db: PrismaClient;
+  let service: NetworkSettingsService;
+  let networks: ManagedEntityNetworksService;
+  const suffix = randomUUID();
+  const actor = `network-settings-${suffix}`;
+  const bot = `network-settings-bot-${suffix}`;
+  const ids = Array.from({ length: 6 }, (_, index) => `network-settings-${suffix}-${index}`);
+  const largeIds = Array.from(
+    { length: 104 },
+    (_, index) => `network-settings-large-${suffix}-${String(index).padStart(3, '0')}`,
+  );
+  const chatId = `network-settings-chat-${suffix}`;
+  const user = { userId: actor, username: null, displayName: null };
+  const ownedOperations: string[] = [];
+  const access = jest.fn<
+    Promise<void>,
+    Parameters<ManagedEntitiesService['assertManagedEntityAdminAccess']>
+  >();
+  const followup = jest.fn<
+    Promise<void>,
+    Parameters<AdminSettingsService['finishNetworkSettingsFollowup']>
+  >();
+  const writes = jest.fn<
+    ReturnType<AdminSettingsService['updateNetworkChannelSettings']>,
+    Parameters<AdminSettingsService['updateNetworkChannelSettings']>
+  >();
+
+  beforeAll(async () => {
+    const url = new URL(databaseUrl);
+    if (!['localhost', '127.0.0.1'].includes(url.hostname) || !url.pathname.includes('race_test'))
+      throw new Error('Disposable PostgreSQL required');
+    db = new PrismaClient({
+      adapter: createPrismaAdapter(databaseUrl, { max: 6, statement_timeout: 15_000 }),
+    });
+    const definition = buildResolvedMaxBotConfigs({
+      defaultBot: {
+        id: bot,
+        token: 'test-token',
+        webhookSecretPath: 'test-path',
+        webhookHeaderSecret: 'test-header',
+      },
+    })[0]!;
+    const registry = {
+      getAllBots: () => [{ ...definition, webhookUrl: null, maskedWebhookUrl: null }],
+    } satisfies Pick<MaxBotRegistryService, 'getAllBots'>;
+    networks = new ManagedEntityNetworksService(
+      db as PrismaService,
+      registry as unknown as MaxBotRegistryService,
+    );
+    for (const id of ids) {
+      await db.chat.create({
+        data: {
+          id,
+          title: id,
+          entityType: 'CHANNEL' as const,
+          channelSettings: {
+            create: {
+              commentsEnabled: false,
+              commentsMessageText: `Own ${id}`,
+              postSuggestionsButtonText: `Private ${id.slice(-1)}`,
+            },
+          },
+        },
+      });
+      await db.managedEntityAccessEdge.create({
+        data: {
+          chatId: id,
+          userId: actor,
+          botId: bot,
+          entityType: 'CHANNEL' as const,
+          state: 'GRANTED' as const,
+          userRole: 'ADMIN' as const,
+          expiresAt: new Date(0),
+        },
+      });
+    }
+    await db.chat.create({
+      data: {
+        id: chatId,
+        title: chatId,
+        entityType: 'CHAT',
+        settings: {
+          create: {
+            linkBotButtons: [{ text: 'Own link', url: 'https://own.example' }],
+            linkBotButtonUrl: 'https://own.example',
+            greetingBotButtons: [{ text: 'Greeting', url: 'https://greeting.example' }],
+            greetingBotButtonUrl: 'https://greeting.example',
+          },
+        },
+      },
+    });
+    const settings = {
+      getChannelSettings: async (id: string) =>
+        channelSettingsSchema.parse(
+          await db.channelSettings.findUniqueOrThrow({ where: { chatId: id } }),
+        ),
+      updateNetworkChannelSettings: writes,
+      finishNetworkSettingsFollowup: followup,
+    } satisfies Pick<
+      AdminSettingsService,
+      'getChannelSettings' | 'updateNetworkChannelSettings' | 'finishNetworkSettingsFollowup'
+    >;
+    const managed = { assertManagedEntityAdminAccess: access } satisfies Pick<
+      ManagedEntitiesService,
+      'assertManagedEntityAdminAccess'
+    >;
+    service = new NetworkSettingsService(
+      db as PrismaService,
+      networks,
+      managed as unknown as ManagedEntitiesService,
+      settings as unknown as AdminSettingsService,
+      {} as AdminStopWordsService,
+      {} as ChannelPostSignatureService,
+    );
+  });
+
+  beforeEach(async () => {
+    access.mockReset().mockResolvedValue(undefined);
+    followup.mockReset().mockResolvedValue(undefined);
+    writes.mockReset().mockImplementation(async (id, requestUser, body, changedPaths, options) =>
+      saveChannelSettings({
+        prisma: db as PrismaService,
+        chatContextCache: { invalidate: async () => undefined },
+        chatId: id,
+        actorUserId: requestUser.userId,
+        body,
+        source: 'miniapp',
+        resolveBotAssignmentData: () => ({}),
+        refreshExecutionReadiness: async () => undefined,
+        networkWrite: {
+          ...options,
+          authoredChannelKeys: changedPaths as Array<keyof ChannelSettings>,
+        },
+      }),
+    );
+    await db.managedEntityFavorite.deleteMany({ where: { userId: actor } });
+  });
+
+  afterAll(async () => {
+    await db?.networkSettingsOperation.deleteMany({ where: { id: { in: ownedOperations } } });
+    await db?.auditLog.deleteMany({ where: { chatId: { in: [...ids, ...largeIds, chatId] } } });
+    await db?.chat.deleteMany({ where: { id: { in: [...ids, ...largeIds, chatId] } } });
+    await db?.managedEntityFavoritePreference.deleteMany({ where: { userId: actor } });
+    await db?.$disconnect();
+  });
+
+  async function prepare(
+    target: NetworkSettingsTarget = { mode: 'selected', entityIds: ids.slice(0, 2) },
+  ) {
+    const read = await service.read(user, { entityType: 'channel', target, section: 'comments' });
+    const operationId = randomUUID();
+    ownedOperations.push(operationId);
+    const preview = await service.preview(user, {
+      entityType: 'channel',
+      target,
+      section: 'comments',
+      operationId,
+      compositionVersion: read.compositionVersion,
+      recipients: read.recipients,
+      changes: [{ path: 'commentsMessageText', op: 'set', value: 'Network text' }],
+    });
+    expect(preview.status).toBe('PREVIEWING');
+    await service.tick();
+    expect((await service.status(user, operationId)).status).toBe('PREPARED');
+    return preview;
+  }
+
+  it('pages a full category and rejects stale composition before confirmation', async () => {
+    await db.managedEntityFavorite.createMany({
+      data: ids.map((chatId) => ({
+        userId: actor,
+        chatId,
+        entityType: 'CHANNEL' as const,
+        favoriteType: 'WATCH' as const,
+      })),
+    });
+    const target = { mode: 'category', favoriteType: 'watch' };
+    const first = await service.read(user, { entityType: 'channel', target, section: 'comments' });
+    expect(first.recipientCount).toBe(6);
+    expect(first.recipients).toHaveLength(4);
+    expect(first.complete).toBe(false);
+    const last = await service.read(user, {
+      entityType: 'channel',
+      target,
+      section: 'comments',
+      cursor: first.nextCursor,
+    });
+    expect(last.complete).toBe(true);
+    expect([...first.recipients, ...last.recipients].map((row) => row.entityId)).toEqual(ids);
+    await networks.updateComposition(user, 'channel', {
+      changes: [{ entityId: ids[0], expectedFavoriteType: 'watch', favoriteType: null }],
+    });
+    await expect(
+      service.read(user, {
+        entityType: 'channel',
+        target,
+        section: 'comments',
+        cursor: first.nextCursor,
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('reads and previews a large category while each worker tick validates only its bounded chunk', async () => {
+    await db.$transaction([
+      db.chat.createMany({
+        data: largeIds.map((id, index) => ({
+          id,
+          title: `Канал ${index} ${'проверка '.repeat(10)}`,
+          entityType: 'CHANNEL' as const,
+        })),
+      }),
+      db.channelSettings.createMany({
+        data: largeIds.map((chatId) => ({ chatId, commentsMessageText: 'Own channel text' })),
+      }),
+      db.managedEntityAccessEdge.createMany({
+        data: largeIds.map((chatId) => ({
+          chatId,
+          userId: actor,
+          botId: bot,
+          entityType: 'CHANNEL' as const,
+          state: 'GRANTED' as const,
+          userRole: 'ADMIN' as const,
+          expiresAt: new Date(0),
+        })),
+      }),
+      db.managedEntityFavorite.createMany({
+        data: largeIds.map((chatId) => ({
+          userId: actor,
+          chatId,
+          entityType: 'CHANNEL' as const,
+          favoriteType: 'WATCH' as const,
+        })),
+      }),
+    ]);
+    const request = {
+      entityType: 'channel',
+      target: { mode: 'category', favoriteType: 'watch' },
+      section: 'comments',
+    } as const;
+    const recipients: NetworkSettingsRecipient[] = [];
+    let cursor: string | undefined;
+    let compositionVersion: string | undefined;
+    let pageCount = 0;
+    do {
+      const page = await service.read(user, { ...request, ...(cursor ? { cursor } : {}) });
+      expect(page.recipientCount).toBe(largeIds.length);
+      expect(page.recipients.length).toBeLessThanOrEqual(4);
+      if (compositionVersion) expect(page.compositionVersion).toBe(compositionVersion);
+      compositionVersion = page.compositionVersion;
+      recipients.push(...page.recipients);
+      cursor = page.nextCursor ?? undefined;
+      expect(page.complete).toBe(!cursor);
+      pageCount += 1;
+    } while (cursor);
+    expect(pageCount).toBe(26);
+    expect(recipients.map((recipient) => recipient.entityId)).toEqual(largeIds);
+    const operationId = randomUUID();
+    ownedOperations.push(operationId);
+    const body = {
+      ...request,
+      operationId,
+      compositionVersion,
+      recipients,
+      changes: [{ path: 'commentsMessageText', op: 'set', value: 'Large network text' }],
+    };
+    expect(Buffer.byteLength(JSON.stringify(body), 'utf8')).toBeLessThan(128 * 1024);
+    try {
+      const preview = await service.preview(user, body);
+      expect(preview.status).toBe('PREVIEWING');
+      expect(preview.recipients).toEqual(recipients);
+      expect(await db.networkSettingsOperationTarget.count({ where: { operationId } })).toBe(
+        largeIds.length,
+      );
+      expect(writes).not.toHaveBeenCalled();
+      access.mockClear();
+      await service.tick(1);
+      const status = await service.status(user, operationId);
+      expect(status.status).toBe('PREVIEWING');
+      expect(status.outcomes.filter((target) => target.status === 'VALIDATED')).toHaveLength(2);
+      expect(status.outcomes.filter((target) => target.status === 'PENDING')).toHaveLength(102);
+      expect(access).toHaveBeenCalledTimes(2);
+      expect(writes).toHaveBeenCalledTimes(2);
+      expect(writes.mock.calls.every(([, , , , options]) => options.validateOnly)).toBe(true);
+      expect(followup).not.toHaveBeenCalled();
+      expect(
+        await db.channelSettings.count({
+          where: { chatId: { in: largeIds }, commentsMessageText: 'Own channel text' },
+        }),
+      ).toBe(largeIds.length);
+    } finally {
+      await db.networkSettingsOperation.deleteMany({ where: { id: operationId } });
+    }
+  });
+
+  it('preflights every target before writing and records a permission failure with zero writes', async () => {
+    const preview = await prepare();
+    await service.apply(user, {
+      operationId: preview.operationId,
+      previewHash: preview.previewHash,
+    });
+    access.mockImplementation(async (id) => {
+      if (id === ids[1]) throw new ForbiddenException();
+    });
+    const before = await db.channelSettings.findMany({
+      where: { chatId: { in: ids.slice(0, 2) } },
+      orderBy: { chatId: 'asc' },
+    });
+    await service.tick();
+    const operation = await service.status(user, preview.operationId);
+    expect(operation.status).toBe('FAILED');
+    expect(operation.outcomes.find((target) => target.entityId === ids[1])?.failureCode).toBe(
+      'DENIED',
+    );
+    expect(
+      await db.channelSettings.findMany({
+        where: { chatId: { in: ids.slice(0, 2) } },
+        orderBy: { chatId: 'asc' },
+      }),
+    ).toEqual(before);
+    expect(followup).not.toHaveBeenCalled();
+  });
+
+  it('fences a category mutation between preview and launch under the favorites writer lock', async () => {
+    await networks.updateComposition(user, 'channel', {
+      changes: ids.slice(0, 2).map((entityId) => ({
+        entityId,
+        expectedFavoriteType: null,
+        favoriteType: 'watch',
+      })),
+    });
+    const preview = await prepare({ mode: 'category', favoriteType: 'watch' });
+    await networks.updateComposition(user, 'channel', {
+      changes: [{ entityId: ids[2], expectedFavoriteType: null, favoriteType: 'watch' }],
+    });
+    await expect(
+      service.apply(user, { operationId: preview.operationId, previewHash: preview.previewHash }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect((await service.status(user, preview.operationId)).status).toBe('PREPARED');
+    expect(followup).not.toHaveBeenCalled();
+  });
+
+  it('co-commits receipt and settings, then resumes followups after restart without replay', async () => {
+    const preview = await prepare();
+    await service.apply(user, {
+      operationId: preview.operationId,
+      previewHash: preview.previewHash,
+    });
+    await service.tick();
+    followup.mockRejectedValueOnce(new Error('cache unavailable'));
+    await service.tick();
+    const target = await db.networkSettingsOperationTarget.findUniqueOrThrow({
+      where: { operationId_entityId: { operationId: preview.operationId, entityId: ids[0] } },
+    });
+    expect(target.status).toBe('COMMITTED');
+    const written = await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[0] } });
+    expect(written.commentsMessageText).toBe('Network text');
+    expect(written.postSuggestionsButtonText).toBe(`Private ${ids[0].slice(-1)}`);
+    expect(target.committedRevision).toBe(String(written.revision));
+    const committedWrites = writes.mock.calls.filter(
+      ([, , , , options]) => !options.validateOnly,
+    ).length;
+    expect(
+      (await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[1] } }))
+        .commentsMessageText,
+    ).toBe('Network text');
+    await service.tick();
+    expect(
+      (await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[0] } })).revision,
+    ).toBe(written.revision);
+    expect(writes.mock.calls.filter(([, , , , options]) => !options.validateOnly).length).toBe(
+      committedWrites,
+    );
+    expect((await service.status(user, preview.operationId)).status).toBe('COMPLETE');
+    await service.apply(user, {
+      operationId: preview.operationId,
+      previewHash: preview.previewHash,
+    });
+    await service.tick();
+    expect(
+      (await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[0] } })).revision,
+    ).toBe(written.revision);
+  });
+
+  it('rolls back a settings update when its receipt callback fails', async () => {
+    const current = await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[2] } });
+    await expect(
+      saveChannelSettings({
+        prisma: db as PrismaService,
+        chatContextCache: { invalidate: async () => undefined },
+        chatId: ids[2],
+        actorUserId: actor,
+        body: { ...channelSettingsSchema.parse(current), commentsMessageText: 'Must rollback' },
+        source: 'miniapp',
+        resolveBotAssignmentData: () => ({}),
+        refreshExecutionReadiness: async () => undefined,
+        networkWrite: {
+          authoredChannelKeys: ['commentsMessageText'],
+          onCommitted: async () => {
+            throw new Error('lost lease');
+          },
+        },
+      }),
+    ).rejects.toThrow('lost lease');
+    expect(await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[2] } })).toEqual(
+      current,
+    );
+  });
+
+  it('prevents a superseded worker from committing a target after losing its operation lease', async () => {
+    const preview = await prepare({ mode: 'selected', entityIds: [ids[4]] });
+    await service.apply(user, {
+      operationId: preview.operationId,
+      previewHash: preview.previewHash,
+    });
+    await service.tick();
+    const before = await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[4] } });
+    const normalWrite = writes.getMockImplementation()!;
+    writes.mockImplementationOnce(async (...args) => {
+      await db.networkSettingsOperation.update({
+        where: { id: preview.operationId },
+        data: {
+          leaseToken: 'superseding-worker',
+          leaseUntil: new Date(Date.now() + 60_000),
+        },
+      });
+      return normalWrite(...args);
+    });
+    await service.tick();
+    expect(await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[4] } })).toEqual(
+      before,
+    );
+    expect((await service.status(user, preview.operationId)).outcomes[0].status).toBe('AUTHORIZED');
+    await db.networkSettingsOperation.update({
+      where: { id: preview.operationId },
+      data: { leaseUntil: new Date(0) },
+    });
+    await service.tick();
+    expect((await service.status(user, preview.operationId)).status).toBe('COMPLETE');
+  });
+
+  it('rejects a stale channel revision and the database trigger versions older writers', async () => {
+    const current = await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[3] } });
+    await db.channelSettings.update({
+      where: { chatId: ids[3] },
+      data: { commentsMessageText: 'Concurrent' },
+    });
+    const changed = await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[3] } });
+    expect(changed.revision).toBe(current.revision + 1);
+    await expect(
+      saveChannelSettings({
+        prisma: db as PrismaService,
+        chatContextCache: { invalidate: async () => undefined },
+        chatId: ids[3],
+        actorUserId: actor,
+        body: { ...channelSettingsSchema.parse(current), commentsEnabled: true },
+        source: 'miniapp',
+        resolveBotAssignmentData: () => ({}),
+        refreshExecutionReadiness: async () => undefined,
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(
+      (await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[3] } }))
+        .commentsMessageText,
+    ).toBe('Concurrent');
+  });
+
+  it('fences read-time normalization when a concurrent writer keeps the same timestamp', async () => {
+    const entityId = ids[5];
+    const stale = await db.channelSettings.update({
+      where: { chatId: entityId },
+      data: {
+        commentsEnabled: true,
+        postSuggestionsButtonEnabled: true,
+        postSuggestionsButtonUrl: 'https://max.ru/chat/example/https://nested.example.test',
+      },
+    });
+    const concurrentUrl = 'https://example.test/concurrent';
+    const raced = db.$extends({
+      query: {
+        chat: {
+          async upsert({ args, query }) {
+            const result = await query(args);
+            await db.channelSettings.update({
+              where: { chatId: entityId },
+              data: {
+                postSuggestionsButtonEnabled: true,
+                postSuggestionsButtonUrl: concurrentUrl,
+                updatedAt: stale.updatedAt,
+              },
+            });
+            return result;
+          },
+        },
+      },
+    });
+    await expect(
+      readChannelSettings({
+        prisma: raced as unknown as PrismaService,
+        logger: { warn: jest.fn() },
+        chatId: entityId,
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    const saved = await db.channelSettings.findUniqueOrThrow({ where: { chatId: entityId } });
+    expect(saved.updatedAt).toEqual(stale.updatedAt);
+    expect(saved.revision).toBe(stale.revision + 1);
+    expect(saved.postSuggestionsButtonUrl).toBe(concurrentUrl);
+    expect(saved.postSuggestionsButtonEnabled).toBe(true);
+  });
+
+  it('persists an explicit empty chat button list without resurrecting legacy aliases or altering sibling buttons', async () => {
+    const current = await db.chatSettings.findUniqueOrThrow({ where: { chatId } });
+    const parsed = {
+      ...chatSettingsSchema.parse(sanitizeStoredChatSettings(current)),
+      settingsRevision: current.updatedAt.toISOString(),
+    };
+    const changes = [{ path: 'linkBotButtons', op: 'replace' as const, value: [] }];
+    const body = buildNetworkSettingsPatch(parsed, 'chat', 'links', changes);
+    await saveChatSettings({
+      prisma: db as PrismaService,
+      chatContextCache: { invalidate: async () => undefined },
+      chatId,
+      actorUserId: actor,
+      body,
+      source: 'miniapp',
+      resolveBotAssignmentData: () => ({}),
+      assertRequiredSubscriptionSettings: async () => undefined,
+      reportsAvailable: () => false,
+      assertBotCapabilities: async () => undefined,
+      refreshExecutionReadiness: async () => undefined,
+      networkWrite: { authoredKeys: networkSettingsAuthoredKeys(changes) },
+    });
+    const written = await db.chatSettings.findUniqueOrThrow({ where: { chatId } });
+    expect(written.linkBotButtons).toEqual([]);
+    expect(written.linkBotButtonUrl).toBe('');
+    expect(written.linkBotButtonText).toBe('Открыть');
+    expect(written.greetingBotButtons).toEqual(current.greetingBotButtons);
+    expect(written.greetingBotButtonUrl).toBe(current.greetingBotButtonUrl);
+    expect(chatSettingsSchema.parse(sanitizeStoredChatSettings(written)).linkBotButtons).toEqual(
+      [],
+    );
+  });
+});

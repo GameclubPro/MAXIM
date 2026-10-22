@@ -292,14 +292,17 @@ test('channel post signature client preserves a custom URL across GET and PATCH'
   const api = createApiMock(signature, calls);
 
   const current = await getChannelPostSignature(api, 'channel-1');
-  const updated = await updateChannelPostSignature(api, 'channel-1', signature);
+  const updated = await updateChannelPostSignature(api, 'channel-1', {
+    ...signature,
+    expectedRevision: 4,
+  });
 
   assert.deepEqual(current, signature);
   assert.deepEqual(updated, current);
   assert.equal(calls[0]?.path, '/channels/channel-1/post-signature');
   assert.equal(calls[1]?.path, '/channels/channel-1/post-signature');
   assert.equal(calls[1]?.init?.method, 'PATCH');
-  assert.equal(calls[1]?.init?.body, JSON.stringify(current));
+  assert.equal(calls[1]?.init?.body, JSON.stringify({ expectedRevision: 4, ...current }));
 });
 
 test('channel settings screen client only adds prefetch query when requested', async () => {

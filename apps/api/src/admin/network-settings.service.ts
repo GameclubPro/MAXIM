@@ -1,0 +1,618 @@
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  networkSettingsApplyRequestSchema,
+  networkSettingsOperationResponseSchema,
+  networkSettingsPreviewRequestSchema,
+  networkSettingsPreviewResponseSchema,
+  networkSettingsReadRequestSchema,
+  networkSettingsReadResponseSchema,
+  type NetworkSettingsPreviewRequest,
+  type NetworkSettingsPreviewResponse,
+  type NetworkSettingsReadRequest,
+  type NetworkSettingsRecipient,
+} from '@maxim/contracts/network-settings';
+import type { ChannelSettings, ChatSettings } from '@maxim/contracts';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { ChatEntityType, Prisma } from '../prisma/prisma-client';
+import { PrismaService } from '../prisma/prisma.service';
+import { ManagedEntityNetworksService } from './managed-entity-networks.service';
+import { ManagedEntitiesService } from './managed-entities.service';
+import { AdminSettingsService } from './admin-settings.service';
+import { AdminStopWordsService } from './admin-stop-words.service';
+import { ChannelPostSignatureService } from './channel-post-signature.service';
+import {
+  buildNetworkSettingsPatch,
+  commonNetworkSettingsFields,
+  networkSettingsAuthoredKeys,
+  networkSettingsPaths,
+} from './network-settings-patch';
+import type { NetworkSettingsWriteOptions } from './network-settings-write';
+
+const PREVIEW_TTL_MS = 10 * 60_000;
+const LEASE_MS = 5 * 60_000;
+const READ_PAGE_SIZE = 4;
+const WORK_CHUNK_SIZE = 2;
+const ACTIVE_STATUSES = ['PREVIEWING', 'AUTHORIZING', 'RUNNING'];
+type StoredPayload = { request: NetworkSettingsPreviewRequest; expiresAt: string };
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object')
+    return `{${Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`)
+      .join(',')}}`;
+  return JSON.stringify(value);
+}
+function digest(value: unknown): string {
+  return createHash('sha256').update(canonical(value)).digest('hex');
+}
+function changed(): ConflictException {
+  return new ConflictException({
+    code: 'NETWORK_SETTINGS_CHANGED',
+    message: 'Состав или настройки изменились. Проверьте изменения заново.',
+  });
+}
+function parse<T>(
+  schema: {
+    safeParse(
+      value: unknown,
+    ): { success: true; data: T } | { success: false; error: { format(): unknown } };
+  },
+  body: unknown,
+): T {
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) throw new BadRequestException(parsed.error.format());
+  return parsed.data;
+}
+
+@Injectable()
+export class NetworkSettingsService {
+  private readonly logger = new Logger(NetworkSettingsService.name);
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly networks: ManagedEntityNetworksService,
+    private readonly managed: ManagedEntitiesService,
+    private readonly settings: AdminSettingsService,
+    private readonly stopWords: AdminStopWordsService,
+    private readonly signatures: ChannelPostSignatureService,
+  ) {}
+
+  private async selection(user: AuthUser, request: NetworkSettingsReadRequest) {
+    if (request.target.mode === 'category')
+      return this.networks.resolveSelection(user, request.entityType, request.target.favoriteType);
+    const entityIds = [...request.target.entityIds].sort();
+    return { entityIds, compositionVersion: digest({ entityType: request.entityType, entityIds }) };
+  }
+
+  private assertSelection(
+    request: NetworkSettingsPreviewRequest,
+    selection: { entityIds: string[]; compositionVersion: string },
+  ) {
+    if (
+      selection.compositionVersion !== request.compositionVersion ||
+      digest([...selection.entityIds].sort()) !==
+        digest(request.recipients.map((r) => r.entityId).sort())
+    )
+      throw changed();
+  }
+
+  private async snapshot(user: AuthUser, request: NetworkSettingsReadRequest, entityId: string) {
+    await this.managed.assertManagedEntityAdminAccess(entityId, user, request.entityType);
+    if (request.entityType === 'chat') {
+      const value = await this.settings.getSettings(entityId, user, {
+        skipAdminCheck: true,
+        skipEntityCheck: true,
+      });
+      const stop =
+        request.section === 'stopWords' ? await this.stopWords.read(entityId, user) : null;
+      const row = await this.prisma.chat.findUniqueOrThrow({
+        where: { id: entityId },
+        select: { title: true, settings: { select: { updatedAt: true } } },
+      });
+      if (!row.settings || !value.settingsRevision) throw changed();
+      return {
+        value: stop ? { ...value, stopWordsPolicy: stop.policy } : value,
+        recipient: {
+          entityId,
+          title: row.title,
+          revision: stop ? row.settings.updatedAt.toISOString() : value.settingsRevision,
+          ...(stop ? { stopWordsRevision: stop.revision } : {}),
+        } satisfies NetworkSettingsRecipient,
+      };
+    }
+    const settings = await this.settings.getChannelSettings(entityId, user, {
+      skipAdminCheck: true,
+      skipEntityCheck: true,
+    });
+    const value =
+      request.section === 'postSignature' ? await this.signatures.getSettings(entityId) : settings;
+    const row = await this.prisma.chat.findUniqueOrThrow({
+      where: { id: entityId },
+      select: { title: true },
+    });
+    if (value.revision === undefined) throw changed();
+    return {
+      value,
+      recipient: {
+        entityId,
+        title: row.title,
+        revision: value.revision,
+      } satisfies NetworkSettingsRecipient,
+    };
+  }
+
+  async read(user: AuthUser, body: unknown) {
+    const request = parse(networkSettingsReadRequestSchema, body);
+    const paths = networkSettingsPaths(request.entityType, request.section);
+    const selection = await this.selection(user, request);
+    const binding = digest({
+      actor: user.userId,
+      entityType: request.entityType,
+      target: request.target,
+      section: request.section,
+    });
+    let offset = 0;
+    if (request.cursor) {
+      try {
+        const cursor = JSON.parse(Buffer.from(request.cursor, 'base64url').toString('utf8')) as {
+          binding?: unknown;
+          version?: unknown;
+          offset?: unknown;
+        };
+        if (
+          cursor.binding !== binding ||
+          !Number.isSafeInteger(cursor.offset) ||
+          (cursor.offset as number) < 0
+        )
+          throw new Error('cursor');
+        if (cursor.version !== selection.compositionVersion) throw changed();
+        offset = cursor.offset as number;
+        if (offset > selection.entityIds.length) throw new Error('cursor');
+      } catch (error) {
+        if (error instanceof ConflictException) throw error;
+        throw new BadRequestException('Недействительный курсор настроек.');
+      }
+    }
+    const snapshots = [];
+    // FLAG: Every page binds to the complete server category; loading pages never truncates the
+    // target category. Clients must finish all pages before treating values as network-wide.
+    for (const entityId of selection.entityIds.slice(offset, offset + READ_PAGE_SIZE))
+      snapshots.push(await this.snapshot(user, request, entityId));
+    const nextOffset = offset + snapshots.length;
+    const complete = nextOffset >= selection.entityIds.length;
+    return networkSettingsReadResponseSchema.parse({
+      entityType: request.entityType,
+      target: request.target,
+      section: request.section,
+      compositionVersion: selection.compositionVersion,
+      recipientCount: selection.entityIds.length,
+      complete,
+      nextCursor: complete
+        ? null
+        : Buffer.from(
+            JSON.stringify({ binding, version: selection.compositionVersion, offset: nextOffset }),
+          ).toString('base64url'),
+      recipients: snapshots.map((snapshot) => snapshot.recipient),
+      fields: snapshots.length
+        ? commonNetworkSettingsFields(
+            paths,
+            snapshots.map((snapshot) => snapshot.value),
+          )
+        : {},
+    });
+  }
+
+  async preview(user: AuthUser, body: unknown): Promise<NetworkSettingsPreviewResponse> {
+    const request = parse(networkSettingsPreviewRequestSchema, body);
+    const allowed = networkSettingsPaths(request.entityType, request.section);
+    if (request.changes.some((change) => !allowed.includes(change.path)))
+      throw new BadRequestException('Поле не входит в выбранный раздел.');
+    const requestHash = digest(request);
+    let existing = await this.prisma.networkSettingsOperation.findUnique({
+      where: { id: request.operationId },
+    });
+    if (!existing) {
+      this.assertSelection(request, await this.selection(user, request));
+      const expiresAt = new Date(Date.now() + PREVIEW_TTL_MS).toISOString();
+      try {
+        existing = await this.prisma.networkSettingsOperation.create({
+          data: {
+            id: request.operationId,
+            actorUserId: user.userId,
+            entityType:
+              request.entityType === 'chat' ? ChatEntityType.CHAT : ChatEntityType.CHANNEL,
+            requestHash,
+            section: request.section,
+            status: 'PREVIEWING',
+            payload: { request, expiresAt } as unknown as Prisma.InputJsonValue,
+            targets: {
+              create: request.recipients.map((recipient) => ({
+                entityId: recipient.entityId,
+                revision: String(recipient.revision),
+                stopWordsRevision: recipient.stopWordsRevision,
+                status: 'PENDING',
+              })),
+            },
+          },
+        });
+      } catch (error) {
+        if ((error as { code?: string }).code === 'P2002') return this.preview(user, body);
+        throw error;
+      }
+    }
+    if (existing.actorUserId !== user.userId || existing.requestHash !== requestHash)
+      throw changed();
+    return networkSettingsPreviewResponseSchema.parse({
+      operationId: existing.id,
+      previewHash: requestHash,
+      expiresAt: (existing.payload as unknown as StoredPayload).expiresAt,
+      status: existing.status,
+      entityType: request.entityType,
+      section: request.section,
+      recipients: request.recipients,
+      changes: request.changes,
+    });
+  }
+
+  async apply(user: AuthUser, body: unknown) {
+    const input = parse(networkSettingsApplyRequestSchema, body);
+    const operation = await this.ownedOperation(user, input.operationId);
+    if (operation.requestHash !== input.previewHash) throw changed();
+    if (operation.status === 'PREVIEWING')
+      throw new ConflictException('Проверка получателей ещё выполняется.');
+    if (operation.status === 'PREPARED') {
+      const stored = operation.payload as unknown as StoredPayload;
+      if (Date.parse(stored.expiresAt) <= Date.now()) throw changed();
+      const request = networkSettingsPreviewRequestSchema.parse(stored.request);
+      const confirm = async (
+        tx: Prisma.TransactionClient,
+        selection: { entityIds: string[]; compositionVersion: string },
+      ) => {
+        if (Date.parse(stored.expiresAt) <= Date.now()) throw changed();
+        this.assertSelection(request, selection);
+        await tx.networkSettingsOperation.updateMany({
+          where: { id: operation.id, status: 'PREPARED' },
+          data: { status: 'AUTHORIZING' },
+        });
+      };
+      // FLAG: Category composition is checked under the same lock as all favorites writers,
+      // and the exact frozen operation is confirmed before releasing that lock.
+      if (request.target.mode === 'category')
+        await this.networks.withLockedSelection(
+          user,
+          request.entityType,
+          request.target.favoriteType,
+          confirm,
+        );
+      else {
+        const selection = await this.selection(user, request);
+        await this.prisma.$transaction((tx) => confirm(tx, selection));
+      }
+    }
+    return this.status(user, operation.id);
+  }
+
+  private async ownedOperation(user: AuthUser, operationId: string) {
+    const operation = await this.prisma.networkSettingsOperation.findUnique({
+      where: { id: operationId },
+    });
+    if (!operation || operation.actorUserId !== user.userId)
+      throw new NotFoundException('Операция не найдена.');
+    return operation;
+  }
+
+  async status(user: AuthUser, operationId: string) {
+    const operation = await this.ownedOperation(user, operationId);
+    const targets = await this.prisma.networkSettingsOperationTarget.findMany({
+      where: { operationId },
+      orderBy: { entityId: 'asc' },
+    });
+    return networkSettingsOperationResponseSchema.parse({
+      operationId,
+      entityType: operation.entityType === ChatEntityType.CHAT ? 'chat' : 'channel',
+      section: operation.section,
+      status: operation.status,
+      expiresAt: (operation.payload as unknown as StoredPayload).expiresAt,
+      outcomes: targets.map((target) => ({
+        entityId: target.entityId,
+        status: target.status,
+        ...(target.failureCode ? { failureCode: target.failureCode } : {}),
+        ...(target.failureMessage ? { failureMessage: target.failureMessage } : {}),
+      })),
+    });
+  }
+
+  private async writeOne(
+    user: AuthUser,
+    request: NetworkSettingsPreviewRequest,
+    recipient: NetworkSettingsRecipient,
+    options: NetworkSettingsWriteOptions,
+  ) {
+    const snapshot = await this.snapshot(user, request, recipient.entityId);
+    const currentRecipient: NetworkSettingsRecipient = snapshot.recipient;
+    if (
+      currentRecipient.revision !== recipient.revision ||
+      currentRecipient.stopWordsRevision !== recipient.stopWordsRevision
+    )
+      throw changed();
+    const next = buildNetworkSettingsPatch(
+      snapshot.value,
+      request.entityType,
+      request.section,
+      request.changes,
+    );
+    if (request.entityType === 'chat') {
+      if (request.section === 'stopWords')
+        return this.stopWords.updateNetworkSettings(
+          recipient.entityId,
+          user,
+          (next as ChatSettings).stopWordsPolicy!,
+          recipient.stopWordsRevision!,
+          String(recipient.revision),
+          options,
+        );
+      return this.settings.updateNetworkChatSettings(
+        recipient.entityId,
+        user,
+        next as ChatSettings,
+        { ...options, authoredKeys: networkSettingsAuthoredKeys(request.changes) },
+      );
+    }
+    if (request.section === 'postSignature')
+      return this.signatures.updateSettings(
+        recipient.entityId,
+        user.userId,
+        {
+          ...Object.fromEntries(
+            request.changes.map((change) => [
+              change.path,
+              'value' in change ? change.value : undefined,
+            ]),
+          ),
+          expectedRevision: recipient.revision,
+        },
+        options,
+      );
+    if (
+      request.section === 'comments'
+        ? (next as ChannelSettings).commentsEnabled
+        : (next as ChannelSettings).quickButtonsEnabled
+    )
+      await this.signatures.assertNetworkSettingsEditingAccess(recipient.entityId);
+    return this.settings.updateNetworkChannelSettings(
+      recipient.entityId,
+      user,
+      next as ChannelSettings,
+      request.changes.map((change) => change.path),
+      options,
+    );
+  }
+
+  async tick(limit = 2): Promise<void> {
+    const operations = await this.prisma.networkSettingsOperation.findMany({
+      where: {
+        status: { in: ACTIVE_STATUSES },
+        OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date() } }],
+      },
+      orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+      take: Math.max(1, Math.min(limit, 4)),
+      select: { id: true },
+    });
+    for (const operation of operations) {
+      try {
+        await this.runOperation(operation.id);
+      } catch (error) {
+        this.logger.warn(
+          {
+            operationId: operation.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Network settings operation awaits durable retry',
+        );
+      }
+    }
+  }
+
+  private async withLease(
+    operationId: string,
+    leaseToken: string,
+    status: string,
+    work: (tx: Prisma.TransactionClient) => Promise<void>,
+  ) {
+    await this.prisma.$transaction(async (tx) => {
+      const owned = await tx.networkSettingsOperation.updateMany({
+        where: { id: operationId, leaseToken, status, leaseUntil: { gt: new Date() } },
+        data: { leaseUntil: new Date(Date.now() + LEASE_MS) },
+      });
+      if (!owned.count) throw changed();
+      await work(tx);
+    });
+  }
+
+  private async runOperation(operationId: string) {
+    const leaseToken = randomUUID();
+    const claimed = await this.prisma.networkSettingsOperation.updateMany({
+      where: {
+        id: operationId,
+        status: { in: ACTIVE_STATUSES },
+        OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date() } }],
+      },
+      data: { leaseToken, leaseUntil: new Date(Date.now() + LEASE_MS) },
+    });
+    if (!claimed.count) return;
+    try {
+      const operation = await this.prisma.networkSettingsOperation.findUniqueOrThrow({
+        where: { id: operationId },
+      });
+      const stored = operation.payload as unknown as StoredPayload;
+      const request = networkSettingsPreviewRequestSchema.parse(stored.request);
+      const user: AuthUser = { userId: operation.actorUserId, username: null, displayName: null };
+      const preflight = operation.status !== 'RUNNING';
+      const from =
+        operation.status === 'PREVIEWING'
+          ? 'PENDING'
+          : operation.status === 'AUTHORIZING'
+            ? 'VALIDATED'
+            : 'AUTHORIZED';
+      const targets = await this.prisma.networkSettingsOperationTarget.findMany({
+        where: { operationId, status: { in: preflight ? [from] : ['AUTHORIZED', 'COMMITTED'] } },
+        orderBy: [{ updatedAt: 'asc' }, { entityId: 'asc' }],
+        take: WORK_CHUNK_SIZE,
+      });
+      for (const target of targets) {
+        const renewed = await this.prisma.networkSettingsOperation.updateMany({
+          where: {
+            id: operationId,
+            leaseToken,
+            status: operation.status,
+            leaseUntil: { gt: new Date() },
+          },
+          data: { leaseUntil: new Date(Date.now() + LEASE_MS) },
+        });
+        if (!renewed.count) return;
+        if (target.status !== 'COMMITTED') {
+          const recipient = request.recipients.find((item) => item.entityId === target.entityId)!;
+          try {
+            await this.writeOne(
+              user,
+              request,
+              recipient,
+              preflight
+                ? { validateOnly: true }
+                : {
+                    deferFollowup: true,
+                    onCommitted: async (tx, revision) => {
+                      // FLAG: Settings and their durable receipt commit together. A stale lease owner
+                      // cannot commit either; recovery resumes COMMITTED followups without another write.
+                      const owned = await tx.networkSettingsOperation.updateMany({
+                        where: {
+                          id: operationId,
+                          leaseToken,
+                          status: 'RUNNING',
+                          leaseUntil: { gt: new Date() },
+                        },
+                        data: { leaseUntil: new Date(Date.now() + LEASE_MS) },
+                      });
+                      if (!owned.count) throw changed();
+                      const recorded = await tx.networkSettingsOperationTarget.updateMany({
+                        where: { operationId, entityId: target.entityId, status: 'AUTHORIZED' },
+                        data: { status: 'COMMITTED', committedRevision: revision },
+                      });
+                      if (!recorded.count) throw changed();
+                    },
+                  },
+            );
+            if (preflight)
+              await this.withLease(operationId, leaseToken, operation.status, async (tx) => {
+                await tx.networkSettingsOperationTarget.updateMany({
+                  where: { operationId, entityId: target.entityId, status: from },
+                  data: { status: operation.status === 'PREVIEWING' ? 'VALIDATED' : 'AUTHORIZED' },
+                });
+              });
+          } catch (error) {
+            const status = error instanceof HttpException ? error.getStatus() : 503;
+            const failureCode = [401, 403].includes(status)
+              ? 'DENIED'
+              : [409, 412, 428].includes(status)
+                ? 'CONFLICT'
+                : [400, 422].includes(status)
+                  ? 'INVALID'
+                  : 'TRANSIENT';
+            await this.withLease(operationId, leaseToken, operation.status, async (tx) => {
+              await tx.networkSettingsOperationTarget.updateMany({
+                where: { operationId, entityId: target.entityId, status: from },
+                data: {
+                  status: 'FAILED',
+                  failureCode,
+                  failureMessage:
+                    'Настройки не применены. Обновите экран и проверьте доступ и значения.',
+                },
+              });
+              if (preflight)
+                await tx.networkSettingsOperation.update({
+                  where: { id: operationId },
+                  data: { status: 'FAILED' },
+                });
+            });
+            if (preflight) return;
+          }
+        }
+        if (!preflight) {
+          const committed = await this.prisma.networkSettingsOperationTarget.findUniqueOrThrow({
+            where: { operationId_entityId: { operationId, entityId: target.entityId } },
+          });
+          if (committed.status === 'COMMITTED') {
+            let complete = false;
+            try {
+              await this.settings.finishNetworkSettingsFollowup(
+                target.entityId,
+                request.entityType,
+                request.section,
+              );
+              complete = true;
+            } catch {
+              // FLAG: Keep committed receipts retryable and rotate their retry timestamp so a
+              // failing cache/readiness followup cannot starve the remaining frozen recipients.
+            }
+            await this.withLease(operationId, leaseToken, operation.status, async (tx) => {
+              await tx.networkSettingsOperationTarget.updateMany({
+                where: { operationId, entityId: target.entityId, status: 'COMMITTED' },
+                data: complete
+                  ? { status: 'COMPLETE', failureCode: null, failureMessage: null }
+                  : {
+                      failureCode: 'TRANSIENT',
+                      failureMessage:
+                        'Настройки сохранены. Обновление состояния повторится автоматически.',
+                    },
+              });
+            });
+          }
+        }
+      }
+      const unfinished = await this.prisma.networkSettingsOperationTarget.count({
+        where: { operationId, status: { in: preflight ? [from] : ['AUTHORIZED', 'COMMITTED'] } },
+      });
+      if (!unfinished)
+        await this.withLease(operationId, leaseToken, operation.status, async (tx) => {
+          if (preflight) {
+            const expiresAt =
+              operation.status === 'PREVIEWING'
+                ? new Date(Date.now() + PREVIEW_TTL_MS).toISOString()
+                : stored.expiresAt;
+            await tx.networkSettingsOperation.update({
+              where: { id: operationId },
+              data: {
+                status: operation.status === 'PREVIEWING' ? 'PREPARED' : 'RUNNING',
+                payload: { request, expiresAt } as unknown as Prisma.InputJsonValue,
+              },
+            });
+          } else {
+            const failed = await tx.networkSettingsOperationTarget.count({
+              where: { operationId, status: 'FAILED' },
+            });
+            const complete = await tx.networkSettingsOperationTarget.count({
+              where: { operationId, status: 'COMPLETE' },
+            });
+            await tx.networkSettingsOperation.update({
+              where: { id: operationId },
+              data: { status: failed ? (complete ? 'PARTIAL' : 'FAILED') : 'COMPLETE' },
+            });
+          }
+        });
+    } finally {
+      await this.prisma.networkSettingsOperation.updateMany({
+        where: { id: operationId, leaseToken },
+        data: { leaseUntil: null, leaseToken: null },
+      });
+    }
+  }
+}

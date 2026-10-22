@@ -20,6 +20,9 @@ function createFixture() {
         postSignatureUrl: '',
       }),
       upsert: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      create: jest.fn(),
+      findUniqueOrThrow: jest.fn().mockResolvedValue({ revision: 1 }),
     },
     vkParsingSettings: {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -77,12 +80,12 @@ describe('ChannelPostSignatureService', () => {
       isOwner: false,
       permissions: ['write'],
     });
-    await expect(service.updateSettings('channel-1', 'admin', { enabled: true })).rejects.toThrow(
-      'право редактировать',
-    );
+    await expect(
+      service.updateSettings('channel-1', 'admin', { expectedRevision: 0, enabled: true }),
+    ).rejects.toThrow('право редактировать');
     expect(prisma.$transaction).not.toHaveBeenCalled();
     await expect(
-      service.updateSettings('channel-1', 'admin', { enabled: false }),
+      service.updateSettings('channel-1', 'admin', { expectedRevision: 0, enabled: false }),
     ).resolves.toMatchObject({ enabled: false });
   });
 
@@ -91,7 +94,7 @@ describe('ChannelPostSignatureService', () => {
     maxBotLinkService.resolveBotIdsForModerationAction.mockResolvedValue(['bot-1', 'bot-2']);
     maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(new Error('timeout'));
     await expect(
-      service.updateSettings('channel-1', 'admin', { enabled: true }),
+      service.updateSettings('channel-1', 'admin', { expectedRevision: 0, enabled: true }),
     ).resolves.toMatchObject({ enabled: true });
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenLastCalledWith(
       'channel-1',
@@ -107,7 +110,7 @@ describe('ChannelPostSignatureService', () => {
     const { service, prisma, maxClient } = createFixture();
     maxClient.getCurrentChatMemberAccess.mockRejectedValue(new Error('timeout'));
     await expect(
-      service.updateSettings('channel-1', 'admin', { enabled: true }),
+      service.updateSettings('channel-1', 'admin', { expectedRevision: 0, enabled: true }),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(prisma.channelSettings.upsert).not.toHaveBeenCalled();
   });
@@ -121,12 +124,12 @@ describe('ChannelPostSignatureService', () => {
       postSignatureUrl: '',
     });
     await expect(
-      service.updateSettings('channel-1', 'admin', { presentation: 'button' }),
+      service.updateSettings('channel-1', 'admin', { expectedRevision: 0, presentation: 'button' }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.channelSettings.upsert).not.toHaveBeenCalled();
   });
 
-  it('merges a partial update with the latest locked settings', async () => {
+  it('rejects a stale partial update when the locked revision changed', async () => {
     const { prisma, service } = createFixture();
     prisma.channelSettings.findUnique
       .mockResolvedValueOnce({
@@ -134,27 +137,28 @@ describe('ChannelPostSignatureService', () => {
         postSignaturePresentation: 'SIGNATURE',
         postSignatureText: 'Old',
         postSignatureUrl: 'https://example.com/old',
+        revision: 0,
       })
       .mockResolvedValue({
         postSignatureEnabled: true,
         postSignaturePresentation: 'BUTTON',
         postSignatureText: 'Concurrent',
         postSignatureUrl: 'https://example.com/new',
+        revision: 1,
       });
-    await expect(service.updateSettings('channel-1', 'admin', { enabled: false })).resolves.toEqual(
-      {
-        enabled: false,
-        presentation: 'button',
-        text: 'Concurrent',
-        url: 'https://example.com/new',
-      },
-    );
+    await expect(
+      service.updateSettings('channel-1', 'admin', { expectedRevision: 0, enabled: false }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.channelSettings.updateMany).not.toHaveBeenCalled();
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
   });
 
   it('does not advance the post scan baseline or write an audit for an unchanged setting', async () => {
     const { prisma, service } = createFixture();
-    await service.updateSettings('channel-1', 'admin', { text: 'Читать канал' });
+    await service.updateSettings('channel-1', 'admin', {
+      expectedRevision: 0,
+      text: 'Читать канал',
+    });
     expect(prisma.channelSettings.upsert).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
@@ -175,7 +179,7 @@ describe('ChannelPostSignatureService', () => {
         postSignatureUrl: '',
       });
     await expect(
-      service.updateSettings('channel-1', 'admin', { enabled: true }),
+      service.updateSettings('channel-1', 'admin', { expectedRevision: 0, enabled: true }),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(prisma.channelSettings.upsert).not.toHaveBeenCalled();
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
@@ -422,6 +426,7 @@ describe('ChannelPostSignatureService', () => {
 
     await expect(
       service.updateSettings('channel-1', 'admin-1', {
+        expectedRevision: 0,
         enabled: true,
         presentation: 'button',
         text: '  Новый текст  ',
@@ -432,18 +437,13 @@ describe('ChannelPostSignatureService', () => {
       presentation: 'button',
       text: 'Новый текст',
       url: 'https://max.ru/advertising',
+      revision: 1,
     });
 
-    expect(prisma.channelSettings.upsert).toHaveBeenCalledWith({
-      where: { chatId: 'channel-1' },
-      create: {
-        chatId: 'channel-1',
-        postSignatureEnabled: true,
-        postSignaturePresentation: 'BUTTON',
-        postSignatureText: 'Новый текст',
-        postSignatureUrl: 'https://max.ru/advertising',
-      },
-      update: {
+    expect(prisma.channelSettings.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'channel-1', revision: 0 },
+      data: {
+        revision: { increment: 1 },
         postSignatureEnabled: true,
         postSignaturePresentation: 'BUTTON',
         postSignatureText: 'Новый текст',
@@ -456,14 +456,7 @@ describe('ChannelPostSignatureService', () => {
         chatId: 'channel-1',
         actorUserId: 'admin-1',
         action: 'UPDATE_CHANNEL_POST_SIGNATURE',
-        payload: {
-          changed: {
-            enabled: true,
-            presentation: 'button',
-            text: 'Новый текст',
-            url: 'https://max.ru/advertising',
-          },
-        },
+        payload: { settingKeys: ['enabled', 'presentation', 'text', 'url'] },
       },
     });
     expect(prisma.channelAudienceSnapshot.findFirst).not.toHaveBeenCalled();

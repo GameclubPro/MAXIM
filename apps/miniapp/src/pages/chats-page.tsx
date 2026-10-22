@@ -33,6 +33,7 @@ import { Skeleton, SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import type { ApiTransport } from '../lib/api/transport';
+import { ApiRequestError } from '../lib/api-request-error';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
 import {
@@ -236,10 +237,17 @@ async function saveManagedEntityFavoriteTypes(
   entityType: ManagedTab,
   entityId: string,
   favoriteTypes: ManagedEntityFavoriteType[],
+  expectedFavoriteType: ManagedEntityFavoriteType | null,
 ) {
   const { updateManagedEntityFavorites } =
     await import('../lib/api/managed-entity-favorites-client');
-  return updateManagedEntityFavorites(api, entityType, entityId, favoriteTypes);
+  return updateManagedEntityFavorites(
+    api,
+    entityType,
+    entityId,
+    favoriteTypes,
+    expectedFavoriteType,
+  );
 }
 
 function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity) {
@@ -359,7 +367,6 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
   useEffect(() => {
     setFavoriteLabelsEditorOpen(false);
   }, [api, favoriteStorageScope]);
-  const favoriteMigrationAttemptedRef = useRef(false);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
   >({
@@ -1113,7 +1120,6 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
     }
 
     favoriteStorageScopeRef.current = favoriteStorageScope;
-    favoriteMigrationAttemptedRef.current = false;
     setHomeEntityFavorites(scopedFavorites);
   }, [
     channelsState.data,
@@ -1122,40 +1128,6 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
     chatsState.hasLoadedFromServer,
     favoriteStorageScope,
   ]);
-
-  useEffect(() => {
-    if (
-      favoriteMigrationAttemptedRef.current ||
-      favoriteStorageScope === getHomeEntityFavoritesFallbackScope() ||
-      typeof window === 'undefined'
-    ) {
-      return;
-    }
-
-    favoriteMigrationAttemptedRef.current = true;
-    const controller = new AbortController();
-    void import('../lib/home-entity-favorites-runtime')
-      .then((runtime) => {
-        if (controller.signal.aborted) {
-          return;
-        }
-        runtime.migrateLegacyHomeEntityFavorites(
-          api,
-          favoriteStorageScope,
-          homeEntityFavorites,
-          controller.signal,
-          setHomeEntityFavorites,
-        );
-      })
-      .catch(() => {
-        favoriteMigrationAttemptedRef.current = false;
-      });
-
-    return () => {
-      controller.abort();
-      favoriteMigrationAttemptedRef.current = false;
-    };
-  }, [api, favoriteStorageScope, homeEntityFavorites]);
 
   useEffect(() => {
     if (showEmptyState) {
@@ -1446,7 +1418,13 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
     setSavingFavoriteEntityKey(buildFavoriteEntityKey(entityType, entityId));
 
     try {
-      const saved = await saveManagedEntityFavoriteTypes(api, entityType, entityId, favoriteTypes);
+      const saved = await saveManagedEntityFavoriteTypes(
+        api,
+        entityType,
+        entityId,
+        favoriteTypes,
+        previousFavoriteTypes[0] ?? null,
+      );
       pendingFavoriteMutationRef.current = {
         entityType,
         entityId,
@@ -1460,7 +1438,7 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
       setFavoritePicker((current) =>
         current?.entityType === entityType && current.entity.id === entityId ? null : current,
       );
-    } catch {
+    } catch (error) {
       pendingFavoriteMutationRef.current = {
         entityType,
         entityId,
@@ -1477,8 +1455,14 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
         return rollback;
       });
       pushToast({
-        title: 'Не удалось сохранить категорию',
-        description: 'Попробуйте ещё раз.',
+        title:
+          error instanceof ApiRequestError && error.status === 409
+            ? 'Состав избранного изменился'
+            : 'Не удалось сохранить категорию',
+        description:
+          error instanceof ApiRequestError && error.status === 409
+            ? 'Обновите список перед сохранением.'
+            : 'Попробуйте ещё раз.',
         tone: 'danger',
       });
     } finally {

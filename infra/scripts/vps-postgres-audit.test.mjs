@@ -3939,6 +3939,47 @@ test('monitor delegates its database sample to the fixed bounded audit', () => {
   assert.match(monitor, /SIGNAL_WINDOW_MIN > 1440/u);
 });
 
+test('network statistics mode validates exact scope and preserves private bounded audit admission', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  for (const options of [[], ['--explain'], ['--observations'], ['--observations', '--explain']]) {
+    const result = runAudit(data, ['network-statistics', '-1,-2', ...options]);
+    assert.equal(result.status, 0, result.stderr);
+    const sql = readFileSync(data.sql, 'utf8');
+    assert.match(sql, /BEGIN READ ONLY/u);
+    assert.match(sql, /network_statistics_privileges_ready/u);
+    assert.match(sql, /network_statistics_observations_privileges_ready/u);
+    assert.match(sql, /network_statistics_indexes_ready/u);
+    assert.match(sql, /'audit','network_statistics'/u);
+    assert.match(sql, /LIMIT 25/u);
+    assert.match(sql, /LIMIT 24/u);
+    assert.match(sql, /LIMIT 2/u);
+    assert.doesNotMatch(sql, /EXPLAIN ANALYZE|message_text|post_body/u);
+    assert.match(readFileSync(data.dockerArgs, 'utf8'), /search_path=pg_catalog,public,pg_temp/u);
+    assert.equal(
+      runConnect(data, ['postgres-audit', 'network-statistics', '-1,-2', ...options]).status,
+      0,
+    );
+  }
+  for (const value of [
+    '',
+    '1',
+    '-1;SELECT 1',
+    '/tmp/query.sql',
+    Array.from({ length: 13 }, (_, i) => `-${i + 1}`).join(','),
+  ]) {
+    assert.notEqual(runAudit(data, ['network-statistics', value]).status, 0);
+    assert.notEqual(runConnect(data, ['postgres-audit', 'network-statistics', value]).status, 0);
+  }
+  assert.notEqual(runAudit(data, ['network-statistics', '-1', '--apply']).status, 0);
+  assert.notEqual(
+    runConnect(data, ['postgres-audit', 'network-statistics', '-1', '--explain', 'extra']).status,
+    0,
+  );
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit','network_statistics'/u);
+});
+
 test('provisioning is preview-only by default and declares a hardened idempotent role', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

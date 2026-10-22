@@ -55,6 +55,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh webhook-retry-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-queued-proof [--explain]
   ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
+  ./infra/scripts/vps-postgres-audit.sh network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -104,7 +105,12 @@ RECOVERY_KEY_COHORT_ARGS=()
 SOURCE_ENVELOPE_OWNER=''
 PUBLISHER_SLOT_ARGS=()
 MODERATION_OUTCOME_ARGS=()
+NETWORK_STATISTICS_ARGS=()
 case "$AUDIT_MODE" in
+  network-statistics)
+    NETWORK_STATISTICS_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/network-statistics-audit.mjs" "${NETWORK_STATISTICS_ARGS[@]}" >/dev/null || exit 2
+    ;;
   chat-message-window)
     if [[ $# -lt 3 || $# -gt 4 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
           ! "$3" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$ ||
@@ -215,7 +221,7 @@ esac
 
 # FLAG: This report attests public relations. Pin resolution before the shared
 # privilege admission as well as the report, including pg_temp last explicitly.
-if [[ "$AUDIT_MODE" == 'publisher-slots' || "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' ]]; then
+if [[ "$AUDIT_MODE" == 'publisher-slots' || "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' || "$AUDIT_MODE" == 'network-statistics' ]]; then
   POSTGRES_AUDIT_OPTIONS+=' -c search_path=pg_catalog,public,pg_temp'
 fi
 
@@ -509,6 +515,9 @@ SELECT CASE
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
               'managed_broadcast_deliveries', 'managed_broadcasts', 'chats', 'commercial_review_samples', '_prisma_migrations',
               'webhook_execution_claims', 'max_action_ledger',
+              'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
+              'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
+              'channel_view_archive_states', 'marketplace_bindings',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -2362,6 +2371,13 @@ emit_legacy_default_webhook_audit() {
 
 emit_sql() {
   emit_prelude
+  local network_privilege_args=(--privileges)
+  if [[ "$AUDIT_MODE" == 'network-statistics' ]]; then network_privilege_args+=(--require-all); fi
+  local network_argument
+  for network_argument in "${NETWORK_STATISTICS_ARGS[@]}"; do
+    if [[ "$network_argument" == '--observations' ]]; then network_privilege_args+=(--observations); fi
+  done
+  node "$ROOT_DIR/infra/scripts/network-statistics-audit.mjs" "${network_privilege_args[@]}"
   local publication_privilege_args=(--privileges)
   if [[ "$AUDIT_MODE" == 'publisher-publications' || "$AUDIT_MODE" == 'publisher-slots' ]]; then
     publication_privilege_args+=(--require-all)
@@ -2383,6 +2399,9 @@ emit_sql() {
   if [[ "$AUDIT_MODE" == 'webhook-quarantine' ]]; then quarantine_privilege_args+=(--require-all); fi
   node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "${quarantine_privilege_args[@]}"
   case "$AUDIT_MODE" in
+    network-statistics)
+      node "$ROOT_DIR/infra/scripts/network-statistics-audit.mjs" "${NETWORK_STATISTICS_ARGS[@]}"
+      ;;
     publisher-slots)
       node "$ROOT_DIR/infra/scripts/publisher-slot-audit.mjs" "${PUBLISHER_SLOT_ARGS[@]}"
       ;;

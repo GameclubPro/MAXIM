@@ -7,6 +7,14 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
+    "./network-settings": {
+      "types": "./dist/network-settings.d.ts",
+      "default": "./dist/network-settings.js"
+    },
+    "./networks-stats": {
+      "types": "./dist/networks-stats.d.ts",
+      "default": "./dist/networks-stats.js"
+    },
     "./advertising-placement": {
       "types": "./dist/advertising-placement.d.ts",
       "default": "./dist/advertising-placement.js"

@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { ChannelPostSignatureSettings } from '@maxim/contracts/channel-post-signature';
 import type { ManagedEntityAccessDiagnostics } from '@maxim/contracts/managed-entities';
 import type { VkParsingFeed } from '@maxim/contracts/vk-parsing';
 import type { DomainAllowlistEntry } from '@maxim/contracts/settings';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import { publishRules, updateBotSpeechStyle } from '../src/lib/api/chat-settings-client';
+import {
+  getChannelPostSignature,
+  getChannelSettings,
+  updateChannelPostSignature,
+  updateChannelSettings,
+} from '../src/lib/api/channel-settings-client';
 import type { ChatSettings } from '@maxim/contracts/settings';
 
 test('preview style writes preserve current custom text and media without accepting unrelated data', async () => {
@@ -117,12 +124,7 @@ test('Major preview settings keep publishing data empty', async () => {
     }>;
   };
   const channelSettings = (await api.request('/channels/preview-channel/settings-screen')) as {
-    postSignature: {
-      enabled: boolean;
-      presentation: 'signature' | 'button';
-      text: string;
-      url: string;
-    };
+    postSignature: ChannelPostSignatureSettings;
     managedBroadcasts: Array<{
       id: string;
       targetMode: string;
@@ -147,6 +149,7 @@ test('Major preview settings keep publishing data empty', async () => {
   assert.deepEqual(chatSettings.managedBroadcasts, []);
   assert.deepEqual(channelSettings.managedBroadcasts, []);
   assert.deepEqual(channelSettings.postSignature, {
+    revision: 0,
     enabled: false,
     presentation: 'signature',
     text: 'Подписаться на канал',
@@ -158,33 +161,23 @@ test('preview channel signature update is isolated from settings and Publik VK i
   const api = createPreviewApiTransport({ search: '?profile=publisher' });
   const publisherVkPath = '/publisher/entities/channel/preview-channel/vk-parsing';
   const vkBefore = (await api.request(publisherVkPath)) as VkParsingFeed;
+  const signatureBefore = await getChannelPostSignature(api, 'preview-channel');
 
-  await api.request('/channels/preview-channel/post-signature', {
-    method: 'PATCH',
-    body: JSON.stringify({
-      enabled: true,
-      presentation: 'button',
-      text: 'Заказать рекламу',
-      url: 'https://max.ru/advertising-manager',
-    }),
+  await updateChannelPostSignature(api, 'preview-channel', {
+    expectedRevision: signatureBefore.revision ?? 0,
+    enabled: true,
+    presentation: 'button',
+    text: 'Заказать рекламу',
+    url: 'https://max.ru/advertising-manager',
   });
-  const signature = (await api.request('/channels/preview-channel/post-signature')) as {
-    enabled: boolean;
-    presentation: 'signature' | 'button';
-    text: string;
-    url: string;
-  };
+  const signature = await getChannelPostSignature(api, 'preview-channel');
   const screen = (await api.request('/channels/preview-channel/settings-screen')) as {
-    postSignature: {
-      enabled: boolean;
-      presentation: 'signature' | 'button';
-      text: string;
-      url: string;
-    };
+    postSignature: ChannelPostSignatureSettings;
   };
   const vkAfter = (await api.request(publisherVkPath)) as VkParsingFeed;
 
   assert.deepEqual(signature, {
+    revision: (signatureBefore.revision ?? 0) + 1,
     enabled: true,
     presentation: 'button',
     text: 'Заказать рекламу',
@@ -196,6 +189,55 @@ test('preview channel signature update is isolated from settings and Publik VK i
     vkBefore.settings.appendChannelLinkEnabled,
   );
   assert.equal(vkAfter.settings.channelLinkText, vkBefore.settings.channelLinkText);
+});
+
+test('preview channel settings and signature reject stale shared revisions without mutation', async () => {
+  const api = createPreviewApiTransport();
+  const channelId = 'preview-channel';
+  const initialSettings = await getChannelSettings(api, channelId);
+  const initialSignature = await getChannelPostSignature(api, channelId);
+  assert.equal(initialSettings.revision, 0);
+  assert.equal(initialSignature.revision, 0);
+
+  const signature = await updateChannelPostSignature(api, channelId, {
+    expectedRevision: initialSignature.revision ?? 0,
+    enabled: true,
+    presentation: 'button',
+    text: 'Заказать рекламу',
+    url: 'https://max.ru/advertising-manager',
+  });
+  const settingsAfterSignature = await getChannelSettings(api, channelId);
+  assert.equal(signature.revision, 1);
+  assert.deepEqual(settingsAfterSignature, { ...initialSettings, revision: 1 });
+
+  await assert.rejects(
+    updateChannelSettings(api, channelId, {
+      ...initialSettings,
+      commentsEnabled: !initialSettings.commentsEnabled,
+    }),
+    /Настройки канала изменились/u,
+  );
+  assert.deepEqual(await getChannelSettings(api, channelId), settingsAfterSignature);
+  assert.deepEqual(await getChannelPostSignature(api, channelId), signature);
+
+  const savedSettings = await updateChannelSettings(api, channelId, {
+    ...settingsAfterSignature,
+    commentsEnabled: !initialSettings.commentsEnabled,
+  });
+  const signatureAfterSettings = await getChannelPostSignature(api, channelId);
+  assert.equal(savedSettings.revision, 2);
+  assert.equal(savedSettings.commentsEnabled, !initialSettings.commentsEnabled);
+  assert.deepEqual(signatureAfterSettings, { ...signature, revision: 2 });
+
+  await assert.rejects(
+    updateChannelPostSignature(api, channelId, {
+      expectedRevision: signature.revision ?? 0,
+      text: 'Устаревший текст',
+    }),
+    /Настройки канала изменились/u,
+  );
+  assert.deepEqual(await getChannelSettings(api, channelId), savedSettings);
+  assert.deepEqual(await getChannelPostSignature(api, channelId), signatureAfterSettings);
 });
 
 test('preview access query exposes deterministic lost and degraded settings diagnostics', async () => {

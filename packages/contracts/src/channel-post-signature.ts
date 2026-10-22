@@ -32,6 +32,7 @@ export const channelPostSignatureUrlSchema = z
 
 export const channelPostSignatureSettingsSchema = z
   .object({
+    revision: z.number().int().nonnegative().optional(),
     enabled: z.boolean().default(false),
     presentation: channelPostSignaturePresentationSchema.default('signature'),
     text: z
@@ -43,7 +44,10 @@ export const channelPostSignatureSettingsSchema = z
     url: channelPostSignatureUrlSchema.default(''),
   })
   .superRefine((value, ctx) => {
-    if (value.presentation === 'button' && value.text.length > CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH) {
+    if (
+      value.presentation === 'button' &&
+      value.text.length > CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.too_big,
         maximum: CHANNEL_POST_BUTTON_TEXT_MAX_LENGTH,
@@ -58,6 +62,7 @@ export type ChannelPostSignatureSettings = z.infer<typeof channelPostSignatureSe
 
 export const updateChannelPostSignatureRequestSchema = z
   .object({
+    expectedRevision: z.number().int().nonnegative(),
     enabled: z.boolean().optional(),
     presentation: channelPostSignaturePresentationSchema.optional(),
     text: z
@@ -68,7 +73,7 @@ export const updateChannelPostSignatureRequestSchema = z
       .optional(),
     url: channelPostSignatureUrlSchema.optional(),
   })
-  .refine((value) => Object.keys(value).length > 0, {
+  .refine((value) => Object.keys(value).some((key) => key !== 'expectedRevision'), {
     message: 'Передайте хотя бы одну настройку.',
   });
 export type UpdateChannelPostSignatureRequest = z.infer<

@@ -43,12 +43,22 @@ describe('channel post signature contracts', () => {
   });
 
   it('trims saved text and rejects empty or oversized labels', () => {
-    expect(updateChannelPostSignatureRequestSchema.parse({ text: '  Читать канал  ' })).toEqual({
+    expect(
+      updateChannelPostSignatureRequestSchema.parse({
+        expectedRevision: 3,
+        text: '  Читать канал  ',
+      }),
+    ).toEqual({
+      expectedRevision: 3,
       text: 'Читать канал',
     });
-    expect(updateChannelPostSignatureRequestSchema.safeParse({ text: '   ' }).success).toBe(false);
+    expect(
+      updateChannelPostSignatureRequestSchema.safeParse({ expectedRevision: 3, text: '   ' })
+        .success,
+    ).toBe(false);
     expect(
       updateChannelPostSignatureRequestSchema.safeParse({
+        expectedRevision: 3,
         text: 'a'.repeat(CHANNEL_POST_SIGNATURE_TEXT_MAX_LENGTH + 1),
       }).success,
     ).toBe(false);
@@ -57,10 +67,13 @@ describe('channel post signature contracts', () => {
   it('normalizes an explicit HTTP(S) destination and allows clearing it', () => {
     expect(
       updateChannelPostSignatureRequestSchema.parse({
+        expectedRevision: 3,
         url: '  HTTP://MAX.RU/advertising/../contact?from=channel  ',
       }),
-    ).toEqual({ url: 'http://max.ru/contact?from=channel' });
-    expect(updateChannelPostSignatureRequestSchema.parse({ url: '   ' })).toEqual({ url: '' });
+    ).toEqual({ expectedRevision: 3, url: 'http://max.ru/contact?from=channel' });
+    expect(
+      updateChannelPostSignatureRequestSchema.parse({ expectedRevision: 3, url: '   ' }),
+    ).toEqual({ expectedRevision: 3, url: '' });
   });
 
   it.each([
@@ -70,12 +83,23 @@ describe('channel post signature contracts', () => {
     'https://max.ru/contact https://example.test',
     `https://max.ru/${'a'.repeat(CHANNEL_POST_SIGNATURE_URL_MAX_LENGTH)}`,
   ])('rejects an unsafe or oversized explicit destination %s', (url) => {
-    expect(updateChannelPostSignatureRequestSchema.safeParse({ url }).success).toBe(false);
+    expect(
+      updateChannelPostSignatureRequestSchema.safeParse({ expectedRevision: 3, url }).success,
+    ).toBe(false);
   });
 
   it('requires at least one field in a partial update', () => {
     expect(updateChannelPostSignatureRequestSchema.safeParse({}).success).toBe(false);
-    expect(updateChannelPostSignatureRequestSchema.parse({ enabled: true })).toEqual({
+    expect(updateChannelPostSignatureRequestSchema.safeParse({ enabled: true }).success).toBe(
+      false,
+    );
+    expect(updateChannelPostSignatureRequestSchema.safeParse({ expectedRevision: 3 }).success).toBe(
+      false,
+    );
+    expect(
+      updateChannelPostSignatureRequestSchema.parse({ expectedRevision: 3, enabled: true }),
+    ).toEqual({
+      expectedRevision: 3,
       enabled: true,
     });
   });

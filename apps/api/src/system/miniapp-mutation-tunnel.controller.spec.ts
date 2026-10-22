@@ -543,6 +543,26 @@ describe('MiniappMutationTunnelController', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['PUT', '/managed-entities/networks/chat/composition'],
+    ['PUT', '/managed-entities/networks/channel/composition'],
+    ['POST', '/networks/settings/read'],
+    ['POST', '/networks/settings/preview'],
+    ['POST', '/networks/settings/apply'],
+  ])('forwards network %s %s without changing revision conflicts', async (method, path) => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const payload = JSON.stringify({ code: 'NETWORK_SETTINGS_CHANGED' });
+    global.fetch = jest.fn().mockResolvedValue(new Response(payload, {
+      status: 409, headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    await controller.tunnel({ method, path, body: Buffer.from('{}').toString('base64url'),
+      contentType: 'application/json' }, 'InitData auth_date=1&hash=test', TEST_USER, reply as never);
+    expect(global.fetch).toHaveBeenCalledWith(`http://127.0.0.1:3001/api/v1${path}`,
+      expect.objectContaining({ method, body: '{}' }));
+    expect(reply.status).toHaveBeenCalledWith(409);
+  });
+
   it('allows durable favorite-label saves through the mutation tunnel', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

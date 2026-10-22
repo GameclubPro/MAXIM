@@ -27,6 +27,8 @@ import {
 import { StopWordsMatcher } from '../moderation/stop-words/stop-words.matcher';
 import { createAllowlistLinkMatcher } from '../moderation/rule-engine-link-detector';
 import { resolveImageTextStopListOcrRuntimePolicy } from '../moderation/commercial-ocr/image-text-stop-list.runtime';
+import type { NetworkSettingsWriteOptions } from './network-settings-write';
+import type { StopWordsPolicy } from '@maxim/contracts/settings';
 
 @Injectable()
 export class AdminStopWordsService {
@@ -61,20 +63,34 @@ export class AdminStopWordsService {
     return { revision: row?.stopWordsRevision ?? 0, imageScanStatus: await this.imageScanStatus() };
   }
 
-  async update(chatId: string, user: AuthUser, body: unknown): Promise<StopWordsState> {
+  async update(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    networkWrite?: NetworkSettingsWriteOptions & { settingsRevision?: string },
+  ): Promise<StopWordsState> {
     await this.admin.assertChatAdminAccess(chatId, user);
     const parsed = updateStopWordsRequestSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const { policy, expectedRevision } = parsed.data;
     const current = await this.load(chatId, user);
     if (current.stopWordsRevision !== expectedRevision) throw this.conflict();
+    if (
+      networkWrite?.settingsRevision &&
+      current.updatedAt.toISOString() !== networkWrite.settingsRevision
+    )
+      throw this.conflict();
     if (policy.enabled) {
-      await this.capabilities.assertChatSettingsBotCapabilities(chatId, [
-        { permission: 'write', featureKeys: ['stopWordsPolicy'] },
-        ...(policy.sanctions.muteEnabled || policy.sanctions.banEnabled
-          ? [{ permission: 'add_remove_members' as const, featureKeys: ['stopWordsPolicy'] }]
-          : []),
-      ]);
+      await this.capabilities.assertChatSettingsBotCapabilities(
+        chatId,
+        [
+          { permission: 'write', featureKeys: ['stopWordsPolicy'] },
+          ...(policy.sanctions.muteEnabled || policy.sanctions.banEnabled
+            ? [{ permission: 'add_remove_members' as const, featureKeys: ['stopWordsPolicy'] }]
+            : []),
+        ],
+        networkWrite ? { forceLive: true } : undefined,
+      );
     }
     await this.prisma.$transaction(async (tx) => {
       const lockedChat = await lockModeratorSettingsChat(tx, chatId);
@@ -91,11 +107,20 @@ export class AdminStopWordsService {
           : [],
       );
 
+      if (networkWrite?.validateOnly) return;
+
       const changed = await tx.chatSettings.updateMany({
         where: { chatId, stopWordsRevision: expectedRevision, updatedAt: current.updatedAt },
         data: { ...stopWordsPolicyStorage(policy), stopWordsRevision: { increment: 1 } },
       });
       if (changed.count !== 1) throw this.conflict();
+      if (networkWrite?.onCommitted) {
+        const written = await tx.chatSettings.findUniqueOrThrow({
+          where: { chatId },
+          select: { updatedAt: true },
+        });
+        await networkWrite.onCommitted(tx, written.updatedAt.toISOString());
+      }
       await tx.auditLog.create({
         data: {
           chatId,
@@ -115,12 +140,29 @@ export class AdminStopWordsService {
         },
       });
     });
-    await this.cache.invalidate(chatId);
+    if (!networkWrite?.deferFollowup && !networkWrite?.validateOnly)
+      await this.cache.invalidate(chatId);
     return {
       policy,
-      revision: expectedRevision + 1,
+      revision: expectedRevision + (networkWrite?.validateOnly ? 0 : 1),
       imageScanStatus: await this.imageScanStatus(),
     };
+  }
+
+  async updateNetworkSettings(
+    chatId: string,
+    user: AuthUser,
+    policy: StopWordsPolicy,
+    expectedRevision: number,
+    settingsRevision: string,
+    options: NetworkSettingsWriteOptions,
+  ): Promise<StopWordsState> {
+    return this.update(
+      chatId,
+      user,
+      { policy, expectedRevision },
+      { ...options, settingsRevision },
+    );
   }
 
   async preview(chatId: string, user: AuthUser, body: unknown) {

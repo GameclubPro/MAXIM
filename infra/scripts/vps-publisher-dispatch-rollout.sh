@@ -18,6 +18,7 @@ COMPOSE_FILES=(--env-file ".env" -p infra -f "infra/docker-compose.yml")
 RELEASE_STATE_DIR="${MAXIM_RELEASE_STATE_DIR:-/var/lib/maxim-deploy}"
 STATE_HELPER="$ROOT_DIR/infra/scripts/publisher-dispatch-rollout-state.mjs"
 MODE_AUDIT_HELPER="$ROOT_DIR/infra/scripts/publisher-temporal-selection-audit.mjs"
+NETWORKS_STATE_HELPER="$ROOT_DIR/infra/scripts/major-networks-rollout-state.mjs"
 CONTROL_HELPER="$ROOT_DIR/infra/scripts/publisher-dispatch-rollout-control.cjs"
 INVENTORY_HELPER="$ROOT_DIR/infra/scripts/commercial-ocr-runtime-inventory.mjs"
 PUBLISHER_IDENTITY_PROBE_SCRIPT="apps/api/dist/apps/api/src/scripts/attest-publisher-identity.js"
@@ -54,6 +55,7 @@ unset \
   MAX_PUBLISHER_DISPATCH_ENABLED \
   PUBLISHER_TEMPORAL_SELECTION_ROLLOUT \
   PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT \
+  MAJOR_NETWORKS_ROLLOUT \
   MAXIM_COMPOSE_SERVICE_ENV_FILE \
   MAXIM_API_IMAGE \
   COMMERCIAL_OCR_ROLLOUT_MODE \
@@ -76,6 +78,9 @@ EXPECTED_SELECTION_MODE=""
 CURRENT_ROLLUP_MODE=""
 CURRENT_ROLLUP_CONFIGURED=""
 EXPECTED_ROLLUP_MODE=""
+CURRENT_NETWORKS_MODE=""
+CURRENT_NETWORKS_CONFIGURED=""
+EXPECTED_NETWORKS_MODE=""
 EXPECTED_MODE_SOURCE_SHA="${MAXIM_EXPECTED_DEPLOY_SHA:-}"
 MODE_AUDIT_PATH=""
 MODE_AUDIT_TERMINAL=0
@@ -104,6 +109,7 @@ Usage:
   ./infra/scripts/vps-publisher-dispatch-rollout.sh disable [--apply]
   ./infra/scripts/vps-publisher-dispatch-rollout.sh selection <off|test|5|25|100> [--apply]
   ./infra/scripts/vps-publisher-dispatch-rollout.sh rollup-noop <off|test|5|25|100> [--apply]
+  ./infra/scripts/vps-publisher-dispatch-rollout.sh networks <off|test|on> [--apply]
 
 Enable and disable are read-only previews unless --apply is supplied. Applied operations recreate
 all shared API roles from the exact active image without building, migrating, or touching stateful
@@ -168,6 +174,15 @@ parse_args() {
       ;;
     disable)
       DESIRED_STATE=false
+      ;;
+    networks)
+      MODE_OPERATION=networks
+      DESIRED_MODE="${2:-}"
+      case "$DESIRED_MODE" in
+        off|test|on) ;;
+        *) fail "Major networks mode must be off, test or on."; return 2 ;;
+      esac
+      shift
       ;;
     selection|rollup-noop)
       MODE_OPERATION="$COMMAND"
@@ -377,6 +392,7 @@ mode_state_operation() {
   case "$MODE_OPERATION" in
     selection) printf '%s\n' selection ;;
     rollup-noop) printf '%s\n' rollup ;;
+    networks) printf '%s\n' networks ;;
     *) fail "Unknown Publisher reader mode operation."; return 1 ;;
   esac
 }
@@ -395,9 +411,17 @@ prepare_mode_operation() {
     fail "Reader mode rollout cannot adopt an interrupted release; recover that operation first."
     return 1
   }
-  node "$STATE_HELPER" "verify-${state_operation}-source" "$ROOT_DIR" || return
+  if [[ "$MODE_OPERATION" == networks ]]; then
+    node "$NETWORKS_STATE_HELPER" verify-source "$ROOT_DIR" || return
+    CURRENT_NETWORKS_MODE="$(node "$NETWORKS_STATE_HELPER" read-env .env)" || return
+    CURRENT_NETWORKS_CONFIGURED="$(node "$NETWORKS_STATE_HELPER" read-env-configured .env)" || return
+    EXPECTED_NETWORKS_MODE="$CURRENT_NETWORKS_MODE"
+    [[ "$CURRENT_NETWORKS_CONFIGURED" == true ]] || EXPECTED_NETWORKS_MODE=default-off
+  else
+    node "$STATE_HELPER" "verify-${state_operation}-source" "$ROOT_DIR" || return
+  fi
   read_rollout_modes || return
-  if [[ "$DESIRED_MODE" != off && "$CURRENT_ENV_STATE" != true ]]; then
+  if [[ "$MODE_OPERATION" != networks && "$DESIRED_MODE" != off && "$CURRENT_ENV_STATE" != true ]]; then
     fail "Non-off reader modes require Publisher dispatch already enabled; its switch is preserved."
     return 1
   fi
@@ -408,6 +432,14 @@ prepare_mode_operation() {
 }
 
 record_mode_audit_start() {
+  if [[ "$MODE_OPERATION" == networks ]]; then
+    MODE_AUDIT_PATH="$(node "$NETWORKS_STATE_HELPER" start-audit "$RELEASE_STATE_DIR" \
+      "$MANIFEST_SOURCE_SHA" "$CURRENT_NETWORKS_MODE" "$CURRENT_NETWORKS_CONFIGURED" \
+      "$DESIRED_MODE" "$CURRENT_ENV_STATE" "$CURRENT_ENV_CONFIGURED" \
+      "$CURRENT_SELECTION_MODE" "$CURRENT_SELECTION_CONFIGURED" \
+      "$CURRENT_ROLLUP_MODE" "$CURRENT_ROLLUP_CONFIGURED")" || return
+    return
+  fi
   local command current_mode current_configured retained_mode retained_configured
   case "$MODE_OPERATION" in
     selection)
@@ -429,6 +461,11 @@ record_mode_audit_start() {
 }
 
 record_mode_audit_finish() {
+  if [[ "$MODE_OPERATION" == networks ]]; then
+    node "$NETWORKS_STATE_HELPER" finish-audit "$MODE_AUDIT_PATH" "$1" "$2" "$MODE_RUNTIME_VERIFIED" || return
+    MODE_AUDIT_TERMINAL=1
+    return
+  fi
   local command
   case "$MODE_OPERATION" in
     selection) command=finish ;;
@@ -449,6 +486,10 @@ verify_compose_config() {
     node "$STATE_HELPER" "${validation[@]}"; then
     fail "Compose does not define the exact reviewed 14-role publisher runtime on the active image."
   fi
+  if [[ "${MODE_OPERATION:-}" == networks ]]; then
+    docker compose "${COMPOSE_FILES[@]}" config --format json 2>/dev/null |
+      node "$NETWORKS_STATE_HELPER" verify-compose "$EXPECTED_NETWORKS_MODE" "$MANIFEST_IMAGE_REF" || return
+  fi
 }
 
 verify_preview_compose_config() {
@@ -456,17 +497,23 @@ verify_preview_compose_config() {
   if [[ -n "${MODE_OPERATION:-}" && "$CURRENT_ENV_CONFIGURED" != true &&
         "$expected_state" == false ]]; then expected_state=default-false; fi
   local patch=(patch-env)
+  local patch_helper="$STATE_HELPER"
   local validation=(verify-compose "$expected_state" "$MANIFEST_IMAGE_REF")
   local preview_value="$expected_state"
   local preview_selection="$EXPECTED_SELECTION_MODE" preview_rollup="$EXPECTED_ROLLUP_MODE"
   if [[ -n "${MODE_OPERATION:-}" ]]; then
     local state_operation
     state_operation="$(mode_state_operation)" || return
-    patch=("patch-${state_operation}-env")
+    if [[ "$MODE_OPERATION" == networks ]]; then
+      patch=(patch-env)
+      patch_helper="$NETWORKS_STATE_HELPER"
+    else
+      patch=("patch-${state_operation}-env")
+    fi
     preview_value="$DESIRED_MODE"
     if [[ "$MODE_OPERATION" == selection ]]; then
       preview_selection="$DESIRED_MODE"
-    else
+    elif [[ "$MODE_OPERATION" == rollup-noop ]]; then
       preview_rollup="$DESIRED_MODE"
     fi
   fi
@@ -475,13 +522,18 @@ verify_preview_compose_config() {
     fail "Could not create a private publisher preview dotenv."
   install -m 0600 .env "$PREVIEW_ENV_FILE" ||
     fail "Could not prepare a private publisher preview dotenv."
-  node "$STATE_HELPER" "${patch[@]}" "$PREVIEW_ENV_FILE" "$preview_value" ||
+  node "$patch_helper" "${patch[@]}" "$PREVIEW_ENV_FILE" "$preview_value" ||
     fail "Could not prepare the requested publisher preview state."
   if ! MAXIM_COMPOSE_SERVICE_ENV_FILE="$PREVIEW_ENV_FILE" \
     docker compose --env-file "$PREVIEW_ENV_FILE" -p infra -f "infra/docker-compose.yml" \
       config --format json 2>/dev/null |
     node "$STATE_HELPER" "${validation[@]}"; then
     fail "Compose cannot render the requested publisher dispatch target across all 14 API roles."
+  fi
+  if [[ "${MODE_OPERATION:-}" == networks ]]; then
+    MAXIM_COMPOSE_SERVICE_ENV_FILE="$PREVIEW_ENV_FILE" \
+      docker compose --env-file "$PREVIEW_ENV_FILE" -p infra -f "infra/docker-compose.yml" config --format json 2>/dev/null |
+      node "$NETWORKS_STATE_HELPER" verify-compose "$DESIRED_MODE" "$MANIFEST_IMAGE_REF" || return
   fi
   rm -f -- "$PREVIEW_ENV_FILE"
   PREVIEW_ENV_FILE=""
@@ -499,6 +551,7 @@ container_env_summary() {
         "MAX_PUBLISHER_DISPATCH_ENABLED",
         "PUBLISHER_TEMPORAL_SELECTION_ROLLOUT",
         "PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT",
+        "MAJOR_NETWORKS_ROLLOUT",
       ]);
       const result = {};
       for (const line of readFileSync(0).toString("utf8").split(/\r?\n/u)) {
@@ -651,6 +704,10 @@ verify_runtime() {
       node "$STATE_HELPER" "${validation[@]}"; then
       fail "A production API role does not match its exact service, APP_ROLE, dispatch, or reader mode state."
       return 1
+    fi
+    if [[ "${MODE_OPERATION:-}" == networks && "$mode_policy" == required ]]; then
+      printf '%s' "$env_summary" |
+        node "$NETWORKS_STATE_HELPER" verify-runtime-env "$EXPECTED_NETWORKS_MODE" "$service" || return
     fi
     case "$service" in
       api-media-analysis) media_id="${container_ids[0]}" ;;
@@ -911,10 +968,21 @@ patch_mode_env() {
     fail "Publisher configuration changed after reader mode preflight."
     return 1
   }
-  node "$STATE_HELPER" "patch-${state_operation}-env" .env "$DESIRED_MODE" || return
+  if [[ "$MODE_OPERATION" == networks ]]; then
+    [[ "$(node "$NETWORKS_STATE_HELPER" read-env .env)" == "$CURRENT_NETWORKS_MODE" &&
+       "$(node "$NETWORKS_STATE_HELPER" read-env-configured .env)" == "$CURRENT_NETWORKS_CONFIGURED" ]] || {
+      fail "Major networks dotenv changed after the locked preview."; return 1;
+    }
+    node "$NETWORKS_STATE_HELPER" patch-env .env "$DESIRED_MODE" || return
+    [[ "$(node "$NETWORKS_STATE_HELPER" read-env .env)" == "$DESIRED_MODE" &&
+       "$(node "$NETWORKS_STATE_HELPER" read-env-configured .env)" == true ]] || return 1
+    EXPECTED_NETWORKS_MODE="$DESIRED_MODE"
+  else
+    node "$STATE_HELPER" "patch-${state_operation}-env" .env "$DESIRED_MODE" || return
+  fi
   if [[ "$MODE_OPERATION" == selection ]]; then
     selection_mode="$DESIRED_MODE"; selection_configured=true
-  else
+  elif [[ "$MODE_OPERATION" == rollup-noop ]]; then
     rollup_mode="$DESIRED_MODE"; rollup_configured=true
   fi
   [[ "$(node "$STATE_HELPER" read-selection-env .env)" == "$selection_mode" &&
@@ -928,7 +996,7 @@ patch_mode_env() {
   }
   if [[ "$MODE_OPERATION" == selection ]]; then
     EXPECTED_SELECTION_MODE="$DESIRED_MODE"
-  else
+  elif [[ "$MODE_OPERATION" == rollup-noop ]]; then
     EXPECTED_ROLLUP_MODE="$DESIRED_MODE"
   fi
 }
@@ -1471,6 +1539,10 @@ apply_rollout() {
   fi
   ROLLOUT_COMPLETE=1
   if [[ -n "${MODE_OPERATION:-}" ]]; then
+    if [[ "$MODE_OPERATION" == networks ]]; then
+      printf 'Major networks rollout complete: mode=%s roles=14 image=%s\n' "$DESIRED_MODE" "$MANIFEST_SOURCE_SHA"
+      return
+    fi
     printf 'Publik %s rollout complete: mode=%s dispatch=%s roles=14 image=%s\n' \
       "$MODE_OPERATION" "$DESIRED_MODE" "$DESIRED_STATE" "$MANIFEST_SOURCE_SHA"
     return
@@ -1492,6 +1564,7 @@ require_operational_limits
 require_topology
 [[ -s "$STATE_HELPER" && -s "$CONTROL_HELPER" && -s "$INVENTORY_HELPER" ]] ||
   fail "Publisher rollout helpers are missing."
+if [[ "$MODE_OPERATION" == networks && ! -s "$NETWORKS_STATE_HELPER" ]]; then fail "Major networks rollout helper is missing."; fi
 [[ -f .env && ! -L .env ]] || fail "Production .env must be a regular non-symlink file."
 acquire_deploy_lock
 trap cleanup EXIT
@@ -1519,6 +1592,11 @@ fi
 rollout_preflight
 if [[ "$APPLY" -ne 1 ]]; then
   if [[ -n "$MODE_OPERATION" ]]; then
+    if [[ "$MODE_OPERATION" == networks ]]; then
+      printf 'Major networks preflight passed: current=%s target=%s roles=14 image=%s; no state changed.\n' \
+        "$CURRENT_NETWORKS_MODE" "$DESIRED_MODE" "$MANIFEST_SOURCE_SHA"
+      exit 0
+    fi
     printf 'Publik %s preflight passed: selection=%s rollup=%s target=%s dispatch=%s; no state changed.\n' \
       "$MODE_OPERATION" "$CURRENT_SELECTION_MODE" "$CURRENT_ROLLUP_MODE" "$DESIRED_MODE" "$CURRENT_ENV_STATE"
     exit 0

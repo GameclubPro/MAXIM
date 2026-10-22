@@ -1,6 +1,6 @@
 import { assertFixedModeratorCapabilitiesForSettings } from '../max/fixed-moderator-capabilities';
 import { channelSettingsSchema, type ChannelSettings } from '@maxim/contracts';
-import { BadRequestException, type Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, type Logger } from '@nestjs/common';
 import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
@@ -11,6 +11,7 @@ import {
 } from './admin.service.support';
 import type { ResolvedBotAssignmentData } from './admin-chat-settings';
 import { normalizeLegacyProfileButtonUrl } from './admin-profile-links';
+import type { NetworkSettingsWriteOptions } from './network-settings-write';
 
 function readTrimmedString(value: unknown): string | null {
   if (typeof value !== 'string') {
@@ -178,10 +179,13 @@ export async function readChannelSettings(params: {
       ...getChannelSettingsNormalizationChanges(parsed.data, normalized),
     };
     if (Object.keys(normalizationChanges).length > 0) {
-      await params.prisma.channelSettings.updateMany({
-        where: { chatId: params.chatId, updatedAt: chat.channelSettings.updatedAt },
-        data: normalizationChanges,
+      const repaired = await params.prisma.channelSettings.updateMany({
+        where: { chatId: params.chatId, revision: chat.channelSettings.revision },
+        data: { ...normalizationChanges, revision: { increment: 1 } },
       });
+      if (!repaired.count)
+        throw new ConflictException('Настройки канала изменились. Обновите экран.');
+      return { ...normalized, revision: chat.channelSettings.revision + 1 };
     }
     return normalized;
   }
@@ -197,14 +201,16 @@ export async function readChannelSettings(params: {
     'Invalid channel settings found in DB, applying defaults',
   );
 
-  await params.prisma.channelSettings.updateMany({
-    where: { chatId: params.chatId, updatedAt: chat.channelSettings.updatedAt },
+  const repaired = await params.prisma.channelSettings.updateMany({
+    where: { chatId: params.chatId, revision: chat.channelSettings.revision },
     data: {
       ...DEFAULT_CHANNEL_SETTINGS,
+      revision: { increment: 1 },
     },
   });
 
-  return DEFAULT_CHANNEL_SETTINGS;
+  if (!repaired.count) throw new ConflictException('Настройки канала изменились. Обновите экран.');
+  return { ...DEFAULT_CHANNEL_SETTINGS, revision: chat.channelSettings.revision + 1 };
 }
 
 export async function saveChannelSettings(params: {
@@ -216,15 +222,30 @@ export async function saveChannelSettings(params: {
   source: AdminActionSource;
   resolveBotAssignmentData: () => Promise<ResolvedBotAssignmentData> | ResolvedBotAssignmentData;
   refreshExecutionReadiness: () => Promise<void>;
+  networkWrite?: NetworkSettingsWriteOptions;
 }): Promise<ChannelSettings> {
   const parsed = channelSettingsSchema.safeParse(params.body);
   if (!parsed.success) {
     throw new BadRequestException(parsed.error.format());
   }
+  if (parsed.data.revision === undefined)
+    throw new HttpException(
+      {
+        code: 'CHANNEL_SETTINGS_REVISION_REQUIRED',
+        message: 'Обновите экран настроек перед сохранением.',
+      },
+      428,
+    );
   const normalizedSettings = normalizeChannelSettings(parsed.data, params.chatId);
   const botAssignmentData = await params.resolveBotAssignmentData();
   const settingsToSave = normalizedSettings;
   const settingsToUpdate: Partial<ChannelSettings> = { ...settingsToSave };
+  delete settingsToUpdate.revision;
+  if (params.networkWrite?.authoredChannelKeys) {
+    const authored = new Set(params.networkWrite.authoredChannelKeys);
+    for (const key of Object.keys(settingsToUpdate) as Array<keyof ChannelSettings>)
+      if (!authored.has(key)) delete settingsToUpdate[key];
+  }
   // FLAG: Older clients must not disable subscription protection by omitting new fields.
   for (const key of [
     'postSuggestionsRequireSubscription',
@@ -233,6 +254,26 @@ export async function saveChannelSettings(params: {
     if (!Object.prototype.hasOwnProperty.call(params.body, key)) delete settingsToUpdate[key];
   }
 
+  if (params.networkWrite?.validateOnly) {
+    const current = await params.prisma.channelSettings.findUnique({
+      where: { chatId: params.chatId },
+      select: { revision: true },
+    });
+    if ((current?.revision ?? 0) !== parsed.data.revision)
+      throw new ConflictException('Настройки канала изменились. Обновите экран.');
+    const chat = await params.prisma.chat.findUniqueOrThrow({ where: { id: params.chatId } });
+    await assertFixedModeratorCapabilitiesForSettings(
+      params.prisma,
+      chat,
+      settingsToSave.commentsEnabled ||
+        settingsToSave.postSuggestionsEnabled ||
+        settingsToSave.quickButtonsEnabled
+        ? ['send_message', 'edit_message']
+        : [],
+    );
+    return normalizedSettings;
+  }
+  let savedRevision = parsed.data.revision;
   await params.prisma.$transaction(async (tx) => {
     const lockedChat = await tx.chat.upsert({
       where: { id: params.chatId },
@@ -254,22 +295,44 @@ export async function saveChannelSettings(params: {
       lockedChat,
       editingEnabled ? ['send_message', 'edit_message'] : [],
     );
-    await tx.channelSettings.upsert({
+    const current = await tx.channelSettings.findUnique({
       where: { chatId: params.chatId },
-      create: { chatId: params.chatId, ...settingsToSave },
-      update: settingsToUpdate,
+      select: { revision: true },
     });
+    if (current) {
+      const changed = await tx.channelSettings.updateMany({
+        where: { chatId: params.chatId, revision: parsed.data.revision },
+        data: { ...settingsToUpdate, revision: { increment: 1 } },
+      });
+      if (!changed.count)
+        throw new ConflictException({
+          code: 'CHANNEL_SETTINGS_CONCURRENT_UPDATE',
+          message: 'Настройки канала изменились. Обновите экран.',
+        });
+    } else {
+      if (parsed.data.revision !== 0) throw new ConflictException('Настройки канала изменились.');
+      await tx.channelSettings.create({
+        data: { chatId: params.chatId, ...settingsToSave, revision: 1 },
+      });
+    }
     await tx.auditLog.create({
       data: {
         chatId: params.chatId,
         actorUserId: params.actorUserId,
         action: 'UPDATE_CHANNEL_SETTINGS',
-        payload: { ...settingsToUpdate, source: params.source },
+        payload: { settingKeys: Object.keys(settingsToUpdate), source: params.source },
       },
     });
+    const written = await tx.channelSettings.findUniqueOrThrow({
+      where: { chatId: params.chatId },
+      select: { revision: true },
+    });
+    savedRevision = written.revision;
+    await params.networkWrite?.onCommitted?.(tx, String(savedRevision));
   });
+  if (params.networkWrite?.deferFollowup) return { ...settingsToSave, revision: savedRevision };
   await params.chatContextCache.invalidate(params.chatId);
   await params.refreshExecutionReadiness();
 
-  return settingsToSave;
+  return { ...settingsToSave, revision: savedRevision };
 }

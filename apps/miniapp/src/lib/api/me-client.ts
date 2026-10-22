@@ -76,6 +76,7 @@ function parseMe(value: unknown): Me {
     profileHandoffUrl: typeof value.profileHandoffUrl === 'string' ? value.profileHandoffUrl : null,
     botDialogUrl: parseBotDialogUrl(value.botDialogUrl),
     ...(value.canAccessSystem === true ? { canAccessSystem: true } : {}),
+    ...(profile === 'moderation' && value.networksEnabled === true ? { networksEnabled: true } : {}),
     profile,
     capabilities,
     homeRoute,

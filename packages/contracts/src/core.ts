@@ -62,11 +62,7 @@ import {
   managedEntityHeaderSchema,
   managedEntityTypeSchema,
 } from './managed-entities.js';
-import {
-  miniappCapabilitySchema,
-  miniappHomeRouteSchema,
-  miniappProfileSchema,
-} from './publisher.js';
+export { meSchema, type Me } from './miniapp-session.js';
 import {
   DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES,
   DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES,
@@ -1375,6 +1371,7 @@ export type PublishChatRulesResult = z.infer<typeof publishChatRulesResultSchema
 
 export const channelSettingsSchema = z
   .object({
+    revision: z.number().int().nonnegative().optional(),
     quickButtonsEnabled: z.boolean().default(false),
     postSuggestionsEnabled: z.boolean().default(false),
     postSuggestionsRequireSubscription: z.boolean().default(false),
@@ -1537,29 +1534,6 @@ export const applySectionTargetPreviewResponseSchema = z.object({
 export type ApplySectionTargetPreviewResponse = z.infer<
   typeof applySectionTargetPreviewResponseSchema
 >;
-
-const botDialogUrlSchema = z
-  .string()
-  .trim()
-  .url()
-  .regex(/^https:\/\/max\.ru\/[^/?#\s]+$/u);
-
-export const meSchema = z.object({
-  userId: z.string(),
-  username: z.string().nullable(),
-  displayName: z.string().nullable(),
-  avatarUrl: z.string().trim().url().nullable().default(null),
-  profileUrl: z.string().trim().url().nullable().default(null),
-  profileHandoffUrl: z.string().trim().url().nullable().default(null),
-  botDialogUrl: botDialogUrlSchema.nullable().default(null),
-  canAccessSystem: z.boolean().optional(),
-  profile: miniappProfileSchema.default('moderation'),
-  capabilities: z
-    .array(miniappCapabilitySchema)
-    .default(['moderation_workspace', 'publisher_policy_write']),
-  homeRoute: miniappHomeRouteSchema.default('/'),
-});
-export type Me = z.infer<typeof meSchema>;
 
 export const dateRangeQuerySchema = z.object({
   from: z.string().datetime().optional(),

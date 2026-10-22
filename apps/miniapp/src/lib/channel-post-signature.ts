@@ -10,6 +10,7 @@ export function normalizePostSignatureSettings(
 ): ChannelPostSignatureSettings {
   const parsedUrl = parseChannelPostSignatureUrl(value.url);
   return {
+    ...(value.revision !== undefined ? { revision: value.revision } : {}),
     enabled: value.enabled,
     presentation: value.presentation,
     text: value.text.trim(),
@@ -26,6 +27,7 @@ export function buildPostSignaturePatch(
   previous: ChannelPostSignatureSettings | null,
 ): UpdateChannelPostSignatureRequest {
   return {
+    expectedRevision: previous?.revision ?? next.revision ?? 0,
     ...(next.enabled !== previous?.enabled ? { enabled: next.enabled } : {}),
     ...(next.presentation !== previous?.presentation ? { presentation: next.presentation } : {}),
     ...(next.text !== previous?.text ? { text: next.text } : {}),
@@ -38,7 +40,12 @@ export function reconcilePostSignatureSave(
   latest: ChannelPostSignatureSettings,
   saved: ChannelPostSignatureSettings,
 ): ChannelPostSignatureSettings {
-  return { ...saved, ...buildPostSignaturePatch(latest, submitted) };
+  const changes: Partial<UpdateChannelPostSignatureRequest> = buildPostSignaturePatch(
+    latest,
+    submitted,
+  );
+  delete changes.expectedRevision;
+  return { ...saved, ...changes };
 }
 
 export type ParsedChannelPostSignatureUrl = {

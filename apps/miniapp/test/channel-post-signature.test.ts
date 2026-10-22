@@ -12,9 +12,11 @@ import {
 test('signature updates send only changed fields, preserving another administrator changes', () => {
   const saved = { enabled: true, presentation: 'signature' as const, text: 'Read', url: '' };
   assert.deepEqual(buildPostSignaturePatch({ ...saved, enabled: false }, saved), {
+    expectedRevision: 0,
     enabled: false,
   });
   assert.deepEqual(buildPostSignaturePatch({ ...saved, presentation: 'button' }, saved), {
+    expectedRevision: 0,
     presentation: 'button',
   });
 });
@@ -25,7 +27,10 @@ test('a delayed save merges only newer local edits over the returned server stat
   const saved = { ...submitted, text: 'Normalized', presentation: 'button' as const };
   const reconciled = reconcilePostSignatureSave(submitted, latest, saved);
   assert.deepEqual(reconciled, { ...saved, url: latest.url });
-  assert.deepEqual(buildPostSignaturePatch(reconciled, saved), { url: latest.url });
+  assert.deepEqual(buildPostSignaturePatch(reconciled, saved), {
+    expectedRevision: 0,
+    url: latest.url,
+  });
 });
 
 test('empty signature text stays invalid instead of silently restoring default copy', () => {

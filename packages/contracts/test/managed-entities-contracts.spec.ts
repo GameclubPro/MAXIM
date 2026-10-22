@@ -193,12 +193,23 @@ describe('managed entities contract exports', () => {
     ).toThrow();
   });
 
-  it('deduplicates favorite filters while preserving the submitted order', () => {
+  it('deduplicates a single favorite assignment and rejects multiple categories', () => {
     const result = updateManagedEntityFavoritesRequestSchema.parse({
-      favoriteTypes: ['broadcast', 'important', 'broadcast', 'service', 'important'],
+      favoriteTypes: ['broadcast', 'broadcast'],
+      expectedFavoriteType: null,
     });
 
-    expect(result.favoriteTypes).toEqual(['broadcast', 'important', 'service']);
+    expect(result.favoriteTypes).toEqual(['broadcast']);
+    expect(result.expectedFavoriteType).toBeNull();
+    expect(() =>
+      updateManagedEntityFavoritesRequestSchema.parse({ favoriteTypes: ['important'] }),
+    ).toThrow();
+    expect(() =>
+      updateManagedEntityFavoritesRequestSchema.parse({
+        favoriteTypes: ['broadcast', 'important'],
+        expectedFavoriteType: null,
+      }),
+    ).toThrow();
   });
 
   it('defaults the bot dialog handoff url without weakening URL validation', () => {

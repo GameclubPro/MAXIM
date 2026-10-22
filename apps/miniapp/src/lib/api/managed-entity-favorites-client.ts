@@ -136,12 +136,14 @@ export async function updateManagedEntityFavorites(
   entityType: ManagedEntityType,
   entityId: string,
   favoriteTypes: ManagedEntityFavoriteType[],
+  expectedFavoriteType: ManagedEntityFavoriteType | null,
 ): Promise<ManagedEntityFavoritesResponse> {
   const response = await api.request(
     `/managed-entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/favorites`,
     {
       method: 'PUT',
-      body: JSON.stringify({ favoriteTypes }),
+      body: JSON.stringify({ favoriteTypes, expectedFavoriteType }),
+      retryMutationOnTransportError: false,
     },
   );
   return parseManagedEntityFavoritesResponse(response);

@@ -103,6 +103,7 @@ Commands:
   postgres-audit webhook-retry-proof [--explain]
   postgres-audit webhook-queued-proof [--explain]
   postgres-audit commercial-quality [--explain]
+  postgres-audit network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
   recover-publisher-catalog-migration [--apply]
@@ -132,6 +133,7 @@ Commands:
   publisher-obsolete-retirement stop-apply --reviewed-digest <sha256>
                               Stop reviewed obsolete dispatch intents; preserve delivery evidence
   publisher-selection-rollout <off|test|5|25|100> [--apply]
+  major-networks-rollout <off|test|on> [--apply]
   publisher-rollup-noop-rollout <off|test|5|25|100> [--apply]
                               Preview or change selection stage without changing dispatch
   vk-parsing-retire-legacy-queue [--apply [--reviewed-digest <sha256>]]
@@ -571,6 +573,12 @@ ERROR
 
 postgres_audit() {
   local mode="${1:-all}"
+
+  if [[ "$mode" == 'network-statistics' ]]; then
+    node "$ROOT_DIR/infra/scripts/network-statistics-audit.mjs" "${@:2}" >/dev/null || return 2
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
 
   if [[ "$mode" == 'publisher-slots' ]]; then
     node "$ROOT_DIR/infra/scripts/publisher-slot-audit.mjs" "${@:2}" >/dev/null || return 2
@@ -1067,6 +1075,25 @@ publisher_selection_command() {
   publisher_reader_mode_command selection "$@"
 }
 
+major_networks_command() {
+  local mode="${1:-}" apply="${2:-}"
+  if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$apply" != --apply ) ]]; then
+    echo 'Usage: major-networks-rollout <off|test|on> [--apply]' >&2; return 2
+  fi
+  case "$mode" in off|test|on) ;; *) echo 'Major networks mode must be off, test or on.' >&2; return 2 ;; esac
+  if [[ "${MAXIM_WEBHOOK_ROLLOUT_ADOPT_EXISTING_PAUSE:-0}" != 0 ]]; then
+    echo 'Recover the interrupted release before changing Major networks mode.' >&2; return 2
+  fi
+  local target_sha remote_command
+  target_sha="$(git -C "$ROOT_DIR" rev-parse --verify HEAD)" || return
+  # FLAG: This mode setter has no CI bypass and only targets the exact active image.
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha" || return
+  local remote_args=(./infra/scripts/vps-publisher-dispatch-rollout.sh networks "$mode")
+  [[ "$apply" != --apply ]] || remote_args+=(--apply)
+  remote_command="$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" "${remote_args[@]}")"
+  remote_exec "$remote_command"
+}
+
 publisher_obsolete_retirement() {
   node --input-type=module - "$@" <<'VALIDATE_RETIREMENT'
 import { parseRetirementArgs } from './infra/scripts/publisher-obsolete-retirement-host.mjs';
@@ -1529,7 +1556,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_fixed_moderator \
+    maxim_topology_require_managed_network_foundation \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1544,15 +1571,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback must restore tooling with the fixed-moderator reader floor;
-  # older tooling cannot preserve assignments, dormant receipts and permanent holds.
+  # FLAG: API rollback must restore tooling with the installed network journal floor,
+  # as well as every preceding assignment, activation and permanent-hold reader.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_fixed_moderator
+    capability_marker=maxim_topology_require_managed_network_foundation
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_fixed_moderator
+        capability_marker=maxim_topology_require_managed_network_foundation
         break
       fi
     done
@@ -1838,6 +1865,9 @@ case "$command" in
     ;;
   publisher-selection-rollout)
     publisher_selection_command "$@"
+    ;;
+  major-networks-rollout)
+    major_networks_command "$@"
     ;;
   publisher-rollup-noop-rollout)
     publisher_rollup_noop_command "$@"

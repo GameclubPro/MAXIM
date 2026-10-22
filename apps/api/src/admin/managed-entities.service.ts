@@ -40,6 +40,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { majorNetworksEnabled } from './major-networks-rollout';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -96,7 +97,6 @@ import {
   CONTRACT_FAVORITE_TYPE_BY_PRISMA,
   MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS,
   MANAGED_ENTITY_FAVORITE_TYPE_ORDER,
-  PRISMA_FAVORITE_TYPE_BY_CONTRACT,
   type AdminReadBypassOptions,
   type ManagedEntitiesListOptions,
   type ManagedEntitiesRefreshJobOutcome,
@@ -105,6 +105,7 @@ import {
   MANAGED_ENTITIES_LEGACY_PORT,
   type ManagedEntitiesLegacyPort,
 } from './managed-entities-legacy.port';
+import { writeManagedEntityFavorites } from './managed-entity-favorites-writer';
 
 const MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT_CODE =
   'MANAGED_ENTITY_FAVORITE_LABELS_REVISION_CONFLICT';
@@ -158,6 +159,7 @@ export class ManagedEntitiesService {
   private readonly logger = new Logger(ManagedEntitiesService.name);
   private readonly dialogLinkHelper: AdminDialogLinkHelper;
   private readonly systemAccessConfig: SystemAccessConfig;
+  private readonly networksRollout: string;
   private readonly fallbackBotDialogId: string | null;
 
   constructor(
@@ -197,6 +199,7 @@ export class ManagedEntitiesService {
       normalizeOwnBotUserId(configService.get<string>('MAX_ENTRY_BOT_ID')) ??
       normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
     this.systemAccessConfig = readSystemAccessConfig(configService);
+    this.networksRollout = configService.get<string>('MAJOR_NETWORKS_ROLLOUT') ?? 'off';
   }
 
   async getMe(
@@ -243,6 +246,14 @@ export class ManagedEntitiesService {
           : null,
       botDialogUrl: this.buildBotDialogUrl(user.launchBotId, profileProjection.profile),
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
+      ...(majorNetworksEnabled(
+        this.networksRollout,
+        profileProjection.profile,
+        user.userId,
+        this.systemAccessConfig.systemAdminUserIds,
+      )
+        ? { networksEnabled: true }
+        : {}),
       ...profileProjection,
     };
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
@@ -288,6 +299,7 @@ export class ManagedEntitiesService {
         ),
         botDialogUrl: fallback.botDialogUrl,
         ...(canAccessSystem ? { canAccessSystem: true } : {}),
+        ...(fallback.networksEnabled ? { networksEnabled: true } : {}),
         ...profileProjection,
       };
     } catch (error: unknown) {
@@ -675,6 +687,20 @@ export class ManagedEntitiesService {
     return this.assertManagedEntityAdminAccess(chatId, user, 'channel');
   }
 
+  assertManagedEntityReadAccess(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    options: Pick<AdminReadBypassOptions, 'timeoutMs'> = {},
+  ): Promise<void> {
+    return this.legacyAdminService.assertManagedEntityReadAccess(
+      chatId,
+      user.userId,
+      entityType,
+      options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs },
+    );
+  }
+
   assertChatReadAccess(chatId: string, user: AuthUser): Promise<void> {
     return this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat');
   }
@@ -737,7 +763,17 @@ export class ManagedEntitiesService {
     user: AuthUser,
     body: unknown,
   ): Promise<ManagedEntityFavoritesResponse> {
-    const entityType = managedEntityTypeSchema.parse(entityTypeRaw);
+    const parsedType = managedEntityTypeSchema.safeParse(entityTypeRaw);
+    if (!parsedType.success) throw new BadRequestException('Допустимы только чаты или каналы.');
+    const entityType = parsedType.data;
+    // FLAG: Retired clients and delayed DeviceStorage imports cannot perform blind
+    // replacements after another device has removed or moved an assignment.
+    if (!body || typeof body !== 'object' || !Object.hasOwn(body, 'expectedFavoriteType')) {
+      throw new ConflictException({
+        code: 'MANAGED_ENTITY_FAVORITES_REFRESH_REQUIRED',
+        message: 'Обновите мини-приложение и список избранного перед сохранением.',
+      });
+    }
     const parsed = updateManagedEntityFavoritesRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -746,58 +782,12 @@ export class ManagedEntitiesService {
     await this.assertManagedEntityAdminAccess(entityId, user, entityType);
 
     const favoriteTypes = parsed.data.favoriteTypes;
-    const prismaEntityType = toPrismaEntityType(entityType);
-    const prismaFavoriteTypes = favoriteTypes.map(
-      (favoriteType) => PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
-    );
-
-    await this.prisma.$transaction([
-      this.prisma.managedEntityFavorite.deleteMany({
-        where: {
-          userId: user.userId,
-          chatId: entityId,
-          entityType: prismaEntityType,
-          favoriteType:
-            prismaFavoriteTypes.length > 0
-              ? {
-                  notIn: prismaFavoriteTypes,
-                }
-              : undefined,
-        },
-      }),
-      ...favoriteTypes.map((favoriteType, index) =>
-        this.prisma.managedEntityFavorite.upsert({
-          where: {
-            userId_entityType_chatId_favoriteType: {
-              userId: user.userId,
-              entityType: prismaEntityType,
-              chatId: entityId,
-              favoriteType: PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
-            },
-          },
-          create: {
-            userId: user.userId,
-            entityType: prismaEntityType,
-            chatId: entityId,
-            favoriteType: PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
-            position: index,
-          },
-          update: {
-            position: index,
-          },
-        }),
-      ),
-      this.prisma.auditLog.create({
-        data: {
-          chatId: entityId,
-          actorUserId: user.userId,
-          action: 'UPDATE_MANAGED_ENTITY_FAVORITES',
-          payload: {
-            entityType,
-            favoriteTypes,
-          },
-        },
-      }),
+    await writeManagedEntityFavorites(this.prisma, user.userId, entityType, [
+      {
+        entityId,
+        favoriteType: favoriteTypes[0] ?? null,
+        expectedFavoriteType: parsed.data.expectedFavoriteType,
+      },
     ]);
 
     return managedEntityFavoritesResponseSchema.parse({
