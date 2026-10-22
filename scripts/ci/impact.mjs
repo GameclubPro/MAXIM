@@ -1,0 +1,239 @@
+#!/usr/bin/env node
+
+import { execFileSync, spawnSync } from 'node:child_process';
+import { appendFileSync, readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { collectGitChanges } from '../agent/git-changes.mjs';
+import { loadImpactConfig } from '../agent/impact-config.mjs';
+import { createImpactPlan } from '../agent/impact-plan.mjs';
+
+export const CI_LANES = Object.freeze([
+  'static',
+  'contracts',
+  'api',
+  'postgres-races',
+  'commercial-benchmark',
+  'miniapp',
+  'admin',
+  'docker',
+]);
+
+export const DOCKER_COMPONENTS = Object.freeze([
+  {
+    component: 'api',
+    dockerfile: 'apps/api/Dockerfile',
+    image_repository: 'maxim-api',
+    vite_api_base: '',
+  },
+  {
+    component: 'miniapp',
+    dockerfile: 'apps/miniapp/Dockerfile',
+    image_repository: 'maxim-miniapp-major',
+    vite_api_base: 'https://major-maksimov.ru/api/v1',
+  },
+  {
+    component: 'admin',
+    dockerfile: 'apps/admin/Dockerfile',
+    image_repository: 'maxim-admin',
+    vite_api_base: '',
+  },
+]);
+
+const SHA = /^[a-f0-9]{40}$/u;
+const KNOWN_CHECKS = new Set([
+  'repo-static',
+  'agent-tools',
+  'docs',
+  'infra',
+  'contracts',
+  'api',
+  'prisma',
+  'miniapp-css',
+  'miniapp',
+  'miniapp-production-build',
+  'miniapp-visual-local',
+  'admin',
+  'full',
+]);
+const COMPONENT_LANES = {
+  'api-shared': 'api',
+  'miniapp-major-static': 'miniapp',
+  'admin-static': 'admin',
+};
+
+function git(cwd, args) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function isAncestor(cwd, base, head) {
+  return (
+    spawnSync('git', ['merge-base', '--is-ancestor', base, head], {
+      cwd,
+      stdio: 'ignore',
+    }).status === 0
+  );
+}
+
+function fullPlan(head, reason, base = null, changedFileCount = null) {
+  return {
+    schemaVersion: 1,
+    mode: 'full',
+    reason,
+    base,
+    head,
+    changedFileCount,
+    lanes: Object.fromEntries(CI_LANES.map((lane) => [lane, true])),
+    dockerComponents: DOCKER_COMPONENTS.map(({ component }) => component),
+  };
+}
+
+export function selectCiLanes(impact, { base, head }) {
+  const count = impact.changedFiles.length;
+  // FLAG: CI/workflow/tooling changes must exercise the whole graph. Unknown
+  // paths or newly introduced check kinds cannot silently reduce coverage.
+  if (impact.unknownPaths.length || impact.checks.some((check) => !KNOWN_CHECKS.has(check))) {
+    return fullPlan(head, 'unknown-impact', base, count);
+  }
+  if (
+    impact.checks.includes('full') ||
+    impact.changedFiles.some(
+      (path) =>
+        !path.endsWith('.md') &&
+        (/^(?:\.github|scripts|config|infra)\//u.test(path) || !path.includes('/')),
+    )
+  ) {
+    return fullPlan(head, 'shared-tooling-or-build-input', base, count);
+  }
+  if (impact.deploy.components.some((component) => !Object.hasOwn(COMPONENT_LANES, component))) {
+    return fullPlan(head, 'unknown-component', base, count);
+  }
+  const checks = new Set(impact.checks);
+  const dockerComponents = DOCKER_COMPONENTS.map(({ component }) => component).filter((lane) =>
+    impact.deploy.components.some((component) => COMPONENT_LANES[component] === lane),
+  );
+  const api = checks.has('api') || checks.has('prisma') || dockerComponents.includes('api');
+  return {
+    schemaVersion: 1,
+    mode: 'scoped',
+    reason: 'classified-changes',
+    base,
+    head,
+    changedFileCount: count,
+    lanes: {
+      static: true,
+      contracts: checks.has('contracts'),
+      api,
+      'postgres-races': api,
+      'commercial-benchmark': api,
+      miniapp:
+        [...checks].some((check) => check.startsWith('miniapp')) ||
+        dockerComponents.includes('miniapp'),
+      admin: checks.has('admin') || dockerComponents.includes('admin'),
+      docker: dockerComponents.length > 0,
+    },
+    dockerComponents,
+  };
+}
+
+export async function createCiPlan({ cwd = process.cwd(), eventName, event, sha }) {
+  if (!SHA.test(sha ?? '') || git(cwd, ['rev-parse', 'HEAD']) !== sha) {
+    throw new Error('CI checkout must match the exact event SHA.');
+  }
+  let base;
+  if (eventName === 'pull_request') {
+    base = event.pull_request?.base?.sha;
+    const requestedHead = event.pull_request?.head?.sha;
+    if (!SHA.test(requestedHead ?? '') || !isAncestor(cwd, requestedHead, sha)) {
+      throw new Error('CI checkout does not contain the pull request head.');
+    }
+  } else if (eventName === 'push') {
+    if (event.after !== sha) throw new Error('Push event and checked-out SHA disagree.');
+    base = event.before;
+  } else {
+    return fullPlan(sha, 'manual-scheduled-or-unsupported-event');
+  }
+
+  // FLAG: Missing history, first pushes and rewritten histories run all lanes.
+  // A truncated API file list or a guessed parent must never authorize a skip.
+  if (!SHA.test(base ?? '') || /^0+$/u.test(base) || !isAncestor(cwd, base, sha)) {
+    return fullPlan(sha, 'unproved-base');
+  }
+  const config = await loadImpactConfig();
+  const changeSet = collectGitChanges({ cwd, mode: 'range', base, head: sha });
+  const impact = createImpactPlan({ config, changeSet });
+  return selectCiLanes(impact, { base, head: sha });
+}
+
+export function ciOutputs(plan) {
+  return {
+    plan: JSON.stringify(plan),
+    ...Object.fromEntries(
+      CI_LANES.map((lane) => [lane.replaceAll('-', '_'), String(plan.lanes[lane])]),
+    ),
+    docker_matrix: JSON.stringify({
+      include: DOCKER_COMPONENTS.filter(({ component }) =>
+        plan.dockerComponents.includes(component),
+      ),
+    }),
+  };
+}
+
+export function verifyCiResults(plan, needs) {
+  const expectedJobs = ['impact', ...CI_LANES].sort();
+  if (!needs || JSON.stringify(Object.keys(needs).sort()) !== JSON.stringify(expectedJobs)) {
+    throw new Error('Required must receive every CI lane and the impact job.');
+  }
+  if (needs.impact.result !== 'success')
+    throw new Error('CI impact classification did not succeed.');
+  // FLAG: Recompute from the exact event and Git tree, including the image
+  // matrix. A green aggregate cannot stand in for an omitted selected image.
+  for (const [name, value] of Object.entries(ciOutputs(plan))) {
+    if (needs.impact.outputs?.[name] !== value) {
+      throw new Error(`CI impact output disagrees with the independently computed plan: ${name}.`);
+    }
+  }
+  for (const lane of CI_LANES) {
+    const expected = plan.lanes[lane] ? 'success' : 'skipped';
+    if (needs[lane]?.result !== expected) {
+      throw new Error(
+        `CI lane ${lane}: expected ${expected}, received ${needs[lane]?.result ?? 'missing'}.`,
+      );
+    }
+  }
+}
+
+export async function runCiImpact(command, env = process.env) {
+  if (!['plan', 'verify'].includes(command)) throw new Error('Expected plan or verify.');
+  const plan = await createCiPlan({
+    eventName: env.GITHUB_EVENT_NAME,
+    event: JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8')),
+    sha: env.GITHUB_SHA,
+  });
+  if (command === 'verify') {
+    verifyCiResults(plan, JSON.parse(env.CI_NEEDS));
+    process.stdout.write(
+      'Required: every selected lane passed; every skip matches the verified impact.\n',
+    );
+  } else {
+    if (env.GITHUB_OUTPUT) {
+      appendFileSync(
+        env.GITHUB_OUTPUT,
+        Object.entries(ciOutputs(plan))
+          .map(([key, value]) => `${key}=${value}\n`)
+          .join(''),
+      );
+    }
+    process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runCiImpact(process.argv[2]).catch((error) => {
+    process.stderr.write(`CI impact failed: ${error.message}\n`);
+    process.exitCode = 1;
+  });
+}

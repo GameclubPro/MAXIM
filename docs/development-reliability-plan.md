@@ -201,7 +201,7 @@ tests alone do not demonstrate more productive work.
 
 ## Boundaries And Follow-Up
 
-Markdown-only changes select `check:docs` without runtime, browser or native-store setup. Environment
+Local Markdown-only changes select `check:docs` without runtime, browser or native-store setup. Environment
 examples and `infra/env/**` are classified independently; they do not inherit the Markdown-only
 path. Run the environment doctor only for setup, and do not repeat it for ordinary edits.
 
@@ -215,6 +215,19 @@ cases remain mandatory for the affected invariant; skipped store cases are missi
 Miniapp-only UI changes need no API, Prisma, admin or native-store suites unless a changed boundary
 or concrete regression requires them. Do not repeat green suites without changed inputs, failure
 or a newly identified coverage gap; included subchecks do not need a separate run.
+
+CI uses the same impact classifier for the complete push range or the PR merge checkout against
+its recorded base. `Static` stays mandatory. Miniapp changes select both miniapp browser shards
+and its affected Docker image; API changes retain API, Redis, every PostgreSQL shard, the
+commercial benchmark and the affected API image. Shared contracts select all their consumers.
+Tests alone do not build unrelated runtime images. CodeQL remains a separate exact-SHA gate.
+
+Workflow, shared tooling, infrastructure, root build inputs, unknown files/check kinds, unproved
+Git history and manual/scheduled runs select full CI. Renames include both paths. The `Required`
+job independently recomputes the selection and image matrix from Git and the event, requires
+success for selected lanes and accepts `skipped` only for lanes proved unrelated. Failed
+classification, missing results, cancellation and mismatched outputs block it. Workflow guards
+and real Git fixtures cover these boundaries; the weekly scheduled run retains full coverage.
 
 `agent:verify` also avoids repeating included CSS checks. Full verification adds the browser smoke,
 which the root `check` script does not include. Focused local selection changes neither exact-SHA

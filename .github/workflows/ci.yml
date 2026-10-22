@@ -16,6 +16,31 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  impact:
+    name: Change impact
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      static: ${{ steps.plan.outputs.static }}
+      contracts: ${{ steps.plan.outputs.contracts }}
+      api: ${{ steps.plan.outputs.api }}
+      postgres_races: ${{ steps.plan.outputs.postgres_races }}
+      commercial_benchmark: ${{ steps.plan.outputs.commercial_benchmark }}
+      miniapp: ${{ steps.plan.outputs.miniapp }}
+      admin: ${{ steps.plan.outputs.admin }}
+      docker: ${{ steps.plan.outputs.docker }}
+      docker_matrix: ${{ steps.plan.outputs.docker_matrix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+      - id: plan
+        run: node scripts/ci/impact.mjs plan
+
   static:
     name: Static
     runs-on: ubuntu-latest
@@ -43,6 +68,8 @@ jobs:
 
   contracts:
     name: Contracts
+    needs: impact
+    if: needs.impact.outputs.contracts == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -56,6 +83,8 @@ jobs:
 
   api:
     name: API
+    needs: impact
+    if: needs.impact.outputs.api == 'true'
     runs-on: ubuntu-latest
     # Include full API validation, Redis integration and runner cleanup.
     timeout-minutes: 30
@@ -87,6 +116,8 @@ jobs:
 
   postgres-races:
     name: PostgreSQL Races (${{ matrix.shard }})
+    needs: impact
+    if: needs.impact.outputs.postgres_races == 'true'
     runs-on: ubuntu-latest
     # FLAG: Each shard owns its PostgreSQL/Redis services; race suites stay serial inside it.
     timeout-minutes: 10
@@ -190,6 +221,8 @@ jobs:
 
   commercial-benchmark:
     name: Commercial Benchmark
+    needs: impact
+    if: needs.impact.outputs.commercial_benchmark == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
@@ -205,6 +238,8 @@ jobs:
 
   miniapp:
     name: Mini App (${{ matrix.shard }})
+    needs: impact
+    if: needs.impact.outputs.miniapp == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # FLAG: Keep every browser case while bounding each serial runner below the
@@ -292,6 +327,8 @@ jobs:
 
   admin:
     name: Safety Desk
+    needs: impact
+    if: needs.impact.outputs.admin == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -306,24 +343,13 @@ jobs:
 
   docker:
     name: Docker (${{ matrix.component }})
+    needs: impact
+    if: needs.impact.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - component: api
-            dockerfile: apps/api/Dockerfile
-            image_repository: maxim-api
-            vite_api_base: ''
-          - component: miniapp
-            dockerfile: apps/miniapp/Dockerfile
-            image_repository: maxim-miniapp-major
-            vite_api_base: https://major-maksimov.ru/api/v1
-          - component: admin
-            dockerfile: apps/admin/Dockerfile
-            image_repository: maxim-admin
-            vite_api_base: ''
+      matrix: ${{ fromJSON(needs.impact.outputs.docker_matrix) }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -487,7 +513,9 @@ jobs:
     name: Required
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     needs:
+      - impact
       - static
       - contracts
       - api
@@ -497,25 +525,13 @@ jobs:
       - admin
       - docker
     steps:
-      - name: Require every CI lane
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+      - name: Require selected CI lanes and verify every skip
         env:
-          STATIC_RESULT: ${{ needs.static.result }}
-          CONTRACTS_RESULT: ${{ needs.contracts.result }}
-          API_RESULT: ${{ needs.api.result }}
-          POSTGRES_RESULT: ${{ needs.postgres-races.result }}
-          BENCHMARK_RESULT: ${{ needs.commercial-benchmark.result }}
-          MINIAPP_RESULT: ${{ needs.miniapp.result }}
-          ADMIN_RESULT: ${{ needs.admin.result }}
-          DOCKER_RESULT: ${{ needs.docker.result }}
-        run: |
-          for result in \
-            "$STATIC_RESULT" \
-            "$CONTRACTS_RESULT" \
-            "$API_RESULT" \
-            "$POSTGRES_RESULT" \
-            "$BENCHMARK_RESULT" \
-            "$MINIAPP_RESULT" \
-            "$ADMIN_RESULT" \
-            "$DOCKER_RESULT"; do
-            test "$result" = "success"
-          done
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/impact.mjs verify

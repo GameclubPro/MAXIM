@@ -37,7 +37,8 @@ test('requires duplicate, interval, Publisher, OCR and retention Redis flows in 
     api,
     /run: npm test --workspace @maxim\/api -- 'message-duplicate\|photo-duplicate-history\.redis\|rule-engine-media-cooldown\.redis\|traffic-protection\.redis\|publisher-dispatch-health\.redis\|chat-context-cache\.redis\|publisher-refresh-operation\.redis\|publisher-access-refresh\.redis\|commercial-ocr-admission\.redis\|marketplace-publisher-access\.redis\|retention-priority-admission\.redis-integration\|message-retention-admission\.redis-integration'/u,
   );
-  assert.doesNotMatch(api, /continue-on-error|if:/u);
+  assert.doesNotMatch(api, /continue-on-error|^ {6,}(?:- )?if:/mu);
+  assert.equal(parse(workflow).jobs.api.if, "needs.impact.outputs.api == 'true'");
 });
 
 test('requires traffic revision and activation checks against local PostgreSQL', () => {
@@ -118,7 +119,8 @@ test('isolates every native shard and keeps all compatibility checks blocking', 
   assert.equal(postgres['timeout-minutes'], 10);
   assert.ok(postgres.services.postgres);
   assert.ok(postgres.services.redis);
-  assert.equal(postgres.needs, undefined, 'Shards must run independently');
+  assert.equal(postgres.needs, 'impact', 'Shards only wait for the impact plan');
+  assert.equal(postgres.if, "needs.impact.outputs.postgres_races == 'true'");
   const native = postgres.steps.find((step) => step.name === 'Native race shard');
   assert.equal(native.if, "matrix.shard != 'compatibility'");
   assert.equal(
@@ -153,7 +155,8 @@ test('isolates every native shard and keeps all compatibility checks blocking', 
     }
   }
   assert.ok(jobs.required.needs.includes('postgres-races'));
-  assert.match(jobs.required.steps[0].env.POSTGRES_RESULT, /needs\.postgres-races\.result/u);
+  const gate = jobs.required.steps.find((step) => step.run === 'node scripts/ci/impact.mjs verify');
+  assert.equal(gate.env.CI_NEEDS, '${{ toJSON(needs) }}');
   const report = postgres.steps.find((step) => step.name === 'Save native shard result');
   assert.equal(report.if, "always() && matrix.shard != 'compatibility'");
   assert.equal(report.with.path, 'apps/api/postgres-races.json');

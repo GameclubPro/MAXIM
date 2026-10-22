@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { parse } from 'yaml';
+import { CI_LANES } from './impact.mjs';
 import { validateImpactConfig } from '../agent/impact-config.mjs';
 import { selectVerificationScripts } from '../agent/verify.mjs';
 
@@ -159,23 +161,17 @@ test('CI installation jobs leave dependency auditing to the required Static gate
 });
 
 test('Required still rejects any non-successful Static result', () => {
-  const job = jobBody('required');
-  assert.match(job, /^ {4}name: Required$/mu);
-  assert.match(job, /^ {4}if: always\(\)$/mu);
-  assert.doesNotMatch(job, /^\s*(?:-\s*)?(?:continue-on-error|shell):/mu);
-  assert.equal([...job.matchAll(/^\s*(?:-\s*)?if:/gmu)].length, 1);
-  const needs = /^ {4}needs:\n((?: {6}- [a-z][a-z0-9-]*\n)+)/mu.exec(job);
-  assert.ok(needs, 'Required must declare its blocking lanes');
-  assert.equal([...needs[1].matchAll(/^ {6}- static$/gmu)].length, 1);
-  assert.match(job, /^ {10}STATIC_RESULT: \$\{\{ needs\.static\.result \}\}$/mu);
-  const run = /^ {8}run: \|\n((?: {10}[^\n]*(?:\n|$))+)/mu.exec(job);
-  assert.ok(run, 'Required must execute its result check');
-  const body = run[1]
-    .replace(/^ {10}/gmu, '')
-    .trimEnd()
-    .replace(/\\\n */gu, '');
-  const loop = /^for result in (.+); do\n {2}test "\$result" = "success"\ndone$/u.exec(body);
-  assert.ok(loop, 'Required must fail normally for a non-success result');
-  assert.match(loop[1], /^(?:"\$[A-Z][A-Z_]+" )*"\$[A-Z][A-Z_]+"$/u);
-  assert.equal(loop[1].split(' ').filter((value) => value === '"$STATIC_RESULT"').length, 1);
+  const job = parse(workflow).jobs.required;
+  assert.equal(job.name, 'Required');
+  assert.equal(job.if, 'always()');
+  assert.deepEqual([...job.needs].sort(), ['impact', ...CI_LANES].sort());
+  assert.equal(job['continue-on-error'], undefined);
+  for (const step of job.steps) {
+    assert.equal(step.if, undefined);
+    assert.equal(step['continue-on-error'], undefined);
+  }
+  const commands = job.steps.filter((step) => step.run);
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].run, 'node scripts/ci/impact.mjs verify');
+  assert.equal(commands[0].env.CI_NEEDS, '${{ toJSON(needs) }}');
 });
