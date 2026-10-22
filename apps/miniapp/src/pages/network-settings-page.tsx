@@ -178,14 +178,6 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
   );
   const footer = (
     <>
-      {controller.preview ? (
-        <p className="settings-drilldown__footer-note">
-          Получателей: {controller.preview.recipients.length}. Проверьте выбранные изменения перед
-          применением.
-        </p>
-      ) : controller.read && controller.read.recipientCount > 0 ? (
-        <p className="settings-drilldown__footer-note">Изменятся только заданные вами параметры.</p>
-      ) : null}
       <div className="settings-drilldown__footer-actions is-single-action">
         {controller.preview ? (
           <button
@@ -195,7 +187,7 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
             aria-busy={controller.phase === 'apply' || undefined}
             onClick={() => void controller.apply()}
           >
-            Применить к выбранным
+            {scope.target.mode === 'category' ? 'Применить ко всей сетке' : 'Применить к выбранным'}
           </button>
         ) : (
           <button
@@ -230,7 +222,10 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
       overlayClassName={presentation.overlayClassName}
       summary={
         controller.read
-          ? props.title + ' · Выбрано: ' + controller.read.recipientCount
+          ? props.title +
+            ' · ' +
+            (scope.target.mode === 'category' ? 'Вся сетка: ' : 'Выбрано: ') +
+            controller.read.recipientCount
           : props.title
       }
       className={presentation.panelClassName + ' network-settings-editor'}
@@ -314,12 +309,13 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
             )}
           </Suspense>
         ) : null}
-        {controller.changes.length > 0 || controller.navigationAllowlist ? (
+        {controller.preview && (controller.changes.length > 0 || controller.navigationAllowlist) ? (
           <Suspense fallback={<p role="status">Загружаем список изменений…</p>}>
             <NetworkSettingsReview controller={controller} recipientTitles={recipientTitles} />
           </Suspense>
         ) : null}
-        {controller.operation ? (
+        {controller.operation &&
+        (!controller.preview || controller.operation.status !== 'PREPARED') ? (
           <Suspense fallback={<p role="status">Загружаем результат операции…</p>}>
             <NetworkSettingsOperationPanel
               operation={controller.operation}

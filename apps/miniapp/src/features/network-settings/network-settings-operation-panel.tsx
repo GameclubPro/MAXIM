@@ -52,6 +52,19 @@ export function NetworkSettingsOperationPanel({
   const applied = operation.outcomes.filter(
     (row) => row.status === 'COMMITTED' || row.status === 'COMPLETE',
   ).length;
+  const failures = operation.outcomes.filter((row) => row.status === 'FAILED');
+  const otherOutcomes = operation.outcomes.filter((row) => row.status !== 'FAILED');
+  const outcomes = (rows: typeof operation.outcomes) => (
+    <ul className="network-settings-outcomes">
+      {rows.map((row) => (
+        <li key={row.entityId}>
+          <strong>{recipientTitles.get(row.entityId) || 'Сообщество'}</strong>
+          <span>{outcomeLabel(row)}</span>
+          {row.failureMessage ? <small>{row.failureMessage}</small> : null}
+        </li>
+      ))}
+    </ul>
+  );
   return (
     <section className="network-settings-page__operation" aria-live="polite">
       <h2>{STATUS[operation.status]}</h2>
@@ -64,16 +77,12 @@ export function NetworkSettingsOperationPanel({
           проверьте изменения.
         </p>
       ) : null}
-      <ul>
-        {operation.outcomes.map((row) => (
-          <li key={row.entityId}>
-            <strong>{recipientTitles.get(row.entityId) || 'Сообщество'}</strong>
-            <span>{outcomeLabel(row)}</span>
-            <small>{row.entityId}</small>
-            {row.failureMessage ? <small>{row.failureMessage}</small> : null}
-          </li>
-        ))}
-      </ul>
+      {failures.length ? outcomes(failures) : null}
+      <details className="network-settings-details">
+        <summary>Подробности применения</summary>
+        {otherOutcomes.length ? outcomes(otherOutcomes) : null}
+        <small>Номер операции: {operation.operationId}</small>
+      </details>
       {controller.canStartAgain ? (
         <button type="button" onClick={onStartAgain}>
           Изменить настройки снова
@@ -92,7 +101,6 @@ export function NetworkSettingsOperationPanel({
           категорию.
         </p>
       ) : null}
-      <small>Номер операции: {operation.operationId}</small>
     </section>
   );
 }
