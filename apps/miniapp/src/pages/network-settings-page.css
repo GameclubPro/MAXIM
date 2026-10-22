@@ -1,4 +1,48 @@
 @layer workspace {
+  body[data-miniapp-profile='moderation'] .network-settings-scope {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: fit-content;
+    max-width: 100%;
+    padding: 7px 11px;
+    border: 1px solid var(--steel-line);
+    border-radius: 12px;
+    background: var(--steel-stat-start);
+    color: var(--steel-stat-ink);
+    font-size: 12px;
+    font-weight: 750;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-settings-scope .app-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-settings-details summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    color: var(--major-accent);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-settings-outcomes {
+    display: grid;
+    gap: 10px;
+    padding: 0;
+    list-style: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-settings-outcomes > li {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
   body[data-miniapp-profile='moderation'] .network-settings-editor {
     --network-settings-surface: var(--major-surface);
     --network-settings-border: var(--major-border);

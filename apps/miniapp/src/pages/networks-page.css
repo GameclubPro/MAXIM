@@ -16,9 +16,38 @@
     --network-raised: #1d2b42;
     --network-edge: #2d3d56;
   }
+  body[data-miniapp-profile='moderation'] [data-network-category] {
+    --network-category: var(--major-accent);
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='important'] {
+    --network-category: #b87515;
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='watch'] {
+    --network-category: #4d7dd9;
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='broadcast'] {
+    --network-category: #9065d1;
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='test'] {
+    --network-category: #bb6497;
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='partner'] {
+    --network-category: #348b75;
+  }
+  body[data-miniapp-profile='moderation'] [data-network-category='service'] {
+    --network-category: #76899f;
+  }
+  body[data-miniapp-profile='moderation']
+    :is(.networks-heading__icon, .network-category-icon, .network-picker) {
+    --network-category-surface: color-mix(
+      in srgb,
+      var(--network-category, var(--major-accent)) 13%,
+      var(--network-surface)
+    );
+  }
   body[data-miniapp-profile='moderation'] .networks-page {
     display: grid;
-    gap: 20px;
+    gap: 18px;
     width: min(100%, 860px);
     min-width: 0;
     margin: 0 auto;
@@ -41,7 +70,7 @@
     letter-spacing: 0.12em;
   }
   body[data-miniapp-profile='moderation'] .networks-heading h1 {
-    margin: 6px 0;
+    margin: 0 0 4px;
     font-size: clamp(26px, 7vw, 34px);
     font-weight: 800;
     line-height: 1.15;
@@ -61,8 +90,8 @@
     height: 48px;
     flex-shrink: 0;
     border-radius: 16px;
-    background: var(--major-accent-soft);
-    color: var(--major-accent);
+    background: var(--network-category-surface);
+    color: var(--network-category, var(--major-accent));
     box-shadow: inset 0 0 0 1px var(--network-accent-edge);
   }
   body[data-miniapp-profile='moderation'] .networks-heading__icon .app-icon {
@@ -76,7 +105,7 @@
     min-width: 0;
   }
   body[data-miniapp-profile='moderation'] .networks-controls .segmented-control,
-  body[data-miniapp-profile='moderation'] .network-tabs {
+  body[data-miniapp-profile='moderation'] :is(.network-tabs, .network-range) {
     padding: 4px;
     background: var(--network-surface);
     border: 1px solid var(--network-edge);
@@ -85,7 +114,7 @@
     box-shadow: inset 0 1px 2px var(--network-inset-shadow);
   }
   body[data-miniapp-profile='moderation']
-    :is(.networks-controls, .network-tabs)
+    :is(.networks-controls, .network-tabs, .network-range)
     .segmented-control__item {
     min-height: 38px;
     min-width: 0;
@@ -98,7 +127,7 @@
     font-weight: 700;
   }
   body[data-miniapp-profile='moderation']
-    :is(.networks-controls, .network-tabs)
+    :is(.networks-controls, .network-tabs, .network-range)
     .segmented-control__item.is-active {
     background: var(--major-accent-soft);
     color: var(--major-accent);
@@ -113,6 +142,8 @@
     min-width: 0;
   }
   body[data-miniapp-profile='moderation'] .network-summary-card {
+    display: grid;
+    grid-template-rows: 1fr auto;
     min-width: 0;
     border: 1px solid var(--network-edge);
     border-radius: 20px;
@@ -122,30 +153,21 @@
       inset 0 1px 0 var(--network-panel-highlight);
     overflow: hidden;
   }
-  body[data-miniapp-profile='moderation'] .network-summary-card__open {
+  body[data-miniapp-profile='moderation'] .network-summary-card__body {
     display: grid;
-    gap: 20px;
-    width: 100%;
-    padding: 18px 18px 12px;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
+    align-content: start;
+    gap: 18px;
+    min-width: 0;
+    padding: 18px 18px 16px;
   }
   body[data-miniapp-profile='moderation'] .network-summary-card__head {
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) 18px;
+    grid-template-columns: 44px minmax(0, 1fr);
     gap: 12px;
     align-items: center;
   }
-  body[data-miniapp-profile='moderation'] .network-summary-card__head > .app-icon {
-    width: 18px;
-    height: 18px;
-    color: var(--major-muted);
-  }
-  body[data-miniapp-profile='moderation'] .network-summary-card__head strong {
-    display: block;
+  body[data-miniapp-profile='moderation'] .network-summary-card__head h2 {
+    margin: 0;
     font-size: 16px;
     font-weight: 800;
     line-height: 1.35;
@@ -163,8 +185,8 @@
     width: 44px;
     height: 44px;
     border-radius: 14px;
-    color: var(--major-accent);
-    background: var(--major-accent-soft);
+    color: var(--network-category);
+    background: var(--network-category-surface);
   }
   body[data-miniapp-profile='moderation'] .network-summary-card__metrics {
     display: grid;
@@ -183,11 +205,11 @@
   }
   body[data-miniapp-profile='moderation'] .network-card-metric strong {
     color: var(--major-ink);
-    font-size: clamp(25px, 8vw, 34px);
+    font-size: clamp(20px, 6.3vw, 28px);
     line-height: 1.2;
     font-weight: 800;
     letter-spacing: -0.045em;
-    overflow-wrap: anywhere;
+    white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
   body[data-miniapp-profile='moderation'] .network-card-metric .is-positive {
@@ -196,26 +218,30 @@
   body[data-miniapp-profile='moderation'] .network-card-metric .is-negative {
     color: var(--major-danger);
   }
-  body[data-miniapp-profile='moderation'] .network-summary-card__foot {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
-    align-items: center;
-    border-top: 1px solid var(--network-edge);
-    padding-top: 11px;
+  body[data-miniapp-profile='moderation'] .network-summary-card__status {
+    margin: -8px 0 0;
     color: var(--major-muted);
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1.5;
   }
-  body[data-miniapp-profile='moderation'] .network-summary-card__foot .app-icon {
-    width: 16px;
-    height: 16px;
-    color: var(--major-accent);
+  body[data-miniapp-profile='moderation'] .network-summary-card__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    padding: 4px 14px 14px;
   }
-  body[data-miniapp-profile='moderation'] :is(.networks-empty-categories, .networks-resumes) h2 {
+  body[data-miniapp-profile='moderation'] .networks-resumes h2 {
     margin: 0 0 10px;
     font-size: 14px;
     font-weight: 800;
+  }
+  body[data-miniapp-profile='moderation'] .networks-empty-categories summary {
+    min-height: 44px;
+    padding: 12px 2px;
+    color: var(--major-muted);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 750;
   }
   body[data-miniapp-profile='moderation'] .networks-empty-categories > p {
     color: var(--major-muted);
@@ -244,25 +270,30 @@
   body[data-miniapp-profile='moderation'] .networks-empty-categories button span {
     overflow-wrap: anywhere;
   }
-  body[data-miniapp-profile='moderation'] .networks-empty-categories button :is(.app-icon, small) {
-    color: var(--major-muted);
-  }
-  body[data-miniapp-profile='moderation'] .networks-empty-categories .app-icon {
+  body[data-miniapp-profile='moderation'] .networks-empty-categories button .app-icon {
+    color: var(--network-category, var(--major-accent));
     width: 16px;
     height: 16px;
+  }
+  body[data-miniapp-profile='moderation'] .networks-empty-categories > .networks-text-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    border: 0;
+    background: transparent;
+    color: var(--major-accent);
   }
   body[data-miniapp-profile='moderation'] .networks-caption {
     color: var(--major-muted);
     font-size: 12px;
     line-height: 1.6;
   }
-  body[data-miniapp-profile='moderation'] .networks-footnote {
-    margin: 0;
-    font-size: 11px;
-  }
-  body[data-miniapp-profile='moderation'] .network-detail-heading {
+  body[data-miniapp-profile='moderation'] .network-detail-navigation {
     display: grid;
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) 168px;
+    align-items: center;
+    gap: 16px;
   }
   body[data-miniapp-profile='moderation'] .networks-back {
     display: inline-flex;
@@ -282,67 +313,58 @@
     height: 18px;
   }
   body[data-miniapp-profile='moderation'] .network-picker {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
-    min-width: 0;
-    padding: 8px 12px;
-    background: var(--network-surface);
+    gap: 8px;
+    width: 64px;
+    height: 48px;
+    flex-shrink: 0;
+    padding: 10px;
+    background: var(--network-category-surface);
     border: 1px solid var(--network-edge);
     border-radius: 13px;
-    color: var(--major-accent);
+    color: var(--network-category, var(--major-accent));
+  }
+  body[data-miniapp-profile='moderation'] .network-picker > .app-icon {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+  }
+  body[data-miniapp-profile='moderation'] .network-picker > .app-icon:nth-child(2) {
+    width: 12px;
+    height: 12px;
+    transform: rotate(90deg);
+  }
+  body[data-miniapp-profile='moderation'] .network-picker:focus-within {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 3px;
   }
   body[data-miniapp-profile='moderation'] .network-picker select {
-    min-width: 0;
+    position: absolute;
+    inset: 0;
     width: 100%;
-    min-height: 36px;
-    padding: 4px;
-    border: 0;
-    background: transparent;
-    color: var(--major-ink);
-    font-size: 14px;
-    font-weight: 750;
-    text-overflow: ellipsis;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
   }
-  body[data-miniapp-profile='moderation'] .network-selection-panel {
+  body[data-miniapp-profile='moderation'] .network-detail-toolbar {
     display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(112px, 0.55fr);
     gap: 8px;
-    padding: 16px;
-    border: 1px solid var(--network-edge);
-    background: var(--network-surface);
-    border-radius: 16px;
   }
-  body[data-miniapp-profile='moderation'] .network-selection-panel > label {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-height: 44px;
-  }
-  body[data-miniapp-profile='moderation'] .network-selection-panel strong {
-    display: block;
-    font-size: 13px;
-  }
-  body[data-miniapp-profile='moderation'] .network-selection-panel small {
-    display: block;
-    margin-top: 4px;
-    color: var(--major-muted);
-    font-size: 11px;
-    line-height: 1.5;
-  }
-  body[data-miniapp-profile='moderation']
-    :is(.network-selection-panel, .network-community-row)
-    input[type='checkbox'] {
-    appearance: auto;
-    width: 20px;
-    height: 20px;
-    margin: 0;
-    flex-shrink: 0;
-    accent-color: var(--major-accent);
+  body[data-miniapp-profile='moderation'] .network-detail-toolbar .network-tabs {
+    min-width: 0;
   }
   body[data-miniapp-profile='moderation'] .network-community-actions {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .network-community-actions .networks-secondary {
+    width: auto;
+    flex-shrink: 0;
   }
   body[data-miniapp-profile='moderation'] :is(.networks-primary, .networks-secondary) {
     display: flex;
@@ -372,8 +394,9 @@
   body[data-miniapp-profile='moderation'] :is(.networks-primary, .networks-secondary) .app-icon {
     width: 18px;
     height: 18px;
+    flex-shrink: 0;
   }
-  body[data-miniapp-profile='moderation'] .networks-primary:disabled {
+  body[data-miniapp-profile='moderation'] :is(.networks-primary, .networks-secondary):disabled {
     opacity: 0.48;
     box-shadow: none;
     cursor: default;
@@ -660,6 +683,14 @@
   @media (min-width: 720px) {
     body[data-miniapp-profile='moderation'] .networks-controls {
       max-width: 420px;
+    }
+  }
+  @media (max-width: 360px) {
+    body[data-miniapp-profile='moderation'] .network-summary-card__body {
+      padding-inline: 12px;
+    }
+    body[data-miniapp-profile='moderation'] .network-summary-card__metrics {
+      gap: 8px;
     }
   }
   @media (prefers-reduced-motion: reduce) {

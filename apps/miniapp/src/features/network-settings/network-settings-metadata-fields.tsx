@@ -1,4 +1,5 @@
 import { AppIcon } from '../../components/ui/app-icon';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   lazy,
   Suspense,
@@ -21,6 +22,7 @@ import {
   type NavigationAllowlistKind,
 } from '@maxim/contracts/settings';
 import type { ApiTransport } from '../../lib/api/transport';
+import { getReportAvailability } from '../../lib/api/report-availability-client';
 import { getAdminContactLabel } from '../../lib/admin-contact-profile-url';
 import {
   readNetworkAdminContacts,
@@ -107,7 +109,89 @@ export function NetworkSettingsMetadataFields(props: Props) {
     ),
     invitationActivationAvailable: false,
   };
+  if (props.read.section === 'reports')
+    return (
+      <NetworkReportsMetadata
+        api={props.api}
+        scopeId={props.scopeId}
+        read={props.read}
+        fields={props.fields}
+      >
+        {(reports) => props.children({ ...context, ...reports })}
+      </NetworkReportsMetadata>
+    );
   return <>{props.children(context)}</>;
+}
+
+function NetworkReportsMetadata({
+  api,
+  scopeId,
+  read,
+  fields,
+  children,
+}: {
+  api: ApiTransport;
+  scopeId: string;
+  read: NetworkSettingsReadResponse;
+  fields: ChatSettingsFieldAdapter;
+  children: (
+    context: Pick<SharedChatSettingsContext, 'reportsActivationAvailable' | 'runtimeNotes'>,
+  ) => ReactNode;
+}) {
+  const queryClient = useQueryClient();
+  const recipientIds = read.recipients.map((recipient) => recipient.entityId);
+  const availability = useQuery({
+    queryKey: ['network-report-availability', scopeId, read.compositionVersion, recipientIds],
+    queryFn: async ({ signal }) => {
+      // FLAG: Canary availability belongs to each exact recipient; one chat cannot authorize the network.
+      for (const chatId of recipientIds) {
+        signal.throwIfAborted();
+        const value = await queryClient.fetchQuery({
+          queryKey: ['report-availability', chatId],
+          queryFn: () => getReportAvailability(api, chatId, signal),
+          staleTime: 0,
+          retry: false,
+        });
+        signal.throwIfAborted();
+        if (!value.reportsAvailable) return false;
+      }
+      return recipientIds.length > 0;
+    },
+    enabled: recipientIds.length > 0,
+    retry: false,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+  });
+  const enabled = fields.read('reportsEnabled');
+  const persistedEnabled = read.fields.reportsEnabled;
+  const available = !availability.isError && availability.data === true;
+  return children({
+    reportsActivationAvailable:
+      available || (persistedEnabled?.kind === 'common' && persistedEnabled.value === true),
+    runtimeNotes: {
+      reports: available ? null : (
+        <div className="reports-availability" role="status">
+          <p>
+            {availability.isPending
+              ? 'Проверяем приём жалоб…'
+              : availability.isError
+                ? 'Не удалось проверить доступность жалоб.'
+                : 'Приём жалоб доступен не во всех чатах сетки.'}
+          </p>
+          {enabled.kind === 'mixed' ? (
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={fields.readOnly}
+              onClick={() => fields.setScalar('reportsEnabled', false)}
+            >
+              Выключить во всей сетке
+            </button>
+          ) : null}
+        </div>
+      ),
+    },
+  });
 }
 
 type Contact = Awaited<ReturnType<typeof readNetworkAdminContacts>>['items'][number];

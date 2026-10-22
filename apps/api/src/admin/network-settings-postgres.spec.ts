@@ -190,7 +190,7 @@ integration('network settings durable writes with PostgreSQL', () => {
       changes: [{ path: 'commentsMessageText', op: 'set', value: 'Network text' }],
     });
     expect(preview.status).toBe('PREVIEWING');
-    await service.tick();
+    await expect(service.tick()).resolves.toBe(true);
     expect((await service.status(user, operationId)).status).toBe('PREPARED');
     return preview;
   }
@@ -501,9 +501,9 @@ integration('network settings durable writes with PostgreSQL', () => {
       operationId: preview.operationId,
       previewHash: preview.previewHash,
     });
-    await service.tick();
+    await expect(service.tick()).resolves.toBe(true);
     followup.mockRejectedValueOnce(new Error('cache unavailable'));
-    await service.tick();
+    await expect(service.tick()).resolves.toBe(true);
     const target = await db.networkSettingsOperationTarget.findUniqueOrThrow({
       where: { operationId_entityId: { operationId: preview.operationId, entityId: ids[0] } },
     });
@@ -519,7 +519,13 @@ integration('network settings durable writes with PostgreSQL', () => {
       (await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[1] } }))
         .commentsMessageText,
     ).toBe('Network text');
-    await service.tick();
+    followup.mockRejectedValueOnce(new Error('cache still unavailable'));
+    await expect(service.tick()).resolves.toBe(false);
+    expect((await service.status(user, preview.operationId)).status).toBe('RUNNING');
+    expect(writes.mock.calls.filter(([, , , , options]) => !options.validateOnly).length).toBe(
+      committedWrites,
+    );
+    await expect(service.tick()).resolves.toBe(true);
     expect(
       (await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[0] } })).revision,
     ).toBe(written.revision);
@@ -531,7 +537,7 @@ integration('network settings durable writes with PostgreSQL', () => {
       operationId: preview.operationId,
       previewHash: preview.previewHash,
     });
-    await service.tick();
+    await expect(service.tick()).resolves.toBe(false);
     expect(
       (await db.channelSettings.findUniqueOrThrow({ where: { chatId: ids[0] } })).revision,
     ).toBe(written.revision);
@@ -560,7 +566,7 @@ integration('network settings durable writes with PostgreSQL', () => {
       data: { status: 'RUNNING' },
     });
     writes.mockClear();
-    await service.tick();
+    await expect(service.tick()).resolves.toBe(false);
     expect(writes).not.toHaveBeenCalled();
     expect((await service.status(user, row.id)).outcomes[0].status).toBe('VALIDATED');
   });

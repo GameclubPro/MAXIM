@@ -666,7 +666,9 @@ export class NetworkSettingsService {
     );
   }
 
-  async tick(limit = 2): Promise<void> {
+  async tick(limit = 2): Promise<boolean> {
+    // FLAG: Only durable target/stage advancement requests an early scheduling pass.
+    // Lease renewal and retry metadata alone must retain the runner's idle backoff.
     const operations = await this.prisma.networkSettingsOperation.findMany({
       where: {
         status: { in: ACTIVE_STATUSES },
@@ -676,9 +678,10 @@ export class NetworkSettingsService {
       take: Math.max(1, Math.min(limit, 4)),
       select: { id: true },
     });
+    let progressed = false;
     for (const operation of operations) {
       try {
-        await this.runOperation(operation.id);
+        if (await this.runOperation(operation.id)) progressed = true;
       } catch (error) {
         this.logger.warn(
           {
@@ -689,6 +692,7 @@ export class NetworkSettingsService {
         );
       }
     }
+    return progressed;
   }
 
   private async withLease(
@@ -707,7 +711,7 @@ export class NetworkSettingsService {
     });
   }
 
-  private async runOperation(operationId: string) {
+  private async runOperation(operationId: string): Promise<boolean> {
     const leaseToken = randomUUID();
     const claimed = await this.prisma.networkSettingsOperation.updateMany({
       where: {
@@ -717,7 +721,8 @@ export class NetworkSettingsService {
       },
       data: { leaseToken, leaseUntil: new Date(Date.now() + LEASE_MS) },
     });
-    if (!claimed.count) return;
+    if (!claimed.count) return false;
+    let progressed = false;
     try {
       const operation = await this.prisma.networkSettingsOperation.findUniqueOrThrow({
         where: { id: operationId },
@@ -748,7 +753,7 @@ export class NetworkSettingsService {
           },
           data: { leaseUntil: new Date(Date.now() + LEASE_MS) },
         });
-        if (!renewed.count) return;
+        if (!renewed.count) return progressed;
         if (target.status !== 'COMMITTED') {
           const recipient = request.recipients.find((item) => item.entityId === target.entityId)!;
           try {
@@ -814,6 +819,7 @@ export class NetworkSettingsService {
                   data: { status: operation.status === 'PREVIEWING' ? 'VALIDATED' : 'AUTHORIZED' },
                 });
               });
+            progressed = true;
           } catch (error) {
             const status = error instanceof HttpException ? error.getStatus() : 503;
             const failureCode = [401, 403].includes(status)
@@ -863,7 +869,8 @@ export class NetworkSettingsService {
                 });
               }
             });
-            if (preflight) return;
+            progressed = true;
+            if (preflight) return progressed;
           }
         }
         if (!preflight) {
@@ -895,13 +902,14 @@ export class NetworkSettingsService {
                     },
               });
             });
+            if (complete) progressed = true;
           }
         }
       }
       const unfinished = await this.prisma.networkSettingsOperationTarget.count({
         where: { operationId, status: { in: preflight ? [from] : ['AUTHORIZED', 'COMMITTED'] } },
       });
-      if (!unfinished)
+      if (!unfinished) {
         await this.withLease(operationId, leaseToken, operation.status, async (tx) => {
           if (preflight) {
             const expiresAt =
@@ -936,11 +944,14 @@ export class NetworkSettingsService {
             });
           }
         });
+        progressed = true;
+      }
     } finally {
       await this.prisma.networkSettingsOperation.updateMany({
         where: { id: operationId, leaseToken },
         data: { leaseUntil: null, leaseToken: null },
       });
     }
+    return progressed;
   }
 }

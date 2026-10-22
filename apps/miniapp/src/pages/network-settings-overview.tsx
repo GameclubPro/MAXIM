@@ -11,6 +11,8 @@ import type { NetworkSettingsSection } from '@maxim/contracts/network-settings-r
 import type { StoredNetworkSettingsScope } from '../lib/network-settings-workspace-state';
 import { useManagedEntityNavigation } from '../lib/managed-entity-navigation';
 import { useNativeBackHandler } from '../lib/native-back';
+import { AppIcon } from '../components/ui/app-icon';
+import './network-settings-page.css';
 import '../styles/settings-home-compact.css';
 import '../styles/settings-home-route-polish.css';
 import './settings-page.css';
@@ -65,6 +67,8 @@ export function NetworkSettingsOverview({
   const isChat = entityType === 'chat';
   const containerId = 'network-settings-overview';
   const statsRoute = new URL(stored.returnTo, 'https://miniapp.invalid');
+  statsRoute.searchParams.set('type', entityType);
+  if (target.mode === 'category') statsRoute.searchParams.set('category', target.favoriteType);
   statsRoute.searchParams.set('tab', 'overview');
   const sections = getNetworkSettingsSections(entityType).filter(
     (entry) => entry.overview !== false,
@@ -72,9 +76,10 @@ export function NetworkSettingsOverview({
   const scopeLabel =
     target.mode === 'category' ? 'Вся сетка' : 'Выбрано: ' + target.entityIds.length;
   const scopeNote = (
-    <p className="field__hint" role="status">
-      {scopeLabel}. Изменятся только заданные вами параметры.
-    </p>
+    <div className="network-settings-scope" role="status">
+      <AppIcon icon="Community" />
+      <span>{scopeLabel}</span>
+    </div>
   );
   const search = (
     <SettingsOverviewSearch

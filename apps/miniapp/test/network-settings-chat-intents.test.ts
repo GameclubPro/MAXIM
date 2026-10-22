@@ -75,6 +75,35 @@ test('mixed duplicate stages preserve recipient thresholds and unrelated authore
   assert.equal(state.publications, 1, 'a common allowance cannot infer missing recipient stages');
 });
 
+test('restoring a common value removes its intent and preserves unrelated edits', () => {
+  const state = fixture('duplicates', {
+    duplicateMuteEnabled: false,
+    duplicateBotMessageText: 'Исходный текст',
+  });
+  state.adapter().setScalar('duplicateMuteEnabled', true);
+  state.adapter().setScalar('duplicateBotMessageText', 'Общий текст');
+  state.adapter().setScalar('duplicateMuteEnabled', false);
+  assert.deepEqual(state.changes, [
+    { op: 'set', path: 'duplicateBotMessageText', value: 'Общий текст' },
+  ]);
+  state.adapter().setScalar('duplicateBotMessageText', 'Исходный текст');
+  assert.equal(state.adapter().isDirty(), false);
+  assert.deepEqual(state.changes, []);
+});
+
+test('equal lists and absent media stay clean while explicit mixed replacements remain', () => {
+  const state = fixture('links', { linkBotButtons: [], 'botSpeechMedia.linkBotMessageText': null });
+  state.adapter().replaceList('linkBotButtons', []);
+  state.adapter().clearMedia('botSpeechMedia.linkBotMessageText');
+  assert.deepEqual(state.changes, []);
+  state.adapter().replaceList('linkBotButtons', [{ text: 'Сайт', url: 'https://example.com' }]);
+  state.adapter().replaceList('linkBotButtons', []);
+  assert.deepEqual(state.changes, []);
+  const mixed = fixture('links');
+  mixed.adapter().replaceList('linkBotButtons', []);
+  assert.deepEqual(mixed.changes, [{ op: 'replace', path: 'linkBotButtons', value: [] }]);
+});
+
 test('greeting deactivation is atomic and preserves each recipient text, buttons and image', () => {
   const image = { mimeType: 'image/png', base64: 'YQ==', fileName: 'greeting.png' };
   const state = fixture('greeting', { 'botSpeechMedia.greetingBotMessageText': image });

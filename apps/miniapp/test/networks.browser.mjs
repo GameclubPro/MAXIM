@@ -59,6 +59,74 @@ async function fits(page, name) {
         .map((node) => node.getAttribute('aria-label') || node.labels?.[0]?.textContent),
     );
   assert.deepEqual(outsideSelects, [], `${name}: select outside viewport`);
+  const brokenMetrics = await page
+    .locator('.network-card-metric strong, .network-detail-metric > strong')
+    .evaluateAll((nodes) =>
+      nodes.flatMap((node) => {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
+        return lines.size > 1 || node.scrollWidth > node.clientWidth + 1 ? [node.textContent] : [];
+      }),
+    );
+  assert.deepEqual(brokenMetrics, [], `${name}: numeric metrics must fit on one line`);
+}
+
+async function numericSamplesFit(page, name, detail = false) {
+  const failures = await page
+    .locator(detail ? '.network-detail-metric > strong' : '.network-card-metric strong')
+    .evaluateAll((nodes, exact) => {
+      const originals = nodes.map((node) => node.textContent);
+      const formatter = new Intl.NumberFormat(
+        'ru-RU',
+        exact
+          ? {}
+          : {
+              notation: 'compact',
+              maximumFractionDigits: 1,
+            },
+      );
+      const samples = exact
+        ? [100_000_000, -100_000_000, Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER]
+        : [337_380, -337_380, 999_900_000, -999_900_000, 999_900_000_000, -999_900_000_000];
+      const failures = [];
+      try {
+        for (const value of samples) {
+          const formatted = `${value > 0 ? '+' : ''}${formatter.format(value)}`;
+          nodes.forEach((node) => {
+            node.textContent = formatted;
+          });
+          for (const node of nodes) {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
+            const bounds = node.getBoundingClientRect();
+            if (
+              lines.size > 1 ||
+              node.scrollWidth > node.clientWidth + 1 ||
+              bounds.left < -1 ||
+              bounds.right > innerWidth + 1
+            ) {
+              failures.push({
+                value: formatted,
+                width: node.clientWidth,
+                actual: node.scrollWidth,
+              });
+            }
+          }
+        }
+      } finally {
+        nodes.forEach((node, index) => {
+          node.textContent = originals[index];
+        });
+      }
+      return failures;
+    }, detail);
+  assert.deepEqual(
+    failures,
+    [],
+    `${name}: large positive/negative metrics fit without losing digits`,
+  );
 }
 
 async function observe(page) {
@@ -69,9 +137,6 @@ async function observe(page) {
         .findLast((entry) => new URL(entry.name).pathname.endsWith(`/${name}`))?.name;
     const { PREVIEW_REQUEST_HANDLERS } = await import(findModule('preview-transport.ts'));
     const { PREVIEW_NOT_HANDLED } = await import(findModule('preview-transport-runtime.ts'));
-    const { handleNetworksPreviewRequest } = await import(
-      findModule('preview-transport-networks.ts')
-    );
     window.__networkRequests = [];
     window.__networkLostComposition = false;
     PREVIEW_REQUEST_HANDLERS.unshift(async (context) => {
@@ -88,6 +153,9 @@ async function observe(page) {
         url.pathname.endsWith('/composition')
       ) {
         window.__networkLostComposition = false;
+        const { handleNetworksPreviewRequest } = await import(
+          findModule('preview-transport-networks.ts')
+        );
         await handleNetworksPreviewRequest(context);
         throw new Error('Preview response lost after committed composition');
       }
@@ -97,6 +165,7 @@ async function observe(page) {
 }
 
 async function back(page) {
+  await settleVisualFrame(page);
   await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
 }
 
@@ -339,6 +408,15 @@ async function readRequests(page) {
   );
 }
 
+async function storedScope(page, scopeId) {
+  return page.evaluate((id) => {
+    const key = Object.keys(localStorage).find(
+      (value) => value.startsWith('maxim.network.settings.scope.v1:') && value.endsWith(':' + id),
+    );
+    return key ? JSON.parse(localStorage.getItem(key)) : null;
+  }, scopeId);
+}
+
 async function settingsHub(page, { scope, readCount = 0, single } = {}) {
   const hub = page.locator('[data-network-settings-overview]');
   await hub.waitFor();
@@ -468,18 +546,35 @@ for (const profile of [
     await observe(page);
     assert.equal(await page.locator('.bottom-nav__item').count(), 4);
     await fits(page, `${profile.name} catalogue`);
+    await numericSamplesFit(page, `${profile.name} catalogue`);
     await page.screenshot({
       path: join(output, `${profile.name}-catalogue.png`),
       animations: 'disabled',
     });
 
+    const importantCard = page.locator('.network-summary-card[data-network-category="important"]');
+    await importantCard.getByRole('button', { name: 'Настройки', exact: true }).click();
+    const directScope = await settingsHub(page);
+    assert.deepEqual(
+      (await storedScope(page, directScope)).scope.target,
+      {
+        mode: 'category',
+        favoriteType: 'important',
+      },
+      'card Settings targets the complete favorite category without selecting recipients',
+    );
+    await back(page);
+    await importantCard.waitFor();
+
     await page.locator('.network-summary-card__open').first().click();
-    await page.getByRole('radio', { name: /^Сообщества/u }).click();
-    await page.locator('[data-network-entity-id]').first().waitFor();
-    assert.equal(await page.locator('[data-network-entity-id]').count(), 50);
-    const configure = page.getByRole('button', { name: /^Настроить/u });
-    assert.equal(await configure.isDisabled(), true, 'empty selection must not mean everyone');
-    await page.getByRole('checkbox', { name: /^Выбрать всю сетку/u }).check();
+    await page.locator('.network-detail-metric').first().waitFor();
+    await fits(page, `${profile.name} network statistics`);
+    await numericSamplesFit(page, `${profile.name} network statistics`, true);
+    await page.screenshot({
+      path: join(output, `${profile.name}-statistics.png`),
+      animations: 'disabled',
+    });
+    const configure = page.getByRole('button', { name: 'Настройки', exact: true });
     assert.equal(await configure.isEnabled(), true);
     await configure.click();
     const categoryScope = await settingsHub(page, { single });
@@ -501,7 +596,7 @@ for (const profile of [
       Number(
         (
           await page.locator('.network-settings-editor .settings-drilldown__summary').innerText()
-        ).match(/Выбрано: (\d+)/u)?.[1],
+        ).match(/(?:Выбрано|Вся сетка): (\d+)/u)?.[1],
       ) > 50,
     );
     const writesBefore = await page.evaluate(
@@ -513,11 +608,10 @@ for (const profile of [
     await back(page);
     await settingsHub(page, { scope: categoryScope, readCount: reads.length });
     await back(page);
-    await page.locator('[data-network-entity-id]').first().waitFor();
     assert.equal(
-      await page.getByRole('checkbox', { name: /^Выбрать всю сетку/u }).isChecked(),
+      await page.getByRole('radio', { name: 'Статистика', exact: true }).isChecked(),
       true,
-      'Back keeps category selection',
+      'Back restores the Statistics tab that opened Settings',
     );
     assert.equal(
       await page.evaluate(
@@ -530,10 +624,18 @@ for (const profile of [
       'opening and closing settings cannot save changes',
     );
 
+    await page.getByRole('radio', { name: /^Состав/u }).click();
+    await page.locator('[data-network-entity-id]').first().waitFor();
+    assert.equal(await page.locator('[data-network-entity-id]').count(), 50);
+    assert.equal(
+      await page.locator('.network-community-list input').count(),
+      0,
+      'network membership is not a second settings-recipient picker',
+    );
+
     await page.getByRole('button', { name: 'Показать ещё', exact: true }).click();
     await page.locator('[data-network-entity-id]').nth(50).waitFor();
     await page.locator('[data-network-entity-id]').last().scrollIntoViewIfNeeded();
-    await page.getByRole('checkbox', { name: /^Выбрать всю сетку/u }).check();
     await configure.scrollIntoViewIfNeeded();
     await settleVisualFrame(page);
     const position = await page.evaluate(() => {
@@ -568,9 +670,9 @@ for (const profile of [
       'Back restores loaded pages',
     );
     assert.equal(
-      await page.getByRole('checkbox', { name: /^Выбрать всю сетку/u }).isChecked(),
+      await page.getByRole('radio', { name: /^Состав/u }).isChecked(),
       true,
-      'Back restores selected category',
+      'Back restores the Composition tab that opened Settings',
     );
     assert.ok(
       Math.abs((await page.evaluate(() => scrollY)) - position.scrollY) <= 2,
@@ -636,6 +738,38 @@ for (const profile of [
     );
     await back(page);
     await sheet.waitFor({ state: 'hidden' });
+    await configure.click();
+    const changedCompositionScope = await settingsHub(page, {
+      readCount: (await readRequests(page)).length,
+    });
+    assert.deepEqual(
+      (await storedScope(page, changedCompositionScope)).scope.target,
+      {
+        mode: 'category',
+        favoriteType: 'important',
+      },
+      'composition changes keep Settings targeted at the whole network',
+    );
+    await back(page);
+    await page
+      .getByRole('combobox', { name: 'Переключить сетку', exact: true })
+      .selectOption('watch');
+    await configure.click();
+    const switchedScope = await settingsHub(page, { readCount: (await readRequests(page)).length });
+    assert.deepEqual(
+      (await storedScope(page, switchedScope)).scope.target,
+      {
+        mode: 'category',
+        favoriteType: 'watch',
+      },
+      'switching networks never carries recipients from the previous category',
+    );
+    await back(page);
+    assert.equal(
+      await page.getByRole('combobox', { name: 'Переключить сетку', exact: true }).inputValue(),
+      'watch',
+    );
+    await settleVisualFrame(page);
     await back(page);
     await page.locator('.network-summary-card').first().waitFor();
     await page.getByRole('radio', { name: 'Каналы', exact: true }).click();
@@ -653,10 +787,43 @@ for (const profile of [
         },
       );
       await observe(page);
-      await page.getByRole('checkbox', { name: /^Выбрать всю сетку/u }).uncheck();
-      await page.locator('[data-network-entity-id="preview-network-chat-0001"] input').check();
-      await page.locator('[data-network-entity-id="preview-network-chat-0002"] input').check();
-      await page.getByRole('button', { name: /^Настроить/u }).click();
+      await page.getByRole('button', { name: 'Настройки', exact: true }).click();
+      const category = await settingsHub(page);
+      // Retain the existing selected-target recovery coverage through an explicit test scope.
+      const selectedScopeId = await page.evaluate(async (scopeId) => {
+        const source = performance
+          .getEntriesByType('resource')
+          .findLast((entry) =>
+            new URL(entry.name).pathname.endsWith('/network-settings-workspace-state.ts'),
+          )?.name;
+        const { createNetworkSettingsScope } = await import(source);
+        const key = Object.keys(localStorage).find(
+          (value) =>
+            value.startsWith('maxim.network.settings.scope.v1:') && value.endsWith(':' + scopeId),
+        );
+        const stored = JSON.parse(localStorage.getItem(key));
+        return createNetworkSettingsScope({
+          userId: stored.userId,
+          title: stored.title,
+          returnTo: stored.returnTo,
+          scope: {
+            ...stored.scope,
+            target: {
+              mode: 'selected',
+              entityIds: ['preview-network-chat-0001', 'preview-network-chat-0002'],
+            },
+          },
+        }).scopeId;
+      }, category);
+      await open(
+        `networks/chat/settings?scope=${selectedScopeId}`,
+        '[data-network-settings-overview]',
+        {
+          networks: '1',
+          networksScenario: scenario,
+        },
+      );
+      await observe(page);
       const scope = await settingsHub(page);
       await openSettingsSection(page, 'links');
       return scope;
@@ -854,12 +1021,15 @@ for (const profile of [
     await openSelectedSettings('prepared-reload');
     await selectBlockingPolicy(linkPolicy(page.locator('.network-settings-editor')));
     await page.getByRole('button', { name: 'Проверить изменения', exact: true }).click();
-    await page
-      .getByRole('heading', { name: 'Изменения готовы к подтверждению', exact: true })
-      .waitFor();
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('button')].some(
+        (node) => node.textContent.trim() === 'Применить к выбранным' && !node.disabled,
+      ),
+    );
     const preparedOperation = await page.evaluate(
       () => window.__networkRequests.find((row) => row.path.endsWith('/preview')).body.operationId,
     );
+    await settleVisualFrame(page);
     const reloadUrl = new URL(page.url());
     reloadUrl.searchParams.set('preview', '1');
     reloadUrl.searchParams.set('networks', '1');
@@ -873,6 +1043,7 @@ for (const profile of [
       0,
       'restored PREPARED stays status-only',
     );
+    await page.getByText('Подробности применения', { exact: true }).click();
     assert.match(
       await page.locator('.network-settings-page__operation').innerText(),
       new RegExp(preparedOperation),
@@ -948,15 +1119,14 @@ for (const profile of [
         { networks: '1', networksScenario: 'large' },
       );
       await observe(page);
-      await page.getByRole('checkbox', { name: /^Выбрать всю сетку/u }).check();
-      await page.getByRole('button', { name: /^Настроить/u }).click();
+      await page.getByRole('button', { name: 'Настройки', exact: true }).click();
       await settingsHub(page);
       await openSettingsSection(page, 'links');
       assert.ok(
         Number(
           (
             await page.locator('.network-settings-editor .settings-drilldown__summary').innerText()
-          ).match(/Выбрано: (\d+)/u)?.[1],
+          ).match(/(?:Выбрано|Вся сетка): (\d+)/u)?.[1],
         ) > 500,
         'whole category has no selected-recipient cap',
       );
@@ -969,17 +1139,10 @@ for (const profile of [
     await fits(page, `${profile.name} Publisher`);
     assert.deepEqual(errors, []);
     console.log(
-      `PASS ${profile.name}: actual single/group presentation and fields, lazy hub, restored selection/position, category pagination, mixed drafts, Native Back, keyboard, lost response, durable operation and PREPARED recovery`,
+      `PASS ${profile.name}: whole-category settings from cards and statistics, category switching and composition, original settings parity, restored tab/position, pagination, mixed drafts, Native Back, keyboard, lost response and durable recovery`,
     );
   } catch (error) {
-    console.error('FAILED', profile.name, page.url(), await page.locator('body').innerText());
-    console.error(
-      'STORAGE DIAGNOSTIC',
-      await page.evaluate(() => ({
-        denied: window.__networkDeniedWrites,
-        applyCalls: window.__networkRequests?.filter((row) => row.path.endsWith('/apply')).length,
-      })),
-    );
+    console.error('FAILED', profile.name, page.url());
     await page.screenshot({
       path: join(output, `${profile.name}-failure.png`),
       animations: 'disabled',

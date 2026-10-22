@@ -40,9 +40,6 @@ function Coverage({ value, growth = false }: { value: NetworkMetricCoverage; gro
         {growth ? 'Последние наблюдения' : 'Обновлено'}:{' '}
         {value.asOf ? `${timestamp.format(new Date(value.asOf))} МСК` : '—'}
       </small>
-      <small>
-        Первые наблюдения: {value.observedFrom ? date.format(new Date(value.observedFrom)) : '—'}
-      </small>
     </div>
   );
 }
@@ -76,12 +73,10 @@ function GrowthChart({ series }: { series: NetworkStatisticsResponse['series'] }
     <section className="network-growth-panel" aria-labelledby="network-growth-title">
       <div className="network-panel-heading">
         <div>
-          <span className="networks-eyebrow">ДИНАМИКА СЕТКИ</span>
           <h2 id="network-growth-title">Прирост по дням</h2>
         </div>
         <AppIcon icon="StatsUpSquare" />
       </div>
-      <p className="network-statistics-caption">Наблюдаемые вступления минус выходы · МСК</p>
       {observed ? (
         <>
           <svg
@@ -133,9 +128,6 @@ function GrowthChart({ series }: { series: NetworkStatisticsResponse['series'] }
           <span>Данные появятся по мере наблюдений за сообществами.</span>
         </div>
       )}
-      <p className="network-statistics-caption">
-        Текущий день ещё не завершён. Покрытие наблюдений может быть неполным.
-      </p>
       <details className="network-daily-details">
         <summary>Значения по дням</summary>
         <div className="network-statistics-table-scroll">
@@ -321,29 +313,40 @@ export function NetworkStatisticsView({
         ) : null}
       </div>
       <p className="network-statistics-caption">
-        Аудитория суммируется по {entityType === 'chat' ? 'чатам' : 'каналам'}: один человек может
-        входить в несколько сообществ.
+        Суммарная аудитория · участники разных сообществ могут повторяться
       </p>
-      {entityType === 'channel' ? (
-        <p className="network-statistics-caption">
-          Просмотры, набранные за период, включая старые публикации.
-          {data.unallocatedViews > 0
-            ? ` Из них ${number.format(data.unallocatedViews)} нельзя точно распределить по дням.`
-            : ''}
-        </p>
-      ) : null}
-      {entityType === 'channel' ? (
-        <p className="network-statistics-caption">
-          MAX возвращает периодические замеры просмотров. Между ними точный момент прироста
-          неизвестен.
-        </p>
-      ) : null}
       <GrowthChart series={data.series} />
-      <p className="network-statistics-method">
-        Расчёт по текущему составу сетки. Частичные данные охватывают только доступные наблюдения.
-        Период: {date.format(new Date(data.period.from))} —{' '}
-        {timestamp.format(new Date(data.period.to))} МСК.
-      </p>
+      <details className="network-statistics-method network-daily-details">
+        <summary>О данных</summary>
+        <p>
+          Период: {date.format(new Date(data.period.from))} —{' '}
+          {timestamp.format(new Date(data.period.to))} МСК. Расчёт по текущему составу сетки.
+        </p>
+        <p>
+          Прирост — наблюдаемые вступления минус выходы. Пропуски означают отсутствие данных.
+          Текущий день ещё не завершён.
+        </p>
+        <p>
+          Частичные данные охватывают только доступные наблюдения. Первые наблюдения об аудитории:{' '}
+          {data.audience.coverage.observedFrom
+            ? date.format(new Date(data.audience.coverage.observedFrom))
+            : '—'}
+          ; о приросте:{' '}
+          {data.netGrowth.coverage.observedFrom
+            ? date.format(new Date(data.netGrowth.coverage.observedFrom))
+            : '—'}
+          .
+        </p>
+        {entityType === 'channel' ? (
+          <p>
+            Просмотры — прирост за период, включая старые публикации. MAX возвращает периодические
+            замеры: между ними точное время прироста неизвестно.
+            {data.unallocatedViews > 0
+              ? ` Нельзя распределить по дням: ${number.format(data.unallocatedViews)}.`
+              : ''}
+          </p>
+        ) : null}
+      </details>
       <Communities
         key={`${data.entityType}:${data.favoriteType}:${data.period.range}`}
         data={data}
