@@ -18,6 +18,7 @@ import { resolveRequiredWebhookUpdateTypes } from '../max/max-webhook-subscripti
 import { PrismaService } from '../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
+import { NetworkStatisticsObservationService } from './network-statistics-observation.service';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -141,6 +142,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     @Optional()
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
     @Optional() private readonly marketplaceState?: MarketplaceStateService,
+    @Optional() private readonly networkStatistics?: NetworkStatisticsObservationService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.startupSyncEnabled = configService.get<boolean>(
@@ -1132,6 +1134,15 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
             });
             await this.upsertOfficialMessages(chatId, messages, now);
             result.viewsSynced = true;
+            if (options?.reason !== 'stats_endpoint') {
+              await this.networkStatistics?.archivePage(chatId, 'major', this.maxClient, {
+                botId: statsBotId,
+                authorized: async () =>
+                  !this.shuttingDown && !(await this.sharedCollectionOwns(chatId, ['REACH'])),
+                store: (message, observedAt) =>
+                  this.upsertOfficialMessages(chatId, [message], observedAt),
+              });
+            }
           } catch (error: unknown) {
             result.throttled ||= this.isMaxApiThrottleError(error);
             this.logger.warn(
@@ -1198,105 +1209,126 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     capturedAt: Date,
   ) {
     for (const message of messages) {
-      const publishedAt = new Date(message.publishedAt);
-      const views =
-        typeof message.views === 'number' && Number.isFinite(message.views)
-          ? Math.max(message.views, 0)
-          : null;
-      const reactions = message.reactions
-        .filter((item) => item.count > 0)
-        .map((item) => ({
-          emoji: item.emoji,
-          count: item.count,
-        }));
-      const reactionsTotal = Math.max(
-        message.reactionsTotal ?? 0,
-        reactions.reduce((total, item) => total + item.count, 0),
-      );
-      const post = await this.prisma.channelPost.upsert({
-        where: {
-          chatId_messageId: {
+      const store = async (database: Prisma.TransactionClient) => {
+        if (this.networkStatistics) {
+          // FLAG: Materialize the unique parent before locking it. A concurrent
+          // first insert from another owner must not overwrite a newer snapshot.
+          await database.$executeRaw`
+            INSERT INTO channel_posts(id,chat_id,message_id,published_at,updated_at)
+            VALUES(${randomUUID()},${chatId},${message.messageId},${new Date(message.publishedAt)},now())
+            ON CONFLICT(chat_id,message_id) DO NOTHING
+          `;
+          const existing = await database.$queryRaw<Array<{ latest_snapshot_at: Date | null }>>`
+          SELECT latest_snapshot_at FROM channel_posts
+          WHERE chat_id=${chatId} AND message_id=${message.messageId} FOR UPDATE
+        `;
+          if (existing[0]?.latest_snapshot_at && existing[0].latest_snapshot_at > capturedAt)
+            return;
+        }
+        const publishedAt = new Date(message.publishedAt);
+        const views =
+          typeof message.views === 'number' && Number.isFinite(message.views)
+            ? Math.max(message.views, 0)
+            : null;
+        const reactions = message.reactions
+          .filter((item) => item.count > 0)
+          .map((item) => ({
+            emoji: item.emoji,
+            count: item.count,
+          }));
+        const reactionsTotal = Math.max(
+          message.reactionsTotal ?? 0,
+          reactions.reduce((total, item) => total + item.count, 0),
+        );
+        const post = await database.channelPost.upsert({
+          where: {
+            chatId_messageId: {
+              chatId,
+              messageId: message.messageId,
+            },
+          },
+          create: {
             chatId,
             messageId: message.messageId,
+            publishedAt,
+            url: message.url,
+            previewUrl: message.previewUrl,
+            ...(views !== null ? { latestViews: views, latestSnapshotAt: capturedAt } : {}),
+            latestReactions:
+              reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
+            latestReactionsTotal: reactionsTotal,
           },
-        },
-        create: {
-          chatId,
-          messageId: message.messageId,
-          publishedAt,
-          url: message.url,
-          previewUrl: message.previewUrl,
-          ...(views !== null ? { latestViews: views, latestSnapshotAt: capturedAt } : {}),
-          latestReactions:
-            reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
-          latestReactionsTotal: reactionsTotal,
-        },
-        update: {
-          publishedAt,
-          url: message.url,
-          previewUrl: message.previewUrl,
-          ...(views !== null ? { latestViews: views, latestSnapshotAt: capturedAt } : {}),
-          latestReactions:
-            reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
-          latestReactionsTotal: reactionsTotal,
-        },
-        select: {
-          id: true,
-          viewSnapshots: {
-            orderBy: [{ capturedAt: 'desc' }, { id: 'desc' }],
-            take: 1,
-            select: { views: true },
+          update: {
+            publishedAt,
+            url: message.url,
+            previewUrl: message.previewUrl,
+            ...(views !== null ? { latestViews: views, latestSnapshotAt: capturedAt } : {}),
+            latestReactions:
+              reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
+            latestReactionsTotal: reactionsTotal,
           },
-        },
-      });
-
-      if (views === null) {
-        continue;
-      }
-
-      if (post.viewSnapshots[0]?.views !== views) {
-        await this.prisma.channelPostViewSnapshot.create({
-          data: {
-            channelPostId: post.id,
-            views,
-            reactionsTotal,
-            capturedAt,
+          select: {
+            id: true,
+            viewSnapshots: {
+              orderBy: [{ capturedAt: 'desc' }, { id: 'desc' }],
+              take: 1,
+              select: { views: true },
+            },
           },
         });
-      }
 
-      const postAgeMs = capturedAt.getTime() - publishedAt.getTime();
-      if (
-        postAgeMs >= CHANNEL_POST_VIEWS_24H_MS &&
-        postAgeMs <= CHANNEL_POST_VIEWS_24H_MS + CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS
-      ) {
-        await this.prisma.channelPost.updateMany({
-          where: {
-            id: post.id,
-            viewsAt24h: null,
-          },
-          data: {
-            viewsAt24h: views,
-            viewsAt24hCapturedAt: capturedAt,
-          },
-        });
-      }
+        if (views === null) {
+          return;
+        }
 
-      if (
-        postAgeMs >= CHANNEL_POST_VIEWS_48H_MS &&
-        postAgeMs <= CHANNEL_POST_VIEWS_48H_MS + CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS
-      ) {
-        await this.prisma.channelPost.updateMany({
-          where: {
-            id: post.id,
-            viewsAt48h: null,
-          },
-          data: {
-            viewsAt48h: views,
-            viewsAt48hCapturedAt: capturedAt,
-          },
-        });
-      }
+        await this.networkStatistics?.views(database, post.id, views, capturedAt, 'major');
+
+        if (post.viewSnapshots[0]?.views !== views) {
+          await database.channelPostViewSnapshot.create({
+            data: {
+              channelPostId: post.id,
+              views,
+              reactionsTotal,
+              capturedAt,
+            },
+          });
+        }
+
+        const postAgeMs = capturedAt.getTime() - publishedAt.getTime();
+        if (
+          postAgeMs >= CHANNEL_POST_VIEWS_24H_MS &&
+          postAgeMs <= CHANNEL_POST_VIEWS_24H_MS + CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS
+        ) {
+          await database.channelPost.updateMany({
+            where: {
+              id: post.id,
+              viewsAt24h: null,
+            },
+            data: {
+              viewsAt24h: views,
+              viewsAt24hCapturedAt: capturedAt,
+            },
+          });
+        }
+
+        if (
+          postAgeMs >= CHANNEL_POST_VIEWS_48H_MS &&
+          postAgeMs <= CHANNEL_POST_VIEWS_48H_MS + CHANNEL_POST_VIEWS_MILESTONE_GRACE_MS
+        ) {
+          await database.channelPost.updateMany({
+            where: {
+              id: post.id,
+              viewsAt48h: null,
+            },
+            data: {
+              viewsAt48h: views,
+              viewsAt48hCapturedAt: capturedAt,
+            },
+          });
+        }
+      };
+      if (this.networkStatistics) await this.prisma.$transaction(store);
+      else await store(this.prisma);
     }
   }
 
@@ -1338,6 +1370,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           },
         }),
       ]);
+      await this.networkStatistics?.audience(
+        chatId,
+        'channel',
+        snapshot.participantsCount,
+        params.now,
+        'major',
+      );
 
       return {
         audienceSynced: true,

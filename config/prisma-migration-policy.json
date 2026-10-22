@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261019083000_index_webhook_backlog_children_operation",
-  "baselineNamesSha256": "0a33ccba091aa074b0546feb9a0fc71887a4ca93e9fd4f2e58a68d15fb166859",
-  "baselineContentsSha256": "738367d5e2cb9adab94fc4a48e9ddab62470c8cae5772b15a941fae179d590af",
+  "baselineThrough": "20261022120000_add_managed_network_foundation",
+  "baselineNamesSha256": "faf2b17c9097291ec58816fe4613c5cf267eb15f4dcb52724782813a3739ddc7",
+  "baselineContentsSha256": "ccb9bd96e3e30d8bfa992891bbc0dc4c3cfa7e5f119e241d606351e4198bf9c3",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -126,6 +126,11 @@
       "reason": "Reviewed additive nullable history column and static row trigger. No dynamic SQL, row deletion or fleet backfill. The trigger preserves confirmed administrator history on later denial; history never grants access.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Old readers ignore the nullable column; the trigger covers all existing grant and revocation writers. New readers require a fresh exact-user verdict for entry. No existing columns or rows are removed."
+    },
+    "20261022120000_add_managed_network_foundation": {
+      "reason": "Reviewed static additive channel revision trigger. EXECUTE FUNCTION is a parser false positive: no dynamic SQL, DROP, DELETE, table rewrite or historical backfill.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The constant-zero revision column is additive and the NOT VALID check avoids scanning existing rows. Every update advances exactly once, including old roles. New compare-and-set routes stay hidden until all roles are current. New operation and observation tables have no legacy readers; no historical data is reinterpreted."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -218,6 +223,9 @@
     },
     "20261016190000_add_moderation_delete_reason_origins": {
       "reason": "The sole ordinary index belongs to a new empty observation table. No retained reasons or webhook rows are scanned, backfilled, rewritten or indexed; origins grant no execution authority. Existing readers ignore the additive table."
+    },
+    "20261022120000_add_managed_network_foundation": {
+      "reason": "All new indexes belong to new empty operation and observation tables and are created before their first writes; no existing-table index is built."
     }
   }
 }

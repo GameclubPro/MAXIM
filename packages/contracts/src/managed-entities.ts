@@ -446,10 +446,16 @@ export type ManagedEntityAccessRecheckResponse = z.infer<
 export const updateManagedEntityFavoritesRequestSchema = z
   .object({
     favoriteTypes: z.array(managedEntityFavoriteTypeSchema).max(6).default([]),
+    expectedFavoriteType: managedEntityFavoriteTypeSchema.nullable(),
   })
   .transform((value) => ({
     favoriteTypes: Array.from(new Set(value.favoriteTypes)),
-  }));
+    expectedFavoriteType: value.expectedFavoriteType,
+  }))
+  .refine((value) => value.favoriteTypes.length <= 1, {
+    path: ['favoriteTypes'],
+    message: 'Сообщество может состоять только в одной категории избранного.',
+  });
 export type UpdateManagedEntityFavoritesRequest = z.infer<
   typeof updateManagedEntityFavoritesRequestSchema
 >;
@@ -520,4 +526,89 @@ export const managedEntityFavoriteLabelsResponseSchema = z
   });
 export type ManagedEntityFavoriteLabelsResponse = z.infer<
   typeof managedEntityFavoriteLabelsResponseSchema
+>;
+
+export const managedEntityNetworkCardSchema = z.object({
+  favoriteType: managedEntityFavoriteTypeSchema,
+  label: managedEntityFavoriteLabelSchema,
+  entityCount: z.number().int().nonnegative(),
+  compositionVersion: z.string().min(1),
+});
+export type ManagedEntityNetworkCard = z.infer<typeof managedEntityNetworkCardSchema>;
+
+export const managedEntityNetworksResponseSchema = z.object({
+  entityType: managedEntityTypeSchema,
+  compositionVersion: z.string().min(1),
+  labelsRevision: z.number().int().positive().nullable(),
+  items: z.array(managedEntityNetworkCardSchema).length(6),
+});
+export type ManagedEntityNetworksResponse = z.infer<typeof managedEntityNetworksResponseSchema>;
+
+export const managedEntityNetworkEntriesQuerySchema = z.object({
+  favoriteType: managedEntityFavoriteTypeSchema.optional(),
+  favoritesOnly: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((value) => value === 'true'),
+  search: z.string().trim().max(100).optional().default(''),
+  cursor: z.string().max(2048).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+});
+export type ManagedEntityNetworkEntriesQuery = z.infer<
+  typeof managedEntityNetworkEntriesQuerySchema
+>;
+export const managedEntityNetworkEntrySchema = z.object({
+  id: z.string().trim().min(1),
+  entityType: managedEntityTypeSchema,
+  title: z.string(),
+  avatarUrl: z.string().nullable(),
+  favoriteType: managedEntityFavoriteTypeSchema.nullable(),
+});
+export type ManagedEntityNetworkEntry = z.infer<typeof managedEntityNetworkEntrySchema>;
+export const managedEntityNetworkEntriesResponseSchema = z.object({
+  entityType: managedEntityTypeSchema,
+  compositionVersion: z.string().min(1),
+  items: z.array(managedEntityNetworkEntrySchema).max(100),
+  nextCursor: z.string().nullable(),
+});
+export type ManagedEntityNetworkEntriesResponse = z.infer<
+  typeof managedEntityNetworkEntriesResponseSchema
+>;
+
+export const managedEntityNetworkCompositionChangeSchema = z
+  .object({
+    entityId: z.string().trim().min(1).max(128),
+    expectedFavoriteType: managedEntityFavoriteTypeSchema.nullable(),
+    favoriteType: managedEntityFavoriteTypeSchema.nullable(),
+  })
+  .strict();
+export type ManagedEntityNetworkCompositionChange = z.infer<
+  typeof managedEntityNetworkCompositionChangeSchema
+>;
+export const updateManagedEntityNetworkCompositionRequestSchema = z
+  .object({ changes: z.array(managedEntityNetworkCompositionChangeSchema).min(1).max(500) })
+  .strict()
+  .superRefine((value, context) => {
+    const ids = new Set<string>();
+    value.changes.forEach((change, index) => {
+      if (ids.has(change.entityId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['changes', index, 'entityId'],
+          message: 'Сообщество указано повторно.',
+        });
+      }
+      ids.add(change.entityId);
+    });
+  });
+export type UpdateManagedEntityNetworkCompositionRequest = z.infer<
+  typeof updateManagedEntityNetworkCompositionRequestSchema
+>;
+export const managedEntityNetworkCompositionResponseSchema = z.object({
+  entityType: managedEntityTypeSchema,
+  changes: z.array(managedEntityNetworkCompositionChangeSchema).max(500),
+});
+export type ManagedEntityNetworkCompositionResponse = z.infer<
+  typeof managedEntityNetworkCompositionResponseSchema
 >;

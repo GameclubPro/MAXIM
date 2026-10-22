@@ -362,6 +362,9 @@ function createService(
       upsert: jest
         .fn()
         .mockResolvedValue(options.persistedChannelSettings ?? createPersistedChannelSettings()),
+      create: jest.fn().mockResolvedValue({ revision: 1 }),
+      findUniqueOrThrow: jest.fn().mockResolvedValue({ revision: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       update: jest.fn().mockResolvedValue({}),
     },
     chatRules: {
@@ -1791,6 +1794,7 @@ describe('AdminSettingsService chat rules', () => {
     });
 
     const result = await service.updateChannelSettings('channel-1', user as never, {
+      revision: 0,
       commentsEnabled: true,
       postSuggestionsEnabled: true,
     });
@@ -1818,14 +1822,12 @@ describe('AdminSettingsService chat rules', () => {
         update: expect.objectContaining({ entityType: 'CHANNEL' }),
       }),
     );
-    expect(prisma.channelSettings.upsert).toHaveBeenCalledWith({
-      where: { chatId: 'channel-1' },
-      create: expect.objectContaining({
+    expect(prisma.channelSettings.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
         chatId: 'channel-1',
         commentsEnabled: true,
         postSuggestionsEnabled: true,
       }),
-      update: expect.objectContaining({ commentsEnabled: true, postSuggestionsEnabled: true }),
     });
     expect(channelSettingsUpsert?.update).not.toHaveProperty('botId');
     expect(channelSettingsUpsert?.update).not.toHaveProperty('primaryBotId');
@@ -1835,8 +1837,7 @@ describe('AdminSettingsService chat rules', () => {
         actorUserId: 'admin-1',
         action: 'UPDATE_CHANNEL_SETTINGS',
         payload: expect.objectContaining({
-          commentsEnabled: true,
-          postSuggestionsEnabled: true,
+          settingKeys: expect.arrayContaining(['commentsEnabled', 'postSuggestionsEnabled']),
           source: 'miniapp',
         }),
       },

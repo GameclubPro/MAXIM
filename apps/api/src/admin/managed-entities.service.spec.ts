@@ -32,7 +32,7 @@ function createPlan(entityType: 'chat' | 'channel' = 'chat') {
 }
 
 function createPrismaMock() {
-  return {
+  const prisma = {
     chat: {
       findUnique: jest.fn().mockResolvedValue({
         id: 'chat-1',
@@ -55,6 +55,7 @@ function createPrismaMock() {
     },
     managedEntityFavorite: {
       findMany: jest.fn().mockResolvedValue([]),
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn(() => ({ operation: 'delete-many-favorites' })),
       upsert: jest.fn(() => ({ operation: 'upsert-favorite' })),
     },
@@ -72,9 +73,15 @@ function createPrismaMock() {
     },
     auditLog: {
       create: jest.fn(() => ({ operation: 'audit-log' })),
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     $transaction: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue(0),
   };
+  prisma.$transaction.mockImplementation(async (operation: unknown) =>
+    typeof operation === 'function' ? operation(prisma) : [],
+  );
+  return prisma;
 }
 
 function createConfigMock(
@@ -1116,6 +1123,26 @@ describe('ManagedEntitiesService onboarding diagnostics', () => {
 });
 
 describe('ManagedEntitiesService headers', () => {
+  it.each(['chat', 'channel'] as const)(
+    'preserves strict %s read denial and never forwards settings bypass flags',
+    async (entityType) => {
+      const { legacyAdminService, service } = createService();
+      const denied = new ForbiddenException('access revoked');
+      legacyAdminService.assertManagedEntityReadAccess.mockRejectedValueOnce(denied);
+      const readOptions = { timeoutMs: 2500, skipAdminCheck: true, skipEntityCheck: true };
+
+      await expect(
+        service.assertManagedEntityReadAccess('chat-1', user, entityType, readOptions),
+      ).rejects.toBe(denied);
+      expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
+        'chat-1',
+        user.userId,
+        entityType,
+        { timeoutMs: 2500 },
+      );
+    },
+  );
+
   it('loads chat header without routing through legacy getChatHeader', async () => {
     const { chatContextCache, legacyAdminService, maxClient, prisma, service } = createService();
 
@@ -1710,13 +1737,14 @@ describe('ManagedEntitiesService bot execution plan', () => {
     const { legacyAdminService, prisma, service } = createService();
 
     const result = await service.updateManagedEntityFavorites('channel', 'chat-1', user as never, {
-      favoriteTypes: ['watch', 'watch', 'broadcast'],
+      favoriteTypes: ['watch', 'watch'],
+      expectedFavoriteType: null,
     });
 
     expect(result).toEqual({
       entityType: 'channel',
       entityId: 'chat-1',
-      favoriteTypes: ['watch', 'broadcast'],
+      favoriteTypes: ['watch'],
     });
     expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'chat-1',
@@ -1727,50 +1755,60 @@ describe('ManagedEntitiesService bot execution plan', () => {
     expect(prisma.managedEntityFavorite.deleteMany).toHaveBeenCalledWith({
       where: {
         userId: 'admin-1',
-        chatId: 'chat-1',
+        chatId: { in: ['chat-1'] },
         entityType: 'CHANNEL',
-        favoriteType: {
-          notIn: ['WATCH', 'BROADCAST'],
-        },
       },
     });
-    expect(prisma.managedEntityFavorite.upsert).toHaveBeenCalledTimes(2);
-    expect(prisma.managedEntityFavorite.upsert).toHaveBeenNthCalledWith(
-      1,
+    expect(prisma.managedEntityFavorite.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.managedEntityFavorite.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
-          favoriteType: 'WATCH',
-          position: 0,
-        }),
-        update: {
-          position: 0,
-        },
+        data: [
+          expect.objectContaining({
+            favoriteType: 'WATCH',
+            position: 0,
+          }),
+        ],
       }),
     );
-    expect(prisma.managedEntityFavorite.upsert).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        create: expect.objectContaining({
-          favoriteType: 'BROADCAST',
-          position: 1,
-        }),
-        update: {
-          position: 1,
+    expect(prisma.auditLog.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          chatId: 'chat-1',
+          actorUserId: 'admin-1',
+          action: 'UPDATE_MANAGED_ENTITY_FAVORITES',
+          payload: {
+            entityType: 'channel',
+            favoriteTypes: ['watch'],
+          },
         },
-      }),
-    );
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: {
-        chatId: 'chat-1',
-        actorUserId: 'admin-1',
-        action: 'UPDATE_MANAGED_ENTITY_FAVORITES',
-        payload: {
-          entityType: 'channel',
-          favoriteTypes: ['watch', 'broadcast'],
-        },
-      },
+      ],
     });
-    expect(prisma.$transaction.mock.calls[0][0]).toHaveLength(4);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects delayed blind favorites PUTs and stale device assignments without restoring removals', async () => {
+    const { legacyAdminService, prisma, service } = createService();
+    await expect(
+      service.updateManagedEntityFavorites('chat', 'chat-1', user as never, {
+        favoriteTypes: ['important'],
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'MANAGED_ENTITY_FAVORITES_REFRESH_REQUIRED' },
+      status: 409,
+    });
+    expect(legacyAdminService.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+    await expect(
+      service.updateManagedEntityFavorites('chat', 'chat-1', user as never, {
+        favoriteTypes: ['watch'],
+        expectedFavoriteType: 'important',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'MANAGED_ENTITY_NETWORK_COMPOSITION_CONFLICT' },
+      status: 409,
+    });
+    expect(prisma.managedEntityFavorite.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.managedEntityFavorite.createMany).not.toHaveBeenCalled();
+    expect(prisma.auditLog.createMany).not.toHaveBeenCalled();
   });
 
   it('returns whether the administrator favorite-label profile has been initialized', async () => {

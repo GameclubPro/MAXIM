@@ -1,4 +1,5 @@
 import { readChatClosureStatus } from './chat-closure-status';
+import type { NetworkSettingsWriteOptions } from './network-settings-write';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
   channelSettingsScreenResponseSchema,
@@ -274,7 +275,10 @@ export class AdminSettingsService {
     user: AuthUser,
     body: unknown,
     source: AdminActionSource = 'miniapp',
-    options: { forceLiveBotCapabilityCheck?: boolean } = {},
+    options: {
+      forceLiveBotCapabilityCheck?: boolean;
+      networkWrite?: NetworkSettingsWriteOptions;
+    } = {},
   ): Promise<ChatSettings> {
     await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
     const shouldReconcileNightModeTransitions =
@@ -286,6 +290,7 @@ export class AdminSettingsService {
       actorUserId: user.userId,
       body,
       source,
+      networkWrite: options.networkWrite,
       resolveBotAssignmentData: () =>
         this.legacyAdminService.resolveChatSettingsWriteBotAssignmentData(chatId),
       assertRequiredSubscriptionSettings: (settings) =>
@@ -300,7 +305,11 @@ export class AdminSettingsService {
       refreshExecutionReadiness: (settings) =>
         this.legacyAdminService.refreshChatSettingsExecutionReadiness(chatId, settings),
     });
-    if (shouldReconcileNightModeTransitions) {
+    if (
+      shouldReconcileNightModeTransitions &&
+      !options.networkWrite?.validateOnly &&
+      !options.networkWrite?.deferFollowup
+    ) {
       await this.reconcileNightModeTransitions([chatId]);
     }
     return settings;
@@ -589,6 +598,7 @@ export class AdminSettingsService {
     user: AuthUser,
     body: unknown,
     source: AdminActionSource = 'miniapp',
+    networkWrite?: NetworkSettingsWriteOptions,
   ): Promise<ChannelSettings> {
     await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
     return saveChannelSettings({
@@ -598,11 +608,60 @@ export class AdminSettingsService {
       actorUserId: user.userId,
       body,
       source,
+      networkWrite,
       resolveBotAssignmentData: () =>
         this.legacyAdminService.resolveChannelSettingsWriteBotAssignmentData(chatId),
       refreshExecutionReadiness: () =>
         this.legacyAdminService.refreshChannelSettingsExecutionReadiness(chatId),
     });
+  }
+
+  async updateNetworkChatSettings(
+    chatId: string,
+    user: AuthUser,
+    body: ChatSettings,
+    networkWrite: NetworkSettingsWriteOptions,
+  ): Promise<ChatSettings> {
+    return this.updateSettings(chatId, user, body, 'miniapp', {
+      forceLiveBotCapabilityCheck: true,
+      networkWrite,
+    });
+  }
+
+  async updateNetworkChannelSettings(
+    chatId: string,
+    user: AuthUser,
+    body: ChannelSettings,
+    changedPaths: readonly string[],
+    networkWrite: NetworkSettingsWriteOptions,
+  ): Promise<ChannelSettings> {
+    return this.updateChannelSettings(chatId, user, body, 'miniapp', {
+      ...networkWrite,
+      authoredChannelKeys: changedPaths as Array<keyof ChannelSettings>,
+    });
+  }
+
+  async finishNetworkSettingsFollowup(
+    chatId: string,
+    entityType: 'chat' | 'channel',
+    section: string,
+  ): Promise<void> {
+    await this.chatContextCache.invalidate(chatId);
+    if (entityType === 'channel') {
+      await this.legacyAdminService.refreshChannelSettingsExecutionReadiness(chatId);
+      return;
+    }
+    const user: AuthUser = {
+      userId: 'network-settings-followup',
+      username: null,
+      displayName: null,
+    };
+    const settings = await this.getSettings(chatId, user, {
+      skipAdminCheck: true,
+      skipEntityCheck: true,
+    });
+    await this.legacyAdminService.refreshChatSettingsExecutionReadiness(chatId, settings);
+    if (section === 'night') await this.reconcileNightModeTransitions([chatId]);
   }
 
   private async assertSettingsScreenAccess(check: () => Promise<void>): Promise<void> {

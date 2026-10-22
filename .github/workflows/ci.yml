@@ -28,7 +28,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit
       - name: Fast source and generated-input preflight
         run: node scripts/agent/preflight.mjs
       - name: Audit production dependencies
@@ -51,7 +51,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit
       - run: npm run check:contracts
 
   api:
@@ -75,7 +75,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit
       - name: Check API
         env:
           NODE_OPTIONS: --max-old-space-size=6144
@@ -135,7 +135,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends redis-server
           fi
-      - run: npm ci
+      - run: npm ci --no-audit
       - name: Validate Prisma schema and migration policy
         run: npm run check:prisma
       - name: Apply migrations
@@ -200,7 +200,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit
       - run: npm run test:api:commercial-benchmark:ci
 
   miniapp:
@@ -219,7 +219,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit
       - run: npx playwright install --with-deps chromium
       - run: npm run check:miniapp
         if: matrix.shard == '1/2'
@@ -293,7 +293,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit
       - run: npx playwright install --with-deps chromium
       - run: npm run check:admin
 

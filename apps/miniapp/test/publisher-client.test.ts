@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getMe } from '../src/lib/api/me-client';
+import { getChannelPostSignature } from '../src/lib/api/channel-settings-client';
 import {
   getPublisherEntity,
   getPublisherPolicy,
@@ -580,6 +581,7 @@ test('preview keeps Publisher channel comments independent and exposes channel C
     (entity) => entity.entityType === 'channel' && entity.readiness.canPublish,
   );
   assert.ok(channel);
+  const signatureBefore = await getChannelPostSignature(api, channel.id);
 
   await updatePublisherModules(api, 'channel', channel.id, {
     expectedRevision: channel.moduleSettings.revision,
@@ -592,6 +594,7 @@ test('preview keeps Publisher channel comments independent and exposes channel C
   assert.equal(disabled.readiness.canUseChannelComments, false);
   assert.equal(disabled.readiness.canPublishSuggestions, false);
   assert.deepEqual(disabled.channelPostSignature, {
+    revision: signatureBefore.revision,
     enabled: true,
     presentation: 'button',
     text: '📞 Заказать рекламу',
@@ -608,4 +611,5 @@ test('preview keeps Publisher channel comments independent and exposes channel C
   assert.equal(enabled.moduleSettings.channelSuggestionsEnabled, true);
   assert.equal(enabled.readiness.canUseChannelComments, true);
   assert.equal(enabled.readiness.canPublishSuggestions, true);
+  assert.deepEqual(enabled.channelPostSignature, signatureBefore);
 });

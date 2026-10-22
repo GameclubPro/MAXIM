@@ -37,6 +37,15 @@ const onboardingSource = readFileSync(
   'utf8',
 );
 
+test('home device cache cannot import retired composition or issue blind favorites writes', () => {
+  assert.doesNotMatch(
+    favoritesRuntimeSource,
+    /updateManagedEntityFavorites|migrateLegacyHomeEntityFavorites|Promise\.allSettled/u,
+  );
+  assert.doesNotMatch(chatsPageSource, /migrateLegacyHomeEntityFavorites/u);
+  assert.match(favoritesRuntimeSource, /synchronizeManagedEntityFavoriteLabels/u);
+});
+
 test('entity cards expose settings, favorite, statistics and category edit targets', () => {
   assert.match(chatsPageSource, /className="chat-card__primary-link"/u);
   assert.match(chatsPageSource, /'chat-card__action--favorite'/u);

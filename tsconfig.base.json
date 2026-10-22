@@ -10,6 +10,8 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
+      "@maxim/contracts/network-settings": ["packages/contracts/src/network-settings.ts"],
+      "@maxim/contracts/networks-stats": ["packages/contracts/src/networks-stats.ts"],
       "@maxim/contracts/marketplace-integration": [
         "packages/contracts/src/marketplace-integration.ts"
       ],

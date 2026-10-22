@@ -14,6 +14,7 @@ import {
 } from './marketplace-statistics';
 import { MarketplaceStatisticsService } from './marketplace-statistics.service';
 import { MarketplaceNativeProjectionService } from './marketplace-native-projection.service';
+import { NetworkStatisticsObservationService } from '../../admin/network-statistics-observation.service';
 
 @Injectable()
 export class MarketplaceCollectorService {
@@ -23,6 +24,7 @@ export class MarketplaceCollectorService {
     private readonly state: MarketplaceStateService,
     private readonly statistics: MarketplaceStatisticsService,
     @Optional() private readonly native?: MarketplaceNativeProjectionService,
+    @Optional() private readonly networkStatistics?: NetworkStatisticsObservationService,
   ) {}
   async tick(profile?: 'moderation' | 'publisher'): Promise<void> {
     if (!this.state.enabled()) return;
@@ -56,6 +58,12 @@ export class MarketplaceCollectorService {
         await this.seedNativeMilestones(row, lease);
         await this.sampleDue(row, lease);
         await this.scanPage(row, lease);
+        if (this.native)
+          await this.networkStatistics?.archivePage(row.entity_id, 'marketplace', this.max, {
+            botId: row.bot_id,
+            authorized: () => this.state.hasActiveGrant(row.id, lease),
+            store: (snapshot, observedAt) => this.native!.post(row.id, lease, snapshot, observedAt),
+          });
       } else {
         await this.prisma
           .$executeRaw`UPDATE marketplace_bindings SET history_complete=true,history_cursor=NULL,history_to=now() WHERE id=${row.id}::uuid AND lease_id=${lease}::uuid AND lease_until>now() AND ${marketplaceLocalGrantSql()}`;

@@ -67,6 +67,8 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
     pattern: new RegExp(`^/managed-entities/(chat|channel)/${ENTITY_ID_SEGMENT}/favorites$`),
   },
   { method: 'PUT', pattern: /^\/managed-entities\/favorite-labels$/u },
+  { method: 'PUT', pattern: /^\/managed-entities\/networks\/(chat|channel)\/composition$/u },
+  { method: 'POST', pattern: /^\/networks\/settings\/(read|preview|apply)$/u },
   { method: 'POST', pattern: /^\/managed-entities\/presentation$/u },
   {
     method: 'POST',

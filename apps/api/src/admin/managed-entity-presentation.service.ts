@@ -21,6 +21,7 @@ import {
   type AdminManagedEntitiesRefreshJob,
 } from './admin-managed-entities-refresh.queue';
 import { createManagedEntityHeader } from './admin-managed-entity-header';
+import { NetworkStatisticsObservationService } from './network-statistics-observation.service';
 import {
   isBotAdminLookupDeniedError,
   resolvePresentableManagedEntityTitle,
@@ -40,6 +41,7 @@ export class ManagedEntityPresentationService {
     @InjectQueue(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE)
     private readonly queue: Queue<AdminManagedEntitiesRefreshJob>,
     @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly networkStatistics?: NetworkStatisticsObservationService,
   ) {}
 
   private jobId(entityType: string, id: string): string {
@@ -246,6 +248,13 @@ export class ManagedEntityPresentationService {
         throw error;
       }
       if (snapshot.chatId !== first.chatId || snapshot.entityType !== job.entityType) return;
+      await this.networkStatistics?.audience(
+        first.chatId,
+        job.entityType,
+        snapshot.participantsCount,
+        startedAt,
+        'presentation',
+      );
       const title = resolvePresentableManagedEntityTitle(first.chatId, snapshot.title);
       const avatarState = snapshot.avatarState ?? (snapshot.avatarUrl ? 'present' : 'unknown');
       // FLAG: Update existing catalog metadata only. Never upsert a connection, advance its

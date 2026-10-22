@@ -37,6 +37,15 @@ import { SystemModule } from '../system/system.module';
 import { AdminManagedEntitiesRefreshProcessor } from './admin-managed-entities-refresh.processor';
 import { ManagedEntityPresentationController } from './managed-entity-presentation.controller';
 import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
+import { ManagedEntityNetworksController } from './managed-entity-networks.controller';
+import { ManagedEntityNetworksService } from './managed-entity-networks.service';
+import { NetworkSettingsController } from './network-settings.controller';
+import { MajorNetworksGuard } from './major-networks.guard';
+import { NetworkSettingsService } from './network-settings.service';
+import { NetworkSettingsRunnerService } from './network-settings-runner.service';
+import { NetworkStatisticsController } from './network-statistics.controller';
+import { NetworkStatisticsService } from './network-statistics.service';
+import { NetworkStatisticsObservationService } from './network-statistics-observation.service';
 import { ManagedModeratorController } from './managed-moderator.controller';
 import { ManagedModeratorService } from './managed-moderator.service';
 import { MaxFixedModeratorAssignmentService } from '../max/max-fixed-moderator-assignment.service';
@@ -192,6 +201,9 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     MarketplaceProfileController,
     AdminManagedEntitiesController,
     ManagedEntityPresentationController,
+    ManagedEntityNetworksController,
+    NetworkSettingsController,
+    NetworkStatisticsController,
     ManagedModeratorController,
     AdminSettingsController,
     AdminStopWordsController,
@@ -260,6 +272,12 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
     ManagedEntityPresentationService,
+    ManagedEntityNetworksService,
+    MajorNetworksGuard,
+    NetworkSettingsService,
+    NetworkStatisticsService,
+    NetworkStatisticsObservationService,
+    ...(roleRunsAction(getAppRole()) ? [NetworkSettingsRunnerService] : []),
     ManagedModeratorService,
     MaxFixedModeratorAssignmentService,
     ManagedEntityAccessRefreshService,

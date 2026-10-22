@@ -354,14 +354,24 @@ describeStores('native durable moderation rule continuation across bot/process c
     const { s, chatId } = await fixture();
     const row = await ready(s, chatId, 'atomic');
     const fn = `fixture_followup_${randomUUID().replace(/-/gu, '')}`;
+    await s.prisma.$executeRawUnsafe(`CREATE SEQUENCE "${fn}_hits"`);
     await s.prisma.$executeRawUnsafe(
-      `CREATE FUNCTION "${fn}"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.chat_id = '${chatId.replace(/'/gu, "''")}' THEN RAISE EXCEPTION 'fixture strike insert failed'; END IF; RETURN NEW; END $$`,
+      `CREATE FUNCTION "${fn}"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.chat_id = '${chatId.replace(/'/gu, "''")}' THEN PERFORM nextval('"${fn}_hits"'); RAISE EXCEPTION 'fixture network timeout before strike insert failed'; END IF; RETURN NEW; END $$`,
     );
     await s.prisma.$executeRawUnsafe(
       `CREATE TRIGGER "${fn}" BEFORE INSERT ON violations FOR EACH ROW EXECUTE FUNCTION "${fn}"()`,
     );
     try {
-      await s.ruleFollowups.attempt(row.id);
+      expect(await s.ruleFollowups.attempt(row.id)).toBe(true);
+      expect(
+        await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } }),
+      ).toMatchObject({ status: 'RETRYABLE', attemptCount: 1, actionPlan: null });
+      expect(
+        await s.prisma.$queryRawUnsafe(
+          `SELECT last_value::text AS hits, is_called FROM "${fn}_hits"`,
+        ),
+      ).toEqual([{ hits: '1', is_called: true }]);
+      expect(s.effects.filter((effect) => effect.method === 'post')).toHaveLength(0);
       expect(
         await s.prisma.moderationViolationMessageClaim.count({
           where: { chatId, messageId: row.messageId },
@@ -375,10 +385,14 @@ describeStores('native durable moderation rule continuation across bot/process c
     } finally {
       await s.prisma.$executeRawUnsafe(`DROP TRIGGER "${fn}" ON violations`);
       await s.prisma.$executeRawUnsafe(`DROP FUNCTION "${fn}"()`);
+      await s.prisma.$executeRawUnsafe(`DROP SEQUENCE "${fn}_hits"`);
     }
     await due(s, row.id);
-    await s.ruleFollowups.attempt(row.id);
+    expect(await s.ruleFollowups.attempt(row.id)).toBe(true);
     await expectWarnOnce(s, chatId, row.messageId);
+    expect(
+      await s.prisma.moderationRuleFollowup.findUniqueOrThrow({ where: { id: row.id } }),
+    ).toMatchObject({ status: 'COMPLETED', attemptCount: 2 });
   });
 
   it('keeps its frozen warning/count after a crash before execution and newer violations', async () => {

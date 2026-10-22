@@ -503,6 +503,8 @@ model Chat {
   channelPostDemand                 ChannelPostDemandChannel?
   chatAutoCommentAttachMarkers      ChatAutoCommentAttachMarker[]
   channelAudienceSnapshots          ChannelAudienceSnapshot[]
+  audienceObservations              ManagedEntityAudienceObservation[]
+  viewArchiveState                  ChannelViewArchiveState?
   channelPosts                      ChannelPost[]
   channelStatsSyncState             ChannelStatsSyncState?
   managedBroadcasts                 ManagedBroadcast[]
@@ -1515,6 +1517,7 @@ model ChatRules {
 model ChannelSettings {
   id                           String                     @id @default(cuid())
   chatId                       String                     @unique @map("chat_id")
+  revision                     Int                        @default(0)
   postSuggestionsEnabled       Boolean                    @default(false) @map("post_suggestions_enabled")
   postSuggestionsRequireSubscription Boolean @default(false) @map("post_suggestions_require_subscription")
   postSuggestionsDeleteOnUnsubscribe Boolean @default(false) @map("post_suggestions_delete_on_unsubscribe")
@@ -4058,6 +4061,8 @@ model ChannelPost {
 
   chat          Chat                      @relation(fields: [chatId], references: [id], onDelete: Cascade)
   viewSnapshots ChannelPostViewSnapshot[]
+  viewObservationState ChannelViewObservationState?
+  observedViewIntervals ChannelViewObservedInterval[]
 
   @@unique([chatId, messageId])
   @@index([chatId, publishedAt(sort: Desc)])
@@ -4066,6 +4071,104 @@ model ChannelPost {
   @@index([viewsAt24h, publishedAt, chatId, id], map: "channel_posts_24h_milestone_due_idx")
   @@index([viewsAt48h, publishedAt, chatId, id], map: "channel_posts_48h_milestone_due_idx")
   @@map("channel_posts")
+}
+
+// FLAG: Observations start with a baseline; legacy snapshots are never reinterpreted
+// as newly observed growth. Both existing collection owners share this state.
+model ManagedEntityAudienceObservation {
+  chatId            String         @map("chat_id")
+  entityType        ChatEntityType @map("entity_type")
+  participantsCount Int            @map("participants_count")
+  observedAt        DateTime       @map("observed_at") @db.Timestamptz(6)
+  source            String
+  chat              Chat           @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, entityType])
+  @@map("managed_entity_audience_observations")
+}
+
+model ChannelViewObservationState {
+  channelPostId  String      @id @map("channel_post_id")
+  baselineAt     DateTime    @map("baseline_at") @db.Timestamptz(6)
+  observedAt     DateTime    @map("observed_at") @db.Timestamptz(6)
+  observedViews  Int         @map("observed_views")
+  highWaterViews Int         @map("high_water_views")
+  anomalyAt      DateTime?   @map("anomaly_at") @db.Timestamptz(6)
+  source         String
+  channelPost    ChannelPost @relation(fields: [channelPostId], references: [id], onDelete: Cascade)
+
+  @@map("channel_view_observation_states")
+}
+
+model ChannelViewObservedInterval {
+  channelPostId String      @map("channel_post_id")
+  chatId        String      @map("chat_id")
+  fromAt        DateTime    @map("from_at") @db.Timestamptz(6)
+  toAt          DateTime    @map("to_at") @db.Timestamptz(6)
+  delta         BigInt
+  quality       String
+  source        String
+  channelPost   ChannelPost @relation(fields: [channelPostId], references: [id], onDelete: Cascade)
+
+  @@id([channelPostId, toAt])
+  @@index([toAt, channelPostId], map: "channel_view_observed_intervals_to_post_idx")
+  @@index([chatId, toAt, channelPostId], map: "channel_view_observed_intervals_chat_to_post_idx")
+  @@map("channel_view_observed_intervals")
+}
+
+model ChannelViewArchiveState {
+  chatId              String    @id @map("chat_id")
+  cursorAt            DateTime? @map("cursor_at") @db.Timestamptz(6)
+  cursorSignature     String?   @map("cursor_signature")
+  discoveredFrom      DateTime? @map("discovered_from") @db.Timestamptz(6)
+  discoveryCompleteAt DateTime? @map("discovery_complete_at") @db.Timestamptz(6)
+  lastAttemptAt       DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  lastSuccessAt       DateTime? @map("last_success_at") @db.Timestamptz(6)
+  fullRefreshAt       DateTime? @map("full_refresh_at") @db.Timestamptz(6)
+  stalledAt           DateTime? @map("stalled_at") @db.Timestamptz(6)
+  observedPostCount   Int       @default(0) @map("observed_post_count")
+  firstObservedAt     DateTime? @map("first_observed_at") @db.Timestamptz(6)
+  lastObservedAt      DateTime? @map("last_observed_at") @db.Timestamptz(6)
+  chat                Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("channel_view_archive_states")
+}
+
+model NetworkSettingsOperation {
+  id          String                           @id
+  actorUserId String                           @map("actor_user_id")
+  entityType  ChatEntityType                   @map("entity_type")
+  requestHash String                           @map("request_hash")
+  section     String
+  payload     Json
+  status      String
+  leaseToken  String?                          @map("lease_token")
+  leaseUntil  DateTime?                        @map("lease_until")
+  createdAt   DateTime                         @default(now()) @map("created_at")
+  updatedAt   DateTime                         @updatedAt @map("updated_at")
+  targets     NetworkSettingsOperationTarget[]
+
+  @@index([status, leaseUntil, updatedAt], map: "network_settings_operations_status_lease_updated_idx")
+  @@index([actorUserId, createdAt], map: "network_settings_operations_actor_created_idx")
+  @@map("network_settings_operations")
+}
+
+model NetworkSettingsOperationTarget {
+  operationId       String                   @map("operation_id")
+  entityId          String                   @map("entity_id")
+  status            String
+  revision          String
+  stopWordsRevision Int?                     @map("stop_words_revision")
+  failureCode       String?                  @map("failure_code")
+  failureMessage    String?                  @map("failure_message")
+  committedRevision String?                  @map("committed_revision")
+  followup          Json?
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  operation         NetworkSettingsOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  @@id([operationId, entityId])
+  @@index([status, updatedAt], map: "network_settings_operation_targets_status_updated_idx")
+  @@map("network_settings_operation_targets")
 }
 
 model ChannelPostViewSnapshot {

@@ -254,6 +254,7 @@ export class ModerationRuleFollowupService
     `);
     if (!claimed) return false;
     let journal = this.journal(id, leaseToken, receiptOnly);
+    let executionStarted = false;
     const heartbeat = setInterval(() => void this.renewLease(id, leaseToken).catch(() => {}), 5000);
     heartbeat.unref();
     try {
@@ -280,6 +281,7 @@ export class ModerationRuleFollowupService
         MODERATION_RULE_FOLLOWUP_EXECUTOR,
         { strict: false },
       );
+      executionStarted = true;
       await executor.executeRuleFollowup(row, plan, journal);
       await this.finish(id, leaseToken, 'COMPLETED');
     } catch (error) {
@@ -294,7 +296,9 @@ export class ModerationRuleFollowupService
       }
       const status =
         error instanceof RuleFollowupBanOutcomeUnknownError ||
-        isAmbiguousMaxSendError(error) ||
+        // FLAG: Preparation performs reads and atomic SQL only. Its failure cannot create a
+        // new unknown MAX effect; retained unknown phases still fence earlier execution.
+        (executionStarted && isAmbiguousMaxSendError(error)) ||
         ['BAN_STARTED', 'UNKNOWN'].includes(phase)
           ? 'AMBIGUOUS'
           : error instanceof ModerationRuleSanctionRejectedError ||

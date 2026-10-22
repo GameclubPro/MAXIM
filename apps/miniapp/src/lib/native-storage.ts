@@ -1,4 +1,5 @@
 type NativeStorageArea = 'device' | 'secure';
+const localWriteVersions = new Map<string, number>();
 
 export type StorageItemReadResult =
   | { status: 'found'; value: string }
@@ -83,11 +84,7 @@ export function readLocalMirrorItemState(key: string): StorageItemReadResult {
   }
 }
 
-export function writeLocalMirrorItem(key: string, value: string): void {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
+function persistLocalMirrorItem(key: string, value: string): void {
   try {
     window.localStorage.setItem(key, value);
   } catch {
@@ -95,10 +92,19 @@ export function writeLocalMirrorItem(key: string, value: string): void {
   }
 }
 
+export function writeLocalMirrorItem(key: string, value: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  localWriteVersions.set(key, (localWriteVersions.get(key) ?? 0) + 1);
+  persistLocalMirrorItem(key, value);
+}
+
 export function removeLocalMirrorItem(key: string): void {
   if (typeof window === 'undefined') {
     return;
   }
+  localWriteVersions.set(key, (localWriteVersions.get(key) ?? 0) + 1);
 
   try {
     window.localStorage.removeItem(key);
@@ -179,11 +185,13 @@ export function removeMirroredItem(key: string): void {
 }
 
 export async function hydrateMirroredItem(key: string): Promise<string | null> {
+  const version = localWriteVersions.get(key) ?? 0;
   const nativeValue = await readNativeStorageItem(key);
+  if ((localWriteVersions.get(key) ?? 0) !== version) return readLocalMirrorItem(key);
   if (nativeValue === null) {
     return readLocalMirrorItem(key);
   }
 
-  writeLocalMirrorItem(key, nativeValue);
+  persistLocalMirrorItem(key, nativeValue);
   return nativeValue;
 }

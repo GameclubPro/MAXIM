@@ -353,7 +353,7 @@ describe('AdminService night mode settings normalization', () => {
         displayName: null,
         chatTitle: null,
       },
-      channelSettingsSchema.parse({}),
+      channelSettingsSchema.parse({ revision: 0 }),
     );
 
     const upsert = prisma.chat.upsert.mock.lastCall?.[0];
@@ -21185,6 +21185,7 @@ describe('AdminService.updateChannelSettings', () => {
         chatTitle: null,
       },
       {
+        revision: 0,
         commentsEnabled: true,
         postSuggestionsEnabled: true,
       },
@@ -21199,10 +21200,10 @@ describe('AdminService.updateChannelSettings', () => {
         }),
       }),
     );
-    expect(prisma.channelSettings.upsert).toHaveBeenCalledWith(
+    expect(prisma.channelSettings.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { chatId: 'channel-1' },
-        update: expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'channel-1',
           commentsEnabled: true,
           postSuggestionsEnabled: true,
         }),
@@ -21246,6 +21247,7 @@ describe('AdminService.updateChannelSettings', () => {
         chatTitle: null,
       },
       {
+        revision: 0,
         commentsEnabled: true,
       },
     );

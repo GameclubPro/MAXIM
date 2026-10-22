@@ -28,6 +28,7 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException, ConflictException, type Logger } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
+import type { NetworkSettingsWriteOptions } from './network-settings-write';
 import {
   assertLegacyStopWordsWrite,
   omitLegacyStopWordsSettings,
@@ -867,6 +868,7 @@ export async function saveChatSettings(params: {
     settings: ChatSettings,
     options?: { skipManagedEntityBotRefresh?: boolean },
   ) => Promise<void>;
+  networkWrite?: NetworkSettingsWriteOptions;
 }): Promise<ChatSettings> {
   const parsed = updateSettingsRequestSchema.safeParse(params.body);
   if (!parsed.success) {
@@ -1061,6 +1063,21 @@ export async function saveChatSettings(params: {
     },
     params.chatId,
   );
+  if (params.networkWrite?.authoredKeys) {
+    for (const key of params.networkWrite.authoredKeys) {
+      if (
+        key === 'requiredSubscriptionBotMessageEnabled' ||
+        key === 'requiredSubscriptionExpiresAt'
+      )
+        continue;
+      // FLAG: Group mode cannot silently report an authored value that a domain invariant
+      // discarded. The actor must explicitly supply a compatible set of dirty fields.
+      if (!isDeepStrictEqual(parsed.data[key], normalizedSettings[key]))
+        throw new BadRequestException(
+          'Выбранное значение несовместимо с настройками одного из получателей.',
+        );
+    }
+  }
   const savedSubscriptionIds = new Set(
     Array.isArray(currentSettings?.requiredSubscriptionChannelIds)
       ? currentSettings.requiredSubscriptionChannelIds
@@ -1100,10 +1117,21 @@ export async function saveChatSettings(params: {
       duplicateWindowMode: currentSettings?.duplicateWindowMode === 'DAILY' ? 'DAILY' : 'INTERVAL',
     },
     next: normalizedSettings,
-    requestedSettings: params.body,
+    requestedSettings: params.networkWrite?.authoredKeys
+      ? Object.fromEntries(params.networkWrite.authoredKeys.map((key) => [key, parsed.data[key]]))
+      : params.body,
   });
   if (capabilityRequirements.length > 0) {
     await params.assertBotCapabilities(capabilityRequirements);
+  }
+  if (params.networkWrite?.validateOnly) {
+    const chat = await params.prisma.chat.findUniqueOrThrow({ where: { id: params.chatId } });
+    await assertFixedModeratorCapabilitiesForSettings(
+      params.prisma,
+      chat,
+      chatSettingsCapabilityPurposes(capabilityRequirements),
+    );
+    return normalizedSettings;
   }
   const botAssignmentData = await params.resolveBotAssignmentData();
   // FLAG: Major never includes Publisher-owned comment fields in UPDATE, so concurrent Publisher
@@ -1112,6 +1140,24 @@ export async function saveChatSettings(params: {
     omitStopWordsPolicy(omitPublisherOwnedChatSettings(normalizedSettings)),
   );
   delete majorOwnedSettings.settingsRevision;
+  if (params.networkWrite?.authoredKeys) {
+    const authored = new Set(params.networkWrite.authoredKeys);
+    if (
+      params.networkWrite.authoredKeys.some((key) =>
+        [
+          'nightModeForceCloseEnabled',
+          'nightModeForceCloseForever',
+          'nightModeForceCloseHours',
+          'nightModeForceCloseDays',
+        ].includes(key),
+      )
+    )
+      authored.add('nightModeForceCloseUntil');
+    // FLAG: Group patches may normalize their own requested fields, but never persist another
+    // target field merely because it shares the settings object or the same editor section.
+    for (const key of Object.keys(majorOwnedSettings) as Array<keyof typeof majorOwnedSettings>)
+      if (!authored.has(key)) delete majorOwnedSettings[key];
+  }
   const createSettings = {
     ...majorOwnedSettings,
     ...DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS,
@@ -1156,11 +1202,19 @@ export async function saveChatSettings(params: {
           'nightModeForceCloseHours',
           'nightModeForceCloseDays',
           'nightModeForceCloseUntil',
-        ].some((key) => hasOwnSetting(params.body, key as keyof ChatSettings))
+        ].some((key) =>
+          params.networkWrite?.authoredKeys
+            ? params.networkWrite.authoredKeys.includes(key as keyof ChatSettings)
+            : hasOwnSetting(params.body, key as keyof ChatSettings),
+        )
       ) {
         await advanceChatMutationOrder(tx, params.chatId, 'CHAT_CONTROL');
       }
-      if (hasOwnSetting(params.body, 'rulesAttachViolationsEnabled')) {
+      if (
+        params.networkWrite?.authoredKeys
+          ? params.networkWrite.authoredKeys.includes('rulesAttachViolationsEnabled')
+          : hasOwnSetting(params.body, 'rulesAttachViolationsEnabled')
+      ) {
         await advanceChatMutationOrder(tx, params.chatId, 'RULES');
       }
       if (currentSettings) {
@@ -1182,7 +1236,11 @@ export async function saveChatSettings(params: {
           actorUserId: params.actorUserId,
           action: 'UPDATE_SETTINGS',
           payload: buildUpdateSettingsAuditPayload({
-            requestedSettings: params.body,
+            requestedSettings: params.networkWrite?.authoredKeys
+              ? Object.fromEntries(
+                  params.networkWrite.authoredKeys.map((key) => [key, normalizedSettings[key]]),
+                )
+              : params.body,
             normalizedSettings,
             source: params.source,
           }),
@@ -1195,6 +1253,10 @@ export async function saveChatSettings(params: {
         select: { updatedAt: true },
       });
       savedRevision = written?.updatedAt?.toISOString();
+      if (params.networkWrite?.onCommitted) {
+        if (!savedRevision) throw chatSettingsRevisionConflict();
+        await params.networkWrite.onCommitted(tx, savedRevision);
+      }
     });
   } catch (error: unknown) {
     if ((error as { code?: unknown })?.code === 'P2002') {
@@ -1227,6 +1289,7 @@ export async function saveChatSettings(params: {
       publisherOwnedSettings?.commentsChatBroadcastsEnabled ??
       DEFAULT_PUBLISHER_OWNED_CHAT_SETTINGS.commentsChatBroadcastsEnabled,
   };
+  if (params.networkWrite?.deferFollowup) return resultingSettings;
   await params.chatContextCache.invalidate(params.chatId);
   if (capabilityRequirements.length > 0) {
     await params.refreshExecutionReadiness(resultingSettings, {

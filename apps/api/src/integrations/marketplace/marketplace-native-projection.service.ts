@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { MarketplaceBinding } from '@maxim/contracts/marketplace-integration';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -6,6 +6,7 @@ import type { Prisma } from '../../prisma/prisma-client';
 import type { MaxChannelMessageSnapshot } from '../../max/max-client.service';
 import { MARKETPLACE_HORIZON_TOLERANCE_MS } from './marketplace-statistics';
 import { marketplaceLocalGrantSql } from './marketplace-state.service';
+import { NetworkStatisticsObservationService } from '../../admin/network-statistics-observation.service';
 
 type NativeGrant = {
   entity_id: string;
@@ -21,7 +22,10 @@ const count = (value: number | null) =>
 
 @Injectable()
 export class MarketplaceNativeProjectionService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly networkStatistics?: NetworkStatisticsObservationService,
+  ) {}
 
   // Only compact native statistics are projected. Message bodies never enter native retention.
   private async lock(
@@ -51,6 +55,14 @@ export class MarketplaceNativeProjectionService {
     await this.prisma.$transaction(async (tx) => {
       const grant = await this.lock(tx, bindingId, lease);
       if (!grant || grant.checked_at?.getTime() !== observedAt.getTime()) return;
+      await this.networkStatistics?.audience(
+        grant.entity_id,
+        'channel',
+        metadata.audience,
+        observedAt,
+        'marketplace',
+        tx,
+      );
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${'marketplace-native-audience:' + grant.entity_id},0))`;
       const latest = await tx.channelAudienceSnapshot.findFirst({
         where: { chatId: grant.entity_id },
@@ -122,6 +134,7 @@ export class MarketplaceNativeProjectionService {
         return;
       }
       if (views === null) return;
+      await this.networkStatistics?.views(tx, post.id, views, observedAt, 'marketplace');
       // Retain the legacy native reaction column; absence never overwrites a previous observation.
       if (!post.latest_snapshot_at || post.latest_snapshot_at <= observedAt)
         await tx.$executeRaw`INSERT INTO channel_post_view_snapshots(id,channel_post_id,views,reactions_total,captured_at)

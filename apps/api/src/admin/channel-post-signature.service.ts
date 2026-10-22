@@ -29,6 +29,8 @@ import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { hasConfirmedEditMessageAccess } from '../max/max-delete-message-access.util';
 import { ChannelPostSignaturePresentation, ChatEntityType } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import type { NetworkSettingsWriteOptions } from './network-settings-write';
+import { hasExecutionCapability } from '../max/max-execution-route-proof';
 
 export const CHANNEL_POST_MAX_TEXT_LENGTH = 4_000;
 
@@ -59,6 +61,7 @@ export class ChannelPostSignatureService {
         postSignaturePresentation: true,
         postSignatureText: true,
         postSignatureUrl: true,
+        revision: true,
       },
     });
     return channelPostSignatureSettingsSchema.parse({
@@ -69,6 +72,7 @@ export class ChannelPostSignatureService {
           : 'signature',
       text: settings?.postSignatureText ?? CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
       url: settings?.postSignatureUrl ?? '',
+      revision: settings?.revision ?? 0,
     });
   }
 
@@ -76,6 +80,7 @@ export class ChannelPostSignatureService {
     chatId: string,
     actorUserId: string,
     body: unknown,
+    networkWrite?: NetworkSettingsWriteOptions,
   ): Promise<ChannelPostSignatureSettings> {
     const parsed = updateChannelPostSignatureRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -83,10 +88,12 @@ export class ChannelPostSignatureService {
     }
     await this.assertChannel(chatId);
     const current = await this.getSettings(chatId);
+    if (current.revision !== parsed.data.expectedRevision) throw this.revisionConflict();
+    const { expectedRevision, ...changes } = parsed.data;
     const validateNext = (currentSettings: ChannelPostSignatureSettings) => {
       const result = channelPostSignatureSettingsSchema.safeParse({
         ...currentSettings,
-        ...parsed.data,
+        ...changes,
       });
       if (!result.success) {
         throw new BadRequestException(result.error.format());
@@ -94,7 +101,7 @@ export class ChannelPostSignatureService {
       return result.data;
     };
     const preview = validateNext(current);
-    if (preview.enabled && (parsed.data.enabled === true || !current.enabled)) {
+    if (preview.enabled && (networkWrite || parsed.data.enabled === true || !current.enabled)) {
       await this.assertEditAccessAvailable(chatId);
     }
     const channelLinkVerified = preview.enabled && !preview.url;
@@ -107,15 +114,8 @@ export class ChannelPostSignatureService {
       // MAX preflight stays outside the transaction so network waits never hold this lock.
       const lockedChat = await lockModeratorSettingsChat(tx, chatId);
       const lockedCurrent = await this.getSettings(chatId, tx);
+      if (lockedCurrent.revision !== expectedRevision) throw this.revisionConflict();
       const next = validateNext(lockedCurrent);
-      if (
-        next.enabled === lockedCurrent.enabled &&
-        next.presentation === lockedCurrent.presentation &&
-        next.text === lockedCurrent.text &&
-        next.url === lockedCurrent.url
-      ) {
-        return lockedCurrent;
-      }
       if (next.enabled && !next.url && !channelLinkVerified) {
         throw new ConflictException('Настройки подписи изменились. Повторите сохранение.');
       }
@@ -124,38 +124,96 @@ export class ChannelPostSignatureService {
         lockedChat,
         next.enabled ? ['edit_message'] : [],
       );
-      await tx.channelSettings.upsert({
+      if (networkWrite?.validateOnly) return next;
+      if (
+        next.enabled === lockedCurrent.enabled &&
+        next.presentation === lockedCurrent.presentation &&
+        next.text === lockedCurrent.text &&
+        next.url === lockedCurrent.url
+      ) {
+        await networkWrite?.onCommitted?.(tx, String(lockedCurrent.revision));
+        return lockedCurrent;
+      }
+      const data = {
+        postSignatureEnabled: next.enabled,
+        postSignaturePresentation:
+          next.presentation === 'button'
+            ? ChannelPostSignaturePresentation.BUTTON
+            : ChannelPostSignaturePresentation.SIGNATURE,
+        postSignatureText: next.text,
+        postSignatureUrl: next.url,
+      };
+      const exists = await tx.channelSettings.findUnique({
         where: { chatId },
-        create: {
-          chatId,
-          postSignatureEnabled: next.enabled,
-          postSignaturePresentation:
-            next.presentation === 'button'
-              ? ChannelPostSignaturePresentation.BUTTON
-              : ChannelPostSignaturePresentation.SIGNATURE,
-          postSignatureText: next.text,
-          postSignatureUrl: next.url,
-        },
-        update: {
-          postSignatureEnabled: next.enabled,
-          postSignaturePresentation:
-            next.presentation === 'button'
-              ? ChannelPostSignaturePresentation.BUTTON
-              : ChannelPostSignaturePresentation.SIGNATURE,
-          postSignatureText: next.text,
-          postSignatureUrl: next.url,
-        },
+        select: { revision: true },
       });
+      if (exists) {
+        const written = await tx.channelSettings.updateMany({
+          where: { chatId, revision: expectedRevision },
+          data: { ...data, revision: { increment: 1 } },
+        });
+        if (written.count !== 1) throw this.revisionConflict();
+      } else {
+        if (expectedRevision !== 0) throw this.revisionConflict();
+        await tx.channelSettings.create({ data: { chatId, ...data, revision: 1 } });
+      }
+      const written = await tx.channelSettings.findUniqueOrThrow({
+        where: { chatId },
+        select: { revision: true },
+      });
+      await networkWrite?.onCommitted?.(tx, String(written.revision));
       await tx.auditLog.create({
         data: {
           chatId,
           actorUserId,
           action: 'UPDATE_CHANNEL_POST_SIGNATURE',
-          payload: { changed: parsed.data },
+          payload: { settingKeys: Object.keys(changes) },
         },
       });
-      return next;
+      return { ...next, revision: written.revision };
     });
+  }
+
+  private revisionConflict(): ConflictException {
+    return new ConflictException({
+      code: 'CHANNEL_SETTINGS_CONCURRENT_UPDATE',
+      message: 'Настройки канала изменились. Обновите экран.',
+    });
+  }
+
+  async assertNetworkSettingsEditingAccess(chatId: string): Promise<void> {
+    await this.assertChannel(chatId);
+    await this.assertEditAccessAvailable(chatId);
+    const botId = await this.maxBotLinkService.resolveBotIdForSend({
+      chatId,
+      fallbackToPrimary: false,
+    });
+    if (!botId || this.maxBotLinkService.getExecutableBotById(botId)?.id !== botId)
+      throw new BadRequestException(
+        'Для этих настроек предоставьте боту право отправлять сообщения канала.',
+      );
+    let access;
+    try {
+      access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+        botId,
+        bypassCache: true,
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+        timeoutMs: 2_000,
+      });
+    } catch {
+      throw new ServiceUnavailableException('Не удалось проверить права бота. Повторите позже.');
+    }
+    if (
+      !hasExecutionCapability(
+        { permissionsSnapshot: { ...access, checkedAt: null } },
+        ChatEntityType.CHANNEL,
+        'send_message',
+      )
+    )
+      throw new BadRequestException(
+        'Для этих настроек предоставьте боту право отправлять сообщения канала.',
+      );
   }
 
   async preparePostText(

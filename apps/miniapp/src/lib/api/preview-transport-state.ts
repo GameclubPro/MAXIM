@@ -396,6 +396,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     }),
   ];
   const channelSettings = channelSettingsSchema.parse({
+    revision: 0,
     commentsEnabled: true,
     commentsModerationEnabled: true,
     commentsBlockLinksEnabled: true,
@@ -411,6 +412,7 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
     engagementMessageText: 'Есть идея или обратная связь? Выберите действие ниже.',
   });
   const channelPostSignature: ChannelPostSignatureSettings = {
+    revision: 0,
     enabled: channelPostSignatureState === 'button',
     presentation: channelPostSignatureState === 'button' ? 'button' : 'signature',
     text: channelPostSignatureState === 'button' ? '📞 Заказать рекламу' : 'Подписаться на канал',

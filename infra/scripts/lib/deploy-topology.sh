@@ -372,6 +372,13 @@ maxim_topology_require_fixed_moderator() {
   node "$(dirname "${BASH_SOURCE[0]}")/../assert-fixed-moderator-source.mjs" "$commit_sha"
 }
 
+maxim_topology_require_managed_network_foundation() {
+  local commit_sha="$1"
+  # FLAG: Installed operation journals and channel revisions survive feature-off.
+  # Keep the runner, atomic COMMITTED receipts and every channel CAS writer wired.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-managed-network-foundation-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_managed_entity_activation() {
   local commit_sha="$1"
   # FLAG: Known denials, pending activation, capability ceilings and receipt-only

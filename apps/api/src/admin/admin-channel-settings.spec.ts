@@ -3,11 +3,15 @@ import { readChannelSettings, saveChannelSettings } from './admin-channel-settin
 
 describe('channel settings normalization', () => {
   it('preserves subscription protection when a legacy settings client omits the new fields', async () => {
-    const upsert = jest.fn();
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const audit = jest.fn();
     const tx = {
       chat: { upsert: jest.fn().mockResolvedValue({ id: '-1', fixedModeratorBotId: null }) },
-      channelSettings: { upsert },
+      channelSettings: {
+        updateMany,
+        findUnique: jest.fn().mockResolvedValue({ revision: 0 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({ revision: 1 }),
+      },
       auditLog: { create: audit },
     };
     await saveChannelSettings({
@@ -15,18 +19,15 @@ describe('channel settings normalization', () => {
       chatContextCache: { invalidate: jest.fn() },
       chatId: '-1',
       actorUserId: 'admin',
-      body: { postSuggestionsEnabled: true },
+      body: { revision: 0, postSuggestionsEnabled: true },
       source: 'miniapp',
       resolveBotAssignmentData: () => ({ botId: 'major', primaryBotId: 'major' }),
       refreshExecutionReadiness: jest.fn(),
     });
-    const saved = upsert.mock.calls[0][0];
-    expect(saved.update).not.toHaveProperty('postSuggestionsRequireSubscription');
-    expect(saved.update).not.toHaveProperty('postSuggestionsDeleteOnUnsubscribe');
-    expect(saved.create).toMatchObject({
-      postSuggestionsRequireSubscription: false,
-      postSuggestionsDeleteOnUnsubscribe: false,
-    });
+    const saved = updateMany.mock.calls[0][0];
+    expect(saved.where).toEqual({ chatId: '-1', revision: 0 });
+    expect(saved.data).not.toHaveProperty('postSuggestionsRequireSubscription');
+    expect(saved.data).not.toHaveProperty('postSuggestionsDeleteOnUnsubscribe');
     expect(audit.mock.calls[0][0].data.payload).not.toHaveProperty(
       'postSuggestionsRequireSubscription',
     );
@@ -40,8 +41,9 @@ describe('channel settings normalization', () => {
         postSuggestionsButtonUrl: 'https://max.ru/chat/example/https://nested.example.test',
       }),
       updatedAt,
+      revision: 0,
     };
-    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
 
     const upsert = jest.fn().mockResolvedValue({ channelSettings: storedSettings });
     const result = await readChannelSettings({
@@ -61,7 +63,7 @@ describe('channel settings normalization', () => {
     expect(result.postSuggestionsButtonEnabled).toBe(false);
     expect(result.postSuggestionsButtonUrl).toBe('');
     expect(updateMany).toHaveBeenCalledWith({
-      where: { chatId: 'channel-1', updatedAt },
+      where: { chatId: 'channel-1', revision: 0 },
       data: expect.objectContaining({
         postSuggestionsButtonEnabled: false,
         postSuggestionsButtonUrl: '',

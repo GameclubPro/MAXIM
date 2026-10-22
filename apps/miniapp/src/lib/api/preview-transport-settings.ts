@@ -81,7 +81,7 @@ import {
   type PreviewClock,
   type PreviewRequestHandler,
 } from './preview-transport-runtime';
-import { cloneJson } from './preview-transport-shared';
+import { cloneJson, parseJsonBody } from './preview-transport-shared';
 import {
   PREVIEW_STANDBY_BOT_ID,
   buildPreviewAssignedBots,
@@ -276,14 +276,6 @@ export function buildChannelSettingsScreen(
     },
     managedBroadcasts: [],
   });
-}
-
-export function parseJsonBody(init?: RequestInit): unknown {
-  if (!init?.body || typeof init.body !== 'string') {
-    return null;
-  }
-
-  return JSON.parse(init.body);
 }
 
 export function createBroadcastHandoffResponse(): BroadcastHandoffResponse {
@@ -1045,10 +1037,15 @@ export async function handleChannelRequest(
 
     if (method === 'PATCH') {
       const payload = updateChannelPostSignatureRequestSchema.parse(parseJsonBody(init));
+      if (payload.expectedRevision !== (state.channelPostSignature.revision ?? 0))
+        throw new Error('Настройки канала изменились. Обновите экран.');
+      const revision = (state.channelPostSignature.revision ?? 0) + 1;
       state.channelPostSignature = channelPostSignatureSettingsSchema.parse({
         ...state.channelPostSignature,
         ...payload,
+        revision,
       });
+      state.channelSettings = { ...state.channelSettings, revision };
       return cloneJson(state.channelPostSignature);
     }
   }
@@ -1076,7 +1073,12 @@ export async function handleChannelRequest(
     }
 
     if (method === 'PUT') {
-      state.channelSettings = channelSettingsSchema.parse(parseJsonBody(init));
+      const payload = channelSettingsSchema.parse(parseJsonBody(init));
+      if (payload.revision !== (state.channelSettings.revision ?? 0))
+        throw new Error('Настройки канала изменились. Обновите экран.');
+      const revision = (state.channelSettings.revision ?? 0) + 1;
+      state.channelSettings = { ...payload, revision };
+      state.channelPostSignature = { ...state.channelPostSignature, revision };
       return cloneJson(state.channelSettings);
     }
   }

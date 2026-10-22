@@ -2,6 +2,8 @@
 module.exports = {
   testRegex: '.*\\.(spec|test)\\.ts$',
   moduleNameMapper: {
+    '^@maxim/contracts/network-settings$': '<rootDir>/../../packages/contracts/src/network-settings.ts',
+    '^@maxim/contracts/networks-stats$': '<rootDir>/../../packages/contracts/src/networks-stats.ts',
     '^@maxim/contracts/marketplace-integration$':
       '<rootDir>/../../packages/contracts/src/marketplace-integration.ts',
     '^@maxim/contracts/advertising-placement$':

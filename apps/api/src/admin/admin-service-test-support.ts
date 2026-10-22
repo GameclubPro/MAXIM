@@ -4,6 +4,7 @@ import {
   type ManagedEntityHeader,
 } from '@maxim/contracts';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { createChannelSettingsPrismaMock } from './admin-channel-settings-test-support';
 import { AdminService } from './admin.service';
 
 export type ManagedEntityType = 'chat' | 'channel';
@@ -534,23 +535,7 @@ export function createPrismaMock() {
     managedBotChatCatalog: {
       findMany: jest.fn().mockResolvedValue([]),
     },
-    channelSettings: {
-      findUnique: jest.fn().mockResolvedValue(null),
-      findMany: jest.fn().mockResolvedValue([]),
-      upsert: jest.fn().mockResolvedValue({
-        chatId: 'channel-1',
-        postSuggestionsEnabled: false,
-        postSuggestionsEntryMode: 'BOT',
-        postSuggestionsButtonText: 'Предложить пост',
-        commentsEnabled: false,
-        engagementPublishedMessageId: null,
-        engagementPublishedBotId: null,
-        engagementPublishedThreadId: null,
-        engagementPublishedAt: null,
-      }),
-      update: jest.fn().mockResolvedValue(undefined),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-    },
+    channelSettings: createChannelSettingsPrismaMock(),
     chatSettings: {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),

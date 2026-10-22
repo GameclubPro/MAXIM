@@ -9,6 +9,7 @@ import {
 import { isMutationTunnelPreferredHost } from './transport-mutation-tunnel-hosts';
 
 const COMPRESSED_TUNNEL_BODY_THRESHOLD = 1024;
+const MAX_NORMAL_TUNNEL_BODY_BYTES = 128 * 1024;
 const CHUNKED_TUNNEL_CHUNK_BYTES = 4_200;
 const MAX_CHUNKED_TUNNEL_BODY_LENGTH = 34 * 1024 * 1024;
 const CHUNKED_TUNNEL_CONCURRENCY = 6;
@@ -70,6 +71,11 @@ export async function buildMutationTunnelPath(
   const params = buildBaseTunnelParams(path, init);
 
   if (typeof init.body === 'string' && init.body) {
+    // FLAG: Gzip cannot hide a decoded body above the server's normal tunnel limit.
+    // Returning null sends the unchanged UTF-8 payload through the chunked tunnel instead.
+    if (new TextEncoder().encode(init.body).byteLength > MAX_NORMAL_TUNNEL_BODY_BYTES) {
+      return null;
+    }
     const body = encodeBase64UrlUtf8(init.body);
     const bodyGzip =
       init.body.length >= COMPRESSED_TUNNEL_BODY_THRESHOLD ? await encodeGzipBody(init.body) : null;

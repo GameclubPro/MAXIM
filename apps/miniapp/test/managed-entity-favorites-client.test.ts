@@ -3,8 +3,31 @@ import test from 'node:test';
 import {
   getManagedEntityFavoriteLabels,
   updateManagedEntityFavoriteLabels,
+  updateManagedEntityFavorites,
 } from '../src/lib/api/managed-entity-favorites-client';
 import type { ApiRequestInit, ApiTransport } from '../src/lib/api/transport';
+
+test('single favorites writes carry the observed assignment and never replay a transport failure', async () => {
+  const calls: Array<{ path: string; init?: ApiRequestInit }> = [];
+  const failed = new Error('ambiguous transport failure');
+  const api: ApiTransport = {
+    request: async (path, init) => {
+      calls.push({ path, init });
+      throw failed;
+    },
+  };
+  await assert.rejects(
+    updateManagedEntityFavorites(api, 'chat', '-1', ['watch'], 'important'),
+    (error) => error === failed,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.path, '/managed-entities/chat/-1/favorites');
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    favoriteTypes: ['watch'],
+    expectedFavoriteType: 'important',
+  });
+  assert.equal(calls[0]?.init?.retryMutationOnTransportError, false);
+});
 
 test('loads server-authoritative favorite category labels', async () => {
   const calls: Array<{ path: string; init?: ApiRequestInit }> = [];

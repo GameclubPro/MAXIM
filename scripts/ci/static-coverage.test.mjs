@@ -104,7 +104,7 @@ test('Static keeps its twelve-minute budget and every blocking validation step',
   assert.doesNotMatch(job, /^\s*(?:-\s*)?(?:if|continue-on-error|shell|working-directory):/mu);
   const runs = [...job.matchAll(/^ {6}(?:- | {2})run: (.+)$/gmu)].map((entry) => entry[1]);
   assert.deepEqual(runs, [
-    'npm ci',
+    'npm ci --no-audit',
     'node scripts/agent/preflight.mjs',
     'npm audit --omit=dev --audit-level=high',
     'npm run check:static:ci',
@@ -113,6 +113,17 @@ test('Static keeps its twelve-minute budget and every blocking validation step',
     'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7',
     'npm run check:infra',
   ]);
+});
+
+test('CI installation jobs leave dependency auditing to the required Static gate', () => {
+  const installs = [...workflow.matchAll(/^ {6}- run: (npm ci(?: .*)?)$/gmu)].map(
+    (entry) => entry[1],
+  );
+  assert.deepEqual(installs, Array(7).fill('npm ci --no-audit'));
+  const audits = [...workflow.matchAll(/^ {6}(?:- | {2})run: (npm audit(?: .*)?)$/gmu)].map(
+    (entry) => entry[1],
+  );
+  assert.deepEqual(audits, ['npm audit --omit=dev --audit-level=high']);
 });
 
 test('Required still rejects any non-successful Static result', () => {
