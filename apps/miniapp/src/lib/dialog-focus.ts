@@ -3,9 +3,14 @@ import { useEffect, type RefObject } from 'react';
 const DIALOG_FOCUSABLE_SELECTOR =
   'button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-function getDialogFocusableElements(scope: HTMLElement): HTMLElement[] {
+export function getDialogFocusableElements(scope: HTMLElement): HTMLElement[] {
   return Array.from(scope.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)).filter(
-    (element) => element.offsetParent !== null,
+    (element) =>
+      element.tabIndex >= 0 &&
+      !element.matches(':disabled') &&
+      !element.closest('[inert], [hidden], [aria-hidden="true"]') &&
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility === 'visible',
   );
 }
 

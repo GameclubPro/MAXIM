@@ -486,12 +486,15 @@
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section] {
-    --stats-accent: var(--steel-violet);
+    --stats-accent: var(--steel-blue);
     --stats-range-active-surface: color-mix(in srgb, var(--stats-accent) 13%, var(--steel-raised));
     --stats-stage-tint: color-mix(in srgb, var(--stats-accent) 4%, var(--steel-panel));
     --stats-left-surface: color-mix(in srgb, var(--steel-rose) 10%, var(--steel-panel));
     --stats-left-border: color-mix(in srgb, var(--steel-rose) 26%, var(--steel-line));
-    --events-sticky-top: calc(var(--managed-entity-workspace-header-bottom, 88px) + 72px);
+    --events-sticky-top: calc(
+      var(--managed-entity-workspace-header-bottom, 88px) +
+        var(--events-primary-tabs-height, 58px) + 14px
+    );
     grid-template-columns: minmax(0, 1fr);
     min-width: 0;
     gap: 6px;
@@ -500,11 +503,11 @@
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section='participants'] {
-    --stats-accent: var(--steel-ice);
+    --stats-accent: var(--steel-blue);
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section='activity'] {
-    --stats-accent: var(--steel-mint);
+    --stats-accent: var(--steel-blue);
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
@@ -529,7 +532,7 @@
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
     .events-primary-tab {
-    --tab-accent: var(--steel-violet);
+    --tab-accent: var(--steel-blue);
     --stats-tab-active-border: color-mix(in srgb, var(--tab-accent) 24%, var(--steel-line));
     --stats-tab-active-surface: color-mix(in srgb, var(--tab-accent) 7%, var(--steel-raised));
     position: relative;
@@ -550,12 +553,12 @@
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
     .events-primary-tab:nth-child(2) {
-    --tab-accent: var(--steel-ice);
+    --tab-accent: var(--steel-blue);
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
     .events-primary-tab:nth-child(3) {
-    --tab-accent: var(--steel-mint);
+    --tab-accent: var(--steel-blue);
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
@@ -576,6 +579,28 @@
     flex: 0 0 18px;
     place-items: center;
     color: var(--tab-accent);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-primary-tabs.is-expanded-text
+    .events-primary-tabs__track {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scroll-padding-inline: 4px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-primary-tabs.is-expanded-text
+    .events-primary-tab {
+    flex: 1 0 auto;
+    padding: 8px 12px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace]
+    .events-primary-tabs.is-expanded-text
+    .events-primary-tab__icon {
+    display: none;
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
@@ -1332,7 +1357,11 @@
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
     > .events-primary-tabs::before {
-    display: none;
+    display: block;
+    top: -8px;
+    bottom: -4px;
+    z-index: -1;
+    background: var(--steel-page);
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
@@ -1473,7 +1502,6 @@
         .participants-roster__results,
         .participants-roster__identity > span,
         .participants-roster__activity,
-        .membership-feed__time,
         .membership-feed__pill,
         .events-dashboard__metric small,
         .events-dashboard__period-label
@@ -1510,5 +1538,42 @@
       ) {
       font-variant-numeric: tabular-nums;
     }
+  }
+
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-statistics-section]
+    > .events-primary-tabs {
+    isolation: isolate;
+    box-shadow: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-statistics-section]
+    .events-primary-tabs__track {
+    position: relative;
+    border-radius: 14px;
+    background: var(--steel-panel);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-statistics-section]
+    .membership-feed__item {
+    grid-template-columns: 3.25rem minmax(0, 1fr);
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-statistics-section]
+    .membership-feed__rail {
+    grid-auto-flow: row;
+    justify-content: stretch;
+    justify-items: center;
+    gap: 6px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-statistics-section]
+    .membership-feed__time {
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: normal;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
   }
 }

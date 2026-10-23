@@ -12,8 +12,8 @@
   Independent read-only monitoring can continue.
 - During an incident, name the next user-visible recovery result and its blocking gate. Defer
   unrelated refactoring and diagnostics; use the [incident delivery rules](docs/development-reliability-plan.md#incident-delivery).
-- Preserve dirty worktrees and unrelated changes. Reuse a suitable clean checkout when isolation
-  is needed; stage only owned paths. Never change a checkout/index used by an active wrapper.
+- Keep `main` clean at the verified production SHA; use task worktrees and fast-forward
+  after release. Preserve inherited work; stage owned paths. Never mutate an active wrapper's checkout.
 - Continue authorized reversible work without repeated permission requests. Approval for one
   destructive recovery does not authorize another source or a fleet-wide operation.
 

@@ -117,7 +117,7 @@ test('daily audience table stays visible with all four data columns', () => {
   );
   assert.match(
     channelStatsPageSource,
-    /<section className="channel-summary-table-card"[\s\S]*?<table className="channel-summary-table"/u,
+    /<section className="channel-summary-table-card"[\s\S]*?<table\b[^>]*className="channel-summary-table"/u,
   );
   assert.doesNotMatch(channelStatsPageSource, /<details className="channel-summary-table-card"/u);
   assert.doesNotMatch(channelStatsExecutiveCss, /channel-summary-table-card:not\(\[open\]\)/u);
@@ -178,7 +178,7 @@ test('managed statistics workspace keeps sticky navigation below the measured he
   );
   assert.match(
     eventsPageSource,
-    /<ManagedEntityWorkspaceHeader[\s\S]*?<div className="events-primary-tabs"[\s\S]*?<section className=\{`events-stage events-stage--\$\{section\}`\}>/u,
+    /<ManagedEntityWorkspaceHeader[\s\S]*?<div\s+className=\{`events-primary-tabs[\s\S]*?<section className=\{`events-stage events-stage--\$\{section\}`\}>/u,
   );
   assert.match(
     statisticsExperienceCss,

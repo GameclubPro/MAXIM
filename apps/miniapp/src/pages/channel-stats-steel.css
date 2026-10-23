@@ -114,7 +114,7 @@
     .channel-insights[data-managed-entity-workspace]
     .channel-insights__body {
     gap: 16px;
-    padding-inline: 12px;
+    padding-inline: 0;
   }
 
   body[data-miniapp-profile='moderation']
@@ -150,9 +150,9 @@
   body[data-miniapp-profile='moderation']
     .channel-insights[data-managed-entity-workspace]
     .channel-summary-card--compact {
-    min-height: 112px;
+    min-height: 76px;
     gap: 4px;
-    padding: 12px 14px;
+    padding: 10px 12px;
     border: 1px solid var(--steel-line);
     border-radius: 20px;
     background:
@@ -167,7 +167,7 @@
     .channel-insights[data-managed-entity-workspace]
     .channel-summary-card--compact
     > small {
-    min-height: 32px;
+    min-height: 0;
     color: var(--steel-muted);
     font-size: 0.78rem;
     font-weight: 650;
@@ -185,7 +185,7 @@
     text-overflow: clip;
     white-space: normal;
     overflow-wrap: anywhere;
-    font-size: clamp(1.2rem, 5.5vw, 2.15rem);
+    font-size: clamp(1.35rem, 6vw, 2.15rem);
     font-weight: 850;
     line-height: 1.4;
     letter-spacing: -0.055em;
@@ -236,60 +236,6 @@
     font-size: 1.05rem;
     font-weight: 800;
     letter-spacing: -0.035em;
-  }
-
-  body[data-miniapp-profile='moderation']
-    .channel-insights[data-managed-entity-workspace]
-    :is(.channel-audience-board__metrics, .channel-audience-board__legend) {
-    gap: 8px;
-    margin-inline: 0;
-    border: 0;
-    background: transparent;
-  }
-
-  body[data-miniapp-profile='moderation']
-    .channel-insights[data-managed-entity-workspace]
-    :is(.channel-audience-metric, .channel-audience-board__legend > span) {
-    min-height: 68px;
-    padding: 10px;
-    border: 1px solid var(--steel-line);
-    border-radius: 14px;
-    background: var(--steel-inset);
-    box-shadow: none;
-  }
-
-  body[data-miniapp-profile='moderation']
-    .channel-insights[data-managed-entity-workspace]
-    .channel-audience-metric
-    b {
-    font-size: 1.2rem;
-    font-weight: 800;
-    line-height: 1.4;
-    letter-spacing: -0.035em;
-  }
-
-  body[data-miniapp-profile='moderation']
-    .channel-insights[data-managed-entity-workspace]
-    :is(.channel-audience-metric :is(b, small, em), .channel-audience-board__legend :is(b, em)) {
-    min-width: 0;
-    max-width: 100%;
-    overflow: visible;
-    text-overflow: clip;
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-
-  body[data-miniapp-profile='moderation']
-    .channel-insights[data-managed-entity-workspace]
-    :is(
-      .channel-audience-metric small,
-      .channel-audience-metric em,
-      .channel-audience-board__legend em
-    ) {
-    color: var(--steel-muted);
-    font-size: 0.7rem;
-    font-weight: 650;
-    line-height: 1.3;
   }
 
   body[data-miniapp-profile='moderation']
@@ -645,49 +591,6 @@
 
     body[data-miniapp-profile='moderation']
       .channel-insights[data-managed-entity-workspace]
-      .channel-audience-metric {
-      grid-template-columns: 20px minmax(0, 1fr);
-      grid-template-areas:
-        'icon date'
-        'value value'
-        'label label';
-      gap: 5px;
-      align-content: start;
-    }
-
-    body[data-miniapp-profile='moderation']
-      .channel-insights[data-managed-entity-workspace]
-      .channel-audience-metric
-      svg {
-      width: 20px;
-      height: 20px;
-    }
-
-    body[data-miniapp-profile='moderation']
-      .channel-insights[data-managed-entity-workspace]
-      .channel-audience-metric
-      small {
-      text-align: right;
-    }
-
-    body[data-miniapp-profile='moderation']
-      .channel-insights[data-managed-entity-workspace]
-      .channel-audience-metric
-      em {
-      text-align: left;
-    }
-
-    body[data-miniapp-profile='moderation']
-      .channel-insights[data-managed-entity-workspace]
-      .channel-audience-board__legend
-      > span {
-      grid-template-areas:
-        'icon value'
-        'label label';
-    }
-
-    body[data-miniapp-profile='moderation']
-      .channel-insights[data-managed-entity-workspace]
       :is(.channel-insights__chart-card--audience, .channel-fact-panel) {
       padding: 11px;
     }
@@ -727,9 +630,6 @@
       .channel-insights[data-managed-entity-workspace]
       :is(
         .channel-summary-card--compact > span,
-        .channel-audience-metric small,
-        .channel-audience-metric em,
-        .channel-audience-board__legend em,
         .channel-insights__data-status,
         .channel-insights__calculated-at,
         .channel-summary-table tr,
@@ -756,7 +656,6 @@
       .channel-insights[data-managed-entity-workspace]
       :is(
         .channel-summary-card--compact > strong,
-        .channel-audience-metric b,
         .channel-summary-table td,
         .channel-events-section__metric strong
       ) {
@@ -792,6 +691,238 @@
       .channel-events-section__metric:first-child {
       grid-column: 1 / -1;
       min-height: 100px;
+    }
+  }
+
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-stats-graph__canvas--audience {
+    grid-template-rows: none;
+    gap: 12px;
+    padding: 0;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-board__heading {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px 12px;
+    align-items: baseline;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-board__heading
+    strong {
+    font-size: 0.9375rem;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    :is(.channel-audience-board__plot, .channel-stats-graph__svg) {
+    height: 260px;
+    min-height: 260px;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-board__plot {
+    position: relative;
+    touch-action: pan-y;
+    border-radius: 12px;
+    outline-offset: 4px;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-board__plot:focus-visible {
+    outline: 2px solid var(--steel-blue);
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    :is(.channel-stats-graph__line--audience, .channel-stats-graph__dot) {
+    stroke: var(--steel-blue);
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-board__series {
+    font-size: 0.75rem;
+    gap: 8px 14px;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-board__series
+    > span:not(.is-previous)::before {
+    border-color: var(--steel-blue);
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-selection {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--steel-line);
+    border-radius: 14px;
+    background: var(--steel-inset);
+    color: var(--steel-muted);
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-selection
+    strong {
+    grid-column: 1;
+    grid-row: 2;
+    color: var(--steel-ink);
+    font-size: 1.5rem;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-selection
+    > span:last-child {
+    align-self: end;
+    grid-column: 2;
+    grid-row: 1 / 3;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-details {
+    border-top: 1px solid var(--steel-line);
+    font-size: 0.8125rem;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-details
+    summary {
+    min-height: 44px;
+    padding-block: 12px;
+    cursor: pointer;
+    color: var(--steel-muted);
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-details
+    b {
+    margin-inline-start: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-details
+    dl {
+    margin: 0;
+    display: grid;
+    gap: 10px;
+    padding-block: 4px 12px;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-details
+    dl
+    > div {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px 12px;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-audience-details
+    dd {
+    margin: 0;
+    font-weight: 750;
+    font-variant-numeric: tabular-nums;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    :is(.channel-audience-selection, .channel-audience-details)
+    .is-positive {
+    color: var(--steel-mint);
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    :is(.channel-audience-selection, .channel-audience-details)
+    .is-negative {
+    color: var(--steel-rose);
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-summary-table-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding: 0 4px 8px;
+    font-size: 0.875rem;
+  }
+  body[data-miniapp-profile='moderation']
+    .channel-insights[data-managed-entity-workspace]
+    .channel-summary-table-heading
+    button {
+    min-height: 44px;
+    padding: 8px 10px;
+    border: 1px solid var(--steel-line);
+    border-radius: 12px;
+    color: var(--steel-blue);
+    background: var(--steel-inset);
+    font: inherit;
+    font-size: 0.75rem;
+  }
+  @media (max-width: 600px) {
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-insights__chart-card--audience {
+      padding-inline: 0;
+    }
+    body[data-miniapp-profile='moderation']
+      .app-shell
+      .channel-insights[data-managed-entity-workspace]
+      .channel-insights__chart-card--audience {
+      width: auto;
+      max-width: none;
+      margin-inline: calc(0px - var(--app-page-gutter));
+    }
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-stats-graph__canvas--audience
+      > :not(.channel-audience-board__plot) {
+      margin-inline: 14px;
+    }
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      :is(
+        .channel-insights__summary,
+        .channel-insights__overview-top,
+        .channel-insights__primary-stack
+      ) {
+      gap: 10px;
+    }
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-summary-card--compact {
+      padding: 10px;
+      align-content: start;
+    }
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-summary-card--compact
+      > small {
+      font-size: 0.8125rem;
+    }
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-summary-card--compact
+      > strong {
+      line-height: 1.4;
+    }
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-summary-card--compact
+      > span {
+      font-size: 0.75rem;
     }
   }
 }

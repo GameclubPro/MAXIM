@@ -265,6 +265,8 @@ export function Shell({
             profile === 'moderation' && networksEnabled && 'bottom-nav--four',
             isKeyboardOpen && 'is-keyboard-open',
           )}
+          inert={isKeyboardOpen}
+          aria-hidden={isKeyboardOpen || undefined}
           aria-label={profile === 'publisher' ? 'Навигация Публика' : 'Навигация Майора'}
         >
           <Link

@@ -128,12 +128,19 @@ export function ManagedEntityWorkspaceHeader({
       return undefined;
     }
 
+    const tabs = workspace.querySelector<HTMLElement>('.events-primary-tabs');
     const measure = () => {
+      if (tabs)
+        workspace.style.setProperty(
+          '--events-primary-tabs-height',
+          `${tabs.getBoundingClientRect().height}px`,
+        );
       const height = Math.max(0, header.getBoundingClientRect().height);
       workspace.style.setProperty('--managed-entity-workspace-header-bottom', `${height}px`);
     };
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(header);
+    if (tabs) resizeObserver.observe(tabs);
     measure();
     window.visualViewport?.addEventListener('resize', measure);
 
@@ -141,6 +148,7 @@ export function ManagedEntityWorkspaceHeader({
       resizeObserver.disconnect();
       window.visualViewport?.removeEventListener('resize', measure);
       workspace.style.removeProperty('--managed-entity-workspace-header-bottom');
+      workspace.style.removeProperty('--events-primary-tabs-height');
     };
   }, [compact]);
 
