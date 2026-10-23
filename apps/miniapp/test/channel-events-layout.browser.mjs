@@ -2,24 +2,45 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright';
+import {
+  allocateMiniappBaseUrl,
+  ensureMiniappDevServer,
+  stopChildProcess,
+} from '../../../scripts/miniapp-local-server.mjs';
+import { captureBrowserLaunchOptions } from '../../../scripts/miniapp-smartphone.mjs';
 import {
   installNativeVisualModeInitScript,
   applyNativeVisualMode,
 } from '../../../scripts/miniapp-native-visual-mode.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
 
-const base = new URL(process.env.MINIAPP_TEST_BASE_URL ?? 'http://127.0.0.1:3015/app/');
+const engine = process.env.MINIAPP_TEST_BROWSER ?? 'chromium';
+assert.ok(['chromium', 'webkit'].includes(engine));
+const base = new URL(
+  process.env.MINIAPP_TEST_BASE_URL ?? (await allocateMiniappBaseUrl('http://127.0.0.1/app/')),
+);
 if (!['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)) {
   throw new Error('Local server required');
 }
 const output = mkdtempSync(join(tmpdir(), 'maxim-channel-events-layout-'));
-const browser = await chromium.launch();
+const server = process.env.MINIAPP_TEST_BASE_URL ? null : await ensureMiniappDevServer(base.href);
+let browser;
 
 async function settle(page) {
   await page.evaluate(
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
+}
+
+async function scrollFeed(page, offset) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await settle(page);
+  const top = await page
+    .locator('.membership-feed__toolbar')
+    .evaluate((node) => node.getBoundingClientRect().top + scrollY);
+  await page.evaluate((y) => window.scrollTo(0, y), top + offset);
+  await settle(page);
 }
 
 async function assertFilterGeometry(page) {
@@ -74,13 +95,22 @@ async function assertStickyStack(page) {
 }
 
 try {
+  browser = await { chromium, webkit }[engine].launch(
+    captureBrowserLaunchOptions(engine, base.href),
+  );
   for (const [width, height, platform, safeTop, safeBottom] of [
+    [280, 667, 'ios', 20, 0],
     [320, 568, 'ios', 20, 0],
     [360, 800, 'android', 24, 16],
     [393, 780, 'android', 48, 24],
     [430, 932, 'ios', 59, 34],
     [1280, 900, 'desktop', 0, 0],
   ]) {
+    if (
+      process.env.MINIAPP_TEST_WIDTHS &&
+      !process.env.MINIAPP_TEST_WIDTHS.split(',').includes(String(width))
+    )
+      continue;
     for (const theme of ['light', 'dark']) {
       const context = await browser.newContext({
         viewport: { width, height },
@@ -109,6 +139,27 @@ try {
         () => !document.querySelector('[aria-label="Обновить события"]').disabled,
       );
       await settle(page);
+      await page
+        .locator('.membership-feed__item')
+        .first()
+        .evaluate((item) => item.scrollIntoView({ block: 'center', behavior: 'instant' }));
+      const name = page.locator('.membership-feed__name-link').first();
+      await page.waitForFunction(
+        () => document.querySelector('.membership-feed__name-link')?.innerText.length > 0,
+      );
+      assert.equal(await name.innerText(), 'Владимир');
+      const lines = await name.evaluate((node) => {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+      });
+      assert.equal(
+        lines,
+        1,
+        `${engine} ${width}px ${theme}: ordinary participant name must fit a line`,
+      );
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await settle(page);
       const before = await assertFilterGeometry(page);
       await page.screenshot({
         path: join(output, `${width}-${theme}-top.png`),
@@ -131,9 +182,8 @@ try {
         () => !document.querySelector('[aria-label="Обновить события"]').disabled,
       );
 
-      for (const scrollTop of [350, 650]) {
-        await page.evaluate((y) => window.scrollTo(0, y), scrollTop);
-        await settle(page);
+      for (const offset of [100, 400]) {
+        await scrollFeed(page, offset);
         await assertStickyStack(page);
       }
       // Production shares statistics CSS with other routes and can load the channel
@@ -174,7 +224,11 @@ try {
         window.scrollTo(0, 0);
       });
       await settle(page);
-      await page.locator('.membership-feed__name-link').first().scrollIntoViewIfNeeded();
+      // Reveal the containing item before measuring text skipped by content-visibility.
+      await page
+        .locator('.membership-feed__item')
+        .first()
+        .evaluate((item) => item.scrollIntoView({ block: 'center', behavior: 'instant' }));
       await page.waitForFunction(
         () => document.querySelector('.membership-feed__name-link')?.innerText.length > 0,
       );
@@ -190,6 +244,22 @@ try {
           .map((node) => node.className);
       });
       assert.deepEqual(overflow, []);
+      if (width < 360) {
+        const lines = await page.evaluate(() =>
+          [
+            '.channel-events-section__period-copy span',
+            '.channel-events-section__metric--total strong',
+          ].map((selector) => {
+            const range = document.createRange();
+            range.selectNodeContents(document.querySelector(selector));
+            return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+          }),
+        );
+        assert.ok(
+          lines.every((count) => count <= 2),
+          `Narrow large text remains readable: ${lines}`,
+        );
+      }
       const row = await page
         .locator('.membership-feed__card')
         .first()
@@ -215,16 +285,14 @@ try {
         path: join(output, `${width}-${theme}-large-text.png`),
         animations: 'disabled',
       });
-      await page.evaluate(() => window.scrollTo(0, 650));
-      await settle(page);
+      await scrollFeed(page, 400);
       await assertStickyStack(page);
 
       await page.getByRole('radio', { name: 'Обзор', exact: true }).click();
       await page.locator('.channel-summary-table').waitFor();
       await page.getByRole('radio', { name: 'События', exact: true }).click();
       await page.locator('.membership-feed__item').first().waitFor();
-      await page.evaluate(() => window.scrollTo(0, 650));
-      await settle(page);
+      await scrollFeed(page, 400);
       await assertStickyStack(page);
       assert.deepEqual(errors, []);
       console.log(
@@ -235,5 +303,6 @@ try {
   }
   console.log(`Channel event screenshots: ${output}`);
 } finally {
-  await browser.close();
+  await browser?.close();
+  await stopChildProcess(server);
 }

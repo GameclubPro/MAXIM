@@ -340,6 +340,56 @@
     color: var(--steel-ink);
   }
 
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    .settings-drilldown__panel--links
+    .allowlist-composer__head
+    select {
+    appearance: none;
+    padding-right: 32px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--steel-muted) 50%),
+      linear-gradient(135deg, var(--steel-muted) 50%, transparent 50%);
+    background-position:
+      right 19px center,
+      right 14px center;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+  }
+
+  @media (max-width: 359px) {
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--links
+      .settings-mode-segments {
+      display: flex;
+      flex-wrap: wrap;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--links
+      .settings-mode-segments
+      .segmented-control__item {
+      flex: 1 1 8rem;
+      overflow-wrap: normal;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--links
+      .settings-mode-segments
+      .segmented-control__item
+      span {
+      overflow-wrap: normal;
+    }
+  }
+
   @media (max-width: 600px) {
     body[data-miniapp-profile='moderation']:is(
         .settings-home-page-open,

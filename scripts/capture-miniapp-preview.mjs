@@ -2743,6 +2743,10 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
       await page.locator('.allowlist-item__action--schedule').first().click();
+      const fields = page.locator('.allowlist-item__schedule-fields').first();
+      await fields.locator('.date-field__control').waitFor({ state: 'visible' });
+      await fields.locator('.time-field__button').waitFor({ state: 'visible' });
+      await fields.scrollIntoViewIfNeeded();
       await page.waitForTimeout(300);
     },
   },
@@ -3267,12 +3271,16 @@ const scenarioBehaviors = [
   {
     name: 'channel-stats-top-posts',
     beforeShot: async (page) => {
-      const detailTarget = page
-        .locator('.channel-top-posts-panel, .channel-summary-table-card')
-        .first();
+      const detailTarget = page.locator('.channel-top-posts-panel');
+      await detailTarget.waitFor({ state: 'visible' });
       await detailTarget.evaluate((element) => {
         element.scrollIntoView({ block: 'start', behavior: 'instant' });
-        window.scrollBy({ top: -116, behavior: 'instant' });
+        const stickyBottom = Math.max(
+          ...['.managed-entity-workspace-header', '.channel-insights__section-tabs'].map(
+            (selector) => document.querySelector(selector)?.getBoundingClientRect().bottom ?? 0,
+          ),
+        );
+        window.scrollBy({ top: -stickyBottom - 12, behavior: 'instant' });
       });
       await page.waitForTimeout(350);
     },
