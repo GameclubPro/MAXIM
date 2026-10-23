@@ -933,17 +933,40 @@
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
     .participants-roster__filters {
-    display: grid;
+    display: flex;
+    flex-wrap: wrap;
     grid-column: 1 / -1;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
     gap: 8px;
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
     .participants-roster__filters
     label {
+    position: relative;
+    flex: 1 1 7.2rem;
     min-width: 0;
     gap: 5px;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace][data-statistics-section]
+    .participants-roster__filters
+    .participants-roster__activity-filter {
+    flex-basis: 10.5rem;
+  }
+  body[data-miniapp-profile='moderation']
+    .events-screen[data-managed-entity-workspace][data-statistics-section]
+    .participants-roster__filters
+    label::after {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    width: 6px;
+    height: 6px;
+    border: solid var(--steel-muted);
+    border-width: 0 2px 2px 0;
+    content: '';
+    pointer-events: none;
+    transform: translateY(-70%) rotate(45deg);
   }
   body[data-miniapp-profile='moderation']
     .events-screen[data-managed-entity-workspace][data-statistics-section]
@@ -958,6 +981,7 @@
     .events-screen[data-managed-entity-workspace][data-statistics-section]
     .participants-roster__filters
     select {
+    appearance: none;
     width: 100%;
     min-width: 0;
     min-height: 48px;
@@ -1279,6 +1303,19 @@
     svg {
     width: 18px;
     height: 18px;
+  }
+  @media (max-width: 359px) {
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace][data-statistics-section]
+      .participants-roster__toolbar {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace][data-statistics-section]
+      .participants-roster__search {
+      flex-basis: 100%;
+    }
   }
   @media (max-width: 340px) {
     body[data-miniapp-profile='moderation']
