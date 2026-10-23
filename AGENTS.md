@@ -62,7 +62,7 @@
 Contract changes affect API, mini app and admin. Keep exports, TypeScript paths and Jest mappers
 aligned. Unknown paths fail closed in the impact planner; renames include old and new scopes.
 Prisma changes follow the migration review in API notes. Nginx changes are manual site operations.
-Full release details: [development reliability](docs/development-reliability-plan.md).
+See [release details](docs/development-reliability-plan.md).
 
 ## Non-Negotiable Boundaries
 
@@ -98,8 +98,8 @@ Full release details: [development reliability](docs/development-reliability-pla
 - Report written, locally validated, CI-verified, deployed and production-accepted separately.
   Run the user's final monitoring window only after its other gates are ready. Preserve failures
   and missing coverage; do not claim all bots/functions are green from one healthy sample.
-- At handoff inspect `git status --short`; report tests/deploy/acceptance not completed. Fix small
-  in-scope issues and encode repeatable mistakes as tests/types where useful. Update scoped notes
-  and active runbooks when workflows or topology change.
+- At task start/end run the [ownership check](docs/development-reliability-plan.md#worktree-ownership-and-completion).
+  Preserve inherited changes; finish owned edits before success. Report pending checks/CI/deploy/
+  acceptance. Fix defects; update affected notes/runbooks.
 - Keep these entry files short. Put detailed invariants in task-selected references and historical
   observations in dated incidents; never put temporary PIDs, release status, secrets or guesses here.
