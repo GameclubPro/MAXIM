@@ -145,14 +145,23 @@ test(
     url.pathname = `/${database}`;
     const db = new pg.Client({ connectionString: url.href });
     await db.connect();
+    let ownsAuditRole = false;
+    let ownsReaderRole = false;
     t.after(async () => {
-      await db.end();
-      await admin.query(`DROP DATABASE ${database}`);
-      await admin.end();
+      try {
+        await db.end();
+        await admin.query(`DROP DATABASE ${database}`);
+        if (ownsAuditRole) await admin.query('DROP ROLE maxim_audit');
+        if (ownsReaderRole) await admin.query('DROP ROLE exchange_reader');
+      } finally {
+        await admin.end();
+      }
     });
-    await db.query(
-      'CREATE ROLE maxim_audit; CREATE ROLE exchange_reader; GRANT exchange_reader TO maxim_audit;',
-    );
+    await db.query('CREATE ROLE maxim_audit');
+    ownsAuditRole = true;
+    await db.query('CREATE ROLE exchange_reader');
+    ownsReaderRole = true;
+    await db.query('GRANT exchange_reader TO maxim_audit');
     assert.equal(
       (await db.query(readiness(buildStatisticsExchangePrivilegesSql()))).rows[0]
         .statistics_exchange_privileges_ready,

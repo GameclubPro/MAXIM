@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261023030000_preserve_explicit_statistics_revocation",
-  "baselineNamesSha256": "3d02ce432e82ffa3d2929e9e1b098e261ae89170cb2c258b45e13998a8246e0e",
-  "baselineContentsSha256": "91fed0b20f4ef5f5caca4ffeb012e1f80032276a6571fe8ee71c38b36d600859",
+  "baselineThrough": "20261023060100_statistics_exchange_retention_index",
+  "baselineNamesSha256": "f11b38d7a027f84db64e36af2e5eaf22a725fb9966fb7393aee78f30d0d3f4c5",
+  "baselineContentsSha256": "040a67a18deac6e5f2b905019fac325f538832f34e3f667444ba9de5494517b0",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -239,6 +239,12 @@
     },
     "20261022120000_add_managed_network_foundation": {
       "reason": "All new indexes belong to new empty operation and observation tables and are created before their first writes; no existing-table index is built."
+    },
+    "20261023040000_durable_statistics_exchange_downloads": {
+      "reason": "The expiry index belongs only to the new empty statistics download staging table and is created before runtime can write pages. Existing grants/entities receive only additive constant-default or nullable columns; no existing history is indexed or backfilled."
+    },
+    "20261023050000_bounded_statistics_exchange_v3": {
+      "reason": "All indexes belong to new empty bounded membership snapshot and immutable statistics page/generation tables. Existing grant/entity/import/download rows receive only additive nullable or constant-default columns; no retained native history is indexed or backfilled."
     }
   }
 }

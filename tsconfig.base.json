@@ -21,6 +21,9 @@
         "packages/contracts/src/network-settings-metadata.ts"
       ],
       "@maxim/contracts/networks-stats": ["packages/contracts/src/networks-stats.ts"],
+      "@maxim/contracts/statistics-exchange-v3": [
+        "packages/contracts/src/statistics-exchange-v3.ts"
+      ],
       "@maxim/contracts/marketplace-integration": [
         "packages/contracts/src/marketplace-integration.ts"
       ],

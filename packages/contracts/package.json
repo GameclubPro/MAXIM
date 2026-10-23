@@ -158,6 +158,10 @@
     "./channel-settings": {
       "types": "./dist/channel-settings.d.ts",
       "default": "./dist/channel-settings.js"
+    },
+    "./statistics-exchange-v3": {
+      "types": "./dist/statistics-exchange-v3.d.ts",
+      "default": "./dist/statistics-exchange-v3.js"
     }
   },
   "files": [

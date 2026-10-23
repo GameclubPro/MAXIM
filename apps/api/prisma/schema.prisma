@@ -4516,12 +4516,29 @@ model StatisticsExchangeGrant {
   revision BigInt
   state String
   inputHash String @map("input_hash")
+  membershipSnapshotId String? @map("membership_snapshot_id") @db.Uuid
+  membershipRevision BigInt @default(0) @map("membership_revision")
+  membershipSha256 String? @map("membership_sha256")
+  membershipEntityCount Int @default(0) @map("membership_entity_count")
+  accessRevision BigInt @default(0) @map("access_revision")
+  remoteAccessCursor String? @map("remote_access_cursor")
+  remoteAccessRevision BigInt? @map("remote_access_revision")
+  remoteAccessSweepId String? @map("remote_access_sweep_id") @db.Uuid
+  remoteAccessSweepStartedAt DateTime? @map("remote_access_sweep_started_at") @db.Timestamptz(6)
+  remoteProtocol Int? @map("remote_protocol")
+  remoteProtocolCheckedAt DateTime? @map("remote_protocol_checked_at") @db.Timestamptz(6)
+  v3Generations StatisticsExchangeV3Generation[]
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  nextImportPruneAt DateTime @default(now()) @map("next_import_prune_at") @db.Timestamptz(6)
   nextPullAt DateTime @default(now()) @map("next_pull_at") @db.Timestamptz(6)
   leaseId String? @map("lease_id") @db.Uuid
   leaseUntil DateTime? @map("lease_until") @db.Timestamptz(6)
   lastPullAt DateTime? @map("last_pull_at") @db.Timestamptz(6)
   lastError String? @map("last_error")
+  lastAttemptAt DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  lastErrorPhase String? @map("last_error_phase")
+  lastErrorEntity String? @map("last_error_entity")
+  failureCount Int @default(0) @map("failure_count")
   pullCursor String? @map("pull_cursor")
   producerRevision BigInt @default(0) @map("producer_revision")
   pruneAfterCreatedAt DateTime? @map("prune_after_created_at") @db.Timestamptz(6)
@@ -4531,6 +4548,8 @@ model StatisticsExchangeGrant {
   imports StatisticsExchangeImport[]
   remoteAccessVersion BigInt @default(0) @map("remote_access_version")
   nextRemoteAccessAt DateTime @default(now()) @map("next_remote_access_at") @db.Timestamptz(6)
+  lastRemoteAccessAttemptAt DateTime? @map("last_remote_access_attempt_at") @db.Timestamptz(6)
+  lastRemoteAccessErrorAt DateTime? @map("last_remote_access_error_at") @db.Timestamptz(6)
   lastRemoteAccessAt DateTime? @map("last_remote_access_at") @db.Timestamptz(6)
   remoteAccessError String? @map("remote_access_error")
   @@index([state,nextRemoteAccessAt,id],map:"statistics_exchange_grants_remote_access_idx")
@@ -4548,6 +4567,21 @@ model StatisticsExchangeEntity {
   nextCheckAt DateTime @default(now()) @map("next_check_at") @db.Timestamptz(6)
   remoteValidUntil DateTime? @map("remote_valid_until") @db.Timestamptz(6)
   remoteBindingId String? @map("remote_binding_id") @db.Uuid
+  accessSignature String? @map("access_signature")
+  accessBindingRevision BigInt @default(0) @map("access_binding_revision")
+  remoteAccessSeen String? @map("remote_access_seen") @db.Uuid
+  remoteBindingRevision BigInt? @map("remote_binding_revision")
+  remoteAccessScopes Json? @map("remote_access_scopes")
+  remoteIsPublic Boolean? @map("remote_is_public")
+  remoteStatisticsHealth Json? @map("remote_statistics_health")
+  nextStatsAt DateTime @default(now()) @map("next_stats_at") @db.Timestamptz(6)
+  lastStatsAttemptAt DateTime? @map("last_stats_attempt_at") @db.Timestamptz(6)
+  lastStatsAt DateTime? @map("last_stats_at") @db.Timestamptz(6)
+  statsError String? @map("stats_error")
+  statsErrorPhase String? @map("stats_error_phase")
+  statsFailureCount Int @default(0) @map("stats_failure_count")
+  statsPhaseHealth Json @default("{}") @map("stats_phase_health")
+  downloads StatisticsExchangeDownload[]
   grant StatisticsExchangeGrant @relation(fields:[grantId],references:[id],onDelete:NoAction,onUpdate:NoAction)
   binding MarketplaceBinding? @relation(fields:[bindingId],references:[id],onDelete:NoAction,onUpdate:NoAction)
   @@id([grantId,entityId,kind])
@@ -4581,11 +4615,141 @@ model StatisticsExchangeImport {
   entityId String @map("entity_id")
   kind String
   producerRevision BigInt @map("producer_revision")
+  v3Content Json? @map("v3_content")
   manifest Json
   rows Json
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  retentionCheckedFrom DateTime @default(dbgenerated("'1970-01-01 00:00:00+00'::timestamp with time zone")) @map("retention_checked_from") @db.Timestamptz(6)
   remoteValidUntil DateTime? @map("remote_valid_until") @db.Timestamptz(6)
   grant StatisticsExchangeGrant @relation(fields:[grantId],references:[id],onDelete:NoAction,onUpdate:NoAction)
   @@id([grantId,grantRevision,entityId,kind])
+  @@index([grantId,grantRevision,retentionCheckedFrom,entityId,kind],map:"statistics_exchange_imports_retention_idx")
   @@map("statistics_exchange_imports")
+}
+
+model StatisticsExchangeDownload {
+  id String @id @db.Uuid
+  grantId String @map("grant_id") @db.Uuid
+  grantRevision BigInt @map("grant_revision")
+  entityId String @map("entity_id")
+  kind String
+  localBindingId String @map("local_binding_id") @db.Uuid
+  remoteBindingId String @map("remote_binding_id") @db.Uuid
+  generationId String @map("generation_id") @db.Uuid
+  producerRevision BigInt @map("producer_revision")
+  v3Head Json? @map("v3_head")
+  manifest Json
+  nextCursor String? @map("next_cursor")
+  pageCount Int @default(0) @map("page_count")
+  receivedRows Int @default(0) @map("received_rows")
+  receivedBytes Int @default(0) @map("received_bytes")
+  lastPageAt DateTime? @map("last_page_at") @db.Timestamptz(6)
+  state String @default("DOWNLOADING")
+  leaseId String? @map("lease_id") @db.Uuid
+  leaseUntil DateTime? @map("lease_until") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  entity StatisticsExchangeEntity @relation(fields:[grantId,entityId,kind],references:[grantId,entityId,kind],onDelete:Cascade,onUpdate:NoAction,map:"statistics_exchange_downloads_entity_fk")
+  pages StatisticsExchangeDownloadPage[]
+  @@unique([grantId,grantRevision,entityId,kind],map:"statistics_exchange_downloads_entity_key")
+  @@index([expiresAt,id],map:"statistics_exchange_downloads_expiry_idx")
+  @@map("statistics_exchange_downloads")
+}
+
+model StatisticsExchangeDownloadPage {
+  downloadId String @map("download_id") @db.Uuid
+  pageOrdinal Int @map("page_ordinal")
+  requestCursor String? @map("request_cursor")
+  nextCursor String? @map("next_cursor")
+  rowsText String @map("rows_text")
+  rowsSha256 String @map("rows_sha256")
+  rowCount Int @map("row_count")
+  byteCount Int @map("byte_count")
+  download StatisticsExchangeDownload @relation(fields:[downloadId],references:[id],onDelete:Cascade,onUpdate:NoAction)
+  @@id([downloadId,pageOrdinal])
+  @@map("statistics_exchange_download_pages")
+}
+
+model StatisticsExchangePeerLimit {
+  peerKey String @id @map("peer_key")
+  nextRequestAt DateTime @map("next_request_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("statistics_exchange_peer_limits")
+}
+
+model StatisticsExchangeMembershipActor {
+  actorUserId String @id @map("actor_user_id")
+  revision BigInt
+  sha256 String
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("statistics_exchange_membership_actors")
+}
+model StatisticsExchangeMembershipSnapshot {
+  id String @id @db.Uuid
+  actorUserId String @map("actor_user_id")
+  requestId String @map("request_id") @db.Uuid
+  membershipRevision BigInt @map("membership_revision")
+  sha256 String
+  entityCount Int @map("entity_count")
+  pageCount Int @map("page_count")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  entities StatisticsExchangeMembershipSnapshotEntity[]
+  pages StatisticsExchangeMembershipSnapshotPage[]
+  @@unique([actorUserId,requestId])
+  @@index([expiresAt,id],map:"statistics_exchange_membership_snapshots_expiry_idx")
+  @@map("statistics_exchange_membership_snapshots")
+}
+model StatisticsExchangeMembershipSnapshotEntity {
+  snapshotId String @map("snapshot_id") @db.Uuid
+  ordinal Int
+  entityId String @map("entity_id")
+  kind String
+  profile String
+  snapshot StatisticsExchangeMembershipSnapshot @relation(fields:[snapshotId],references:[id],onDelete:Cascade,onUpdate:NoAction)
+  @@id([snapshotId,ordinal])
+  @@unique([snapshotId,kind,entityId])
+  @@map("statistics_exchange_membership_snapshot_entities")
+}
+model StatisticsExchangeMembershipSnapshotPage {
+  snapshotId String @map("snapshot_id") @db.Uuid
+  pageIndex Int @map("page_index")
+  payload Json
+  byteLength Int @map("byte_length")
+  snapshot StatisticsExchangeMembershipSnapshot @relation(fields:[snapshotId],references:[id],onDelete:Cascade,onUpdate:NoAction)
+  @@id([snapshotId,pageIndex])
+  @@map("statistics_exchange_membership_snapshot_pages")
+}
+model StatisticsExchangeV3Generation {
+  id String @id @db.Uuid
+  grantId String @map("grant_id") @db.Uuid
+  grantRevision BigInt @map("grant_revision")
+  entityId String @map("entity_id")
+  kind String
+  bindingId String @map("binding_id") @db.Uuid
+  nativeGenerationId String @map("native_generation_id") @db.Uuid
+  contentHash String @map("content_hash")
+  materialHash String @map("material_hash")
+  contextHash String @map("context_hash")
+  content Json
+  scopeObservations Json @map("scope_observations")
+  retentionFrom DateTime @map("retention_from") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  grant StatisticsExchangeGrant @relation(fields:[grantId],references:[id],onDelete:NoAction,onUpdate:NoAction)
+  pages StatisticsExchangeV3GenerationPage[]
+  @@index([grantId,grantRevision,kind,entityId,createdAt(sort:Desc),id(sort:Desc)],map:"statistics_exchange_v3_generations_latest_idx")
+  @@index([retentionFrom,id],map:"statistics_exchange_v3_generations_expiry_idx")
+  @@map("statistics_exchange_v3_generations")
+}
+model StatisticsExchangeV3GenerationPage {
+  generationId String @map("generation_id") @db.Uuid
+  pageIndex Int @map("page_index")
+  rowsText String @map("rows_text")
+  rowCount Int @map("row_count")
+  byteLength Int @map("byte_length")
+  sha256 String
+  generation StatisticsExchangeV3Generation @relation(fields:[generationId],references:[id],onDelete:Cascade,onUpdate:NoAction)
+  @@id([generationId,pageIndex])
+  @@map("statistics_exchange_v3_generation_pages")
 }

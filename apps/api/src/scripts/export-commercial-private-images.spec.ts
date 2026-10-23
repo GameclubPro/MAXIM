@@ -30,6 +30,7 @@ import {
 } from './export-commercial-private-images';
 
 const secret = 'private-image-test-secret-1234567890';
+const privateSourcePattern = /private-message|private-user|private-chat|oneme|\+7 900 123-45-67/u;
 const window = {
   since: '2026-10-05T00:00:00.000Z',
   until: '2026-10-05T01:00:00.000Z',
@@ -92,6 +93,25 @@ function sample(row = receipt(), stratum: 'NO_HIT' | 'TECHNICAL' = 'NO_HIT') {
     },
   };
 }
+
+it('distinguishes private source tokens from permitted timestamps and hashes containing 900', () => {
+  expect(
+    JSON.stringify({
+      capturedAt: '2026-10-23T19:05:17.900Z',
+      sha256: `${'a'.repeat(30)}900${'a'.repeat(31)}`,
+      capturedImages: 900,
+    }),
+  ).not.toMatch(privateSourcePattern);
+  for (const value of [
+    'private-message',
+    'private-user',
+    'private-chat',
+    'https://i.oneme.ru/private/photo-one',
+    '+7 900 123-45-67',
+  ]) {
+    expect(JSON.stringify({ value })).toMatch(privateSourcePattern);
+  }
+});
 
 describe('bounded private commercial source-image export', () => {
   let folder: string;
@@ -613,9 +633,8 @@ describe('bounded private commercial source-image export', () => {
     });
     expect(downloader.download).not.toHaveBeenCalled();
     expect(await readdir(folder)).toEqual(['repository']);
-    expect(JSON.stringify(report)).not.toMatch(
-      /private-message|private-user|private-chat|oneme|900|Контакт/u,
-    );
+    expect(JSON.stringify(report)).not.toMatch(privateSourcePattern);
+    expect(JSON.stringify(report)).not.toMatch(/Контакт/u);
     expect(report).toMatchObject({
       mode: 'PREVIEW',
       matchedAlbums: 1,
@@ -664,12 +683,12 @@ describe('bounded private commercial source-image export', () => {
       createHash('sha256').update(manifestBytes).digest('hex'),
     );
     expect(manifestBytes.toString()).not.toMatch(
-      /900|private-message|private-user|private-chat|https|samplingStratum|score|label|decisionOutcome/u,
+      /https|samplingStratum|score|label|decisionOutcome/u,
     );
+    expect(manifestBytes.toString()).not.toMatch(privateSourcePattern);
     const provenance = await readFile(join(outputDir, 'operator-provenance.json'), 'utf8');
-    expect(provenance).not.toMatch(
-      /private-message|private-user|private-chat|oneme|900|candidateDecision|deleteEligible/u,
-    );
+    expect(provenance).not.toMatch(privateSourcePattern);
+    expect(provenance).not.toMatch(/candidateDecision|deleteEligible/u);
     expect((await stat(outputDir)).mode & 0o077).toBe(0);
     expect((await stat(join(outputDir, manifest.images[0]!.file))).mode & 0o077).toBe(0);
     expect(bytes.every((value) => value === 0)).toBe(true);

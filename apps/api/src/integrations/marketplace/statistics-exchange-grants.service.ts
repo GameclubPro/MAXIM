@@ -17,6 +17,11 @@ import {
   type ExchangeGrant,
 } from '@maxim/contracts';
 import { PrismaService } from '../../prisma/prisma.service';
+import { Prisma } from '../../prisma/prisma-client';
+import {
+  type ExchangeV3GrantInput,
+  type ExchangeV3MembershipManifest,
+} from '@maxim/contracts/statistics-exchange-v3';
 import { MarketplaceAccessService } from './marketplace-access.service';
 import {
   MarketplaceStateService,
@@ -36,6 +41,7 @@ export type StatisticsExchangeGrantRow = {
   pull_cursor: string | null;
   last_pull_at: Date | null;
   last_error: string | null;
+  failure_count: number;
 };
 const grantId = z.string().uuid();
 const discoveryQuery = z
@@ -44,6 +50,22 @@ const discoveryQuery = z
     cursor: z.string().max(2048).optional(),
   })
   .strict();
+
+// FLAG: Both v2 discovery and immutable v3 snapshots use the same exact actor/bot policy.
+function statisticsExchangeRosterCandidatesSql(actor: string): Prisma.Sql {
+  return Prisma.sql`
+      SELECT DISTINCT a.chat_id AS "entityId",c.entity_type::text AS kind,
+        CASE WHEN p.publisher_bot_id=a.bot_id THEN 'publisher' ELSE 'moderation' END AS profile,
+        c.title,a.checked_at AS "checkedAt",b.metadata,
+        c.entity_type::text||':'||a.chat_id||':'||CASE WHEN p.publisher_bot_id=a.bot_id THEN 'publisher' ELSE 'moderation' END AS cursor
+      FROM managed_entity_access_edges a JOIN chats c ON c.id=a.chat_id
+      LEFT JOIN chat_bot_memberships m ON m.chat_id=a.chat_id AND m.bot_id=a.bot_id AND m.status='ACTIVE'
+      LEFT JOIN publisher_entity_bindings p ON p.chat_id=a.chat_id AND p.publisher_bot_id=a.bot_id AND p.status='ACTIVE'
+      LEFT JOIN marketplace_bindings b ON b.actor_user_id=a.user_id AND b.entity_id=a.chat_id AND b.bot_id=a.bot_id
+        AND b.profile=CASE WHEN p.publisher_bot_id=a.bot_id THEN 'publisher' ELSE 'moderation' END
+      WHERE a.user_id=${actor} AND a.state='GRANTED' AND a.user_role IN ('OWNER','ADMIN') AND a.bot_role IN ('OWNER','ADMIN')
+        AND (m.chat_id IS NOT NULL OR p.chat_id IS NOT NULL)`;
+}
 
 @Injectable()
 export class StatisticsExchangeGrantsService {
@@ -67,20 +89,8 @@ export class StatisticsExchangeGrantsService {
       Array<
         ExchangeEntityKey & { cursor: string; title: string; checkedAt: Date; metadata: unknown }
       >
-    >`
-      SELECT DISTINCT a.chat_id AS "entityId",c.entity_type::text AS kind,
-        CASE WHEN p.publisher_bot_id=a.bot_id THEN 'publisher' ELSE 'moderation' END AS profile,
-        c.title,a.checked_at AS "checkedAt",b.metadata,
-        c.entity_type::text||':'||a.chat_id||':'||CASE WHEN p.publisher_bot_id=a.bot_id THEN 'publisher' ELSE 'moderation' END AS cursor
-      FROM managed_entity_access_edges a JOIN chats c ON c.id=a.chat_id
-      LEFT JOIN chat_bot_memberships m ON m.chat_id=a.chat_id AND m.bot_id=a.bot_id AND m.status='ACTIVE'
-      LEFT JOIN publisher_entity_bindings p ON p.chat_id=a.chat_id AND p.publisher_bot_id=a.bot_id AND p.status='ACTIVE'
-      LEFT JOIN marketplace_bindings b ON b.actor_user_id=a.user_id AND b.entity_id=a.chat_id AND b.bot_id=a.bot_id
-        AND b.profile=CASE WHEN p.publisher_bot_id=a.bot_id THEN 'publisher' ELSE 'moderation' END
-      WHERE a.user_id=${query.actorUserId} AND a.state='GRANTED' AND a.user_role IN ('OWNER','ADMIN') AND a.bot_role IN ('OWNER','ADMIN')
-        AND (m.chat_id IS NOT NULL OR p.chat_id IS NOT NULL)
-        AND (c.entity_type::text||':'||a.chat_id||':'||CASE WHEN p.publisher_bot_id=a.bot_id THEN 'publisher' ELSE 'moderation' END)>${query.cursor ?? ''}
-      ORDER BY cursor LIMIT 101`;
+    >`SELECT * FROM (${statisticsExchangeRosterCandidatesSql(query.actorUserId)}) candidates
+       WHERE cursor>${query.cursor ?? ''} ORDER BY cursor LIMIT 101`;
     const entities = [];
     const seen = new Set<string>();
     for (const candidate of candidates.slice(0, 100)) {
@@ -128,27 +138,37 @@ export class StatisticsExchangeGrantsService {
   async read(id: string): Promise<ExchangeGrant> {
     const grant = await this.row(id);
     if (!grant) throw new NotFoundException('Согласие не найдено');
+    // FLAG: One bounded snapshot applies the exact same local authority gate to every binding.
     const rows = await this.prisma.$queryRaw<
-      Array<ExchangeEntityKey & { binding_id: string | null; error: string | null }>
+      Array<
+        MarketplaceBindingRow & {
+          exchange_entity_id: string;
+          exchange_kind: 'CHAT' | 'CHANNEL';
+          exchange_profile: 'moderation' | 'publisher';
+          exchange_error: string | null;
+          local_active: boolean | null;
+        }
+      >
     >`
-      SELECT entity_id AS "entityId",kind,profile,binding_id,error FROM statistics_exchange_entities WHERE grant_id=${grant.id}::uuid ORDER BY kind,entity_id`;
-    const entities = [];
-    for (const entity of rows) {
-      const binding = entity.binding_id ? await this.state.read(entity.binding_id) : null;
+      SELECT e.entity_id AS exchange_entity_id,e.kind AS exchange_kind,e.profile AS exchange_profile,e.error AS exchange_error,
+        b.*,(${marketplaceLocalGrantSql('b')}) AS local_active
+      FROM statistics_exchange_entities e LEFT JOIN marketplace_bindings b ON b.id=e.binding_id
+      WHERE e.grant_id=${grant.id}::uuid ORDER BY e.kind,e.entity_id LIMIT 101`;
+    if (rows.length > 100) throw new ConflictException('ROSTER_REQUIRES_V3');
+    const actorAllowed = statisticsExchangeActorAllowed(this.config, grant.actor_user_id);
+    const entities = rows.map((row) => {
+      const binding = row.id ? row : null;
       const active =
-        grant.state === 'ACTIVE' &&
-        statisticsExchangeActorAllowed(this.config, grant.actor_user_id) &&
-        binding &&
-        (await this.state.hasActiveGrant(binding.id));
-      entities.push({
-        entityId: entity.entityId,
-        kind: entity.kind,
-        profile: entity.profile,
+        grant.state === 'ACTIVE' && actorAllowed && binding !== null && row.local_active === true;
+      return {
+        entityId: row.exchange_entity_id,
+        kind: row.exchange_kind,
+        profile: row.exchange_profile,
         status: grant.state === 'REVOKED' ? 'REVOKED' : active ? 'ACTIVE' : 'UNAVAILABLE',
         binding: binding ? this.state.present(binding) : null,
-        error: active ? null : (entity.error ?? 'ACCESS_UNAVAILABLE'),
-      });
-    }
+        error: active ? null : (row.exchange_error ?? 'ACCESS_UNAVAILABLE'),
+      };
+    });
     return exchangeGrantSchema.parse({
       grantId: grant.id,
       actorUserId: grant.actor_user_id,
@@ -232,6 +252,66 @@ export class StatisticsExchangeGrantsService {
       { timeout: 20_000 },
     );
     return this.read(input.grantId);
+  }
+
+  async snapshotRoster(tx: Prisma.TransactionClient, actor: string): Promise<ExchangeEntityKey[]> {
+    this.assertActor(actor);
+    return tx.$queryRaw<ExchangeEntityKey[]>`
+      SELECT DISTINCT ON (kind COLLATE "C","entityId" COLLATE "C") "entityId",kind,profile
+      FROM (${statisticsExchangeRosterCandidatesSql(actor)}) candidates
+      ORDER BY kind COLLATE "C","entityId" COLLATE "C",profile COLLATE "C" LIMIT 10001`;
+  }
+
+  async applyVerifiedSnapshot(
+    tx: Prisma.TransactionClient,
+    input: ExchangeV3GrantInput,
+    entities: ExchangeEntityKey[],
+    manifest: ExchangeV3MembershipManifest | null,
+    hash: string,
+  ): Promise<void> {
+    const locked = await tx.$queryRaw<StatisticsExchangeGrantRow[]>`
+      SELECT * FROM statistics_exchange_grants WHERE actor_user_id=${input.actorUserId} FOR UPDATE`;
+    const current = locked[0];
+    if (current && (current.id !== input.grantId || current.actor_user_id !== input.actorUserId))
+      throw new ConflictException('EXCHANGE_IDENTITY_MISMATCH');
+    if (current && Number(current.revision) === input.revision) {
+      if (current.input_hash !== hash) throw new ConflictException('EXCHANGE_REVISION_CONFLICT');
+      return;
+    }
+    if (Number(current?.revision ?? 0) !== input.expectedRevision)
+      throw new ConflictException('EXCHANGE_REVISION_CONFLICT');
+    // FLAG: Revocation removes only consent introduced by this integration; independent grants survive.
+    await tx.$executeRaw`UPDATE marketplace_bindings b SET statistics_consent=false,
+      statistics_v2_consent_only=false,lease_id=NULL,lease_until=NULL,revision=revision+1,updated_at=now()
+      WHERE b.statistics_v2_consent_only=true AND b.id IN
+        (SELECT binding_id FROM statistics_exchange_entities WHERE grant_id=${input.grantId}::uuid)`;
+    await tx.$executeRaw`INSERT INTO statistics_exchange_grants
+      (id,actor_user_id,revision,state,input_hash,membership_snapshot_id,membership_revision,membership_sha256,membership_entity_count,access_revision)
+      VALUES(${input.grantId}::uuid,${input.actorUserId},${input.revision},${input.state},${hash},
+        ${manifest?.snapshotId ?? null}::uuid,${manifest?.membershipRevision ?? 0},${manifest?.sha256 ?? null},${entities.length},1)
+      ON CONFLICT(id) DO UPDATE SET revision=EXCLUDED.revision,state=EXCLUDED.state,input_hash=EXCLUDED.input_hash,
+        membership_snapshot_id=EXCLUDED.membership_snapshot_id,membership_revision=EXCLUDED.membership_revision,
+        membership_sha256=EXCLUDED.membership_sha256,membership_entity_count=EXCLUDED.membership_entity_count,
+        access_revision=statistics_exchange_grants.access_revision+1,updated_at=now(),next_pull_at=now(),
+        lease_id=NULL,lease_until=NULL,pull_cursor=NULL,remote_access_cursor=NULL,remote_access_revision=NULL,
+        remote_access_sweep_id=NULL,remote_access_sweep_started_at=NULL`;
+    await tx.$executeRaw`DELETE FROM statistics_exchange_entities WHERE grant_id=${input.grantId}::uuid`;
+    await tx.$executeRaw`DELETE FROM statistics_exchange_imports WHERE grant_id=${input.grantId}::uuid AND grant_revision<>${input.revision}`;
+    if (input.state !== 'ACTIVE') return;
+    const selected = JSON.stringify(entities);
+    await tx.$executeRaw`UPDATE marketplace_bindings b SET statistics_v2_consent_only=CASE WHEN statistics_consent=false THEN true ELSE statistics_v2_consent_only END,
+      statistics_consent=true,next_collect_at=now(),revision=revision+1,updated_at=now()
+      FROM jsonb_to_recordset(${selected}::jsonb) e("entityId" text,kind text,profile text)
+      WHERE b.actor_user_id=${input.actorUserId} AND b.entity_id=e."entityId" AND b.kind=e.kind AND b.profile=e.profile
+        AND b.statistics_revoked_at IS NULL AND ${marketplaceLocalGrantSql('b', false)}`;
+    // FLAG: Initial authenticated peer proof is bounded; replaying the same revision never reaches this write.
+    await tx.$executeRaw`INSERT INTO statistics_exchange_entities
+      (grant_id,entity_id,kind,profile,binding_id,error,remote_valid_until)
+      SELECT ${input.grantId}::uuid,e."entityId",e.kind,e.profile,b.id,
+        CASE WHEN b.id IS NULL THEN 'ACCESS_UNAVAILABLE' ELSE NULL END,now()+interval '5 minutes'
+      FROM jsonb_to_recordset(${selected}::jsonb) e("entityId" text,kind text,profile text)
+      LEFT JOIN marketplace_bindings b ON b.actor_user_id=${input.actorUserId} AND b.entity_id=e."entityId"
+        AND b.kind=e.kind AND b.profile=e.profile AND ${marketplaceLocalGrantSql('b')}`;
   }
 
   async recoverUnavailable(id: string): Promise<boolean> {

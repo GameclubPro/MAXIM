@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import {
   type ExchangeGrantInput,
   type ExchangeMeasurement,
   type ExchangeStatisticsPage,
+  exchangeMeasurementSchema,
   exchangeManifestSchema,
 } from '@maxim/contracts';
 import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
@@ -12,9 +13,13 @@ import { MarketplaceStateService } from './marketplace-state.service';
 import { MarketplaceStatisticsService } from './marketplace-statistics.service';
 import { type MarketplaceAccessService } from './marketplace-access.service';
 import { exchangeRetentionFrom } from './statistics-exchange-values';
-import { StatisticsExchangeGrantsService } from './statistics-exchange-grants.service';
+import {
+  StatisticsExchangeGrantsService,
+  type StatisticsExchangeGrantRow,
+} from './statistics-exchange-grants.service';
 import { StatisticsExchangeStatisticsService } from './statistics-exchange-statistics.service';
 import { StatisticsExchangeAudienceService } from './statistics-exchange-audience.service';
+import { StatisticsExchangeDownloadsService } from './statistics-exchange-downloads.service';
 import { StatisticsExchangeRuntimeService } from './statistics-exchange-runtime.service';
 import { MarketplaceIntegrationController } from './marketplace.controller';
 import {
@@ -83,6 +88,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
   });
   beforeEach(async () => {
     attest.mockClear();
+    await db.$executeRaw`DELETE FROM statistics_exchange_peer_limits`;
     grantId = randomUUID();
     bindingId = randomUUID();
     actor = String(Date.now()) + String(Math.floor(Math.random() * 1000));
@@ -336,7 +342,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     try {
       await expect(statistics.refreshRemoteAccess(grantId, 1)).rejects.toThrow('второй стороны');
       release();
-      await expect(delayed).rejects.toThrow('проверка доступа');
+      await expect(delayed).rejects.toThrow('EXCHANGE_AUTHORITY_CHECK_SUPERSEDED');
       await expect(statistics.page(grantId, { entityId, kind: 'CHANNEL' })).rejects.toThrow(
         'Доступ',
       );
@@ -482,11 +488,57 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
       }
       return new Response(JSON.stringify(await grants.read(grantId)));
     });
-    await expect(statistics.pull(grantId, 1)).rejects.toThrow('Согласие изменилось');
+    await expect(statistics.pull(grantId, 1)).rejects.toThrow(
+      'EXCHANGE_DOWNLOAD_AUTHORITY_CHANGED',
+    );
     const imported = await db.$queryRaw<
       Array<{ count: bigint }>
     >`SELECT count(*) AS count FROM statistics_exchange_generations WHERE grant_id=${grantId}::uuid AND origin='EXCHANGE'`;
     expect(imported[0]!.count).toBe(0n);
+  });
+  it('rejects semantic bucket duplicates across pages and preserves the verified projection', async () => {
+    await grants.put(grantId, input());
+    const page = await remoteFixture();
+    const remote = mockRemote(page);
+    await statistics.pull(grantId, 1);
+    const rows = [
+      { ...page.rows[0]!, revision: 2 },
+      {
+        ...page.rows[0]!,
+        revision: 2,
+        data: { ...page.rows[0]!.data, bucket: page.rows[0]!.data.bucket.replace('.000Z', 'Z') },
+      },
+    ];
+    const manifest = {
+      ...page.manifest,
+      generationId: randomUUID(),
+      producerRevision: 2,
+      rowCount: rows.length,
+      sha256: createHash('sha256').update(JSON.stringify(rows)).digest('hex'),
+    };
+    let pages = 0;
+    remote.mockImplementation(async (raw) => {
+      if (!String(raw).includes('/statistics?'))
+        return new Response(JSON.stringify(await grants.read(grantId)));
+      const second = new URL(String(raw)).searchParams.has('cursor');
+      pages++;
+      return new Response(
+        JSON.stringify({
+          manifest,
+          rows: [rows[second ? 1 : 0]],
+          nextCursor: second ? null : 'next',
+        }),
+      );
+    });
+    await statistics.pull(grantId, 1);
+    await expect(statistics.pull(grantId, 1)).rejects.toThrow('EXCHANGE_DUPLICATE_ROW');
+    expect(pages).toBe(2);
+    const imported = await db.$queryRaw<Array<{ rows: ExchangeMeasurement[] }>>`
+      SELECT rows FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`;
+    expect(imported[0]!.rows).toEqual(page.rows);
+    const generations = await db.$queryRaw<Array<{ count: bigint }>>`
+      SELECT count(*) AS count FROM statistics_exchange_generations WHERE grant_id=${grantId}::uuid AND origin='EXCHANGE'`;
+    expect(generations[0]!.count).toBe(1n);
   });
   function remoteGeneration(
     page: ExchangeStatisticsPage,
@@ -508,6 +560,71 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
       nextCursor: null,
     };
   }
+  it('verifies and retains the exact parsed wire order before building the read projection', async () => {
+    await grants.put(grantId, input());
+    const fixture = await remoteFixture();
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const yesterday = new Date(today.getTime() - 86400_000).toISOString();
+    const first = fixture.rows[0]!;
+    const rows: ExchangeMeasurement[] = [
+      { ...first, data: { ...first.data, bucket: today.toISOString().replace('.000Z', 'Z') } },
+      { ...first, data: { ...first.data, bucket: yesterday, observedAt: yesterday } },
+    ];
+    const page: ExchangeStatisticsPage = {
+      ...fixture,
+      manifest: {
+        ...fixture.manifest,
+        from: yesterday,
+        rowCount: rows.length,
+        sha256: createHash('sha256').update(JSON.stringify(rows)).digest('hex'),
+      },
+      rows,
+    };
+    expect(page.manifest.sha256).not.toBe(exchangeMeasurementsHash(rows));
+    mockRemote(page);
+    await statistics.pull(grantId, 1);
+    const immutable = await db.$queryRaw<Array<{ rows: ExchangeMeasurement[] }>>`
+      SELECT rows FROM statistics_exchange_generations WHERE id=${page.manifest.generationId}::uuid`;
+    const stored = immutable[0]!.rows.map((row) => exchangeMeasurementSchema.parse(row));
+    expect(stored).toEqual(rows);
+    expect(createHash('sha256').update(JSON.stringify(stored)).digest('hex')).toBe(
+      page.manifest.sha256,
+    );
+  });
+  it('replaces an equivalent timestamp boundary without retaining the old bucket spelling', async () => {
+    await grants.put(grantId, input());
+    const fixture = await remoteFixture();
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const bucket = today.toISOString();
+    const remote = mockRemote(fixture);
+    await statistics.pull(grantId, 1);
+    const alias = bucket.replace('.000Z', 'Z');
+    const corrected = remoteGeneration(
+      fixture,
+      [
+        {
+          ...fixture.rows[0]!,
+          data: { metric: 'AUDIENCE', bucket: alias, observedAt: alias, value: 999 },
+        },
+      ],
+      2,
+      alias,
+    );
+    remote.mockImplementation(
+      async (raw) =>
+        new Response(
+          JSON.stringify(
+            String(raw).includes('/statistics?') ? corrected : await grants.read(grantId),
+          ),
+        ),
+    );
+    await statistics.pull(grantId, 1);
+    const imported = await db.$queryRaw<Array<{ rows: ExchangeMeasurement[] }>>`
+      SELECT rows FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`;
+    expect(imported[0]!.rows).toEqual(corrected.rows);
+  });
   it('replaces only the declared interval, preserves prior buckets and ignores delayed lower producer versions', async () => {
     await grants.put(grantId, input());
     const fixture = await remoteFixture(),
@@ -645,7 +762,14 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     >(async (id) => {
       pulled.add(id);
       if (pulled.size <= 4) await slowReverse;
-      return { failures: 0, nextCursor: null };
+      return {
+        failures: 0,
+        nextCursor: null,
+        pending: false,
+        completedEntities: 0,
+        nextDelayMs: 300000,
+        lastError: null,
+      };
     });
     const recoverUnavailable = jest
       .fn<
@@ -732,7 +856,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
         observedAt: '2020-01-01T00:00:00.000Z',
       },
     };
-    await db.$executeRaw`UPDATE statistics_exchange_imports SET rows=${JSON.stringify([expired, ...page.rows])}::jsonb WHERE grant_id=${grantId}::uuid`;
+    await db.$executeRaw`UPDATE statistics_exchange_imports SET retention_checked_from='1970-01-01T00:00:00Z',rows=${JSON.stringify([expired, ...page.rows])}::jsonb WHERE grant_id=${grantId}::uuid`;
     expect(
       await new StatisticsExchangeAudienceService(
         db as PrismaService,
@@ -785,6 +909,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     await expect(statistics.pull(grantId, 1)).rejects.toThrow('EXCHANGE_IDENTITY_MISMATCH');
     const lease = randomUUID();
     await db.$executeRaw`UPDATE statistics_exchange_grants SET lease_id=${lease}::uuid,lease_until=now()+interval '2 minutes' WHERE id=${grantId}::uuid`;
+    await forceDue();
     remote.mockImplementation(async (raw) => {
       if (String(raw).includes('/statistics?')) {
         await db.$executeRaw`UPDATE statistics_exchange_grants SET lease_id=NULL,lease_until=NULL WHERE id=${grantId}::uuid`;
@@ -799,7 +924,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
         maxEntities: 3,
         deadline: Date.now() + 10_000,
       }),
-    ).toEqual({ failures: 1, nextCursor: null });
+    ).toMatchObject({ failures: 1, nextCursor: null, completedEntities: 0 });
     expect(
       await db.$queryRaw`SELECT 1 FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`,
     ).toEqual([]);
@@ -904,5 +1029,840 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     await expect(statistics.page(grantId, { entityId, kind: 'CHANNEL' })).rejects.toThrow(
       'Согласие изменилось',
     );
+  });
+  async function pagedFixture(count = 1600) {
+    const own = await nativeAll();
+    const from = Date.parse(own.manifest.from);
+    const rows: ExchangeMeasurement[] = Array.from({ length: count }, (_, i) =>
+      exchangeMeasurementSchema.parse({
+        origin: 'EXCHANGE',
+        method: 'utc-buckets-v1',
+        revision: 1,
+        data: {
+          metric: 'PUBLICATION_HOUR',
+          bucket: new Date(from + i * 3600000).toISOString(),
+          observedAt: new Date(from + i * 3600000).toISOString(),
+          posts: 1,
+          complete: true,
+        },
+      }),
+    );
+    return {
+      rows,
+      manifest: exchangeManifestSchema.parse({
+        ...own.manifest,
+        generationId: randomUUID(),
+        bindingId,
+        origin: 'EXCHANGE',
+        producerRevision: 1,
+        rowCount: rows.length,
+        sha256: createHash('sha256').update(JSON.stringify(rows)).digest('hex'),
+        metrics: own.manifest.metrics.filter((m) => m.metric === 'PUBLICATION_HOUR'),
+      }),
+    };
+  }
+  async function grantLease() {
+    const leaseId = randomUUID();
+    await db.$executeRaw`UPDATE statistics_exchange_grants SET lease_id=${leaseId}::uuid,lease_until=now()+interval '2 minutes' WHERE id=${grantId}::uuid`;
+    return leaseId;
+  }
+  async function forceDue() {
+    await db.$executeRaw`UPDATE statistics_exchange_entities SET next_stats_at=now()-interval '1 second' WHERE grant_id=${grantId}::uuid`;
+  }
+  function pageRemote(
+    fixture: Awaited<ReturnType<typeof pagedFixture>>,
+    onPage?: (offset: number) => Promise<void>,
+  ) {
+    return jest.spyOn(globalThis, 'fetch').mockImplementation(async (raw) => {
+      const url = new URL(String(raw));
+      if (!url.pathname.endsWith('/statistics'))
+        return new Response(JSON.stringify(await grants.read(grantId)));
+      const offset = Number(url.searchParams.get('cursor') ?? 0);
+      if (offset > 0)
+        expect(url.searchParams.get('generationId')).toBe(fixture.manifest.generationId);
+      await onPage?.(offset);
+      return new Response(
+        JSON.stringify({
+          manifest: fixture.manifest,
+          rows: fixture.rows.slice(offset, offset + 200),
+          nextCursor: offset + 200 < fixture.rows.length ? String(offset + 200) : null,
+        }),
+      );
+    });
+  }
+  it.each([700, 1500])(
+    'persists original page order through bounded visits with %sms latency and a fresh service instance',
+    async (latency) => {
+      await grants.put(grantId, input());
+      const fixture = await pagedFixture(2000);
+      const own = await nativeAll();
+      const days = Array.from({ length: 90 }, (_, i) =>
+        new Date(Date.parse(own.manifest.from) + i * 86400000).toISOString(),
+      );
+      for (const day of days) {
+        fixture.rows.push(
+          exchangeMeasurementSchema.parse({
+            origin: 'EXCHANGE',
+            method: 'utc-buckets-v1',
+            revision: 1,
+            data: { metric: 'AUDIENCE', bucket: day, observedAt: day, value: 100 },
+          }),
+        );
+        fixture.rows.push(
+          exchangeMeasurementSchema.parse({
+            origin: 'EXCHANGE',
+            method: 'utc-buckets-v1',
+            revision: 1,
+            data: {
+              metric: 'MEMBERSHIP',
+              bucket: day,
+              observedAt: day,
+              joined: 0,
+              left: 0,
+              complete: true,
+            },
+          }),
+        );
+        for (const horizon of [0, 24, 48])
+          fixture.rows.push(
+            exchangeMeasurementSchema.parse({
+              origin: 'EXCHANGE',
+              method: 'utc-buckets-v1',
+              revision: 1,
+              data: {
+                metric: 'REACH',
+                bucket: day,
+                observedAt: day,
+                horizon,
+                posts: 0,
+                samples: 0,
+                views: 0,
+                incomplete: false,
+                maxDelaySeconds: null,
+              },
+            }),
+          );
+      }
+      // 2450 semantically distinct rows fit the real 90-day metric contract: thirteen pages.
+      fixture.rows.reverse();
+      fixture.manifest = exchangeManifestSchema.parse({
+        ...fixture.manifest,
+        metrics: own.manifest.metrics,
+        rowCount: fixture.rows.length,
+        sha256: createHash('sha256').update(JSON.stringify(fixture.rows)).digest('hex'),
+      });
+      let clock = Date.now(),
+        requests = 0;
+      jest.spyOn(Date, 'now').mockImplementation(() => clock);
+      pageRemote(fixture, async () => {
+        requests++;
+        clock += latency;
+      });
+      const leaseId = await grantLease();
+      const options = () => ({
+        leaseId,
+        afterEntityKey: null,
+        maxEntities: 3,
+        deadline: clock + 10000,
+      });
+      for (let page = 0; page < 13; page++) {
+        await forceDue();
+        const instance = new StatisticsExchangeStatisticsService(
+          db as PrismaService,
+          config,
+          grants,
+          new MarketplaceStatisticsService(db as PrismaService, state),
+        );
+        const result = await instance.pull(grantId, 1, options());
+        expect(requests).toBe(page + 1);
+        expect(result.completedEntities).toBe(page === 12 ? 1 : 0);
+        const imported = await db.$queryRaw<
+          Array<{ count: bigint }>
+        >`SELECT count(*) AS count FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`;
+        expect(imported[0]!.count).toBe(page === 12 ? 1n : 0n);
+        const health = await db.$queryRaw<
+          Array<{
+            last_stats_at: Date | null;
+            stats_phase_health: Record<string, { successAt?: string }>;
+          }>
+        >`
+        SELECT last_stats_at,stats_phase_health FROM statistics_exchange_entities WHERE grant_id=${grantId}::uuid`;
+        expect(health[0]!.last_stats_at === null).toBe(page !== 12);
+        expect(health[0]!.stats_phase_health.PAGE?.successAt).toBeTruthy();
+        clock += 1500;
+      }
+      expect(
+        await db.$queryRaw`SELECT id FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`,
+      ).toEqual([]);
+      const saved = await db.$queryRaw<
+        Array<{ rows: ExchangeMeasurement[] }>
+      >`SELECT rows FROM statistics_exchange_generations WHERE id=${fixture.manifest.generationId}::uuid`;
+      expect(saved[0]!.rows.map((row) => exchangeMeasurementSchema.parse(row))).toEqual(
+        fixture.rows,
+      );
+    },
+  );
+  it('resumes page eight after interruption without exposing the first seven pages', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture();
+    let blocked = true;
+    const requests: number[] = [];
+    pageRemote(fixture, async (offset) => {
+      requests.push(offset);
+      if (offset === 1400 && blocked) throw new TypeError('synthetic transport failure');
+    });
+    for (let i = 0; i < 7; i++) await statistics.pull(grantId, 1);
+    await expect(statistics.pull(grantId, 1)).rejects.toThrow('synthetic transport failure');
+    const staged = await db.$queryRaw<
+      Array<{ page_count: number; next_cursor: string }>
+    >`SELECT page_count,next_cursor FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`;
+    expect(staged[0]).toMatchObject({ page_count: 7, next_cursor: '1400' });
+    expect(
+      await db.$queryRaw`SELECT grant_id FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`,
+    ).toEqual([]);
+    blocked = false;
+    const replacement = new StatisticsExchangeStatisticsService(
+      db as PrismaService,
+      config,
+      grants,
+      new MarketplaceStatisticsService(db as PrismaService, state),
+    );
+    expect((await replacement.pull(grantId, 1)).completedEntities).toBe(1);
+    expect(requests).toEqual([0, 200, 400, 600, 800, 1000, 1200, 1400, 1400]);
+  });
+  it('keeps READY durable across a deadline yield and finalizes with zero additional page reads', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture(1);
+    let clock = Date.now(),
+      pages = 0;
+    jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    pageRemote(fixture, async () => {
+      pages++;
+      clock += 9500;
+    });
+    const leaseId = await grantLease();
+    expect(
+      (
+        await statistics.pull(grantId, 1, {
+          leaseId,
+          afterEntityKey: null,
+          maxEntities: 3,
+          deadline: clock + 10000,
+        })
+      ).completedEntities,
+    ).toBe(0);
+    expect(
+      (
+        await db.$queryRaw<
+          Array<{ state: string }>
+        >`SELECT state FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`
+      )[0]!.state,
+    ).toBe('READY');
+    await forceDue();
+    expect(
+      (
+        await statistics.pull(grantId, 1, {
+          leaseId,
+          afterEntityKey: null,
+          maxEntities: 3,
+          deadline: clock + 10000,
+        })
+      ).completedEntities,
+    ).toBe(1);
+    expect(pages).toBe(1);
+  });
+  it('makes page replay idempotent, supports the v2 Unicode cursor and rejects an obsolete session lease', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture(2);
+    mockRemote({ manifest: fixture.manifest, rows: fixture.rows, nextCursor: null });
+    await statistics.refreshRemoteAccess(grantId, 1);
+    const downloads = new StatisticsExchangeDownloadsService(db as PrismaService),
+      owner = randomUUID();
+    const scope = {
+      grantId,
+      grantRevision: 1,
+      entityId,
+      kind: 'CHANNEL' as const,
+      localBindingId: bindingId,
+      remoteBindingId: bindingId,
+    };
+    expect(await downloads.claim(scope, owner)).toBeNull();
+    const page = {
+      manifest: fixture.manifest,
+      rows: fixture.rows.slice(0, 1),
+      nextCursor: 'я'.repeat(1500),
+    };
+    const first = await downloads.append(scope, owner, null, page);
+    const replay = await downloads.append(scope, owner, null, page);
+    expect(replay.page_count).toBe(1);
+    expect(replay.received_rows).toBe(1);
+    await expect(
+      downloads.append(scope, owner, null, { ...page, nextCursor: 'different' }),
+    ).rejects.toThrow('EXCHANGE_PAGE_CONFLICT');
+    await db.$executeRaw`UPDATE statistics_exchange_downloads SET lease_until=now()-interval '1 second' WHERE id=${first.id}::uuid`;
+    const nextOwner = randomUUID(),
+      claimed = (await downloads.claim(scope, nextOwner))!;
+    await expect(
+      downloads.append(scope, owner, first, {
+        manifest: fixture.manifest,
+        rows: fixture.rows.slice(1),
+        nextCursor: null,
+      }),
+    ).rejects.toThrow('EXCHANGE_DOWNLOAD_CHANGED');
+    const ready = await downloads.append(scope, nextOwner, claimed, {
+      manifest: fixture.manifest,
+      rows: fixture.rows.slice(1),
+      nextCursor: null,
+    });
+    expect((await downloads.assemble(ready)).rows).toEqual(fixture.rows);
+    expect(
+      (
+        await db.$queryRaw<
+          Array<{ count: bigint }>
+        >`SELECT count(*) AS count FROM statistics_exchange_download_pages WHERE download_id=${first.id}::uuid`
+      )[0]!.count,
+    ).toBe(2n);
+  });
+  it('refuses the final READY activation when revocation races the final peer proof', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture(1);
+    let grantsRead = 0;
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (raw) => {
+      if (String(raw).includes('/statistics?'))
+        return new Response(
+          JSON.stringify({ manifest: fixture.manifest, rows: fixture.rows, nextCursor: null }),
+        );
+      grantsRead++;
+      const proof = await grants.read(grantId);
+      if (grantsRead === 2) await grants.put(grantId, input(2, 'REVOKED'));
+      return new Response(JSON.stringify(proof));
+    });
+    await expect(statistics.pull(grantId, 1)).rejects.toThrow('Согласие');
+    expect(
+      await db.$queryRaw`SELECT grant_id FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`,
+    ).toEqual([]);
+    expect(
+      await db.$queryRaw`SELECT id FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`,
+    ).toEqual([]);
+  });
+  it('preserves VERIFIED phase failures through page-only progress and keeps import success unchanged', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture(400);
+    pageRemote(fixture);
+    await db.$executeRaw`UPDATE statistics_exchange_entities SET stats_error='CHECKSUM_MISMATCH',stats_error_phase='VERIFY',
+      stats_phase_health='{"VERIFY":{"failureAt":"2026-10-01T00:00:00.000Z","error":"CHECKSUM_MISMATCH"}}'::jsonb WHERE grant_id=${grantId}::uuid`;
+    const result = await statistics.pull(grantId, 1);
+    expect(result.lastError).toMatchObject({ code: 'CHECKSUM_MISMATCH', phase: 'VERIFY' });
+    const row = (
+      await db.$queryRaw<
+        Array<{
+          last_stats_at: Date | null;
+          stats_error: string;
+          stats_phase_health: Record<string, unknown>;
+        }>
+      >`
+      SELECT last_stats_at,stats_error,stats_phase_health FROM statistics_exchange_entities WHERE grant_id=${grantId}::uuid`
+    )[0]!;
+    expect(row.last_stats_at).toBeNull();
+    expect(row.stats_error).toBe('CHECKSUM_MISMATCH');
+    expect(row.stats_phase_health).toHaveProperty('PAGE.successAt');
+    expect(row.stats_phase_health).toHaveProperty('VERIFY.failureAt');
+  });
+  it('continues an active import when unavailable binding recovery throws and records the separate recovery phase', async () => {
+    await grants.put(grantId, input());
+    const fixture = await remoteFixture();
+    mockRemote(fixture);
+    const leaseId = await grantLease();
+    const grant = (await grants.row(grantId))!;
+    const recoverUnavailable = jest
+      .fn<
+        ReturnType<StatisticsExchangeGrantsService['recoverUnavailable']>,
+        Parameters<StatisticsExchangeGrantsService['recoverUnavailable']>
+      >()
+      .mockRejectedValue(new TypeError('private synthetic network body'));
+    const runtime = new StatisticsExchangeRuntimeService(db as PrismaService, config, statistics, {
+      recoverUnavailable,
+    } as unknown as StatisticsExchangeGrantsService);
+    await (
+      runtime as unknown as {
+        pullGrant(
+          value: StatisticsExchangeGrantRow,
+          lease: string,
+          deadline: number,
+        ): Promise<void>;
+      }
+    ).pullGrant(grant, leaseId, Date.now() + 10000);
+    const saved = (
+      await db.$queryRaw<
+        Array<{ last_pull_at: Date | null; last_error: string; last_error_phase: string }>
+      >`
+      SELECT last_pull_at,last_error,last_error_phase FROM statistics_exchange_grants WHERE id=${grantId}::uuid`
+    )[0]!;
+    expect(saved.last_pull_at).toBeInstanceOf(Date);
+    expect(saved.last_error).toBe('TRANSPORT');
+    expect(saved.last_error_phase).toBe('RECOVERY');
+    expect(
+      await db.$queryRaw`SELECT grant_id FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`,
+    ).toHaveLength(1);
+  });
+  it('preserves seven committed pages when the parent lease expires during page eight, then resumes under a new lease', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture();
+    let expire = true;
+    const requests: number[] = [];
+    pageRemote(fixture, async (offset) => {
+      requests.push(offset);
+      if (offset === 1400 && expire)
+        await db.$executeRaw`UPDATE statistics_exchange_grants SET lease_until=now()-interval '1 second' WHERE id=${grantId}::uuid`;
+    });
+    for (let i = 0; i < 7; i++) await statistics.pull(grantId, 1);
+    let leaseId = await grantLease();
+    await forceDue();
+    const failed = await statistics.pull(grantId, 1, {
+      leaseId,
+      afterEntityKey: null,
+      maxEntities: 3,
+      deadline: Date.now() + 10000,
+    });
+    expect(failed).toMatchObject({ failures: 1, completedEntities: 0 });
+    expect(
+      (
+        await db.$queryRaw<
+          Array<{ page_count: number }>
+        >`SELECT page_count FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`
+      )[0]!.page_count,
+    ).toBe(7);
+    expire = false;
+    leaseId = await grantLease();
+    await forceDue();
+    expect(
+      (
+        await statistics.pull(grantId, 1, {
+          leaseId,
+          afterEntityKey: null,
+          maxEntities: 3,
+          deadline: Date.now() + 10000,
+        })
+      ).completedEntities,
+    ).toBe(1);
+    expect(requests).toEqual([0, 200, 400, 600, 800, 1000, 1200, 1400, 1400]);
+  });
+  it('rejects checksum corruption on page eight and retains the previously verified import', async () => {
+    await grants.put(grantId, input());
+    const previous = await remoteFixture(),
+      remote = mockRemote(previous);
+    await statistics.pull(grantId, 1);
+    const fixture = await pagedFixture();
+    fixture.rows = fixture.rows.map((row) => ({ ...row, revision: 2 }));
+    fixture.manifest = { ...fixture.manifest, producerRevision: 2, sha256: '0'.repeat(64) };
+    remote.mockRestore();
+    pageRemote(fixture);
+    for (let i = 0; i < 7; i++) await statistics.pull(grantId, 1);
+    await expect(statistics.pull(grantId, 1)).rejects.toThrow('EXCHANGE_CHECKSUM_MISMATCH');
+    const saved = (
+      await db.$queryRaw<
+        Array<{ rows: ExchangeMeasurement[] }>
+      >`SELECT rows FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`
+    )[0]!;
+    expect(saved.rows).toEqual(previous.rows);
+    expect(
+      await db.$queryRaw`SELECT id FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`,
+    ).toEqual([]);
+  });
+  it('rejects revocation in page eight without publishing a partial generation', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture();
+    pageRemote(fixture, async (offset) => {
+      if (offset === 1400) await grants.put(grantId, input(2, 'REVOKED'));
+    });
+    for (let i = 0; i < 7; i++) await statistics.pull(grantId, 1);
+    await expect(statistics.pull(grantId, 1)).rejects.toThrow(
+      'EXCHANGE_DOWNLOAD_AUTHORITY_CHANGED',
+    );
+    expect(
+      await db.$queryRaw`SELECT id FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`,
+    ).toEqual([]);
+    expect(
+      await db.$queryRaw`SELECT grant_id FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`,
+    ).toEqual([]);
+  });
+  it('honors a shared credential cooldown across service instances and authority/page lanes without renewing permission', async () => {
+    await grants.put(grantId, input());
+    const page = await remoteFixture();
+    const remote = mockRemote(page);
+    await statistics.refreshRemoteAccess(grantId, 1);
+    const before = (
+      await db.$queryRaw<
+        Array<{ remote_valid_until: Date }>
+      >`SELECT remote_valid_until FROM statistics_exchange_entities WHERE grant_id=${grantId}::uuid`
+    )[0]!.remote_valid_until;
+    remote.mockImplementation(
+      async () =>
+        new Response('private remote body', { status: 429, headers: { 'retry-after': '120' } }),
+    );
+    const first = statistics as unknown as { remote(path: string): Promise<unknown> };
+    await expect(
+      first.remote(`/grants/${grantId}/statistics?entityId=${entityId}&kind=CHANNEL`),
+    ).rejects.toMatchObject({ status: 429, retryAfterMs: 120000 });
+    const calls = remote.mock.calls.length;
+    const replacement = new StatisticsExchangeStatisticsService(
+      db as PrismaService,
+      config,
+      grants,
+      new MarketplaceStatisticsService(db as PrismaService, state),
+    );
+    await expect(replacement.refreshRemoteAccess(grantId, 1)).rejects.toMatchObject({
+      status: 429,
+    });
+    await expect(
+      first.remote(`/grants/${grantId}/statistics?entityId=${entityId}&kind=CHANNEL`),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(remote.mock.calls).toHaveLength(calls);
+    const after = (
+      await db.$queryRaw<
+        Array<{ remote_valid_until: Date }>
+      >`SELECT remote_valid_until FROM statistics_exchange_entities WHERE grant_id=${grantId}::uuid`
+    )[0]!.remote_valid_until;
+    expect(after).toEqual(before);
+    const limit = (
+      await db.$queryRaw<
+        Array<{ peer_key: string; next_request_at: Date }>
+      >`SELECT peer_key,next_request_at FROM statistics_exchange_peer_limits`
+    )[0]!;
+    expect(limit.peer_key).toMatch(/^EXCHANGE:[a-f0-9]{64}$/u);
+    expect(limit.peer_key).not.toContain('c'.repeat(64));
+    await db.$executeRaw`UPDATE statistics_exchange_peer_limits SET next_request_at=now()-interval '1 second'`;
+    remote.mockImplementation(async () => new Response(JSON.stringify(await grants.read(grantId))));
+    await replacement.refreshRemoteAccess(grantId, 1);
+  });
+  it('rotates one slow two-page entity fairly among one hundred entities and eventually returns to its durable cursor', async () => {
+    const others = Array.from({ length: 99 }, (_, i) => ({
+      id: '-' + (BigInt(actor) + BigInt(i) + 1n).toString(),
+      bindingId: randomUUID(),
+    }));
+    const bindingFor = new Map([
+      [entityId, bindingId],
+      ...others.map((v) => [v.id, v.bindingId] as [string, string]),
+    ]);
+    try {
+      await db.chat.createMany({
+        data: others.map((v) => ({
+          id: v.id,
+          title: 'Synthetic fair statistics channel',
+          entityType: 'CHANNEL' as const,
+        })),
+      });
+      await db.chatBotMembership.createMany({
+        data: others.map((v) => ({
+          chatId: v.id,
+          botId: 'synthetic-v2-bot',
+          status: 'ACTIVE' as const,
+          botAccessState: 'CONFIRMED_ADMIN' as const,
+        })),
+      });
+      for (const other of others)
+        await db.$executeRaw`INSERT INTO marketplace_bindings(id,actor_user_id,entity_id,kind,profile,bot_id,state,checked_at,valid_until,metadata,history_complete,history_from,history_to)
+        SELECT ${other.bindingId}::uuid,actor_user_id,${other.id},kind,profile,bot_id,state,checked_at,valid_until,metadata,history_complete,history_from,history_to FROM marketplace_bindings WHERE id=${bindingId}::uuid`;
+      attest.mockImplementation(async (raw) => {
+        const id = bindingFor.get((raw as { entityId: string }).entityId);
+        const binding = id ? await state.read(id) : null;
+        if (!binding) throw new Error('Synthetic fair binding absent');
+        return binding;
+      });
+      await grants.put(grantId, {
+        ...input(),
+        entities: [...bindingFor.keys()].map((id) => ({
+          entityId: id,
+          kind: 'CHANNEL',
+          profile: 'moderation',
+        })),
+      });
+      const proof = await grants.read(grantId),
+        fixture = await pagedFixture(400),
+        single = await remoteFixture();
+      const generations = new Map([...bindingFor.keys()].map((id) => [id, randomUUID()]));
+      const counts = new Map<string, number>();
+      jest.spyOn(globalThis, 'fetch').mockImplementation(async (raw) => {
+        const url = new URL(String(raw));
+        if (!url.pathname.endsWith('/statistics')) return new Response(JSON.stringify(proof));
+        const id = url.searchParams.get('entityId')!,
+          offset = Number(url.searchParams.get('cursor') ?? 0);
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+        const rows = id === entityId ? fixture.rows : single.rows;
+        const base = id === entityId ? fixture.manifest : single.manifest;
+        const manifest = {
+          ...base,
+          entityId: id,
+          bindingId: bindingFor.get(id),
+          generationId: generations.get(id),
+        };
+        return new Response(
+          JSON.stringify({
+            manifest,
+            rows: rows.slice(offset, offset + 200),
+            nextCursor: offset + 200 < rows.length ? String(offset + 200) : null,
+          }),
+        );
+      });
+      const leaseId = await grantLease();
+      let cursor: string | null = null,
+        total = 0;
+      for (let visit = 0; visit < 40 && total < 100; visit++) {
+        await db.$executeRaw`UPDATE statistics_exchange_entities SET next_stats_at=now()-interval '1 second' WHERE grant_id=${grantId}::uuid AND last_stats_at IS NULL`;
+        const result = await statistics.pull(grantId, 1, {
+          leaseId,
+          afterEntityKey: cursor,
+          maxEntities: 3,
+          deadline: Date.now() + 10000,
+        });
+        cursor = result.nextCursor;
+        total += result.completedEntities;
+        if (visit === 0) expect(counts.size).toBe(3);
+      }
+      expect(total).toBe(100);
+      expect(counts.size).toBe(100);
+      expect(counts.get(entityId)).toBe(2);
+      expect([...counts].filter(([id]) => id !== entityId).every(([, count]) => count === 1)).toBe(
+        true,
+      );
+      expect(
+        (
+          await db.$queryRaw<
+            Array<{ count: bigint }>
+          >`SELECT count(*) AS count FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`
+        )[0]!.count,
+      ).toBe(100n);
+    } finally {
+      await db.$executeRaw`DELETE FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`;
+      await db.$executeRaw`DELETE FROM statistics_exchange_generations WHERE grant_id=${grantId}::uuid`;
+      await db.$executeRaw`DELETE FROM statistics_exchange_entities WHERE grant_id=${grantId}::uuid`;
+      for (const other of others) {
+        await db.$executeRaw`DELETE FROM marketplace_statistics_generations WHERE binding_id=${other.bindingId}::uuid`;
+        await db.$executeRaw`DELETE FROM marketplace_bindings WHERE id=${other.bindingId}::uuid`;
+      }
+      await db.chat.deleteMany({ where: { id: { in: others.map((v) => v.id) } } });
+    }
+  }, 120000);
+  it('records page-only runtime progress without advancing the completed-import timestamp', async () => {
+    await grants.put(grantId, input());
+    pageRemote(await pagedFixture(400));
+    const leaseId = await grantLease(),
+      grant = (await grants.row(grantId))!;
+    const recoverUnavailable = jest
+      .fn<
+        ReturnType<StatisticsExchangeGrantsService['recoverUnavailable']>,
+        Parameters<StatisticsExchangeGrantsService['recoverUnavailable']>
+      >()
+      .mockResolvedValue(false);
+    const runtime = new StatisticsExchangeRuntimeService(db as PrismaService, config, statistics, {
+      recoverUnavailable,
+    } as unknown as StatisticsExchangeGrantsService);
+    await (
+      runtime as unknown as {
+        pullGrant(
+          value: StatisticsExchangeGrantRow,
+          lease: string,
+          deadline: number,
+        ): Promise<void>;
+      }
+    ).pullGrant(grant, leaseId, Date.now() + 10000);
+    const saved = (
+      await db.$queryRaw<
+        Array<{ last_pull_at: Date | null; last_error: string | null }>
+      >`SELECT last_pull_at,last_error FROM statistics_exchange_grants WHERE id=${grantId}::uuid`
+    )[0]!;
+    expect(saved.last_pull_at).toBeNull();
+    expect(saved.last_error).toBeNull();
+    const page = (
+      await db.$queryRaw<
+        Array<{ page_count: number; last_page_at: Date }>
+      >`SELECT page_count,last_page_at FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`
+    )[0]!;
+    expect(page.page_count).toBe(1);
+    expect(page.last_page_at).toBeInstanceOf(Date);
+  });
+  it('preserves an empty opaque cursor in the next request', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture(2),
+      offsets: string[] = [];
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (raw) => {
+      const url = new URL(String(raw));
+      if (!url.pathname.endsWith('/statistics'))
+        return new Response(JSON.stringify(await grants.read(grantId)));
+      const second = url.searchParams.has('cursor');
+      offsets.push(second ? url.searchParams.get('cursor')! : 'INITIAL');
+      return new Response(
+        JSON.stringify({
+          manifest: fixture.manifest,
+          rows: fixture.rows.slice(second ? 1 : 0, second ? 2 : 1),
+          nextCursor: second ? null : '',
+        }),
+      );
+    });
+    expect((await statistics.pull(grantId, 1)).completedEntities).toBe(0);
+    expect((await statistics.pull(grantId, 1)).completedEntities).toBe(1);
+    expect(offsets).toEqual(['INITIAL', '']);
+  });
+  it('serializes racing initial page commits and never extends a staged generation hard expiry', async () => {
+    await grants.put(grantId, input());
+    const fixture = await pagedFixture(400);
+    pageRemote(fixture);
+    await statistics.refreshRemoteAccess(grantId, 1);
+    const downloads = new StatisticsExchangeDownloadsService(db as PrismaService);
+    const scope = {
+      grantId,
+      grantRevision: 1,
+      entityId,
+      kind: 'CHANNEL' as const,
+      localBindingId: bindingId,
+      remoteBindingId: bindingId,
+    };
+    const page = {
+      manifest: fixture.manifest,
+      rows: fixture.rows.slice(0, 200),
+      nextCursor: '200',
+    };
+    const owner = randomUUID(),
+      otherOwner = randomUUID();
+    const race = await Promise.allSettled([
+      downloads.append(scope, owner, null, page),
+      downloads.append(scope, otherOwner, null, page),
+    ]);
+    expect(race.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(race.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    const first = (
+      await db.$queryRaw<
+        Array<{ id: string; expires_at: Date; lease_id: string }>
+      >`SELECT id,expires_at,lease_id FROM statistics_exchange_downloads WHERE grant_id=${grantId}::uuid`
+    )[0]!;
+    await downloads.release(scope, first.id, first.lease_id);
+    const claimed = (await downloads.claim(scope, randomUUID()))!;
+    expect(claimed.expires_at).toEqual(first.expires_at);
+    await db.$executeRaw`UPDATE statistics_exchange_downloads SET expires_at=now()-interval '1 second' WHERE id=${first.id}::uuid`;
+    expect(await downloads.claim(scope, randomUUID())).toBeNull();
+    expect(
+      await db.$queryRaw`SELECT download_id FROM statistics_exchange_download_pages WHERE download_id=${first.id}::uuid`,
+    ).toEqual([]);
+  });
+  it('bounds the expiry selector on a skewed retained staging history with a real PostgreSQL plan', async () => {
+    const prefix = 'stats-staging-plan-' + randomUUID();
+    try {
+      await db.$executeRaw`INSERT INTO statistics_exchange_grants(id,actor_user_id,revision,state,input_hash)
+        SELECT md5(${prefix}||n::text)::uuid,${prefix}||n::text,1,'ACTIVE','synthetic' FROM generate_series(1,10000)n`;
+      await db.$executeRaw`INSERT INTO statistics_exchange_entities(grant_id,entity_id,kind,profile)
+        SELECT md5(${prefix}||n::text)::uuid,'-'||n::text,'CHANNEL','moderation' FROM generate_series(1,10000)n`;
+      await db.$executeRaw`INSERT INTO statistics_exchange_downloads(id,grant_id,grant_revision,entity_id,kind,local_binding_id,remote_binding_id,generation_id,producer_revision,manifest,expires_at)
+        SELECT md5(${prefix}||'download'||n)::uuid,md5(${prefix}||n::text)::uuid,1,'-'||n::text,'CHANNEL',${bindingId}::uuid,${bindingId}::uuid,
+          md5(${prefix}||'generation'||n)::uuid,1,'{}'::jsonb,now()+CASE WHEN n<=150 THEN -interval '1 minute' ELSE interval '1 day' END
+        FROM generate_series(1,10000)n`;
+      await db.$executeRaw`ANALYZE statistics_exchange_downloads`;
+      const plan = await db.$queryRaw<
+        Array<{ 'QUERY PLAN': unknown }>
+      >`EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON)
+        SELECT id FROM statistics_exchange_downloads WHERE expires_at<=now() ORDER BY expires_at,id LIMIT 100`;
+      const evidence = JSON.stringify(plan);
+      expect(evidence).toContain('statistics_exchange_downloads_expiry_idx');
+      expect(evidence).not.toContain('"Node Type":"Sort"');
+      expect(
+        await db.$queryRaw<
+          Array<{ id: string }>
+        >`SELECT id FROM statistics_exchange_downloads WHERE expires_at<=now() ORDER BY expires_at,id LIMIT 100`,
+      ).toHaveLength(100);
+    } finally {
+      await db.$executeRaw`DELETE FROM statistics_exchange_entities WHERE grant_id IN(SELECT id FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'})`;
+      await db.$executeRaw`DELETE FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'}`;
+    }
+  });
+  it('retains the measurement payload across repeated same-day retention visits', async () => {
+    await grants.put(grantId, input());
+    const page = await remoteFixture();
+    mockRemote(page);
+    await statistics.pull(grantId, 1);
+    const lease = randomUUID();
+    await db.$executeRaw`UPDATE statistics_exchange_grants SET lease_id=${lease}::uuid,lease_until=now()+interval '2 minutes' WHERE id=${grantId}::uuid`;
+    const runtime = new StatisticsExchangeRuntimeService(
+      db as PrismaService,
+      config,
+      statistics,
+      grants,
+    );
+    await runtime.prune(grantId, lease);
+    const before = (
+      await db.$queryRaw<
+        Array<{ xmin: string; rows: unknown }>
+      >`SELECT xmin::text AS xmin,rows FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`
+    )[0]!;
+    await runtime.prune(grantId, lease);
+    const after = (
+      await db.$queryRaw<
+        Array<{ xmin: string; rows: unknown }>
+      >`SELECT xmin::text AS xmin,rows FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid`
+    )[0]!;
+    process.stderr.write(
+      'retention-rewrite-measurement ' +
+        JSON.stringify({
+          rewritten: after.xmin !== before.xmin,
+          equalPayload: JSON.stringify(after.rows) === JSON.stringify(before.rows),
+        }) +
+        '\n',
+    );
+    expect(after.rows).toEqual(before.rows);
+    expect(after.xmin).toBe(before.xmin);
+  });
+
+  it('bounds indexed retention work to fifty stale projections and resumes without changing producer proof', async () => {
+    await grants.put(grantId, input());
+    const page = await remoteFixture();
+    mockRemote(page);
+    await statistics.pull(grantId, 1);
+    const expired: ExchangeMeasurement = {
+      ...page.rows[0]!,
+      data: {
+        ...page.rows[0]!.data,
+        metric: 'AUDIENCE',
+        value: 55,
+        bucket: '2020-01-01T00:00:00.000Z',
+        observedAt: '2020-01-01T00:00:00.000Z',
+      },
+    };
+    const payload = JSON.stringify([expired, ...page.rows]);
+    await db.$executeRaw`INSERT INTO statistics_exchange_imports(grant_id,grant_revision,entity_id,kind,producer_revision,manifest,rows,remote_valid_until)
+      SELECT ${grantId}::uuid,1,'-7000000000'||n::text,'CHANNEL',1,jsonb_set(${JSON.stringify(page.manifest)}::jsonb,'{entityId}',to_jsonb('-7000000000'||n::text)),${payload}::jsonb,now()+interval '5 minutes' FROM generate_series(1,10000) n`;
+    await db.$executeRaw`ANALYZE statistics_exchange_imports`;
+    const cutoff = new Date(exchangeRetentionFrom());
+    const plan = await db.$queryRaw<
+      Array<{ 'QUERY PLAN': unknown }>
+    >`EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) SELECT entity_id,kind FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid AND grant_revision=1 AND retention_checked_from<${cutoff} ORDER BY retention_checked_from,entity_id,kind LIMIT 50 FOR UPDATE SKIP LOCKED`;
+    expect(JSON.stringify(plan)).toContain('statistics_exchange_imports_retention_idx');
+    expect(JSON.stringify(plan)).not.toContain('"Node Type":"Sort"');
+    const lease = randomUUID();
+    await db.$executeRaw`UPDATE statistics_exchange_grants SET lease_id=${lease}::uuid,lease_until=now()+interval '2 minutes',next_import_prune_at=now() WHERE id=${grantId}::uuid`;
+    const runtime = new StatisticsExchangeRuntimeService(
+      db as PrismaService,
+      config,
+      statistics,
+      grants,
+    );
+    await runtime.prune(grantId, lease);
+    const progress = async () =>
+      (
+        await db.$queryRaw<
+          Array<{ n: bigint; invalid: bigint }>
+        >`SELECT count(*) FILTER(WHERE retention_checked_from>=${cutoff}) AS n,count(*) FILTER(WHERE producer_revision<>1 OR manifest->>'sha256'<>${page.manifest.sha256}) AS invalid FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid AND entity_id<>${entityId}`
+      )[0]!;
+    expect(await progress()).toEqual({ n: 50n, invalid: 0n });
+    await db.$executeRaw`UPDATE statistics_exchange_grants SET next_import_prune_at=now() WHERE id=${grantId}::uuid`;
+    const restarted = new StatisticsExchangeRuntimeService(
+      db as PrismaService,
+      config,
+      statistics,
+      grants,
+    );
+    await restarted.prune(grantId, lease);
+    expect(await progress()).toEqual({ n: 100n, invalid: 0n });
+    const changed = await db.$queryRaw<
+      Array<{ rows: ExchangeMeasurement[] }>
+    >`SELECT rows FROM statistics_exchange_imports WHERE grant_id=${grantId}::uuid AND entity_id<>${entityId} AND retention_checked_from>=${cutoff} LIMIT 1`;
+    expect(changed[0]!.rows).toEqual(page.rows);
   });
 });

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   exchangeMeasurementKey,
+  exchangeMeasurementIdentity,
   exchangeMeasurementSchema,
   type ExchangeMeasurement,
 } from '@maxim/contracts';
@@ -32,8 +33,15 @@ export function exchangeMetricError(
 }
 
 export function canonicalExchangeMeasurements(rows: ExchangeMeasurement[]): ExchangeMeasurement[] {
+  const identities = new Set<string>();
   return rows
-    .map((row) => exchangeMeasurementSchema.parse(row))
+    .map((row) => {
+      const parsed = exchangeMeasurementSchema.parse(row),
+        identity = exchangeMeasurementIdentity(parsed);
+      if (identities.has(identity)) throw new Error('Duplicate exchange measurement identity');
+      identities.add(identity);
+      return parsed;
+    })
     .sort((a, b) =>
       exchangeMeasurementKey(a) < exchangeMeasurementKey(b)
         ? -1
@@ -59,9 +67,9 @@ export function selectExchangeMeasurements(
   native: ExchangeMeasurement[],
   imported: ExchangeMeasurement[],
 ): ExchangeMeasurement[] {
-  const selected = new Map(native.map((row) => [exchangeMeasurementKey(row), row]));
+  const selected = new Map(native.map((row) => [exchangeMeasurementIdentity(row), row]));
   for (const row of imported) {
-    const key = exchangeMeasurementKey(row),
+    const key = exchangeMeasurementIdentity(row),
       own = selected.get(key);
     if (!own) {
       selected.set(key, row);
@@ -70,7 +78,8 @@ export function selectExchangeMeasurements(
     if (row.data.metric === 'AUDIENCE' && own.data.metric === 'AUDIENCE') {
       if (
         exchangeMeasurementComplete(row) &&
-        (!exchangeMeasurementComplete(own) || row.data.observedAt! > own.data.observedAt!)
+        (!exchangeMeasurementComplete(own) ||
+          Date.parse(row.data.observedAt!) > Date.parse(own.data.observedAt!))
       )
         selected.set(key, row);
     } else if (!exchangeMeasurementComplete(own) && exchangeMeasurementComplete(row))

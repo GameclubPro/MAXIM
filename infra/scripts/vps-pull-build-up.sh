@@ -41,6 +41,8 @@ PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL%/}"
 API_READY_TIMEOUT_SEC="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-900}"
 RETENTION_DEPLOY_MODE="${MAXIM_MESSAGE_RETENTION_MODE:-}"
 RETENTION_STATE_HELPER="$ROOT_DIR/infra/scripts/message-retention-rollout-state.mjs"
+STATISTICS_EXCHANGE_DEPLOY_ENABLED="${STATISTICS_EXCHANGE_V3_ENABLED:-}"
+STATISTICS_EXCHANGE_STATE_HELPER="$ROOT_DIR/infra/scripts/statistics-exchange-rollout-state.mjs"
 
 SERVICES=()
 if [[ $# -ge 2 ]]; then
@@ -180,6 +182,44 @@ verify_retention_deploy_mode() {
     fi
     docker inspect --format '{{json .Config.Env}}' "$container_id" |
       node "$RETENTION_STATE_HELPER" verify-runtime-env "$RETENTION_DEPLOY_MODE" || return
+  done
+}
+
+validate_statistics_exchange_deploy_flag() {
+  case "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" in
+    ''|true|false) ;;
+    *) echo 'STATISTICS_EXCHANGE_V3_ENABLED must be true or false when supplied.' >&2; return 2 ;;
+  esac
+}
+
+prepare_statistics_exchange_deploy_flag() {
+  [[ -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" ]] || return 0
+  # FLAG: Verify the canonical persisted dotenv, never a caller's Compose interpolation override.
+  unset STATISTICS_EXCHANGE_V3_ENABLED MAXIM_COMPOSE_SERVICE_ENV_FILE
+  export MAXIM_COMPOSE_SERVICE_ENV_FILE=../.env
+  node "$STATISTICS_EXCHANGE_STATE_HELPER" read-env .env >/dev/null
+}
+
+persist_statistics_exchange_deploy_flag() {
+  [[ -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" ]] || return 0
+  require_deploy_lock || return
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES || return
+  node "$STATISTICS_EXCHANGE_STATE_HELPER" patch-env .env "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" || return
+  docker compose "${COMPOSE_FILES[@]}" config --format json |
+    node "$STATISTICS_EXCHANGE_STATE_HELPER" verify-compose "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" "${API_SERVICES[@]}"
+}
+
+verify_statistics_exchange_deploy_flag() {
+  [[ -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" ]] || return 0
+  local service container_id
+  for service in "${API_SERVICES[@]}"; do
+    container_id="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || return
+    if [[ ! "$container_id" =~ ^[0-9a-f]{12,64}$ ]]; then
+      echo 'Statistics exchange verification requires exactly one container for every API role.' >&2
+      return 1
+    fi
+    docker inspect --format '{{json .Config.Env}}' "$container_id" |
+      node "$STATISTICS_EXCHANGE_STATE_HELPER" verify-runtime-env "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" || return
   done
 }
 
@@ -389,7 +429,7 @@ impact_plan_selects_component() {
 
 derive_auto_services() {
   SERVICES=()
-  if [[ -n "$RETENTION_DEPLOY_MODE" ]] || impact_plan_selects_component api-shared; then
+  if [[ -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" ]] || impact_plan_selects_component api-shared; then
     SERVICES+=("api-ingress")
   fi
   if impact_plan_selects_component miniapp-major-static; then
@@ -407,13 +447,16 @@ print_deploy_plan() {
 
   for component in api-shared miniapp-major-static admin-static; do
     current_sha="$(release_field "$component" sourceSha || printf '%s' unknown)"
-    if [[ "$component" == api-shared && -n "$RETENTION_DEPLOY_MODE" ]] || impact_plan_selects_component "$component"; then
+    if [[ "$component" == api-shared && ( -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" ) ]] || impact_plan_selects_component "$component"; then
       selected+=("$component")
     fi
     echo "$component current=$current_sha target=$(git rev-parse HEAD)"
   done
   if [[ -n "$RETENTION_DEPLOY_MODE" ]]; then
     echo "Retention runtime mode requested: $RETENTION_DEPLOY_MODE (all API roles; chat policies unchanged)."
+  fi
+  if [[ -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" ]]; then
+    echo "Statistics exchange v3 flag requested: $STATISTICS_EXCHANGE_DEPLOY_ENABLED (all API roles; cohort unchanged)."
   fi
   if [[ "${#selected[@]}" -eq 0 ]]; then
     echo "No production components require deployment."
@@ -1313,6 +1356,7 @@ validate_requested_services
 validate_api_ready_timeout
 validate_post_release_reclaim
 validate_retention_deploy_mode
+validate_statistics_exchange_deploy_flag
 acquire_deploy_lock
 trap cleanup EXIT
 if [[ "$DEPLOY_MODE" != "plan" ]]; then
@@ -1329,6 +1373,7 @@ fi
 maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 ensure_compose_env
 prepare_retention_deploy_mode
+prepare_statistics_exchange_deploy_flag
 initialize_release_inventory
 load_current_component_images
 if [[ "$DEPLOY_MODE" == "auto" ]]; then
@@ -1350,7 +1395,7 @@ fi
 validate_admin_access_code
 warn_postgres_password_fallback
 
-if [[ -n "$RETENTION_DEPLOY_MODE" ]] && ! has_requested_api_service; then
+if [[ -n "$RETENTION_DEPLOY_MODE" || -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" ]] && ! has_requested_api_service; then
   SERVICES+=("api-ingress")
 fi
 BUILD_API_IMAGE=0
@@ -1514,6 +1559,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   fi
 
   persist_retention_deploy_mode
+  persist_statistics_exchange_deploy_flag
 
   maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
   recreate_service_wave "action, publisher and retention" "api-action" "api-publisher" "api-message-retention"
@@ -1564,6 +1610,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     verify_service_image_id "$service" "$expected_api_image_id"
   done
   verify_retention_deploy_mode
+  verify_statistics_exchange_deploy_flag
   if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
     maxim_topology_verify_ocr_native_sandbox_runtime \
       COMPOSE_FILES "$expected_api_image_id" with-media
@@ -1598,6 +1645,9 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   SMOKE_RESULTS+=("api-local-live" "api-local-ready" "api-admin-live" "api-admin-ready" "api-public-live")
   if [[ -n "$RETENTION_DEPLOY_MODE" ]]; then
     SMOKE_RESULTS+=("api-message-retention-mode-$RETENTION_DEPLOY_MODE")
+  fi
+  if [[ -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" ]]; then
+    SMOKE_RESULTS+=("api-statistics-exchange-v3-$STATISTICS_EXCHANGE_DEPLOY_ENABLED")
   fi
   if [[ "$MAXIM_TARGET_HAS_PHOTO_NATIVE_SANDBOX" -eq 1 ]]; then
     SMOKE_RESULTS+=(api-photo-native-sandbox-isolation api-photo-native-sandbox-uds)

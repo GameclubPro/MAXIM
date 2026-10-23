@@ -680,6 +680,7 @@ const envSchema = z.object({
   VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(120_000),
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
   KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
+  STATISTICS_EXCHANGE_V3_ENABLED: envBoolean(false),
   SVYAZKA_STATISTICS_EXPORT_TOKEN: z
     .string()
     .regex(/^[a-f0-9]{64}$/u)

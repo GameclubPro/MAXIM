@@ -17,6 +17,8 @@ module.exports = {
     '^@maxim/contracts/network-settings-metadata$':
       '<rootDir>/../../packages/contracts/src/network-settings-metadata.ts',
     '^@maxim/contracts/networks-stats$': '<rootDir>/../../packages/contracts/src/networks-stats.ts',
+    '^@maxim/contracts/statistics-exchange-v3$':
+      '<rootDir>/../../packages/contracts/src/statistics-exchange-v3.ts',
     '^@maxim/contracts/marketplace-integration$':
       '<rootDir>/../../packages/contracts/src/marketplace-integration.ts',
     '^@maxim/contracts/advertising-placement$':

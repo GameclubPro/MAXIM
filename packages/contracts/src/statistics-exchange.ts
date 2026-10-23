@@ -137,6 +137,12 @@ export function exchangeMeasurementKey(v: z.infer<typeof exchangeMeasurementSche
   return `${d.metric}:${d.bucket}:${d.metric === 'REACH' ? d.horizon : ''}`;
 }
 
+// FLAG: Semantic identity does not change the producer's bucket spelling or wire ordering key.
+export function exchangeMeasurementIdentity(v: z.infer<typeof exchangeMeasurementSchema>) {
+  const d = v.data;
+  return `${d.metric}:${Date.parse(d.bucket)}:${d.metric === 'REACH' ? d.horizon : ''}`;
+}
+
 export function validateExchangePage(raw: unknown, now = Date.now()) {
   const page = exchangeStatisticsPageSchema.parse(raw);
   const m = page.manifest;
@@ -164,7 +170,7 @@ export function validateExchangePage(raw: unknown, now = Date.now()) {
   for (const row of page.rows) {
     const d = row.data,
       at = Date.parse(d.bucket);
-    const key = exchangeMeasurementKey(row);
+    const key = exchangeMeasurementIdentity(row);
     if (
       row.origin !== m.origin ||
       row.method !== m.method ||

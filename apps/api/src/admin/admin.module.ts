@@ -1,9 +1,14 @@
+import { StatisticsExchangeV3Controller } from '../integrations/marketplace/statistics-exchange-v3.controller';
+import { StatisticsExchangeV3MembershipService } from '../integrations/marketplace/statistics-exchange-v3-membership.service';
+import { StatisticsExchangeV3Service } from '../integrations/marketplace/statistics-exchange-v3.service';
+import { StatisticsExchangeV3ConsumerService } from '../integrations/marketplace/statistics-exchange-v3-consumer.service';
 import { MarketplaceStateModule } from '../integrations/marketplace/marketplace-state.module';
 import {
   StatisticsExchangeController,
   StatisticsExchangeOwnerController,
 } from '../integrations/marketplace/statistics-exchange.controller';
 import { StatisticsExchangeGrantsService } from '../integrations/marketplace/statistics-exchange-grants.service';
+import { StatisticsExchangeDownloadsService } from '../integrations/marketplace/statistics-exchange-downloads.service';
 import { StatisticsExchangeStatisticsService } from '../integrations/marketplace/statistics-exchange-statistics.service';
 import { StatisticsExchangeAudienceService } from '../integrations/marketplace/statistics-exchange-audience.service';
 import { StatisticsExchangeRuntimeService } from '../integrations/marketplace/statistics-exchange-runtime.service';
@@ -210,6 +215,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdvertisingPlacementController,
     MarketplaceIntegrationController,
     StatisticsExchangeController,
+    StatisticsExchangeV3Controller,
     StatisticsExchangeOwnerController,
     MarketplaceProfileController,
     AdminManagedEntitiesController,
@@ -254,7 +260,11 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     MarketplaceNativeProjectionService,
     MarketplaceRuntimeService,
     StatisticsExchangeGrantsService,
+    StatisticsExchangeV3MembershipService,
+    StatisticsExchangeV3Service,
+    StatisticsExchangeV3ConsumerService,
     StatisticsExchangeStatisticsService,
+    StatisticsExchangeDownloadsService,
     StatisticsExchangeAudienceService,
     StatisticsExchangeRuntimeService,
     MarketplaceIntegrationGuard,

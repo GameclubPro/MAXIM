@@ -72,6 +72,27 @@ describe('statistics exchange native and imported selection', () => {
     expect(exchangeMeasurementsHash(rows)).toBe(exchangeMeasurementsHash([...rows].reverse()));
     expect(canonicalExchangeMeasurements(rows)).toHaveLength(2);
   });
+  it('refuses semantically duplicate timestamps without rewriting producer buckets', () => {
+    const row = audience('EXCHANGE', 100);
+    const alias = { ...row, data: { ...row.data, bucket: '2026-10-20T00:00:00Z' } };
+    expect(() => canonicalExchangeMeasurements([row, alias])).toThrow(
+      'Duplicate exchange measurement identity',
+    );
+    expect(canonicalExchangeMeasurements([alias])).toEqual([alias]);
+  });
+  it('selects one source for equivalent buckets and compares actual observation instants', () => {
+    const native = audience('MAXIM', 100, '2026-10-20T01:00:00.000Z');
+    const imported = {
+      ...audience('EXCHANGE', 120, '2026-10-20T01:00:00Z'),
+      data: {
+        ...audience('EXCHANGE', 120, '2026-10-20T01:00:00Z').data,
+        bucket: '2026-10-20T00:00:00Z',
+      },
+    };
+    expect(selectExchangeMeasurements([native], [imported])).toEqual([native]);
+    imported.data.observedAt = '2026-10-20T02:00:00Z';
+    expect(selectExchangeMeasurements([native], [imported])).toEqual([imported]);
+  });
   it('exports the shared strict validator', () =>
     expect(typeof validateExchangePage).toBe('function'));
 });

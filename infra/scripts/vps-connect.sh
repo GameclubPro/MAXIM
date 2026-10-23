@@ -26,6 +26,7 @@ DATABASE_BREAK_GLASS_REASON_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS_REASON
 DEPLOY_DISK_MIN_FREE_BYTES_FROM_CALLER="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-}"
 DEPLOY_API_READY_TIMEOUT_SEC_FROM_CALLER="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-}"
 readonly MESSAGE_RETENTION_MODE_FROM_CALLER="${MAXIM_MESSAGE_RETENTION_MODE:-}"
+readonly STATISTICS_EXCHANGE_V3_FROM_CALLER="${STATISTICS_EXCHANGE_V3_ENABLED:-}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -35,6 +36,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 MAXIM_MESSAGE_RETENTION_MODE="$MESSAGE_RETENTION_MODE_FROM_CALLER"
+STATISTICS_EXCHANGE_V3_ENABLED="$STATISTICS_EXCHANGE_V3_FROM_CALLER"
 
 MAXIM_VPS_SSH_TARGET="${MAXIM_VPS_SSH_TARGET:-maxim-vps}"
 MAXIM_VPS_REPO_DIR="${MAXIM_VPS_REPO_DIR:-/var/www/Chat_bot}"
@@ -1201,6 +1203,10 @@ deploy_main() {
     ''|on|off) ;;
     *) echo 'MAXIM_MESSAGE_RETENTION_MODE must be on or off when supplied.' >&2; return 2 ;;
   esac
+  case "${STATISTICS_EXCHANGE_V3_ENABLED:-}" in
+    ''|true|false) ;;
+    *) echo 'STATISTICS_EXCHANGE_V3_ENABLED must be true or false when supplied.' >&2; return 2 ;;
+  esac
   maxim_validate_git_ssh_port "${MAXIM_DEPLOY_GIT_SSH_PORT:-default}"
   if ! expected_sha="$(git rev-parse --verify --end-of-options "${branch}^{commit}" 2>/dev/null)"; then
     echo "Cannot resolve local deploy branch to an exact commit: ${branch}" >&2
@@ -1224,6 +1230,9 @@ deploy_main() {
   remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$expected_sha") $remote_command"
   if [[ -n "${MAXIM_MESSAGE_RETENTION_MODE:-}" ]]; then
     remote_command="MAXIM_MESSAGE_RETENTION_MODE=$(printf '%q' "$MAXIM_MESSAGE_RETENTION_MODE") $remote_command"
+  fi
+  if [[ -n "${STATISTICS_EXCHANGE_V3_ENABLED:-}" ]]; then
+    remote_command="STATISTICS_EXCHANGE_V3_ENABLED=$(printf '%q' "$STATISTICS_EXCHANGE_V3_ENABLED") $remote_command"
   fi
   if [[ -n "${MAXIM_DEPLOY_EMERGENCY_REASON:-}" ]]; then
     remote_command="MAXIM_DEPLOY_EMERGENCY_REASON=$(printf '%q' "$MAXIM_DEPLOY_EMERGENCY_REASON") $remote_command"
