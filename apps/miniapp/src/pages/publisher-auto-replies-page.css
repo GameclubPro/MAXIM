@@ -901,7 +901,8 @@
     left: max(var(--app-page-gutter), calc((100vw - var(--app-shell-max-width)) / 2));
   }
 
-  html[data-max-keyboard-open='true'] .publisher-auto-reply-editor__save-bar {
+  html[data-max-keyboard-open='true'] .publisher-auto-reply-editor__save-bar,
+  .publisher-auto-reply-editor.is-keyboard-open .publisher-auto-reply-editor__save-bar {
     display: none;
   }
 

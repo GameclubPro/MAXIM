@@ -47,11 +47,17 @@ async function assertStickyStack(page) {
   const layout = await page.evaluate(() => {
     const rect = (selector) => document.querySelector(selector).getBoundingClientRect().toJSON();
     const toolbar = document.querySelector('.membership-feed__toolbar');
+    const toolbarBottom = toolbar.getBoundingClientRect().bottom;
+    const day = [...document.querySelectorAll('.membership-feed__day')].find((candidate) => {
+      const group = candidate.closest('.membership-feed__group').getBoundingClientRect();
+      return group.top <= toolbarBottom + 1 && group.bottom > toolbarBottom;
+    });
     return {
       header: rect('.managed-entity-workspace-header'),
       tabs: rect('.channel-insights__section-tabs'),
       toolbar: toolbar.getBoundingClientRect().toJSON(),
-      day: rect('.membership-feed__day'),
+      day: day?.getBoundingClientRect().toJSON() ?? null,
+      groupBottom: day?.closest('.membership-feed__group').getBoundingClientRect().bottom ?? null,
       hitTargets: [...toolbar.querySelectorAll('button')].map((button) => {
         const r = button.getBoundingClientRect();
         return button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
@@ -60,7 +66,10 @@ async function assertStickyStack(page) {
   });
   assert.ok(Math.abs(layout.header.bottom - layout.tabs.top) <= 1, JSON.stringify(layout));
   assert.ok(Math.abs(layout.tabs.bottom - layout.toolbar.top) <= 1, JSON.stringify(layout));
-  assert.ok(Math.abs(layout.toolbar.bottom - layout.day.top) <= 1, JSON.stringify(layout));
+  assert.ok(layout.day, JSON.stringify(layout));
+  // A day heading yields to the following group as its own group leaves the viewport.
+  const expectedDayTop = Math.min(layout.toolbar.bottom, layout.groupBottom - layout.day.height);
+  assert.ok(Math.abs(expectedDayTop - layout.day.top) <= 1, JSON.stringify(layout));
   assert.deepEqual(layout.hitTargets, [true, true, true]);
 }
 

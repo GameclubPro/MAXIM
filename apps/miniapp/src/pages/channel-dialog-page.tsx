@@ -2308,7 +2308,7 @@ export function ChannelDialogPage({
   }, [activeMessageId, activeMessageIsOwn, isReactionPickerExpanded]);
 
   useEffect(() => {
-    if (!activeMessageId) {
+    if (!activeMessageId || !reactionPopoverLayout) {
       return undefined;
     }
 
@@ -2329,28 +2329,32 @@ export function ChannelDialogPage({
 
       const viewportRect = viewport.getBoundingClientRect();
       const activeBubbleRect = activeBubble.getBoundingClientRect();
-      const popoverHeight = reactionPopoverRef.current?.getBoundingClientRect().height ?? 0;
+      const popoverHeight = reactionPopoverRef.current?.offsetHeight ?? 0;
       const desiredTopInset =
         14 + (reactionPopoverLayout?.placement === 'above' ? popoverHeight + 10 : 0);
       const desiredBottomInset =
         20 + (reactionPopoverLayout?.placement === 'below' ? popoverHeight + 10 : 0);
 
-      const topOffset = activeBubbleRect.top - viewportRect.top;
-      const bottomOffset = viewportRect.bottom - activeBubbleRect.bottom;
-
-      if (topOffset < desiredTopInset) {
-        viewport.scrollBy({
-          top: topOffset - desiredTopInset,
-          behavior: 'smooth',
-        });
+      // FLAG: The floating menu may overlap its bubble when both cannot fit together.
+      // Opposing scroll targets in that case would keep moving the menu under the user's finger.
+      if (desiredTopInset + activeBubbleRect.height + desiredBottomInset > viewportRect.height) {
         return;
       }
 
-      if (bottomOffset < desiredBottomInset) {
-        viewport.scrollBy({
-          top: desiredBottomInset - bottomOffset,
-          behavior: 'smooth',
-        });
+      const topOffset = activeBubbleRect.top - viewportRect.top;
+      const bottomOffset = viewportRect.bottom - activeBubbleRect.bottom;
+      const delta =
+        topOffset < desiredTopInset - 1
+          ? topOffset - desiredTopInset
+          : bottomOffset < desiredBottomInset - 1
+            ? desiredBottomInset - bottomOffset
+            : 0;
+      const target = Math.max(
+        0,
+        Math.min(viewport.scrollTop + delta, viewport.scrollHeight - viewport.clientHeight),
+      );
+      if (Math.abs(target - viewport.scrollTop) > 1) {
+        viewport.scrollTo({ top: target, behavior: 'instant' });
       }
     };
 

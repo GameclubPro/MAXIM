@@ -13,6 +13,8 @@ import { NetworkSettingsOverview } from './network-settings-overview';
 import { useManagedEntityNavigation } from '../lib/managed-entity-navigation';
 
 import { Spinner } from '../components/ui/spinner';
+import { AppIcon } from '../components/ui/app-icon';
+import './network-settings-route.css';
 import {
   hydrateNetworkSettingsOperationReceipts,
   listNetworkSettingsOperationReceipts,
@@ -56,9 +58,12 @@ export function NetworkSettingsRoute({ api, userId }: { api: ApiTransport; userI
   }, [identity, scopeId, type, userId]);
   if (loaded?.identity !== identity)
     return (
-      <div className="network-route-loading" role="status">
+      <div className="network-route-loading" role="status" aria-live="polite">
         <Spinner />
-        <span>Открываем настройки…</span>
+        <div>
+          <strong>Открываем настройки</strong>
+          <span>Загружаем сохранённый выбор сообществ…</span>
+        </div>
       </div>
     );
   const stored = loaded.value;
@@ -87,6 +92,9 @@ export function NetworkSettingsRoute({ api, userId }: { api: ApiTransport; userI
   )
     return (
       <div className="network-route-error" role="alert">
+        <span className="network-route-error__icon" aria-hidden>
+          <AppIcon icon="Group" />
+        </span>
         <h1>
           {operationUnavailable ? 'Операция не связана с этим выбором' : 'Выбор не сохранился'}
         </h1>
@@ -95,7 +103,9 @@ export function NetworkSettingsRoute({ api, userId }: { api: ApiTransport; userI
             ? 'Откройте сохранённую операцию из раздела «Сетки».'
             : 'Откройте сетку ещё раз.'}
         </p>
-        <Link to="/networks">К сеткам</Link>
+        <Link to="/networks">
+          <AppIcon icon="NavArrowLeft" aria-hidden />К сеткам
+        </Link>
       </div>
     );
   const hubPath = `/networks/${type}/settings?${new URLSearchParams({ scope: scopeId })}`;

@@ -1,0 +1,97 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] :is(.network-route-loading, .network-route-error) {
+    --network-route-icon-border: color-mix(in srgb, var(--major-accent) 20%, var(--major-border));
+    width: min(100%, 480px);
+    min-width: 0;
+    margin: clamp(24px, 10vh, 96px) auto 24px;
+    padding: clamp(20px, 6vw, 32px);
+    border: 1px solid var(--major-border);
+    border-radius: 24px;
+    background:
+      radial-gradient(ellipse at 100% 0%, var(--major-accent-soft), transparent 72%),
+      var(--major-surface);
+    box-shadow: var(--shadow-sm);
+    color: var(--major-ink);
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-loading {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-loading .spinner {
+    flex-shrink: 0;
+    --spinner-head: var(--major-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-loading > div {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-loading strong {
+    font-size: 15px;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-loading span,
+  body[data-miniapp-profile='moderation'] .network-route-error p {
+    color: var(--major-muted);
+    font-size: 14px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-error {
+    display: grid;
+    justify-items: start;
+    gap: 16px;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-error__icon {
+    display: grid;
+    place-items: center;
+    width: 52px;
+    height: 52px;
+    border: 1px solid var(--network-route-icon-border);
+    border-radius: 17px;
+    background: var(--major-accent-soft);
+    color: var(--major-accent);
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-error__icon .app-icon {
+    width: 26px;
+    height: 26px;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-error h1 {
+    font-size: clamp(22px, 6vw, 28px);
+    line-height: 1.2;
+    letter-spacing: -0.035em;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-error > a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 46px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 10px 16px;
+    border: 1px solid var(--major-accent);
+    border-radius: 14px;
+    background: var(--major-accent);
+    color: var(--major-on-accent);
+    font-size: 14px;
+    font-weight: 750;
+    text-decoration: none;
+  }
+
+  body[data-miniapp-profile='moderation'] .network-route-error > a .app-icon {
+    width: 18px;
+    height: 18px;
+  }
+}

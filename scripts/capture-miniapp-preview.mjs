@@ -169,7 +169,7 @@ function parseOptionalEnvFlag(name) {
 
 async function openSettingsSection(page, name, panelSelector) {
   await page.getByRole('button', { name, exact: true }).click();
-  await page.locator(panelSelector).waitFor({ state: 'visible' });
+  await page.locator(panelSelector).first().waitFor({ state: 'visible' });
   await page.waitForTimeout(350);
 }
 
@@ -629,6 +629,24 @@ async function scrollSettingsDrilldownToBottom(page) {
   }
 }
 
+async function scrollCaptureList(page, list) {
+  if (page.context().browser()?.browserType().name() === 'webkit') {
+    await list.evaluate((element) => {
+      let scroller = element;
+      while (
+        scroller.parentElement &&
+        (scroller.scrollHeight <= scroller.clientHeight ||
+          !/(auto|scroll)/u.test(getComputedStyle(scroller).overflowY))
+      ) {
+        scroller = scroller.parentElement;
+      }
+      scroller.scrollBy({ top: 1_200, behavior: 'instant' });
+    });
+  } else {
+    await page.mouse.wheel(0, 1_200);
+  }
+}
+
 async function scrollPaginatedListToStatus(page, options) {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const deadline = Date.now() + timeoutMs;
@@ -638,7 +656,7 @@ async function scrollPaginatedListToStatus(page, options) {
   let statusText = (await status.textContent())?.trim() ?? '';
   while (statusText !== options.expectedStatus && Date.now() < deadline) {
     const previousStatus = statusText;
-    await page.mouse.wheel(0, 1_200);
+    await scrollCaptureList(page, options.list);
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       break;
@@ -945,7 +963,7 @@ const scenarioBehaviors = [
       });
       await page.locator('.publisher-entities-page__list.is-virtual').waitFor({ state: 'visible' });
       for (let attempt = 0; attempt < 8; attempt += 1) {
-        await page.mouse.wheel(0, 1_200);
+        await scrollCaptureList(page, list);
         await page.waitForTimeout(50);
       }
       await page.waitForFunction(() => {
@@ -1145,8 +1163,7 @@ const scenarioBehaviors = [
       const editor = page.locator('.publication-content-composer .max-rich-text-editor__surface');
       await editor.fill('Черновик для осеннего анонса');
       await page.getByText('Сохранено', { exact: true }).waitFor();
-      if (screenshotTarget === 'native')
-        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      if (nativeScreenshot) await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
       else
         await page
           .locator('.publications-editor-header')
@@ -1163,8 +1180,7 @@ const scenarioBehaviors = [
       await editor.waitFor();
       if (!(await editor.textContent())?.includes('Черновик для осеннего анонса'))
         throw new Error('Cloud draft text was not restored.');
-      if (screenshotTarget === 'native')
-        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      if (nativeScreenshot) await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
       else
         await page
           .locator('.publications-editor-header')
@@ -1430,11 +1446,14 @@ const scenarioBehaviors = [
       await page.locator('.publication-target-picker__summary').click();
       const list = page.locator('.publication-target-picker__list');
       await list.waitFor({ state: 'visible' });
-      await page.getByText('Показано 30 из 200', { exact: true }).waitFor({ state: 'visible' });
+      const loaded = page.locator('.publication-target-picker__loaded');
+      await loaded.filter({ hasText: /^Показано 30 из \d+$/u }).waitFor();
+      const total = Number((await loaded.innerText()).match(/из (\d+)$/u)?.[1]);
+      if (total <= 30) throw new Error('Large recipient fixture must span multiple pages.');
       await scrollPaginatedListToStatus(page, {
         list,
         statusSelector: '.publication-target-picker__loaded',
-        expectedStatus: 'Показано 200 из 200',
+        expectedStatus: `Показано ${total} из ${total}`,
         loadMoreSelector: '.publication-target-picker__load-more',
         label: 'Publisher recipient scroll',
       });
@@ -1442,12 +1461,14 @@ const scenarioBehaviors = [
         .locator('.publication-target-picker__list.is-virtual')
         .waitFor({ state: 'visible' });
       for (let attempt = 0; attempt < 8; attempt += 1) {
-        await page.mouse.wheel(0, 1_200);
+        await scrollCaptureList(page, list);
         await page.waitForTimeout(50);
       }
-      await page.waitForFunction(() => {
+      await page.waitForFunction((total) => {
         const list = document.querySelector('.publication-target-picker__list.is-virtual');
-        const lastRow = list?.querySelector('.publication-target-row[data-target-position="200"]');
+        const lastRow = list?.querySelector(
+          `.publication-target-row[data-target-position="${total}"]`,
+        );
         if (!(list instanceof HTMLElement) || !(lastRow instanceof HTMLElement)) {
           return false;
         }
@@ -1464,7 +1485,7 @@ const scenarioBehaviors = [
           hitTarget !== null &&
           lastRow.contains(hitTarget)
         );
-      });
+      }, total);
     },
   },
   {
@@ -1711,7 +1732,7 @@ const scenarioBehaviors = [
         .getByText('MAX ограничил частоту. Пост остаётся в очереди.')
         .waitFor({ state: 'visible' });
       await details.getByText(/Следующая попытка не раньше/).waitFor({ state: 'visible' });
-      await details.getByText(/Срок отправки:/).waitFor({ state: 'visible' });
+      await details.getByText(/При задержке пост актуален до/).waitFor({ state: 'visible' });
       await details.locator('.publication-deliveries').scrollIntoViewIfNeeded();
     },
   },
@@ -1960,8 +1981,7 @@ const scenarioBehaviors = [
       await page
         .locator('.publication-content-composer .max-rich-text-editor__surface')
         .fill('Несохранённый текст публикации');
-      if (screenshotTarget === 'native')
-        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      if (nativeScreenshot) await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
       else
         await page
           .locator('.publications-editor-header')
@@ -2328,8 +2348,27 @@ const scenarioBehaviors = [
         throw new Error('Duplicate window preset was not applied');
       await hours.fill('168');
       await hours.blur();
-      if ((await hours.inputValue()) !== '48')
-        throw new Error('Duplicate window exceeds the 48-hour ceiling');
+      const hoursError = panel.locator('#duplicate-window-hours-error');
+      await hoursError.waitFor({ state: 'visible' });
+      if (
+        (await hours.inputValue()) !== '168' ||
+        (await hours.getAttribute('aria-invalid')) !== 'true' ||
+        (await hoursError.innerText()) !== 'Укажите период от 1 до 48 часов.'
+      )
+        throw new Error('Invalid duplicate window lost its value or validation state');
+      await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+      if (!(await panel.isVisible()) || !(await hoursError.isVisible()))
+        throw new Error('Invalid duplicate window was accepted');
+      await panel.getByRole('radio', { name: '2 дня', exact: true }).click();
+      if (
+        (await hours.inputValue()) !== '48' ||
+        (await hours.getAttribute('aria-invalid')) === 'true'
+      )
+        throw new Error('Correcting the duplicate window did not clear its validation state');
+      await hoursError.waitFor({ state: 'hidden' });
+      await page
+        .locator('.toast__close')
+        .evaluateAll((buttons) => buttons.forEach((button) => button.click()));
       const countControlsOverlap = await panel
         .locator('.duplicate-count-stepper')
         .evaluate((element) => {
@@ -2629,7 +2668,7 @@ const scenarioBehaviors = [
   {
     name: 'chat-settings-stop-words',
     beforeShot: async (page) => {
-      await page.locator('.stop-words-editor__list').waitFor({ state: 'visible' });
+      await page.getByLabel('Список слов и фраз', { exact: true }).waitFor({ state: 'visible' });
       await page.getByRole('checkbox', { name: 'Стоп-слова включены' }).scrollIntoViewIfNeeded();
       await page.waitForTimeout(350);
     },
@@ -3318,6 +3357,56 @@ const scenarioBehaviors = [
 const scenarioBehaviorByName = new Map(
   scenarioBehaviors.map((behavior) => [behavior.name, behavior]),
 );
+
+for (const name of [
+  'networks',
+  'networks-channels',
+  'networks-statistics',
+  'networks-communities',
+  'networks-settings',
+]) {
+  scenarioBehaviorByName.set(name, {
+    name,
+    beforeShot: async (page) => {
+      if (name === 'networks-statistics') {
+        await page.locator('.network-detail-metric').first().waitFor();
+      } else if (name === 'networks-communities') {
+        await page.locator('.network-community-row').first().waitFor();
+      } else {
+        await page.locator('.network-summary-card').first().waitFor();
+        if (name === 'networks-settings') {
+          await page
+            .locator('.network-summary-card')
+            .first()
+            .getByRole('button', { name: 'Настройки', exact: true })
+            .click();
+          await page.locator('[data-network-settings-overview]').waitFor();
+        }
+      }
+    },
+  });
+}
+for (const name of [
+  'chat-settings-reports',
+  'chat-settings-reports-journal',
+  'chat-settings-retention',
+]) {
+  scenarioBehaviorByName.set(name, {
+    name,
+    beforeShot: async (page) => {
+      const reports = name.includes('reports');
+      await openSettingsSection(
+        page,
+        reports ? 'Система жалоб' : 'Удаление старых сообщений',
+        reports ? '.reports-settings' : '.message-retention-settings',
+      );
+      if (name.endsWith('-journal')) {
+        await page.getByRole('tab', { name: 'Журнал', exact: true }).click();
+        await page.locator('.reports-journal__item').first().waitFor();
+      }
+    },
+  });
+}
 
 for (const sourceName of MINIAPP_VISUAL_BOTTOM_SCENARIO_SOURCES) {
   const source = scenarioBehaviorByName.get(sourceName);
@@ -4062,7 +4151,7 @@ async function assertConfiguredChecks(page, scenario) {
 async function assertCompactTextContained(page, scenario) {
   const clipped = await page.evaluate(() => {
     for (const label of document.querySelectorAll(
-      '.settings-mode-segments .segmented-control__item > span, .channel-summary-table th, .channel-summary-table td, .channel-audience-metric b, .channel-audience-metric small, .channel-audience-metric em',
+      '.settings-mode-segments .segmented-control__item > span, .channel-summary-card--compact > strong, .channel-summary-table th, .channel-summary-table td, .channel-audience-metric b, .channel-audience-metric small, .channel-audience-metric em',
     )) {
       const control = label.closest('button') ?? label;
       if (!control || !label.getClientRects().length) continue;
@@ -5216,6 +5305,7 @@ async function assertNoUnexpectedHorizontalOverflow(page, scenario) {
 
       const style = getComputedStyle(element);
       if (
+        !element.checkVisibility({ checkVisibilityCSS: true }) ||
         style.display === 'none' ||
         style.visibility === 'hidden' ||
         Number.parseFloat(style.opacity || '1') <= 0.01
@@ -5677,7 +5767,7 @@ function assertNavigationResponse(response, scenario, url) {
   }
 }
 
-async function captureDeviceScenarios(browser, capture, baseUrl, outputDir, report) {
+async function captureDeviceScenarios(browser, capture, baseUrl, outputDir, report, reportPath) {
   const { profile } = capture;
 
   const shotDir = path.join(outputDir, profile.outputDirName);
@@ -5769,7 +5859,7 @@ async function captureDeviceScenarios(browser, capture, baseUrl, outputDir, repo
           [...document.querySelectorAll('svg.app-icon')].every((icon) => {
             if (!icon.getBoundingClientRect().width) return true;
             const bounds = icon.getBBox();
-            return bounds.width > 0 && bounds.height > 0;
+            return bounds.width > 0 || bounds.height > 0;
           }),
         null,
         { timeout: 10_000 },
@@ -5796,6 +5886,12 @@ async function captureDeviceScenarios(browser, capture, baseUrl, outputDir, repo
       }
       const locator = resolveScreenshotLocator(page);
       let screenshotImage;
+
+      if (scenario.name === 'publisher-entities-error') {
+        await page
+          .locator('.publisher-entities-page__state.has-error[role="alert"]')
+          .waitFor({ state: 'visible' });
+      }
 
       if (locator) {
         screenshotImage = await locator.screenshot({
@@ -5856,6 +5952,10 @@ async function captureDeviceScenarios(browser, capture, baseUrl, outputDir, repo
     } finally {
       reportEntry.durationMs = Date.now() - startedAt;
       await context?.close();
+      report.heartbeatAt = new Date().toISOString();
+      if (reportEntry.status === 'passed') report.lastSuccessfulSampleAt = report.heartbeatAt;
+      await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+      console.log(`[visual] ${profile.outputDirName}/${scenario.name}: ${reportEntry.status}`);
     }
   }
 }
@@ -5986,7 +6086,7 @@ async function main() {
         }
         browsers.set(capture.browserName, browser);
       }
-      await captureDeviceScenarios(browser, capture, baseUrl, outputDir, report);
+      await captureDeviceScenarios(browser, capture, baseUrl, outputDir, report, reportPath);
     }
     const failures = report.scenarios.filter((scenario) => scenario.status === 'failed');
     if (failures.length)

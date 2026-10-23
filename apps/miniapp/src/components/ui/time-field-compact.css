@@ -1,0 +1,10 @@
+@layer workspace {
+  .time-field--compact .time-field__button {
+    min-height: 44px;
+  }
+
+  .time-field--compact .time-field__value {
+    font-size: 14px;
+    line-height: 1.2;
+  }
+}

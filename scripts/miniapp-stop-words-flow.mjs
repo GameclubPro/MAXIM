@@ -12,6 +12,7 @@ async function save(page) {
 
 export async function assertStopWordsEditorFlow(page) {
   const panel = page.locator(PANEL);
+  const wordsList = panel.getByLabel('Список слов и фраз', { exact: true });
   const input = panel.getByRole('textbox', { name: 'Добавить слова и фразы', exact: true });
   const phrase = 'доход без вложений';
   await input.fill(phrase);
@@ -24,6 +25,16 @@ export async function assertStopWordsEditorFlow(page) {
     .filter({ has: page.locator('summary', { hasText: 'Проверка сообщения' }) });
   await pendingTester.locator('summary').click();
   await pendingTester.getByRole('textbox', { name: 'Сообщение для проверки' }).fill(phrase);
+  assert.equal(
+    await pendingTester.getByRole('button', { name: 'Проверить', exact: true }).isDisabled(),
+    true,
+    'Message preview must wait until the input buffer is added to the draft list',
+  );
+  await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  assert.equal(await input.inputValue(), phrase);
+  assert.equal(await wordsList.getByText(phrase, { exact: true }).count(), 0);
+  await panel.getByRole('button', { name: 'Добавить записи', exact: true }).click();
+  assert.equal(await input.inputValue(), '');
   await pendingTester.getByRole('button', { name: 'Проверить', exact: true }).click();
   await pendingTester.locator('mark').getByText(phrase, { exact: true }).waitFor();
   await save(page);
@@ -65,19 +76,19 @@ export async function assertStopWordsEditorFlow(page) {
     await panel.getByRole('checkbox', { name: 'Стоп-слова включены', exact: true }).isChecked(),
     false,
   );
-  assert.equal(await panel.locator('.stop-words-editor__row').count(), 4);
+  assert.equal(await wordsList.locator('.stop-words-editor__row').count(), 4);
   await panel.getByRole('checkbox', { name: 'Стоп-слова включены', exact: true }).check();
   await panel.getByRole('searchbox', { name: 'Поиск по списку' }).fill('доход');
   await panel.getByRole('checkbox', { name: 'Выбрать ' + phrase, exact: true }).check();
   await panel.getByRole('button', { name: 'Удалить выбранное', exact: true }).click();
   const confirmation = page.getByRole('dialog', { name: 'Удалить выбранные записи?', exact: true });
   await confirmation.getByRole('button', { name: 'Отмена', exact: true }).click();
-  assert.equal(await panel.locator('.stop-words-editor__row').count(), 1);
+  assert.equal(await wordsList.locator('.stop-words-editor__row').count(), 1);
   await panel.getByRole('button', { name: 'Удалить выбранное', exact: true }).click();
   await confirmation.getByRole('button', { name: 'Удалить', exact: true }).click();
   await save(page);
   await reopen(page);
-  assert.equal(await panel.locator('.stop-words-editor__row').count(), 3);
+  assert.equal(await wordsList.locator('.stop-words-editor__row').count(), 3);
 
   await input.fill('несохранённая фраза');
   const viewport = page.viewportSize();
@@ -94,7 +105,7 @@ export async function assertStopWordsEditorFlow(page) {
   await page.getByRole('button', { name: 'Не сохранять', exact: true }).click();
   await reopen(page);
   assert.equal(await input.inputValue(), '');
-  assert.equal(await panel.locator('.stop-words-editor__row').count(), 3);
+  assert.equal(await wordsList.locator('.stop-words-editor__row').count(), 3);
   await panel
     .getByRole('checkbox', { name: 'Стоп-слова включены', exact: true })
     .scrollIntoViewIfNeeded();
@@ -103,10 +114,16 @@ export async function assertStopWordsEditorFlow(page) {
 export async function assertStopWordsSaveFailure(page, failure) {
   const panel = page.locator(PANEL);
   const input = panel.getByRole('textbox', { name: 'Добавить слова и фразы', exact: true });
+  const wordsList = panel.getByLabel('Список слов и фраз', { exact: true });
   await input.fill('контрольная фраза');
   await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
-  await page.getByText('Не удалось сохранить блок «Стоп-слова»', { exact: true }).waitFor();
   assert.equal(await input.inputValue(), 'контрольная фраза');
+  assert.equal(await wordsList.getByText('контрольная фраза', { exact: true }).count(), 0);
+  await panel.getByRole('button', { name: 'Добавить записи', exact: true }).click();
+  await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await page.getByText('Не удалось сохранить блок «Стоп-слова»', { exact: true }).waitFor();
+  assert.equal(await input.inputValue(), '');
+  await wordsList.getByText('контрольная фраза', { exact: true }).waitFor();
   if (failure === 'conflict') {
     await panel.getByRole('button', { name: 'Загрузить сохранённый список', exact: true }).click();
     await page
@@ -116,7 +133,9 @@ export async function assertStopWordsSaveFailure(page, failure) {
     await page.waitForFunction(
       () => document.querySelector('.stop-words-editor__input textarea')?.value === '',
     );
+    assert.equal(await wordsList.getByText('контрольная фраза', { exact: true }).count(), 0);
     await input.fill('контрольная фраза');
+    await panel.getByRole('button', { name: 'Добавить записи', exact: true }).click();
   }
   await save(page);
   await reopen(page);
@@ -128,24 +147,25 @@ export async function assertStopWordsSaveFailure(page, failure) {
 
 export async function assertStopWordsLargeList(page) {
   const panel = page.locator(PANEL);
-  await panel.locator('.stop-words-editor__row').first().waitFor();
-  assert.equal(await panel.locator('.stop-words-editor__row').count(), 100);
+  const wordsList = panel.getByLabel('Список слов и фраз', { exact: true });
+  await wordsList.locator('.stop-words-editor__row').first().waitFor();
+  assert.equal(await wordsList.locator('.stop-words-editor__row').count(), 100);
   const search = panel.getByRole('searchbox', { name: 'Поиск по списку' });
   await search.fill('д'.repeat(20));
-  assert.equal(await panel.locator('.stop-words-editor__row').count(), 1);
+  assert.equal(await wordsList.locator('.stop-words-editor__row').count(), 1);
   assert.equal(
-    await panel.locator('.stop-words-editor__value > span').textContent(),
+    await wordsList.locator('.stop-words-editor__value > span').textContent(),
     'Д'.repeat(160),
   );
   assert.equal(
-    await panel
+    await wordsList
       .locator('.stop-words-editor__value')
       .evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
     true,
   );
   await search.fill('');
   await panel.getByRole('button', { name: 'Показать ещё', exact: true }).click();
-  assert.equal(await panel.locator('.stop-words-editor__row').count(), 200);
+  assert.equal(await wordsList.locator('.stop-words-editor__row').count(), 200);
   await search.fill('д'.repeat(20));
   await panel
     .getByRole('checkbox', { name: 'Стоп-слова включены', exact: true })

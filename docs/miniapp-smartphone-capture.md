@@ -30,6 +30,9 @@
 Режим smartphone продолжает съёмку после ошибки отдельного сценария и возвращает ненулевой
 код завершения в конце. `MINIAPP_SCREENSHOT_CONTINUE_ON_FAILURE=0` включает раннюю остановку.
 Аудит собирает результаты всех комбинаций устройств и тем перед завершением.
+Отчёт обновляется после каждого сценария: `heartbeatAt` отмечает последний завершённый
+замер, `lastSuccessfulSampleAt` — последний успешный. Незавершённый прогон не считается
+полной проверкой; исходные ошибки сохраняются и перепроверяются отдельным списком сценариев.
 Перед замерами загружаются шрифты и завершаются конечные CSS-анимации: промежуточный масштаб
 открывающейся панели не выдаётся за дефект её окончательной геометрии.
 
@@ -50,6 +53,12 @@ npm run screenshots:miniapp
 MINIAPP_SCREENSHOT_PRESET=moderation \
 MINIAPP_SCREENSHOT_TARGET=smartphone npm run screenshots:miniapp
 
+# Все активные экраны Major и Публика, включая сетки, статистику и вложенные панели
+# Проверки геометрии, контраста и доступности включены в пресете
+MINIAPP_SCREENSHOT_PRESET=mobile \
+MINIAPP_SCREENSHOT_DEVICE=android \
+MINIAPP_SCREENSHOT_COLOR_SCHEME=dark npm run screenshots:miniapp
+
 # Клавиатура: три цикла открытия/закрытия с настоящим фокусом поля
 MINIAPP_SCREENSHOT_TARGET=smartphone \
 MINIAPP_SCREENSHOT_DEVICE=all \
@@ -64,6 +73,10 @@ npm run emulator:miniapp -- --device iphone --theme dark
 # Проверка самого средства съёмки, включая пиксели итогового PNG
 node apps/miniapp/test/smartphone-harness.browser.mjs
 ```
+
+Для очень узкого экрана задайте в локальном JSON профилю `iphone-se` значения
+`{"width":280,"height":667}` и передайте файл через `MINIAPP_PHONE_METRICS_PATH`.
+Повторите выбранные экраны на обычной ширине: узкая версия не заменяет эту проверку.
 
 Для старого режима: `MINIAPP_SCREENSHOT_TARGET=native`,
 `MINIAPP_VISUAL_AUDIT_TARGET=native` или `emulator:miniapp -- --target native`.

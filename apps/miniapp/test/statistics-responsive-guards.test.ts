@@ -113,7 +113,7 @@ test('compact channel KPI cards remain a two-column grid through 380px', () => {
 test('daily audience table stays visible with all four data columns', () => {
   assert.match(
     channelStatsPageSource,
-    /<th>День<\/th>[\s\S]*?<th>Подписчиков<\/th>[\s\S]*?<th>Прирост<\/th>[\s\S]*?<th>Движение<\/th>/u,
+    /<th scope="col">День<\/th>[\s\S]*?<th scope="col" aria-label="Всего подписчиков">[\s\S]*?Всего[\s\S]*?<\/th>[\s\S]*?<th scope="col">Прирост<\/th>[\s\S]*?<th scope="col">Вход \/ выход<\/th>/u,
   );
   assert.match(
     channelStatsPageSource,

@@ -7,6 +7,7 @@
 
   .time-field__button {
     width: 100%;
+    min-width: 0;
     min-height: 58px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -29,7 +30,7 @@
   }
 
   .time-field--compact .time-field__button {
-    min-height: 36px;
+    min-height: 44px;
     gap: 8px;
     padding: 5px 7px 5px 9px;
     border-color: var(--vk-line, rgba(190, 205, 220, 0.86));
@@ -108,9 +109,9 @@
   }
 
   .time-field--compact .time-field__value {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 650;
-    line-height: 1.1;
+    line-height: 1.2;
   }
 
   .time-field__icon {

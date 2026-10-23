@@ -3389,7 +3389,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
               {section === 'participants' ? (
                 <div className="events-dashboard__body events-dashboard__body--participants">
                   <article className="events-dashboard__hero events-dashboard__hero--accent">
-                    <small>Участников</small>
+                    <small aria-label="Всего участников">Всего</small>
                     <strong className="events-dashboard__hero-value">
                       {participantsTotalPresentation.status === 'loading' ? (
                         <span

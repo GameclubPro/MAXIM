@@ -50,6 +50,7 @@ import { useManagedEntityLeaveGuard } from '../lib/managed-entity-navigation';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { useAutoReplyDraft } from '../lib/use-auto-reply-draft';
+import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import { recoverableLazyNamedComponent } from '../lib/recoverable-lazy';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import type { PublicationButtonsSheetProps } from '../features/publications/publication-buttons-sheet';
@@ -310,6 +311,66 @@ function PublisherAutoReplyEditor({
   const [imagesPreparing, setImagesPreparing] = useState(false);
   const [phraseInput, setPhraseInput] = useState('');
   const requestIdRef = useRef<string | null>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const keyboardOpen = useKeyboardOpen();
+
+  useEffect(() => {
+    if (!keyboardOpen) return;
+    const viewport = window.visualViewport;
+    let frame = 0;
+    const revealFocusedField = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const field = document.activeElement;
+        if (!(field instanceof HTMLElement) || !editorRef.current?.contains(field)) return;
+        if (!field.matches('input, textarea, [contenteditable="true"]')) return;
+        const top = (viewport?.offsetTop ?? 0) + 12;
+        const bottom = (viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight) - 12;
+        let bounds = field.getBoundingClientRect();
+        if (field.isContentEditable && bounds.height > bottom - top) {
+          const selection = window.getSelection();
+          if (!selection?.focusNode || !field.contains(selection.focusNode)) return;
+          const caret = document.createRange();
+          caret.setStart(selection.focusNode, selection.focusOffset);
+          caret.collapse(true);
+          let caretBounds = caret.getBoundingClientRect();
+          if (
+            !caretBounds.height &&
+            selection.focusNode instanceof Text &&
+            selection.focusNode.length
+          ) {
+            const offset = Math.min(
+              Math.max(0, selection.focusOffset - 1),
+              selection.focusNode.length - 1,
+            );
+            caret.setStart(selection.focusNode, offset);
+            caret.setEnd(selection.focusNode, offset + 1);
+            caretBounds = caret.getBoundingClientRect();
+          }
+          if (!caretBounds.height) return;
+          bounds = caretBounds;
+        }
+        const delta =
+          bounds.top < top
+            ? bounds.top - top
+            : bounds.bottom > bottom
+              ? Math.min(bounds.bottom - bottom, bounds.top - top)
+              : 0;
+        if (Math.abs(delta) > 1) window.scrollBy({ top: delta, behavior: 'instant' });
+      });
+    };
+    revealFocusedField();
+    viewport?.addEventListener('resize', revealFocusedField);
+    window.addEventListener('resize', revealFocusedField);
+    const editor = editorRef.current;
+    editor?.addEventListener('focusin', revealFocusedField);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      viewport?.removeEventListener('resize', revealFocusedField);
+      window.removeEventListener('resize', revealFocusedField);
+      editor?.removeEventListener('focusin', revealFocusedField);
+    };
+  }, [keyboardOpen]);
 
   const saveMutation = useMutation({
     mutationFn: async (value: AutoReplyDraft) => {
@@ -565,7 +626,11 @@ function PublisherAutoReplyEditor({
   }
 
   return (
-    <div className="publisher-auto-reply-editor" aria-busy={saveMutation.isPending || undefined}>
+    <div
+      ref={editorRef}
+      className={`publisher-auto-reply-editor${keyboardOpen ? ' is-keyboard-open' : ''}`}
+      aria-busy={saveMutation.isPending || undefined}
+    >
       <header className="publisher-auto-reply-editor__header">
         <button type="button" onClick={requestClose} aria-label="Закрыть редактор" title="Назад">
           <NavArrowLeft aria-hidden />

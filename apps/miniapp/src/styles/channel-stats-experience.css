@@ -352,14 +352,46 @@
   }
 
   .channel-audience-board__plot {
-    min-height: 188px;
+    min-height: 210px;
     margin: 0;
     overflow: visible;
   }
 
   .channel-stats-graph--audience-reference .channel-stats-graph__svg {
-    min-height: 188px;
+    height: 210px;
+    min-height: 210px;
+    aspect-ratio: auto;
     overflow: visible;
+  }
+
+  .channel-stats-graph--audience-reference .channel-stats-graph__axis-text,
+  .channel-stats-graph--audience-reference .channel-stats-graph__x-label {
+    font-size: 11px;
+  }
+
+  .channel-audience-board__series {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    line-height: 1.4;
+  }
+
+  .channel-audience-board__series > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .channel-audience-board__series > span::before {
+    content: '';
+    width: 18px;
+    border-top: 3px solid var(--success);
+  }
+
+  .channel-audience-board__series > .is-previous::before {
+    border-top: 2px dashed var(--text-muted);
   }
 
   .channel-stats-graph--audience-reference .channel-stats-graph__grid,
@@ -390,7 +422,8 @@
 
   .channel-stats-graph--audience-reference .channel-stats-graph__line--previous {
     stroke: var(--text-muted);
-    opacity: 0.35;
+    stroke-dasharray: 5 4;
+    opacity: 0.7;
     filter: none;
   }
 
@@ -998,7 +1031,7 @@
 
     .channel-audience-board__plot,
     .channel-stats-graph--audience-reference .channel-stats-graph__svg {
-      min-height: 180px;
+      min-height: 210px;
     }
 
     .channel-events-section__head {
@@ -1007,7 +1040,6 @@
   }
 
   @media (max-width: 360px) {
-
     .events-stage__appbar-bar,
     .channel-insights__sticky-header .compact-page-header__bar,
     .channel-insights__sticky-header.compact-page-header.is-compact .compact-page-header__bar {
@@ -1142,13 +1174,13 @@
   }
 
   .channel-events-section__period-copy span {
-    overflow: hidden;
+    overflow: visible;
     color: var(--text-secondary);
     font-size: 0.62rem;
     font-weight: 680;
     line-height: 1.15;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .channel-events-section__head--period .channel-insights__range {
@@ -1162,12 +1194,12 @@
 
   @media (max-width: 360px) {
     .channel-events-section__head--period {
-      grid-template-columns: minmax(0, 1fr) 132px;
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .channel-events-section__head--period .channel-insights__range {
-      justify-self: end;
-      width: 132px;
+      justify-self: stretch;
+      width: 100%;
     }
   }
 
