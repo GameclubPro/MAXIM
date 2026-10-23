@@ -1,4 +1,4 @@
-import { Calendar } from 'iconoir-react';
+import { AppIcon } from './app-icon';
 import { forwardRef, useId } from 'react';
 import { cn } from '../../lib/cn';
 import './date-field.css';
@@ -51,7 +51,7 @@ export const DateField = forwardRef<HTMLInputElement, DateFieldProps>(function D
       <span className="date-field__label">{label}</span>
       <span className="date-field__control">
         <strong className="date-field__value">{formatDate(value, placeholder)}</strong>
-        <Calendar aria-hidden focusable="false" />
+        <AppIcon icon="Calendar" style={{ strokeWidth: 1.5 }} />
         <input
           ref={ref}
           type="date"
