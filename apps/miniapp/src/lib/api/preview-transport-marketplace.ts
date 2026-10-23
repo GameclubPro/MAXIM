@@ -7,6 +7,7 @@ import type { PreviewState } from './preview-transport-state';
 
 const profiles = new WeakMap<PreviewState, Map<string, MarketplaceProfileState>>();
 const requests = new WeakMap<PreviewState, Map<string, MarketplaceProfileState>>();
+const pendingReadiness = new WeakSet<MarketplaceProfileState>();
 
 export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
   state,
@@ -30,6 +31,7 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
   const store = profiles.get(state) ?? new Map<string, MarketplaceProfileState>();
   profiles.set(state, store);
   let current = store.get(key);
+  const initialRead = !current;
   if (!current) {
     const now = state.clock.now().toISOString();
     const id =
@@ -58,7 +60,7 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
         historyFrom: null,
         collectionOwner: 'SHADOW',
         collectionMetrics: [],
-        statisticsConsent: false,
+        statisticsConsent: state.marketplaceReadiness === 'ready',
         statisticsCheckedAt: null,
         metadata: {
           title: entity.title,
@@ -76,6 +78,7 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
       buttonDiagnostic: null,
     };
     store.set(key, current);
+    if (state.marketplaceReadiness === 'delayed') pendingReadiness.add(current);
   }
   const present = () => {
     const linked = !!current.listing;
@@ -113,6 +116,7 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
   if (method === 'GET') {
     // Preview models successful re-attestation, never consent restoration.
     current.binding.state = 'ACTIVE';
+    if (!initialRead && pendingReadiness.delete(current)) current.binding.statisticsConsent = true;
     return present();
   }
   if (method !== 'POST') return PREVIEW_NOT_HANDLED;
@@ -147,6 +151,7 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
     current.appendEnabled = input.appendEnabled === true;
     current.appendRevision++;
   } else if (input.action === 'revoke') {
+    pendingReadiness.delete(current);
     current.binding.statisticsConsent = false;
     current.binding.state = 'REVOKED';
     current.binding.revision++;

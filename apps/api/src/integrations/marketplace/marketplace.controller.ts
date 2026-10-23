@@ -128,9 +128,9 @@ export class MarketplaceIntegrationController {
       }
       if (rows[0].revision !== input.expectedRevision)
         throw new ConflictException('Привязка изменилась');
-      await tx.$executeRaw`UPDATE marketplace_bindings SET state='REVOKED',statistics_consent=false,append_enabled=false,
+      await tx.$executeRaw`UPDATE marketplace_bindings SET state='REVOKED',statistics_consent=false,statistics_revoked_at=COALESCE(statistics_revoked_at,now()),statistics_v2_consent_only=false,append_enabled=false,
         valid_until=NULL,public_verified_until=NULL,lease_id=NULL,lease_until=NULL,checked_at=now(),revision=revision+1,append_revision=append_revision+1,updated_at=now()
-        WHERE id=${id}::uuid AND (state<>'REVOKED' OR statistics_consent=true OR append_enabled=true OR lease_id IS NOT NULL OR valid_until IS NOT NULL OR public_verified_until IS NOT NULL)`;
+        WHERE id=${id}::uuid AND (statistics_revoked_at IS NULL OR state<>'REVOKED' OR statistics_consent=true OR append_enabled=true OR lease_id IS NOT NULL OR valid_until IS NOT NULL OR public_verified_until IS NOT NULL)`;
       const result = { revoked: true as const };
       await tx.$executeRaw`INSERT INTO marketplace_policy_requests(request_id,binding_id,payload_hash,result) VALUES(${input.requestId}::uuid,${id}::uuid,${hash},${JSON.stringify(result)}::jsonb)`;
       return result;

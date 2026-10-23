@@ -83,7 +83,8 @@ postgres('marketplace durable owner policy changes', () => {
     );
     const request = { requestId: randomUUID(), expectedRevision: 0 };
     expect(await controller.revoke(id, request)).toEqual({ revoked: true });
-    await db.$executeRaw`UPDATE marketplace_bindings SET statistics_consent=true,state='ACTIVE',valid_until=now()+interval '5 minutes',revision=revision+1 WHERE id=${id}::uuid`;
+    expect((await state.read(id))!.statistics_revoked_at).toBeInstanceOf(Date);
+    await db.$executeRaw`UPDATE marketplace_bindings SET statistics_consent=true,statistics_revoked_at=NULL,statistics_v2_consent_only=false,state='ACTIVE',valid_until=now()+interval '5 minutes',append_revision=append_revision+1,revision=revision+1 WHERE id=${id}::uuid`;
     expect(await controller.revoke(id, request)).toEqual({ revoked: true });
     expect((await state.read(id))!.statistics_consent).toBe(true);
     await expect(controller.revoke(id, { ...request, requestId: randomUUID() })).rejects.toThrow(
@@ -143,6 +144,7 @@ postgres('marketplace durable owner policy changes', () => {
     expect(repeated).toEqual(first);
     expect((await state.read(id))!).toMatchObject({
       statistics_consent: false,
+      statistics_revoked_at: expect.any(Date),
       append_enabled: false,
       append_revision: 1,
       state: 'REVOKED',
@@ -210,5 +212,51 @@ postgres('marketplace durable owner policy changes', () => {
       }),
     ).rejects.toThrow('Согласие изменилось');
     expect((await state.read(id))!.statistics_consent).toBe(false);
+  });
+  it('claims explicit legacy consent only with its policy CAS, including an already enabled automatic binding', async () => {
+    await db.$executeRaw`UPDATE marketplace_bindings SET statistics_v2_consent_only=true WHERE id=${id}::uuid`;
+    jest.spyOn(service, 'relay').mockImplementation(async () => {
+      await db.$executeRaw`UPDATE marketplace_bindings SET append_revision=append_revision+1 WHERE id=${id}::uuid`;
+      return remote;
+    });
+    await expect(
+      mutate({
+        action: 'save',
+        requestId: randomUUID(),
+        expectedRevision: 0,
+        statisticsConsent: true,
+      }),
+    ).rejects.toThrow('Согласие изменилось');
+    const rows = await db.$queryRaw<Array<{ statistics_v2_consent_only: boolean }>>`
+      SELECT statistics_v2_consent_only FROM marketplace_bindings WHERE id=${id}::uuid`;
+    expect(rows[0]!.statistics_v2_consent_only).toBe(true);
+  });
+  it('keeps explicit denial through access attestation and clears it only for a later explicit legacy true', async () => {
+    await mutate({ action: 'revoke', requestId: randomUUID(), expectedRevision: 0 });
+    const denied = (await state.read(id))!.statistics_revoked_at;
+    await db.$executeRaw`UPDATE marketplace_bindings SET state='ACTIVE',checked_at=now(),valid_until=now()+interval '5 minutes' WHERE id=${id}::uuid`;
+    expect((await state.read(id))!.statistics_revoked_at).toEqual(denied);
+    await mutate({
+      action: 'pause',
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      statisticsConsent: true,
+    });
+    expect((await state.read(id))!.statistics_revoked_at).toEqual(denied);
+    await expect(
+      mutate({ action: 'save', requestId: randomUUID(), expectedRevision: 1 }),
+    ).rejects.toThrow('Подтвердите');
+    const response = await mutate({
+      action: 'save',
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      statisticsConsent: true,
+    });
+    expect(response.binding.statisticsConsent).toBe(true);
+    expect((await state.read(id))!).toMatchObject({
+      statistics_revoked_at: null,
+      statistics_consent: true,
+      append_revision: 2,
+    });
   });
 });

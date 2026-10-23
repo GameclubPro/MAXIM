@@ -5,7 +5,6 @@ export function marketplaceQueryKey(profile: string, entityType: string, entityI
 }
 export function marketplaceProfileTitle(state: MarketplaceProfileState, fresh = true) {
   const active = fresh && state.binding.state === 'ACTIVE';
-  const consent = state.binding.statisticsConsent;
   const publicState =
     state.capabilities?.publicState ??
     (state.listing?.status === 'PAUSED'
@@ -13,7 +12,11 @@ export function marketplaceProfileTitle(state: MarketplaceProfileState, fresh = 
       : state.listing?.status === 'PUBLISHED'
         ? 'ACCESS_REQUIRED'
         : 'DRAFT');
-  const publicNow = active && publicState === 'PUBLIC' && !!state.listing?.publicUrl;
+  const publicNow =
+    active &&
+    state.binding.statisticsConsent &&
+    publicState === 'PUBLIC' &&
+    !!state.listing?.publicUrl;
   return !state.listing
     ? 'Новый профиль · не сохранён'
     : !fresh
@@ -21,16 +24,16 @@ export function marketplaceProfileTitle(state: MarketplaceProfileState, fresh = 
       : state.binding.state === 'UNKNOWN'
         ? 'Проверяем ваши права…'
         : !active
-          ? consent
-            ? 'Доступ не подтверждён'
-            : 'Обмен статистикой отключён'
-          : publicState === 'REVIEW'
-            ? 'Профиль на проверке биржи'
-            : publicNow
-              ? 'Профиль опубликован'
-              : publicState === 'HIDDEN'
-                ? 'Профиль скрыт'
-                : publicState === 'ACCESS_REQUIRED'
-                  ? 'Профиль сейчас недоступен посетителям'
-                  : 'Черновик · виден только вам';
+          ? 'Профиль пока недоступен'
+          : !state.binding.statisticsConsent
+            ? 'Профиль пока недоступен'
+            : publicState === 'REVIEW'
+              ? 'Профиль на проверке биржи'
+              : publicNow
+                ? 'Профиль опубликован'
+                : publicState === 'HIDDEN'
+                  ? 'Профиль скрыт'
+                  : publicState === 'ACCESS_REQUIRED'
+                    ? 'Профиль сейчас недоступен посетителям'
+                    : 'Черновик · виден только вам';
 }

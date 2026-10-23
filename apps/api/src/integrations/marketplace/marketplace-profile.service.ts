@@ -138,7 +138,7 @@ export class MarketplaceProfileService {
           input.action === 'revoke'
             ? await tx.$queryRaw<
                 MarketplaceBindingRow[]
-              >`UPDATE marketplace_bindings SET statistics_consent=false,append_enabled=false,state='REVOKED',valid_until=NULL,lease_id=NULL,lease_until=NULL,
+              >`UPDATE marketplace_bindings SET statistics_consent=false,statistics_revoked_at=COALESCE(statistics_revoked_at,now()),statistics_v2_consent_only=false,append_enabled=false,state='REVOKED',valid_until=NULL,lease_id=NULL,lease_until=NULL,
             public_verified_until=NULL,append_revision=append_revision+1,revision=revision+1,checked_at=now(),updated_at=now() WHERE id=${binding.id}::uuid RETURNING *`
             : await tx.$queryRaw<
                 MarketplaceBindingRow[]
@@ -156,17 +156,22 @@ export class MarketplaceProfileService {
     if (input.action !== 'pause' && !binding.statistics_consent && input.statisticsConsent !== true)
       throw new ConflictException('Подтвердите использование статистики');
     const result = await this.relay(binding, input);
-    if (input.statisticsConsent === true)
-      await this.prisma
-        .$executeRaw`UPDATE marketplace_bindings SET statistics_v2_consent_only=false WHERE id=${binding.id}::uuid`;
-    if (input.action !== 'pause' && !binding.statistics_consent) {
+    if (input.action !== 'pause' && input.statisticsConsent === true) {
       const now = new Date();
       const from = new Date(now);
       from.setUTCHours(0, 0, 0, 0);
       from.setUTCDate(from.getUTCDate() - 89);
+      // FLAG: Only an explicit legacy consent claims independent collection, atomically with its local policy CAS.
       const changed = await this.prisma
-        .$executeRaw`UPDATE marketplace_bindings SET statistics_consent=true,history_from=${from},history_to=${now},history_cursor=${now},
-        history_complete=false,history_signature=NULL,discovery_from=NULL,discovery_to=NULL,history_anomaly=false,
+        .$executeRaw`UPDATE marketplace_bindings SET statistics_consent=true,statistics_v2_consent_only=false,statistics_revoked_at=NULL,
+        history_from=CASE WHEN statistics_consent=false THEN ${from} ELSE history_from END,
+        history_to=CASE WHEN statistics_consent=false THEN ${now} ELSE history_to END,
+        history_cursor=CASE WHEN statistics_consent=false THEN ${now} ELSE history_cursor END,
+        history_complete=CASE WHEN statistics_consent=false THEN false ELSE history_complete END,
+        history_signature=CASE WHEN statistics_consent=false THEN NULL ELSE history_signature END,
+        discovery_from=CASE WHEN statistics_consent=false THEN NULL ELSE discovery_from END,
+        discovery_to=CASE WHEN statistics_consent=false THEN NULL ELSE discovery_to END,
+        history_anomaly=CASE WHEN statistics_consent=false THEN false ELSE history_anomaly END,
         next_collect_at=now(),append_revision=append_revision+1,revision=revision+1,updated_at=now() WHERE id=${binding.id}::uuid
         AND append_revision=${binding.append_revision} AND state='ACTIVE' AND valid_until>now()`;
       if (!changed) throw new ConflictException('Согласие изменилось. Обновите экран');

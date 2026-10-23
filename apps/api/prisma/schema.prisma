@@ -4294,6 +4294,7 @@ model MarketplaceBinding {
   updatedAt           DateTime                          @default(now()) @map("updated_at") @db.Timestamptz(6)
   metadata            Json                              @default("{}")
   statisticsConsent   Boolean                           @default(false) @map("statistics_consent")
+  statisticsRevokedAt DateTime?                         @map("statistics_revoked_at") @db.Timestamptz(6)
   statisticsV2ConsentOnly Boolean                        @default(false) @map("statistics_v2_consent_only")
   collectionOwner     String                            @default("SHADOW") @map("collection_owner")
   collectionMetrics   Json                              @default("[]") @map("collection_metrics")
