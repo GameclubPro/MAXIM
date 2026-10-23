@@ -1,5 +1,9 @@
 # Major networks bundle boundaries
 
+The later [Zod security baseline](zod-security-bundle-baseline-2026-10-24.md)
+updates nine JavaScript caps for the patched validator runtime. The table below
+records the original interface release; current caps are in `route-budgets.json`.
+
 The production build measures gzip bytes with `VITE_API_BASE=https://major-maksimov.ru/api/v1`.
 The network catalogue, individual settings, shared forms, advanced editors and operation recovery
 remain separate loading boundaries. Public comment/suggestion and Publisher launches do not

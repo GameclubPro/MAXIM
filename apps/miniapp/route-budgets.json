@@ -36,7 +36,7 @@
       "entries": ["src/pages/settings-page.tsx"],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 157696,
+        "jsGzipBytes": 165120,
         "cssGzipBytes": 79872
       }
     },
@@ -85,7 +85,7 @@
       ],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 168960,
+        "jsGzipBytes": 175872,
         "cssGzipBytes": 67584
       }
     },
@@ -151,7 +151,7 @@
       ],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 219136,
+        "jsGzipBytes": 225792,
         "cssGzipBytes": 102400
       }
     },
@@ -168,7 +168,7 @@
         "packages/contracts/dist/network-settings-actions.js"
       ],
       "limits": {
-        "jsGzipBytes": 196608,
+        "jsGzipBytes": 198656,
         "cssGzipBytes": 67584
       }
     },
@@ -178,7 +178,7 @@
       "entries": ["src/pages/channel-dialog-page.tsx"],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 68608,
+        "jsGzipBytes": 72960,
         "cssGzipBytes": 20480
       }
     },
@@ -193,7 +193,7 @@
         "src/pages/channel-dialog-page.tsx"
       ],
       "limits": {
-        "jsGzipBytes": 176128,
+        "jsGzipBytes": 180992,
         "cssGzipBytes": 41984
       }
     },
@@ -243,7 +243,7 @@
       "entries": ["src/pages/publisher-entities-page.tsx"],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 45312,
+        "jsGzipBytes": 49920,
         "cssGzipBytes": 12288
       }
     },
@@ -253,7 +253,7 @@
       "entries": ["src/pages/publisher-entity-modules-page.tsx"],
       "baseline": "startup",
       "limits": {
-        "jsGzipBytes": 51200,
+        "jsGzipBytes": 56320,
         "cssGzipBytes": 6144
       }
     },
@@ -294,7 +294,7 @@
       "baseline": "startup",
       "coversRouteEntry": false,
       "limits": {
-        "jsGzipBytes": 88064
+        "jsGzipBytes": 88576
       }
     }
   ]
