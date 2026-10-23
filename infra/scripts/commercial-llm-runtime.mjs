@@ -35,6 +35,7 @@ export const COMMERCIAL_LLM_RUNTIME = Object.freeze({
   modelSha256: 'a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2',
   modelBytes: 17074419072,
   modelManifestSha256: '001e5dafc3c77684c2307ebc6ab8e336e10c9b18eca52acf547d72fc83c3ca8c',
+  smokePromptSha256: '2576c4c69ea8cff5ec852e2a28ac9648e10a1be114faffa7499abaaab8450d1f',
   templateSha256: 'ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4',
   templateBytes: 18683,
   licenseSha256: 'a66d4e37329585c918619de71e426057186cb725fbe572e7f28e498077798d52',
@@ -375,6 +376,10 @@ function inspectContainer({ requireHealthy = true, requireRunning = true } = {})
   return rows[0];
 }
 
+function receiptPresent() {
+  return lstatSync(pin.receiptPath, { throwIfNoEntry: false }) !== undefined;
+}
+
 function readReceipt() {
   assertSafeFile(pin.receiptPath, { maximumBytes: 16384 });
   return assertCommercialLlmReceipt(JSON.parse(readFileSync(pin.receiptPath, 'utf8')));
@@ -383,7 +388,8 @@ function readReceipt() {
 async function checksum(path, sha256, bytes) {
   const before = assertSafeFile(path, { exactBytes: bytes });
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  for await (const chunk of createReadStream(path, { signal: AbortSignal.timeout(120000) }))
+    hash.update(chunk);
   const after = assertSafeFile(path, { exactBytes: bytes });
   if (
     hash.digest('hex') !== sha256 ||
@@ -559,8 +565,11 @@ export function validateCommercialLlmSyntheticResponse(response) {
   }
 }
 
-function smoke() {
+function smoke(expectedContainerId) {
   const container = inspectContainer();
+  if (expectedContainerId && container.Id !== expectedContainerId) {
+    throw new Error('commercial_llm_generation_changed');
+  }
   const response = run(
     'docker',
     [
@@ -583,12 +592,70 @@ function smoke() {
     { input: JSON.stringify(commercialLlmSyntheticRequest()), timeout: 125000, maxBuffer: 16384 },
   );
   validateCommercialLlmSyntheticResponse(JSON.parse(response));
+  if (inspectContainer().Id !== container.Id) throw new Error('commercial_llm_generation_changed');
   emit('smoke', {
     result: 'closed-synthetic-json-v1',
     containerId: container.Id,
     modelSha256: pin.modelSha256,
   });
   return container;
+}
+
+function hasExactKeys(value, keys) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+export function validateCommercialLlmClientSmokeResponse(response) {
+  const expectedCases = [
+    { name: 'commercial-service', classification: 'COMMERCIAL' },
+    { name: 'personal-used-item', classification: 'NOT_COMMERCIAL' },
+  ];
+  if (
+    !hasExactKeys(response, [
+      'ok',
+      'casesPassed',
+      'casesTotal',
+      'modelSha256',
+      'promptSha256',
+      'cases',
+    ]) ||
+    response.ok !== true ||
+    response.casesPassed !== 2 ||
+    response.casesTotal !== 2 ||
+    response.modelSha256 !== pin.modelSha256 ||
+    response.promptSha256 !== pin.smokePromptSha256 ||
+    !Array.isArray(response.cases) ||
+    response.cases.length !== expectedCases.length ||
+    !response.cases.every(
+      (current, index) =>
+        hasExactKeys(current, ['name', 'classification', 'durationMs']) &&
+        current.name === expectedCases[index].name &&
+        current.classification === expectedCases[index].classification &&
+        Number.isFinite(current.durationMs) &&
+        current.durationMs >= 0 &&
+        current.durationMs <= 60000,
+    )
+  ) {
+    throw new Error('commercial_llm_client_smoke_refused');
+  }
+  return {
+    ok: true,
+    casesPassed: 2,
+    casesTotal: 2,
+    modelSha256: pin.modelSha256,
+    promptSha256: pin.smokePromptSha256,
+    cases: response.cases.map(({ name, classification, durationMs }) => ({
+      name,
+      classification,
+      durationMs,
+    })),
+  };
 }
 
 function checkClient() {
@@ -628,22 +695,35 @@ function checkClient() {
       { timeout: 140000, maxBuffer: 16384 },
     ),
   );
-  if (
-    response?.ok !== true ||
-    response.casesPassed !== 2 ||
-    response.casesTotal !== 2 ||
-    response.modelSha256 !== pin.modelSha256 ||
-    !/^[0-9a-f]{64}$/u.test(response.promptSha256 ?? '')
-  ) {
-    throw new Error('commercial_llm_client_smoke_refused');
-  }
-  emit('check_client', {
-    ok: true,
-    casesPassed: response.casesPassed,
-    casesTotal: response.casesTotal,
-    modelSha256: response.modelSha256,
-    promptSha256: response.promptSha256,
-  });
+  emit('check_client', validateCommercialLlmClientSmokeResponse(response));
+}
+
+function buildReceipt(sourceSha, containerId) {
+  const receipt = {
+    schemaVersion: 1,
+    sourceSha,
+    installedAt: new Date().toISOString(),
+    state: 'installed',
+    containerId,
+    imageRef: pin.imageRef,
+    imageId: pin.imageId,
+    modelSha256: pin.modelSha256,
+    modelBytes: pin.modelBytes,
+    modelManifestSha256: pin.modelManifestSha256,
+    templateSha256: pin.templateSha256,
+    licenseSha256: pin.licenseSha256,
+    upstreamRevision: pin.upstreamRevision,
+    upstreamVersion: pin.upstreamVersion,
+    cpuLimit: pin.cpuLimit,
+    memoryLimitBytes: pin.memoryLimitBytes,
+    contextTokens: 4096,
+    parallelRequests: 1,
+    generationThreads: 4,
+    reasoning: false,
+    smoke: 'closed-synthetic-json-v1',
+  };
+  assertCommercialLlmReceipt(receipt);
+  return receipt;
 }
 
 async function install(sourceSha) {
@@ -651,32 +731,17 @@ async function install(sourceSha) {
   ensureDirectory(modelDir);
   const existing = run('docker', [...composeArgs, 'ps', '-a', '-q', pin.service]);
   if (existing) {
-    const receipt = readReceipt();
-    const restarting = receipt.state === 'stopped';
-    const container = inspectContainer({
-      requireHealthy: !restarting,
-      requireRunning: !restarting,
+    await reconcileCommercialLlmGeneration({
+      operation: 'install',
+      sourceSha,
+      receipt: receiptPresent() ? readReceipt() : undefined,
+      io: runtimeIo,
     });
-    if (receipt.containerId !== container.Id) {
-      throw new Error('commercial_llm_existing_runtime_receipt_mismatch');
-    }
-    await checksum(pin.modelPath, pin.modelSha256, pin.modelBytes);
-    await checksum(pin.templatePath, pin.templateSha256, pin.templateBytes);
-    await checksum(pin.licensePath, pin.licenseSha256, pin.licenseBytes);
-    if (restarting) {
-      emit('capacity', capacity(false));
-      run('docker', [...composeArgs, 'start', pin.service], { timeout: 60000 });
-      await waitUntilReady();
-    }
-    smoke();
-    if (restarting) {
-      atomicWrite(
-        pin.receiptPath,
-        `${JSON.stringify({ ...receipt, state: 'installed', restartedAt: new Date().toISOString() }, null, 2)}\n`,
-      );
-    }
-    emit('install', { result: 'already_installed', sourceSha: receipt.sourceSha });
     return;
+  }
+  if (receiptPresent()) {
+    readReceipt();
+    throw new Error('commercial_llm_recorded_generation_missing');
   }
   emit('capacity', capacity(!existsSync(pin.modelPath)));
   await downloadArtifact({
@@ -732,52 +797,106 @@ async function install(sourceSha) {
   );
   await waitUntilReady();
   const container = smoke();
-  const receipt = {
-    schemaVersion: 1,
-    sourceSha,
-    installedAt: new Date().toISOString(),
-    state: 'installed',
-    containerId: container.Id,
-    imageRef: pin.imageRef,
-    imageId: pin.imageId,
-    modelSha256: pin.modelSha256,
-    modelBytes: pin.modelBytes,
-    modelManifestSha256: pin.modelManifestSha256,
-    templateSha256: pin.templateSha256,
-    licenseSha256: pin.licenseSha256,
-    upstreamRevision: pin.upstreamRevision,
-    upstreamVersion: pin.upstreamVersion,
-    cpuLimit: pin.cpuLimit,
-    memoryLimitBytes: pin.memoryLimitBytes,
-    contextTokens: 4096,
-    parallelRequests: 1,
-    generationThreads: 4,
-    reasoning: false,
-    smoke: 'closed-synthetic-json-v1',
-  };
-  assertCommercialLlmReceipt(receipt);
+  const receipt = buildReceipt(sourceSha, container.Id);
   atomicWrite(pin.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   emit('install', { result: 'installed', ...receipt });
 }
 
-async function waitUntilReady() {
+async function waitUntilReady(expectedContainerId) {
   const deadline = Date.now() + 180000;
-  let ready = false;
   while (Date.now() < deadline) {
-    try {
-      inspectContainer();
-      ready = true;
-      break;
-    } catch {
-      emit('model_readiness', { event: 'waiting', deadline: new Date(deadline).toISOString() });
+    const container = inspectContainer({ requireHealthy: false, requireRunning: false });
+    if (expectedContainerId && container.Id !== expectedContainerId) {
+      throw new Error('commercial_llm_generation_changed');
     }
+    if (container.State?.Running === true && container.State?.Health?.Status === 'healthy') return;
+    emit('model_readiness', { event: 'waiting', deadline: new Date(deadline).toISOString() });
     await new Promise((done) => setTimeout(done, 10000));
   }
-  if (!ready) throw new Error('commercial_llm_readiness_deadline');
+  throw new Error('commercial_llm_readiness_deadline');
 }
 
+async function verifyPinnedArtifacts() {
+  await checksum(pin.modelPath, pin.modelSha256, pin.modelBytes);
+  await checksum(pin.templatePath, pin.templateSha256, pin.templateBytes);
+  await checksum(pin.licensePath, pin.licenseSha256, pin.licenseBytes);
+}
+
+// FLAG: Recovery may adopt only a positively attested generation with all pinned artifacts.
+// A present invalid receipt must never be interpreted as an interrupted unrecorded install.
+export async function reconcileCommercialLlmGeneration({ operation, sourceSha, receipt, io }) {
+  if (!['install', 'stop'].includes(operation) || !safeSha.test(sourceSha ?? '')) {
+    throw new Error('commercial_llm_generation_operation_refused');
+  }
+  if (receipt !== undefined) assertCommercialLlmReceipt(receipt);
+  const before = await io.inspect();
+  assertCommercialLlmContainer(before, { requireHealthy: false, requireRunning: false });
+  if (receipt && receipt.containerId !== before.Id) {
+    throw new Error('commercial_llm_existing_runtime_receipt_mismatch');
+  }
+  await io.verifyArtifacts();
+  const inspectSameGeneration = async (requireHealthy = false) => {
+    const current = await io.inspect();
+    assertCommercialLlmContainer(current, { requireHealthy, requireRunning: requireHealthy });
+    if (current.Id !== before.Id) throw new Error('commercial_llm_generation_changed');
+    return current;
+  };
+  let current = await inspectSameGeneration();
+  if (operation === 'stop') {
+    await io.stop(before.Id);
+    current = await inspectSameGeneration();
+    if (current.State?.Running !== false) throw new Error('commercial_llm_stop_readback_refused');
+    if (receipt) {
+      await io.record({ ...receipt, state: 'stopped', stoppedAt: new Date().toISOString() });
+    }
+    const outcome = {
+      result: receipt ? 'stopped' : 'unrecorded_generation_stopped',
+      containerId: before.Id,
+      retainedArtifacts: true,
+      successReceiptWritten: false,
+      runtimeActivation: 'api_shadow_flag_requires_separate_disable_and_deploy',
+    };
+    io.emit('stop', outcome);
+    return outcome;
+  }
+  const restarting = current.State?.Running !== true;
+  if (restarting) {
+    await io.capacity();
+    await io.start(before.Id);
+  }
+  await io.waitReady(before.Id);
+  const smoked = await io.smoke(before.Id);
+  if (smoked?.Id !== before.Id) throw new Error('commercial_llm_generation_changed');
+  await inspectSameGeneration(true);
+  const nextReceipt = receipt
+    ? { ...receipt, state: 'installed', validatedAt: new Date().toISOString() }
+    : buildReceipt(sourceSha, before.Id);
+  assertCommercialLlmReceipt(nextReceipt);
+  await io.record(nextReceipt);
+  const outcome = {
+    result: receipt ? 'already_installed' : 'recovered_unrecorded_generation',
+    sourceSha: nextReceipt.sourceSha,
+    containerId: before.Id,
+    successReceiptWritten: true,
+  };
+  io.emit('install', outcome);
+  return outcome;
+}
+
+const runtimeIo = {
+  inspect: () => inspectContainer({ requireHealthy: false, requireRunning: false }),
+  verifyArtifacts: verifyPinnedArtifacts,
+  capacity: () => emit('capacity', capacity(false)),
+  start: (id) => run('docker', ['start', id], { timeout: 60000 }),
+  stop: (id) => run('docker', ['stop', '--time', '30', id], { timeout: 40000 }),
+  waitReady: waitUntilReady,
+  smoke,
+  record: (receipt) => atomicWrite(pin.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`),
+  emit,
+};
+
 function status() {
-  if (!existsSync(pin.receiptPath)) {
+  if (!receiptPresent()) {
     const existing = run('docker', [...composeArgs, 'ps', '-a', '-q', pin.service]);
     emit('status', { installed: false, unrecordedContainerPresent: existing !== '' });
     if (existing) throw new Error('commercial_llm_unrecorded_runtime');
@@ -854,20 +973,11 @@ async function cli(argv) {
     });
     return;
   }
-  const receipt = readReceipt();
-  const container = inspectContainer({ requireHealthy: false });
-  if (container.Id !== receipt.containerId) throw new Error('commercial_llm_stop_receipt_refused');
-  run('docker', [...composeArgs, 'stop', '--timeout', '30', pin.service], { timeout: 40000 });
-  const running = run('docker', [...composeArgs, 'ps', '-q', pin.service]);
-  if (running) throw new Error('commercial_llm_stop_readback_refused');
-  atomicWrite(
-    pin.receiptPath,
-    `${JSON.stringify({ ...receipt, state: 'stopped', stoppedAt: new Date().toISOString() }, null, 2)}\n`,
-  );
-  emit('stop', {
-    result: 'stopped',
-    retainedArtifacts: true,
-    runtimeActivation: 'api_shadow_flag_requires_separate_disable_and_deploy',
+  await reconcileCommercialLlmGeneration({
+    operation: 'stop',
+    sourceSha,
+    receipt: receiptPresent() ? readReceipt() : undefined,
+    io: runtimeIo,
   });
 }
 

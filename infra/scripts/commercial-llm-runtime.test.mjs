@@ -10,7 +10,9 @@ import {
   COMMERCIAL_LLM_RUNTIME as pin,
   commercialLlmSyntheticRequest,
   patchCommercialLlmEnvironment,
+  reconcileCommercialLlmGeneration,
   validateCommercialLlmSyntheticResponse,
+  validateCommercialLlmClientSmokeResponse,
 } from './commercial-llm-runtime.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -310,4 +312,298 @@ test('production mutators keep exact-green admission and the persistent protecte
     /acquire_deploy_lock[\s\S]+maxim_require_ordinary_effect_authority[\s\S]+require_deploy_lock/u,
   );
   assert.doesNotMatch(host, /FLUSH|prune|remove-orphans|force-recreate/u);
+});
+
+function recoveryReceipt() {
+  return {
+    schemaVersion: 1,
+    sourceSha: 'f'.repeat(40),
+    installedAt: new Date().toISOString(),
+    containerId: 'a'.repeat(64),
+    state: 'installed',
+    imageRef: pin.imageRef,
+    imageId: pin.imageId,
+    modelSha256: pin.modelSha256,
+    modelBytes: pin.modelBytes,
+    modelManifestSha256: pin.modelManifestSha256,
+    templateSha256: pin.templateSha256,
+    licenseSha256: pin.licenseSha256,
+    upstreamRevision: pin.upstreamRevision,
+    upstreamVersion: pin.upstreamVersion,
+    smoke: 'closed-synthetic-json-v1',
+  };
+}
+
+function recoveryIo({
+  running = true,
+  failSmoke = false,
+  failArtifacts = false,
+  replaceAfterArtifacts = false,
+} = {}) {
+  const state = container();
+  state.State.Running = running;
+  state.State.Health.Status = running ? 'healthy' : 'unhealthy';
+  const calls = [];
+  const receipts = [];
+  const io = {
+    inspect: () => {
+      calls.push('inspect');
+      return structuredClone(state);
+    },
+    verifyArtifacts: async () => {
+      calls.push('verify_all_artifacts');
+      if (failArtifacts) throw new Error('checksum failed');
+      if (replaceAfterArtifacts) state.Id = 'b'.repeat(64);
+    },
+    capacity: () => {
+      calls.push('capacity');
+    },
+    start: (id) => {
+      assert.equal(id, 'a'.repeat(64));
+      calls.push('start_captured_id');
+      state.State.Running = true;
+    },
+    stop: (id) => {
+      assert.equal(id, 'a'.repeat(64));
+      calls.push('stop_captured_id');
+      state.State.Running = false;
+    },
+    waitReady: (id) => {
+      assert.equal(id, 'a'.repeat(64));
+      calls.push('ready_captured_id');
+      state.State.Health.Status = 'healthy';
+    },
+    smoke: (id) => {
+      assert.equal(id, 'a'.repeat(64));
+      calls.push('smoke_captured_id');
+      if (failSmoke) throw new Error('smoke failed');
+      return structuredClone(state);
+    },
+    record: (receipt) => {
+      calls.push('record_success');
+      receipts.push(receipt);
+    },
+    emit: (stage) => {
+      calls.push(`emit_${stage}`);
+    },
+  };
+  return { io, calls, receipts, state };
+}
+
+test('interrupted unrecorded install succeeds only after exact artifacts, readiness and smoke', async () => {
+  const observed = recoveryIo({ running: false });
+  const result = await reconcileCommercialLlmGeneration({
+    operation: 'install',
+    sourceSha: 'e'.repeat(40),
+    receipt: undefined,
+    io: observed.io,
+  });
+  assert.equal(result.result, 'recovered_unrecorded_generation');
+  assert.equal(observed.receipts.length, 1);
+  assert.equal(observed.receipts[0].sourceSha, 'e'.repeat(40));
+  assertCommercialLlmReceipt(observed.receipts[0]);
+  const order = [
+    'verify_all_artifacts',
+    'capacity',
+    'start_captured_id',
+    'ready_captured_id',
+    'smoke_captured_id',
+    'record_success',
+  ];
+  assert.deepEqual(
+    observed.calls.filter((call) => order.includes(call)),
+    order,
+  );
+});
+
+test('failed recovery smoke leaves success absent and permits stopping that exact unrecorded generation', async () => {
+  const observed = recoveryIo({ failSmoke: true });
+  await assert.rejects(
+    reconcileCommercialLlmGeneration({
+      operation: 'install',
+      sourceSha: 'e'.repeat(40),
+      receipt: undefined,
+      io: observed.io,
+    }),
+    /smoke failed/u,
+  );
+  assert.equal(observed.receipts.length, 0);
+  const result = await reconcileCommercialLlmGeneration({
+    operation: 'stop',
+    sourceSha: 'e'.repeat(40),
+    receipt: undefined,
+    io: observed.io,
+  });
+  assert.equal(result.result, 'unrecorded_generation_stopped');
+  assert.equal(result.successReceiptWritten, false);
+  assert.equal(observed.state.State.Running, false);
+  assert.equal(observed.receipts.length, 0);
+  assert.ok(observed.calls.includes('stop_captured_id'));
+});
+
+test('recovery refuses malformed, foreign or mismatched existing receipts before changing the generation', async () => {
+  for (const receipt of [
+    {},
+    { ...recoveryReceipt(), imageRef: 'foreign' },
+    { ...recoveryReceipt(), containerId: 'b'.repeat(64) },
+  ]) {
+    const observed = recoveryIo();
+    await assert.rejects(
+      reconcileCommercialLlmGeneration({
+        operation: 'install',
+        sourceSha: 'e'.repeat(40),
+        receipt,
+        io: observed.io,
+      }),
+      /receipt/u,
+    );
+    assert.equal(observed.receipts.length, 0);
+    assert.equal(
+      observed.calls.some((call) => call.startsWith('start_') || call.startsWith('stop_')),
+      false,
+    );
+    assert.equal(observed.calls.includes('verify_all_artifacts'), false);
+  }
+});
+
+test('recovery refuses artifact uncertainty and any generation replacement before start or stop', async () => {
+  for (const operation of ['install', 'stop']) {
+    for (const options of [{ failArtifacts: true }, { replaceAfterArtifacts: true }]) {
+      const observed = recoveryIo({ running: false, ...options });
+      await assert.rejects(
+        reconcileCommercialLlmGeneration({
+          operation,
+          sourceSha: 'e'.repeat(40),
+          receipt: undefined,
+          io: observed.io,
+        }),
+        /checksum|generation_changed/u,
+      );
+      assert.equal(observed.receipts.length, 0);
+      assert.equal(
+        observed.calls.some((call) => call.startsWith('start_') || call.startsWith('stop_')),
+        false,
+      );
+    }
+  }
+});
+
+test('unrecorded recovery cannot adopt a relaxed runtime even with a matching image', async () => {
+  const observed = recoveryIo();
+  observed.state.HostConfig.ReadonlyRootfs = false;
+  await assert.rejects(
+    reconcileCommercialLlmGeneration({
+      operation: 'stop',
+      sourceSha: 'e'.repeat(40),
+      receipt: undefined,
+      io: observed.io,
+    }),
+    /attestation_refused/u,
+  );
+  assert.equal(observed.calls.includes('verify_all_artifacts'), false);
+  assert.equal(observed.calls.includes('stop_captured_id'), false);
+});
+
+test('recorded stopped generation restarts its captured ID and preserves original verified provenance', async () => {
+  const observed = recoveryIo({ running: false });
+  const receipt = { ...recoveryReceipt(), state: 'stopped' };
+  await reconcileCommercialLlmGeneration({
+    operation: 'install',
+    sourceSha: 'e'.repeat(40),
+    receipt,
+    io: observed.io,
+  });
+  assert.equal(observed.receipts.length, 1);
+  assert.equal(observed.receipts[0].sourceSha, receipt.sourceSha);
+  assert.equal(observed.receipts[0].installedAt, receipt.installedAt);
+  assert.equal(observed.receipts[0].state, 'installed');
+  assert.ok(observed.calls.indexOf('record_success') > observed.calls.indexOf('smoke_captured_id'));
+});
+
+test('same-generation proof is retained through readiness, smoke and stopped readback', async () => {
+  const replaced = recoveryIo({ running: false });
+  const originalReady = replaced.io.waitReady;
+  replaced.io.waitReady = (id) => {
+    originalReady(id);
+    replaced.state.Id = 'b'.repeat(64);
+  };
+  await assert.rejects(
+    reconcileCommercialLlmGeneration({
+      operation: 'install',
+      sourceSha: 'e'.repeat(40),
+      io: replaced.io,
+    }),
+    /generation_changed/u,
+  );
+  assert.equal(replaced.receipts.length, 0);
+
+  const notStopped = recoveryIo();
+  notStopped.io.stop = () => {};
+  await assert.rejects(
+    reconcileCommercialLlmGeneration({
+      operation: 'stop',
+      sourceSha: 'e'.repeat(40),
+      io: notStopped.io,
+    }),
+    /stop_readback_refused/u,
+  );
+  assert.equal(notStopped.receipts.length, 0);
+});
+
+test('production-prompt smoke forwards only exact synthetic case results and bounded latency', () => {
+  const valid = {
+    ok: true,
+    casesPassed: 2,
+    casesTotal: 2,
+    modelSha256: pin.modelSha256,
+    promptSha256: pin.smokePromptSha256,
+    cases: [
+      {
+        name: 'commercial-service',
+        classification: 'COMMERCIAL',
+        durationMs: 0,
+      },
+      {
+        name: 'personal-used-item',
+        classification: 'NOT_COMMERCIAL',
+        durationMs: 60000,
+      },
+    ],
+  };
+  const accepted = validateCommercialLlmClientSmokeResponse(valid);
+  assert.deepEqual(accepted, valid);
+  assert.notEqual(accepted, valid);
+  assert.notEqual(accepted.cases, valid.cases);
+  assert.notEqual(accepted.cases[0], valid.cases[0]);
+  for (const invalid of [
+    null,
+    [],
+    { ...valid, ok: false },
+    { ...valid, casesPassed: 1 },
+    { ...valid, casesTotal: 3 },
+    { ...valid, modelSha256: '0'.repeat(64) },
+    { ...valid, promptSha256: '0'.repeat(64) },
+    { ...valid, extra: 'unallowlisted output' },
+    { ...valid, cases: [] },
+    { ...valid, cases: [...valid.cases].reverse() },
+    { ...valid, cases: [valid.cases[0], valid.cases[0]] },
+    ...['COMMERCIAL', 'UNSURE', null].map((classification) => ({
+      ...valid,
+      cases: [valid.cases[0], { ...valid.cases[1], classification }],
+    })),
+    ...[-1, 60001, NaN, Infinity, -Infinity, '2000', undefined].map((durationMs) => ({
+      ...valid,
+      cases: [{ ...valid.cases[0], durationMs }, valid.cases[1]],
+    })),
+    {
+      ...valid,
+      cases: [{ ...valid.cases[0], text: 'must not be forwarded' }, valid.cases[1]],
+    },
+    { ...valid, cases: [null, valid.cases[1]] },
+  ]) {
+    assert.throws(
+      () => validateCommercialLlmClientSmokeResponse(invalid),
+      /commercial_llm_client_smoke_refused/u,
+    );
+  }
 });

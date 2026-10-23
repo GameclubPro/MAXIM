@@ -68,9 +68,12 @@ Image pulling has a separate 15-minute deadline.
 The container must become healthy within three minutes, pass exact identity,
 network and containment checks, then return complete constrained JSON for a
 closed synthetic greeting. Only then is the immutable model/image/source receipt
-written. A failed or missing sample is not a successful install. An unrecorded,
-different or drifted existing container is refused; inspect its exact identity
-before any explicit recovery.
+written. A failed or missing sample is not a successful install. A different or drifted container, or any present malformed/foreign receipt, is
+refused. An interrupted unrecorded singleton may be recovered only after all
+pinned artifacts and its exact image, command, resource, network and mount
+boundaries are rechecked. Recovery waits for and smokes that same generation
+before writing a success receipt; it never fabricates an earlier successful
+installation.
 
 `enable` atomically changes only `COMMERCIAL_LLM_SHADOW_ENABLED=true` in the root
 dotenv. It preserves other settings and refuses duplicate keys. It requires the
@@ -106,15 +109,21 @@ and the background role, then runs only the compiled standalone
 `commercial-llm-shadow-smoke.js` script there. Its two closed synthetic classifier
 cases exercise the actual prompt, parser and shared inference admission lease;
 it does not contact MAX or write moderation outcomes. Its output is limited to
-pass counts and model/prompt hashes. This is still not a representative accuracy
+pass counts, model/prompt hashes and the two known synthetic case classifications
+and durations. This is still not a representative accuracy
 evaluation.
 
 Disable stages the flag as false for the next ordinary API deployment. Stopping
 the model releases its resources immediately and preserves weights, receipts,
 queues and the running API. A still-enabled client must fail open and shed its
 shadow work. `install --apply` can restart the same attested stopped generation
-after a fresh capacity check, artifact checks and smoke. It never removes a
-different or unrecorded generation to force success.
+after a fresh capacity check, artifact checks and smoke. It can also finish an
+interrupted unrecorded install under those same exact checks. `stop --apply` may
+stop that captured unrecorded generation only after complete containment and
+artifact verification, and reports `unrecorded_generation_stopped` without
+creating a successful-install receipt. Both paths recheck the container ID and
+refuse generation replacement; neither removes a different generation to force
+success. Model, template and license hashing each have a two-minute deadline.
 
 Application rollback stays component-scoped through the normal release wrapper.
 The optional inference service is independent; leaving it stopped does not

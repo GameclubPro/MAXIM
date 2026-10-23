@@ -60,6 +60,7 @@ following limits are separate application budgets, not the former server's size:
 | Budget                         | Current setting / rule                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------------- |
 | API database pools             | 72 main connections across 14 roles, plus 6 admin read connections                      |
+| Optional LLM shadow consumer   | 1 extra connection when enabled; statement timeout 1500 ms, lock timeout 1000 ms        |
 | Enqueue                        | Pool 24, queue concurrency 32; 12 shared preparation slots with per-bot/class admission |
 | Native OCR and photo sandboxes | Each 1 CPU / 1 GiB; preserve exact isolation and native identity                        |
 | Media analysis                 | 1 CPU / 1 GiB                                                                           |
