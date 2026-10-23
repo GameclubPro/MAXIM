@@ -56,7 +56,19 @@ test('advertising announcement is a disabled chat module, never a navigation or 
   assert.ok(disabled && ts.isJsxAttribute(disabled));
   assert.equal(disabled.initializer, undefined);
   assert.match(sectionSource, /Рекламная площадка/u);
-  assert.match(sectionSource, /Скоро/u);
+  assert.match(sectionSource, /const smartphone = useSmartphoneLayout\(\);/u);
+  assert.match(
+    sectionSource,
+    /data-settings-navigation-entry=\{smartphone \? 'true' : undefined\}/u,
+  );
+  assert.match(
+    sectionSource,
+    /aria-describedby=\{smartphone \? undefined : 'settings-advertising-soon-status'\}/u,
+  );
+  assert.match(
+    sectionSource,
+    /\{smartphone \? \([\s\S]*?settings-section__chevron[\s\S]*?\) : \([\s\S]*?settings-advertising-soon__badge/u,
+  );
   assert.match(sectionSource, /data-settings-search="[^"]*Связка[^"]*взаимопиар/u);
   assert.match(pageSource, /<SettingsAdvertisingSection\s/u);
 });
@@ -75,8 +87,12 @@ test('the announcement introduces no writable setting or bulk-apply section', ()
   const imports = parsed.statements
     .filter(ts.isImportDeclaration)
     .map((node) => node.moduleSpecifier.getText(parsed));
-  assert.equal(imports.length, 2);
-  assert.ok(imports.every((value) => value.includes('/components/ui/')));
+  assert.ok(
+    imports.every(
+      (value) => value.includes('/components/ui/') || value.includes('/lib/use-smartphone-layout'),
+    ),
+  );
+  assert.doesNotMatch(sectionSource, /api\.request|useQuery|useMutation/u);
 });
 
 test('the unavailable module has a dedicated real-browser scenario and stays chat-only', () => {

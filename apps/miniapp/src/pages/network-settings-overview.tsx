@@ -1,9 +1,14 @@
-import { useEffect, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { ApiTransport } from '../lib/api/transport';
 import { GlassCard } from '../components/ui/glass-card';
-import { SettingsOverviewSearch } from '../components/ui/settings-overview-search';
+import { SettingsOverviewSearchPlaceholder } from '../components/ui/settings-overview-search-placeholder';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
+import {
+  CHAT_SETTINGS_OVERVIEW_GROUPS,
+  SettingsOverviewEntry,
+  SettingsOverviewGroups,
+} from '../components/ui/settings-overview-groups';
 import { getNetworkSettingsSections } from './settings/settings-workspace-sections';
 import type { NetworkSettingsSection } from '@maxim/contracts/network-settings-read';
 import type { StoredNetworkSettingsScope } from '../lib/network-settings-workspace-state';
@@ -24,6 +29,12 @@ import './settings-page.css';
 import '../styles/settings-tile-grid.css';
 import '../styles/settings-overview-steel.css';
 import '../components/ui/managed-entity-settings-header.css';
+
+const LazySettingsOverviewSearch = lazy(() =>
+  import('../components/ui/settings-overview-search').then((module) => ({
+    default: module.SettingsOverviewSearch,
+  })),
+);
 
 export function NetworkSettingsOverview({
   api,
@@ -86,11 +97,13 @@ export function NetworkSettingsOverview({
     (entry) => entry.overview !== false,
   );
   const search = (
-    <SettingsOverviewSearch
-      containerId={containerId}
-      entrySelector={isChat ? '.settings-home-entry' : '.channel-settings-card'}
-      groupSelector={isChat ? '.settings-home-group-head' : undefined}
-    />
+    <Suspense fallback={<SettingsOverviewSearchPlaceholder />}>
+      <LazySettingsOverviewSearch
+        containerId={containerId}
+        entrySelector={isChat ? '.settings-home-entry' : '.channel-settings-card'}
+        groupSelector={isChat ? '.settings-home-group-head' : undefined}
+      />
+    </Suspense>
   );
   const entries = sections.map((entry) => {
     if (isChat && entry.section === 'advertising' && !advertising.data?.available) return null;
@@ -109,29 +122,31 @@ export function NetworkSettingsOverview({
     );
     if (isChat && entry.plainEntry)
       return (
-        <section
-          key={entry.section}
-          className="settings-section settings-home-entry settings-home-entry--list"
-          style={{ order: entry.order }}
-          aria-label={entry.title}
-        >
-          {head}
-        </section>
+        <SettingsOverviewEntry key={entry.section} order={entry.order}>
+          <section
+            className="settings-section settings-home-entry settings-home-entry--list"
+            style={{ order: entry.order }}
+            aria-label={entry.title}
+          >
+            {head}
+          </section>
+        </SettingsOverviewEntry>
       );
     return (
-      <GlassCard
-        key={entry.section}
-        className={
-          isChat
-            ? `settings-section settings-home-entry${entry.entryVariant === 'plain' ? '' : ' settings-home-entry--' + (entry.entryVariant ?? 'list')}${entry.entryClassName ? ' ' + entry.entryClassName : ''} stagger-in`
-            : 'channel-settings-card' +
-              (entry.section === 'postSignature' ? ' channel-post-signature-entry' : '')
-        }
-        style={{ order: entry.order }}
-        elevated={!isChat}
-      >
-        {head}
-      </GlassCard>
+      <SettingsOverviewEntry key={entry.section} order={entry.order}>
+        <GlassCard
+          className={
+            isChat
+              ? `settings-section settings-home-entry${entry.entryVariant === 'plain' ? '' : ' settings-home-entry--' + (entry.entryVariant ?? 'list')}${entry.entryClassName ? ' ' + entry.entryClassName : ''} stagger-in`
+              : 'channel-settings-card' +
+                (entry.section === 'postSignature' ? ' channel-post-signature-entry' : '')
+          }
+          style={{ order: entry.order }}
+          elevated={!isChat}
+        >
+          {head}
+        </GlassCard>
+      </SettingsOverviewEntry>
     );
   });
   return (
@@ -175,19 +190,15 @@ export function NetworkSettingsOverview({
         >
           {search}
           <div id={containerId} className="settings-sections-shell">
-            <div className="settings-home-group-head stagger-in" style={{ order: 10 }}>
-              <h2 className="settings-home-group-head__title">Защита</h2>
-            </div>
-            <div className="settings-home-group-head stagger-in" style={{ order: 20 }}>
-              <h2 className="settings-home-group-head__title">Контент</h2>
-            </div>
-            {card?.entityCount !== 0 ? entries : null}
+            <SettingsOverviewGroups groups={CHAT_SETTINGS_OVERVIEW_GROUPS}>
+              {entries}
+            </SettingsOverviewGroups>
           </div>
         </section>
       ) : (
         <>
           {search}
-          {card?.entityCount !== 0 ? entries : null}
+          <SettingsOverviewGroups>{entries}</SettingsOverviewGroups>
         </>
       )}
       {children}

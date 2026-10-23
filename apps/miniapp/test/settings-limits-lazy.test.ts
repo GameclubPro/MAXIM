@@ -31,7 +31,7 @@ const controlsSource = readSettingsSource('settings-limits-controls');
 
 test('limits catalog keeps its overview and save shell eager while loading only an open editor', () => {
   assert.match(sectionSource, /<SettingsSectionToggle/u);
-  assert.match(sectionSource, /summary=\{`Активных ограничений: \$\{limitsRulesEnabledCount\}`\}/u);
+  assert.match(sectionSource, /title=\{SECTION_PRESENTATION\.title\}/u);
   assert.match(sectionSource, /footer=\{renderSectionSaveFooter\('limits'\)\}/u);
   assert.match(sectionSource, /confirmCloseWhen=\{isSectionDirty\('limits'\)\}/u);
   assert.match(sectionSource, /recoverableLazyNamedComponent<SettingsLimitsSectionProps>/u);

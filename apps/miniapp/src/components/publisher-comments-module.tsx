@@ -72,6 +72,7 @@ export function PublisherCommentsModule({
       <button
         type="button"
         className="publisher-comments-toggle"
+        data-settings-navigation-entry="true"
         aria-expanded={open}
         aria-controls={`${id}-settings`}
         aria-haspopup="dialog"

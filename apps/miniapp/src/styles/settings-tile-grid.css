@@ -36,7 +36,7 @@
   }
 
   body.settings-home-page-open .settings-sections--chat-home .settings-home-entry,
-  .channel-settings-screen > .channel-settings-card {
+  :is(.channel-settings-screen, .settings-overview-group__entries) > .channel-settings-card {
     grid-column: 1 / -1;
     min-width: 0;
     min-height: 68px;
@@ -52,7 +52,9 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__head,
-  .channel-settings-screen > .channel-settings-card > .settings-section__head {
+  :is(.channel-settings-screen, .settings-overview-group__entries)
+    > .channel-settings-card
+    > .settings-section__head {
     height: 100%;
   }
 
@@ -60,7 +62,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__toggle,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle {
@@ -102,11 +104,11 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__toggle::after,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle::before,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle::after {
@@ -117,7 +119,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__toggle:hover,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle:hover {
@@ -132,7 +134,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__toggle[aria-expanded='true'],
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle[aria-expanded='true'] {
@@ -145,7 +147,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__toggle:focus-visible,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle:focus-visible {
@@ -157,7 +159,9 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__icon-badge,
-  .channel-settings-screen > .channel-settings-card .settings-section__icon-badge {
+  :is(.channel-settings-screen, .settings-overview-group__entries)
+    > .channel-settings-card
+    .settings-section__icon-badge {
     grid-column: 1;
     grid-row: 1;
     grid-area: auto;
@@ -260,7 +264,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__summary,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle
@@ -280,7 +284,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__status-chip,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle
@@ -306,7 +310,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__chevron,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle
@@ -327,7 +331,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__chevron-icon,
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle
@@ -336,7 +340,9 @@
     height: 18px;
   }
 
-  .channel-settings-screen > .channel-settings-card .publication-workspace-handoff--settings-entry {
+  :is(.channel-settings-screen, .settings-overview-group__entries)
+    > .channel-settings-card
+    .publication-workspace-handoff--settings-entry {
     min-height: 60px;
     height: auto;
     display: grid;
@@ -390,11 +396,11 @@
         .settings-sections--chat-home
         .settings-home-entry
         .settings-section__toggle,
-      .channel-settings-screen
+      :is(.channel-settings-screen, .settings-overview-group__entries)
         > .channel-settings-card
         > .settings-section__head
         > .settings-section__toggle,
-      .channel-settings-screen
+      :is(.channel-settings-screen, .settings-overview-group__entries)
         > .channel-settings-card
         .publication-workspace-handoff--settings-entry
     ) {
@@ -410,11 +416,11 @@
         .settings-sections--chat-home
         .settings-home-entry
         .settings-section__toggle:hover,
-      .channel-settings-screen
+      :is(.channel-settings-screen, .settings-overview-group__entries)
         > .channel-settings-card
         > .settings-section__head
         > .settings-section__toggle:hover,
-      .channel-settings-screen
+      :is(.channel-settings-screen, .settings-overview-group__entries)
         > .channel-settings-card
         .publication-workspace-handoff--settings-entry:hover
     ) {
@@ -428,7 +434,7 @@
         .settings-sections--chat-home
         .settings-home-entry
         .settings-section__toggle[aria-expanded='true'],
-      .channel-settings-screen
+      :is(.channel-settings-screen, .settings-overview-group__entries)
         > .channel-settings-card
         > .settings-section__head
         > .settings-section__toggle[aria-expanded='true']
@@ -442,7 +448,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__toggle:has(.settings-section__icon-badge.is-mint),
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle:has(.settings-section__icon-badge.is-mint) {
@@ -453,7 +459,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__toggle:has(.settings-section__icon-badge.is-amber),
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle:has(.settings-section__icon-badge.is-amber) {
@@ -464,7 +470,7 @@
     .settings-sections--chat-home
     .settings-home-entry
     .settings-section__toggle:has(.settings-section__icon-badge.is-rose),
-  .channel-settings-screen
+  :is(.channel-settings-screen, .settings-overview-group__entries)
     > .channel-settings-card
     > .settings-section__head
     > .settings-section__toggle:has(.settings-section__icon-badge.is-rose) {
@@ -478,7 +484,7 @@
     }
 
     body.settings-home-page-open .settings-sections--chat-home .settings-home-entry,
-    .channel-settings-screen > .channel-settings-card {
+    :is(.channel-settings-screen, .settings-overview-group__entries) > .channel-settings-card {
       grid-column: auto;
     }
   }
@@ -493,11 +499,11 @@
       .settings-sections--chat-home
       .settings-home-entry
       .settings-section__toggle,
-    .channel-settings-screen
+    :is(.channel-settings-screen, .settings-overview-group__entries)
       > .channel-settings-card
       > .settings-section__head
       > .settings-section__toggle,
-    .channel-settings-screen
+    :is(.channel-settings-screen, .settings-overview-group__entries)
       > .channel-settings-card
       .publication-workspace-handoff--settings-entry {
       padding-inline: 8px;
@@ -507,7 +513,7 @@
       .settings-sections--chat-home
       .settings-home-entry
       .settings-section__toggle,
-    .channel-settings-screen
+    :is(.channel-settings-screen, .settings-overview-group__entries)
       > .channel-settings-card
       > .settings-section__head
       > .settings-section__toggle {
@@ -519,7 +525,7 @@
       .settings-sections--chat-home
       .settings-home-entry
       .settings-section__status-chip,
-    .channel-settings-screen
+    :is(.channel-settings-screen, .settings-overview-group__entries)
       > .channel-settings-card
       > .settings-section__head
       > .settings-section__toggle

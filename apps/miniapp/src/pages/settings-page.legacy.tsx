@@ -1,10 +1,15 @@
-import { SharedRulesSettingsStudio } from './settings/shared-rules-settings-studio';
+import {
+  CHAT_SETTINGS_OVERVIEW_GROUPS,
+  SettingsOverviewEntry,
+  SettingsOverviewGroups,
+} from '../components/ui/settings-overview-groups';
 import { getNetworkSettingsSectionPresentation } from './settings/settings-workspace-sections';
 import { SharedChatSettingsSection } from './settings/shared-chat-settings-section';
 import { createChatSettingsFieldAdapter } from '../features/network-settings/settings-field-bindings';
 import { settingsSectionPaths } from '../features/network-settings/field-paths';
 import { useHomeEntityFavorites } from '../lib/home-entity-favorites-context';
 import { SettingsOverviewSearchPlaceholder } from '../components/ui/settings-overview-search-placeholder';
+import { SettingsOverviewLoading } from '../components/ui/settings-overview-skeleton';
 import { useSettingsRules } from './settings/use-settings-rules';
 import { useSettingsDraft } from './settings/use-settings-draft';
 import { useSettingsRequiredSubscription } from './settings/use-settings-required-subscription';
@@ -49,7 +54,6 @@ import '../styles/settings-native-controls.css';
 import '../styles/settings-home-compact.css';
 import '../styles/settings-home-route-polish.css';
 import '../styles/broadcast-studio-base.css';
-import '../styles/settings-rules-studio.css';
 import './settings/settings-rules-publication.css';
 import '../styles/settings-link-allowlist.css';
 import { getNavigationAllowlistRefreshInterval } from './settings/settings-link-allowlist';
@@ -342,6 +346,11 @@ import {
   SettingsStorefrontSection,
 } from './settings/settings-lazy-surfaces';
 
+const SharedRulesSettingsStudio = lazy(() =>
+  import('./settings/shared-rules-settings-studio').then((module) => ({
+    default: module.SharedRulesSettingsStudio,
+  })),
+);
 const LazyBotPermissionRequiredDialog = lazy(() =>
   import('../components/bot-permission-required-dialog').then((module) => ({
     default: module.BotPermissionRequiredDialog,
@@ -4992,9 +5001,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
       {settingsQuery.isLoading && handoffMode !== 'loading' ? (
         <section className="settings-sections" aria-label="Загрузка настроек">
-          <GlassCard className="settings-section">
-            <SkeletonCard lines={5} />
-          </GlassCard>
+          <SettingsOverviewLoading desktopLines={5} />
         </section>
       ) : null}
 
@@ -5063,1163 +5070,1265 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           </Suspense>
 
           <div id="chat-settings-overview" className="settings-sections-shell">
-            <div className="settings-home-group-head stagger-in" style={{ order: 10 }}>
-              <h2 className="settings-home-group-head__title">Защита</h2>
-            </div>
-
-            <div className="settings-home-group-head stagger-in" style={{ order: 20 }}>
-              <h2 className="settings-home-group-head__title">Контент</h2>
-            </div>
-
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-              style={{ order: SHARED_CHAT_SECTION_PRESENTATIONS.links.order }}
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title={SHARED_CHAT_SECTION_PRESENTATIONS.links.title}
-                  enabled={draft.linkPolicy !== 'ALERT_ONLY'}
-                  summary={linksHeaderSummary}
-                  status={linksCardStatus}
-                  icon={SHARED_CHAT_SECTION_PRESENTATIONS.links.icon}
-                  tone={SHARED_CHAT_SECTION_PRESENTATIONS.links.tone}
-                  open={expandedSections.links}
-                  controls="settings-links-content"
-                  onClick={() => toggleSection('links')}
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-links-content"
-                icon={<SettingsSectionIcon name={SHARED_CHAT_SECTION_PRESENTATIONS.links.icon} />}
-                open={expandedSections.links}
-                title={SHARED_CHAT_SECTION_PRESENTATIONS.links.title}
-                summary={linksHeaderSummary}
-                tone={SHARED_CHAT_SECTION_PRESENTATIONS.links.tone}
-                className={SHARED_CHAT_SECTION_PRESENTATIONS.links.panelClassName}
-                onClose={() => toggleSection('links')}
-                headerAction={renderApplyTargetHeaderAction('links')}
-                confirmCloseWhen={isSectionDirty('links')}
-                onDiscardChanges={() => discardSectionChanges('links')}
-                footer={renderSectionSaveFooter('links', {
-                  note: isLinksKeyboardOpen ? null : undefined,
-                })}
-                keepFooterVisibleWhenKeyboardOpen
-              >
-                {expandedSections.links ? renderSharedChatSection('links') : null}
-              </SettingsDrilldownPanel>
-            </GlassCard>
-
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '45ms', order: 21 }}
-              aria-label="Правила"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title="Правила"
-                  summary={rulesHeaderSummary}
-                  status={rulesCardStatus}
-                  icon="rules"
-                  tone="ink"
-                  open={expandedSections.rules}
-                  controls="settings-rules-content"
-                  onClick={() => toggleSection('rules')}
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-rules-content"
-                icon={<SettingsSectionIcon name="rules" />}
-                open={expandedSections.rules}
-                title="Правила"
-                summary={rulesHeaderSummary}
-                variant="screen"
-                tone="ink"
-                className="settings-drilldown__panel--campaign settings-drilldown__panel--rules settings-drilldown__panel--broadcast-screen settings-drilldown__panel--rules-screen"
-                onClose={() => toggleSection('rules')}
-                footer={rulesDrilldownFooter}
-              >
-                <div
-                  id="settings-rules-content"
-                  className={cn('settings-section__collapse', expandedSections.rules && 'is-open')}
+            <SettingsOverviewGroups groups={CHAT_SETTINGS_OVERVIEW_GROUPS}>
+              <SettingsOverviewEntry order={SHARED_CHAT_SECTION_PRESENTATIONS.links.order}>
+                <GlassCard
+                  className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+                  style={{ order: SHARED_CHAT_SECTION_PRESENTATIONS.links.order }}
                 >
-                  {expandedSections.rules ? (
-                    <div className="settings-section__collapse-inner">
-                      <div className="rules-panel">
-                        {rulesQuery.isLoading ? (
-                          <p className="allowlist-empty">Загрузка правил...</p>
-                        ) : null}
+                  <div
+                    className={cn('settings-section__head', 'settings-section__head--interactive')}
+                  >
+                    <SettingsSectionToggle
+                      title={SHARED_CHAT_SECTION_PRESENTATIONS.links.title}
+                      enabled={draft.linkPolicy !== 'ALERT_ONLY'}
+                      summary={linksHeaderSummary}
+                      status={linksCardStatus}
+                      icon={SHARED_CHAT_SECTION_PRESENTATIONS.links.icon}
+                      tone={SHARED_CHAT_SECTION_PRESENTATIONS.links.tone}
+                      open={expandedSections.links}
+                      controls="settings-links-content"
+                      onClick={() => toggleSection('links')}
+                    />
+                  </div>
 
-                        {rulesQuery.error ? (
-                          <p className="allowlist-empty allowlist-empty--error">
-                            Ошибка: {formatApiError(rulesQuery.error)}
-                          </p>
-                        ) : null}
+                  <SettingsDrilldownPanel
+                    id="settings-links-content"
+                    icon={
+                      <SettingsSectionIcon name={SHARED_CHAT_SECTION_PRESENTATIONS.links.icon} />
+                    }
+                    open={expandedSections.links}
+                    title={SHARED_CHAT_SECTION_PRESENTATIONS.links.title}
+                    summary={linksHeaderSummary}
+                    tone={SHARED_CHAT_SECTION_PRESENTATIONS.links.tone}
+                    className={SHARED_CHAT_SECTION_PRESENTATIONS.links.panelClassName}
+                    onClose={() => toggleSection('links')}
+                    headerAction={renderApplyTargetHeaderAction('links')}
+                    confirmCloseWhen={isSectionDirty('links')}
+                    onDiscardChanges={() => discardSectionChanges('links')}
+                    footer={renderSectionSaveFooter('links', {
+                      note: isLinksKeyboardOpen ? null : undefined,
+                    })}
+                    keepFooterVisibleWhenKeyboardOpen
+                  >
+                    {expandedSections.links ? renderSharedChatSection('links') : null}
+                  </SettingsDrilldownPanel>
+                </GlassCard>
+              </SettingsOverviewEntry>
 
-                        {!rulesQuery.isLoading && !rulesQuery.error && rulesDraft ? (
-                          <SharedRulesSettingsStudio
-                            header={
-                              <BroadcastStudioHeader
-                                title="Пост правил"
-                                subtitle={rulesStudioSubtitle}
-                                readyCount={rulesStudioReadyCount}
-                                totalCount={rulesStudioSignals.length}
-                                signals={rulesStudioSignals}
-                                busy={isRulesBusy}
-                                ariaLabel="Сводка правил"
-                              />
-                            }
-                            composer={
-                              <Suspense fallback={null}>
-                                <LazyBroadcastContentComposer
-                                  key={chatId}
-                                  className="rules-content-composer"
-                                  text={rulesDraft.text}
-                                  sourceFormat={rulesDraft.textFormat}
-                                  maxLength={MAX_CHAT_RULES_TEXT_LENGTH}
-                                  image={{
-                                    enabled: rulesHasImage,
-                                    base64: rulesDraft.imageBase64,
-                                    mimeType: rulesDraft.imageMimeType,
-                                    fileName: rulesDraft.imageFileName,
+              <SettingsOverviewEntry order={21}>
+                <GlassCard
+                  className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+                  style={{ animationDelay: '45ms', order: 21 }}
+                  aria-label="Правила"
+                >
+                  <div
+                    className={cn('settings-section__head', 'settings-section__head--interactive')}
+                  >
+                    <SettingsSectionToggle
+                      title="Правила"
+                      summary={rulesHeaderSummary}
+                      status={rulesCardStatus}
+                      icon="rules"
+                      tone="ink"
+                      open={expandedSections.rules}
+                      controls="settings-rules-content"
+                      onClick={() => toggleSection('rules')}
+                    />
+                  </div>
+
+                  <SettingsDrilldownPanel
+                    id="settings-rules-content"
+                    icon={<SettingsSectionIcon name="rules" />}
+                    open={expandedSections.rules}
+                    title="Правила"
+                    summary={rulesHeaderSummary}
+                    variant="screen"
+                    tone="ink"
+                    className="settings-drilldown__panel--campaign settings-drilldown__panel--rules settings-drilldown__panel--broadcast-screen settings-drilldown__panel--rules-screen"
+                    onClose={() => toggleSection('rules')}
+                    footer={rulesDrilldownFooter}
+                  >
+                    <div
+                      id="settings-rules-content"
+                      className={cn(
+                        'settings-section__collapse',
+                        expandedSections.rules && 'is-open',
+                      )}
+                    >
+                      {expandedSections.rules ? (
+                        <div className="settings-section__collapse-inner">
+                          <div className="rules-panel">
+                            {rulesQuery.isLoading ? (
+                              <p className="allowlist-empty">Загрузка правил...</p>
+                            ) : null}
+
+                            {rulesQuery.error ? (
+                              <p className="allowlist-empty allowlist-empty--error">
+                                Ошибка: {formatApiError(rulesQuery.error)}
+                              </p>
+                            ) : null}
+
+                            {!rulesQuery.isLoading && !rulesQuery.error && rulesDraft ? (
+                              <Suspense fallback={<SkeletonCard lines={4} />}>
+                                <SharedRulesSettingsStudio
+                                  header={
+                                    <BroadcastStudioHeader
+                                      title="Пост правил"
+                                      subtitle={rulesStudioSubtitle}
+                                      readyCount={rulesStudioReadyCount}
+                                      totalCount={rulesStudioSignals.length}
+                                      signals={rulesStudioSignals}
+                                      busy={isRulesBusy}
+                                      ariaLabel="Сводка правил"
+                                    />
+                                  }
+                                  composer={
+                                    <Suspense fallback={null}>
+                                      <LazyBroadcastContentComposer
+                                        key={chatId}
+                                        className="rules-content-composer"
+                                        text={rulesDraft.text}
+                                        sourceFormat={rulesDraft.textFormat}
+                                        maxLength={MAX_CHAT_RULES_TEXT_LENGTH}
+                                        image={{
+                                          enabled: rulesHasImage,
+                                          base64: rulesDraft.imageBase64,
+                                          mimeType: rulesDraft.imageMimeType,
+                                          fileName: rulesDraft.imageFileName,
+                                        }}
+                                        disabled={isRulesDraftEditingDisabled}
+                                        textError={rulesTextError}
+                                        imageError={rulesImageError}
+                                        onImagePreparationChange={handleRulesImagePreparationChange}
+                                        messageAriaLabel="Пост правил"
+                                        textPlaceholder="Текст правил"
+                                        textAriaLabel="Текст правил"
+                                        onTextChange={(nextText) => {
+                                          setRulesTextError('');
+                                          setRulesDraft((current) =>
+                                            current
+                                              ? {
+                                                  ...current,
+                                                  autoTextEnabled: false,
+                                                  text: nextText,
+                                                  textFormat: 'markdown',
+                                                }
+                                              : current,
+                                          );
+                                        }}
+                                        onImageChange={(nextImage) => {
+                                          setRulesImageError('');
+                                          setRulesDraft((current) =>
+                                            current
+                                              ? {
+                                                  ...current,
+                                                  imageBase64: nextImage.enabled
+                                                    ? nextImage.base64
+                                                    : '',
+                                                  imageMimeType: nextImage.enabled
+                                                    ? nextImage.mimeType
+                                                    : '',
+                                                  imageFileName: nextImage.enabled
+                                                    ? nextImage.fileName
+                                                    : '',
+                                                }
+                                              : current,
+                                          );
+                                        }}
+                                        onError={(message) => {
+                                          setRulesImageError(message);
+                                          maxNotify('error');
+                                        }}
+                                        buttons={normalizedRulesButtons}
+                                        buttonsStatusLabel={rulesButtonStatus}
+                                        buttonsActive={rulesButtonEnabled}
+                                        buttonsError={!rulesButtonDraftValid}
+                                        onOpenButtons={() => setRulesButtonsSheetOpen(true)}
+                                      />
+                                    </Suspense>
+                                  }
+                                  hasContent={rulesHasPublishableContent}
+                                  autoText={{
+                                    kind: 'common',
+                                    value: Boolean(rulesDraft.autoTextEnabled),
                                   }}
-                                  disabled={isRulesDraftEditingDisabled}
-                                  textError={rulesTextError}
-                                  imageError={rulesImageError}
-                                  onImagePreparationChange={handleRulesImagePreparationChange}
-                                  messageAriaLabel="Пост правил"
-                                  textPlaceholder="Текст правил"
-                                  textAriaLabel="Текст правил"
-                                  onTextChange={(nextText) => {
-                                    setRulesTextError('');
-                                    setRulesDraft((current) =>
-                                      current
-                                        ? {
-                                            ...current,
-                                            autoTextEnabled: false,
-                                            text: nextText,
-                                            textFormat: 'markdown',
-                                          }
-                                        : current,
-                                    );
+                                  autoTextSummary={rulesAutoFillSummary}
+                                  onAutoTextChange={(enabled) => {
+                                    if (!enabled) {
+                                      setRulesTextError('');
+                                      setRulesDraft((current) =>
+                                        current
+                                          ? {
+                                              ...current,
+                                              autoTextEnabled: false,
+                                            }
+                                          : current,
+                                      );
+                                      return;
+                                    }
+
+                                    try {
+                                      const nextDraft = buildRulesDraftFromCurrentSettings({
+                                        ...rulesDraft,
+                                        autoTextEnabled: true,
+                                      });
+                                      setRulesTextError('');
+                                      setRulesDraft(nextDraft);
+                                    } catch (error) {
+                                      reportRulesAutofillError(error);
+                                    }
                                   }}
-                                  onImageChange={(nextImage) => {
-                                    setRulesImageError('');
-                                    setRulesDraft((current) =>
-                                      current
-                                        ? {
-                                            ...current,
-                                            imageBase64: nextImage.enabled ? nextImage.base64 : '',
-                                            imageMimeType: nextImage.enabled
-                                              ? nextImage.mimeType
-                                              : '',
-                                            imageFileName: nextImage.enabled
-                                              ? nextImage.fileName
-                                              : '',
-                                          }
-                                        : current,
-                                    );
+                                  adminContact={
+                                    chatId ? (
+                                      <AdminContactToggle
+                                        key={`${chatId}:rules`}
+                                        api={api}
+                                        chatId={chatId}
+                                        title={ADMIN_CONTACT_BUTTON_TEXT}
+                                        checked={Boolean(rulesDraft.adminContactButtonEnabled)}
+                                        url={rulesDraft.adminContactButtonUrl}
+                                        onChange={handleRulesAdminContactButtonChange}
+                                        ariaLabel="Добавить связь с админом в пост правил"
+                                        meta={rulesAdminContactButtonSummary}
+                                        className="rules-native-card"
+                                      />
+                                    ) : null
+                                  }
+                                  attachViolations={{
+                                    kind: 'common',
+                                    value: Boolean(draft?.rulesAttachViolationsEnabled),
                                   }}
-                                  onError={(message) => {
-                                    setRulesImageError(message);
-                                    maxNotify('error');
-                                  }}
-                                  buttons={normalizedRulesButtons}
-                                  buttonsStatusLabel={rulesButtonStatus}
-                                  buttonsActive={rulesButtonEnabled}
-                                  buttonsError={!rulesButtonDraftValid}
-                                  onOpenButtons={() => setRulesButtonsSheetOpen(true)}
+                                  violationsSummary={rulesViolationButtonSummary}
+                                  attachDisabled={updateRulesAttachMutation.isPending}
+                                  onAttachViolationsChange={(enabled) =>
+                                    updateRulesAttachMutation.mutate(enabled)
+                                  }
                                 />
                               </Suspense>
-                            }
-                            hasContent={rulesHasPublishableContent}
-                            autoText={{
-                              kind: 'common',
-                              value: Boolean(rulesDraft.autoTextEnabled),
-                            }}
-                            autoTextSummary={rulesAutoFillSummary}
-                            onAutoTextChange={(enabled) => {
-                              if (!enabled) {
-                                setRulesTextError('');
-                                setRulesDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        autoTextEnabled: false,
-                                      }
-                                    : current,
-                                );
-                                return;
-                              }
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </SettingsDrilldownPanel>
+                </GlassCard>
+              </SettingsOverviewEntry>
 
-                              try {
-                                const nextDraft = buildRulesDraftFromCurrentSettings({
-                                  ...rulesDraft,
-                                  autoTextEnabled: true,
-                                });
-                                setRulesTextError('');
-                                setRulesDraft(nextDraft);
-                              } catch (error) {
-                                reportRulesAutofillError(error);
-                              }
-                            }}
-                            adminContact={
-                              chatId ? (
-                                <AdminContactToggle
-                                  key={`${chatId}:rules`}
-                                  api={api}
-                                  chatId={chatId}
-                                  title={ADMIN_CONTACT_BUTTON_TEXT}
-                                  checked={Boolean(rulesDraft.adminContactButtonEnabled)}
-                                  url={rulesDraft.adminContactButtonUrl}
-                                  onChange={handleRulesAdminContactButtonChange}
-                                  ariaLabel="Добавить связь с админом в пост правил"
-                                  meta={rulesAdminContactButtonSummary}
-                                  className="rules-native-card"
-                                />
-                              ) : null
-                            }
-                            attachViolations={{
-                              kind: 'common',
-                              value: Boolean(draft?.rulesAttachViolationsEnabled),
-                            }}
-                            violationsSummary={rulesViolationButtonSummary}
-                            attachDisabled={updateRulesAttachMutation.isPending}
-                            onAttachViolationsChange={(enabled) =>
-                              updateRulesAttachMutation.mutate(enabled)
-                            }
-                          />
+              <SettingsOverviewEntry order={24}>
+                {chatId ? (
+                  <SettingsPollsSection
+                    api={api}
+                    chatId={chatId}
+                    expanded={expandedSections.polls}
+                    onOpen={() => toggleSection('polls')}
+                    onClose={() => closeSection('polls')}
+                  />
+                ) : null}
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry order={25}>
+                {chatId ? (
+                  <GlassCard
+                    className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+                    style={{ animationDelay: '56ms', order: 25 }}
+                    aria-label="Розыгрыши"
+                  >
+                    <div
+                      className={cn(
+                        'settings-section__head',
+                        'settings-section__head--interactive',
+                      )}
+                    >
+                      <SettingsSectionToggle
+                        title="Розыгрыши"
+                        summary="Запуск, участники и итоги"
+                        status=""
+                        icon="gift"
+                        tone="amber"
+                        open={expandedSections.giveaway}
+                        controls="settings-giveaway-content"
+                        onClick={toggleGiveawaySection}
+                      />
+                    </div>
+
+                    <SettingsDrilldownPanel
+                      id="settings-giveaway-content"
+                      icon={<SettingsSectionIcon name="gift" />}
+                      open={expandedSections.giveaway}
+                      title="Розыгрыши"
+                      summary="Запуск, участники и итоги"
+                      tone="amber"
+                      className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway"
+                      onClose={requestGiveawaySectionClose}
+                    >
+                      <div
+                        id="settings-giveaway-content"
+                        className={cn(
+                          'settings-section__collapse',
+                          expandedSections.giveaway && 'is-open',
+                        )}
+                      >
+                        {expandedSections.giveaway ? (
+                          <div className="settings-section__collapse-inner">
+                            <Suspense fallback={<SkeletonCard lines={4} />}>
+                              <LazyManagedGiveawayCard
+                                ref={giveawayCardRef}
+                                api={api}
+                                entityType="chat"
+                                entityId={chatId}
+                                onClosePanel={() => closeSection('giveaway')}
+                              />
+                            </Suspense>
+                          </div>
                         ) : null}
                       </div>
-                    </div>
-                  ) : null}
-                </div>
-              </SettingsDrilldownPanel>
-            </GlassCard>
+                    </SettingsDrilldownPanel>
+                  </GlassCard>
+                ) : null}
+              </SettingsOverviewEntry>
 
-            {chatId ? (
-              <SettingsPollsSection
-                api={api}
-                chatId={chatId}
-                expanded={expandedSections.polls}
-                onOpen={() => toggleSection('polls')}
-                onClose={() => closeSection('polls')}
-              />
-            ) : null}
-
-            {chatId ? (
-              <GlassCard
-                className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-                style={{ animationDelay: '56ms', order: 25 }}
-                aria-label="Розыгрыши"
-              >
-                <div
-                  className={cn('settings-section__head', 'settings-section__head--interactive')}
-                >
-                  <SettingsSectionToggle
-                    title="Розыгрыши"
-                    summary="Запуск, участники и итоги"
-                    status=""
-                    icon="gift"
-                    tone="amber"
-                    open={expandedSections.giveaway}
-                    controls="settings-giveaway-content"
-                    onClick={toggleGiveawaySection}
-                  />
-                </div>
-
-                <SettingsDrilldownPanel
-                  id="settings-giveaway-content"
-                  icon={<SettingsSectionIcon name="gift" />}
-                  open={expandedSections.giveaway}
-                  title="Розыгрыши"
-                  summary="Запуск, участники и итоги"
-                  tone="amber"
-                  className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway"
-                  onClose={requestGiveawaySectionClose}
-                >
-                  <div
-                    id="settings-giveaway-content"
-                    className={cn(
-                      'settings-section__collapse',
-                      expandedSections.giveaway && 'is-open',
-                    )}
-                  >
-                    {expandedSections.giveaway ? (
-                      <div className="settings-section__collapse-inner">
-                        <Suspense fallback={<SkeletonCard lines={4} />}>
-                          <LazyManagedGiveawayCard
-                            ref={giveawayCardRef}
-                            api={api}
-                            entityType="chat"
-                            entityId={chatId}
-                            onClosePanel={() => closeSection('giveaway')}
-                          />
-                        </Suspense>
-                      </div>
-                    ) : null}
-                  </div>
-                </SettingsDrilldownPanel>
-              </GlassCard>
-            ) : null}
-
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{
-                animationDelay: '60ms',
-                order: SHARED_CHAT_SECTION_PRESENTATIONS.greeting.order,
-              }}
-              aria-label="Приветствие новых участников"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.title}
-                  enabled={draft.greetingEnabled && draft.greetingBotMessageEnabled}
-                  summary={greetingHeaderSummary}
-                  status={greetingCardStatus}
-                  icon={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.icon}
-                  tone={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.tone}
-                  open={expandedSections.greeting}
-                  controls="settings-greeting-content"
-                  onClick={() => toggleSection('greeting')}
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-greeting-content"
-                icon={
-                  <SettingsSectionIcon name={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.icon} />
-                }
-                open={expandedSections.greeting}
-                title={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.title}
-                summary={greetingHeaderSummary}
-                tone={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.tone}
-                className={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.panelClassName}
-                onClose={() => toggleSection('greeting')}
-                headerAction={renderApplyTargetHeaderAction('greeting')}
-                confirmCloseWhen={isSectionDirty('greeting')}
-                onDiscardChanges={() => discardSectionChanges('greeting')}
-                footer={renderSectionSaveFooter('greeting')}
-              >
-                {expandedSections.greeting ? renderSharedChatSection('greeting') : null}
-              </SettingsDrilldownPanel>
-            </GlassCard>
-
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{
-                animationDelay: '90ms',
-                order: SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.order,
-              }}
-              aria-label="Мат и оскорбления"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.title}
-                  enabled={draft.russianProfanityFilterEnabled}
-                  summary={profanityFilterHeaderSummary}
-                  status={profanityFilterCardStatus}
-                  icon={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.icon}
-                  tone={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.tone}
-                  open={expandedSections.profanityFilter}
-                  controls="settings-profanity-filter-content"
-                  onClick={() => toggleSection('profanityFilter')}
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-profanity-filter-content"
-                icon={
-                  <SettingsSectionIcon
-                    name={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.icon}
-                  />
-                }
-                open={expandedSections.profanityFilter}
-                title={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.title}
-                summary={profanityFilterHeaderSummary}
-                tone={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.tone}
-                className={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.panelClassName}
-                onClose={() => toggleSection('profanityFilter')}
-                headerAction={renderApplyTargetHeaderAction('profanityFilter')}
-                confirmCloseWhen={isSectionDirty('profanityFilter')}
-                onDiscardChanges={() => discardSectionChanges('profanityFilter')}
-                footer={renderSectionSaveFooter('profanityFilter')}
-              >
-                {expandedSections.profanityFilter
-                  ? renderSharedChatSection('profanityFilter')
-                  : null}
-              </SettingsDrilldownPanel>
-            </GlassCard>
-
-            <SettingsCommercialFilterSection
-              sharedContent={renderSharedChatSection('commercialFilter')}
-              api={api}
-              botSpeechEditorProps={botSpeechEditorProps!}
-              botSpeechPreviewContext={botSpeechPreviewContext}
-              clearButtonGroupErrors={clearButtonGroupErrors}
-              commercialFilterCardStatus={commercialFilterCardStatus}
-              commercialFilterHeaderSummary={commercialFilterHeaderSummary}
-              commercialSensitivityLabel={commercialSensitivityLabel}
-              commercialSensitivitySliderValue={commercialSensitivitySliderValue}
-              commercialPhotoModerationMode={
-                settingsScreenQuery.data?.commercialPhotoModerationMode ?? 'UNKNOWN'
-              }
-              discardSectionChanges={discardSectionChanges}
-              draft={draft}
-              expanded={expandedSections.commercialFilter}
-              handleCommercialSensitivitySliderChange={handleCommercialSensitivitySliderChange}
-              hasTextFiltersBotButtonError={hasTextFiltersBotButtonError}
-              isSectionDirty={isSectionDirty}
-              openBotEditorKey={openBotEditorKey}
-              openHintKey={openHintKey}
-              openWarnEditorKey={openWarnEditorKey}
-              renderAdminContactToggle={renderAdminContactToggle}
-              renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
-              renderInlineHint={renderInlineHint}
-              renderMuteStageToggle={renderMuteStageToggle}
-              renderSectionSaveFooter={renderSectionSaveFooter}
-              setFieldValue={setFieldValue}
-              setOpenBotEditorKey={setOpenBotEditorKey}
-              setOpenWarnEditorKey={setOpenWarnEditorKey}
-              textFiltersBotButtonErrors={textFiltersBotButtonErrors}
-              toggleBotMessageEditor={toggleBotMessageEditor}
-              toggleHint={toggleHint}
-              toggleSection={toggleSection}
-              toggleWarnMessageEditor={toggleWarnMessageEditor}
-              updateDraftButtonGroup={updateDraftButtonGroup}
-            />
-
-            <SettingsReportsSection
-              sharedContent={renderSharedChatSection('reports')}
-              api={api}
-              reportsAvailable={
-                expandedSections.reports
-                  ? !reportsAvailabilityQuery.isError &&
-                    (reportsAvailabilityQuery.data?.reportsAvailable ?? false)
-                  : (settingsScreenQuery.data?.reportsAvailable ?? false)
-              }
-              reportsAvailabilityLoading={reportsAvailabilityQuery.isPending}
-              persistedReportsEnabled={settingsQuery.data?.reportsEnabled ?? false}
-              fieldErrors={fieldErrors}
-              chatId={chatId!}
-              draft={draft}
-              setFieldValue={setFieldValue}
-              expanded={expandedSections.reports}
-              toggleSection={toggleSection}
-              isSectionDirty={isSectionDirty}
-              discardSectionChanges={discardSectionChanges}
-              renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
-              renderSectionSaveFooter={renderSectionSaveFooter}
-            />
-
-            <SettingsDuplicatesSection
-              sharedContent={renderSharedChatSection('duplicates')}
-              adjustDuplicateAllowedCount={adjustDuplicateAllowedCount}
-              api={api}
-              chatId={chatId!}
-              userId={meQuery.data?.userId ?? null}
-              applyDuplicateDetectionPreset={applyDuplicateDetectionPreset}
-              applyDuplicateFlowConfig={applyDuplicateFlowConfig}
-              botSpeechEditorProps={botSpeechEditorProps!}
-              botSpeechPreviewContext={botSpeechPreviewContext}
-              clearButtonGroupErrors={clearButtonGroupErrors}
-              discardSectionChanges={discardSectionChanges}
-              draft={draft}
-              duplicateAllowedCount={duplicateAllowedCount}
-              duplicateBotButtonErrors={duplicateBotButtonErrors}
-              duplicatePhotoModerationPolicy={duplicatePhotoModerationPolicy}
-              duplicateMessageModerationMode={
-                settingsScreenQuery.data?.duplicateMessageModerationMode ?? 'OFF'
-              }
-              duplicateSharedWindowHours={duplicateSharedWindowHours}
-              duplicateWindowInputValue={duplicateWindowInputValue}
-              duplicatesHeaderSummary={duplicatesHeaderSummary}
-              expanded={expandedSections.duplicates}
-              fieldErrors={fieldErrors}
-              formatMuteDurationCompact={formatMuteDurationCompact}
-              handleDuplicateWindowHoursBlur={handleDuplicateWindowHoursBlur}
-              handleDuplicateWindowHoursChange={handleDuplicateWindowHoursChange}
-              hasDuplicateBotButtonError={hasDuplicateBotButtonError}
-              isSectionDirty={isSectionDirty}
-              openBotEditorKey={openBotEditorKey}
-              openHintKey={openHintKey}
-              openMuteDurationKey={openMuteDurationKey}
-              renderAdminContactToggle={renderAdminContactToggle}
-              renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
-              renderMuteDurationEditor={renderMuteDurationEditor}
-              renderSectionSaveFooter={renderSectionSaveFooter}
-              setFieldValue={setFieldValue}
-              setOpenBotEditorKey={setOpenBotEditorKey}
-              toggleBotMessageEditor={toggleBotMessageEditor}
-              toggleHint={toggleHint}
-              toggleMuteDurationEditor={toggleMuteDurationEditor}
-              toggleSection={toggleSection}
-              updateDraftButtonGroup={updateDraftButtonGroup}
-            />
-
-            <SettingsLimitsSection
-              sharedContent={renderSharedChatSection('limits')}
-              adjustStickerMessageCooldown={adjustStickerMessageCooldown}
-              api={api}
-              botSpeechEditorProps={botSpeechEditorProps!}
-              botSpeechPreviewContext={botSpeechPreviewContext}
-              clearButtonGroupErrors={clearButtonGroupErrors}
-              deleteSpammersRuntimeStatus={deleteSpammersRuntimeStatus}
-              discardSectionChanges={discardSectionChanges}
-              draft={draft}
-              expanded={expandedSections.limits}
-              fieldErrors={fieldErrors}
-              hasMessageLimitsBotButtonError={hasMessageLimitsBotButtonError}
-              isSectionDirty={isSectionDirty}
-              limitsCardStatus={limitsCardStatus}
-              limitsRulesEnabledCount={limitsRulesEnabledCount}
-              messageLimitsBotButtonErrors={messageLimitsBotButtonErrors}
-              openBotEditorKey={openBotEditorKey}
-              openHintKey={openHintKey}
-              renderAdminContactToggle={renderAdminContactToggle}
-              renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
-              renderInlineHint={renderInlineHint}
-              renderMuteStageToggle={renderMuteStageToggle}
-              renderSectionSaveFooter={renderSectionSaveFooter}
-              setFieldValue={setFieldValue}
-              setOpenBotEditorKey={setOpenBotEditorKey}
-              spammerReviewMetricsQuery={spammerReviewMetricsQuery}
-              toggleBotMessageEditor={toggleBotMessageEditor}
-              toggleHint={toggleHint}
-              toggleSection={toggleSection}
-              updateDraftButtonGroup={updateDraftButtonGroup}
-            />
-
-            <SettingsStopWordsSection
-              sharedContent={renderSharedChatSection('stopWords')}
-              api={api}
-              chatId={chatId ?? ''}
-              draft={draft}
-              busy={isSavingSettings || isApplyingSectionToAll || isReloadingStopWords}
-              expanded={expandedSections.stopWords}
-              toggleSection={toggleSection}
-              isSectionDirty={isSectionDirty}
-              discardSectionChanges={discardSectionChanges}
-              renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
-              renderSectionSaveFooter={renderSectionSaveFooter}
-              setFieldValue={setFieldValue}
-              clearFieldError={clearFieldError}
-              botSpeechPreviewContext={botSpeechPreviewContext}
-              messageLimitsBlockedWordsInput={messageLimitsBlockedWordsInput}
-              messageLimitsBlockedDomainsInput={messageLimitsBlockedDomainsInput}
-              setMessageLimitsBlockedWordsInput={setMessageLimitsBlockedWordsInput}
-              setMessageLimitsBlockedDomainsInput={setMessageLimitsBlockedDomainsInput}
-              messageLimitsBlockedWordsError={messageLimitsBlockedWordsError}
-              messageLimitsBlockedDomainsError={messageLimitsBlockedDomainsError}
-              stopWordsError={stopWordsError}
-              reloadPolicy={reloadStopWordsPolicy}
-            />
-
-            <SettingsMessageRetentionSection
-              key={chatId}
-              api={api}
-              chatId={chatId!}
-              initialSummary={settingsScreenQuery.data?.messageRetention}
-            />
-
-            <SettingsNightSection
-              sharedContent={renderSharedChatSection('night')}
-              api={api}
-              closureStatus={settingsScreenQuery.data?.closure}
-              botSpeechEditorProps={botSpeechEditorProps!}
-              botSpeechPreviewContext={botSpeechPreviewContext}
-              clearButtonGroupErrors={clearButtonGroupErrors}
-              clearFieldError={clearFieldError}
-              discardSectionChanges={discardSectionChanges}
-              draft={draft}
-              expanded={expandedSections.night}
-              hasNightBotButtonError={hasNightBotButtonError}
-              hasNightForceCloseDurationError={hasNightForceCloseDurationError}
-              hasPublishedRules={hasPublishedRules}
-              isSectionDirty={isSectionDirty}
-              nightBotButtonErrors={nightBotButtonErrors}
-              nightCardStatus={nightCardStatus}
-              nightForceCloseDaysError={nightForceCloseDaysError}
-              nightForceCloseHoursError={nightForceCloseHoursError}
-              nightHeaderSummary={nightHeaderSummary}
-              nightTimeError={nightTimeError}
-              nightTimezoneError={nightTimezoneError}
-              openBotEditorKey={openBotEditorKey}
-              openHintKey={openHintKey}
-              renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
-              renderInlineHint={renderInlineHint}
-              renderSectionSaveFooter={renderSectionSaveFooter}
-              setDraft={setDraft}
-              setFieldValue={setFieldValue}
-              setOpenBotEditorKey={setOpenBotEditorKey}
-              toggleBotMessageEditor={toggleBotMessageEditor}
-              toggleHint={toggleHint}
-              toggleSection={toggleSection}
-              updateDraftButtonGroup={updateDraftButtonGroup}
-            />
-
-            {legacyBroadcastWorkspaceRequested ? (
-              <GlassCard
-                className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-                style={{ animationDelay: '315ms', order: 5 }}
-                aria-label="Ранее созданные посты"
-              >
-                <div
-                  className={cn('settings-section__head', 'settings-section__head--interactive')}
-                >
-                  <SettingsSectionToggle
-                    title="Автопостинг"
-                    summary={mailingHeaderSummary}
-                    status={mailingCardStatus}
-                    icon="send"
-                    tone="sky"
-                    open={expandedSections.mailing}
-                    controls="settings-mailing-content"
-                    onClick={() => toggleSection('mailing')}
-                  />
-                </div>
-
-                <SettingsDrilldownPanel
-                  id="settings-mailing-content"
-                  open={expandedSections.mailing}
-                  title="Автопостинг"
-                  summary={mailingHeaderSummary}
-                  variant="screen"
-                  tone="sky"
-                  className="settings-drilldown__panel--campaign settings-drilldown__panel--mailing settings-drilldown__panel--broadcast-screen"
-                  onClose={() => toggleSection('mailing')}
-                  footer={activeMailingWorkspaceView === 'compose' ? mailingDrilldownFooter : null}
-                >
-                  <div
-                    id="settings-mailing-content"
-                    className={cn(
-                      'settings-section__collapse',
-                      expandedSections.mailing && 'is-open',
-                    )}
-                  >
-                    {expandedSections.mailing ? (
-                      <div className="settings-section__collapse-inner settings-mailing">
-                        <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
-                          <div className="broadcast-studio-screen__chrome">
-                            <BroadcastWorkspaceChrome
-                              showTabs={showMailingWorkspaceTabs && !handoffRequested}
-                              value={activeMailingWorkspaceView}
-                              autopostCount={orderedManagedAutopostRules.length}
-                              historyCount={orderedManagedBroadcasts.length}
-                              compatibilityOnly
-                              disabled={isMailingBusy}
-                              showReset={showMailingResetAction}
-                              resetLabel={mailingResetActionLabel}
-                              resetPending={clearBroadcastHandoffMutation.isPending}
-                              onChange={setMailingWorkspaceView}
-                              onReset={handleClearMailingComposer}
-                            />
-                          </div>
-
-                          {activeMailingWorkspaceView === 'compose' ? (
-                            <div className="broadcast-compose-flow broadcast-compose-flow--screen">
-                              <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
-                                <div className="broadcast-stage-card__head">
-                                  <div className="broadcast-stage-card__title-wrap">
-                                    <strong>Сообщение</strong>
-                                  </div>
-                                  <span
-                                    className={cn(
-                                      'broadcast-stage-card__status',
-                                      mailingContentReady ? 'is-ready' : 'is-pending',
-                                    )}
-                                  >
-                                    {mailingContentReady
-                                      ? 'Готов'
-                                      : mailingImagesPreparing
-                                        ? 'Фото...'
-                                        : mailingHasDirectContent
-                                          ? 'Проверка'
-                                          : 'Пусто'}
-                                  </span>
-                                </div>
-
-                                <div className="broadcast-stage-card__body">
-                                  <Suspense fallback={null}>
-                                    <LazyBroadcastContentComposer
-                                      text={mailingText}
-                                      maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                                      images={mailingImages}
-                                      videoLabel={editingMailingHasVideo ? 'Видео' : null}
-                                      disabled={isMailingBusy}
-                                      textError={mailingTextError}
-                                      imageError={mailingImageError}
-                                      onTextChange={(nextText) => {
-                                        setMailingText(nextText);
-                                        if (mailingTextError) {
-                                          setMailingTextError('');
-                                        }
-                                      }}
-                                      onImagesChange={(nextImages) => {
-                                        applyMailingImages(nextImages);
-                                        if (nextImages.length > 0) {
-                                          setMailingVideoCleared(true);
-                                        }
-                                        setMailingImageError('');
-                                        if (mailingTextError) {
-                                          setMailingTextError('');
-                                        }
-                                      }}
-                                      onImagePreparationChange={setMailingImagesPreparing}
-                                      onClearVideo={() => {
-                                        setMailingVideoCleared(true);
-                                      }}
-                                      onError={(message) => {
-                                        setMailingImageError(message);
-                                        pushToast({
-                                          tone: 'danger',
-                                          title: 'Фото не добавлено',
-                                          description: message,
-                                        });
-                                        maxNotify('error');
-                                      }}
-                                      buttons={normalizedMailingButtons}
-                                      systemButtons={mailingSystemButtons}
-                                      buttonsStatusLabel={mailingVisibleButtonStatus}
-                                      buttonsActive={mailingHasVisibleButtons}
-                                      buttonsError={!mailingButtonDraftValid}
-                                      onOpenButtons={() => setMailingButtonsSheetOpen(true)}
-                                    />
-                                  </Suspense>
-                                </div>
-                              </div>
-
-                              <div className="broadcast-stage-card broadcast-stage-card--scope">
-                                <div className="broadcast-stage-card__head">
-                                  <div className="broadcast-stage-card__title-wrap">
-                                    <strong>Кому</strong>
-                                  </div>
-                                </div>
-
-                                <div className="broadcast-stage-card__body">
-                                  <Suspense fallback={null}>
-                                    <LazyBroadcastAudienceControls
-                                      targetMode={mailingTargetMode}
-                                      currentChatId={chatId ?? ''}
-                                      targetChatIds={mailingAudiencePayload.targetChatIds}
-                                      favoriteUserId={meQuery.data?.userId ?? null}
-                                      choices={mailingAudienceChoices}
-                                      loading={mailingAudienceChoicesLoading}
-                                      refreshing={chatsList.isRefreshing}
-                                      remoteError={mailingAudienceChoicesError}
-                                      validationError={mailingAudienceError || null}
-                                      disabled={isMailingBusy}
-                                      onToggleAllChats={handleMailingAllChatsToggle}
-                                      onChangeScopedMode={handleMailingScopedTargetModeChange}
-                                      onApplySelection={handleApplyMailingAudienceSelection}
-                                      onClearValidationError={() => setMailingAudienceError('')}
-                                      onRefreshChoices={handleRefreshMailingAudienceChoices}
-                                    />
-                                  </Suspense>
-                                </div>
-                              </div>
-
-                              <div className="broadcast-stage-card broadcast-stage-card--planner">
-                                <div className="broadcast-stage-card__head">
-                                  <div className="broadcast-stage-card__title-wrap">
-                                    <strong>Когда</strong>
-                                  </div>
-                                </div>
-
-                                <div className="broadcast-stage-card__body">
-                                  <Suspense fallback={null}>
-                                    <LazyBroadcastSchedulePlanner
-                                      resetKey={mailingPlannerResetKey}
-                                      value={mailingScheduledSlots}
-                                      occupiedSlots={mailingOccupiedSlots}
-                                      error={mailingScheduleError || mailingCycleError}
-                                      disabled={isMailingBusy}
-                                      managedBroadcasts={managedBroadcasts}
-                                      calendarSlots={mailingCalendarQuery.data?.slots ?? []}
-                                      targetAwareAvailability
-                                      sourceChatId={chatId}
-                                      managedBroadcastsLoading={
-                                        settingsScreenQuery.isLoading ||
-                                        settingsScreenQuery.isFetching ||
-                                        mailingCalendarQuery.isFetching
-                                      }
-                                      currentTargetLabel="Текущий чат"
-                                      targetContextLabel={
-                                        mailingHeaderTargetPresentation.compactLabel
-                                      }
-                                      calendarRefreshing={mailingCalendarQuery.isFetching}
-                                      excludeBroadcastId={editingManagedBroadcast?.id ?? null}
-                                      excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
-                                      onEditBroadcast={handleEditManagedBroadcastById}
-                                      onDeleteBroadcast={handleDeleteManagedBroadcastById}
-                                      pendingEditBroadcastId={
-                                        openManagedBroadcastEditorMutation.isPending
-                                          ? openManagedBroadcastEditorMutation.variables
-                                          : null
-                                      }
-                                      pendingDeleteBroadcastId={
-                                        cancelManagedBroadcastMutation.isPending
-                                          ? cancelManagedBroadcastMutation.variables
-                                          : null
-                                      }
-                                      timingMode={mailingTimingMode}
-                                      cycle={mailingCycleDraft}
-                                      onTimingModeChange={(nextMode) => {
-                                        setMailingTimingMode(nextMode);
-                                        setMailingScheduleError('');
-                                        setMailingCycleError('');
-                                      }}
-                                      onCycleChange={(nextCycle) => {
-                                        setMailingCycleDraft(nextCycle);
-                                        setMailingCycleError('');
-                                      }}
-                                      onSelectionStateChange={handleMailingPlannerStateChange}
-                                      onChange={(nextValue) => {
-                                        setMailingScheduledSlots(nextValue);
-                                        if (mailingScheduleError) {
-                                          setMailingScheduleError('');
-                                        }
-                                      }}
-                                    />
-                                  </Suspense>
-                                </div>
-                              </div>
-                            </div>
-                          ) : activeMailingWorkspaceView === 'calendar' ? (
-                            <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
-                              <div className="broadcast-stage-card__head">
-                                <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Календарь</strong>
-                                </div>
-                              </div>
-
-                              <div className="broadcast-stage-card__body">
-                                <Suspense fallback={null}>
-                                  <LazyBroadcastSchedulePlanner
-                                    resetKey={`calendar-${mailingPlannerResetKey}`}
-                                    value={[]}
-                                    occupiedSlots={mailingOccupiedSlots}
-                                    disabled={isMailingBusy}
-                                    managedBroadcasts={managedBroadcasts}
-                                    calendarSlots={mailingCalendarQuery.data?.slots ?? []}
-                                    sourceChatId={chatId}
-                                    managedBroadcastsLoading={
-                                      settingsScreenQuery.isLoading ||
-                                      settingsScreenQuery.isFetching ||
-                                      mailingCalendarQuery.isFetching
-                                    }
-                                    currentTargetLabel="Текущий чат"
-                                    targetContextLabel={
-                                      mailingHeaderTargetPresentation.compactLabel
-                                    }
-                                    calendarRefreshing={mailingCalendarQuery.isFetching}
-                                    excludeBroadcastId={editingManagedBroadcast?.id ?? null}
-                                    excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
-                                    onEditBroadcast={handleEditManagedBroadcastById}
-                                    onDeleteBroadcast={handleDeleteManagedBroadcastById}
-                                    pendingEditBroadcastId={
-                                      openManagedBroadcastEditorMutation.isPending
-                                        ? openManagedBroadcastEditorMutation.variables
-                                        : null
-                                    }
-                                    pendingDeleteBroadcastId={
-                                      cancelManagedBroadcastMutation.isPending
-                                        ? cancelManagedBroadcastMutation.variables
-                                        : null
-                                    }
-                                    viewMode="calendar"
-                                    onSelectionStateChange={handleMailingPlannerStateChange}
-                                    onChange={(nextValue) => {
-                                      setMailingTimingMode('scheduled');
-                                      setMailingScheduledSlots(nextValue);
-                                      setMailingScheduleError('');
-                                      setMailingWorkspaceView('compose');
-                                    }}
-                                  />
-                                </Suspense>
-                              </div>
-                            </div>
-                          ) : activeMailingWorkspaceView === 'autoposts' ? (
-                            <div className="broadcast-stage-card broadcast-stage-card--feed">
-                              <div className="broadcast-stage-card__head">
-                                <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Автопосты</strong>
-                                  <small>
-                                    {managedAutopostRulesQuery.isLoading
-                                      ? 'Загрузка'
-                                      : orderedManagedAutopostRules.length > 0
-                                        ? `${orderedManagedAutopostRules.length} шт.`
-                                        : 'Пусто'}
-                                  </small>
-                                </div>
-                              </div>
-
-                              <div className="broadcast-stage-card__body">
-                                <div className="managed-broadcasts-list managed-broadcasts-list--autoposts">
-                                  {orderedManagedAutopostRules.length === 0 &&
-                                  !managedAutopostRulesQuery.isLoading ? (
-                                    <div className="managed-broadcasts-list__empty">
-                                      Автопостов пока нет.
-                                    </div>
-                                  ) : null}
-
-                                  <Suspense fallback={<SkeletonCard lines={2} />}>
-                                    {orderedManagedAutopostRules.map((rule) => (
-                                      <LazyManagedAutopostRuleCard
-                                        key={rule.id}
-                                        rule={rule}
-                                        nextLabel={formatCompactBroadcastDateTime(
-                                          rule.nextSendAt,
-                                          rule.scheduleTimezone,
-                                        )}
-                                        facts={buildManagedAutopostRuleFacts(rule, 'Текущий чат')}
-                                        isBusy={isMailingBusy}
-                                        onPause={() =>
-                                          updateManagedAutopostRuleMutation.mutate({
-                                            ruleId: rule.id,
-                                            status: 'PAUSED',
-                                          })
-                                        }
-                                        onDelete={() => handleDeleteManagedAutopostRule(rule)}
-                                      />
-                                    ))}
-                                  </Suspense>
-                                </div>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="broadcast-stage-card broadcast-stage-card--feed">
-                              <div className="broadcast-stage-card__head">
-                                <div className="broadcast-stage-card__title-wrap">
-                                  <strong>История</strong>
-                                  <small>
-                                    {managedBroadcastsQuery.isLoading
-                                      ? 'Загрузка'
-                                      : filteredManagedBroadcasts.length > 0
-                                        ? `${filteredManagedBroadcasts.length} записей`
-                                        : 'Пусто'}
-                                  </small>
-                                </div>
-                              </div>
-
-                              <div className="broadcast-stage-card__body">
-                                <BroadcastHistoryFilterTabs
-                                  value={mailingHistoryFilter}
-                                  counts={mailingHistoryCounts}
-                                  onChange={setMailingHistoryFilter}
-                                />
-
-                                <div className="managed-broadcasts-list">
-                                  {filteredManagedBroadcasts.length === 0 &&
-                                  !managedBroadcastsQuery.isLoading ? (
-                                    <div className="managed-broadcasts-list__empty">
-                                      История пока пустая.
-                                    </div>
-                                  ) : null}
-
-                                  <Suspense fallback={<SkeletonCard lines={2} />}>
-                                    {filteredManagedBroadcasts.map((broadcast) => {
-                                      const cardTone = resolveManagedBroadcastCardTone(broadcast);
-                                      const cardMetric = resolveManagedBroadcastMetric(
-                                        broadcast,
-                                        mailingNowMs,
-                                      );
-                                      const cardFacts = buildManagedBroadcastFactChips(broadcast);
-                                      const canEditBroadcastSchedule =
-                                        broadcast.scheduleMode === 'calendar' &&
-                                        broadcast.status !== 'COMPLETED' &&
-                                        broadcast.status !== 'CANCELED';
-                                      const canCancelBroadcast =
-                                        broadcast.status !== 'COMPLETED' &&
-                                        broadcast.status !== 'CANCELED';
-                                      const isDeletingBroadcast =
-                                        cancelManagedBroadcastMutation.isPending &&
-                                        cancelManagedBroadcastMutation.variables === broadcast.id;
-                                      const isOpeningBroadcastEditor =
-                                        openManagedBroadcastEditorMutation.isPending &&
-                                        openManagedBroadcastEditorMutation.variables ===
-                                          broadcast.id;
-                                      const isRetryingBroadcast =
-                                        retryManagedBroadcastMutation.isPending &&
-                                        retryManagedBroadcastMutation.variables === broadcast.id;
-                                      const cardBadge = isOpeningBroadcastEditor
-                                        ? 'Открываем'
-                                        : resolveManagedBroadcastCardBadge(broadcast);
-
-                                      return (
-                                        <LazyManagedBroadcastHistoryCard
-                                          key={broadcast.id}
-                                          broadcast={broadcast}
-                                          tone={cardTone}
-                                          badge={cardBadge}
-                                          title={resolveManagedBroadcastCardTitle(broadcast)}
-                                          metric={cardMetric}
-                                          facts={cardFacts}
-                                          canEdit={canEditBroadcastSchedule}
-                                          canCancel={canCancelBroadcast}
-                                          isBusy={isMailingBusy}
-                                          isDeleting={isDeletingBroadcast}
-                                          isRetrying={isRetryingBroadcast}
-                                          onEdit={() => handleEditManagedBroadcast(broadcast)}
-                                          onRetry={() =>
-                                            retryManagedBroadcastMutation.mutate(broadcast.id)
-                                          }
-                                          onDelete={() => handleDeleteManagedBroadcast(broadcast)}
-                                        />
-                                      );
-                                    })}
-                                  </Suspense>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </SettingsDrilldownPanel>
-              </GlassCard>
-            ) : null}
-
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--priority settings-home-entry--wide stagger-in"
-              style={{
-                animationDelay: '360ms',
-                order: SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.order,
-              }}
-              aria-label="Подписка на чат или канал"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.title}
-                  enabled={draft.requiredSubscriptionEnabled && requiredSubscriptionIsActive}
-                  summary={requiredSubscriptionHeaderSummary}
-                  status={requiredSubscriptionCardStatus}
-                  icon={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.icon}
-                  tone={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.tone}
-                  open={expandedSections.requiredSubscription}
-                  controls="settings-required-subscription-content"
-                  onClick={() => toggleSection('requiredSubscription')}
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-required-subscription-content"
-                icon={
-                  <SettingsSectionIcon
-                    name={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.icon}
-                  />
-                }
-                open={expandedSections.requiredSubscription}
-                title={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.title}
-                summary={requiredSubscriptionHeaderSummary}
-                tone={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.tone}
-                className={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.panelClassName}
-                onClose={() => toggleSection('requiredSubscription')}
-                headerAction={
-                  <>
-                    <RequiredSubscriptionHelp />
-                    {renderApplyTargetHeaderAction('requiredSubscription')}
-                  </>
-                }
-                confirmCloseWhen={isSectionDirty('requiredSubscription')}
-                onDiscardChanges={() => discardSectionChanges('requiredSubscription')}
-                footer={renderSectionSaveFooter('requiredSubscription')}
-              >
-                {expandedSections.requiredSubscription
-                  ? renderSharedChatSection('requiredSubscription')
-                  : null}
-              </SettingsDrilldownPanel>
-            </GlassCard>
-
-            <Suspense fallback={null}>
-              <LazySettingsAdminCommandsSection
-                sharedContent={renderSharedChatSection('commands')}
-                draft={draft}
-                expanded={expandedSections.commands}
-                fieldErrors={fieldErrors}
-                headerAction={renderApplyTargetHeaderAction('commands')}
-                footer={renderSectionSaveFooter('commands')}
-                hasChanges={isSectionDirty('commands')}
-                onDiscardChanges={() => discardSectionChanges('commands')}
-                onToggleSection={() => toggleSection('commands')}
-                onFieldChange={(key, value) => setFieldValue(key, value)}
-              />
-            </Suspense>
-
-            <SettingsStorefrontSection
-              sharedContent={renderSharedChatSection('storefront')}
-              draft={draft}
-              api={api}
-              chatId={chatId}
-              expanded={expandedSections.storefront}
-              summary={storefrontHeaderSummary}
-              status={storefrontCardStatus}
-              headerAction={renderApplyTargetHeaderAction('storefront')}
-              footer={renderSectionSaveFooter('storefront')}
-              hasChanges={isSectionDirty('storefront')}
-              onDiscardChanges={() => discardSectionChanges('storefront')}
-              onToggleSection={() => toggleSection('storefront')}
-              onFieldChange={(enabled) => setFieldValue('karavanStorefrontEnabled', enabled)}
-              onTextChange={setFieldValue}
-              onAdminsOnlyChange={(enabled) =>
-                setFieldValue('karavanStorefrontAdminsOnly', enabled)
-              }
-            />
-
-            <MarketplaceProfileCard
-              api={api}
-              entityId={chatId ?? ''}
-              entityType="chat"
-              profile="moderation"
-            />
-
-            <SettingsAdvertisingSection
-              key={`advertising:${meQuery.data?.userId ?? ''}:${chatId}`}
-              api={api}
-              chatId={chatId ?? ''}
-              userId={meQuery.data?.userId ?? null}
-            />
-
-            <SettingsExtraSection
-              sharedContent={renderSharedChatSection('extra')}
-              draft={draft}
-              expanded={expandedSections.extra}
-              summary={extraHeaderSummary}
-              status={extraCardStatus}
-              openHintKey={openHintKey}
-              fieldErrors={fieldErrors}
-              headerAction={renderApplyTargetHeaderAction('extra')}
-              footer={renderSectionSaveFooter('extra')}
-              hasChanges={isSectionDirty('extra')}
-              onDiscardChanges={() => discardSectionChanges('extra')}
-              onToggleSection={() => toggleSection('extra')}
-              onToggleHint={toggleHint}
-              onFieldChange={(key, value) => setFieldValue(key, value)}
-              onAdjustDeleteBotMessagesDelay={adjustDeleteBotMessagesDelay}
-            />
-
-            <GlassCard
-              className="settings-section settings-home-entry stagger-in"
-              style={{ order: 33 }}
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title="Стиль речи"
-                  summary="Тон ответов и сообщений бота"
-                  status={BOT_SPEECH_STYLE_METADATA[activeSpeechStyle].label}
-                  icon="comments"
-                  tone="mint"
-                  open={speechStylePanelOpen}
-                  controls="settings-bot-speech-style"
-                  onClick={() => {
-                    setPendingSpeechStyle(activeSpeechStyle);
-                    setSpeechStylePanelOpen(true);
+              <SettingsOverviewEntry order={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.order}>
+                <GlassCard
+                  className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+                  style={{
+                    animationDelay: '60ms',
+                    order: SHARED_CHAT_SECTION_PRESENTATIONS.greeting.order,
                   }}
+                  aria-label="Приветствие новых участников"
+                >
+                  <div
+                    className={cn('settings-section__head', 'settings-section__head--interactive')}
+                  >
+                    <SettingsSectionToggle
+                      title={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.title}
+                      enabled={draft.greetingEnabled && draft.greetingBotMessageEnabled}
+                      summary={greetingHeaderSummary}
+                      status={greetingCardStatus}
+                      icon={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.icon}
+                      tone={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.tone}
+                      open={expandedSections.greeting}
+                      controls="settings-greeting-content"
+                      onClick={() => toggleSection('greeting')}
+                    />
+                  </div>
+
+                  <SettingsDrilldownPanel
+                    id="settings-greeting-content"
+                    icon={
+                      <SettingsSectionIcon name={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.icon} />
+                    }
+                    open={expandedSections.greeting}
+                    title={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.title}
+                    summary={greetingHeaderSummary}
+                    tone={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.tone}
+                    className={SHARED_CHAT_SECTION_PRESENTATIONS.greeting.panelClassName}
+                    onClose={() => toggleSection('greeting')}
+                    headerAction={renderApplyTargetHeaderAction('greeting')}
+                    confirmCloseWhen={isSectionDirty('greeting')}
+                    onDiscardChanges={() => discardSectionChanges('greeting')}
+                    footer={renderSectionSaveFooter('greeting')}
+                  >
+                    {expandedSections.greeting ? renderSharedChatSection('greeting') : null}
+                  </SettingsDrilldownPanel>
+                </GlassCard>
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.order}
+              >
+                <GlassCard
+                  className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+                  style={{
+                    animationDelay: '90ms',
+                    order: SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.order,
+                  }}
+                  aria-label="Мат и оскорбления"
+                >
+                  <div
+                    className={cn('settings-section__head', 'settings-section__head--interactive')}
+                  >
+                    <SettingsSectionToggle
+                      title={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.title}
+                      enabled={draft.russianProfanityFilterEnabled}
+                      summary={profanityFilterHeaderSummary}
+                      status={profanityFilterCardStatus}
+                      icon={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.icon}
+                      tone={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.tone}
+                      open={expandedSections.profanityFilter}
+                      controls="settings-profanity-filter-content"
+                      onClick={() => toggleSection('profanityFilter')}
+                    />
+                  </div>
+
+                  <SettingsDrilldownPanel
+                    id="settings-profanity-filter-content"
+                    icon={
+                      <SettingsSectionIcon
+                        name={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.icon}
+                      />
+                    }
+                    open={expandedSections.profanityFilter}
+                    title={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.title}
+                    summary={profanityFilterHeaderSummary}
+                    tone={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.tone}
+                    className={SHARED_CHAT_SECTION_PRESENTATIONS.profanityFilter.panelClassName}
+                    onClose={() => toggleSection('profanityFilter')}
+                    headerAction={renderApplyTargetHeaderAction('profanityFilter')}
+                    confirmCloseWhen={isSectionDirty('profanityFilter')}
+                    onDiscardChanges={() => discardSectionChanges('profanityFilter')}
+                    footer={renderSectionSaveFooter('profanityFilter')}
+                  >
+                    {expandedSections.profanityFilter
+                      ? renderSharedChatSection('profanityFilter')
+                      : null}
+                  </SettingsDrilldownPanel>
+                </GlassCard>
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'commercialFilter').order}
+              >
+                <SettingsCommercialFilterSection
+                  sharedContent={renderSharedChatSection('commercialFilter')}
+                  api={api}
+                  botSpeechEditorProps={botSpeechEditorProps!}
+                  botSpeechPreviewContext={botSpeechPreviewContext}
+                  clearButtonGroupErrors={clearButtonGroupErrors}
+                  commercialFilterCardStatus={commercialFilterCardStatus}
+                  commercialFilterHeaderSummary={commercialFilterHeaderSummary}
+                  commercialSensitivityLabel={commercialSensitivityLabel}
+                  commercialSensitivitySliderValue={commercialSensitivitySliderValue}
+                  commercialPhotoModerationMode={
+                    settingsScreenQuery.data?.commercialPhotoModerationMode ?? 'UNKNOWN'
+                  }
+                  discardSectionChanges={discardSectionChanges}
+                  draft={draft}
+                  expanded={expandedSections.commercialFilter}
+                  handleCommercialSensitivitySliderChange={handleCommercialSensitivitySliderChange}
+                  hasTextFiltersBotButtonError={hasTextFiltersBotButtonError}
+                  isSectionDirty={isSectionDirty}
+                  openBotEditorKey={openBotEditorKey}
+                  openHintKey={openHintKey}
+                  openWarnEditorKey={openWarnEditorKey}
+                  renderAdminContactToggle={renderAdminContactToggle}
+                  renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
+                  renderInlineHint={renderInlineHint}
+                  renderMuteStageToggle={renderMuteStageToggle}
+                  renderSectionSaveFooter={renderSectionSaveFooter}
+                  setFieldValue={setFieldValue}
+                  setOpenBotEditorKey={setOpenBotEditorKey}
+                  setOpenWarnEditorKey={setOpenWarnEditorKey}
+                  textFiltersBotButtonErrors={textFiltersBotButtonErrors}
+                  toggleBotMessageEditor={toggleBotMessageEditor}
+                  toggleHint={toggleHint}
+                  toggleSection={toggleSection}
+                  toggleWarnMessageEditor={toggleWarnMessageEditor}
+                  updateDraftButtonGroup={updateDraftButtonGroup}
                 />
-              </div>
-            </GlassCard>
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'reports').order}
+              >
+                <SettingsReportsSection
+                  sharedContent={renderSharedChatSection('reports')}
+                  api={api}
+                  reportsAvailable={
+                    expandedSections.reports
+                      ? !reportsAvailabilityQuery.isError &&
+                        (reportsAvailabilityQuery.data?.reportsAvailable ?? false)
+                      : (settingsScreenQuery.data?.reportsAvailable ?? false)
+                  }
+                  reportsAvailabilityLoading={reportsAvailabilityQuery.isPending}
+                  persistedReportsEnabled={settingsQuery.data?.reportsEnabled ?? false}
+                  fieldErrors={fieldErrors}
+                  chatId={chatId!}
+                  draft={draft}
+                  setFieldValue={setFieldValue}
+                  expanded={expandedSections.reports}
+                  toggleSection={toggleSection}
+                  isSectionDirty={isSectionDirty}
+                  discardSectionChanges={discardSectionChanges}
+                  renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
+                  renderSectionSaveFooter={renderSectionSaveFooter}
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'duplicates').order}
+              >
+                <SettingsDuplicatesSection
+                  sharedContent={renderSharedChatSection('duplicates')}
+                  adjustDuplicateAllowedCount={adjustDuplicateAllowedCount}
+                  api={api}
+                  chatId={chatId!}
+                  userId={meQuery.data?.userId ?? null}
+                  applyDuplicateDetectionPreset={applyDuplicateDetectionPreset}
+                  applyDuplicateFlowConfig={applyDuplicateFlowConfig}
+                  botSpeechEditorProps={botSpeechEditorProps!}
+                  botSpeechPreviewContext={botSpeechPreviewContext}
+                  clearButtonGroupErrors={clearButtonGroupErrors}
+                  discardSectionChanges={discardSectionChanges}
+                  draft={draft}
+                  duplicateAllowedCount={duplicateAllowedCount}
+                  duplicateBotButtonErrors={duplicateBotButtonErrors}
+                  duplicatePhotoModerationPolicy={duplicatePhotoModerationPolicy}
+                  duplicateMessageModerationMode={
+                    settingsScreenQuery.data?.duplicateMessageModerationMode ?? 'OFF'
+                  }
+                  duplicateSharedWindowHours={duplicateSharedWindowHours}
+                  duplicateWindowInputValue={duplicateWindowInputValue}
+                  duplicatesHeaderSummary={duplicatesHeaderSummary}
+                  expanded={expandedSections.duplicates}
+                  fieldErrors={fieldErrors}
+                  formatMuteDurationCompact={formatMuteDurationCompact}
+                  handleDuplicateWindowHoursBlur={handleDuplicateWindowHoursBlur}
+                  handleDuplicateWindowHoursChange={handleDuplicateWindowHoursChange}
+                  hasDuplicateBotButtonError={hasDuplicateBotButtonError}
+                  isSectionDirty={isSectionDirty}
+                  openBotEditorKey={openBotEditorKey}
+                  openHintKey={openHintKey}
+                  openMuteDurationKey={openMuteDurationKey}
+                  renderAdminContactToggle={renderAdminContactToggle}
+                  renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
+                  renderMuteDurationEditor={renderMuteDurationEditor}
+                  renderSectionSaveFooter={renderSectionSaveFooter}
+                  setFieldValue={setFieldValue}
+                  setOpenBotEditorKey={setOpenBotEditorKey}
+                  toggleBotMessageEditor={toggleBotMessageEditor}
+                  toggleHint={toggleHint}
+                  toggleMuteDurationEditor={toggleMuteDurationEditor}
+                  toggleSection={toggleSection}
+                  updateDraftButtonGroup={updateDraftButtonGroup}
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'limits').order}
+              >
+                <SettingsLimitsSection
+                  sharedContent={renderSharedChatSection('limits')}
+                  adjustStickerMessageCooldown={adjustStickerMessageCooldown}
+                  api={api}
+                  botSpeechEditorProps={botSpeechEditorProps!}
+                  botSpeechPreviewContext={botSpeechPreviewContext}
+                  clearButtonGroupErrors={clearButtonGroupErrors}
+                  deleteSpammersRuntimeStatus={deleteSpammersRuntimeStatus}
+                  discardSectionChanges={discardSectionChanges}
+                  draft={draft}
+                  expanded={expandedSections.limits}
+                  fieldErrors={fieldErrors}
+                  hasMessageLimitsBotButtonError={hasMessageLimitsBotButtonError}
+                  isSectionDirty={isSectionDirty}
+                  limitsCardStatus={limitsCardStatus}
+                  limitsRulesEnabledCount={limitsRulesEnabledCount}
+                  messageLimitsBotButtonErrors={messageLimitsBotButtonErrors}
+                  openBotEditorKey={openBotEditorKey}
+                  openHintKey={openHintKey}
+                  renderAdminContactToggle={renderAdminContactToggle}
+                  renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
+                  renderInlineHint={renderInlineHint}
+                  renderMuteStageToggle={renderMuteStageToggle}
+                  renderSectionSaveFooter={renderSectionSaveFooter}
+                  setFieldValue={setFieldValue}
+                  setOpenBotEditorKey={setOpenBotEditorKey}
+                  spammerReviewMetricsQuery={spammerReviewMetricsQuery}
+                  toggleBotMessageEditor={toggleBotMessageEditor}
+                  toggleHint={toggleHint}
+                  toggleSection={toggleSection}
+                  updateDraftButtonGroup={updateDraftButtonGroup}
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'stopWords').order}
+              >
+                <SettingsStopWordsSection
+                  sharedContent={renderSharedChatSection('stopWords')}
+                  api={api}
+                  chatId={chatId ?? ''}
+                  draft={draft}
+                  busy={isSavingSettings || isApplyingSectionToAll || isReloadingStopWords}
+                  expanded={expandedSections.stopWords}
+                  toggleSection={toggleSection}
+                  isSectionDirty={isSectionDirty}
+                  discardSectionChanges={discardSectionChanges}
+                  renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
+                  renderSectionSaveFooter={renderSectionSaveFooter}
+                  setFieldValue={setFieldValue}
+                  clearFieldError={clearFieldError}
+                  botSpeechPreviewContext={botSpeechPreviewContext}
+                  messageLimitsBlockedWordsInput={messageLimitsBlockedWordsInput}
+                  messageLimitsBlockedDomainsInput={messageLimitsBlockedDomainsInput}
+                  setMessageLimitsBlockedWordsInput={setMessageLimitsBlockedWordsInput}
+                  setMessageLimitsBlockedDomainsInput={setMessageLimitsBlockedDomainsInput}
+                  messageLimitsBlockedWordsError={messageLimitsBlockedWordsError}
+                  messageLimitsBlockedDomainsError={messageLimitsBlockedDomainsError}
+                  stopWordsError={stopWordsError}
+                  reloadPolicy={reloadStopWordsPolicy}
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry order={15}>
+                <SettingsMessageRetentionSection
+                  key={chatId}
+                  api={api}
+                  chatId={chatId!}
+                  initialSummary={settingsScreenQuery.data?.messageRetention}
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'night').order}
+              >
+                <SettingsNightSection
+                  sharedContent={renderSharedChatSection('night')}
+                  api={api}
+                  closureStatus={settingsScreenQuery.data?.closure}
+                  botSpeechEditorProps={botSpeechEditorProps!}
+                  botSpeechPreviewContext={botSpeechPreviewContext}
+                  clearButtonGroupErrors={clearButtonGroupErrors}
+                  clearFieldError={clearFieldError}
+                  discardSectionChanges={discardSectionChanges}
+                  draft={draft}
+                  expanded={expandedSections.night}
+                  hasNightBotButtonError={hasNightBotButtonError}
+                  hasNightForceCloseDurationError={hasNightForceCloseDurationError}
+                  hasPublishedRules={hasPublishedRules}
+                  isSectionDirty={isSectionDirty}
+                  nightBotButtonErrors={nightBotButtonErrors}
+                  nightCardStatus={nightCardStatus}
+                  nightForceCloseDaysError={nightForceCloseDaysError}
+                  nightForceCloseHoursError={nightForceCloseHoursError}
+                  nightHeaderSummary={nightHeaderSummary}
+                  nightTimeError={nightTimeError}
+                  nightTimezoneError={nightTimezoneError}
+                  openBotEditorKey={openBotEditorKey}
+                  openHintKey={openHintKey}
+                  renderApplyTargetHeaderAction={renderApplyTargetHeaderAction}
+                  renderInlineHint={renderInlineHint}
+                  renderSectionSaveFooter={renderSectionSaveFooter}
+                  setDraft={setDraft}
+                  setFieldValue={setFieldValue}
+                  setOpenBotEditorKey={setOpenBotEditorKey}
+                  toggleBotMessageEditor={toggleBotMessageEditor}
+                  toggleHint={toggleHint}
+                  toggleSection={toggleSection}
+                  updateDraftButtonGroup={updateDraftButtonGroup}
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry order={5}>
+                {legacyBroadcastWorkspaceRequested ? (
+                  <GlassCard
+                    className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+                    style={{ animationDelay: '315ms', order: 5 }}
+                    aria-label="Ранее созданные посты"
+                  >
+                    <div
+                      className={cn(
+                        'settings-section__head',
+                        'settings-section__head--interactive',
+                      )}
+                    >
+                      <SettingsSectionToggle
+                        title="Автопостинг"
+                        summary={mailingHeaderSummary}
+                        status={mailingCardStatus}
+                        icon="send"
+                        tone="sky"
+                        open={expandedSections.mailing}
+                        controls="settings-mailing-content"
+                        onClick={() => toggleSection('mailing')}
+                      />
+                    </div>
+
+                    <SettingsDrilldownPanel
+                      id="settings-mailing-content"
+                      open={expandedSections.mailing}
+                      title="Автопостинг"
+                      summary={mailingHeaderSummary}
+                      variant="screen"
+                      tone="sky"
+                      className="settings-drilldown__panel--campaign settings-drilldown__panel--mailing settings-drilldown__panel--broadcast-screen"
+                      onClose={() => toggleSection('mailing')}
+                      footer={
+                        activeMailingWorkspaceView === 'compose' ? mailingDrilldownFooter : null
+                      }
+                    >
+                      <div
+                        id="settings-mailing-content"
+                        className={cn(
+                          'settings-section__collapse',
+                          expandedSections.mailing && 'is-open',
+                        )}
+                      >
+                        {expandedSections.mailing ? (
+                          <div className="settings-section__collapse-inner settings-mailing">
+                            <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
+                              <div className="broadcast-studio-screen__chrome">
+                                <BroadcastWorkspaceChrome
+                                  showTabs={showMailingWorkspaceTabs && !handoffRequested}
+                                  value={activeMailingWorkspaceView}
+                                  autopostCount={orderedManagedAutopostRules.length}
+                                  historyCount={orderedManagedBroadcasts.length}
+                                  compatibilityOnly
+                                  disabled={isMailingBusy}
+                                  showReset={showMailingResetAction}
+                                  resetLabel={mailingResetActionLabel}
+                                  resetPending={clearBroadcastHandoffMutation.isPending}
+                                  onChange={setMailingWorkspaceView}
+                                  onReset={handleClearMailingComposer}
+                                />
+                              </div>
+
+                              {activeMailingWorkspaceView === 'compose' ? (
+                                <div className="broadcast-compose-flow broadcast-compose-flow--screen">
+                                  <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
+                                    <div className="broadcast-stage-card__head">
+                                      <div className="broadcast-stage-card__title-wrap">
+                                        <strong>Сообщение</strong>
+                                      </div>
+                                      <span
+                                        className={cn(
+                                          'broadcast-stage-card__status',
+                                          mailingContentReady ? 'is-ready' : 'is-pending',
+                                        )}
+                                      >
+                                        {mailingContentReady
+                                          ? 'Готов'
+                                          : mailingImagesPreparing
+                                            ? 'Фото...'
+                                            : mailingHasDirectContent
+                                              ? 'Проверка'
+                                              : 'Пусто'}
+                                      </span>
+                                    </div>
+
+                                    <div className="broadcast-stage-card__body">
+                                      <Suspense fallback={null}>
+                                        <LazyBroadcastContentComposer
+                                          text={mailingText}
+                                          maxLength={MAX_BROADCAST_TEXT_LENGTH}
+                                          images={mailingImages}
+                                          videoLabel={editingMailingHasVideo ? 'Видео' : null}
+                                          disabled={isMailingBusy}
+                                          textError={mailingTextError}
+                                          imageError={mailingImageError}
+                                          onTextChange={(nextText) => {
+                                            setMailingText(nextText);
+                                            if (mailingTextError) {
+                                              setMailingTextError('');
+                                            }
+                                          }}
+                                          onImagesChange={(nextImages) => {
+                                            applyMailingImages(nextImages);
+                                            if (nextImages.length > 0) {
+                                              setMailingVideoCleared(true);
+                                            }
+                                            setMailingImageError('');
+                                            if (mailingTextError) {
+                                              setMailingTextError('');
+                                            }
+                                          }}
+                                          onImagePreparationChange={setMailingImagesPreparing}
+                                          onClearVideo={() => {
+                                            setMailingVideoCleared(true);
+                                          }}
+                                          onError={(message) => {
+                                            setMailingImageError(message);
+                                            pushToast({
+                                              tone: 'danger',
+                                              title: 'Фото не добавлено',
+                                              description: message,
+                                            });
+                                            maxNotify('error');
+                                          }}
+                                          buttons={normalizedMailingButtons}
+                                          systemButtons={mailingSystemButtons}
+                                          buttonsStatusLabel={mailingVisibleButtonStatus}
+                                          buttonsActive={mailingHasVisibleButtons}
+                                          buttonsError={!mailingButtonDraftValid}
+                                          onOpenButtons={() => setMailingButtonsSheetOpen(true)}
+                                        />
+                                      </Suspense>
+                                    </div>
+                                  </div>
+
+                                  <div className="broadcast-stage-card broadcast-stage-card--scope">
+                                    <div className="broadcast-stage-card__head">
+                                      <div className="broadcast-stage-card__title-wrap">
+                                        <strong>Кому</strong>
+                                      </div>
+                                    </div>
+
+                                    <div className="broadcast-stage-card__body">
+                                      <Suspense fallback={null}>
+                                        <LazyBroadcastAudienceControls
+                                          targetMode={mailingTargetMode}
+                                          currentChatId={chatId ?? ''}
+                                          targetChatIds={mailingAudiencePayload.targetChatIds}
+                                          favoriteUserId={meQuery.data?.userId ?? null}
+                                          choices={mailingAudienceChoices}
+                                          loading={mailingAudienceChoicesLoading}
+                                          refreshing={chatsList.isRefreshing}
+                                          remoteError={mailingAudienceChoicesError}
+                                          validationError={mailingAudienceError || null}
+                                          disabled={isMailingBusy}
+                                          onToggleAllChats={handleMailingAllChatsToggle}
+                                          onChangeScopedMode={handleMailingScopedTargetModeChange}
+                                          onApplySelection={handleApplyMailingAudienceSelection}
+                                          onClearValidationError={() => setMailingAudienceError('')}
+                                          onRefreshChoices={handleRefreshMailingAudienceChoices}
+                                        />
+                                      </Suspense>
+                                    </div>
+                                  </div>
+
+                                  <div className="broadcast-stage-card broadcast-stage-card--planner">
+                                    <div className="broadcast-stage-card__head">
+                                      <div className="broadcast-stage-card__title-wrap">
+                                        <strong>Когда</strong>
+                                      </div>
+                                    </div>
+
+                                    <div className="broadcast-stage-card__body">
+                                      <Suspense fallback={null}>
+                                        <LazyBroadcastSchedulePlanner
+                                          resetKey={mailingPlannerResetKey}
+                                          value={mailingScheduledSlots}
+                                          occupiedSlots={mailingOccupiedSlots}
+                                          error={mailingScheduleError || mailingCycleError}
+                                          disabled={isMailingBusy}
+                                          managedBroadcasts={managedBroadcasts}
+                                          calendarSlots={mailingCalendarQuery.data?.slots ?? []}
+                                          targetAwareAvailability
+                                          sourceChatId={chatId}
+                                          managedBroadcastsLoading={
+                                            settingsScreenQuery.isLoading ||
+                                            settingsScreenQuery.isFetching ||
+                                            mailingCalendarQuery.isFetching
+                                          }
+                                          currentTargetLabel="Текущий чат"
+                                          targetContextLabel={
+                                            mailingHeaderTargetPresentation.compactLabel
+                                          }
+                                          calendarRefreshing={mailingCalendarQuery.isFetching}
+                                          excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                          excludeAutopostRuleId={
+                                            editingManagedAutopostRule?.id ?? null
+                                          }
+                                          onEditBroadcast={handleEditManagedBroadcastById}
+                                          onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                                          pendingEditBroadcastId={
+                                            openManagedBroadcastEditorMutation.isPending
+                                              ? openManagedBroadcastEditorMutation.variables
+                                              : null
+                                          }
+                                          pendingDeleteBroadcastId={
+                                            cancelManagedBroadcastMutation.isPending
+                                              ? cancelManagedBroadcastMutation.variables
+                                              : null
+                                          }
+                                          timingMode={mailingTimingMode}
+                                          cycle={mailingCycleDraft}
+                                          onTimingModeChange={(nextMode) => {
+                                            setMailingTimingMode(nextMode);
+                                            setMailingScheduleError('');
+                                            setMailingCycleError('');
+                                          }}
+                                          onCycleChange={(nextCycle) => {
+                                            setMailingCycleDraft(nextCycle);
+                                            setMailingCycleError('');
+                                          }}
+                                          onSelectionStateChange={handleMailingPlannerStateChange}
+                                          onChange={(nextValue) => {
+                                            setMailingScheduledSlots(nextValue);
+                                            if (mailingScheduleError) {
+                                              setMailingScheduleError('');
+                                            }
+                                          }}
+                                        />
+                                      </Suspense>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : activeMailingWorkspaceView === 'calendar' ? (
+                                <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
+                                  <div className="broadcast-stage-card__head">
+                                    <div className="broadcast-stage-card__title-wrap">
+                                      <strong>Календарь</strong>
+                                    </div>
+                                  </div>
+
+                                  <div className="broadcast-stage-card__body">
+                                    <Suspense fallback={null}>
+                                      <LazyBroadcastSchedulePlanner
+                                        resetKey={`calendar-${mailingPlannerResetKey}`}
+                                        value={[]}
+                                        occupiedSlots={mailingOccupiedSlots}
+                                        disabled={isMailingBusy}
+                                        managedBroadcasts={managedBroadcasts}
+                                        calendarSlots={mailingCalendarQuery.data?.slots ?? []}
+                                        sourceChatId={chatId}
+                                        managedBroadcastsLoading={
+                                          settingsScreenQuery.isLoading ||
+                                          settingsScreenQuery.isFetching ||
+                                          mailingCalendarQuery.isFetching
+                                        }
+                                        currentTargetLabel="Текущий чат"
+                                        targetContextLabel={
+                                          mailingHeaderTargetPresentation.compactLabel
+                                        }
+                                        calendarRefreshing={mailingCalendarQuery.isFetching}
+                                        excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                        excludeAutopostRuleId={
+                                          editingManagedAutopostRule?.id ?? null
+                                        }
+                                        onEditBroadcast={handleEditManagedBroadcastById}
+                                        onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                                        pendingEditBroadcastId={
+                                          openManagedBroadcastEditorMutation.isPending
+                                            ? openManagedBroadcastEditorMutation.variables
+                                            : null
+                                        }
+                                        pendingDeleteBroadcastId={
+                                          cancelManagedBroadcastMutation.isPending
+                                            ? cancelManagedBroadcastMutation.variables
+                                            : null
+                                        }
+                                        viewMode="calendar"
+                                        onSelectionStateChange={handleMailingPlannerStateChange}
+                                        onChange={(nextValue) => {
+                                          setMailingTimingMode('scheduled');
+                                          setMailingScheduledSlots(nextValue);
+                                          setMailingScheduleError('');
+                                          setMailingWorkspaceView('compose');
+                                        }}
+                                      />
+                                    </Suspense>
+                                  </div>
+                                </div>
+                              ) : activeMailingWorkspaceView === 'autoposts' ? (
+                                <div className="broadcast-stage-card broadcast-stage-card--feed">
+                                  <div className="broadcast-stage-card__head">
+                                    <div className="broadcast-stage-card__title-wrap">
+                                      <strong>Автопосты</strong>
+                                      <small>
+                                        {managedAutopostRulesQuery.isLoading
+                                          ? 'Загрузка'
+                                          : orderedManagedAutopostRules.length > 0
+                                            ? `${orderedManagedAutopostRules.length} шт.`
+                                            : 'Пусто'}
+                                      </small>
+                                    </div>
+                                  </div>
+
+                                  <div className="broadcast-stage-card__body">
+                                    <div className="managed-broadcasts-list managed-broadcasts-list--autoposts">
+                                      {orderedManagedAutopostRules.length === 0 &&
+                                      !managedAutopostRulesQuery.isLoading ? (
+                                        <div className="managed-broadcasts-list__empty">
+                                          Автопостов пока нет.
+                                        </div>
+                                      ) : null}
+
+                                      <Suspense fallback={<SkeletonCard lines={2} />}>
+                                        {orderedManagedAutopostRules.map((rule) => (
+                                          <LazyManagedAutopostRuleCard
+                                            key={rule.id}
+                                            rule={rule}
+                                            nextLabel={formatCompactBroadcastDateTime(
+                                              rule.nextSendAt,
+                                              rule.scheduleTimezone,
+                                            )}
+                                            facts={buildManagedAutopostRuleFacts(
+                                              rule,
+                                              'Текущий чат',
+                                            )}
+                                            isBusy={isMailingBusy}
+                                            onPause={() =>
+                                              updateManagedAutopostRuleMutation.mutate({
+                                                ruleId: rule.id,
+                                                status: 'PAUSED',
+                                              })
+                                            }
+                                            onDelete={() => handleDeleteManagedAutopostRule(rule)}
+                                          />
+                                        ))}
+                                      </Suspense>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="broadcast-stage-card broadcast-stage-card--feed">
+                                  <div className="broadcast-stage-card__head">
+                                    <div className="broadcast-stage-card__title-wrap">
+                                      <strong>История</strong>
+                                      <small>
+                                        {managedBroadcastsQuery.isLoading
+                                          ? 'Загрузка'
+                                          : filteredManagedBroadcasts.length > 0
+                                            ? `${filteredManagedBroadcasts.length} записей`
+                                            : 'Пусто'}
+                                      </small>
+                                    </div>
+                                  </div>
+
+                                  <div className="broadcast-stage-card__body">
+                                    <BroadcastHistoryFilterTabs
+                                      value={mailingHistoryFilter}
+                                      counts={mailingHistoryCounts}
+                                      onChange={setMailingHistoryFilter}
+                                    />
+
+                                    <div className="managed-broadcasts-list">
+                                      {filteredManagedBroadcasts.length === 0 &&
+                                      !managedBroadcastsQuery.isLoading ? (
+                                        <div className="managed-broadcasts-list__empty">
+                                          История пока пустая.
+                                        </div>
+                                      ) : null}
+
+                                      <Suspense fallback={<SkeletonCard lines={2} />}>
+                                        {filteredManagedBroadcasts.map((broadcast) => {
+                                          const cardTone =
+                                            resolveManagedBroadcastCardTone(broadcast);
+                                          const cardMetric = resolveManagedBroadcastMetric(
+                                            broadcast,
+                                            mailingNowMs,
+                                          );
+                                          const cardFacts =
+                                            buildManagedBroadcastFactChips(broadcast);
+                                          const canEditBroadcastSchedule =
+                                            broadcast.scheduleMode === 'calendar' &&
+                                            broadcast.status !== 'COMPLETED' &&
+                                            broadcast.status !== 'CANCELED';
+                                          const canCancelBroadcast =
+                                            broadcast.status !== 'COMPLETED' &&
+                                            broadcast.status !== 'CANCELED';
+                                          const isDeletingBroadcast =
+                                            cancelManagedBroadcastMutation.isPending &&
+                                            cancelManagedBroadcastMutation.variables ===
+                                              broadcast.id;
+                                          const isOpeningBroadcastEditor =
+                                            openManagedBroadcastEditorMutation.isPending &&
+                                            openManagedBroadcastEditorMutation.variables ===
+                                              broadcast.id;
+                                          const isRetryingBroadcast =
+                                            retryManagedBroadcastMutation.isPending &&
+                                            retryManagedBroadcastMutation.variables ===
+                                              broadcast.id;
+                                          const cardBadge = isOpeningBroadcastEditor
+                                            ? 'Открываем'
+                                            : resolveManagedBroadcastCardBadge(broadcast);
+
+                                          return (
+                                            <LazyManagedBroadcastHistoryCard
+                                              key={broadcast.id}
+                                              broadcast={broadcast}
+                                              tone={cardTone}
+                                              badge={cardBadge}
+                                              title={resolveManagedBroadcastCardTitle(broadcast)}
+                                              metric={cardMetric}
+                                              facts={cardFacts}
+                                              canEdit={canEditBroadcastSchedule}
+                                              canCancel={canCancelBroadcast}
+                                              isBusy={isMailingBusy}
+                                              isDeleting={isDeletingBroadcast}
+                                              isRetrying={isRetryingBroadcast}
+                                              onEdit={() => handleEditManagedBroadcast(broadcast)}
+                                              onRetry={() =>
+                                                retryManagedBroadcastMutation.mutate(broadcast.id)
+                                              }
+                                              onDelete={() =>
+                                                handleDeleteManagedBroadcast(broadcast)
+                                              }
+                                            />
+                                          );
+                                        })}
+                                      </Suspense>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </SettingsDrilldownPanel>
+                  </GlassCard>
+                ) : null}
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.order}
+              >
+                <GlassCard
+                  className="settings-section settings-home-entry settings-home-entry--priority settings-home-entry--wide stagger-in"
+                  style={{
+                    animationDelay: '360ms',
+                    order: SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.order,
+                  }}
+                  aria-label="Подписка на чат или канал"
+                >
+                  <div
+                    className={cn('settings-section__head', 'settings-section__head--interactive')}
+                  >
+                    <SettingsSectionToggle
+                      title={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.title}
+                      enabled={draft.requiredSubscriptionEnabled && requiredSubscriptionIsActive}
+                      summary={requiredSubscriptionHeaderSummary}
+                      status={requiredSubscriptionCardStatus}
+                      icon={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.icon}
+                      tone={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.tone}
+                      open={expandedSections.requiredSubscription}
+                      controls="settings-required-subscription-content"
+                      onClick={() => toggleSection('requiredSubscription')}
+                    />
+                  </div>
+
+                  <SettingsDrilldownPanel
+                    id="settings-required-subscription-content"
+                    icon={
+                      <SettingsSectionIcon
+                        name={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.icon}
+                      />
+                    }
+                    open={expandedSections.requiredSubscription}
+                    title={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.title}
+                    summary={requiredSubscriptionHeaderSummary}
+                    tone={SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.tone}
+                    className={
+                      SHARED_CHAT_SECTION_PRESENTATIONS.requiredSubscription.panelClassName
+                    }
+                    onClose={() => toggleSection('requiredSubscription')}
+                    headerAction={
+                      <>
+                        <RequiredSubscriptionHelp />
+                        {renderApplyTargetHeaderAction('requiredSubscription')}
+                      </>
+                    }
+                    confirmCloseWhen={isSectionDirty('requiredSubscription')}
+                    onDiscardChanges={() => discardSectionChanges('requiredSubscription')}
+                    footer={renderSectionSaveFooter('requiredSubscription')}
+                  >
+                    {expandedSections.requiredSubscription
+                      ? renderSharedChatSection('requiredSubscription')
+                      : null}
+                  </SettingsDrilldownPanel>
+                </GlassCard>
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'commands').order}
+              >
+                <Suspense fallback={null}>
+                  <LazySettingsAdminCommandsSection
+                    sharedContent={renderSharedChatSection('commands')}
+                    draft={draft}
+                    expanded={expandedSections.commands}
+                    fieldErrors={fieldErrors}
+                    headerAction={renderApplyTargetHeaderAction('commands')}
+                    footer={renderSectionSaveFooter('commands')}
+                    hasChanges={isSectionDirty('commands')}
+                    onDiscardChanges={() => discardSectionChanges('commands')}
+                    onToggleSection={() => toggleSection('commands')}
+                    onFieldChange={(key, value) => setFieldValue(key, value)}
+                  />
+                </Suspense>
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'storefront').order}
+              >
+                <SettingsStorefrontSection
+                  sharedContent={renderSharedChatSection('storefront')}
+                  draft={draft}
+                  api={api}
+                  chatId={chatId}
+                  expanded={expandedSections.storefront}
+                  summary={storefrontHeaderSummary}
+                  status={storefrontCardStatus}
+                  headerAction={renderApplyTargetHeaderAction('storefront')}
+                  footer={renderSectionSaveFooter('storefront')}
+                  hasChanges={isSectionDirty('storefront')}
+                  onDiscardChanges={() => discardSectionChanges('storefront')}
+                  onToggleSection={() => toggleSection('storefront')}
+                  onFieldChange={(enabled) => setFieldValue('karavanStorefrontEnabled', enabled)}
+                  onTextChange={setFieldValue}
+                  onAdminsOnlyChange={(enabled) =>
+                    setFieldValue('karavanStorefrontAdminsOnly', enabled)
+                  }
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry order={32}>
+                <MarketplaceProfileCard
+                  api={api}
+                  entityId={chatId ?? ''}
+                  entityType="chat"
+                  profile="moderation"
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry order={32}>
+                <SettingsAdvertisingSection
+                  key={`advertising:${meQuery.data?.userId ?? ''}:${chatId}`}
+                  api={api}
+                  chatId={chatId ?? ''}
+                  userId={meQuery.data?.userId ?? null}
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry
+                order={getNetworkSettingsSectionPresentation('chat', 'extra').order}
+              >
+                <SettingsExtraSection
+                  sharedContent={renderSharedChatSection('extra')}
+                  draft={draft}
+                  expanded={expandedSections.extra}
+                  summary={extraHeaderSummary}
+                  status={extraCardStatus}
+                  openHintKey={openHintKey}
+                  fieldErrors={fieldErrors}
+                  headerAction={renderApplyTargetHeaderAction('extra')}
+                  footer={renderSectionSaveFooter('extra')}
+                  hasChanges={isSectionDirty('extra')}
+                  onDiscardChanges={() => discardSectionChanges('extra')}
+                  onToggleSection={() => toggleSection('extra')}
+                  onToggleHint={toggleHint}
+                  onFieldChange={(key, value) => setFieldValue(key, value)}
+                  onAdjustDeleteBotMessagesDelay={adjustDeleteBotMessagesDelay}
+                />
+              </SettingsOverviewEntry>
+
+              <SettingsOverviewEntry order={33}>
+                <GlassCard
+                  className="settings-section settings-home-entry stagger-in"
+                  style={{ order: 33 }}
+                >
+                  <div
+                    className={cn('settings-section__head', 'settings-section__head--interactive')}
+                  >
+                    <SettingsSectionToggle
+                      title="Стиль речи"
+                      summary="Тон ответов и сообщений бота"
+                      status={BOT_SPEECH_STYLE_METADATA[activeSpeechStyle].label}
+                      icon="comments"
+                      tone="mint"
+                      open={speechStylePanelOpen}
+                      controls="settings-bot-speech-style"
+                      onClick={() => {
+                        setPendingSpeechStyle(activeSpeechStyle);
+                        setSpeechStylePanelOpen(true);
+                      }}
+                    />
+                  </div>
+                </GlassCard>
+              </SettingsOverviewEntry>
+            </SettingsOverviewGroups>
           </div>
         </section>
       ) : null}

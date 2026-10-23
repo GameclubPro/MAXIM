@@ -62,21 +62,28 @@ export function useSettingsOverviewFilter({
       }
 
       if (groupSelector) {
+        const readGroupOrder = (group: HTMLElement) =>
+          Number.parseInt(
+            group.style.order || group.style.getPropertyValue('--settings-group-order') || '0',
+            10,
+          ) || 0;
         const groups = Array.from(container.querySelectorAll<HTMLElement>(groupSelector)).sort(
-          (left, right) =>
-            (Number.parseInt(left.style.order || '0', 10) || 0) -
-            (Number.parseInt(right.style.order || '0', 10) || 0),
+          (left, right) => readGroupOrder(left) - readGroupOrder(right),
         );
         for (const [index, group] of groups.entries()) {
-          const groupOrder = Number.parseInt(group.style.order || '0', 10) || 0;
+          const groupOrder = readGroupOrder(group);
           const nextGroup = groups[index + 1];
-          const nextGroupOrder = nextGroup
-            ? Number.parseInt(nextGroup.style.order || '0', 10) || Number.POSITIVE_INFINITY
-            : Number.POSITIVE_INFINITY;
+          const nextGroupOrder = nextGroup ? readGroupOrder(nextGroup) : Number.POSITIVE_INFINITY;
           group.hidden = !matchedOrders.some(
             (entryOrder) => entryOrder >= groupOrder && entryOrder < nextGroupOrder,
           );
         }
+      }
+
+      for (const group of container.querySelectorAll<HTMLElement>('.settings-overview-group')) {
+        group.hidden = !Array.from(group.querySelectorAll<HTMLElement>(entrySelector)).some(
+          (entry) => !entry.hidden,
+        );
       }
 
       setMatchCount((current) => (current === nextMatchCount ? current : nextMatchCount));

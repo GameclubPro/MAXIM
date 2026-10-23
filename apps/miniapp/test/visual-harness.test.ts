@@ -193,8 +193,10 @@ test('moderation explanations and pending actions have dedicated interaction sce
     'utf8',
   );
   assert.match(source, /await assertModerationTouchTargets\(page, scenario\)/u);
-  assert.match(source, /querySelectorAll\('\.settings-section__summary'\)/u);
-  assert.match(source, /bounds\.height > lineHeight \* 3 \+ 2/u);
+  assert.match(source, /await assertSettingsOverviewNavigation\(page, scenario\)/u);
+  assert.match(source, /\[data-settings-navigation-entry="true"\]/u);
+  assert.match(source, /text\(entry\.textContent\) !== expected/u);
+  assert.match(source, /action\.hasAttribute\('aria-describedby'\)/u);
   assert.ok(source.includes('body[data-miniapp-profile="moderation"] .action-confirm-sheet'));
   assert.match(source, /await scenario\.afterShot\(page\)/u);
   assert.match(source, /window\.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__/u);

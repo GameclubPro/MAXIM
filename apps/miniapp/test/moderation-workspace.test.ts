@@ -150,7 +150,7 @@ test('participant actions retain the real bottom safe area inside their scroll c
   );
 });
 
-test('settings summaries remain visible and help fits the measured visible area', () => {
+test('legacy desktop summary geometry and measured help area remain available', () => {
   const declarationsFor = (selector: string) => {
     const values = new Map<string, string>();
     root.walkRules((rule) => {

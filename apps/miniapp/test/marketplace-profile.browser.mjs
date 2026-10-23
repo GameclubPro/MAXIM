@@ -14,8 +14,12 @@ import {
   installNativeVisualModeInitScript,
 } from '../../../scripts/miniapp-native-visual-mode.mjs';
 
-const baseUrl = await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/');
-const server = await ensureMiniappDevServer(baseUrl);
+const baseUrl =
+  process.env.MINIAPP_MARKETPLACE_TEST_BASE_URL ??
+  (await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/'));
+const server = await ensureMiniappDevServer(baseUrl, {
+  reuseServer: process.env.MINIAPP_MARKETPLACE_TEST_REUSE_SERVER === '1',
+});
 const output = await mkdtemp(path.join(tmpdir(), 'maxim-marketplace-profile-'));
 let browser;
 async function assertInternalExchangeHidden(workspace) {
@@ -68,7 +72,17 @@ try {
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=delayed`,
         );
         const entry = page.getByRole('button', { name: 'Профиль на бирже', exact: true });
+        await entry.waitFor();
+        assert.equal(await entry.getAttribute('data-settings-navigation-entry'), 'true');
+        assert.equal((await entry.textContent()).trim(), 'Профиль на бирже');
+        assert.equal(
+          await entry
+            .locator('small, .settings-section__summary, .settings-section__state')
+            .count(),
+          0,
+        );
         await entry.click();
+        assert.equal(await entry.getAttribute('aria-expanded'), 'true');
         const workspace = page.locator('.marketplace-profile');
         await workspace.getByLabel('Название', { exact: true }).waitFor();
         await assertInternalExchangeHidden(workspace);
@@ -207,7 +221,8 @@ try {
         await save.click();
         await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).waitFor();
         await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
-        assert.match(await entry.textContent(), /Профиль скрыт/u);
+        assert.equal((await entry.textContent()).trim(), 'Профиль на бирже');
+        assert.equal(await entry.getAttribute('aria-expanded'), 'false');
         await page.goto(
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=0`,
         );

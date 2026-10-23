@@ -15,9 +15,13 @@ import {
   installNativeVisualModeInitScript,
 } from '../../../scripts/miniapp-native-visual-mode.mjs';
 
-const base = await allocateMiniappBaseUrl('http://127.0.0.1:3014/app/');
+const base =
+  process.env.MINIAPP_PUBLISHER_TEST_BASE_URL ??
+  (await allocateMiniappBaseUrl('http://127.0.0.1:3014/app/'));
 const output = await mkdtemp(path.join(tmpdir(), 'maxim-publisher-comments-'));
-const server = await ensureMiniappDevServer(base);
+const server = await ensureMiniappDevServer(base, {
+  reuseServer: process.env.MINIAPP_PUBLISHER_TEST_REUSE_SERVER === '1',
+});
 const browser = await chromium.launch();
 async function select(locator) {
   if (!(await locator.isChecked())) await locator.click();
@@ -31,14 +35,16 @@ async function select(locator) {
 
 async function assertModuleAlignment(page, label) {
   const metrics = await page.locator('.publisher-entity-modules-page__modules').evaluate((list) => {
-    const reference = list.querySelector('.publisher-entity-module:not(.is-settings)');
+    const reference = list.querySelector(
+      '.publisher-module-entry, .publisher-entity-module:not(.is-settings)',
+    );
     const comments = list.querySelector('.publisher-comments-toggle');
     const icon = (node) =>
       node.querySelector('.publisher-entity-module__icon').getBoundingClientRect();
     const copy = (node) =>
-      node.querySelector('.publisher-entity-module__copy').getBoundingClientRect();
+      node.querySelector('.publisher-entity-module__copy, :scope > strong').getBoundingClientRect();
     const referenceAction = reference
-      .querySelector('.publisher-entity-module__action')
+      .querySelector('.publisher-entity-module__action, :scope > svg')
       .getBoundingClientRect();
     const commentsAction = comments.querySelector(':scope > svg').getBoundingClientRect();
     const bounds = comments.getBoundingClientRect();
@@ -68,7 +74,7 @@ async function assertModuleAlignment(page, label) {
 async function checkActualPublisherModuleLayout() {
   const layoutBrowser = await webkit.launch(captureBrowserLaunchOptions('webkit', base));
   try {
-    for (const width of [393, 280])
+    for (const width of [393, 320, 280])
       for (const colorScheme of ['dark', 'light']) {
         const context = await layoutBrowser.newContext({
           ...devices['iPhone SE'],
@@ -144,7 +150,7 @@ async function checkActualPublisherModuleLayout() {
 }
 try {
   console.log(
-    `Publisher comments checks: owned server PID ${server.pid}, base ${base}, screenshots ${output}`,
+    `Publisher comments checks: server ${server?.pid ?? 'reused'}, base ${base}, screenshots ${output}`,
   );
   await checkActualPublisherModuleLayout();
   for (const profile of [
@@ -280,7 +286,83 @@ try {
       assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
       await toggle.click();
       await page.getByRole('button', { name: 'О комментариях канала', exact: true }).click();
-      await page.getByRole('dialog', { name: 'Комментарии канала', exact: true }).waitFor();
+      const channelInfo = page.getByRole('dialog', { name: 'Комментарии канала', exact: true });
+      await channelInfo.waitFor();
+      await page.keyboard.press('Escape');
+      await channelInfo.waitFor({ state: 'hidden' });
+      await page.keyboard.press('Escape');
+      await workspace.waitFor({ state: 'hidden' });
+
+      if (profile.device.viewport.width <= 600) {
+        const suggestionsEntry = page.getByRole('button', { name: 'Предложения', exact: true });
+        assert.equal((await suggestionsEntry.textContent()).trim(), 'Предложения');
+        assert.equal(
+          await page.locator('.publisher-entity-modules-page__modules input').count(),
+          0,
+          'mobile module navigation must not contain switches',
+        );
+        await suggestionsEntry.click();
+        const suggestions = page.getByRole('dialog', { name: 'Предложения', exact: true });
+        await suggestions.waitFor();
+        const controlledId = await suggestionsEntry.getAttribute('aria-controls');
+        assert.ok(controlledId);
+        assert.equal(await suggestions.locator(`[id="${controlledId}"]`).count(), 1);
+        const master = suggestions.locator('.settings-drilldown__header input[type="checkbox"]');
+        const subscription = suggestions.getByRole('checkbox', {
+          name: 'Требовать подписку',
+          exact: true,
+        });
+        const deletion = suggestions.getByRole('checkbox', {
+          name: 'Удалять посты после отписки',
+          exact: true,
+        });
+        assert.equal(await subscription.isDisabled(), !(await master.isChecked()));
+        await select(master);
+        await select(subscription);
+        await select(deletion);
+        const changes = await page.evaluate(() => window.publisherCommentsTest.changes);
+        for (const key of [
+          'channelSuggestionsEnabled',
+          'channelSuggestionsRequireSubscription',
+          'channelSuggestionsDeleteOnUnsubscribe',
+        ]) {
+          assert.ok(
+            changes.some((change) => change[key] === true),
+            `${key} must reach the API`,
+          );
+        }
+        assert.ok(changes.every((change) => Number.isInteger(change.expectedRevision)));
+        await page.screenshot({
+          path: path.join(output, `${profile.name}-${colorScheme}-suggestions.png`),
+        });
+        await page.evaluate(() => window.publisherCommentsTest.failNext());
+        await master.click();
+        await page.getByText('Не удалось сохранить', { exact: true }).waitFor();
+        await page.waitForFunction(() => {
+          const input = document.querySelector(
+            '.publisher-suggestions-workspace .settings-drilldown__header input',
+          );
+          return input?.checked && !input.disabled;
+        });
+        await page.keyboard.press('Escape');
+        await suggestions.waitFor({ state: 'hidden' });
+        assert.equal(
+          await suggestionsEntry.evaluate((node) => node === document.activeElement),
+          true,
+        );
+        await suggestionsEntry.click();
+        await suggestions.waitFor();
+        assert.equal(await master.isChecked(), true);
+        assert.equal(await subscription.isChecked(), true);
+        assert.equal(await deletion.isChecked(), true);
+      } else {
+        assert.equal(
+          await page.getByRole('button', { name: 'Предложения', exact: true }).count(),
+          0,
+          'desktop keeps its direct module switch',
+        );
+        assert.equal(await page.getByRole('checkbox', { name: /предложения$/u }).isVisible(), true);
+      }
       assert.deepEqual(errors, []);
       await context.close();
     }

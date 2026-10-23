@@ -1,5 +1,5 @@
 import { Search } from 'iconoir-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useSettingsOverviewFilter } from '../../lib/settings-overview-filter';
 import { XmarkGlyph } from './compact-icons';
 import './settings-overview-search.css';
@@ -16,6 +16,11 @@ export function SettingsOverviewSearch({
   groupSelector,
 }: SettingsOverviewSearchProps) {
   const [value, setValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const clearSearch = () => {
+    setValue('');
+    inputRef.current?.focus();
+  };
   const matchCount = useSettingsOverviewFilter({
     query: value,
     containerId,
@@ -29,6 +34,7 @@ export function SettingsOverviewSearch({
       <label className="settings-overview-search">
         <Search aria-hidden focusable="false" />
         <input
+          ref={inputRef}
           type="search"
           value={value}
           onChange={(event) => setValue(event.target.value)}
@@ -37,7 +43,7 @@ export function SettingsOverviewSearch({
           autoComplete="off"
         />
         {hasQuery ? (
-          <button type="button" onClick={() => setValue('')} aria-label="Очистить поиск">
+          <button type="button" onClick={clearSearch} aria-label="Очистить поиск">
             <XmarkGlyph aria-hidden />
           </button>
         ) : null}
@@ -46,7 +52,7 @@ export function SettingsOverviewSearch({
       {hasQuery && matchCount === 0 ? (
         <div className="settings-overview-search__empty" role="status">
           <span>Ничего не найдено</span>
-          <button type="button" onClick={() => setValue('')}>
+          <button type="button" onClick={clearSearch}>
             Сбросить поиск
           </button>
         </div>

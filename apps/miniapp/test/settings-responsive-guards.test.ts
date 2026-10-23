@@ -37,7 +37,7 @@ test('required subscription action titles wrap instead of clipping on narrow scr
   );
 });
 
-test('settings overviews use compact phone rows and expand only on wider screens', () => {
+test('legacy desktop settings geometry remains available outside the smartphone overview', () => {
   assert.match(
     settingsTileGridCss,
     /\.channel-settings-screen \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/u,
