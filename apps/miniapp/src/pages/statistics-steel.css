@@ -482,6 +482,8 @@
     --stats-left-surface: color-mix(in srgb, var(--steel-rose) 10%, var(--steel-panel));
     --stats-left-border: color-mix(in srgb, var(--steel-rose) 26%, var(--steel-line));
     --events-sticky-top: calc(var(--managed-entity-workspace-header-bottom, 88px) + 72px);
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
     gap: 6px;
     padding-bottom: 24px;
     font-variant-numeric: tabular-nums;
@@ -1308,6 +1310,34 @@
       .participants-roster__violations {
       width: auto;
       min-width: 28px;
+    }
+  }
+  @media (max-width: 319px) {
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace][data-statistics-section='moderation']
+      .events-dashboard__body--moderation {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace][data-statistics-section='moderation']
+      .events-dashboard__hero {
+      min-height: 0;
+    }
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace][data-statistics-section='moderation']
+      .events-dashboard__stack {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding-left: 0;
+      border-left: 0;
+      border-top: 1px solid var(--steel-line);
+    }
+    body[data-miniapp-profile='moderation']
+      .events-screen[data-managed-entity-workspace][data-statistics-section='moderation']
+      .events-dashboard__metric
+      + .events-dashboard__metric {
+      border-top: 0;
     }
   }
   @media (min-width: 760px) {
