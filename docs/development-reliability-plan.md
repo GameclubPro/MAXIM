@@ -106,6 +106,39 @@ checks. Read-only monitoring may continue independently. Finish the stage before
 runtime workstream unless a dependency or production incident requires it. Reuse a suitable clean
 checkout; never change a checkout while its validation, deployment or monitor wrapper is running.
 
+### Worktree Ownership And Completion
+
+Before editing, record the checkout's initial changes with
+`node scripts/agent/task-worktree.mjs start /absolute/private/task-state.json`. The parent directory
+must exist outside the checkout and Git metadata. Use a new path for each editing task/checkout;
+the command refuses to overwrite an earlier baseline. It records checkout/branch identity, the
+starting revision, changed paths, Git object identities and content hashes, never source contents.
+Keep this baseline with the private task record through resumptions, not in Git. Record the actual
+implementation checkout; a dirty or stale source folder is not an implementation baseline for a
+different worktree. Use a suitable clean isolated checkout when inherited changes overlap the task
+or another writer is active. Read-only audits need no editing baseline.
+
+After submitting owned changes and before reporting completion, run
+`node scripts/agent/task-worktree.mjs check /absolute/private/task-state.json` from that same
+checkout. The check permits byte-identical inherited staged, unstaged and untracked changes, and
+new completed commits. It rejects new unfinished files (including Markdown), changes to inherited
+content or staging, renamed/deleted inherited files, incorporation of inherited work into a commit,
+another checkout or branch, and rewinding/replacing the starting history. It also checks executable
+bits and symbolic links. Unsupported non-file entries fail explicitly. The check neither stages
+nor repairs anything.
+
+Do not label a file "someone else's" just because it remains dirty. Establish what was present at
+the start, what this task changed and what remains unresolved. Missing initial evidence cannot be
+reconstructed from a final `git status`; report that gap. Do not reset, stash, delete or bulk commit
+unrelated work, or replace the baseline to make the check pass. New concurrent changes also need
+reconciliation; their appearance alone does not establish ownership. If the user explicitly asks
+for uncommitted edits, report the unfinished paths and requested handoff instead of claiming this
+completion gate passed.
+
+A passed ownership check proves preservation and reconciliation of the observed worktree only.
+It does not establish authorship, test coverage, push/merge, exact-SHA CI, deployment or production
+acceptance. Report those gates separately. A commit helper's successful push does not close them.
+
 ### Incident Delivery
 
 An active user-facing incident takes priority over optional refactoring. Record one next recovery
