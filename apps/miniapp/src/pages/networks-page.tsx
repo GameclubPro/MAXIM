@@ -1,4 +1,5 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router';
 import type { ManagedEntityNetworkCard, ManagedEntityType } from '@maxim/contracts';
 import type { ApiTransport } from '../lib/api/transport';
@@ -13,7 +14,10 @@ import {
   createManagedEntityWorkspaceState,
   buildManagedEntityStatisticsRoute,
 } from '../lib/managed-entity-workspace';
-import { useNetworkStatistics } from '../features/networks/network-statistics';
+import {
+  networkStatisticsQueryKey,
+  useNetworkStatistics,
+} from '../features/networks/network-statistics';
 import { useNetworkEntries } from '../features/networks/network-community-list';
 import {
   buildNetworkRoute,
@@ -498,7 +502,9 @@ function NetworkDetail({
                   entityType={item.entityType}
                   avatarUrl={item.avatarUrl}
                 />
-                <span className="network-community-row__text">{item.title}</span>
+                <span className="network-community-row__text">
+                  <strong>{item.title}</strong>
+                </span>
                 <AppIcon icon="NavArrowRight" />
               </button>
             ))}
@@ -564,6 +570,7 @@ function NetworkDetail({
 export function NetworksPage({ api, userId }: { api: ApiTransport; userId: string }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { snapshot } = useHomeEntityFavorites();
   useEffect(() => {
     document.body.classList.add('networks-page-open');
@@ -580,6 +587,11 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
   );
   const catalogue = useHomeEntityNetworkCatalogue(state.entityType);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [refreshes, setRefreshes] = useState<Record<ManagedEntityType, boolean>>({
+    chat: false,
+    channel: false,
+  });
+  const refreshing = refreshes[state.entityType];
   const onRoute = (next: NetworkRouteState) => navigate(buildNetworkRoute(next));
   const selectedCard = catalogue.cards.find((card) => card.favoriteType === state.favoriteType);
   useNativeBackHandler(
@@ -591,6 +603,29 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
   );
   const populated = catalogue.cards.filter((card) => card.entityCount > 0);
   const emptyCards = catalogue.cards.filter((card) => card.entityCount === 0);
+  const refreshCatalogue = async () => {
+    const entityType = state.entityType;
+    if (refreshes[entityType]) return;
+    setRefreshes((current) => ({ ...current, [entityType]: true }));
+    try {
+      await catalogue.refresh();
+      for (const card of catalogue.cards) {
+        void queryClient.invalidateQueries({
+          queryKey: networkStatisticsQueryKey({
+            api,
+            scopeKey: snapshot.actor.scope,
+            entityType,
+            favoriteType: card.favoriteType,
+            range: state.range,
+            compositionVersion: card.compositionVersion,
+          }),
+          exact: true,
+        });
+      }
+    } finally {
+      setRefreshes((current) => ({ ...current, [entityType]: false }));
+    }
+  };
   const openSettings = async (
     card: ManagedEntityNetworkCard,
     returnState: NetworkRouteState,
@@ -638,34 +673,65 @@ export function NetworksPage({ api, userId }: { api: ApiTransport; userId: strin
         />
       ) : (
         <header className="networks-heading">
-          <h1>Сетки</h1>
-          <span className="networks-heading__icon">
+          <span className="catalogue-heading-mark" aria-hidden />
+          <div className="networks-heading__brand">
+            <h1>Сетки</h1>
+            {catalogue.cards.length > 0 ? (
+              <span
+                className="networks-heading__count"
+                aria-label={`Сеток с сообществами: ${populated.length}`}
+              >
+                {populated.length}
+              </span>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="networks-heading__refresh"
+            aria-label="Обновить сетки"
+            aria-busy={refreshing}
+            disabled={refreshing || catalogue.status === 'loading'}
+            onClick={() => void refreshCatalogue().catch(() => undefined)}
+          >
+            {refreshing ? <Spinner /> : <AppIcon icon="RefreshDouble" />}
+          </button>
+          <span className="networks-heading__icon" aria-hidden>
             <AppIcon icon="Community" />
           </span>
         </header>
       )}
       {!selectedCard ? (
         <div className="networks-controls">
-          <SegmentedControl
-            value={state.entityType}
-            options={[
-              { value: 'chat', label: 'Чаты' },
-              { value: 'channel', label: 'Каналы' },
-            ]}
-            onChange={(entityType) =>
-              onRoute({ ...state, entityType, favoriteType: null, tab: 'overview' })
-            }
-            ariaLabel="Тип сообществ"
-          />
-          <SegmentedControl
-            value={state.range}
-            options={[
-              { value: '7d', label: '7 дней' },
-              { value: '30d', label: '30 дней' },
-            ]}
-            onChange={(range) => onRoute({ ...state, range })}
-            ariaLabel="Период статистики"
-          />
+          <div className="networks-control">
+            <span className="networks-caption" aria-hidden>
+              Сообщества
+            </span>
+            <SegmentedControl
+              value={state.entityType}
+              options={[
+                { value: 'chat', label: 'Чаты' },
+                { value: 'channel', label: 'Каналы' },
+              ]}
+              onChange={(entityType) =>
+                onRoute({ ...state, entityType, favoriteType: null, tab: 'overview' })
+              }
+              ariaLabel="Тип сообществ"
+            />
+          </div>
+          <div className="networks-control">
+            <span className="networks-caption" aria-hidden>
+              Период статистики
+            </span>
+            <SegmentedControl
+              value={state.range}
+              options={[
+                { value: '7d', label: '7 дней' },
+                { value: '30d', label: '30 дней' },
+              ]}
+              onChange={(range) => onRoute({ ...state, range })}
+              ariaLabel="Период статистики"
+            />
+          </div>
         </div>
       ) : null}
       {settingsError ? (

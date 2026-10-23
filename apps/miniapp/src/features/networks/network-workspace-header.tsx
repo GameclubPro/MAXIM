@@ -120,7 +120,9 @@ function NetworkWorkspaceIdentity({
     onPick(type, category);
   };
   return (
-    <div className="network-workspace-identity">
+    <div
+      className={`network-workspace-identity${rename ? ' network-workspace-identity--renaming' : ''}`}
+    >
       <CompactStickyHeader
         backTo={`/networks?type=${entityType}`}
         backLabel={backLabel}

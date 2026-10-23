@@ -1,4 +1,28 @@
 @layer workspace {
+  body[data-miniapp-profile='moderation'] .catalogue-heading-mark {
+    display: inline-flex;
+    align-items: flex-end;
+    flex-shrink: 0;
+    gap: 3px;
+    width: 12px;
+    height: 22px;
+    transform: skew(-13deg);
+  }
+  body[data-miniapp-profile='moderation'] .catalogue-heading-mark::before,
+  body[data-miniapp-profile='moderation'] .catalogue-heading-mark::after {
+    content: '';
+    display: block;
+    flex-shrink: 0;
+    width: 4px;
+    height: 22px;
+    border-radius: 2px;
+    background: var(--steel-blue);
+  }
+  body[data-miniapp-profile='moderation'] .catalogue-heading-mark::after {
+    height: 14px;
+    background: var(--steel-red);
+  }
+
   body[data-miniapp-profile='moderation']:is(
       .chats-home-page-open,
       .networks-page-open,
@@ -212,5 +236,16 @@
   body[data-miniapp-profile='moderation'] [data-network-category='service'] {
     --network-category: var(--steel-service-ink);
     --network-category-surface: var(--steel-service-soft);
+  }
+
+  @media (max-width: 380px) {
+    body[data-miniapp-profile='moderation']:is(
+        .chats-home-page-open,
+        .networks-page-open,
+        .network-settings-page-open
+      )
+      .bottom-nav {
+      width: min(calc(100% - 22px), 736px);
+    }
   }
 }

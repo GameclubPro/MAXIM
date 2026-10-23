@@ -1644,7 +1644,7 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
         elevated
       >
         <div className="chats-command__identity">
-          <span className="chats-command__mark" aria-hidden />
+          <span className="chats-command__mark catalogue-heading-mark" aria-hidden />
           <div className="chats-command__brand">
             <h1>{tabLabel}</h1>
             {!isLoading && activeEntities ? (

@@ -13,6 +13,9 @@
     min-height: 0;
     margin: 0;
   }
+  body[data-miniapp-profile='moderation'] .network-workspace-identity--renaming {
+    position: relative;
+  }
   body[data-miniapp-profile='moderation'] .network-workspace-heading .compact-page-header__bar {
     padding-inline: 0;
   }
@@ -122,6 +125,7 @@
     padding: 16px;
     border-radius: 18px;
     background: var(--major-surface);
+    border: 1px solid var(--major-border);
   }
   body[data-miniapp-profile='moderation'] .network-rename p {
     margin: 0;
@@ -132,6 +136,11 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .network-rename > div > button {
+    flex: 1 1 8rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   body[data-miniapp-profile='moderation'] .network-workspace-tabs {
     display: flex;
