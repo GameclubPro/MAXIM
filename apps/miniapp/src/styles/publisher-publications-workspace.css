@@ -1,0 +1,397 @@
+@layer workspace {
+  body[data-miniapp-profile='publisher'] {
+    --publisher-page: var(--color-page);
+    --publisher-surface: var(--color-surface);
+    --publisher-raised: var(--color-surface-raised);
+    --publisher-muted: var(--color-surface-muted);
+    --publisher-tint: var(--color-surface-tint);
+    --publisher-ink: var(--color-ink);
+    --publisher-secondary: var(--color-ink-muted);
+    --publisher-subtle: var(--color-ink-subtle);
+    --publisher-border: var(--color-border);
+    --publisher-border-strong: var(--color-border-strong);
+    --publisher-accent: var(--color-accent);
+    --publisher-accent-soft: var(--color-accent-soft);
+    --publisher-on-accent: var(--publication-ui-on-accent);
+  }
+
+  body[data-miniapp-profile='publisher']
+    :is(.publication-draft-resume, .publication-details-sheet__message) {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-draft-resume small {
+    color: var(--color-ink-muted);
+  }
+  body[data-miniapp-profile='publisher'] .publication-draft-resume > span:last-child {
+    color: var(--color-accent);
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-recurrence__interval-notice {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--color-ink-muted);
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-recurrence__interval-notice strong {
+    font-weight: 550;
+  }
+
+  body[data-miniapp-profile='publisher'] .publications-feed {
+    gap: 10px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-feed-card,
+  body[data-miniapp-profile='publisher'] .publication-feed-card:last-child {
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: var(--color-surface);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-feed-card__status {
+    font-size: 0.75rem;
+    font-weight: 650;
+    text-transform: none;
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-feed-card__schedule {
+    font-size: 0.75rem;
+    font-weight: 550;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-feed-card__title {
+    font-size: 0.9375rem;
+    font-weight: 750;
+    line-height: 1.35;
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-feed-card__meta {
+    font-size: 0.75rem;
+    font-weight: 550;
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-publisher-status {
+    min-height: 44px;
+    grid-template-columns: 20px minmax(0, 1fr) 44px;
+    gap: 8px;
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-publisher-status__mark {
+    width: 20px;
+    height: 20px;
+  }
+  body[data-miniapp-profile='publisher'] .publication-publisher-status__copy {
+    gap: 3px;
+  }
+  body[data-miniapp-profile='publisher'] .publication-publisher-status__copy strong {
+    font-size: 0.75rem;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='publisher'] .publication-publisher-status__copy small {
+    font-size: 0.75rem;
+  }
+
+  body[data-miniapp-profile='publisher'] .publication-recurrence__date.date-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  body[data-miniapp-profile='publisher'] .publication-once-fields .date-field,
+  body[data-miniapp-profile='publisher'] .publication-recurrence__date.date-field {
+    min-width: 0;
+  }
+  body[data-miniapp-profile='publisher'] .publication-once-fields .date-field input,
+  body[data-miniapp-profile='publisher'] .publication-recurrence__date.date-field input {
+    width: 100%;
+  }
+
+  @container publik-header (max-width: 340px) {
+    body[data-miniapp-profile='publisher'] .publications-header > .publications-primary {
+      width: auto;
+      flex: 0 0 auto;
+      padding: 10px;
+    }
+    body[data-miniapp-profile='publisher'] .publications-header > .publications-primary span {
+      display: inline;
+    }
+  }
+
+  @media (max-width: 767px) {
+    body[data-miniapp-profile='publisher'] .bottom-nav {
+      border-radius: 22px;
+      padding: 5px;
+      box-shadow: 0 6px 24px var(--publisher-shadow-ink);
+    }
+
+    body[data-miniapp-profile='publisher'] .bottom-nav__item {
+      border-radius: 17px;
+    }
+
+    body[data-miniapp-profile='publisher'] .bottom-nav__item.is-active {
+      background: var(--color-accent-soft);
+    }
+
+    body[data-miniapp-profile='publisher'] .bottom-nav__item.is-active::before {
+      display: none;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publisher-entity-modules-page__identity strong,
+        .publisher-auto-replies-page__identity strong,
+        .publisher-auto-reply-editor__header > span strong,
+        .publication-details-sheet__header strong
+      ) {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      font-size: 1rem;
+      line-height: 1.3;
+    }
+
+    body[data-miniapp-profile='publisher'] :is(.publications-page, .publication-buttons-sheet) {
+      --publication-ui-page: var(--publisher-page);
+      --publication-ui-surface: var(--publisher-surface);
+      --publication-ui-surface-raised: var(--publisher-raised);
+      --publication-ui-surface-muted: var(--publisher-muted);
+      --publication-ui-surface-tint: var(--publisher-tint);
+      --publication-ui-ink: var(--publisher-ink);
+      --publication-ui-ink-muted: var(--publisher-secondary);
+      --publication-ui-ink-subtle: var(--publisher-subtle);
+      --publication-ui-border: var(--publisher-border);
+      --publication-ui-border-strong: var(--publisher-border-strong);
+      --publication-ui-row-border: var(--publisher-border);
+      --publication-ui-accent: var(--publisher-accent);
+      --publication-ui-accent-soft: var(--publisher-accent-soft);
+      --publication-ui-on-accent: var(--publisher-on-accent);
+      --publication-buttons-accent: var(--publisher-accent);
+      --publication-buttons-accent-soft: var(--publisher-accent-soft);
+      --publication-buttons-on-accent: var(--publisher-on-accent);
+    }
+
+    body[data-miniapp-profile='publisher'] .publications-header h1 {
+      font-size: 1.625rem;
+      letter-spacing: -0.035em;
+    }
+
+    body[data-miniapp-profile='publisher'] .publications-primary {
+      min-height: 48px;
+      border-radius: 14px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publications-feed {
+      gap: 12px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      overflow: visible;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-feed-card,
+    body[data-miniapp-profile='publisher'] .publication-feed-card:last-child {
+      overflow: hidden;
+      border: 1px solid var(--color-border);
+      border-radius: 20px;
+      background: var(--color-surface);
+      box-shadow: 0 4px 16px var(--publisher-shadow-ink);
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-feed-card__surface {
+      gap: 9px;
+      padding: 14px 54px 12px 16px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-feed-card__title {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      font-size: 1rem;
+      line-height: 1.35;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-feed-card__preview {
+      font-size: 0.875rem;
+      line-height: 1.5;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-feed-card__meta > span,
+    body[data-miniapp-profile='publisher'] .publication-delivery-note {
+      font-size: 0.75rem;
+      line-height: 1.4;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-feed-card__footer {
+      min-height: 38px;
+      padding-left: 16px;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-editor-section__head strong,
+        .publisher-auto-reply-editor__section > header h2
+      ) {
+      font-size: 1rem;
+      line-height: 1.35;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-editor-section__head small,
+        .publications-editor-header .publication-draft-indicator,
+        .publisher-auto-replies-page__identity small,
+        .publisher-auto-reply-editor__header > span small,
+        .publisher-auto-reply-editor__section > header small,
+        .publisher-auto-reply-editor__field-meta,
+        .publisher-auto-replies-page__module-toggle small,
+        .publisher-auto-replies-page__authoring small,
+        .publication-schedule-timezone
+      ) {
+      font-size: 0.75rem;
+      line-height: 1.45;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-weekdays {
+      grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+      gap: 6px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-weekdays button {
+      min-width: 44px;
+      border-radius: 12px;
+      font-size: 0.8125rem;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-late-policy-options > summary {
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-late-policy label,
+    body[data-miniapp-profile='publisher'] .publication-late-policy p {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-late-policy select,
+        .publisher-auto-reply-editor__field input,
+        .publisher-auto-reply-editor__select-field select
+      ) {
+      min-height: 48px;
+      font-size: 16px;
+      border-radius: 14px;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-create-sheet__panel,
+        .publication-drafts-sheet__panel,
+        .publication-details-sheet__panel
+      ) {
+      border-radius: 24px 24px 0 0;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-create-sheet__actions > button {
+      min-height: 76px;
+      padding: 14px;
+      border-radius: 18px;
+      font-size: 1rem;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-create-sheet__actions small {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-review-sheet .action-confirm-sheet__panel {
+      border-radius: 24px;
+    }
+
+    body[data-miniapp-profile='publisher']
+      .publication-review-sheet
+      .action-confirm-sheet__preview {
+      padding: 14px;
+      border: 1px solid var(--color-border);
+      border-radius: 18px;
+      background: var(--color-surface);
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-preview__facts {
+      gap: 0;
+      margin-top: 16px;
+      padding-top: 8px;
+      font-size: 0.875rem;
+      line-height: 1.5;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-preview__facts > li {
+      padding-block: 8px;
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-preview__facts > li:last-child {
+      border-bottom: 0;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-details-targets strong,
+        .publication-deliveries strong,
+        .publication-occurrences strong,
+        .publication-details-dispatch-notice strong
+      ) {
+      font-size: 0.875rem;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-details-targets small,
+        .publication-deliveries small,
+        .publication-occurrences small,
+        .publication-details-dispatch-notice small
+      ) {
+      font-size: 0.75rem;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-details-sheet__message {
+      border-radius: 18px;
+      font-size: 0.9375rem;
+      line-height: 1.5;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-buttons-sheet__card {
+      padding: 14px;
+      border-radius: 20px;
+      gap: 12px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-buttons-sheet__card-top > strong {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      line-height: 1.4;
+      font-size: 0.9375rem;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-buttons-sheet__field > span {
+      font-size: 0.8125rem;
+    }
+  }
+}

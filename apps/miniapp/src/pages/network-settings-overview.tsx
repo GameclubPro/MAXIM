@@ -22,7 +22,7 @@ import '../styles/settings-home-compact.css';
 import '../styles/settings-home-route-polish.css';
 import './settings-page.css';
 import '../styles/settings-tile-grid.css';
-import '../styles/settings-steel.css';
+import '../styles/settings-overview-steel.css';
 import '../components/ui/managed-entity-settings-header.css';
 
 export function NetworkSettingsOverview({
@@ -98,6 +98,7 @@ export function NetworkSettingsOverview({
       <div className="settings-section__head settings-section__head--interactive">
         <SettingsSectionToggle
           title={entry.title}
+          summary="Состояние не проверено"
           icon={entry.icon}
           tone={entry.tone}
           open={section === entry.section}

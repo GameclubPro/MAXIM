@@ -1,4 +1,8 @@
 @layer workspace {
+  body[data-miniapp-profile='moderation'] .channel-quick-buttons-example {
+    display: none;
+  }
+
   /* Module-local roles keep lazy settings styles out of the home and Publisher. */
   body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
     :is(
@@ -391,6 +395,49 @@
   }
 
   @media (max-width: 600px) {
+    body[data-miniapp-profile='moderation'] .channel-quick-buttons-source {
+      display: none;
+    }
+
+    body[data-miniapp-profile='moderation'] .channel-quick-buttons-example {
+      display: grid;
+      min-width: 0;
+      gap: 10px;
+      margin: 0;
+      padding: 16px;
+      border: 1px solid var(--steel-line);
+      border-radius: 16px;
+      background: var(--steel-panel);
+      color: var(--steel-ink);
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+
+    body[data-miniapp-profile='moderation'] .channel-quick-buttons-example code {
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--steel-inset);
+      overflow-wrap: anywhere;
+    }
+
+    body[data-miniapp-profile='moderation'] .channel-quick-buttons-example__label {
+      color: var(--steel-muted);
+    }
+
+    body[data-miniapp-profile='moderation'] .channel-quick-buttons-example__button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      gap: 8px;
+      border: 1px solid var(--steel-line);
+      border-radius: 12px;
+      background: var(--steel-blue-soft);
+      color: var(--steel-blue);
+      font-size: 0.9375rem;
+      font-weight: 700;
+    }
+
     body[data-miniapp-profile='moderation']:is(
         .settings-home-page-open,
         .channel-settings-page-open
@@ -443,6 +490,76 @@
       .settings-drilldown__panel--module
       .settings-drilldown__footer-actions.is-single-action {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-drilldown__body {
+      padding: 16px;
+      scroll-padding-block: 16px 32px;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-section__collapse-inner {
+      gap: 12px;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      :is(.settings-native-toggle__title, .channel-settings-toggle-card__title-row strong) {
+      font-size: 1rem;
+      line-height: 1.4;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      :is(.settings-native-toggle__hint, .field__hint, .settings-drilldown__summary) {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown
+      :is(.field input, .field select, .settings-command-card__row input, .button) {
+      min-height: 48px;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-drilldown__footer-actions
+      .button {
+      font-size: 0.9375rem;
+    }
+  }
+
+  @media (max-width: 359px) {
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      :is(.settings-drilldown__body, .settings-drilldown__header) {
+      padding: 12px;
     }
   }
 

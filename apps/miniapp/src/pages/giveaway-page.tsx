@@ -29,6 +29,7 @@ import {
   isGiveawayEntryOpen,
   resolveGiveawayDisplayPhase,
 } from '../lib/giveaway-state';
+import { giveawayImageSource } from '../lib/giveaway-image';
 import { closeMaxMiniApp, maxNotify, openMaxBotLink } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
@@ -67,6 +68,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
   const [actionError, setActionError] = useState<string | null>(null);
   const [returnPending, setReturnPending] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [failedImage, setFailedImage] = useState<string | null>(null);
   const actionInFlight = useRef(false);
   const awaitingReturn = useRef(false);
   const mounted = useRef(true);
@@ -303,8 +305,92 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
     phase === 'COMPLETED'
       ? (giveaway?.resultsUrl ?? giveaway?.publicationUrl)
       : giveaway?.publicationUrl;
+  const personalStatusFirst = Boolean(
+    participant?.joined ||
+    participant?.isWinner ||
+    unavailable ||
+    phase === 'CANCELED' ||
+    phase === 'DRAWING' ||
+    phase === 'COMPLETED',
+  );
+  const imageSource = giveaway ? giveawayImageSource(giveaway) : null;
+  const prizes = [...(giveaway?.prizes ?? [])].sort(
+    (left, right) => left.position - right.position,
+  );
+  const description = giveaway?.description.trim() ?? '';
+  const promotion = giveaway ? (
+    <section className="giveaway-page__promotion" aria-label="О розыгрыше">
+      {imageSource && failedImage !== imageSource ? (
+        <img
+          className="giveaway-page__cover"
+          src={imageSource}
+          alt="Обложка розыгрыша"
+          onError={() => setFailedImage(imageSource)}
+        />
+      ) : null}
+      <div className="giveaway-page__promotion-copy">
+        <span className="giveaway-page__eyebrow">
+          {phase === 'COMPLETED'
+            ? 'Розыгрыш завершён'
+            : phase === 'ACTIVE'
+              ? 'Участвуйте и выигрывайте'
+              : phase === 'SCHEDULED'
+                ? 'Скоро начнётся'
+                : phase === 'DRAWING'
+                  ? 'Подводим итоги'
+                  : phase === 'CANCELED'
+                    ? 'Розыгрыш отменён'
+                    : 'О розыгрыше'}
+        </span>
+        <h2>{giveaway.title}</h2>
+        {prizes.length ? (
+          <div className="giveaway-page__prizes">
+            <h3>
+              <Trophy aria-hidden="true" /> Призы
+            </h3>
+            <ol>
+              {prizes.slice(0, 3).map((prize) => (
+                <li key={prize.id}>
+                  <span>{prize.position}</span>
+                  <strong>{prize.displayTitle || prize.title}</strong>
+                </li>
+              ))}
+            </ol>
+            {prizes.length > 3 ? (
+              <details>
+                <summary>Все призовые места · {prizes.length}</summary>
+                <ol start={4}>
+                  {prizes.slice(3).map((prize) => (
+                    <li key={prize.id}>
+                      <span>{prize.position}</span>
+                      <strong>{prize.displayTitle || prize.title}</strong>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            ) : null}
+          </div>
+        ) : null}
+        {description.length > 220 ? (
+          <details className="giveaway-page__description">
+            <summary>
+              {description.slice(0, 220).trimEnd()}… <span>Подробнее</span>
+            </summary>
+            <p>{description}</p>
+          </details>
+        ) : description ? (
+          <p className="giveaway-page__description">{description}</p>
+        ) : null}
+      </div>
+    </section>
+  ) : null;
   return (
-    <main className="giveaway-page" data-phase={phase} data-tone={statusTone}>
+    <main
+      className="giveaway-page"
+      data-phase={phase}
+      data-tone={statusTone}
+      data-personal-status-first={personalStatusFirst}
+    >
       <div className="giveaway-page__content">
         <header className="giveaway-page__header">
           <EntityAvatar
@@ -327,6 +413,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             <Xmark />
           </button>
         </header>
+        {!personalStatusFirst ? promotion : null}
         <section
           className="giveaway-page__participation-status"
           aria-busy={Boolean(loading || busy)}
@@ -365,7 +452,12 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             <p>MAX пока не подтвердил подписки. Заявка сохранена, допуск ещё не подтверждён.</p>
           ) : null}
           {participant?.isWinner && !expired && participant.prizePosition ? (
-            <p>{participant.prizePosition} место</p>
+            <p className="giveaway-page__personal-prize">
+              {participant.prizePosition} место
+              {participant.prizeDisplayTitle || participant.prizeTitle
+                ? ` · ${participant.prizeDisplayTitle || participant.prizeTitle}`
+                : ''}
+            </p>
           ) : null}
           {phase === 'CANCELED' ? <p>Приём заявок остановлен. Победители не выбираются.</p> : null}
         </section>
@@ -403,6 +495,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             </div>
           </section>
         ) : null}
+        {personalStatusFirst ? promotion : null}
         {showConditions ? (
           <section className="giveaway-page__conditions" aria-label="Условия участия">
             <div className="giveaway-page__section-heading">

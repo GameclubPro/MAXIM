@@ -2,7 +2,7 @@ import type {
   ChannelDialogNotificationMode,
   ChannelDialogNotificationScope,
 } from '@maxim/contracts';
-import { useEffect, useRef, type KeyboardEvent } from 'react';
+import { useEffect, useRef, type KeyboardEvent, type RefObject } from 'react';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { createPortal } from 'react-dom';
 import { cn } from '../lib/cn';
@@ -27,6 +27,7 @@ type ChannelDialogNotificationSheetProps = {
   onDraftModeSelect: (mode: ChannelDialogNotificationMode) => void;
   onDraftScopeSelect: (scope: ChannelDialogNotificationScope) => void;
   onApply: () => void;
+  returnFocusRef?: RefObject<HTMLButtonElement | null>;
 };
 
 const NOTIFICATION_SCOPE_OPTIONS: ChannelDialogNotificationScope[] = [
@@ -93,10 +94,11 @@ export default function ChannelDialogNotificationSheet({
   onDraftModeSelect,
   onDraftScopeSelect,
   onApply,
+  returnFocusRef,
 }: ChannelDialogNotificationSheetProps) {
   const panelRef = useRef<HTMLElement | null>(null);
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
-  useDialogFocusTrap(true, panelRef, cancelButtonRef);
+  useDialogFocusTrap(true, panelRef, cancelButtonRef, returnFocusRef);
   useNativeBackHandler(
     () => {
       onClose();

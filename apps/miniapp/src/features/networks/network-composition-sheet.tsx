@@ -12,6 +12,7 @@ import { ActionConfirmSheet } from '../../components/ui/action-confirm-sheet';
 import { AppIcon } from '../../components/ui/app-icon';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
 import { SegmentedControl } from '../../components/ui/segmented-control';
+import { SearchField } from '../../components/ui/search-field';
 import {
   HOME_ENTITY_FAVORITE_TYPES,
   getHomeEntityFavoriteTypes,
@@ -200,16 +201,13 @@ export function NetworkCompositionSheet({
               }}
               ariaLabel="Редактирование состава"
             />
-            <label className="networks-search">
-              <AppIcon icon="Search" />
-              <input
-                type="search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Найти сообщество"
-                aria-label="Поиск сообществ"
-              />
-            </label>
+            <SearchField
+              className="network-search-field"
+              value={query}
+              onChange={setQuery}
+              placeholder="Найти сообщество"
+              label="Поиск сообществ"
+            />
             {requiresReview ? (
               <div className="networks-notice" role="alert">
                 <strong>Состав изменился</strong>
@@ -268,23 +266,25 @@ export function NetworkCompositionSheet({
               const value = change ? change.favoriteType : item.favoriteType;
               return (
                 <div className="network-community-row network-composition-row" key={item.id}>
-                  <input
-                    type="checkbox"
-                    aria-label={`${mode === 'members' ? 'Оставить' : 'Добавить'} ${item.title}`}
-                    checked={value === favoriteType}
-                    disabled={saving || requiresReview}
-                    onChange={(event) => {
-                      setError(null);
-                      draft.stage(
-                        item,
-                        event.target.checked
-                          ? favoriteType
-                          : mode === 'add'
-                            ? item.favoriteType
-                            : null,
-                      );
-                    }}
-                  />
+                  <label className="network-composition-check">
+                    <input
+                      type="checkbox"
+                      aria-label={`${mode === 'members' ? 'Оставить' : 'Добавить'} ${item.title}`}
+                      checked={value === favoriteType}
+                      disabled={saving || requiresReview}
+                      onChange={(event) => {
+                        setError(null);
+                        draft.stage(
+                          item,
+                          event.target.checked
+                            ? favoriteType
+                            : mode === 'add'
+                              ? item.favoriteType
+                              : null,
+                        );
+                      }}
+                    />
+                  </label>
                   <EntityAvatar
                     title={item.title}
                     entityId={item.id}

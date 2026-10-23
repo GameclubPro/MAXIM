@@ -89,14 +89,15 @@ test('Posts uses one compact recipient status instead of a second catalog card',
 
 test('publisher target selection is a full-screen sheet with stable virtual rows', () => {
   const sourceHeight = Number(pickerSource.match(/TARGET_ROW_HEIGHT = (\d+);/u)?.[1]);
-  const cssHeight = Number(
-    pickerCss.match(
-      /\.publication-target-picker__list\.is-virtual \.publication-target-row \{[\s\S]*?height: (\d+)px;/u,
-    )?.[1],
+  const cssHeight = pickerCss.match(
+    /\.publication-target-picker__list\.is-virtual \.publication-target-row \{[\s\S]*?height: max\((\d+)px, ([\d.]+)rem\);/u,
   );
 
-  assert.equal(sourceHeight, 58);
-  assert.equal(cssHeight, sourceHeight);
+  assert.ok(sourceHeight >= 44);
+  assert.equal(Number(cssHeight?.[1]), sourceHeight);
+  assert.equal(Number(cssHeight?.[2]) * 16, sourceHeight);
+  assert.match(pickerSource, /TARGET_ROW_REM = TARGET_ROW_HEIGHT \/ 16/u);
+  assert.match(pickerSource, /rootFontSize \* TARGET_ROW_REM/u);
   assert.match(pickerSource, /remoteSource && 'is-sheet'/u);
   assert.match(pickerSource, /role=\{remoteSource \? 'dialog' : 'region'\}/u);
   assert.match(pickerSource, /useNativeBackHandler/u);
@@ -110,7 +111,7 @@ test('publisher target selection is a full-screen sheet with stable virtual rows
     pickerCss,
     /\.publications-page\.is-editor:has\(\.publication-target-picker__editor\)[\s\S]*?\.publications-publish-bar \{[\s\S]*?visibility: hidden;[\s\S]*?pointer-events: none;/u,
   );
-  assert.match(pickerSource, /TARGET_LIST_AUTO_LOAD_THRESHOLD = TARGET_ROW_HEIGHT \* 2/u);
+  assert.match(pickerSource, /list\.clientHeight <= targetRowHeight \* 2/u);
   assert.match(pickerSource, /onScroll=\{handleTargetListScroll\}/u);
   assert.match(pickerSource, /loadMoreRequestRef\.current/u);
   assert.match(pickerSource, /remoteSourceRef\.current\?\.onLoadMore\(\)/u);

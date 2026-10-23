@@ -14,7 +14,7 @@ import {
   WarningCircle,
   Xmark,
 } from 'iconoir-react';
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { AutoReplyCreateSheet } from '../components/auto-reply-create-sheet';
 import type { AutoReplyMatchTesterProps } from '../components/auto-reply-match-tester';
@@ -79,6 +79,7 @@ import {
   type AutoReplyDraftIssues,
 } from './publisher-auto-replies-page-model';
 import './publisher-auto-replies-page.css';
+import '../styles/publisher-auto-replies-workspace.css';
 
 const AUTO_REPLY_QUERY_ROOT = ['publisher-auto-replies'] as const;
 const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
@@ -957,27 +958,68 @@ function PublisherAutoReplyEditor({
 
       <ActionConfirmSheet
         id="publisher-auto-reply-review"
+        className="publisher-auto-reply-review"
         open={reviewOpen}
         title={rule ? 'Сохранить изменения?' : 'Создать автоответ?'}
         summary={`${getAutoReplyPhraseCountLabel(draft.phrases.length)} · ${getAutoReplyMatchModeLabel(draft)}.`}
         previewTitle={
-          <MaxMarkdownPreview
-            value={draft.text}
-            sourceFormat="markdown"
-            fallback={totalImages > 0 ? 'Ответ без текста' : null}
-          />
+          <div className="publisher-auto-reply-review__content">
+            <strong>Ответить</strong>
+            {totalImages > 0 ? (
+              <div className="publisher-auto-reply-review__media" aria-label="Фотографии ответа">
+                {rule
+                  ? rule.content.images
+                      .filter((asset) => draft.retainedAssets.some((item) => item.id === asset.id))
+                      .map((asset) => (
+                        <AutoReplyAssetThumbnail
+                          key={asset.id}
+                          api={api}
+                          chatId={chatId}
+                          ruleId={rule.id}
+                          asset={asset}
+                        />
+                      ))
+                  : null}
+                {draft.images.map((image, index) => (
+                  <img
+                    key={`${image.fileName}-${index}`}
+                    src={`data:${image.mimeType};base64,${image.base64}`}
+                    alt={image.fileName || `Фото ${index + 1}`}
+                  />
+                ))}
+              </div>
+            ) : null}
+            <MaxMarkdownPreview
+              value={draft.text}
+              sourceFormat="markdown"
+              fallback={totalImages > 0 ? 'Ответ без текста' : null}
+            />
+            {draft.buttons.length > 0 ? (
+              <div className="publication-preview__buttons" aria-label="Кнопки автоответа">
+                {draft.buttons.map((button, index) => (
+                  <span key={`${button.url}-${index}`} title={button.url}>
+                    {button.text}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
         }
-        previewMeta={[
-          draft.phrases.length > 0
-            ? `«${draft.phrases[0]}»${draft.phrases.length > 1 ? ` +${draft.phrases.length - 1}` : ''}`
-            : null,
-          totalImages > 0 ? `${totalImages} фото` : null,
-          draft.buttons.length > 0 ? formatBroadcastButtonsStatus(draft.buttons) : null,
-          `Пауза: ${getAutoReplyCooldownLabel(draft.cooldownSeconds)}`,
-          rule ? (draft.enabled ? 'включён' : 'выключен') : null,
-        ]
-          .filter((item): item is string => item !== null)
-          .join(' · ')}
+        previewMeta={
+          <div className="publisher-auto-reply-review__facts">
+            <strong>Если написали</strong>
+            <ul>
+              {draft.phrases.map((phrase) => (
+                <li key={phrase}>{phrase}</li>
+              ))}
+            </ul>
+            <span>{getAutoReplyMatchModeLabel(draft)}</span>
+            <span>Пауза: {getAutoReplyCooldownLabel(draft.cooldownSeconds)}</span>
+            {rule ? (
+              <span>{draft.enabled ? 'Автоответ включён' : 'Автоответ выключен'}</span>
+            ) : null}
+          </div>
+        }
         confirmLabel={rule ? 'Сохранить' : 'Создать'}
         confirmBusyLabel="Сохраняю..."
         tone="accent"
@@ -1041,6 +1083,8 @@ function AutoReplyRuleRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const [phrasesExpanded, setPhrasesExpanded] = useState(false);
+  const phrasesId = useId();
   return (
     <article className={cn('publisher-auto-reply-row', !rule.enabled && 'is-disabled')}>
       <div className="publisher-auto-reply-row__head">
@@ -1048,9 +1092,16 @@ function AutoReplyRuleRow({
           <Key aria-hidden />
           <strong>{rule.phrases[0] ?? 'Без фразы'}</strong>
           {rule.phrases.length > 1 ? (
-            <small className="publisher-auto-reply-row__phrase-more">
-              +{rule.phrases.length - 1}
-            </small>
+            <button
+              type="button"
+              className="publisher-auto-reply-row__phrase-more"
+              aria-expanded={phrasesExpanded}
+              aria-controls={phrasesId}
+              aria-label={phrasesExpanded ? 'Скрыть остальные фразы' : 'Показать все фразы'}
+              onClick={() => setPhrasesExpanded((current) => !current)}
+            >
+              {phrasesExpanded ? '−' : `+${rule.phrases.length - 1}`}
+            </button>
           ) : null}
         </span>
         <AutoReplySwitch
@@ -1060,6 +1111,14 @@ function AutoReplyRuleRow({
           onChange={onToggle}
         />
       </div>
+
+      {phrasesExpanded ? (
+        <ul id={phrasesId} className="publisher-auto-reply-row__all-phrases">
+          {rule.phrases.map((phrase) => (
+            <li key={phrase}>{phrase}</li>
+          ))}
+        </ul>
+      ) : null}
 
       <div className="publisher-auto-reply-row__content">
         {rule.content.images.length > 0 ? (

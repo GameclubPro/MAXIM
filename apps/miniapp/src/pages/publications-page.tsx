@@ -1,4 +1,6 @@
 import { PublicationLatePolicyFields } from '../features/publications/publication-late-policy-fields';
+import { SearchField } from '../components/ui/search-field';
+import { formatPublicationLatePolicy } from '../features/publications/publication-late-policy-presentation';
 import { usePublicationEditorSession } from '../features/publications/use-publication-editor-session';
 import { usePublicationActions } from '../features/publications/use-publication-actions';
 import {
@@ -11,16 +13,7 @@ import { publicationQueryKeys as queryKeys } from '../features/publications/publ
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { type PublicationSummary } from '@maxim/contracts/publication';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
-import {
-  Clock,
-  FilterList,
-  NavArrowLeft,
-  Plus,
-  Refresh,
-  Search,
-  Trash,
-  Xmark,
-} from 'iconoir-react';
+import { Clock, FilterList, NavArrowLeft, Plus, Refresh, Trash, Xmark } from 'iconoir-react';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
@@ -123,6 +116,7 @@ import { useNativeBackHandler } from '../lib/native-back';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import '../styles/publications-page.css';
+import '../styles/publisher-publications-workspace.css';
 import '../features/publications/publication-draft-resume.css';
 import '../features/publications/publication-workbench.css';
 import { PublicationPostPublishFields } from '../features/publications/publication-post-publish-fields';
@@ -794,33 +788,17 @@ export function PublicationsPage({
     return (
       <div className={cn('publications-filterbar', showFilterControls && 'is-expanded')}>
         <div className="publications-filterbar__search-row">
-          <label className="publication-search publications-filterbar__search">
-            <Search aria-hidden />
-            <input
-              type="search"
-              value={query}
-              maxLength={120}
-              onChange={(event) => {
-                const nextQuery = event.currentTarget.value;
-                setQuery(nextQuery);
-                setPublicationHubRoute({ query: nextQuery });
-              }}
-              placeholder="Найти"
-              aria-label="Поиск публикаций"
-            />
-            {query ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery('');
-                  setPublicationHubRoute({ query: '' });
-                }}
-                aria-label="Очистить поиск"
-              >
-                <Xmark aria-hidden />
-              </button>
-            ) : null}
-          </label>
+          <SearchField
+            className="publications-filterbar__search"
+            value={query}
+            onChange={(nextQuery) => {
+              setQuery(nextQuery);
+              setPublicationHubRoute({ query: nextQuery });
+            }}
+            placeholder="Найти пост"
+            label="Поиск публикаций"
+            inputProps={{ maxLength: 120, enterKeyHint: 'search' }}
+          />
           <button
             type="button"
             className={cn('publications-filterbar__toggle', hasActiveFilters && 'is-active')}
@@ -898,33 +876,17 @@ export function PublicationsPage({
     return (
       <div className={cn('legacy-publications-filterbar', showFilterControls && 'is-expanded')}>
         <div className="legacy-publications-filterbar__search-row">
-          <label className="publication-search legacy-publications-filterbar__search">
-            <Search aria-hidden />
-            <input
-              type="search"
-              value={legacyQuery}
-              maxLength={120}
-              onChange={(event) => {
-                const nextQuery = event.currentTarget.value;
-                setLegacyQuery(nextQuery);
-                setLegacyRoute(true, { query: nextQuery });
-              }}
-              placeholder="Найти"
-              aria-label="Поиск ранее созданных постов"
-            />
-            {legacyQuery ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setLegacyQuery('');
-                  setLegacyRoute(true, { query: '' });
-                }}
-                aria-label="Очистить поиск"
-              >
-                <Xmark aria-hidden />
-              </button>
-            ) : null}
-          </label>
+          <SearchField
+            className="legacy-publications-filterbar__search"
+            value={legacyQuery}
+            onChange={(nextQuery) => {
+              setLegacyQuery(nextQuery);
+              setLegacyRoute(true, { query: nextQuery });
+            }}
+            placeholder="Найти пост в архиве"
+            label="Поиск ранее созданных постов"
+            inputProps={{ maxLength: 120, enterKeyHint: 'search' }}
+          />
           <button
             type="button"
             className={cn('legacy-publications-filterbar__toggle', hasActiveFilters && 'is-active')}
@@ -1389,7 +1351,7 @@ export function PublicationsPage({
 
         {draft.timingMode !== 'now' ? (
           <PublicationLatePolicyFields
-            value={draft.latePolicy}
+            value={editorSession.getEffectiveLatePolicy(draft)}
             recurring={draft.timingMode === 'schedule' && draft.scheduleKind === 'recurrence'}
             disabled={isBusy}
             onChange={(latePolicy) => setDraft((current) => ({ ...current, latePolicy }))}
@@ -1817,11 +1779,17 @@ export function PublicationsPage({
               previews={savedAssetPreviews}
               facts={[
                 `Кому · ${formatTargetSummary(draft.targets)}`,
-                ...publicationPostPublishLabels(draft.postPublish),
                 editScope === 'retry' ? null : formatTimezoneLabel(draft.scheduleTimezone),
                 editScope === 'retry'
                   ? 'Отправка · после ручного повтора'
                   : `Когда · ${formatDraftTiming(draft)}`,
+                editScope === 'retry' || draft.timingMode === 'now'
+                  ? null
+                  : `При задержке · ${formatPublicationLatePolicy(
+                      editorSession.getEffectiveLatePolicy(draft),
+                      draft.timingMode === 'schedule' && draft.scheduleKind === 'recurrence',
+                    )}`,
+                ...publicationPostPublishLabels(draft.postPublish),
               ].filter((item): item is string => Boolean(item))}
               confirmLabel={primaryLabel}
               busy={isBusy}

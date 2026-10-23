@@ -53,6 +53,12 @@ function commentsUrl(profile, extra = {}) {
   return url.href;
 }
 
+async function openCommentSettings(page, label) {
+  await page.getByRole('button', { name: 'Параметры обсуждения', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Параметры обсуждения', exact: true }).waitFor();
+  await page.getByRole('button', { name: label, exact: true }).click();
+}
+
 async function openEmoji(page) {
   const tools = page.getByRole('button', { name: 'Вложения и эмодзи', exact: true });
   if ((await tools.getAttribute('aria-expanded')) !== 'true') await tools.click();
@@ -242,8 +248,29 @@ try {
       const draftPrefix = 'Тема меняется, черновик остаётся.';
       const draft = `${draftPrefix}\nВторая строка.\nТретья строка.\nhttps://example.org/${'x'.repeat(110)}`;
       await page.locator('.channel-dialog-compose__field textarea').fill(draft);
+      const settingsTrigger = page.getByRole('button', {
+        name: 'Параметры обсуждения',
+        exact: true,
+      });
+      const settingsMenu = page.getByRole('dialog', { name: 'Параметры обсуждения', exact: true });
+      await settingsTrigger.click();
+      await settingsMenu.waitFor();
+      await page.keyboard.press('Escape');
+      await settingsMenu.waitFor({ state: 'hidden' });
+      assert.equal(
+        await settingsTrigger.evaluate((element) => element === document.activeElement),
+        true,
+      );
+      await settingsTrigger.click();
+      await settingsMenu.waitFor();
+      await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+      await settingsMenu.waitFor({ state: 'hidden' });
+      assert.equal(
+        await page.evaluate(() => Boolean(window.__MAXIM_VISUAL_BRIDGE_CLOSED__)),
+        false,
+      );
       for (const [id, label] of themes) {
-        await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
+        await openCommentSettings(page, 'Оформление комментариев');
         const dialog = page.getByRole('dialog', { name: 'Оформление', exact: true });
         await dialog.waitFor();
         await page.getByRole('radio', { name: label, exact: true }).click();
@@ -273,7 +300,7 @@ try {
         await dialog.getByRole('button', { name: 'Готово', exact: true }).click();
         await assertThemeContrast(page);
         await page.screenshot({ path: path.join(output, `${profile.name}-${mode}-${id}.png`) });
-        await page.getByRole('button', { name: 'Настройки уведомлений', exact: true }).click();
+        await openCommentSettings(page, 'Настройки уведомлений');
         await page.getByRole('dialog', { name: 'Уведомления', exact: true }).waitFor();
         await assertThemeContrast(page);
         await page.getByRole('button', { name: 'Отмена', exact: true }).click();
@@ -329,7 +356,7 @@ try {
       await actions.waitFor();
       await actions.locator('.channel-dialog-reaction-popover__emoji').first().click();
       await sentMessage.locator('.channel-dialog-reaction-pill.is-active').waitFor();
-      await page.getByRole('button', { name: 'Настройки уведомлений', exact: true }).click();
+      await openCommentSettings(page, 'Настройки уведомлений');
       await page.getByRole('dialog', { name: 'Уведомления', exact: true }).waitFor();
       await page.screenshot({
         path: path.join(output, `${profile.name}-${mode}-notifications.png`),
@@ -341,7 +368,7 @@ try {
       await page.reload();
       await page.locator('[data-comment-theme="avant"]').waitFor();
       await applyNativeVisualMode(page, profile);
-      await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
+      await openCommentSettings(page, 'Оформление комментариев');
       await page.getByRole('dialog', { name: 'Оформление', exact: true }).waitFor();
       await page.waitForFunction(
         () => document.activeElement === document.querySelector('.comment-theme-sheet__close'),
@@ -361,17 +388,16 @@ try {
         .waitFor({ state: 'hidden' });
       await page.waitForFunction(
         () =>
-          document.activeElement ===
-          document.querySelector('[aria-label="Оформление комментариев"]'),
+          document.activeElement === document.querySelector('[aria-label="Параметры обсуждения"]'),
       );
       assert.equal(
         await page
-          .getByRole('button', { name: 'Оформление комментариев', exact: true })
+          .getByRole('button', { name: 'Параметры обсуждения', exact: true })
           .evaluate((element) => element === document.activeElement),
         true,
         'closing the sheet restores focus',
       );
-      await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
+      await openCommentSettings(page, 'Оформление комментариев');
       await page.getByRole('dialog', { name: 'Оформление', exact: true }).waitFor();
       await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
       await page.waitForFunction(() => !document.querySelector('.comment-theme-sheet'));
@@ -451,7 +477,7 @@ try {
       await page
         .locator('.channel-dialog-compose__field textarea')
         .fill('Комментарий с открытой клавиатурой');
-      await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).click();
+      await openCommentSettings(page, 'Оформление комментариев');
       const smallDialog = page.getByRole('dialog', { name: 'Оформление', exact: true });
       await smallDialog.waitFor();
       await page.getByRole('radio', { name: 'Авангард', exact: true }).click();
@@ -473,11 +499,22 @@ try {
             botProfile === 'moderation' ? 2 : 0,
             'attachment capabilities remain bot-scoped',
           );
+          await page.getByRole('button', { name: 'Параметры обсуждения', exact: true }).click();
+          const settingsMenu = page.getByRole('dialog', {
+            name: 'Параметры обсуждения',
+            exact: true,
+          });
+          await settingsMenu.waitFor();
           assert.equal(
-            await page.getByRole('button', { name: 'Настройки уведомлений', exact: true }).count(),
-            botProfile === 'moderation' ? 1 : 0,
-            'notification capabilities remain bot-scoped',
+            await settingsMenu
+              .getByRole('button', { name: 'Настройки уведомлений', exact: true })
+              .count(),
+            1,
+            'both authenticated bot profiles support comment notifications',
           );
+          await settingsMenu
+            .getByRole('button', { name: 'Закрыть параметры обсуждения', exact: true })
+            .click();
           await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
           await page.getByRole('button', { name: 'Закрыть эмодзи', exact: true }).click();
           await page
@@ -499,7 +536,7 @@ try {
       await page.locator('.channel-dialog-message').first().waitFor();
       await applyNativeVisualMode(page, profile);
       assert.equal(
-        await page.getByRole('button', { name: 'Оформление комментариев', exact: true }).count(),
+        await page.getByRole('button', { name: 'Параметры обсуждения', exact: true }).count(),
         1,
       );
       assert.equal(
@@ -515,7 +552,7 @@ try {
       });
       await page.waitForFunction(
         () =>
-          document.querySelector('[aria-label="Оформление комментариев"]').getBoundingClientRect()
+          document.querySelector('[aria-label="Параметры обсуждения"]').getBoundingClientRect()
             .top >= 23,
       );
       await assertLayout(page);

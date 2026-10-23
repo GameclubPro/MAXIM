@@ -1,4 +1,4 @@
-import { Check, NavArrowDown, Search, Xmark } from 'iconoir-react';
+import { Check, NavArrowDown, Xmark } from 'iconoir-react';
 import {
   type CSSProperties,
   useDeferredValue,
@@ -11,6 +11,7 @@ import {
   type UIEvent,
 } from 'react';
 import { EntityAvatar } from '../../components/ui/entity-avatar';
+import { SearchField } from '../../components/ui/search-field';
 import { cn } from '../../lib/cn';
 import { useDialogFocusTrap } from '../../lib/dialog-focus';
 import { useNativeBackHandler } from '../../lib/native-back';
@@ -59,11 +60,11 @@ const FILTERS: Array<{ value: PublicationEntityFilter; label: string }> = [
   { value: 'chat', label: 'Чаты' },
   { value: 'channel', label: 'Каналы' },
 ];
-const TARGET_ROW_HEIGHT = 58;
+const TARGET_ROW_HEIGHT = 76;
+const TARGET_ROW_REM = TARGET_ROW_HEIGHT / 16;
 const TARGET_LIST_INITIAL_VIEWPORT_HEIGHT = 266;
 const TARGET_LIST_VIRTUALIZATION_THRESHOLD = 60;
 const TARGET_LIST_OVERSCAN = 3;
-const TARGET_LIST_AUTO_LOAD_THRESHOLD = TARGET_ROW_HEIGHT * 2;
 
 export function PublicationTargetPicker({
   choices,
@@ -81,6 +82,7 @@ export function PublicationTargetPicker({
   const [shouldRevealEditor, setShouldRevealEditor] = useState(false);
   const [listScrollTop, setListScrollTop] = useState(0);
   const [listViewportHeight, setListViewportHeight] = useState(TARGET_LIST_INITIAL_VIEWPORT_HEIGHT);
+  const [targetRowHeight, setTargetRowHeight] = useState(TARGET_ROW_HEIGHT);
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -121,15 +123,15 @@ export function PublicationTargetPicker({
         itemCount: filteredChoices.length,
         scrollTop: listScrollTop,
         viewportHeight: listViewportHeight,
-        rowHeight: TARGET_ROW_HEIGHT,
+        rowHeight: targetRowHeight,
         overscan: TARGET_LIST_OVERSCAN,
       }),
-    [filteredChoices.length, listScrollTop, listViewportHeight],
+    [filteredChoices.length, listScrollTop, listViewportHeight, targetRowHeight],
   );
   const renderedChoices = shouldVirtualize
     ? filteredChoices.slice(virtualRange.startIndex, virtualRange.endIndex)
     : filteredChoices;
-  const renderedOffset = virtualRange.startIndex * TARGET_ROW_HEIGHT;
+  const renderedOffset = virtualRange.startIndex * targetRowHeight;
   const collapsedSelectedSummary =
     value.length === 0
       ? 'Выберите получателей'
@@ -195,11 +197,14 @@ export function PublicationTargetPicker({
     const list = listRef.current;
     const updateHeight = () => {
       setListViewportHeight(Math.max(1, list.clientHeight));
+      const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+      setTargetRowHeight(Math.max(TARGET_ROW_HEIGHT, rootFontSize * TARGET_ROW_REM));
     };
     updateHeight();
     const observer =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateHeight);
     observer?.observe(list);
+    observer?.observe(document.documentElement);
     window.addEventListener('resize', updateHeight);
     return () => {
       observer?.disconnect();
@@ -274,7 +279,7 @@ export function PublicationTargetPicker({
       !remoteSource?.hasNextPage ||
       remoteSource.settling ||
       remoteSource.fetchNextPageError ||
-      list.scrollHeight - list.scrollTop - list.clientHeight > TARGET_LIST_AUTO_LOAD_THRESHOLD
+      list.scrollHeight - list.scrollTop - list.clientHeight > targetRowHeight * 2
     ) {
       return;
     }
@@ -289,6 +294,7 @@ export function PublicationTargetPicker({
     remoteSource?.fetchingNextPage,
     remoteSource?.hasNextPage,
     remoteSource?.settling,
+    targetRowHeight,
   ]);
 
   function toggleTarget(target: PublicationTarget) {
@@ -345,8 +351,7 @@ export function PublicationTargetPicker({
     const list = event.currentTarget;
     setListScrollTop(list.scrollTop);
 
-    const nearEnd =
-      list.scrollHeight - list.scrollTop - list.clientHeight <= TARGET_LIST_AUTO_LOAD_THRESHOLD;
+    const nearEnd = list.scrollHeight - list.scrollTop - list.clientHeight <= targetRowHeight * 2;
     if (!nearEnd) {
       autoLoadArmedRef.current = true;
       return;
@@ -511,29 +516,15 @@ export function PublicationTargetPicker({
             </div>
           ) : null}
 
-          <label className="publication-search">
-            <Search aria-hidden />
-            <input
-              ref={searchInputRef}
-              type="search"
-              value={query}
-              maxLength={120}
-              placeholder="Найти чат или канал"
-              aria-label="Найти получателя"
-              onChange={(event) => changeQuery(event.currentTarget.value)}
-              disabled={disabled}
-            />
-            {query ? (
-              <button
-                type="button"
-                onClick={() => changeQuery('')}
-                aria-label="Очистить поиск"
-                disabled={disabled}
-              >
-                <Xmark aria-hidden />
-              </button>
-            ) : null}
-          </label>
+          <SearchField
+            inputRef={searchInputRef}
+            value={query}
+            onChange={changeQuery}
+            placeholder="Найти чат или канал"
+            label="Найти получателя"
+            disabled={disabled}
+            inputProps={{ maxLength: 120, enterKeyHint: 'search' }}
+          />
 
           <div
             className="publication-target-picker__filters"

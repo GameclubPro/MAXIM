@@ -1,0 +1,25 @@
+@layer components {
+  .init-missing-card .init-missing-card__close {
+    width: 100%;
+    min-height: 48px;
+    padding: 12px 18px;
+    border: 0;
+    border-radius: 14px;
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    font: inherit;
+    font-weight: 750;
+    cursor: pointer;
+  }
+  .init-missing-card .init-missing-card__close:focus-visible {
+    outline: 3px solid var(--color-accent);
+    outline-offset: 3px;
+  }
+  .init-missing-card .init-missing-help {
+    font-size: 16px;
+    line-height: 1.55;
+  }
+  .init-missing-card .init-missing-help ul {
+    gap: 10px;
+  }
+}

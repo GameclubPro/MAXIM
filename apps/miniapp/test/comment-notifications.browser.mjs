@@ -60,6 +60,7 @@ try {
       await page.goto(`${base}?profile=publisher`);
       await page.locator('.channel-dialog-message').first().waitFor();
       await applyNativeVisualMode(page, profile);
+      await page.getByRole('button', { name: 'Параметры обсуждения', exact: true }).click();
       await page.getByRole('button', { name: 'Настройки уведомлений', exact: true }).click();
       const sheet = page.getByRole('dialog', { name: 'Уведомления', exact: true });
       await sheet.waitFor();
@@ -88,6 +89,7 @@ try {
       await sheet.getByRole('button', { name: 'Готово', exact: true }).click();
       await sheet.waitFor({ state: 'hidden' });
       await page.getByRole('button', { name: 'Закрыть уведомление', exact: true }).click();
+      await page.getByRole('button', { name: 'Параметры обсуждения', exact: true }).click();
       await page.getByRole('button', { name: 'Настройки уведомлений', exact: true }).click();
       assert.equal(
         await modes.getByRole('radio', { name: 'Все', exact: true }).getAttribute('aria-checked'),

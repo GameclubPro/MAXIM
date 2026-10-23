@@ -60,14 +60,16 @@
   }
 
   .channel-suggest-heading h1 {
+    min-width: 0;
     margin: 0;
-    font-size: 22px;
+    font-size: clamp(21px, 5.8vw, 26px);
     line-height: 1.25;
     font-weight: 800;
     letter-spacing: 0;
   }
 
   .channel-suggest-heading > span {
+    flex-shrink: 0;
     color: var(--suggest-muted);
     font-size: 13px;
   }
@@ -76,6 +78,13 @@
     display: grid;
     grid-template-columns: 1fr 1.35fr 1fr;
     border-bottom: 1px solid var(--suggest-line);
+    gap: 4px;
+    padding-bottom: 6px;
+  }
+  .channel-suggest-tabs button:focus-visible {
+    outline: 3px solid var(--suggest-accent);
+    outline-offset: -3px;
+    border-radius: 10px;
   }
 
   .channel-suggest-tabs button {

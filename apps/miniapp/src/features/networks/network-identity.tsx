@@ -40,7 +40,13 @@ export function NetworkScopeBadge({
       />
       <span>
         <strong>{title}</strong>
-        {count !== undefined ? <small>{formatNetworkEntityCount(count, entityType)}</small> : null}
+        <small>
+          {count !== undefined
+            ? formatNetworkEntityCount(count, entityType)
+            : entityType === 'chat'
+              ? 'Сетка чатов'
+              : 'Сетка каналов'}
+        </small>
       </span>
       <b>{target.mode === 'category' ? 'Вся сетка' : 'Выбранные'}</b>
     </div>

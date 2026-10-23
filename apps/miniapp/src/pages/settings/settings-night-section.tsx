@@ -222,9 +222,9 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
 
                     {openHintKey === 'nightModeEnabled' ? (
                       <p id="night-mode-enabled-hint" className="settings-native-toggle__hint">
-                        В выбранное время бот удаляет новые сообщения участников. Администраторы
-                        могут продолжать писать. Расписание работает по часовому поясу, выбранному
-                        ниже.
+                        Каждый день в выбранное время бот удаляет новые сообщения участников.
+                        Администраторы могут продолжать писать. Расписание работает по часовому
+                        поясу, выбранному ниже.
                       </p>
                     ) : null}
                   </div>

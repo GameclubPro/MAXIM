@@ -11,8 +11,9 @@ import {
   installNativeVisualModeInitScript,
 } from '../../../scripts/miniapp-native-visual-mode.mjs';
 
-const base = await allocateMiniappBaseUrl('http://127.0.0.1/app/');
-const server = await ensureMiniappDevServer(base);
+const requestedBase = process.env.MINIAPP_TEST_BASE_URL;
+const base = requestedBase ?? (await allocateMiniappBaseUrl('http://127.0.0.1/app/'));
+const server = await ensureMiniappDevServer(base, { reuseServer: Boolean(requestedBase) });
 const profiles = [
   ['iphone-light', devices['iPhone 15'], 'light', 'ios'],
   ['iphone-dark', devices['iPhone SE'], 'dark', 'ios'],
@@ -61,6 +62,30 @@ async function settledBox(locator) {
     }
     throw new Error('Settings geometry did not settle within 120 animation frames');
   });
+}
+
+async function assertOverviewState(entry, enabled, label) {
+  const mobile = (await entry.page().evaluate(() => window.innerWidth)) <= 600;
+  if (mobile) {
+    const stateLabel = entry.locator('.settings-section__state-label');
+    assert.equal(await stateLabel.innerText(), enabled === 'true' ? 'Включено' : 'Выключено');
+    const entryBox = await settledBox(entry);
+    assertBoxWithin(await settledBox(stateLabel), entryBox, `${label} readable state`);
+    assertBoxWithin(
+      await settledBox(entry.locator('.settings-section__summary')),
+      entryBox,
+      `${label} readable summary`,
+    );
+    assert.ok(
+      await stateLabel.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return style.clipPath === 'none' && Number.parseFloat(style.fontSize) >= 12;
+      }),
+      `${label} state must be visible text rather than a color-only signal`,
+    );
+  } else {
+    assert.equal(await entry.locator('.settings-section__state').isVisible(), true);
+  }
 }
 
 async function readSteelPalette(page) {
@@ -255,15 +280,22 @@ async function assertOverviewLayout(page, name, entity) {
   const [left, right] = await Promise.all(
     pair.map((title) => settledBox(page.getByRole('button', { name: title, exact: true }))),
   );
-  assert.ok(
-    Math.abs(left.y - right.y) <= 0.5 && left.x + left.width <= right.x + 0.5,
-    `${name}/${entity} ${pair.join(' / ')} must share a row in separate columns`,
-  );
+  const viewportWidth = await page.evaluate(() => innerWidth);
+  if (viewportWidth <= 600) {
+    assert.ok(
+      left.y + left.height <= right.y + 0.5 && Math.abs(left.x - right.x) <= 0.5,
+      `${name}/${entity} modules must form readable rows without overlap on smartphones`,
+    );
+  } else {
+    assert.ok(
+      Math.abs(left.y - right.y) <= 0.5 && left.x + left.width <= right.x + 0.5,
+      `${name}/${entity} ${pair.join(' / ')} must share a row in separate desktop columns`,
+    );
+  }
   assert.ok(
     Math.abs(left.width - right.width) <= 0.5,
     `${name}/${entity} module columns must have equal widths`,
   );
-  const viewportWidth = await page.evaluate(() => innerWidth);
   for (const [index, box] of [left, right].entries()) {
     assert.ok(
       box.width >= 44 &&
@@ -344,7 +376,7 @@ async function assertOverviewSearch(page, name, entity, entry, enabled) {
     enabled,
     'Search must preserve the actual module state',
   );
-  assert.equal(await entry.locator('.settings-section__state').isVisible(), true);
+  await assertOverviewState(entry, enabled, `${name}/${entity} filtered overview`);
 }
 
 let browser;
@@ -463,14 +495,35 @@ try {
           }),
           true,
         );
-        assert.equal(await entry.locator('.settings-section__state').isVisible(), true);
+        await assertOverviewState(entry, enabled, `${name}/${entity} closed overview`);
+        if (platform !== 'desktop' && entity === 'chat') {
+          for (const countTitle of ['Ссылки', 'Ограничения', 'Подписка']) {
+            const countEntry = page.getByRole('button', { name: countTitle, exact: true });
+            const countStatus = countEntry.locator('.settings-section__status-chip');
+            assert.equal(await countStatus.getAttribute('data-redundant-status'), 'true');
+            assert.equal(await countStatus.isVisible(), false);
+            assert.equal(
+              ((await countEntry.getAttribute('aria-describedby')) ?? '')
+                .split(/\s+/)
+                .includes(await countStatus.getAttribute('id')),
+              false,
+              `${countTitle} must not repeat its summary count in the accessible description`,
+            );
+          }
+        }
         assert.equal(
           await entry.locator('.settings-section__summary').evaluate((summary) => {
             const bounds = summary.getBoundingClientRect();
             return bounds.width <= 1 && bounds.height <= 1 && summary.textContent.trim().length > 0;
           }),
-          true,
-          'Overview descriptions remain available to assistive technology without occupying a row',
+          platform === 'desktop',
+          'Mobile overview descriptions occupy a readable row; desktop retains its compact layout',
+        );
+        assert.ok(
+          await entry.evaluate((element) =>
+            getComputedStyle(element).fontFamily.includes('Manrope VF'),
+          ),
+          'The overview must use the bundled Cyrillic variable font',
         );
         assert.equal(
           await page
@@ -534,7 +587,7 @@ try {
         );
         assert.deepEqual(errors, []);
         console.log(
-          `PASS ${name}/${entity}: delayed search keeps ${readyBox.height}px geometry, two-column modules, steel module palette, reachable header/controls, alias/empty/clear search and no writes`,
+          `PASS ${name}/${entity}: delayed search keeps ${readyBox.height}px geometry, responsive module rows, readable state, steel palette, reachable controls, alias/empty/clear search and no writes`,
         );
       } finally {
         releaseModule();

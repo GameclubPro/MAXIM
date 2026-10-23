@@ -1239,6 +1239,10 @@ const scenarioBehaviors = [
       await sheet.getByLabel('Название', { exact: true }).first().fill('Не сохранять');
       await sheet.getByLabel('Ссылка', { exact: true }).first().fill('https://max.ru/discard');
       await page.keyboard.press('Escape');
+      await page
+        .getByRole('alertdialog', { name: 'Закрыть без сохранения?' })
+        .getByRole('button', { name: 'Не сохранять', exact: true })
+        .click();
       await waitForPublisherButtonsSheetClosed(page, sheet);
       await assertPublisherButtonTriggerIsEmpty(page, trigger);
 
@@ -1250,6 +1254,10 @@ const scenarioBehaviors = [
       await sheet
         .locator('.publication-buttons-sheet__backdrop')
         .click({ position: { x: 2, y: 2 } });
+      await page
+        .getByRole('alertdialog', { name: 'Закрыть без сохранения?' })
+        .getByRole('button', { name: 'Не сохранять', exact: true })
+        .click();
       await waitForPublisherButtonsSheetClosed(page, sheet);
       await assertPublisherButtonTriggerIsEmpty(page, trigger);
 
@@ -2116,8 +2124,9 @@ const scenarioBehaviors = [
     name: 'events-moderation-expanded',
     beforeShot: async (page) => {
       await waitForModerationEventsReady(page);
-      await page.locator('.event-feed-item__trigger').first().click();
-      await page.waitForTimeout(200);
+      const event = page.locator('.event-feed-item').first();
+      await event.locator('.event-feed-item__expand').click();
+      await event.locator('.event-feed-item__details').waitFor({ state: 'visible' });
     },
   },
   {
@@ -2125,8 +2134,11 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await waitForModerationEventsReady(page);
       const event = page.locator('.event-feed-item').filter({ hasText: 'Мария Ссылкина' });
-      await event.locator('.event-feed-item__trigger').click();
-      await event.locator('.logs-violation-item__quick-button--danger').click();
+      await event
+        .getByRole('button', { name: 'Показать детали нарушения: Мария Ссылкина', exact: true })
+        .click();
+      await event.locator('.event-feed-item__details').waitFor({ state: 'visible' });
+      await event.getByRole('button', { name: 'Заблокировать', exact: true }).click();
       await page.getByRole('dialog', { name: 'Блокировка участника' }).waitFor();
     },
     afterShot: (page) => assertModerationScopeBusy(page, 'В этом чате'),
@@ -2895,6 +2907,34 @@ const scenarioBehaviors = [
     name: 'channel-dialog-suggest',
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
+      const composeTab = page.locator('#suggest-tab-compose');
+      await composeTab.focus();
+      for (const [key, selected] of [
+        ['ArrowRight', 'preview'],
+        ['End', 'history'],
+        ['Home', 'compose'],
+        ['ArrowLeft', 'history'],
+        ['ArrowRight', 'compose'],
+      ]) {
+        await page.keyboard.press(key);
+        const tab = page.locator(`#suggest-tab-${selected}`);
+        if (
+          (await tab.getAttribute('aria-selected')) !== 'true' ||
+          (await tab.getAttribute('tabindex')) !== '0'
+        ) {
+          throw new Error(
+            `Suggestion tabs failed ${key}: expected ${selected} to be selected and focusable.`,
+          );
+        }
+        if (!(await tab.evaluate((element) => element === document.activeElement))) {
+          throw new Error(`Suggestion tab focus did not follow ${key}.`);
+        }
+        await page.locator(`#suggest-${selected}`).waitFor({ state: 'visible' });
+      }
+      if ((await page.locator('.channel-suggest-tabs [role="tab"][tabindex="0"]').count()) !== 1) {
+        throw new Error('Suggestion tabs must have one keyboard entry point.');
+      }
+      await composeTab.evaluate((element) => element.blur());
       await page.getByText('Требования канала', { exact: true }).click();
       await page
         .getByText('Только события нашего города с датой, адресом и контактами.', {
@@ -3157,12 +3197,20 @@ const scenarioBehaviors = [
       await page.getByRole('button', { name: 'Быстрые кнопки', exact: true }).click();
       const toggle = page.getByRole('checkbox', { name: 'Быстрые кнопки', exact: true });
       const help = page.locator('#channel-quick-buttons-help');
+      const example = page.locator('.channel-quick-buttons-example');
       await help.waitFor({ state: 'visible' });
+      await example.waitFor({ state: 'visible' });
+      const helpText = await help.innerText();
       if (
         (await toggle.getAttribute('aria-describedby')) !== 'channel-quick-buttons-help' ||
-        !(await help.innerText()).includes('Подробнее = https://example.com')
+        !helpText.includes('Название = ссылка') ||
+        !helpText.includes('Бот уберёт эту строку и добавит кнопку под постом.') ||
+        (await example.locator('code').innerText()) !== 'Подробнее = https://example.com' ||
+        (await example.locator('button, a, input, textarea, [role="button"]').count()) > 0
       ) {
-        throw new Error('Quick buttons must explain the unquoted syntax below the toggle.');
+        throw new Error(
+          'Quick buttons must explain the syntax with a visible static example below the toggle.',
+        );
       }
       if (await toggle.isChecked()) {
         throw new Error('Quick buttons must default off.');

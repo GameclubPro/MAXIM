@@ -46,6 +46,7 @@ import {
 } from './publisher-entities-page-model';
 import { buildPublisherEntityModulesRoute } from './publisher-entity-modules-page-model';
 import './publisher-entities-page.css';
+import '../styles/publisher-catalog-workspace.css';
 
 const PUBLISHER_ENTITIES_QUERY_ROOT = ['publications', 'sources', 'publisher'] as const;
 const PUBLISHER_ENTITY_PAGE_SIZE = 30;

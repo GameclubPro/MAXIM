@@ -12,13 +12,22 @@ export function ChannelQuickButtonsFields({ fields }: { fields: ChannelSettingsF
         error={fields.error('quickButtonsEnabled')}
       />
       <p id="channel-quick-buttons-help" className="settings-native-toggle__hint">
-        В новом посте добавьте отдельную строку:
-        <br />
-        <code>Подробнее = https://example.com</code>
+        Для каждой кнопки добавьте в новом посте отдельную строку «Название = ссылка».
+        <span className="channel-quick-buttons-source">
+          <br />
+          <code>Подробнее = https://example.com</code>
+        </span>
         <br />
         Бот уберёт эту строку и добавит кнопку под постом. Вложения и оформление текста сохранятся.
-        Для каждой кнопки нужна отдельная строка.
       </p>
+      <figure className="channel-quick-buttons-example">
+        <figcaption>Пример строки в посте</figcaption>
+        <code>Подробнее = https://example.com</code>
+        <span className="channel-quick-buttons-example__label">Кнопка под постом</span>
+        <span className="channel-quick-buttons-example__button">
+          Подробнее <span aria-hidden>↗</span>
+        </span>
+      </figure>
     </>
   );
 }

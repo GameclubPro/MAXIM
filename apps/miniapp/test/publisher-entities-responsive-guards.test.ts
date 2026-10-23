@@ -10,10 +10,9 @@ const pageCss = readFileSync(
   new URL('../src/pages/publisher-entities-page.css', import.meta.url),
   'utf8',
 );
-const workspaceCss = readFileSync(
-  new URL('../src/styles/publisher-workspace.css', import.meta.url),
-  'utf8',
-);
+const workspaceCss = ['publisher-workspace.css', 'publisher-catalog-workspace.css']
+  .map((file) => readFileSync(new URL(`../src/styles/${file}`, import.meta.url), 'utf8'))
+  .join('\n');
 const pickerSource = readFileSync(
   new URL('../src/features/publications/publication-target-picker.tsx', import.meta.url),
   'utf8',

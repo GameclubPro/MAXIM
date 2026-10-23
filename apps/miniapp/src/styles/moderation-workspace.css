@@ -235,6 +235,15 @@
     outline-offset: 2px;
   }
 
+  body[data-miniapp-profile='moderation'] .search-field > input,
+  body[data-miniapp-profile='moderation'] .search-field > input:focus-visible {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    outline: none;
+  }
+
   body[data-miniapp-profile='moderation'] .compact-page-header {
     --compact-page-header-height: 52px;
     --compact-page-header-radius: 0px;
@@ -2576,5 +2585,93 @@
 
   body[data-miniapp-profile='moderation'] .advertising-workspace__note {
     font-size: 12px;
+  }
+
+  @media (max-width: 600px) {
+    body[data-miniapp-profile='moderation']
+      .events-screen
+      :is(.event-feed-item__name-link, .membership-feed__name-link) {
+      min-width: 0;
+      font-size: 1rem;
+      line-height: 1.4;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .events-screen
+      :is(
+        .event-feed-item__meta,
+        .membership-feed__time,
+        .membership-feed__pill,
+        .participants-roster__identity > span,
+        .sanctions-workspace__count
+      ) {
+      font-size: 0.8125rem;
+      line-height: 1.45;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .events-screen
+      :is(.sanctions-workspace__filters select, .participants-roster__filters select) {
+      min-height: 48px;
+      font-size: 1rem;
+    }
+
+    body[data-miniapp-profile='moderation']
+      :is(.participant-sheet, .sanction-details, .reports-journal)
+      :is(.button, .participant-sheet__mode-option, .participant-sheet__activity) {
+      min-height: 48px;
+      border-radius: 12px;
+      font-size: 0.9375rem;
+      line-height: 1.4;
+      white-space: normal;
+    }
+
+    body[data-miniapp-profile='moderation']
+      :is(.participant-sheet__stat, .sanction-details__status) {
+      border-radius: 14px;
+    }
+
+    body[data-miniapp-profile='moderation'] .reports-journal :is(small, dt, .reports-availability) {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+
+    body[data-miniapp-profile='moderation'] .reports-journal__summary {
+      min-height: 80px;
+      gap: 10px;
+    }
+
+    body[data-miniapp-profile='moderation'] .reports-journal__votes {
+      flex-wrap: wrap;
+      justify-content: end;
+      max-width: 42%;
+      font-variant-numeric: tabular-nums;
+    }
+  }
+
+  @media (max-width: 359px) {
+    body[data-miniapp-profile='moderation'] .reports-journal dl {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 4px;
+    }
+
+    body[data-miniapp-profile='moderation'] .reports-journal dd {
+      margin-bottom: 8px;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-command-card__row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 10px;
+    }
   }
 }

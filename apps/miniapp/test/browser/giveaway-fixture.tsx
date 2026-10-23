@@ -18,8 +18,8 @@ const data = managedGiveawayPublicSchema.parse({
   sourceLink: 'https://max.ru/source',
   sourceAvatarUrl: 'https://images.example.test/source.webp',
   entityType: 'channel',
-  title: 'Не дублировать приз',
-  description: 'Не дублировать описание',
+  title: 'Подарки для подписчиков',
+  description: 'Подпишитесь на каналы и участвуйте в розыгрыше подарков.',
   status: 'ACTIVE',
   imageEnabled: false,
   imageBase64: '',
@@ -36,7 +36,14 @@ const data = managedGiveawayPublicSchema.parse({
   completedAt: null,
   publicationUrl: 'https://max.ru/post',
   resultsUrl: null,
-  prizes: [{ id: 'prize', position: 1, title: 'Скрытый приз', displayTitle: 'Скрытый приз' }],
+  prizes: [
+    {
+      id: 'prize',
+      position: 1,
+      title: 'Сертификат на 5 000 ₽',
+      displayTitle: 'Сертификат на 5 000 ₽',
+    },
+  ],
   winners: [],
 });
 let participant = managedGiveawayParticipantStateSchema.parse({
@@ -66,6 +73,21 @@ const fixture = {
   mode: 'verified',
   opened: false,
   openedUrl: '',
+  setPromotion(coverBase64: string | null, prizeCount = 1) {
+    data.imageEnabled = Boolean(coverBase64);
+    data.imageMimeType = 'image/webp';
+    data.imageBase64 = coverBase64 ?? '';
+    data.prizes = managedGiveawayPublicSchema.shape.prizes.parse(
+      Array.from({ length: prizeCount }, (_, index) => {
+        const title =
+          index === 0
+            ? 'Сертификат на 5 000 ₽'
+            : `Подарок ${index + 1} с длинным описанием для проверки переноса`;
+        return { id: `prize-${index}`, position: index + 1, title, displayTitle: title };
+      }),
+    );
+    void client.invalidateQueries();
+  },
   setAvatar(avatarUrl: string | null, entityType: 'chat' | 'channel' = 'channel') {
     data.sourceAvatarUrl = avatarUrl;
     data.entityType = entityType;
@@ -102,6 +124,8 @@ const fixture = {
         winnerStatus: 'SELECTED',
         canClaim: true,
         prizePosition: 1,
+        prizeTitle: 'Сертификат на 5 000 ₽',
+        prizeDisplayTitle: 'Сертификат на 5 000 ₽',
         claimDeadlineAt: new Date(
           Date.now() + (scenario === 'expired' ? -1_000 : 3_600_000),
         ).toISOString(),

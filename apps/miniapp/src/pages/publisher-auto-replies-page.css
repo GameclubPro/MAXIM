@@ -1030,6 +1030,14 @@
     --auto-reply-primary-ink: var(--app-page-background);
   }
 
+  html[data-max-theme='dark']
+    .publisher-auto-replies-page
+    .publisher-auto-reply-editor__composer
+    .broadcast-message-card__bubble {
+    background: var(--color-surface);
+    color: var(--color-ink);
+  }
+
   @media (max-width: 380px) {
     .publisher-auto-reply-editor__retained {
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1074,5 +1082,111 @@
     to {
       transform: rotate(360deg);
     }
+  }
+
+  .publisher-auto-reply-row__phrase-more {
+    display: grid;
+    place-items: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 4px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font: inherit;
+    font-size: 0.8125rem;
+  }
+
+  .publisher-auto-reply-row__all-phrases {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 14px 14px 14px 32px;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 0.875rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .publisher-auto-reply-review .action-confirm-sheet__panel {
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .publisher-auto-reply-review .action-confirm-sheet__body {
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .publisher-auto-reply-review .action-confirm-sheet__preview {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .publisher-auto-reply-review__content,
+  .publisher-auto-reply-review__facts {
+    display: grid;
+    gap: 12px;
+    overflow-wrap: anywhere;
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+
+  .publisher-auto-reply-review__content > strong,
+  .publisher-auto-reply-review__facts > strong {
+    color: var(--color-ink);
+    font-size: 0.8125rem;
+  }
+
+  .publisher-auto-reply-review__facts {
+    padding-top: 16px;
+    margin-top: 16px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .publisher-auto-reply-review__facts > ul {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding-left: 20px;
+  }
+
+  .publisher-auto-reply-review__media {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .publisher-auto-reply-review__media :is(img, .publisher-auto-reply-asset) {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    max-height: 240px;
+    aspect-ratio: 1;
+    object-fit: contain;
+    border-radius: 14px;
+  }
+
+  .publisher-auto-reply-review .publication-preview__buttons {
+    display: grid;
+    gap: 6px;
+  }
+
+  .publisher-auto-reply-review .publication-preview__buttons > span {
+    display: grid;
+    place-items: center;
+    min-height: 44px;
+    padding: 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--color-surface-muted);
+    color: var(--color-accent);
+    text-align: center;
   }
 }

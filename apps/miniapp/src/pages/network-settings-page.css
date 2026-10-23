@@ -280,4 +280,80 @@
     opacity: 0.55;
     cursor: default;
   }
+
+  body[data-miniapp-profile='moderation'] .network-settings-failures {
+    --network-failure-border: color-mix(in srgb, var(--color-danger) 40%, var(--major-border));
+    --network-failure-surface: color-mix(in srgb, var(--color-danger) 5%, var(--major-surface));
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--network-failure-border);
+    border-radius: 14px;
+    background: var(--network-failure-surface);
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-failures > h3 {
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.4;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-failures .network-settings-outcomes {
+    margin: 0;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-outcomes > li + li {
+    padding-top: 12px;
+    border-top: 1px solid var(--major-border);
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-outcomes > li > span {
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-outcomes > li > small {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--major-muted);
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-operation-summary {
+    display: grid;
+    gap: 8px;
+    font-weight: 750;
+    font-variant-numeric: tabular-nums;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-operation-summary > :is(h2, p) {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .network-settings-operation-summary > h2 {
+    font-size: 16px;
+    line-height: 1.4;
+  }
+  @media (max-width: 600px) {
+    body[data-miniapp-profile='moderation'] .network-settings-workspace {
+      gap: 14px;
+    }
+    body[data-miniapp-profile='moderation'] .network-settings-scope {
+      flex-wrap: wrap;
+      padding: 12px;
+      border-radius: 16px;
+      font-size: 14px;
+    }
+    body[data-miniapp-profile='moderation'] .network-settings-scope > span {
+      flex: 1 1 120px;
+    }
+    body[data-miniapp-profile='moderation'] .network-settings-scope small {
+      font-size: 13px;
+    }
+    body[data-miniapp-profile='moderation'] .network-settings-scope > b {
+      padding: 5px 8px;
+      border-radius: 8px;
+      background: var(--major-accent-soft);
+    }
+    body[data-miniapp-profile='moderation'] .network-settings-editor__status {
+      font-size: 14px;
+    }
+    body[data-miniapp-profile='moderation']
+      .network-settings-editor
+      .network-settings-page__operation {
+      padding: 14px;
+    }
+  }
 }

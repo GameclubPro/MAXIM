@@ -1782,6 +1782,11 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
             </div>
           )}
         </div>
+        {savingFavoriteEntityKey !== null && !favoritePicker ? (
+          <p className="chats-command__saving" role="status">
+            Сохраняем категорию… Подождите перед следующим изменением.
+          </p>
+        ) : null}
         {!categoryEditMode ? (
           <div className="home-category-chips" role="group" aria-label="Категории">
             <button

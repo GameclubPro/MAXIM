@@ -55,6 +55,9 @@ export function SharedSettingsCommandFields({ fields }: { fields: ChatSettingsFi
   useHintPopoverAutoPosition(openHintKey !== null, openHintKey, () => setOpenHintKey(null));
   return (
     <div className="settings-admin-commands">
+      <p className="settings-admin-commands__case-note">
+        Названия команд можно изменить. Подсказки объясняют действие и область применения.
+      </p>
       {commandCategories.map((category) => (
         <section className="settings-admin-commands__category" key={category.title}>
           <h3>{category.title}</h3>

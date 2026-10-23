@@ -50,16 +50,17 @@ export function NetworkSettingsOperationPanel({
   onStartAgain,
   onRetry,
 }: NetworkSettingsOperationPanelProps) {
-  const [limit, setLimit] = useState(50);
+  const [failureLimit, setFailureLimit] = useState(50);
+  const [detailLimit, setDetailLimit] = useState(50);
   const applied = operation.outcomes.filter(
     (row) => row.status === 'COMMITTED' || row.status === 'COMPLETE',
   ).length;
   const failures = operation.outcomes.filter((row) => row.status === 'FAILED');
   const otherOutcomes = operation.outcomes.filter((row) => row.status !== 'FAILED');
-  const outcomes = (rows: typeof operation.outcomes) => (
+  const outcomes = (rows: typeof operation.outcomes, limit: number) => (
     <ul className="network-settings-outcomes">
       {rows.slice(0, limit).map((row) => (
-        <li key={row.entityId}>
+        <li key={row.entityId} data-outcome={row.status}>
           <strong>{recipientTitles.get(row.entityId) || 'Сообщество'}</strong>
           <span>{outcomeLabel(row)}</span>
           {row.failureMessage ? <small>{row.failureMessage}</small> : null}
@@ -68,14 +69,18 @@ export function NetworkSettingsOperationPanel({
     </ul>
   );
   return (
-    <section className="network-settings-page__operation" aria-live="polite">
-      <h2>{STATUS[operation.status]}</h2>
-      {!['PREVIEWING', 'PREPARED'].includes(operation.status) ? (
-        <p>
-          {operation.outcomes.some((row) => row.status === 'COMMITTED') ? 'Записано' : 'Применено'}:{' '}
-          {applied} из {operation.outcomes.length}
-        </p>
-      ) : null}
+    <section className="network-settings-page__operation" data-operation-status={operation.status}>
+      <div className="network-settings-operation-summary" role="status" aria-atomic="true">
+        <h2>{STATUS[operation.status]}</h2>
+        {!['PREVIEWING', 'PREPARED'].includes(operation.status) ? (
+          <p>
+            {operation.outcomes.some((row) => row.status === 'COMMITTED')
+              ? 'Записано'
+              : 'Применено'}
+            : {applied} из {operation.outcomes.length}
+          </p>
+        ) : null}
+      </div>
       {resumeOperationId && !controller.preview && operation.status === 'PREPARED' ? (
         <p>
           {controller.canStartAgain
@@ -83,12 +88,25 @@ export function NetworkSettingsOperationPanel({
             : 'Подтверждаем состояние операции. Результат пока неизвестен.'}
         </p>
       ) : null}
-      {failures.length ? outcomes(failures) : null}
+      {failures.length ? (
+        <div className="network-settings-failures">
+          <h3>Не применено · {failures.length}</h3>
+          {outcomes(failures, failureLimit)}
+          <p className="network-settings-editor__status">
+            Показано {Math.min(failureLimit, failures.length)} из {failures.length}
+          </p>
+          {failures.length > failureLimit ? (
+            <button type="button" onClick={() => setFailureLimit((value) => value + 50)}>
+              Показать ещё ошибки · {Math.min(50, failures.length - failureLimit)}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <details className="network-settings-details">
         <summary>Подробности применения</summary>
-        {otherOutcomes.length ? outcomes(otherOutcomes) : null}
-        {Math.max(failures.length, otherOutcomes.length) > limit ? (
-          <button type="button" onClick={() => setLimit((value) => value + 50)}>
+        {otherOutcomes.length ? outcomes(otherOutcomes, detailLimit) : null}
+        {otherOutcomes.length > detailLimit ? (
+          <button type="button" onClick={() => setDetailLimit((value) => value + 50)}>
             Показать ещё результаты
           </button>
         ) : null}

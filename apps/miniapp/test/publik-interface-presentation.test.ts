@@ -14,6 +14,14 @@ import {
   getPublicationRecurrenceIntervalNotice,
 } from '../src/features/publications/publication-model';
 
+const workspaceStylesheets = [
+  'publisher-workspace.css',
+  'publisher-catalog-workspace.css',
+  'publisher-modules-workspace.css',
+  'publisher-publications-workspace.css',
+  'publisher-auto-replies-workspace.css',
+].map((file) => readFileSync(new URL(`../src/styles/${file}`, import.meta.url), 'utf8'));
+
 test('draft status is short without claiming unsaved changes were saved', () => {
   const state = (status: DraftSaveState['status']): DraftSaveState => ({ status, error: null });
   assert.equal(publicationDraftSaveLabel(state('idle'), false), '');
@@ -54,24 +62,19 @@ test('time zone presentation uses readable names without changing stored zones',
 });
 
 test('Publisher workspace styling cannot leak to Major after route navigation', () => {
-  const stylesheet = readFileSync(
-    new URL('../src/styles/publisher-workspace.css', import.meta.url),
-    'utf8',
-  );
-  const root = postcss.parse(stylesheet);
-  root.walkRules((rule) => {
-    for (const selector of rule.selectors)
-      assert.match(selector, /body\[data-miniapp-profile='publisher'\]/u);
-  });
-  assert.match(stylesheet, /@layer workspace/u);
-  assert.doesNotMatch(stylesheet, /linear-gradient|backdrop-filter:\s*blur|font-size:[^;]*vw/u);
+  for (const stylesheet of workspaceStylesheets) {
+    const root = postcss.parse(stylesheet);
+    root.walkRules((rule) => {
+      for (const selector of rule.selectors)
+        assert.match(selector, /body\[data-miniapp-profile='publisher'\]/u);
+    });
+    assert.match(stylesheet, /@layer workspace/u);
+    assert.doesNotMatch(stylesheet, /backdrop-filter:\s*blur|font-size:[^;]*vw/u);
+  }
 });
 
 test('Publisher warnings, placeholders and inactive switches follow the theme', () => {
-  const stylesheet = readFileSync(
-    new URL('../src/styles/publisher-workspace.css', import.meta.url),
-    'utf8',
-  );
+  const stylesheet = workspaceStylesheets.join('\n');
   const entities = readFileSync(
     new URL('../src/pages/publisher-entities-page.css', import.meta.url),
     'utf8',

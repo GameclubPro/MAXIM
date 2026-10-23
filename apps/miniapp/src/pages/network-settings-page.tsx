@@ -398,6 +398,7 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
         {controller.operation && resultVisible ? (
           <Suspense fallback={<p role="status">Загружаем результат операции…</p>}>
             <NetworkSettingsOperationPanel
+              key={controller.operation.operationId}
               operation={controller.operation}
               controller={{ ...controller, failedRecipients: retryRecipients }}
               recipientTitles={recipientTitles}

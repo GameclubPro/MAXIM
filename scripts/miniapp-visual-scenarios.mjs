@@ -86,6 +86,7 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/pages/publisher-entity-modules-page*',
     'apps/miniapp/src/pages/publications-page.tsx',
     'apps/miniapp/src/styles/publications-page.css',
+    'apps/miniapp/src/styles/publisher-*.css',
     'packages/contracts/src/publisher.ts',
   ],
   'auto-replies': [
@@ -99,6 +100,7 @@ const FEATURE_SOURCE_GLOBS = {
     'apps/miniapp/src/pages/publisher-auto-replies-page.tsx',
     'apps/miniapp/src/pages/publisher-auto-replies-page.css',
     'apps/miniapp/src/pages/publisher-auto-replies-page-model.ts',
+    'apps/miniapp/src/styles/publisher-*.css',
     'packages/contracts/src/publisher-auto-replies.ts',
   ],
   settings: [
