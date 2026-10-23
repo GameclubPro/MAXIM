@@ -783,7 +783,7 @@ export function PublicationsPage({
   function renderFilters() {
     const statusFilters = STATUS_FILTERS_BY_VIEW[view];
     const hasActiveFilters = entityFilter !== 'all' || statusFilter !== 'all';
-    const showFilterControls = filtersOpen || hasActiveFilters;
+    const showFilterControls = filtersOpen;
 
     return (
       <div className={cn('publications-filterbar', showFilterControls && 'is-expanded')}>
@@ -805,14 +805,33 @@ export function PublicationsPage({
             onClick={() => setFiltersOpen((current) => !current)}
             aria-expanded={showFilterControls}
             aria-label="Фильтры публикаций"
+            aria-controls="publication-filters"
             title="Фильтры"
           >
             <FilterList aria-hidden />
           </button>
         </div>
 
+        {hasActiveFilters && !showFilterControls ? (
+          <button
+            type="button"
+            className="publications-filterbar__summary"
+            onClick={() => setFiltersOpen(true)}
+            aria-label="Изменить активные фильтры"
+          >
+            <FilterList aria-hidden />
+            {[
+              entityFilter !== 'all' &&
+                ENTITY_FILTERS.find((filter) => filter.value === entityFilter)?.label,
+              statusFilter !== 'all' &&
+                statusFilters.find((filter) => filter.value === statusFilter)?.label,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </button>
+        ) : null}
         {showFilterControls ? (
-          <div className="publications-filterbar__controls">
+          <div id="publication-filters" className="publications-filterbar__controls">
             <div
               className="publications-filterbar__entities"
               role="group"
@@ -871,7 +890,7 @@ export function PublicationsPage({
 
   function renderLegacyFilters() {
     const hasActiveFilters = legacyKindFilter !== 'all' || legacyEntityFilter !== 'all';
-    const showFilterControls = legacyFiltersOpen || hasActiveFilters;
+    const showFilterControls = legacyFiltersOpen;
 
     return (
       <div className={cn('legacy-publications-filterbar', showFilterControls && 'is-expanded')}>
@@ -893,14 +912,33 @@ export function PublicationsPage({
             onClick={() => setLegacyFiltersOpen((current) => !current)}
             aria-expanded={showFilterControls}
             aria-label="Фильтры ранее созданных постов"
+            aria-controls="legacy-publication-filters"
             title="Фильтры"
           >
             <FilterList aria-hidden />
           </button>
         </div>
 
+        {hasActiveFilters && !showFilterControls ? (
+          <button
+            type="button"
+            className="publications-filterbar__summary"
+            onClick={() => setLegacyFiltersOpen(true)}
+            aria-label="Изменить активные фильтры архива"
+          >
+            <FilterList aria-hidden />
+            {[
+              legacyKindFilter !== 'all' &&
+                LEGACY_KIND_FILTERS.find((filter) => filter.value === legacyKindFilter)?.label,
+              legacyEntityFilter !== 'all' &&
+                ENTITY_FILTERS.find((filter) => filter.value === legacyEntityFilter)?.label,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </button>
+        ) : null}
         {showFilterControls ? (
-          <div className="legacy-publications-filterbar__controls">
+          <div id="legacy-publication-filters" className="legacy-publications-filterbar__controls">
             <div
               className="legacy-publications-filterbar__kinds"
               role="group"

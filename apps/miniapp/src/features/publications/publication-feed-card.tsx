@@ -87,6 +87,8 @@ export function PublicationFeedCard({
   const menuPanelRef = useRef<HTMLElement | null>(null);
   const firstActionRef = useRef<HTMLButtonElement | null>(null);
   const menuTitleId = useId();
+  const contextId = useId();
+  const audienceId = useId();
   const canReviewSchedule = Boolean(scheduleReviewLabel && onReviewSchedule);
   const hasMenu =
     canEdit || canPause || canResume || canRetry || canDuplicate || canCancel || canReviewSchedule;
@@ -205,7 +207,7 @@ export function PublicationFeedCard({
 
   const content = (
     <>
-      <span className="publication-feed-card__head">
+      <span id={contextId} className="publication-feed-card__head">
         <span className={cn('publication-feed-card__status', `is-${tone}`)}>
           <span aria-hidden className="publication-feed-card__status-dot" />
           {eyebrow}
@@ -229,7 +231,7 @@ export function PublicationFeedCard({
         className="publication-feed-card__preview max-markdown-preview--clamp-2"
       />
       {audience || additionalMeta.length > 0 ? (
-        <span className="publication-feed-card__meta">
+        <span id={audienceId} className="publication-feed-card__meta">
           {audience ? (
             <span className="publication-feed-card__audience" title={audience}>
               {audience}
@@ -259,6 +261,9 @@ export function PublicationFeedCard({
           onClick={primaryAction.onClick}
           disabled={busy}
           aria-label={primaryActionLabel}
+          aria-describedby={[contextId, (audience || additionalMeta.length > 0) && audienceId]
+            .filter(Boolean)
+            .join(' ')}
         >
           {content}
         </button>

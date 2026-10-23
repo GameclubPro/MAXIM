@@ -4,13 +4,15 @@
 
     position: fixed;
     left: 50%;
-    bottom: calc(var(--app-safe-bottom) + var(--toast-bottom-offset));
+    bottom: var(--toast-inset, calc(var(--app-safe-bottom) + var(--toast-bottom-offset)));
     transform: translateX(-50%);
     width: min(92vw, 520px);
     display: grid;
     gap: var(--space-2);
     z-index: 1700;
     pointer-events: none;
+    max-height: calc(var(--app-viewport-height, 100dvh) - 24px);
+    overflow-y: auto;
   }
 
   .toast {
@@ -21,25 +23,24 @@
     border-radius: var(--radius-sm);
     padding: 10px 12px;
     color: #fff;
+    background: linear-gradient(140deg, #2b4d67, #203d53);
     pointer-events: auto;
     box-shadow: 0 10px 24px rgba(24, 38, 52, 0.2);
   }
 
-  .toast--info {
-    background: linear-gradient(140deg, #2b4d67, #203d53);
-  }
-
   .toast--success {
-    background: linear-gradient(140deg, #1f9f7b, #17775d);
+    background: linear-gradient(140deg, #157c60, #11634d);
   }
 
   .toast--danger {
-    background: linear-gradient(140deg, #da5767, #b83d4d);
+    background: linear-gradient(140deg, #b83d4d, #962d3b);
   }
 
   .toast__body {
     display: grid;
     gap: 3px;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .toast__body h4 {
@@ -59,7 +60,6 @@
     width: 44px;
     height: 44px;
     background: rgba(255, 255, 255, 0.16);
-    color: #fff;
     cursor: pointer;
   }
 }

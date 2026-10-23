@@ -198,12 +198,14 @@ html[data-max-theme='dark']
 
 .bottom-nav.is-keyboard-open,
 html[data-max-keyboard-open='true'] .bottom-nav {
+  visibility: hidden;
   opacity: 0;
   pointer-events: none;
   transform: translate(-50%, calc(100% + var(--space-6) + var(--app-keyboard-overlap)));
 }
 
 body.settings-drilldown-open .bottom-nav {
+  visibility: hidden;
   opacity: 0;
   pointer-events: none;
   transform: translate(-50%, calc(100% + var(--space-6)));
@@ -664,4 +666,10 @@ html[data-max-theme='dark']
     overflow-wrap: normal;
     white-space: nowrap;
   }
+}
+
+html[data-max-keyboard-open='true'] .toast-stack {
+  --toast-inset: calc(
+    max(var(--app-visual-viewport-bottom, 0px), var(--app-keyboard-overlap, 0px)) + 12px
+  );
 }
