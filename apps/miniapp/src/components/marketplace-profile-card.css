@@ -65,11 +65,15 @@
       height: 38px;
       border-radius: 12px;
       color: var(--color-accent);
-      background: var(--color-accent-soft);
+      background: transparent;
     }
     .marketplace-profile-card .settings-section__icon-badge svg {
       width: 22px;
       height: 22px;
+    }
+    html[data-max-theme='dark'] .marketplace-profile-card .settings-section__icon-badge svg {
+      --marketplace-icon-glow: color-mix(in srgb, currentColor 16%, transparent);
+      filter: drop-shadow(0 0 3px var(--marketplace-icon-glow));
     }
     .marketplace-profile-card .settings-section__chevron {
       display: grid;

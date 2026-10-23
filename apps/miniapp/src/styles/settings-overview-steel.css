@@ -477,9 +477,22 @@
       width: 38px;
       height: 38px;
       border-radius: 12px;
-      --steel-icon: color-mix(in srgb, var(--steel-blue) 10%, var(--steel-panel));
-      background: var(--steel-icon);
-      color: var(--steel-blue);
+      background: transparent;
+      color: var(--steel-accent);
+    }
+
+    body[data-miniapp-profile='moderation']
+      .settings-overview-group__entries
+      .settings-section__icon-badge.is-mint {
+      --steel-accent: var(--steel-violet);
+    }
+
+    body[data-miniapp-profile='moderation']
+      :is(
+        .settings-overview-group__entries .settings-section__icon-badge.is-sky,
+        .channel-post-signature-entry .settings-section__icon-badge
+      ) {
+      --steel-accent: var(--steel-blue);
     }
 
     body[data-miniapp-profile='moderation']:is(
@@ -549,8 +562,16 @@
     body[data-miniapp-profile='moderation'].settings-home-page-open
       .settings-advertising-soon__entry:disabled
       .settings-section__icon-badge {
-      background: var(--steel-inset);
       color: var(--steel-muted);
+    }
+
+    html[data-max-theme='dark']
+      body[data-miniapp-profile='moderation']
+      .settings-overview-group__entries
+      .settings-section__icon-badge
+      svg {
+      --steel-neon: color-mix(in srgb, currentColor 18%, transparent);
+      filter: drop-shadow(0 0 5px var(--steel-neon));
     }
   }
 

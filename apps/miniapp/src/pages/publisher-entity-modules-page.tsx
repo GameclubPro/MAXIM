@@ -5,10 +5,12 @@ import {
   CheckCircle,
   Download,
   Key,
+  MailIn,
   NavArrowLeft,
   NavArrowRight,
   Post,
   Refresh,
+  Reply,
   WarningCircle,
 } from 'iconoir-react';
 import { lazy, Suspense, useEffect, useRef, useState, type ReactElement } from 'react';
@@ -79,10 +81,18 @@ const LazyPublisherSuggestionsPanel = lazy(
   () => import('../components/publisher-suggestions-panel'),
 );
 
-function ModuleNavigationContent({ title, icon }: { title: string; icon: ReactElement }) {
+function ModuleNavigationContent({
+  title,
+  icon,
+  variant,
+}: {
+  title: string;
+  icon: ReactElement;
+  variant: 'posting' | 'auto-replies' | 'suggestions' | 'vk';
+}) {
   return (
     <>
-      <span className="publisher-entity-module__icon" aria-hidden>
+      <span className={`publisher-entity-module__icon is-${variant}`} aria-hidden>
         {icon}
       </span>
       <strong>{title}</strong>
@@ -428,7 +438,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               className="publisher-module-entry"
               data-settings-navigation-entry="true"
             >
-              <ModuleNavigationContent title="Посты" icon={<Post />} />
+              <ModuleNavigationContent title="Посты" icon={<Post />} variant="posting" />
             </Link>
           ) : (
             <button
@@ -437,7 +447,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               data-settings-navigation-entry="true"
               disabled
             >
-              <ModuleNavigationContent title="Посты" icon={<Post />} />
+              <ModuleNavigationContent title="Посты" icon={<Post />} variant="posting" />
             </button>
           )
         ) : (
@@ -479,7 +489,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               className="publisher-module-entry"
               data-settings-navigation-entry="true"
             >
-              <ModuleNavigationContent title="Автоответы" icon={<Key />} />
+              <ModuleNavigationContent title="Автоответы" icon={<Reply />} variant="auto-replies" />
             </Link>
           ) : (
             <article className="publisher-entity-module">
@@ -513,7 +523,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             aria-controls="publisher-suggestions-workspace"
             onClick={() => setSuggestionsOpen(true)}
           >
-            <ModuleNavigationContent title="Предложения" icon={<ChatBubble />} />
+            <ModuleNavigationContent title="Предложения" icon={<MailIn />} variant="suggestions" />
           </button>
         ) : null}
 
@@ -586,7 +596,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               aria-controls="publisher-vk-workspace"
               onClick={() => setVkOpen(true)}
             >
-              <ModuleNavigationContent title="Посты из VK" icon={<Download />} />
+              <ModuleNavigationContent title="Посты из VK" icon={<Download />} variant="vk" />
             </button>
           ) : (
             <div className="publisher-entity-module">

@@ -1509,18 +1509,6 @@
     --compact-page-header-radius: 30px;
   }
 
-  .channel-settings-screen__sticky-header .compact-page-header__bar {
-    gap: 11px;
-    border-bottom-color: rgba(203, 222, 237, 0.82);
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(242, 249, 253, 0.95)),
-      linear-gradient(112deg, rgba(11, 132, 255, 0.1), rgba(31, 169, 126, 0.08) 58%, transparent),
-      rgba(250, 253, 255, 0.92);
-    box-shadow:
-      0 20px 42px rgba(29, 59, 84, 0.12),
-      0 1px 0 rgba(255, 255, 255, 0.86) inset;
-  }
-
   .channel-settings-screen__sticky-header .compact-page-header__title {
     font-size: 1.08rem;
     line-height: 1.08;
@@ -1692,10 +1680,6 @@
   .channel-settings-screen__sticky-header .compact-page-header__bar {
     border-radius: 24px;
     border-color: rgba(210, 225, 237, 0.72);
-    background: rgba(255, 255, 255, 0.94);
-    box-shadow:
-      0 14px 34px rgba(24, 55, 83, 0.1),
-      0 1px 0 rgba(255, 255, 255, 0.82) inset;
   }
 
   .channel-settings-screen__sticky-header .compact-page-header__subtitle {
