@@ -18,7 +18,11 @@ import {
 } from '@maxim/contracts';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MarketplaceAccessService } from './marketplace-access.service';
-import { MarketplaceStateService, type MarketplaceBindingRow } from './marketplace-state.service';
+import {
+  MarketplaceStateService,
+  marketplaceLocalGrantSql,
+  type MarketplaceBindingRow,
+} from './marketplace-state.service';
 import { statisticsExchangeActorAllowed } from './statistics-exchange.settings';
 
 export type StatisticsExchangeGrantRow = {
@@ -216,7 +220,8 @@ export class StatisticsExchangeGrantsService {
           if (binding && input.state === 'ACTIVE') {
             await tx.$executeRaw`UPDATE marketplace_bindings SET statistics_v2_consent_only=CASE WHEN statistics_consent=false THEN true ELSE statistics_v2_consent_only END,
             statistics_consent=true,next_collect_at=now(),revision=revision+1,updated_at=now()
-            WHERE id=${binding.id}::uuid AND state='ACTIVE' AND valid_until>now() AND checked_at=${binding.checked_at}`;
+            WHERE id=${binding.id}::uuid AND statistics_revoked_at IS NULL
+              AND ${marketplaceLocalGrantSql('marketplace_bindings', false)} AND checked_at=${binding.checked_at}`;
           }
           // FLAG: An authenticated new server selection supplies only bounded initial peer proof.
           // Replaying the same revision above never extends this deadline.
@@ -256,7 +261,10 @@ export class StatisticsExchangeGrantsService {
         return;
       const active = await this.state.hasActiveAccess(binding.id);
       if (!active) return;
-      await tx.$executeRaw`UPDATE marketplace_bindings SET statistics_v2_consent_only=CASE WHEN statistics_consent=false THEN true ELSE statistics_v2_consent_only END,statistics_consent=true,next_collect_at=now(),revision=revision+1 WHERE id=${binding.id}::uuid`;
+      const enabled =
+        await tx.$executeRaw`UPDATE marketplace_bindings SET statistics_v2_consent_only=CASE WHEN statistics_consent=false THEN true ELSE statistics_v2_consent_only END,statistics_consent=true,next_collect_at=now(),revision=revision+1 WHERE id=${binding.id}::uuid
+        AND statistics_revoked_at IS NULL AND ${marketplaceLocalGrantSql('marketplace_bindings', false)}`;
+      if (!enabled) return;
       await tx.$executeRaw`UPDATE statistics_exchange_entities SET binding_id=${binding.id}::uuid,error=NULL WHERE grant_id=${id}::uuid AND entity_id=${entity.entityId} AND kind=${entity.kind}`;
     });
     const pending = await this.prisma.$queryRaw<Array<{ entity_id: string }>>`

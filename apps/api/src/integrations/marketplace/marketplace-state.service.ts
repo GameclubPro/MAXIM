@@ -30,6 +30,7 @@ export type MarketplaceBindingRow = {
   history_from: Date | null;
   metadata: unknown;
   statistics_consent: boolean;
+  statistics_revoked_at: Date | null;
   collection_owner: 'SHADOW' | 'MAXIM';
   collection_metrics: unknown;
   append_enabled: boolean;
@@ -58,7 +59,7 @@ export function marketplaceLocalGrantSql(
   requireConsent = true,
 ): Prisma.Sql {
   const b = Prisma.raw(alias);
-  return Prisma.sql`${b}.state='ACTIVE' AND ${requireConsent ? Prisma.sql`${b}.statistics_consent=true` : Prisma.sql`true`} AND ${b}.valid_until>now()
+  return Prisma.sql`${b}.state='ACTIVE' AND ${requireConsent ? Prisma.sql`${b}.statistics_consent=true AND ${b}.statistics_revoked_at IS NULL` : Prisma.sql`true`} AND ${b}.valid_until>now()
     AND ${b}.checked_at IS NOT NULL AND ${b}.checked_at<=now()+interval '30 seconds'
     AND NOT EXISTS(SELECT 1 FROM chat_membership_activity_events e
       WHERE e.chat_id=${b}.entity_id AND e.user_id=${b}.actor_user_id

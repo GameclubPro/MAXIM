@@ -197,6 +197,31 @@ postgres('marketplace SQL generations and collection', () => {
     ).toBeNull();
     await db.chatMembershipActivityEvent.deleteMany({ where: { chatId: entityId } });
   });
+  it('invalidates a cached statistics generation and publication-button proof when explicit denial is recorded', async () => {
+    await db.$executeRaw`UPDATE marketplace_bindings SET append_enabled=true,public_url='https://max.ru/id613000037577_3_bot',public_verified_until=now()+interval '5 minutes' WHERE id=${id}::uuid`;
+    const before = (await state.read(id))!;
+    const generationId = await statistics.createGeneration(before);
+    const exported = (await state.read(id))!;
+    expect(
+      await state.resolvePublicationButton({ chatId: entityId, botId: 'test-bot' }),
+    ).not.toBeNull();
+    await db.$executeRaw`UPDATE marketplace_bindings SET statistics_revoked_at=now() WHERE id=${id}::uuid`;
+    await db.$executeRaw`UPDATE marketplace_bindings SET state='ACTIVE',checked_at=now(),valid_until=now()+interval '5 minutes',statistics_consent=true,statistics_v2_consent_only=true WHERE id=${id}::uuid`;
+    const denied = (await state.read(id))!;
+    expect(denied).toMatchObject({
+      statistics_consent: false,
+      append_enabled: false,
+      public_verified_until: null,
+      append_revision: exported.append_revision + 1,
+      revision: exported.revision + 1,
+    });
+    expect(state.present(denied)).not.toHaveProperty('statisticsRevokedAt');
+    expect(await state.hasActiveGrant(id)).toBe(false);
+    expect(
+      await state.resolvePublicationButton({ chatId: entityId, botId: 'test-bot' }),
+    ).toBeNull();
+    await expect(statistics.page(id, { generationId })).rejects.toThrow();
+  });
   it('finishes chat aggregate export without an unsupported message-history scan', async () => {
     await db.channelPost.deleteMany({ where: { chatId: entityId } });
     await db.$executeRaw`UPDATE marketplace_bindings SET kind='CHAT',history_complete=false,history_cursor=now() WHERE id=${id}::uuid`;

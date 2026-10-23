@@ -16,6 +16,7 @@ import { StatisticsExchangeGrantsService } from './statistics-exchange-grants.se
 import { StatisticsExchangeStatisticsService } from './statistics-exchange-statistics.service';
 import { StatisticsExchangeAudienceService } from './statistics-exchange-audience.service';
 import { StatisticsExchangeRuntimeService } from './statistics-exchange-runtime.service';
+import { MarketplaceIntegrationController } from './marketplace.controller';
 import {
   canonicalExchangeMeasurements,
   exchangeMeasurementsHash,
@@ -134,6 +135,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     await db.$executeRaw`DELETE FROM statistics_exchange_grants WHERE id=${grantId}::uuid`;
     await db.$executeRaw`DELETE FROM marketplace_statistics_generations WHERE binding_id=${bindingId}::uuid`;
     await db.$executeRaw`DELETE FROM marketplace_audience_observations WHERE binding_id=${bindingId}::uuid`;
+    await db.$executeRaw`DELETE FROM marketplace_policy_requests WHERE binding_id=${bindingId}::uuid`;
     await db.$executeRaw`DELETE FROM marketplace_bindings WHERE id=${bindingId}::uuid`;
     await db.chat.delete({ where: { id: entityId } });
   });
@@ -207,6 +209,37 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     await grants.put(grantId, input());
     await grants.put(grantId, input(2, 'REVOKED'));
     expect((await state.read(bindingId))!.statistics_consent).toBe(true);
+  });
+  it('does not reenable an explicit legacy revoke through new selections, attestation, or unavailable recovery', async () => {
+    await grants.put(grantId, input());
+    const controller = new MarketplaceIntegrationController(
+      {} as MarketplaceAccessService,
+      state,
+      {} as MarketplaceStatisticsService,
+      db as PrismaService,
+    );
+    await controller.revoke(bindingId, {
+      requestId: randomUUID(),
+      expectedRevision: (await state.read(bindingId))!.revision,
+    });
+    const denied = (await state.read(bindingId))!.statistics_revoked_at;
+    expect(denied).toBeInstanceOf(Date);
+    await db.$executeRaw`UPDATE marketplace_bindings SET state='ACTIVE',checked_at=now(),valid_until=now()+interval '5 minutes' WHERE id=${bindingId}::uuid`;
+    expect(await state.hasActiveAccess(bindingId)).toBe(true);
+    expect((await grants.put(grantId, input(2))).entities[0]?.status).toBe('UNAVAILABLE');
+    expect((await state.read(bindingId))!).toMatchObject({
+      statistics_consent: false,
+      statistics_revoked_at: denied,
+    });
+    await db.$executeRaw`UPDATE statistics_exchange_entities SET binding_id=NULL,next_check_at=now() WHERE grant_id=${grantId}::uuid`;
+    expect(await grants.recoverUnavailable(grantId)).toBe(true);
+    expect((await grants.read(grantId)).entities[0]?.binding).toBeNull();
+    expect((await state.read(bindingId))!).toMatchObject({
+      statistics_consent: false,
+      statistics_revoked_at: denied,
+    });
+    expect(await state.hasActiveGrant(bindingId)).toBe(false);
+    await expect(nativeAll()).rejects.toThrow('Доступ');
   });
   it('bounds initial handshake, isolates peer expiry from native access and invalidates proven remote loss', async () => {
     await grants.put(grantId, input());

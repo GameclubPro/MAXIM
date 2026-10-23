@@ -7,7 +7,6 @@ import {
 } from '@maxim/contracts/marketplace-integration';
 import { EntityAvatar } from './ui/entity-avatar';
 import { openMaxBotLink } from '../lib/max-bridge';
-import { describeUserFacingError } from '../lib/user-facing-error';
 import { ApiRequestError } from '../lib/api-request-error';
 import {
   marketplaceDetails,
@@ -16,12 +15,13 @@ import {
   marketplaceQueryKey,
   marketplaceProfileView,
   marketplaceRetryInterval,
+  marketplaceProfileError,
   isMarketplaceAccessPending,
   type MarketplaceDetails,
 } from '../lib/marketplace-profile-view';
 import type { MarketplaceProfileCardProps } from './marketplace-profile-card';
 
-type Action = 'save' | 'publish' | 'pause' | 'toggle' | 'revoke';
+type Action = 'save' | 'publish' | 'pause' | 'toggle';
 type Draft = { details: MarketplaceDetails; original: MarketplaceDetails; revision: number };
 
 export default function MarketplaceProfileWorkspace({
@@ -40,7 +40,6 @@ export default function MarketplaceProfileWorkspace({
   const path = marketplaceProfilePath(profile, entityType, entityId);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [editing, setEditing] = useState(false);
-  const [consent, setConsent] = useState(false);
   const [notice, setNotice] = useState('');
   const [handoff, setHandoff] = useState(false);
   const attempt = useRef<{ fingerprint: string; id: string } | null>(null);
@@ -69,22 +68,20 @@ export default function MarketplaceProfileWorkspace({
     },
   });
   const state = query.data;
-  const dirty =
-    (draft !== null && JSON.stringify(draft.details) !== JSON.stringify(draft.original)) || consent;
+  const dirty = draft !== null && JSON.stringify(draft.details) !== JSON.stringify(draft.original);
   const mutation = useMutation({
     mutationFn: async ({ action, appendEnabled }: { action: Action; appendEnabled?: boolean }) => {
       if (!state) throw new Error('Сначала проверьте состояние профиля');
       const change = {
         action,
         expectedRevision:
-          action === 'toggle' || action === 'revoke'
+          action === 'toggle'
             ? state.appendRevision
             : action === 'save'
               ? (draft?.revision ?? state.revision)
               : state.revision,
         ...(action === 'save' ? { details: draft?.details ?? marketplaceDetails(state) } : {}),
         ...(action === 'toggle' ? { appendEnabled } : {}),
-        ...(action === 'save' && consent ? { statisticsConsent: true as const } : {}),
       };
       const fingerprint = JSON.stringify(change);
       if (attempt.current?.fingerprint !== fingerprint)
@@ -105,12 +102,8 @@ export default function MarketplaceProfileWorkspace({
       attempt.current = null;
       if (variables.action === 'save') {
         setDraft(null);
-        setConsent(false);
         setEditing(false);
         setNotice('Профиль сохранён.');
-      } else if (variables.action === 'revoke') {
-        setConsent(false);
-        setNotice('Обмен статистикой отключён.');
       } else setNotice('');
       void cache.invalidateQueries({ queryKey });
     },
@@ -165,7 +158,7 @@ export default function MarketplaceProfileWorkspace({
   const busy = mutation.isPending;
   const canSave =
     view.canEdit &&
-    (state.binding.statisticsConsent || consent) &&
+    state.binding.statisticsConsent &&
     details.title.trim() &&
     details.topic &&
     details.region &&
@@ -181,7 +174,7 @@ export default function MarketplaceProfileWorkspace({
     setNotice('');
   };
   const published = state.listing?.status === 'PUBLISHED';
-  const noConsent = !state.binding.statisticsConsent;
+  const profileUnavailable = !state.binding.statisticsConsent;
   const stats = state.statistics;
   const openLink = (url: string | null | undefined) => {
     if (url) openMaxBotLink(url);
@@ -193,20 +186,6 @@ export default function MarketplaceProfileWorkspace({
       'Можно принимать заявки. Публикации требуют согласованных условий и отдельных разрешений.',
     UNAVAILABLE: 'Размещения сейчас недоступны. Проверьте настройки в «Связке».',
   }[view.placement];
-  const reconnectConsent = (
-    <label className="marketplace-profile__consent">
-      <input
-        type="checkbox"
-        checked={consent}
-        disabled={busy || !view.active}
-        onChange={(event) => setConsent(event.target.checked)}
-      />
-      <span>
-        Разрешаю передавать статистику этой площадки из MAXIM в «Связку» за последние 90 дней и
-        обновлять её. Списки участников и тексты сообщений не передаются.
-      </span>
-    </label>
-  );
   return (
     <div className="marketplace-profile">
       <div className="marketplace-profile__hero">
@@ -226,9 +205,12 @@ export default function MarketplaceProfileWorkspace({
             ? 'Проверяем ваши права. Подключение ещё не подтверждено.'
             : query.isError
               ? 'Не удалось обновить состояние. Показаны последние полученные данные; введённые изменения сохранены в форме.'
-              : noConsent
-                ? 'Кнопка публикаций отключена. Для возобновления обмена сначала проверьте права.'
-                : 'Доступ не подтверждён. Проверьте права администратора и подключение бота этого сервиса.'}
+              : 'Доступ не подтверждён. Проверьте права администратора и подключение бота этого сервиса.'}
+        </p>
+      )}
+      {profileUnavailable && (
+        <p className="marketplace-profile__notice" role="status">
+          Профиль пока недоступен. Проверьте состояние позже.
         </p>
       )}
       {formOpen ? (
@@ -294,7 +276,6 @@ export default function MarketplaceProfileWorkspace({
               ))}
             </select>
           </label>
-          {noConsent && reconnectConsent}
           {conflict && (
             <div className="marketplace-profile__notice" role="alert">
               <p>
@@ -369,30 +350,6 @@ export default function MarketplaceProfileWorkspace({
               <dd>{state.listing!.region}</dd>
             </div>
           </dl>
-          {noConsent && (
-            <div className="marketplace-profile__notice">
-              <p>Обмен статистикой отключён. Новые замеры и кнопка в публикациях не добавляются.</p>
-              <p>
-                {state.listing!.profileOnly
-                  ? published
-                    ? 'Профиль без бота «Связки» недоступен посетителям до возобновления обмена.'
-                    : 'Профиль не опубликован. Для его публикации понадобится согласие на статистику.'
-                  : 'Публичность профиля проверяется отдельно в «Связке»; отзыв статистики не скрывает его автоматически.'}
-              </p>
-              {view.active && (
-                <>
-                  {reconnectConsent}
-                  <button
-                    className="button button--accent"
-                    disabled={!consent || busy}
-                    onClick={() => mutation.mutate({ action: 'save' })}
-                  >
-                    Возобновить обмен статистикой
-                  </button>
-                </>
-              )}
-            </div>
-          )}
           {!published && (
             <>
               <p className="marketplace-profile-card__intro">
@@ -410,8 +367,8 @@ export default function MarketplaceProfileWorkspace({
               </button>
               {!view.canPublish && (
                 <p className="marketplace-profile-card__intro">
-                  {noConsent
-                    ? 'Для публикации подтвердите передачу статистики.'
+                  {profileUnavailable
+                    ? 'Публикация пока недоступна. Проверьте состояние позже.'
                     : view.publicState === 'REVIEW'
                       ? 'Публикация станет доступна после проверки биржи.'
                       : 'Публикация станет доступна после подтверждения состояния профиля.'}
@@ -433,7 +390,7 @@ export default function MarketplaceProfileWorkspace({
             {view.placement === 'BOT_REQUIRED' && state.capabilities?.connectUrl ? (
               <button
                 className={
-                  published && view.active && !noConsent
+                  published && view.active && !profileUnavailable
                     ? 'button button--accent'
                     : 'button button--ghost'
                 }
@@ -448,7 +405,7 @@ export default function MarketplaceProfileWorkspace({
             ) : state.capabilities?.manageUrl && view.placement !== 'READY' ? (
               <button
                 className={
-                  published && view.active && !noConsent
+                  published && view.active && !profileUnavailable
                     ? 'button button--accent'
                     : 'button button--ghost'
                 }
@@ -469,15 +426,15 @@ export default function MarketplaceProfileWorkspace({
           <section className="marketplace-profile__section" aria-label="Статистика аудитории">
             <h3>История аудитории</h3>
             <p>
-              {noConsent
-                ? 'Передача новых замеров отключена.'
+              {profileUnavailable
+                ? 'История пока недоступна.'
                 : !stats || stats.state === 'PENDING'
                   ? 'История загружается.'
                   : stats.state === 'AVAILABLE'
                     ? `Даты с замерами: ${stats.observedDays} за период истории.`
                     : 'За последние 90 дней замеров аудитории пока нет.'}
             </p>
-            {stats?.from && stats.to && !noConsent && (
+            {stats?.from && stats.to && !profileUnavailable && (
               <p className="marketplace-profile-card__intro">
                 Период:{' '}
                 {new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeZone: 'UTC' }).format(
@@ -490,7 +447,7 @@ export default function MarketplaceProfileWorkspace({
                 . Даты статистики — UTC.
               </p>
             )}
-            {stats?.lastObservedAt && !noConsent && (
+            {stats?.lastObservedAt && !profileUnavailable && (
               <p className="marketplace-profile-card__intro">
                 Последний замер:{' '}
                 {new Intl.DateTimeFormat('ru-RU', {
@@ -560,24 +517,15 @@ export default function MarketplaceProfileWorkspace({
             Сообщения участников, личные превью и старые посты не меняются. Если профиль недоступен
             или для кнопки нет места, публикация отправится без неё.
             {!view.canAppend && !state.appendEnabled
-              ? ' Для включения нужен доступный опубликованный профиль и согласие на статистику.'
+              ? ' Для включения нужен доступный опубликованный профиль.'
               : ''}
           </p>
-          {state.binding.statisticsConsent && (
-            <button
-              className="button button--ghost"
-              disabled={busy}
-              onClick={() => mutation.mutate({ action: 'revoke' })}
-            >
-              Отключить обмен статистикой
-            </button>
-          )}
         </>
       )}
       {notice && <p role="status">{notice}</p>}
       {mutation.isError && (
         <p role="alert">
-          {describeUserFacingError(
+          {marketplaceProfileError(
             mutation.error,
             'Не удалось сохранить изменение. Введённые данные сохранены; проверьте состояние и повторите.',
           )}

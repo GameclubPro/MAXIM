@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261023020100_statistics_exchange_peer_authority_index",
-  "baselineNamesSha256": "5575caee171fab5d4f00890362e4380bf14e66677990f5500bd3db4fe3513929",
-  "baselineContentsSha256": "8ae75b3e73ea1ed9e452025dab91c982e04e63e112821ee12f5ec886b6a0f13c",
+  "baselineThrough": "20261023030000_preserve_explicit_statistics_revocation",
+  "baselineNamesSha256": "3d02ce432e82ffa3d2929e9e1b098e261ae89170cb2c258b45e13998a8246e0e",
+  "baselineContentsSha256": "91fed0b20f4ef5f5caca4ffeb012e1f80032276a6571fe8ee71c38b36d600859",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -136,6 +136,11 @@
       "reason": "Manual review approved three static additive statement-level transition-table triggers. EXECUTE FUNCTION is a parser false positive: there is no dynamic SQL, DROP, DELETE, index build or existing-data backfill. The constant-zero integer default does not rewrite retained Chat rows; each DML statement updates only Chat IDs named in its transition rows.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Existing single and legacy allowlist writers remain compatible and automatically advance the independent revision. Updates that only touch unrelated metadata do not advance it. Old readers ignore the additive column; installed list-intent operation journals require the Stage B v2 runner source floor on both rollback paths even when Major networks is off. Scalar-only settings preserve per-recipient lists and do not read oversized lists."
+    },
+    "20261023030000_preserve_explicit_statistics_revocation": {
+      "reason": "Reviewed additive nullable denial marker, three static functions, two row triggers and receipt-proven backfill. EXECUTE FUNCTION is classified as destructive; no dynamic SQL, DROP, DELETE, publication change or invented consent is present.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The nullable column is ignored by old strict v1 readers. One DDL transaction serializes both receipt writers while installing receipt/backfill and binding fences; old v2 writers cannot enable a marked binding. Proven revokes invalidate consent, leases and button proof/epochs. Current independent legacy true is excluded from backfill, and only explicit legacy true clears the marker with its existing local revision CAS. No stateful services or message data are changed."
     }
   },
   "nonConcurrentIndexExceptions": {

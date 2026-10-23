@@ -4,7 +4,7 @@ import test from 'node:test';
 import { marketplaceProfileStateSchema } from '@maxim/contracts/marketplace-integration';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
-test('marketplace pilot preview requires consent, separate publication, and independent append policy in both profiles', async () => {
+test('automatic marketplace readiness preserves separate publication and append policy in both profiles', async () => {
   const closed = createPreviewApiTransport();
   assert.deepEqual(await closed.request('/marketplace/capability'), { available: false });
   for (const profile of ['moderation', 'publisher']) {
@@ -13,7 +13,7 @@ test('marketplace pilot preview requires consent, separate publication, and inde
       const path = `/marketplace/entities/${kind}/${kind === 'CHAT' ? 'preview-chat' : 'preview-channel'}/profile?profile=${profile}`;
       const initial = marketplaceProfileStateSchema.parse(await api.request(path));
       assert.equal(initial.listing, null);
-      assert.equal(initial.binding.statisticsConsent, false);
+      assert.equal(initial.binding.statisticsConsent, true);
       assert.equal(initial.appendEnabled, false);
       const body = {
         requestId: randomUUID(),
@@ -26,11 +26,7 @@ test('marketplace pilot preview requires consent, separate publication, and inde
           region: initial.choices.regions[0],
         },
       };
-      await assert.rejects(
-        api.request(path, { method: 'POST', body: JSON.stringify(body) }),
-        /Подтвердите/u,
-      );
-      const create = { ...body, statisticsConsent: true };
+      const create = body;
       const draft = marketplaceProfileStateSchema.parse(
         await api.request(path, { method: 'POST', body: JSON.stringify(create) }),
       );
@@ -84,6 +80,33 @@ test('marketplace pilot preview requires consent, separate publication, and inde
   }
 });
 
+test('automatic readiness arrives independently of profile mutations and never publishes or appends', async () => {
+  const api = createPreviewApiTransport({ search: '?marketplacePilot=1&marketplaceReady=delayed' });
+  const path = '/marketplace/entities/CHANNEL/preview-channel/profile?profile=moderation';
+  const initial = marketplaceProfileStateSchema.parse(await api.request(path));
+  assert.equal(initial.binding.statisticsConsent, false);
+  const create = {
+    action: 'save',
+    requestId: randomUUID(),
+    expectedRevision: initial.revision,
+    details: { title: 'Test', description: '', topic: 'Бизнес', region: 'Россия' },
+  };
+  assert.ok(!('statisticsConsent' in create));
+  await assert.rejects(
+    api.request(path, { method: 'POST', body: JSON.stringify(create) }),
+    /Подтвердите/u,
+  );
+  const ready = marketplaceProfileStateSchema.parse(await api.request(path));
+  assert.equal(ready.binding.statisticsConsent, true);
+  assert.equal(ready.listing, null);
+  assert.equal(ready.appendEnabled, false);
+  const draft = marketplaceProfileStateSchema.parse(
+    await api.request(path, { method: 'POST', body: JSON.stringify(create) }),
+  );
+  assert.equal(draft.listing?.status, 'DRAFT');
+  assert.equal(draft.appendEnabled, false);
+});
+
 test('profile readiness distinguishes consent, public visibility and placement setup', async () => {
   const { marketplaceProfileView } = await import('../src/lib/marketplace-profile-view');
   const api = createPreviewApiTransport({ search: '?marketplacePilot=1&profile=publisher' });
@@ -116,6 +139,12 @@ test('profile readiness distinguishes consent, public visibility and placement s
   assert.equal(marketplaceProfileView(state).publicNow, false);
   assert.equal(marketplaceProfileView(state).title, 'Профиль на проверке биржи');
   state.binding.statisticsConsent = false;
+  state.capabilities.publicState = 'PUBLIC';
+  assert.equal(
+    marketplaceProfileView(state).publicNow,
+    false,
+    'A stale public capability cannot restore unavailable access',
+  );
   assert.equal(
     marketplaceProfileView(state).canPause,
     true,
@@ -136,6 +165,22 @@ test('profile readiness distinguishes consent, public visibility and placement s
     'Older server cannot imply visibility',
   );
   assert.equal(marketplaceProfileView(state).placement, 'UNAVAILABLE');
+});
+
+test('profile errors hide internal exchange requirements while preserving actionable conflicts', async () => {
+  const { marketplaceProfileError } = await import('../src/lib/marketplace-profile-view');
+  const fallback = 'Не удалось сохранить изменение. Проверьте состояние и повторите.';
+  for (const message of [
+    'Подтвердите использование статистики',
+    'Согласие на статистику изменилось',
+    'Обмен с MAXIM недоступен',
+  ]) {
+    assert.equal(marketplaceProfileError(new Error(message), fallback), fallback);
+  }
+  assert.equal(
+    marketplaceProfileError(new Error('Профиль изменился. Обновите экран'), fallback),
+    'Профиль изменился. Обновите экран',
+  );
 });
 
 test('initial permission checks use typed pending codes and a bounded retry budget', async () => {
@@ -160,8 +205,10 @@ test('initial permission checks use typed pending codes and a bounded retry budg
   assert.equal(marketplaceRetryInterval(20, false), 60_000);
 });
 
-test('refresh, hide and reconnect never silently restore statistics consent or the publication button', async () => {
-  const api = createPreviewApiTransport({ search: '?marketplacePilot=1&profile=publisher' });
+test('legacy refresh, hide and explicit reconnect preserve independent publication policy', async () => {
+  const api = createPreviewApiTransport({
+    search: '?marketplacePilot=1&profile=publisher&marketplaceReady=0',
+  });
   const path = '/marketplace/entities/CHANNEL/preview-channel/profile?profile=publisher';
   let state = marketplaceProfileStateSchema.parse(await api.request(path));
   const mutate = async (action: string, extra: object = {}) => {

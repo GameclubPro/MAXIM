@@ -18,6 +18,23 @@ const baseUrl = await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/');
 const server = await ensureMiniappDevServer(baseUrl);
 const output = await mkdtemp(path.join(tmpdir(), 'maxim-marketplace-profile-'));
 let browser;
+async function assertInternalExchangeHidden(workspace) {
+  assert.doesNotMatch(
+    await workspace.innerText(),
+    /обмен статистик|переда(?:вать|чу|ча|чи).*статистик|согласи[^.]*статистик|MAXIM/iu,
+  );
+  assert.equal(await workspace.getByRole('checkbox', { name: /статистик/iu }).count(), 0);
+  assert.equal(await workspace.getByRole('button', { name: /обмен|статистик/iu }).count(), 0);
+  const hints = await workspace
+    .locator('[aria-label], [title]')
+    .evaluateAll((elements) =>
+      elements.flatMap((element) => [
+        element.getAttribute('aria-label') ?? '',
+        element.getAttribute('title') ?? '',
+      ]),
+    );
+  assert.doesNotMatch(hints.join('\n'), /обмен статистик|MAXIM/iu);
+}
 try {
   browser = await chromium.launch({ headless: true });
   for (const [deviceName, device] of [
@@ -47,11 +64,14 @@ try {
           if (message.type() === 'error' && !message.text().startsWith('Failed to load resource'))
             errors.push(message.text());
         });
-        await page.goto(`${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1`);
+        await page.goto(
+          `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=delayed`,
+        );
         const entry = page.getByRole('button', { name: 'Профиль на бирже', exact: true });
         await entry.click();
         const workspace = page.locator('.marketplace-profile');
         await workspace.getByLabel('Название', { exact: true }).waitFor();
+        await assertInternalExchangeHidden(workspace);
         await workspace.getByLabel('Название', { exact: true }).fill('Мой несохранённый профиль');
         await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
         await page
@@ -78,7 +98,18 @@ try {
         assert.equal(await create.isDisabled(), true);
         await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
         await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
-        await workspace.getByRole('checkbox', { name: /Разрешаю передавать статистику/u }).check();
+        assert.equal(
+          await create.isDisabled(),
+          true,
+          'A complete form cannot grant its own access',
+        );
+        await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
+        await page.waitForFunction(
+          () =>
+            document.querySelector('.marketplace-profile__form button[type="submit"]')?.disabled ===
+            false,
+        );
+        await assertInternalExchangeHidden(workspace);
         await create.click();
         await workspace
           .getByRole('button', { name: 'Опубликовать на бирже', exact: true })
@@ -95,6 +126,7 @@ try {
         const toggle = workspace.getByRole('checkbox', { name: /Кнопка «Профиль на бирже»/u });
         assert.equal(await toggle.isChecked(), false);
         assert.equal(await toggle.isDisabled(), true);
+        await assertInternalExchangeHidden(workspace);
         await workspace.getByRole('button', { name: 'Опубликовать на бирже', exact: true }).click();
         await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
         const connect = workspace.getByRole('button', {
@@ -149,34 +181,20 @@ try {
           path: path.join(output, `${deviceName}-${colorScheme}-${profile}-${kind}.png`),
           fullPage: false,
         });
+        await assertInternalExchangeHidden(workspace);
         await workspace.getByRole('button', { name: 'Скрыть профиль', exact: true }).click();
         await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
         assert.equal(await toggle.isChecked(), false);
         await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).click();
         await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
-        await workspace
-          .getByRole('button', { name: 'Отключить обмен статистикой', exact: true })
-          .click();
-        await workspace.getByText('Обмен статистикой отключён.', { exact: true }).waitFor();
-        assert.match(
-          await workspace.textContent(),
-          /Новые замеры и кнопка в публикациях не добавляются/u,
-        );
-        assert.equal(await workspace.getByText('Профиль опубликован', { exact: true }).count(), 0);
-        const resume = workspace.getByRole('button', {
-          name: 'Возобновить обмен статистикой',
-          exact: true,
-        });
-        await resume.waitFor();
-        assert.equal(await resume.isDisabled(), true, 'Fresh access must not restore consent');
         const hide = workspace.getByRole('button', { name: 'Скрыть профиль', exact: true });
         await hide.click();
         await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
-        assert.equal(await resume.isDisabled(), true, 'Hiding must not restore consent');
-        await workspace.getByRole('checkbox', { name: /Разрешаю передавать статистику/u }).check();
-        await resume.click();
-        await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
-        assert.equal(await toggle.isChecked(), false, 'Reconnect must not re-enable CTA');
+        assert.equal(
+          await toggle.isChecked(),
+          false,
+          'Refreshing the profile must not re-enable CTA',
+        );
         await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
         const save = workspace.getByRole('button', { name: 'Сохранить изменения', exact: true });
         assert.equal(await save.isDisabled(), true, 'Unchanged profile has no save action');
@@ -190,6 +208,30 @@ try {
         await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).waitFor();
         await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
         assert.match(await entry.textContent(), /Профиль скрыт/u);
+        await page.goto(
+          `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=0`,
+        );
+        await page.getByRole('button', { name: 'Профиль на бирже', exact: true }).click();
+        await workspace.getByLabel('Название', { exact: true }).waitFor();
+        await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
+        await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
+        await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
+        await workspace
+          .getByText('Профиль пока недоступен. Проверьте состояние позже.', { exact: true })
+          .waitFor();
+        assert.equal(
+          await create.isDisabled(),
+          true,
+          'A refresh cannot override unavailable access',
+        );
+        await assertInternalExchangeHidden(workspace);
+        await page.screenshot({
+          path: path.join(
+            output,
+            `${deviceName}-${colorScheme}-${profile}-${kind}-unavailable.png`,
+          ),
+          fullPage: false,
+        });
         assert.deepEqual(errors, []);
         await context.close();
       }

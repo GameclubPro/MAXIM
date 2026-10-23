@@ -1,6 +1,7 @@
 import type { MarketplaceProfileState } from '@maxim/contracts/marketplace-integration';
 import { ApiRequestError } from './api-request-error';
 import { marketplaceProfileTitle } from './marketplace-profile-summary';
+import { describeUserFacingError } from './user-facing-error';
 export { marketplaceQueryKey } from './marketplace-profile-summary';
 
 export type MarketplaceDetails = {
@@ -27,6 +28,10 @@ export function marketplaceRetryInterval(attempts: number, waiting: boolean): nu
   if (!waiting) return 60_000;
   return attempts < 4 ? Math.min(5000 * 2 ** attempts, 30_000) : false;
 }
+export function marketplaceProfileError(error: unknown, fallback: string) {
+  const message = describeUserFacingError(error, fallback);
+  return /статистик|MAXIM|обмен/iu.test(message) ? fallback : message;
+}
 export function marketplaceProfileView(state: MarketplaceProfileState, fresh = true) {
   const active = fresh && state.binding.state === 'ACTIVE';
   const consent = state.binding.statisticsConsent;
@@ -38,7 +43,7 @@ export function marketplaceProfileView(state: MarketplaceProfileState, fresh = t
       : state.listing?.status === 'PUBLISHED'
         ? 'ACCESS_REQUIRED'
         : 'DRAFT');
-  const publicNow = active && publicState === 'PUBLIC' && !!state.listing?.publicUrl;
+  const publicNow = active && consent && publicState === 'PUBLIC' && !!state.listing?.publicUrl;
   return {
     title: marketplaceProfileTitle(state, fresh),
     active,
