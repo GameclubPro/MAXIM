@@ -165,6 +165,17 @@ test('builds API production dependencies before copying runtime source', () => {
     prodStage,
     /npm ci --omit=dev --workspace @maxim\/api --workspace @maxim\/contracts/u,
   );
+  const optionalWorkspaceDirectories = prodStage.indexOf(
+    'mkdir -p apps/api/node_modules packages/contracts/node_modules',
+  );
+  assert.ok(optionalWorkspaceDirectories > prodInstall);
+  for (const workspace of ['apps/api', 'packages/contracts']) {
+    assert.ok(
+      dockerfile.includes(
+        `COPY --from=prod-deps /app/${workspace}/node_modules ./${workspace}/node_modules`,
+      ),
+    );
+  }
   assert.doesNotMatch(prodStage, /--ignore-scripts/u);
   assert.doesNotMatch(dockerfile, /npm prune/u);
 });

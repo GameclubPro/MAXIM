@@ -66,6 +66,9 @@ Commands:
                               Continue reviewed recovery with an exact green controller
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
+  commercial-llm install|enable|disable|stop [--apply]
+  commercial-llm status|smoke|check-client
+                              Inspect the model or run closed transport/client probes
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
                               Requires MAXIM_ALLOW_SCALE_DEPLOY=1.
   rollback-runtime <ref> [...] Rebuild/recreate API roles from a previous git ref
@@ -523,6 +526,26 @@ NODE
     *) echo 'Invalid emergency corrective controller admission.' >&2; return 2 ;;
   esac
   remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_CONTROLLER_SHA=$controller_sha" bash ./infra/scripts/vps-source-abandonment-corrective.sh)" <"$request_file"
+}
+
+commercial_llm() {
+  local operation="${1:-status}" target_sha
+  case "$operation" in
+    status|smoke|check-client)
+      [[ $# -le 1 ]] || { echo 'Unexpected commercial-llm arguments.' >&2; return 2; }
+      remote_exec "$(shell_quote_args bash ./infra/scripts/vps-commercial-llm.sh "$operation")"
+      ;;
+    install|stop|enable|disable)
+      [[ $# -le 2 && ( $# -eq 1 || "${2:-}" == --apply ) ]] || {
+        echo 'Usage: commercial-llm install|enable|disable|stop [--apply]' >&2
+        return 2
+      }
+      target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+      node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+      remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-commercial-llm.sh "$@")"
+      ;;
+    *) echo 'Unknown commercial-llm operation.' >&2; return 2 ;;
+  esac
 }
 
 remote_from_args() {
@@ -1776,6 +1799,9 @@ case "$command" in
     ;;
   preload-ci-image)
     preload_ci_image "$@"
+    ;;
+  commercial-llm)
+    commercial_llm "$@"
     ;;
   deploy-scale)
     deploy_scale "$@"

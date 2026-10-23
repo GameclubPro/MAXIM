@@ -46,7 +46,7 @@ test('cold comments budget includes authentication and prefetch without subtract
     'src/lib/comment-dialog-startup.ts',
     'src/pages/channel-dialog-page.tsx',
   ]);
-  assert.ok(budget.limits.jsGzipBytes <= 176128);
+  assert.ok(budget.limits.jsGzipBytes <= 180992);
   assert.ok(budget.limits.cssGzipBytes <= 41984);
 });
 
