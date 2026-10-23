@@ -1,5 +1,9 @@
 import type { PublicationLatePolicy } from '@maxim/contracts/publication';
 import { useId } from 'react';
+import {
+  formatPublicationLatePolicy,
+  LEGACY_PUBLICATION_LATE_POLICY,
+} from './publication-late-policy-presentation';
 
 export function PublicationLatePolicyFields({
   value,
@@ -13,15 +17,10 @@ export function PublicationLatePolicyFields({
   onChange: (value: PublicationLatePolicy) => void;
 }) {
   const id = useId();
-  const policy = value ?? { mode: 'strict', maxDelayMinutes: 5, catchUp: 'all' };
+  const policy = value ?? LEGACY_PUBLICATION_LATE_POLICY;
   return (
     <details className="publication-late-policy-options">
-      <summary>
-        При задержке: до{' '}
-        {policy.maxDelayMinutes % 60 === 0
-          ? `${policy.maxDelayMinutes / 60} ч.`
-          : `${policy.maxDelayMinutes} мин.`}
-      </summary>
+      <summary>При задержке: {formatPublicationLatePolicy(policy, recurring)}</summary>
       <fieldset className="publication-late-policy" disabled={disabled}>
         <legend>Если MAX задерживает отправку</legend>
         <label htmlFor={`${id}-mode`}>Действие при задержке</label>

@@ -1,0 +1,500 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation']:is(
+      .settings-home-page-open,
+      .channel-settings-page-open
+    ) {
+    --steel-page: #f3f6f8;
+    --steel-panel: #fcfdff;
+    --steel-raised: #ffffff;
+    --steel-inset: #e7edf6;
+    --steel-line: #d9e3f1;
+    --steel-stat-start: #eff4ff;
+    --steel-stat-ink: var(--steel-blue);
+  }
+
+  html[data-max-theme='dark']
+    body[data-miniapp-profile='moderation']:is(
+      .settings-home-page-open,
+      .channel-settings-page-open
+    ) {
+    --steel-page: #0d141b;
+    --steel-panel: #101a2a;
+    --steel-raised: #19263b;
+    --steel-inset: #080f1d;
+    --steel-line: #293a53;
+    --steel-blue-soft: #192f50;
+    --steel-glint: #c6deff27;
+    --steel-stat-start: #1c3354;
+    --steel-stat-ink: #6ea6ff;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    .app-shell {
+    background: var(--steel-page);
+  }
+
+  body[data-miniapp-profile='moderation']:is(
+      .settings-home-page-open,
+      .channel-settings-page-open
+    )::before,
+  body[data-miniapp-profile='moderation']:is(
+      .settings-home-page-open,
+      .channel-settings-page-open
+    )::after,
+  body[data-miniapp-profile='moderation'].settings-home-page-open
+    .settings-sections--chat-home::before {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-sections--chat-home, .channel-settings-screen) {
+    gap: 12px;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open .settings-sections-shell,
+  body[data-miniapp-profile='moderation'].channel-settings-page-open .channel-settings-screen {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open .settings-sections-shell {
+    gap: 1px;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--steel-line);
+    border-radius: 24px;
+    background: var(--steel-line);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'].channel-settings-page-open
+    .channel-settings-screen
+    > :not(.channel-settings-card) {
+    grid-column: 1 / -1;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card) {
+    --steel-module-accent: var(--steel-ice);
+    grid-column: auto;
+    min-width: 0;
+    min-height: 100px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: var(--steel-panel);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card):has(.settings-section__icon-badge.is-mint) {
+    --steel-module-accent: var(--steel-mint);
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card):has(.settings-section__icon-badge.is-amber) {
+    --steel-module-accent: var(--steel-amber);
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card):has(.settings-section__icon-badge.is-rose) {
+    --steel-module-accent: var(--steel-rose);
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card):has(.settings-section__icon-badge.is-ink) {
+    --steel-module-accent: var(--steel-violet);
+  }
+
+  body[data-miniapp-profile='moderation'].channel-settings-page-open .channel-settings-card {
+    border: 1px solid var(--steel-line);
+    border-radius: 20px;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    > .settings-section__head {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    > .settings-section__head
+    > .settings-section__toggle {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 12px;
+    grid-template-rows: 28px minmax(34px, auto);
+    align-items: end;
+    min-height: 100px;
+    height: 100%;
+    gap: 10px 6px;
+    padding: 14px 16px;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    color: var(--steel-ink);
+    box-shadow: none;
+    transform: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    .settings-section__toggle::before,
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    .settings-section__toggle::after {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    .settings-section__toggle-main {
+    grid-area: 2 / 1;
+    align-self: center;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    .settings-section__title {
+    display: block;
+    overflow: visible;
+    color: var(--steel-ink);
+    font-size: 14px;
+    font-weight: 750;
+    line-height: 1.3;
+    letter-spacing: -0.035em;
+    overflow-wrap: normal;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    :is(.settings-section__summary, .settings-section__status-chip),
+  body[data-miniapp-profile='moderation'] .settings-section__state-label {
+    position: absolute;
+    width: 1px;
+    min-width: 0;
+    height: 1px;
+    min-height: 0;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    .settings-section__icon-badge {
+    grid-area: 1 / 1;
+    justify-self: start;
+    width: 28px;
+    height: 28px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--steel-module-accent);
+    box-shadow: none;
+    transform: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    .settings-section__icon-badge
+    svg {
+    width: 27px;
+    height: 27px;
+    filter: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    .settings-section__chevron {
+    grid-area: 2 / 2;
+    align-self: center;
+    width: 12px;
+    height: 20px;
+    border: 0;
+    background: transparent;
+    color: var(--steel-muted);
+    box-shadow: none;
+    opacity: 0.65;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open .settings-home-entry--wide,
+  body[data-miniapp-profile='moderation'].channel-settings-page-open .channel-post-signature-entry {
+    grid-column: 1 / -1;
+    min-height: 62px;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open
+    .settings-home-entry--wide
+    > .settings-section__head
+    > .settings-section__toggle,
+  body[data-miniapp-profile='moderation'].channel-settings-page-open
+    .channel-post-signature-entry
+    > .settings-section__head
+    > .settings-section__toggle {
+    grid-template-columns: 28px minmax(0, 1fr) 7px 12px;
+    grid-template-rows: auto;
+    align-items: center;
+    min-height: 62px;
+    gap: 12px;
+    padding-block: 14px;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry--wide, .channel-post-signature-entry)
+    .settings-section__toggle-main {
+    grid-area: 1 / 2;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry--wide, .channel-post-signature-entry)
+    .settings-section__chevron {
+    grid-area: 1 / 4;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open .settings-home-group-head {
+    grid-column: 1 / -1;
+    gap: 12px;
+    min-height: 37px;
+    margin: 0;
+    padding: 11px 16px;
+    background: var(--steel-panel);
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open .settings-home-group-head__title {
+    color: var(--steel-muted);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open .settings-home-group-head::after {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    .settings-overview-search {
+    min-height: 46px;
+    padding-inline: 14px 6px;
+    border: 1px solid var(--steel-line);
+    border-radius: 15px;
+    background: var(--steel-inset);
+    color: var(--steel-muted);
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open .settings-advertising-soon {
+    grid-column: 1 / -1;
+    min-height: 62px;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open
+    .settings-advertising-soon
+    > .settings-section__head
+    > .settings-advertising-soon__entry {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    align-items: center;
+    min-height: 62px;
+    gap: 12px;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open
+    .settings-advertising-soon
+    .settings-section__toggle-main {
+    grid-area: 1 / 2;
+  }
+
+  body[data-miniapp-profile='moderation'].settings-home-page-open
+    .settings-advertising-soon__badge {
+    grid-area: 1 / 3;
+    color: var(--steel-muted);
+    border-color: var(--steel-line);
+    background: var(--steel-inset);
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card, .settings-home-group-head)[hidden] {
+    display: none;
+  }
+
+  body[data-miniapp-profile='moderation']:is(.settings-home-page-open, .channel-settings-page-open)
+    :is(.settings-home-entry, .channel-settings-card)
+    .settings-section__toggle:focus-visible {
+    outline: 2px solid var(--steel-blue);
+    outline-offset: -3px;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card)
+      .settings-section__toggle:hover {
+      background: var(--steel-raised);
+    }
+  }
+
+  @media (max-width: 600px) {
+    body[data-miniapp-profile='moderation'].settings-home-page-open .settings-sections-shell,
+    body[data-miniapp-profile='moderation'].channel-settings-page-open .channel-settings-screen {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      overflow: visible;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card) {
+      --settings-module-soft: color-mix(in srgb, var(--steel-module-accent) 9%, var(--steel-panel));
+      min-height: 88px;
+      border: 1px solid var(--steel-line);
+      border-radius: 18px;
+      box-shadow:
+        0 3px 12px var(--steel-shadow),
+        inset 0 1px 0 var(--steel-glint);
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card)
+      > .settings-section__head
+      > .settings-section__toggle {
+      grid-template-columns: 36px minmax(0, 1fr) 16px;
+      grid-template-rows: auto auto auto;
+      align-items: center;
+      min-height: 88px;
+      height: auto;
+      padding: 14px;
+      gap: 4px 12px;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card)
+      .settings-section__toggle-main {
+      grid-area: 1 / 2;
+      gap: 4px;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card)
+      .settings-section__title {
+      font-size: 1rem;
+      line-height: 1.35;
+      letter-spacing: -0.025em;
+      overflow-wrap: anywhere;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card)
+      :is(
+        .settings-section__summary,
+        .settings-section__status-chip,
+        .settings-section__state-label
+      ) {
+      position: static;
+      display: block;
+      width: auto;
+      min-width: 0;
+      max-width: 100%;
+      height: auto;
+      min-height: 0;
+      margin: 0;
+      padding: 0;
+      overflow: visible;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--steel-muted);
+      box-shadow: none;
+      clip: auto;
+      clip-path: none;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      line-height: 1.45;
+      letter-spacing: 0;
+      text-transform: none;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      -webkit-line-clamp: unset;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card)
+      .settings-section__icon-badge {
+      grid-area: 1 / 1 / span 3;
+      align-self: start;
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      background: var(--settings-module-soft);
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card)
+      .settings-section__icon-badge
+      svg {
+      width: 23px;
+      height: 23px;
+    }
+
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      :is(.settings-home-entry, .channel-settings-card)
+      .settings-section__chevron {
+      grid-area: 1 / 3 / span 3;
+      align-self: center;
+      width: 16px;
+    }
+
+    body[data-miniapp-profile='moderation'].settings-home-page-open .settings-home-group-head {
+      min-height: 36px;
+      padding: 12px 4px 4px;
+      background: transparent;
+    }
+
+    body[data-miniapp-profile='moderation'].settings-home-page-open
+      .settings-home-group-head__title {
+      font-size: 0.75rem;
+      letter-spacing: 0.06em;
+    }
+  }
+}

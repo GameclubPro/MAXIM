@@ -2305,36 +2305,6 @@
     min-height: 8px;
   }
 
-  .settings-bot-load-strip {
-    padding: 0 2px 4px;
-  }
-
-  .settings-bot-load {
-    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
-    gap: 6px;
-    padding: 5px;
-    border-radius: 20px;
-    box-shadow:
-      0 10px 22px rgba(31, 64, 92, 0.08),
-      0 1px 0 rgba(255, 255, 255, 0.82) inset;
-  }
-
-  .settings-bot-load__item {
-    min-height: 44px;
-    padding: 4px 7px 4px 4px;
-    border-radius: 16px;
-  }
-
-  .settings-bot-load__avatar {
-    width: 34px;
-    height: 34px;
-    border-radius: 12px;
-  }
-
-  .settings-bot-load__meter {
-    height: 5px;
-  }
-
   .settings-sections--chat-home,
   .channel-settings-screen {
     gap: 7px;
@@ -2880,10 +2850,6 @@
       font-size: 0.96rem;
     }
 
-    .settings-bot-load {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
     .settings-home-entry .settings-section__toggle,
     .channel-settings-card .settings-section__toggle {
       grid-template-columns: 32px minmax(0, 1fr) minmax(30px, max-content) 24px;
@@ -2980,15 +2946,6 @@
   }
 
   /* Current settings pass: tighter controls, less explanatory chrome. */
-  .settings-bot-load__item {
-    min-height: 38px;
-  }
-
-  .settings-bot-load__avatar {
-    width: 30px;
-    height: 30px;
-    border-radius: 11px;
-  }
 
   .settings-drilldown .settings-mode-segments {
     display: grid;
@@ -3122,9 +3079,6 @@
   }
 
   /* Settings clarity pass: compact, stateful controls without decorative noise. */
-  .settings-bot-load-strip {
-    display: none;
-  }
 
   .settings-sections--chat-home,
   .channel-settings-screen {

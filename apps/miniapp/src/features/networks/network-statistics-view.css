@@ -398,4 +398,18 @@
       flex-basis: 100%;
     }
   }
+
+  @media (max-width: 600px) {
+    body[data-miniapp-profile='moderation']
+      :is(
+        .network-chart-dates,
+        .network-metrics-row__body small,
+        .network-chart-selection small,
+        .network-statistics-empty,
+        .network-chart-empty
+      ) {
+      font-size: 13px;
+      line-height: 1.5;
+    }
+  }
 }

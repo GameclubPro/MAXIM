@@ -1541,7 +1541,7 @@ export function ChannelSuggestDialogPage({
 
       <div className="channel-dialog-shell channel-dialog-shell--suggest">
         <header className="channel-suggest-heading">
-          <h1>Предложка</h1>
+          <h1>Предложить объявление</h1>
           <span>{profile === 'publisher' ? 'Публик' : 'Майор'}</span>
         </header>
         <div className="channel-suggest-tabs" role="tablist" aria-label="Предложения">
@@ -1559,6 +1559,28 @@ export function ChannelSuggestDialogPage({
               aria-selected={view === tab.value}
               aria-controls={`suggest-${tab.value}`}
               id={`suggest-tab-${tab.value}`}
+              tabIndex={view === tab.value ? 0 : -1}
+              onKeyDown={(event) => {
+                const tabs = ['compose', 'preview', 'history'] as const;
+                const index = tabs.indexOf(tab.value);
+                const nextIndex =
+                  event.key === 'ArrowRight'
+                    ? (index + 1) % tabs.length
+                    : event.key === 'ArrowLeft'
+                      ? (index + tabs.length - 1) % tabs.length
+                      : event.key === 'Home'
+                        ? 0
+                        : event.key === 'End'
+                          ? tabs.length - 1
+                          : null;
+                if (nextIndex === null) return;
+                event.preventDefault();
+                blurSuggestComposerFocus();
+                const nextView = tabs[nextIndex];
+                setView(nextView);
+                scrollViewportRef.current?.scrollTo({ top: 0 });
+                document.getElementById(`suggest-tab-${nextView}`)?.focus({ preventScroll: true });
+              }}
               onClick={() => {
                 blurSuggestComposerFocus();
                 setView(tab.value);

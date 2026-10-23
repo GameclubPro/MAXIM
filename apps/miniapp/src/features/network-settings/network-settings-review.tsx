@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { networkSettingsChangeLabels } from './network-settings-product-labels';
 import type { useNetworkSettingsController } from './network-settings-controller';
 
@@ -11,11 +12,14 @@ export type NetworkSettingsReviewProps = {
     | 'setChanges'
     | 'navigationAllowlist'
     | 'operation'
+    | 'preview'
   >;
   recipientTitles: ReadonlyMap<string, string>;
 };
 
 export function NetworkSettingsReview({ controller, recipientTitles }: NetworkSettingsReviewProps) {
+  const [recipientLimit, setRecipientLimit] = useState(50);
+  const recipients = controller.preview?.recipients ?? [];
   return (
     <>
       {controller.changes.length > 0 ? (
@@ -110,6 +114,27 @@ export function NetworkSettingsReview({ controller, recipientTitles }: NetworkSe
           ) : (
             <p>Последствия для каждого чата появятся после проверки.</p>
           )}
+        </section>
+      ) : null}
+      {recipients.length ? (
+        <section className="network-settings-page__changes" aria-label="Получатели изменений">
+          <h2>Где применятся изменения · {recipients.length}</h2>
+          <p>Только указанные параметры. Остальные настройки сохранятся.</p>
+          <details className="network-settings-details">
+            <summary>Проверить список сообществ</summary>
+            <ul className="network-settings-outcomes">
+              {recipients.slice(0, recipientLimit).map((recipient) => (
+                <li key={recipient.entityId}>
+                  <strong>{recipient.title}</strong>
+                </li>
+              ))}
+            </ul>
+            {recipients.length > recipientLimit ? (
+              <button type="button" onClick={() => setRecipientLimit((value) => value + 50)}>
+                Показать ещё сообщества · {Math.min(50, recipients.length - recipientLimit)}
+              </button>
+            ) : null}
+          </details>
         </section>
       ) : null}
     </>

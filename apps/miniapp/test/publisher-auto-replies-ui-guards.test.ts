@@ -88,7 +88,10 @@ test('new rules are enabled directly while edit and list keep their switches', (
     /\{rule \? \([\s\S]*?<strong>Автоответ включён<\/strong>[\s\S]*?<AutoReplySwitch/u,
   );
   assert.match(pageSource, /<AutoReplyRuleRow[\s\S]*?onToggle=/u);
-  assert.match(pageSource, /rule \? \(draft\.enabled \? 'включён' : 'выключен'\) : null/u);
+  assert.match(
+    pageSource,
+    /rule \? \(\s*<span>\{draft\.enabled \? 'Автоответ включён' : 'Автоответ выключен'\}<\/span>\s*\) : null/u,
+  );
 });
 
 test('v2 trigger authoring exposes phrase chips, independent match switches, and server preview', () => {

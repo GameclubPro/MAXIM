@@ -20,12 +20,15 @@ import {
 } from '../../../scripts/miniapp-smartphone.mjs';
 import deviceProfiles from '../src/lib/preview-device-presets.json' with { type: 'json' };
 
-const base = await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/');
+const base =
+  process.env.MINIAPP_TEST_BASE_URL ?? (await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/'));
 const output = await mkdtemp(join(tmpdir(), 'maxim-auto-reply-keyboard-'));
 const longReply = Array.from({ length: 100 }, (_, index) => `Ответ клиенту ${index + 1}`).join(
   '\n',
 );
-const server = await ensureMiniappDevServer(base);
+const server = await ensureMiniappDevServer(base, {
+  reuseServer: Boolean(process.env.MINIAPP_TEST_BASE_URL),
+});
 const browser = await chromium.launch();
 let activePage;
 

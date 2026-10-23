@@ -93,8 +93,8 @@
   .legal-section li,
   .legal-footer p {
     color: var(--text-secondary);
-    font-size: 0.9rem;
-    line-height: 1.58;
+    font-size: 1rem;
+    line-height: 1.65;
   }
 
   .legal-summary p:first-child {
@@ -108,8 +108,8 @@
   }
 
   .legal-section h2 {
-    font-size: 1.03rem;
-    line-height: 1.22;
+    font-size: 1.125rem;
+    line-height: 1.35;
   }
 
   .legal-section ul {

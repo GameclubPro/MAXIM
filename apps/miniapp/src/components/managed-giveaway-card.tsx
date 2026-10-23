@@ -43,6 +43,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { describeUserFacingError } from '../lib/user-facing-error';
 import { cn } from '../lib/cn';
+import { giveawayImageSource } from '../lib/giveaway-image';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import {
   canShareNativeContent,
@@ -3224,10 +3225,27 @@ function ManagedGiveawayCardImpl(
                 </div>
 
                 {draft.imageEnabled ? (
-                  <div className="managed-giveaway__empty managed-giveaway__empty--soft">
-                    <strong>Фото прикреплено</strong>
-                    <span>{draft.imageFileName || 'Изображение готово к публикации.'}</span>
-                  </div>
+                  giveawayImageSource(draft) ? (
+                    <details className="managed-giveaway__publication-image">
+                      <summary>
+                        <img src={giveawayImageSource(draft)!} alt="Миниатюра фото публикации" />
+                        <span>
+                          <strong>{draft.imageFileName || 'Фото публикации'}</strong>
+                          <small>Посмотреть целиком</small>
+                        </span>
+                      </summary>
+                      <img
+                        className="managed-giveaway__publication-image-full"
+                        src={giveawayImageSource(draft)!}
+                        alt="Фото публикации целиком"
+                      />
+                    </details>
+                  ) : (
+                    <div className="managed-giveaway__empty managed-giveaway__empty--soft">
+                      <strong>Фото прикреплено</strong>
+                      <span>{draft.imageFileName || 'Предпросмотр этого формата недоступен.'}</span>
+                    </div>
+                  )
                 ) : null}
               </div>
             </div>

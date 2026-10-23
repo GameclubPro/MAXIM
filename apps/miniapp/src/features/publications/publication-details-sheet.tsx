@@ -22,6 +22,7 @@ import { useNativeBackHandler } from '../../lib/native-back';
 import { formatPublicationDeliveryError } from './publication-delivery-error';
 import { PublicationDeliveryActions } from './publication-delivery-actions';
 import { getPublicationDeliveryPresentation } from './publication-delivery-presentation';
+import { getPublicationDeliveryResultPresentation } from './publication-delivery-result-presentation';
 import {
   publicationPostActionLabels,
   publicationPostActionsPollingInterval,
@@ -320,6 +321,7 @@ export function PublicationDetailsSheet({
       ? issuePresentation
       : (getPublicationScheduleErrorPresentation(details ?? publication) ?? issuePresentation);
   const actionCapabilities = getPublicationActionCapabilities(details ?? publication);
+  const resultPresentation = getPublicationDeliveryResultPresentation(details ?? publication);
   const editLabel =
     actionCapabilities.editScope === 'future'
       ? 'Изменить будущие отправки'
@@ -379,6 +381,27 @@ export function PublicationDetailsSheet({
             />
           ) : details ? (
             <>
+              <section
+                className={cn(
+                  'publication-details-result',
+                  resultPresentation.needsAttention && 'needs-attention',
+                )}
+                aria-label="Результат доставки"
+              >
+                <span>Доставка · За всё время</span>
+                <strong>{resultPresentation.headline}</strong>
+                {resultPresentation.currentFacts.length > 0 ? (
+                  <div className="publication-details-result__current">
+                    <span>Сейчас</span>
+                    {resultPresentation.currentFacts.map((fact) => (
+                      <small key={fact}>{fact}</small>
+                    ))}
+                  </div>
+                ) : null}
+                {details.delivery.canceled > 0 ? (
+                  <small>Отменено: {details.delivery.canceled}</small>
+                ) : null}
+              </section>
               {dispatchIssuePresentation ? (
                 <div
                   className="publication-details-dispatch-notice"

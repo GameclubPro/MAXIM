@@ -65,6 +65,7 @@ import {
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedEntityWorkspaceHeader } from '../components/ui/managed-entity-workspace-header';
 import '../components/ui/managed-entity-settings-header.css';
+import '../styles/settings-overview-steel.css';
 import '../styles/settings-steel.css';
 import { getInitDataUserId } from '../lib/init-data';
 import { GlassCard } from '../components/ui/glass-card';
@@ -3367,7 +3368,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <SettingsSectionToggle
             title={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.title}
             enabled={draft.quickButtonsEnabled}
-            summary={draft.quickButtonsEnabled ? 'Включены' : 'Выключены'}
+            summary="Кнопки из строк нового поста"
             status={draft.quickButtonsEnabled ? 'Вкл' : 'Выкл'}
             icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.icon}
             tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.tone}

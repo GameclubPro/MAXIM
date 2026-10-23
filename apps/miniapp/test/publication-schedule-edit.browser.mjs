@@ -7,8 +7,11 @@ import {
 } from '../../../scripts/miniapp-local-server.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
 
-const base = await allocateMiniappBaseUrl('http://127.0.0.1/app/');
-const server = await ensureMiniappDevServer(base);
+const base =
+  process.env.MINIAPP_TEST_BASE_URL ?? (await allocateMiniappBaseUrl('http://127.0.0.1/app/'));
+const server = await ensureMiniappDevServer(base, {
+  reuseServer: Boolean(process.env.MINIAPP_TEST_BASE_URL),
+});
 const browser = await chromium.launch();
 const now = new Date('2030-01-01T10:00:00Z');
 const delivery = { total: 0, pending: 0, sent: 0, failed: 0, ambiguous: 0, canceled: 0 };
@@ -60,6 +63,36 @@ try {
   ]) {
     for (const [name, schedule] of [
       ['once', { mode: 'once', at: '2030-01-01T10:01:00Z' }],
+      [
+        'strict-custom',
+        {
+          mode: 'once',
+          at: '2030-01-01T10:10:00Z',
+          latePolicy: { mode: 'strict', maxDelayMinutes: 17, catchUp: 'all' },
+        },
+      ],
+      [
+        'recover-once',
+        {
+          mode: 'once',
+          at: '2030-01-01T10:10:00Z',
+          latePolicy: { mode: 'recover', maxDelayMinutes: 30, catchUp: 'all' },
+        },
+      ],
+      [
+        'recover-recurring',
+        {
+          mode: 'recurrence',
+          frequency: 'weekly',
+          interval: 2,
+          weekdays: [1, 4],
+          times: ['13:00'],
+          startsAt: '2029-12-01T10:00:00Z',
+          endsAt: null,
+          maxOccurrences: 10,
+          latePolicy: { mode: 'recover', maxDelayMinutes: 1440, catchUp: 'all' },
+        },
+      ],
       [
         'slots',
         {
@@ -161,6 +194,27 @@ try {
           .click();
         const review = page.getByRole('dialog', { name: 'Проверка публикации', exact: true });
         await review.waitFor();
+        const reviewFacts = await review.locator('.publication-preview__facts').innerText();
+        const policy = schedule.latePolicy ?? {
+          mode: 'strict',
+          maxDelayMinutes: 5,
+          catchUp: 'all',
+        };
+        assert.match(
+          reviewFacts,
+          policy.mode === 'strict'
+            ? /При задержке · Пропустить спустя/u
+            : /При задержке · Ждать восстановления до/u,
+        );
+        assert.ok(
+          reviewFacts.includes(
+            `${policy.maxDelayMinutes % 60 === 0 ? `${policy.maxDelayMinutes / 60} ч.` : `${policy.maxDelayMinutes} мин.`} после назначенного времени`,
+          ),
+        );
+        if (schedule.mode === 'recurrence' && policy.mode === 'recover')
+          assert.match(reviewFacts, /Все актуальные повторы/u);
+        else assert.doesNotMatch(reviewFacts, /Все актуальные повторы|Только последний повтор/u);
+
         await review.getByRole('button', { name: 'Сохранить', exact: true }).click();
         await page.locator('.publications-page:not(.is-editor)').waitFor();
         assert.equal(patches.length, 1);

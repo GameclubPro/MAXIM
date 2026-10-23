@@ -107,6 +107,8 @@ export function SettingsSectionToggle({
 }: SettingsSectionToggleProps) {
   const trimmedSummary = summary?.trim() ?? '';
   const trimmedStatus = status?.trim() ?? '';
+  const statusRepeatsState =
+    /^(?:вкл\.?|выкл\.?|включен[оы]?|выключен[оы]?|приостановлено)$/iu.test(trimmedStatus);
   const summaryId = `${controls}-entry-summary`;
   const statusId = `${controls}-entry-status`;
   const enabledId = `${controls}-entry-enabled`;
@@ -117,9 +119,15 @@ export function SettingsSectionToggle({
         ? 'Включено'
         : 'Выключено'
       : '';
+  const statusNumbers = /^\d+(?:\s*\/\s*\d+)?$/u.test(trimmedStatus)
+    ? trimmedStatus.match(/\d+/gu)
+    : null;
+  const statusRepeatsSummary =
+    statusNumbers !== null && statusNumbers.join('/') === trimmedSummary.match(/\d+/gu)?.join('/');
+  const statusIsRedundant = Boolean(enabledLabel && statusRepeatsState) || statusRepeatsSummary;
   const descriptionIds = [
     trimmedSummary ? summaryId : '',
-    trimmedStatus ? statusId : '',
+    trimmedStatus && !statusIsRedundant ? statusId : '',
     enabledLabel ? enabledId : '',
   ]
     .filter(Boolean)
@@ -154,7 +162,11 @@ export function SettingsSectionToggle({
       </span>
 
       {trimmedStatus ? (
-        <span id={statusId} className={cn('settings-section__status-chip', `is-${tone}`)}>
+        <span
+          id={statusId}
+          className={cn('settings-section__status-chip', `is-${tone}`)}
+          data-redundant-status={statusIsRedundant ? 'true' : undefined}
+        >
           {trimmedStatus}
         </span>
       ) : null}

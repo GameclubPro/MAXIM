@@ -15,6 +15,7 @@ import { usePublisherPostImportController } from './use-publisher-post-import-co
 import { isPublisherDraftRouteId } from './publisher-post-import-route';
 import { stripPublisherOnlyPublicationRouteParams } from './publication-page-options';
 import { draftFromServer } from './publication-cloud-draft-model';
+import { resolvePublicationDraftLatePolicy } from './publication-late-policy-presentation';
 import {
   shouldPersistPublicationDraft,
   type PublicationEditorContext,
@@ -541,5 +542,12 @@ export function usePublicationEditorSession({
     finishIsolatedPublication,
     canPreservePublicationSchedule: (snapshot: PublicationDraft = draft) =>
       canPreservePublicationSchedule(editorContext, isolatedDraftBaselineRef.current, snapshot),
+    getEffectiveLatePolicy: (snapshot: PublicationDraft = draft) =>
+      resolvePublicationDraftLatePolicy(
+        snapshot,
+        isolatedDraftBaselineRef.current,
+        editorContext?.kind === 'edit',
+        canPreservePublicationSchedule(editorContext, isolatedDraftBaselineRef.current, snapshot),
+      ),
   };
 }

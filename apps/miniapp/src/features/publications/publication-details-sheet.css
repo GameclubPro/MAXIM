@@ -1,4 +1,46 @@
 @layer pages {
+  .publication-details-result {
+    display: grid;
+    gap: 6px;
+    padding: 16px;
+    margin-bottom: 12px;
+    border: 1px solid var(--publication-ui-border);
+    border-radius: 20px;
+    background: var(--publication-ui-surface);
+    color: var(--publication-ui-ink);
+  }
+
+  .publication-details-result > span,
+  .publication-details-result > small,
+  .publication-details-result__current {
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--publication-ui-ink-muted);
+  }
+
+  .publication-details-result__current {
+    display: grid;
+    gap: 4px;
+  }
+
+  .publication-details-result__current > small {
+    font: inherit;
+  }
+
+  .publication-details-result > strong {
+    font-size: 1.25rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  .publication-details-result.needs-attention {
+    border-color: var(--publication-warning-ink);
+  }
+
+  .publication-details-result.needs-attention > small {
+    color: var(--publication-warning-ink);
+  }
+
   .publication-details-dispatch-notice {
     min-height: 60px;
     display: grid;

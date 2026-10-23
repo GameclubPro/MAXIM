@@ -68,9 +68,8 @@ export function PublicationHubHeader({
       <header className="publications-header">
         <div>
           <h1>
-            <span>{publisherProfile ? 'Публик' : 'Расписания'}</span>
+            <span>{publisherProfile ? 'Посты' : 'Расписания'}</span>
           </h1>
-          {publisherProfile ? <span>Посты</span> : null}
         </div>
         {publisherProfile ? (
           <>

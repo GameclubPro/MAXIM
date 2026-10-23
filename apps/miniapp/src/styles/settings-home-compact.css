@@ -18,42 +18,6 @@
     padding-right: 14px;
   }
 
-  .settings-bot-load-strip {
-    justify-content: flex-start;
-    padding: 0 2px 2px;
-  }
-
-  .settings-bot-load {
-    max-width: 100%;
-    gap: 6px;
-    padding: 4px 6px;
-    border-radius: 20px;
-    border-color: rgba(212, 224, 236, 0.8);
-    background: rgba(255, 255, 255, 0.82);
-    box-shadow:
-      0 8px 18px rgba(24, 55, 83, 0.055),
-      0 1px 0 rgba(255, 255, 255, 0.76) inset;
-  }
-
-  .settings-bot-load__item {
-    gap: 6px;
-    padding: 4px 6px 4px 4px;
-    border-radius: 16px;
-    border-color: rgba(214, 226, 238, 0.78);
-  }
-
-  .settings-bot-load__avatar {
-    width: 34px;
-    height: 34px;
-    border-radius: 12px;
-  }
-
-  .settings-bot-load__meter {
-    width: 36px;
-    min-width: 36px;
-    height: 5px;
-  }
-
   .settings-sections-shell {
     gap: 8px;
   }

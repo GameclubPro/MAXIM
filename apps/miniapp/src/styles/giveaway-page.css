@@ -114,6 +114,117 @@
     padding-bottom: 12px;
     border-bottom: 1px solid var(--giveaway-line);
   }
+  .giveaway-page__promotion {
+    min-width: 0;
+    margin-block: 20px;
+    overflow: hidden;
+    border: 1px solid var(--giveaway-line);
+    border-radius: 24px;
+    background: linear-gradient(145deg, var(--giveaway-surface), var(--giveaway-bg));
+  }
+  .giveaway-page__cover {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 280px;
+    object-fit: contain;
+    background: var(--giveaway-surface);
+  }
+  .giveaway-page__promotion-copy {
+    display: grid;
+    gap: 12px;
+    padding: 20px;
+  }
+  .giveaway-page__promotion h2 {
+    margin: 0;
+    font-size: clamp(24px, 7vw, 32px);
+    font-weight: 800;
+    line-height: 1.16;
+    text-wrap: balance;
+  }
+  .giveaway-page__description {
+    margin: 0;
+    color: var(--giveaway-secondary);
+    font-size: 16px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+  .giveaway-page__description p {
+    margin-block: 12px 0;
+  }
+  .giveaway-page__promotion summary {
+    min-height: 44px;
+    cursor: pointer;
+    line-height: 1.55;
+  }
+  .giveaway-page__promotion summary:focus-visible {
+    outline: 3px solid var(--giveaway-accent);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+  .giveaway-page__description summary > span {
+    color: var(--giveaway-accent);
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .giveaway-page__prizes {
+    display: grid;
+    gap: 10px;
+    padding-top: 8px;
+  }
+  .giveaway-page__prizes h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    color: var(--giveaway-gold);
+    font-size: 15px;
+  }
+  .giveaway-page__prizes ol {
+    display: grid;
+    gap: 8px;
+    padding: 0;
+    margin: 0;
+    list-style: none;
+  }
+  .giveaway-page__prizes li {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+    line-height: 1.4;
+  }
+  .giveaway-page__prizes li > span {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--giveaway-gold-tint);
+    color: var(--giveaway-gold);
+    font-size: 12px;
+    font-weight: 800;
+  }
+  .giveaway-page__prizes summary {
+    display: flex;
+    align-items: center;
+    color: var(--giveaway-accent);
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .giveaway-page[data-personal-status-first='false'] .giveaway-page__verification {
+    width: 64px;
+    height: 64px;
+  }
+  .giveaway-page[data-personal-status-first='false'] .giveaway-page__verification svg {
+    width: 30px;
+    height: 30px;
+  }
+  .giveaway-page .giveaway-page__personal-prize {
+    color: var(--giveaway-gold);
+    font-weight: 700;
+  }
   .giveaway-page__source {
     display: grid;
     gap: 3px;

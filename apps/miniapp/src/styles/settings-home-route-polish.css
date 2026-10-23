@@ -154,68 +154,6 @@
       0 0 18px rgba(242, 180, 72, 0.24);
   }
 
-  .settings-bot-load-strip {
-    justify-content: stretch;
-    padding: 4px 0 8px;
-  }
-
-  .settings-bot-load {
-    position: relative;
-    isolation: isolate;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-    width: 100%;
-    gap: 8px;
-    padding: 7px;
-    border-radius: 28px;
-    overflow: hidden;
-    border-color: rgba(255, 255, 255, 0.76);
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 248, 254, 0.78)),
-      rgba(255, 255, 255, 0.74);
-    box-shadow:
-      0 18px 36px rgba(31, 64, 92, 0.11),
-      0 1px 0 rgba(255, 255, 255, 0.82) inset;
-    backdrop-filter: blur(18px) saturate(160%);
-    -webkit-backdrop-filter: blur(18px) saturate(160%);
-  }
-
-  .settings-bot-load::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    background:
-      linear-gradient(110deg, rgba(31, 169, 126, 0.1), transparent 36%),
-      linear-gradient(250deg, rgba(235, 98, 142, 0.09), transparent 48%);
-    pointer-events: none;
-  }
-
-  .settings-bot-load__item {
-    min-width: 0;
-    gap: 8px;
-    padding: 6px 8px 6px 6px;
-    border-radius: 21px;
-    border-color: rgba(255, 255, 255, 0.74);
-    box-shadow:
-      0 12px 24px rgba(24, 55, 83, 0.08),
-      0 1px 0 rgba(255, 255, 255, 0.82) inset;
-  }
-
-  .settings-bot-load__avatar {
-    width: 42px;
-    height: 42px;
-    border-radius: 16px;
-  }
-
-  .settings-bot-load__meter {
-    flex: 1 1 auto;
-    width: auto;
-    min-width: 36px;
-    height: 7px;
-    background: rgba(194, 213, 228, 0.72);
-  }
-
   .settings-sections-shell {
     gap: 9px;
   }
@@ -453,23 +391,6 @@
       border-radius: 17px;
     }
 
-    .settings-bot-load {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 7px;
-      padding: 6px;
-    }
-
-    .settings-bot-load__item {
-      gap: 7px;
-      padding: 5px 7px 5px 5px;
-    }
-
-    .settings-bot-load__avatar {
-      width: 38px;
-      height: 38px;
-      border-radius: 15px;
-    }
-
     .settings-home-entry .settings-section__toggle,
     .channel-settings-card .settings-section__toggle {
       grid-template-columns: auto minmax(0, 1fr) auto auto;
@@ -510,17 +431,6 @@
 
     .settings-home-sticky-header .compact-page-header__title {
       font-size: 0.92rem;
-    }
-
-    .settings-bot-load {
-      gap: 6px;
-      border-radius: 24px;
-    }
-
-    .settings-bot-load__avatar {
-      width: 36px;
-      height: 36px;
-      border-radius: 14px;
     }
 
     .settings-home-entry--priority .settings-section__toggle,

@@ -82,14 +82,55 @@ try {
   });
   assert.equal(await main.locator('img[src*="favicon"]').count(), 0);
   assert.equal(await main.getByText('Не проверено', { exact: true }).count(), 2);
-  assert.equal(await main.getByText('Скрытый приз').count(), 0);
-  assert.equal(await main.getByText('Не дублировать приз').count(), 0);
+  await main.getByRole('heading', { name: 'Подарки для подписчиков', exact: true }).waitFor();
+  assert.equal(await main.getByText('Сертификат на 5 000 ₽', { exact: true }).count(), 1);
+  assert.equal(await main.locator('.giveaway-page__cover').count(), 0);
+  assert.equal(
+    await main.evaluate((element) =>
+      Boolean(
+        element
+          .querySelector('.giveaway-page__promotion')
+          .compareDocumentPosition(element.querySelector('.giveaway-page__participation-status')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ),
+    true,
+    'New participants see the offer before their participation status',
+  );
+  await page.evaluate(
+    (base64) => window.giveawayTest.setPromotion(base64, 12),
+    avatarImage.toString('base64'),
+  );
+  await main.locator('.giveaway-page__cover').waitFor();
+  await page.waitForFunction(
+    () => document.querySelector('.giveaway-page__cover')?.naturalWidth > 0,
+  );
+  await main.getByText('Все призовые места · 12', { exact: true }).click();
+  await main
+    .getByText('Подарок 12 с длинным описанием для проверки переноса', { exact: true })
+    .waitFor({ state: 'visible' });
+  await assertParticipationLayout(page);
+  await page.evaluate(() => window.giveawayTest.setPromotion('broken-image'));
+  await main.locator('.giveaway-page__cover').waitFor({ state: 'detached' });
+  await page.evaluate(() => window.giveawayTest.setPromotion(null));
   await primary.evaluate((element) => {
     element.click();
     element.click();
   });
   await main.locator('.giveaway-page__verification.is-checking').waitFor();
   await main.getByRole('heading', { name: 'Вы участвуете', exact: true }).waitFor();
+  assert.equal(
+    await main.evaluate((element) =>
+      Boolean(
+        element
+          .querySelector('.giveaway-page__participation-status')
+          .compareDocumentPosition(element.querySelector('.giveaway-page__promotion')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ),
+    true,
+    'Registered participants see their personal status first',
+  );
   assert.equal(await page.evaluate(() => window.giveawayTest.enters), 1);
   await page.evaluate(() => {
     window.giveawayTest.mode = 'missing';
@@ -159,6 +200,22 @@ try {
   }
   await page.evaluate(() => window.giveawayTest.setScenario('winner'));
   await main.getByRole('button', { name: 'Подтвердить выигрыш' }).waitFor();
+  assert.equal(
+    await main.locator('.giveaway-page__personal-prize').textContent(),
+    '1 место · Сертификат на 5 000 ₽',
+  );
+  assert.equal(
+    await main.evaluate((element) =>
+      Boolean(
+        element
+          .querySelector('.giveaway-page__timer')
+          .compareDocumentPosition(element.querySelector('.giveaway-page__promotion')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ),
+    true,
+    'The claim deadline stays before promotional content',
+  );
   assert.equal(await main.getAttribute('data-tone'), 'winner');
   assert.equal(await main.locator('.giveaway-page__ticket').count(), 0);
   await main.getByRole('button', { name: 'К опубликованным итогам' }).click();
@@ -227,6 +284,27 @@ try {
           geometry.dockTop >= geometry.contentBottom - 1,
           'Step navigation must not overlap fields',
         );
+        if (step === 'prizes') {
+          await card.locator('.managed-giveaway__file-input').setInputFiles({
+            name: 'giveaway-photo.webp',
+            mimeType: 'image/webp',
+            buffer: avatarImage,
+          });
+          const preview = card.locator('.managed-giveaway__publication-image');
+          await preview.waitFor();
+          await editorPage.waitForFunction(
+            () =>
+              document.querySelector('.managed-giveaway__publication-image summary img')
+                ?.naturalWidth > 0,
+          );
+          await preview.locator('summary').click();
+          await preview
+            .locator('.managed-giveaway__publication-image-full')
+            .waitFor({ state: 'visible' });
+          await preview.locator('summary').click();
+          await card.getByRole('button', { name: 'Убрать фото', exact: true }).click();
+          await preview.waitFor({ state: 'detached' });
+        }
         if (step !== 'prizes') {
           await dock
             .getByRole('button', { name: step === 'basics' ? 'К условиям' : 'К призам' })
@@ -238,7 +316,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(
-    'Giveaway browser checks passed: participation, errors/retry, claim/results, long conditions, five viewport sizes, light/dark, and editor navigation without overlap.',
+    'Giveaway browser checks passed: stage-aware offer/prizes/cover, participation, errors/retry, claim/results, long conditions, five viewport sizes, light/dark, photo preview/remove, and editor navigation without overlap.',
   );
 } finally {
   await browser.close();

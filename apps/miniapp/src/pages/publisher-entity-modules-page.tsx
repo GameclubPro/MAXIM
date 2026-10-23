@@ -41,6 +41,7 @@ import {
   buildPublisherEntityListRoute,
 } from './publisher-entity-modules-page-model';
 import './publisher-entity-modules-page.css';
+import '../styles/publisher-modules-workspace.css';
 import { PublisherPolicyCard } from '../components/publisher-policy-card';
 import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
 import { PublisherCommentsModule } from '../components/publisher-comments-module';

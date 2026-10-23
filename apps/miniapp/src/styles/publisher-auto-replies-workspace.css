@@ -1,0 +1,181 @@
+@layer workspace {
+  body[data-miniapp-profile='publisher'] {
+    --publisher-page: var(--color-page);
+    --publisher-surface: var(--color-surface);
+    --publisher-raised: var(--color-surface-raised);
+    --publisher-muted: var(--color-surface-muted);
+    --publisher-tint: var(--color-surface-tint);
+    --publisher-ink: var(--color-ink);
+    --publisher-secondary: var(--color-ink-muted);
+    --publisher-subtle: var(--color-ink-subtle);
+    --publisher-border: var(--color-border);
+    --publisher-border-strong: var(--color-border-strong);
+    --publisher-accent: var(--color-accent);
+    --publisher-accent-soft: var(--color-accent-soft);
+    --publisher-on-accent: var(--publication-ui-on-accent);
+  }
+
+  body[data-miniapp-profile='publisher']
+    :is(
+      .publisher-entity-row__avatar,
+      .publisher-entity-modules-page__avatar,
+      .publisher-auto-replies-page__avatar
+    ) {
+    box-shadow: none;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-auto-reply-row__footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    font-size: 0.75rem;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-auto-reply-row__actions {
+    justify-self: end;
+  }
+  body[data-miniapp-profile='publisher'] .publisher-auto-replies-page__add {
+    border: 0;
+    background: var(--color-accent);
+    color: var(--publication-ui-on-accent);
+    box-shadow: 0 3px 12px var(--publisher-shadow-ink);
+  }
+  body[data-miniapp-profile='publisher'] .publisher-auto-reply-row__phrase > svg {
+    color: var(--color-accent);
+  }
+
+  @media (max-width: 767px) {
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publisher-entities-page__search,
+        .publisher-entities-page__refresh,
+        .publisher-entity-row__refresh,
+        .publisher-entity-modules-page__back,
+        .publisher-entity-modules-page__refresh,
+        .publisher-auto-replies-page__header > button,
+        .publisher-auto-reply-editor__header > button
+      ) {
+      border-radius: 14px;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publisher-entity-modules-page__identity strong,
+        .publisher-auto-replies-page__identity strong,
+        .publisher-auto-reply-editor__header > span strong,
+        .publication-details-sheet__header strong
+      ) {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      font-size: 1rem;
+      line-height: 1.3;
+    }
+
+    body[data-miniapp-profile='publisher'] :is(.publications-page, .publication-buttons-sheet) {
+      --publication-ui-page: var(--publisher-page);
+      --publication-ui-surface: var(--publisher-surface);
+      --publication-ui-surface-raised: var(--publisher-raised);
+      --publication-ui-surface-muted: var(--publisher-muted);
+      --publication-ui-surface-tint: var(--publisher-tint);
+      --publication-ui-ink: var(--publisher-ink);
+      --publication-ui-ink-muted: var(--publisher-secondary);
+      --publication-ui-ink-subtle: var(--publisher-subtle);
+      --publication-ui-border: var(--publisher-border);
+      --publication-ui-border-strong: var(--publisher-border-strong);
+      --publication-ui-row-border: var(--publisher-border);
+      --publication-ui-accent: var(--publisher-accent);
+      --publication-ui-accent-soft: var(--publisher-accent-soft);
+      --publication-ui-on-accent: var(--publisher-on-accent);
+      --publication-buttons-accent: var(--publisher-accent);
+      --publication-buttons-accent-soft: var(--publisher-accent-soft);
+      --publication-buttons-on-accent: var(--publisher-on-accent);
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-editor-section__head strong,
+        .publisher-auto-reply-editor__section > header h2
+      ) {
+      font-size: 1rem;
+      line-height: 1.35;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-editor-section__head small,
+        .publications-editor-header .publication-draft-indicator,
+        .publisher-auto-replies-page__identity small,
+        .publisher-auto-reply-editor__header > span small,
+        .publisher-auto-reply-editor__section > header small,
+        .publisher-auto-reply-editor__field-meta,
+        .publisher-auto-replies-page__module-toggle small,
+        .publisher-auto-replies-page__authoring small,
+        .publication-schedule-timezone
+      ) {
+      font-size: 0.75rem;
+      line-height: 1.45;
+    }
+
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publication-late-policy select,
+        .publisher-auto-reply-editor__field input,
+        .publisher-auto-reply-editor__select-field select
+      ) {
+      min-height: 48px;
+      font-size: 16px;
+      border-radius: 14px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-buttons-sheet__card {
+      padding: 14px;
+      border-radius: 20px;
+      gap: 12px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-buttons-sheet__card-top > strong {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      line-height: 1.4;
+      font-size: 0.9375rem;
+    }
+
+    body[data-miniapp-profile='publisher'] .publication-buttons-sheet__field > span {
+      font-size: 0.8125rem;
+    }
+
+    body[data-miniapp-profile='publisher'] .publisher-auto-reply-row {
+      border-radius: 20px;
+      box-shadow: 0 4px 16px var(--publisher-shadow-ink);
+    }
+
+    body[data-miniapp-profile='publisher'] .publisher-auto-reply-row__content {
+      padding: 14px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publisher-auto-reply-row__preview {
+      font-size: 0.875rem;
+    }
+
+    body[data-miniapp-profile='publisher'] .publisher-auto-reply-row__phrase strong {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      font-size: 0.9375rem;
+    }
+
+    body[data-miniapp-profile='publisher'] .publisher-auto-replies-page__add {
+      border-radius: 18px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publisher-auto-reply-editor__retained {
+      grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+      gap: 8px;
+    }
+  }
+}

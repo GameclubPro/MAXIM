@@ -33,8 +33,26 @@
   }
 
   .publication-target-picker__list.is-virtual .publication-target-row {
-    height: 58px;
-    min-height: 58px;
+    height: max(76px, 4.75rem);
+    min-height: max(76px, 4.75rem);
+  }
+
+  .publication-target-row {
+    min-height: max(76px, 4.75rem);
+  }
+
+  .publication-target-row__copy strong {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 0.875rem;
+    line-height: 1.3;
+  }
+
+  .publication-target-row__copy small {
+    font-size: 0.75rem;
   }
 
   .publication-target-picker__loaded {

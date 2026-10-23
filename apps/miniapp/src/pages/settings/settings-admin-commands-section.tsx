@@ -109,6 +109,10 @@ export function SettingsAdminCommandsSection({
             >
               {expanded ? (
                 <div className="settings-section__collapse-inner settings-admin-commands">
+                  <p className="settings-admin-commands__case-note">
+                    Названия команд можно изменить. Подсказки объясняют действие и область
+                    применения.
+                  </p>
                   {commandCategories.map((category) => (
                     <section className="settings-admin-commands__category" key={category.title}>
                       <h3>{category.title}</h3>

@@ -1,6 +1,11 @@
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { MAX_PUBLICATION_BUTTONS, publicationButtonSchema } from '@maxim/contracts/publication';
-import { Plus as IconoirPlus, Xmark as IconoirXmark } from 'iconoir-react';
+import {
+  NavArrowDown,
+  NavArrowUp,
+  Plus as IconoirPlus,
+  Xmark as IconoirXmark,
+} from 'iconoir-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -8,9 +13,10 @@ import {
   hasBroadcastLinkButtonErrors,
   type BroadcastLinkButtonFieldErrors,
 } from '../../lib/broadcast-link-buttons';
-import { useDialogFocusTrap } from '../../lib/dialog-focus';
-import { useNativeBackHandler } from '../../lib/native-back';
+import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
+import { NATIVE_BACK_MODAL_CONFIRM_PRIORITY, useNativeBackHandler } from '../../lib/native-back';
 import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';
+import { havePublicationButtonsChanged } from './publication-buttons-working-copy';
 import './publication-buttons-sheet.css';
 
 export type PublicationButtonsSheetProps = {
@@ -81,19 +87,27 @@ export function PublicationButtonsSheet({
   const textInputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const urlInputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const wasOpenRef = useRef(false);
+  const openingButtonsRef = useRef(createWorkingButtons(buttons));
+  const discardPanelRef = useRef<HTMLElement | null>(null);
+  const keepEditingRef = useRef<HTMLButtonElement | null>(null);
   const fieldId = useId();
   const [workingButtons, setWorkingButtons] = useState(() => createWorkingButtons(buttons));
   const [touchedFields, setTouchedFields] = useState<TouchedButtonFields[]>([]);
+  const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false);
   const overlayStyle = useVisualViewportOverlayStyle(open);
   const validationErrors = validatePublicationButtons(workingButtons);
   const visibleErrors = revealTouchedErrors(validationErrors, touchedFields);
 
   useDialogFocusTrap(open, panelRef, closeButtonRef);
+  useDialogFocusTrap(open && discardConfirmationOpen, discardPanelRef, keepEditingRef);
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
-      setWorkingButtons(createWorkingButtons(buttons));
+      const openingButtons = createWorkingButtons(buttons);
+      openingButtonsRef.current = openingButtons;
+      setWorkingButtons(openingButtons);
       setTouchedFields([]);
+      setDiscardConfirmationOpen(false);
     }
     wasOpenRef.current = open;
   }, [buttons, open]);
@@ -113,16 +127,57 @@ export function PublicationButtonsSheet({
     return () => window.clearTimeout(timeoutId);
   }, [open]);
 
+  useEffect(() => {
+    if (!open || discardConfirmationOpen) {
+      return undefined;
+    }
+    const panel = panelRef.current;
+    let frame = 0;
+    const revealFocusedInput = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const active = document.activeElement;
+        const body = panel?.querySelector<HTMLElement>('.publication-buttons-sheet__body');
+        if (!(active instanceof HTMLInputElement) || !body?.contains(active)) {
+          return;
+        }
+        const fieldRect = active.getBoundingClientRect();
+        const bodyRect = body.getBoundingClientRect();
+        if (fieldRect.bottom > bodyRect.bottom - 4) {
+          body.scrollTop += fieldRect.bottom - bodyRect.bottom + 4;
+        } else if (fieldRect.top < bodyRect.top + 4) {
+          body.scrollTop -= bodyRect.top - fieldRect.top + 4;
+        }
+      });
+    };
+    revealFocusedInput();
+    panel?.addEventListener('focusin', revealFocusedInput);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      panel?.removeEventListener('focusin', revealFocusedInput);
+    };
+  }, [discardConfirmationOpen, open, overlayStyle]);
+
   const discard = useCallback(() => {
     setWorkingButtons(createWorkingButtons(buttons));
     setTouchedFields([]);
+    setDiscardConfirmationOpen(false);
     onClose();
   }, [buttons, onClose]);
+
+  const requestClose = useCallback(() => {
+    if (havePublicationButtonsChanged(openingButtonsRef.current, workingButtons)) {
+      setDiscardConfirmationOpen(true);
+      return;
+    }
+    discard();
+  }, [discard, workingButtons]);
 
   const apply = useCallback(() => {
     if (disabled) {
       return;
     }
+    setDiscardConfirmationOpen(false);
     if (workingButtons.length === 0) {
       setWorkingButtons(createWorkingButtons([]));
       setTouchedFields([]);
@@ -150,10 +205,17 @@ export function PublicationButtonsSheet({
 
   useNativeBackHandler(
     () => {
-      discard();
+      requestClose();
       return true;
     },
     { enabled: open, priority: 690 },
+  );
+  useNativeBackHandler(
+    () => {
+      setDiscardConfirmationOpen(false);
+      return true;
+    },
+    { enabled: open && discardConfirmationOpen, priority: NATIVE_BACK_MODAL_CONFIRM_PRIORITY },
   );
 
   useEffect(() => {
@@ -182,14 +244,22 @@ export function PublicationButtonsSheet({
       if (event.key !== 'Escape') {
         return;
       }
+      const activePanel = discardConfirmationOpen ? discardPanelRef.current : panelRef.current;
+      if (!activePanel || !isTopmostModalDialog(activePanel)) {
+        return;
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
-      discard();
+      if (discardConfirmationOpen) {
+        setDiscardConfirmationOpen(false);
+      } else {
+        requestClose();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [discard, open]);
+  }, [discardConfirmationOpen, open, requestClose]);
 
   function updateButton(index: number, patch: Partial<BroadcastLinkButton>) {
     setWorkingButtons((current) =>
@@ -210,6 +280,24 @@ export function PublicationButtonsSheet({
   function removeButton(index: number) {
     setWorkingButtons((current) => current.filter((_, buttonIndex) => buttonIndex !== index));
     setTouchedFields((current) => current.filter((_, buttonIndex) => buttonIndex !== index));
+  }
+
+  function moveButton(index: number, direction: -1 | 1) {
+    const nextIndex = index + direction;
+    if (disabled || nextIndex < 0 || nextIndex >= workingButtons.length) {
+      return;
+    }
+    setWorkingButtons((current) => {
+      const next = current.slice();
+      [next[index], next[nextIndex]] = [next[nextIndex]!, next[index]!];
+      return next;
+    });
+    setTouchedFields((current) => {
+      const next = workingButtons.map((_, buttonIndex) => current[buttonIndex] ?? {});
+      [next[index], next[nextIndex]] = [next[nextIndex]!, next[index]!];
+      return next;
+    });
+    window.requestAnimationFrame(() => textInputRefs.current[nextIndex]?.focus());
   }
 
   function addButton() {
@@ -235,12 +323,15 @@ export function PublicationButtonsSheet({
   }
 
   return createPortal(
-    <div className="publication-buttons-sheet" style={overlayStyle}>
+    <div
+      className={`publication-buttons-sheet${typeof overlayStyle?.height === 'number' && overlayStyle.height <= 360 ? ' is-compact-viewport' : ''}`}
+      style={overlayStyle}
+    >
       <button
         type="button"
         className="publication-buttons-sheet__backdrop"
         aria-label="Закрыть"
-        onClick={discard}
+        onClick={requestClose}
         tabIndex={-1}
       />
 
@@ -250,6 +341,8 @@ export function PublicationButtonsSheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby="publication-buttons-sheet-title"
+        aria-hidden={discardConfirmationOpen || undefined}
+        inert={discardConfirmationOpen}
         tabIndex={-1}
       >
         <header className="publication-buttons-sheet__header">
@@ -257,7 +350,7 @@ export function PublicationButtonsSheet({
           <span>
             {workingButtons.length}/{MAX_PUBLICATION_BUTTONS}
           </span>
-          <button ref={closeButtonRef} type="button" onClick={discard} aria-label="Закрыть">
+          <button ref={closeButtonRef} type="button" onClick={requestClose} aria-label="Закрыть">
             <IconoirXmark aria-hidden focusable="false" />
           </button>
         </header>
@@ -364,6 +457,27 @@ export function PublicationButtonsSheet({
                         </small>
                       ) : null}
                     </label>
+                    {workingButtons.length > 1 ? (
+                      <div className="publication-buttons-sheet__order">
+                        <span>Порядок: {index + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => moveButton(index, -1)}
+                          disabled={disabled || index === 0}
+                          aria-label={`Переместить кнопку ${index + 1} выше`}
+                        >
+                          <NavArrowUp aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveButton(index, 1)}
+                          disabled={disabled || index === workingButtons.length - 1}
+                          aria-label={`Переместить кнопку ${index + 1} ниже`}
+                        >
+                          <NavArrowDown aria-hidden />
+                        </button>
+                      </div>
+                    ) : null}
                   </article>
                 );
               })}
@@ -396,6 +510,41 @@ export function PublicationButtonsSheet({
           </button>
         </footer>
       </section>
+      {discardConfirmationOpen ? (
+        <div className="publication-buttons-sheet__discard">
+          <button
+            type="button"
+            className="publication-buttons-sheet__backdrop"
+            aria-label="Продолжить редактирование"
+            tabIndex={-1}
+            onClick={() => setDiscardConfirmationOpen(false)}
+          />
+          <section
+            ref={discardPanelRef}
+            className="publication-buttons-sheet__discard-panel"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={`${fieldId}-discard-title`}
+            aria-describedby={`${fieldId}-discard-description`}
+            tabIndex={-1}
+          >
+            <strong id={`${fieldId}-discard-title`}>Закрыть без сохранения?</strong>
+            <p id={`${fieldId}-discard-description`}>
+              Изменения кнопок будут потеряны. Чтобы сохранить их, вернитесь и нажмите «Готово».
+            </p>
+            <button
+              ref={keepEditingRef}
+              type="button"
+              onClick={() => setDiscardConfirmationOpen(false)}
+            >
+              Продолжить редактирование
+            </button>
+            <button type="button" className="is-danger" onClick={discard}>
+              Не сохранять
+            </button>
+          </section>
+        </div>
+      ) : null}
     </div>,
     portalTarget,
   );

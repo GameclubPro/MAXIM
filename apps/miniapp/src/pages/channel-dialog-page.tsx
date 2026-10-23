@@ -25,6 +25,7 @@ import {
   Code as IconoirCode,
   Italic as IconoirItalic,
   Link as IconoirLink,
+  MoreHoriz as IconoirMoreHoriz,
   NavArrowDown as IconoirArrowDown,
   ArrowUp as IconoirArrowUp,
   Palette as IconoirPalette,
@@ -33,6 +34,7 @@ import {
   Strikethrough as IconoirStrikethrough,
   Type as IconoirType,
   Underline as IconoirUnderline,
+  Xmark as IconoirXmark,
 } from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -1283,6 +1285,7 @@ export function ChannelDialogPage({
   const [isComposeToolsOpen, setIsComposeToolsOpen] = useState(false);
   const [isNotificationSettingsOpen, setIsNotificationSettingsOpen] = useState(false);
   const [isThemeSettingsOpen, setIsThemeSettingsOpen] = useState(false);
+  const [isCommentToolsOpen, setIsCommentToolsOpen] = useState(false);
   const [moderationSheet, setModerationSheet] = useState<{
     target: CommentModerationTarget | null;
   } | null>(null);
@@ -1310,6 +1313,8 @@ export function ChannelDialogPage({
   const suggestBarRef = useRef<HTMLDivElement | null>(null);
   const suggestionKeyboardBaselineRef = useRef<SuggestionKeyboardViewportBaseline | null>(null);
   const themeToggleRef = useRef<HTMLButtonElement | null>(null);
+  const commentToolsPanelRef = useRef<HTMLElement | null>(null);
+  const commentToolsCloseRef = useRef<HTMLButtonElement | null>(null);
   const imageViewerPanelRef = useRef<HTMLElement | null>(null);
   const imageViewerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const commentsNotificationTopNudgeRef = useRef(0);
@@ -1587,6 +1592,12 @@ export function ChannelDialogPage({
 
   useDialogFocusTrap(Boolean(imageViewer), imageViewerPanelRef, imageViewerCloseButtonRef);
   useDialogFocusTrap(Boolean(activeMessage), reactionPopoverRef, reactionPopoverRef);
+  useDialogFocusTrap(
+    isCommentToolsOpen,
+    commentToolsPanelRef,
+    commentToolsCloseRef,
+    themeToggleRef,
+  );
 
   const clearMessagePress = () => {
     if (pressTimerRef.current !== null && typeof window !== 'undefined') {
@@ -1819,6 +1830,26 @@ export function ChannelDialogPage({
     },
     { enabled: isThemeSettingsOpen, priority: 626 },
   );
+
+  useNativeBackHandler(
+    () => {
+      setIsCommentToolsOpen(false);
+      return true;
+    },
+    { enabled: isCommentToolsOpen, priority: 624 },
+  );
+
+  useEffect(() => {
+    if (!isCommentToolsOpen) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setIsCommentToolsOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCommentToolsOpen]);
 
   useEffect(() => {
     if (canManageCommentNotifications) {
@@ -3804,6 +3835,7 @@ export function ChannelDialogPage({
           className="channel-dialog-comments-header"
           inert={
             Boolean(moderationSheet) ||
+            isCommentToolsOpen ||
             isThemeSettingsOpen ||
             isNotificationSettingsOpen ||
             Boolean(imageViewer) ||
@@ -3849,58 +3881,21 @@ export function ChannelDialogPage({
                 ref={themeToggleRef}
                 type="button"
                 className="channel-dialog-theme-toggle"
-                aria-label="Оформление комментариев"
-                title="Оформление комментариев"
+                aria-label="Параметры обсуждения"
+                title="Параметры обсуждения"
                 aria-haspopup="dialog"
-                aria-expanded={isThemeSettingsOpen}
+                aria-expanded={isCommentToolsOpen}
                 onClick={() => {
                   maxImpact('light');
                   dismissMessageActions();
                   setIsComposeEmojiOpen(false);
                   setIsNotificationSettingsOpen(false);
                   composeFieldRef.current?.blur();
-                  setIsThemeSettingsOpen(true);
+                  setIsCommentToolsOpen(true);
                 }}
               >
-                <IconoirPalette aria-hidden focusable="false" />
+                <IconoirMoreHoriz aria-hidden focusable="false" />
               </button>
-              {canManageCommentNotifications ? (
-                <div className="channel-dialog-notifications">
-                  <button
-                    type="button"
-                    className={cn(
-                      'channel-dialog-notifications__toggle',
-                      notificationMode !== 'off' && 'is-active',
-                      isNotificationSettingsOpen && 'is-open',
-                    )}
-                    onClick={() => {
-                      maxImpact('light');
-                      dismissMessageActions();
-                      setIsComposeEmojiOpen(false);
-                      setIsThemeSettingsOpen(false);
-                      composeFieldRef.current?.blur();
-                      if (!isNotificationSettingsOpen) {
-                        setNotificationDraftScope(notificationScope);
-                        setNotificationDraftMode(
-                          getNotificationSettingsForScope(notificationSettings, notificationScope)
-                            .mode,
-                        );
-                      }
-                      setIsNotificationSettingsOpen((current) => !current);
-                    }}
-                    aria-label="Настройки уведомлений"
-                    aria-expanded={isNotificationSettingsOpen}
-                    title={notificationToggleLabel}
-                    disabled={isNotificationPending}
-                  >
-                    {notificationMode === 'off' ? (
-                      <IconoirBellOff aria-hidden focusable="false" />
-                    ) : (
-                      <IconoirBell aria-hidden focusable="false" />
-                    )}
-                  </button>
-                </div>
-              ) : null}
             </div>
           </div>
         </header>
@@ -3915,6 +3910,7 @@ export function ChannelDialogPage({
         inert={
           dialogType === 'comments' &&
           (Boolean(moderationSheet) ||
+            isCommentToolsOpen ||
             isThemeSettingsOpen ||
             isNotificationSettingsOpen ||
             Boolean(imageViewer) ||
@@ -5161,6 +5157,84 @@ export function ChannelDialogPage({
           )
         : null}
 
+      {dialogType === 'comments' && isCommentToolsOpen
+        ? createPortal(
+            <div className="comment-theme-sheet comment-tools-sheet">
+              <button
+                type="button"
+                className="comment-theme-sheet__backdrop"
+                aria-label="Закрыть параметры обсуждения"
+                tabIndex={-1}
+                onClick={() => setIsCommentToolsOpen(false)}
+              />
+              <section
+                ref={commentToolsPanelRef}
+                className="comment-theme-sheet__panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="comment-tools-title"
+                tabIndex={-1}
+              >
+                <header className="comment-theme-sheet__head">
+                  <h2 id="comment-tools-title">Параметры обсуждения</h2>
+                  <button
+                    ref={commentToolsCloseRef}
+                    type="button"
+                    className="comment-theme-sheet__close"
+                    aria-label="Закрыть параметры обсуждения"
+                    onClick={() => setIsCommentToolsOpen(false)}
+                  >
+                    <IconoirXmark aria-hidden />
+                  </button>
+                </header>
+                <button
+                  type="button"
+                  className="comment-tools-sheet__action"
+                  aria-label="Оформление комментариев"
+                  onClick={() => {
+                    setIsCommentToolsOpen(false);
+                    setIsThemeSettingsOpen(true);
+                  }}
+                >
+                  <IconoirPalette aria-hidden />
+                  <span>
+                    <strong>Оформление</strong>
+                    <small>Тема и фон комментариев</small>
+                  </span>
+                </button>
+                {canManageCommentNotifications ? (
+                  <button
+                    type="button"
+                    className="comment-tools-sheet__action"
+                    aria-label="Настройки уведомлений"
+                    disabled={isNotificationPending}
+                    onClick={() => {
+                      setNotificationDraftScope(notificationScope);
+                      setNotificationDraftMode(
+                        getNotificationSettingsForScope(notificationSettings, notificationScope)
+                          .mode,
+                      );
+                      setIsCommentToolsOpen(false);
+                      setIsNotificationSettingsOpen(true);
+                    }}
+                  >
+                    {notificationMode === 'off' ? (
+                      <IconoirBellOff aria-hidden />
+                    ) : (
+                      <IconoirBell aria-hidden />
+                    )}
+                    <span>
+                      <strong>Уведомления</strong>
+                      <small>{notificationToggleLabel}</small>
+                    </span>
+                  </button>
+                ) : null}
+              </section>
+            </div>,
+            screenRef.current ?? document.body,
+          )
+        : null}
+
       {dialogType === 'comments' && isThemeSettingsOpen ? (
         <Suspense fallback={null}>
           <CommentThemeSheet
@@ -5176,6 +5250,7 @@ export function ChannelDialogPage({
       {canManageCommentNotifications && dialogType === 'comments' && isNotificationSettingsOpen ? (
         <Suspense fallback={null}>
           <LazyChannelDialogNotificationSheet
+            returnFocusRef={themeToggleRef}
             portalTarget={screenRef.current ?? document.body}
             entityType={entityType}
             profile={profile}

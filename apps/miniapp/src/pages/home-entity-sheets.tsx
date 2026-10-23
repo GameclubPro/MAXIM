@@ -476,6 +476,11 @@ export default function HomeEntitySheets(props: HomeEntitySheetsProps) {
         overlayStyle={overlayStyle}
         onClose={props.onClose}
       >
+        {props.favoriteSaving ? (
+          <p className="favorite-picker__saving" role="status">
+            Сохраняем категорию… Подождите перед следующим изменением.
+          </p>
+        ) : null}
         <fieldset className="favorite-picker__fieldset" disabled={props.favoriteSaving}>
           <legend className="favorite-picker__sr">Выберите категорию избранного</legend>
           <div className="favorite-picker__grid" aria-busy={props.favoriteSaving || undefined}>
