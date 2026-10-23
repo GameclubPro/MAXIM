@@ -2,12 +2,16 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
+import { chromium, devices, webkit } from 'playwright';
 import {
   installNativeVisualModeInitScript,
   applyNativeVisualMode,
 } from '../../../scripts/miniapp-native-visual-mode.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
+import {
+  captureBrowserLaunchOptions,
+  settleVisualFrame,
+} from '../../../scripts/miniapp-smartphone.mjs';
 
 const base = new URL(process.env.MINIAPP_TEST_BASE_URL ?? 'http://127.0.0.1:3015/app/');
 if (!['localhost', '127.0.0.1', '[::1]'].includes(base.hostname))
@@ -49,6 +53,136 @@ async function checkControls(locator, label, viewportWidth, { separate = false }
     }
   }
   return controls;
+}
+
+const narrowBrowser = await webkit.launch(captureBrowserLaunchOptions('webkit', base.href));
+try {
+  for (const theme of ['light', 'dark']) {
+    const width = 280;
+    const height = 603;
+    const context = await narrowBrowser.newContext({
+      viewport: { width, height },
+      screen: { width, height: 667 },
+      deviceScaleFactor: 2,
+      isMobile: true,
+      hasTouch: true,
+      userAgent: devices['iPhone SE'].userAgent,
+      locale: 'ru-RU',
+      timezoneId: 'Europe/Moscow',
+      colorScheme: theme,
+    });
+    try {
+      await installNativeVisualModeInitScript(context);
+      await installMaxBridgeShimInitScript(context, { platform: 'ios' }, { colorScheme: theme });
+      await context.route(/https:\/\/st\.max\.ru\/js\/max-web-app\.js(?:\?.*)?$/u, (route) =>
+        route.fulfill({
+          contentType: 'application/javascript',
+          body: '/* Visual MAX Bridge shim. */',
+        }),
+      );
+      const page = await context.newPage();
+      await page.clock.setFixedTime(new Date('2026-07-18T09:00:00.000Z'));
+      const errors = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      await page.goto(new URL('chat/preview-chat/events?preview=1&device=iphone-se', base).href);
+      await page.locator('.sanctions-workspace__details-trigger').first().waitFor();
+      await applyNativeVisualMode(page, { safeTop: 0, safeBottom: 0 });
+      // Follow the public capture flow: open a sanction, visit participants and activity,
+      // then return to the journal. A direct history URL misses the grid regression.
+      await page.getByRole('radio', { name: 'Ограничения', exact: true }).click();
+      await page.locator('.sanctions-workspace__details-trigger').first().click();
+      await page.locator('.sanction-details .button--accent').click({ trial: true });
+      await page
+        .locator('.sanction-details')
+        .getByRole('button', { name: 'Закрыть панель', exact: true })
+        .click();
+      const openHistory = async () => {
+        await page.getByRole('radio', { name: 'Журнал', exact: true }).click();
+        await page
+          .locator('.events-dashboard__body--moderation:not(.events-dashboard__body--loading)')
+          .waitFor({ state: 'visible' });
+        await page.locator('.event-feed-item, .events-inline-state').first().waitFor();
+      };
+      await openHistory();
+      await page
+        .locator('.events-dashboard__range')
+        .getByRole('radio', { name: '24ч', exact: true })
+        .click();
+      const sections = page.getByRole('group', { name: 'Раздел статистики' });
+      await sections.getByRole('button', { name: 'Участники', exact: true }).click();
+      await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
+      await page
+        .getByRole('searchbox', { name: 'Поиск участника' })
+        .fill('несуществующий участник');
+      await page.getByText('Участники не найдены', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Сбросить фильтры' }).click();
+      await page.locator('.participants-roster__list[aria-busy="false"]').waitFor();
+      await sections.getByRole('button', { name: 'События', exact: true }).click();
+      await page.locator('.membership-feed__item').first().waitFor();
+      await sections.getByRole('button', { name: 'Модерация', exact: true }).click();
+      await openHistory();
+      await applyNativeVisualMode(page, { safeTop: 0, safeBottom: 0 });
+      await page.locator('.events-dashboard__skeleton-line').first().waitFor({ state: 'hidden' });
+      await page.locator('.managed-entity-workspace-header__busy').waitFor({ state: 'hidden' });
+      await settleVisualFrame(page);
+      assert.equal(
+        await page.locator('.events-dashboard__range [aria-checked="true"]').innerText(),
+        '24ч',
+      );
+      const geometry = await page.evaluate(() => {
+        const rect = (selector) =>
+          document.querySelector(selector).getBoundingClientRect().toJSON();
+        return {
+          viewportWidth: innerWidth,
+          header: rect('.events-stage__workspace-header'),
+          workspace: rect('.events-screen'),
+          content: rect('.shell-content'),
+        };
+      });
+      await page.screenshot({
+        path: join(output, `webkit-${width}-${theme}-moderation-history.png`),
+        fullPage: true,
+        animations: 'disabled',
+      });
+      assert.ok(
+        geometry.header.left >= -1 && geometry.header.right <= width + 1,
+        `WebKit ${width}px ${theme}: header exceeds viewport ${JSON.stringify(geometry)}`,
+      );
+      assert.equal(geometry.viewportWidth, width);
+      const metricLabels = await page
+        .locator('.events-dashboard__stack .events-dashboard__metric small')
+        .evaluateAll((labels) =>
+          labels.map((label) => {
+            const range = document.createRange();
+            range.selectNodeContents(label);
+            return { text: label.textContent, lines: range.getClientRects().length };
+          }),
+        );
+      assert.equal(metricLabels.length, 2);
+      assert.ok(
+        metricLabels.every((label) => label.lines === 1),
+        `WebKit ${width}px ${theme}: metric labels break words ${JSON.stringify(metricLabels)}`,
+      );
+      const controls = await checkControls(
+        page.locator('.managed-entity-workspace-header__actions button'),
+        `WebKit ${width}px ${theme} header`,
+        width,
+        { separate: true },
+      );
+      assert.equal(controls.length, 2);
+      assert.ok(
+        controls.every((control) => control.y >= 0 && control.y + control.height <= height),
+      );
+      assert.deepEqual(errors, []);
+      console.log(
+        `PASS WebKit ${width}px ${theme}: moderation history 24h header and 44px controls`,
+      );
+    } finally {
+      await context.close();
+    }
+  }
+} finally {
+  await narrowBrowser.close();
 }
 
 const browser = await chromium.launch();
