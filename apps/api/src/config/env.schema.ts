@@ -456,6 +456,10 @@ const envSchema = z.object({
     .default(40_000_000),
   PHOTO_NATIVE_SANDBOX_SOCKET_PATH: z.literal('/run/maxim-photo/native-photo.sock').optional(),
   PHOTO_DUPLICATE_HISTORY_MAX_ITEMS: z.coerce.number().int().min(10).max(2_000).default(250),
+  COMMERCIAL_LLM_SHADOW_ENABLED: envBoolean(false),
+  COMMERCIAL_LLM_ENDPOINT: z
+    .literal('http://gemma-commercial-shadow:8080')
+    .default('http://gemma-commercial-shadow:8080'),
   COMMERCIAL_OCR_ROLLOUT_MODE: z.enum(COMMERCIAL_OCR_ROLLOUT_MODES).default('off'),
   IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: z
     .enum(IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODES)

@@ -41,6 +41,11 @@ Detailed constraints selected by the routing table in [infrastructure agent note
   fault-fixture container's fatal exit/restart and next canonical hash. It is CI-only, bounded
   below two minutes, and must never reuse production volumes, credentials, or MAX destinations.
 - Public health/webhooks go to `api-ingress`; `/api/v1/` and closed owner APIs go to `api-admin`; queue roles do not own public HTTP traffic.
+- Optional `gemma-commercial-shadow` is an independently pinned text-inference auxiliary with a
+  4 CPU/24 GiB budget and one internal network shared only with `api-moderation-background`.
+  Its profile stays opt-in, has no host ports or application secrets, and never grants deletion
+  authority. Install, flag staging, provenance and shutdown use the protected-lock operation in
+  [the local commercial model runbook](../operations/runbooks/commercial-llm-shadow.md).
 - The domain-separated Publisher dialog signing key is mounted only in `api-admin`, `api-action`, and `api-publisher`. Keep the Publisher bot token exclusive to `api-publisher` and init-data verification keys exclusive to `api-admin`.
 - Plain Publisher private starts use `publisher-start`, consumed only by `api-publisher`; preserve its pre-send dispatch marker on retries and retain jobs longer than the one-day accepted event age.
 - Publisher temporal selection stays `off` by default. Use the exact-green, preview-first `publisher-selection-rollout <off|test|5|25|100> [--apply]` setter; it preserves dispatch, records each transition and rechecks all 14 roles. Acceptance and recovery are defined in [the temporal selection rollout](../operations/runbooks/publisher-temporal-selection-rollout.md); numeric stages never promote automatically.
