@@ -11,11 +11,12 @@ import {
   Refresh,
   WarningCircle,
 } from 'iconoir-react';
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Link, useLocation, useParams } from 'react-router';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
+import { useSmartphoneLayout } from '../lib/use-smartphone-layout';
 import {
   getPublisherEntity,
   refreshPublisherEntity,
@@ -74,6 +75,21 @@ const LazyVkWorkspaceShell = lazy(() =>
     default: module.VkWorkspaceShell,
   })),
 );
+const LazyPublisherSuggestionsPanel = lazy(
+  () => import('../components/publisher-suggestions-panel'),
+);
+
+function ModuleNavigationContent({ title, icon }: { title: string; icon: ReactElement }) {
+  return (
+    <>
+      <span className="publisher-entity-module__icon" aria-hidden>
+        {icon}
+      </span>
+      <strong>{title}</strong>
+      <NavArrowRight aria-hidden />
+    </>
+  );
+}
 
 function ModuleSwitch({
   checked,
@@ -110,10 +126,12 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     params.entityType === 'chat' || params.entityType === 'channel' ? params.entityType : null;
   const entityId = params.entityId?.trim() ?? '';
   const location = useLocation();
+  const smartphoneLayout = useSmartphoneLayout();
   const [vkOpen, setVkOpen] = useState(
     () => new URLSearchParams(location.search).get('focus') === 'vk',
   );
   const [permissionBlocker, setPermissionBlocker] = useState<BotPermissionBlocker | null>(null);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [entityRecheckPhase, setEntityRecheckPhase] = useState<PublisherEntityRecheckPhase | null>(
     null,
   );
@@ -174,6 +192,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     setVkOpen(false);
+    setSuggestionsOpen(false);
     entityRecheckAbortRef.current?.abort();
     entityRecheckAbortRef.current = null;
     setEntityRecheckPhase(null);
@@ -333,7 +352,9 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           <strong>
             {entity.title.trim() || (entity.entityType === 'channel' ? 'Канал' : 'Чат')}
           </strong>
-          <small>{entity.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
+          {!smartphoneLayout ? (
+            <small>{entity.entityType === 'channel' ? 'Канал' : 'Чат'}</small>
+          ) : null}
         </span>
         <button
           type="button"
@@ -353,12 +374,14 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       </header>
 
       <PublisherPolicyCard api={api} entityType={entity.entityType} entityId={entity.id} />
-      <MarketplaceProfileCard
-        api={api}
-        entityType={entity.entityType}
-        entityId={entity.id}
-        profile="publisher"
-      />
+      {!smartphoneLayout ? (
+        <MarketplaceProfileCard
+          api={api}
+          entityType={entity.entityType}
+          entityId={entity.id}
+          profile="publisher"
+        />
+      ) : null}
 
       {!entity.readiness.canPublish || entityRecheckPhase ? (
         <div
@@ -398,25 +421,46 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       ) : null}
 
       <div className="publisher-entity-modules-page__modules">
-        <article className="publisher-entity-module">
-          <span className="publisher-entity-module__icon is-posting" aria-hidden>
-            <Post />
-          </span>
-          <span className="publisher-entity-module__copy">
-            <strong>Посты</strong>
-          </span>
-          {canPreparePublisherPublicationTarget(entity) ? (
+        {smartphoneLayout ? (
+          canPreparePublisherPublicationTarget(entity) ? (
             <Link
               to={buildPublisherCreateRoute(entity)}
-              className="publisher-entity-module__action"
-              aria-label={`Создать пост для ${entity.title || entity.id}`}
-              title="Создать пост"
+              className="publisher-module-entry"
+              data-settings-navigation-entry="true"
             >
-              <span>Создать</span>
-              <NavArrowRight aria-hidden />
+              <ModuleNavigationContent title="Посты" icon={<Post />} />
             </Link>
-          ) : null}
-        </article>
+          ) : (
+            <button
+              type="button"
+              className="publisher-module-entry"
+              data-settings-navigation-entry="true"
+              disabled
+            >
+              <ModuleNavigationContent title="Посты" icon={<Post />} />
+            </button>
+          )
+        ) : (
+          <article className="publisher-entity-module">
+            <span className="publisher-entity-module__icon is-posting" aria-hidden>
+              <Post />
+            </span>
+            <span className="publisher-entity-module__copy">
+              <strong>Посты</strong>
+            </span>
+            {canPreparePublisherPublicationTarget(entity) ? (
+              <Link
+                to={buildPublisherCreateRoute(entity)}
+                className="publisher-entity-module__action"
+                aria-label={`Создать пост для ${entity.title || entity.id}`}
+                title="Создать пост"
+              >
+                <span>Создать</span>
+                <NavArrowRight aria-hidden />
+              </Link>
+            ) : null}
+          </article>
+        )}
 
         <PublisherCommentsModule
           key={`${entity.entityType}:${entity.id}`}
@@ -428,27 +472,52 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         />
 
         {entity.entityType === 'chat' ? (
-          <article className="publisher-entity-module">
-            <span className="publisher-entity-module__icon is-auto-replies" aria-hidden>
-              <Key />
-            </span>
-            <span className="publisher-entity-module__copy">
-              <strong>Автоответы</strong>
-            </span>
+          smartphoneLayout ? (
             <Link
               to={buildPublisherAutoRepliesRoute(entity.id)}
               state={{ chatTitle: entity.title }}
-              className="publisher-entity-module__action"
-              aria-label={`Открыть автоответы для ${entity.title || entity.id}`}
-              title="Открыть автоответы"
+              className="publisher-module-entry"
+              data-settings-navigation-entry="true"
             >
-              <span>Открыть</span>
-              <NavArrowRight aria-hidden />
+              <ModuleNavigationContent title="Автоответы" icon={<Key />} />
             </Link>
-          </article>
+          ) : (
+            <article className="publisher-entity-module">
+              <span className="publisher-entity-module__icon is-auto-replies" aria-hidden>
+                <Key />
+              </span>
+              <span className="publisher-entity-module__copy">
+                <strong>Автоответы</strong>
+              </span>
+              <Link
+                to={buildPublisherAutoRepliesRoute(entity.id)}
+                state={{ chatTitle: entity.title }}
+                className="publisher-entity-module__action"
+                aria-label={`Открыть автоответы для ${entity.title || entity.id}`}
+                title="Открыть автоответы"
+              >
+                <span>Открыть</span>
+                <NavArrowRight aria-hidden />
+              </Link>
+            </article>
+          )
         ) : null}
 
-        {entity.entityType === 'channel' ? (
+        {entity.entityType === 'channel' && smartphoneLayout ? (
+          <button
+            type="button"
+            className="publisher-module-entry"
+            data-settings-navigation-entry="true"
+            aria-haspopup="dialog"
+            aria-expanded={suggestionsOpen}
+            aria-controls="publisher-suggestions-workspace"
+            onClick={() => setSuggestionsOpen(true)}
+          >
+            <ModuleNavigationContent title="Предложения" icon={<ChatBubble />} />
+          </button>
+        ) : null}
+
+        {entity.entityType === 'channel' && !smartphoneLayout ? (
           <article className="publisher-entity-module">
             <span className="publisher-entity-module__icon is-suggestions" aria-hidden>
               <ChatBubble />
@@ -467,7 +536,9 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           </article>
         ) : null}
 
-        {entity.entityType === 'channel' && entity.moduleSettings.channelSuggestionsEnabled ? (
+        {entity.entityType === 'channel' &&
+        !smartphoneLayout &&
+        entity.moduleSettings.channelSuggestionsEnabled ? (
           <>
             <div className="publisher-entity-module publisher-entity-module--subscription">
               <span className="publisher-entity-module__icon" aria-hidden>
@@ -505,26 +576,40 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         ) : null}
 
         <section className="publisher-entity-vk-module" data-publisher-module="vk">
-          <div className="publisher-entity-module">
-            <span className="publisher-entity-module__icon is-vk" aria-hidden>
-              <Download />
-            </span>
-            <span className="publisher-entity-module__copy">
-              <strong>Посты из VK</strong>
-            </span>
+          {smartphoneLayout ? (
             <button
               type="button"
-              className={cn('publisher-entity-module__action', vkOpen && 'is-open')}
-              aria-label={vkOpen ? 'Закрыть посты из VK' : 'Открыть посты из VK'}
-              title={vkOpen ? 'Закрыть посты из VK' : 'Открыть посты из VK'}
+              className="publisher-module-entry"
+              data-settings-navigation-entry="true"
+              aria-haspopup="dialog"
               aria-expanded={vkOpen}
               aria-controls="publisher-vk-workspace"
-              onClick={() => setVkOpen((current) => !current)}
+              onClick={() => setVkOpen(true)}
             >
-              <span>{vkOpen ? 'Закрыть' : 'Открыть'}</span>
-              <NavArrowRight aria-hidden />
+              <ModuleNavigationContent title="Посты из VK" icon={<Download />} />
             </button>
-          </div>
+          ) : (
+            <div className="publisher-entity-module">
+              <span className="publisher-entity-module__icon is-vk" aria-hidden>
+                <Download />
+              </span>
+              <span className="publisher-entity-module__copy">
+                <strong>Посты из VK</strong>
+              </span>
+              <button
+                type="button"
+                className={cn('publisher-entity-module__action', vkOpen && 'is-open')}
+                aria-label={vkOpen ? 'Закрыть посты из VK' : 'Открыть посты из VK'}
+                title={vkOpen ? 'Закрыть посты из VK' : 'Открыть посты из VK'}
+                aria-expanded={vkOpen}
+                aria-controls="publisher-vk-workspace"
+                onClick={() => setVkOpen((current) => !current)}
+              >
+                <span>{vkOpen ? 'Закрыть' : 'Открыть'}</span>
+                <NavArrowRight aria-hidden />
+              </button>
+            </div>
+          )}
           {vkOpen ? (
             <Suspense fallback={<span role="status">Открываем посты из VK...</span>}>
               <LazyVkWorkspaceShell title={entity.title} onClose={() => setVkOpen(false)}>
@@ -573,7 +658,33 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             </Suspense>
           ) : null}
         </section>
+        {smartphoneLayout ? (
+          <MarketplaceProfileCard
+            api={api}
+            entityType={entity.entityType}
+            entityId={entity.id}
+            profile="publisher"
+          />
+        ) : null}
       </div>
+
+      {smartphoneLayout && suggestionsOpen && entity.entityType === 'channel' ? (
+        <Suspense fallback={null}>
+          <LazyPublisherSuggestionsPanel
+            entityTitle={entity.title}
+            enabled={entity.moduleSettings.channelSuggestionsEnabled === true}
+            requireSubscription={
+              entity.moduleSettings.channelSuggestionsRequireSubscription === true
+            }
+            deleteOnUnsubscribe={
+              entity.moduleSettings.channelSuggestionsDeleteOnUnsubscribe === true
+            }
+            pending={mutation.isPending}
+            onChange={(change) => mutation.mutate(change)}
+            onClose={() => setSuggestionsOpen(false)}
+          />
+        </Suspense>
+      ) : null}
 
       <Suspense fallback={null}>
         <LazyBotPermissionRequiredDialog

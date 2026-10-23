@@ -185,9 +185,13 @@ async function assertAdvertisingSoonModule(page) {
   await entry.scrollIntoViewIfNeeded();
   if (!(await entry.isDisabled()))
     throw new Error('The advertising announcement must be unavailable.');
-  const badge = entry.locator('.settings-advertising-soon__badge');
-  if (!(await badge.isVisible()) || (await badge.textContent())?.trim() !== 'Скоро') {
-    throw new Error('The coming-soon badge must stay visible.');
+  if (await page.evaluate(() => innerWidth <= 600)) {
+    await assertSettingsOverviewNavigation(page, { name: 'advertising-unavailable' });
+  } else {
+    const badge = entry.locator('.settings-advertising-soon__badge');
+    if (!(await badge.isVisible()) || (await badge.textContent())?.trim() !== 'Скоро') {
+      throw new Error('Desktop must retain the unavailable module context.');
+    }
   }
   const initialUrl = page.url();
   const writes = [];
@@ -826,7 +830,7 @@ const scenarioBehaviors = [
         .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
-      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      await page.getByRole('button', { name: /^(?:Открыть посты|Посты) из VK$/u }).click();
       await page.locator('.vk-parsing-workspace').waitFor({
         state: 'visible',
       });
@@ -840,7 +844,7 @@ const scenarioBehaviors = [
         .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
-      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      await page.getByRole('button', { name: /^(?:Открыть посты|Посты) из VK$/u }).click();
       const card = page.locator('.vk-parsing-workspace');
       await card.waitFor({ state: 'visible' });
       await card.getByRole('button', { name: 'Редактировать', exact: true }).first().click();
@@ -858,7 +862,7 @@ const scenarioBehaviors = [
         .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
-      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      await page.getByRole('button', { name: /^(?:Открыть посты|Посты) из VK$/u }).click();
       await page.getByRole('tab', { name: 'Автоматизация', exact: true }).click();
       const panel = page.locator('.vk-bot-review-panel');
       await panel.getByRole('button', { name: 'Получать посты мне', exact: true }).click();
@@ -880,7 +884,7 @@ const scenarioBehaviors = [
         .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
-      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      await page.getByRole('button', { name: /^(?:Открыть посты|Посты) из VK$/u }).click();
       const panel = page.locator('.vk-autopost-panel');
       if (section === 'queue') {
         await page.getByRole('button', { name: 'Очередь', exact: true }).click();
@@ -935,7 +939,7 @@ const scenarioBehaviors = [
     beforeShot: async (page) => {
       await page.getByText('Проверяем права Публика', { exact: true }).waitFor();
       await page.getByText(/Права Публика перепроверяются автоматически/u).waitFor();
-      await page.getByRole('link', { name: /Создать пост для/u }).waitFor();
+      await page.getByRole('link', { name: /^(?:Посты|Создать пост для .+)$/u }).waitFor();
     },
   },
   {
@@ -2291,6 +2295,10 @@ const scenarioBehaviors = [
         throw new Error('Rules publication interaction smoke requires preview mode.');
       }
       await openSettingsSection(page, 'Правила', '.settings-drilldown__panel--rules');
+      await page.locator('.rules-studio-screen').waitFor({ state: 'visible' });
+      await page
+        .getByRole('textbox', { name: 'Текст правил', exact: true })
+        .waitFor({ state: 'visible' });
       await page.getByRole('button', { name: 'Опубликовать в чат', exact: true }).click();
       await page.getByText('Новый пост правил опубликован', { exact: true }).waitFor();
       await page.getByRole('radio', { name: 'Обновить пост', exact: true }).click();
@@ -2992,6 +3000,8 @@ const scenarioBehaviors = [
     name: 'publisher-channel-suggestions-toggle',
     beforeShot: async (page) => {
       await page.locator('.publisher-entity-modules-page').waitFor({ state: 'visible' });
+      const suggestions = page.getByRole('button', { name: 'Предложения', exact: true });
+      if (await suggestions.count()) await suggestions.click();
       const toggle = page.getByRole('checkbox', { name: 'Включить предложения', exact: true });
       await toggle.click();
       const enabledToggle = page.getByRole('checkbox', {
@@ -4186,6 +4196,7 @@ async function assertConfiguredChecks(page, scenario) {
     await assertVkSourceSummariesSeparated(page, scenario);
     await assertFavoriteCategoryIndicatorsContained(page, scenario);
     await assertCompactTextContained(page, scenario);
+    await assertSettingsOverviewNavigation(page, scenario);
     await assertPrimaryControlsReachable(page, scenario);
     await assertTimeFieldOptionsReachable(page, scenario);
     await assertChartsPainted(page, scenario);
@@ -4254,37 +4265,65 @@ async function assertCompactTextContained(page, scenario) {
           return `chart axis label "${label.textContent?.trim()}" is clipped by its canvas`;
         }
       }
-      const context = document.createElement('canvas').getContext('2d');
-      for (const summary of document.querySelectorAll('.settings-section__summary')) {
-        const bounds = summary.getBoundingClientRect();
-        if (!bounds.width || !bounds.height) continue;
-        const style = getComputedStyle(summary);
-        const descriptionIds = summary
-          .closest('.settings-section__toggle')
-          ?.getAttribute('aria-describedby')
-          ?.split(/\s+/u);
-        if (
-          bounds.width <= 1 &&
-          bounds.height <= 1 &&
-          style.clipPath === 'inset(50%)' &&
-          summary.id &&
-          descriptionIds?.includes(summary.id)
-        ) {
-          continue;
-        }
-        const text = summary.textContent?.trim() ?? '';
-        const lineHeight =
-          Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.5;
-        if (context) context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-        const expectedWidth = Math.min(100, context?.measureText(text).width ?? 0);
-        if (bounds.width + 2 < expectedWidth || bounds.height > lineHeight * 3 + 2) {
-          return `settings summary "${text}" is too narrow or exceeds three lines (${bounds.width.toFixed(1)}x${bounds.height.toFixed(1)})`;
-        }
-      }
     }
     return null;
   });
   if (clipped) throw new Error(`Scenario ${scenario.name} clips compact UI text: ${clipped}`);
+}
+
+async function assertSettingsOverviewNavigation(page, scenario) {
+  if (await page.evaluate(() => innerWidth > 600)) return;
+  const violations = await page
+    .locator(
+      '.settings-section__toggle, .publisher-module-entry, .publisher-comments-toggle, [data-settings-navigation-entry="true"]',
+    )
+    .evaluateAll((entries) =>
+      entries.flatMap((entry) => {
+        const title = entry.querySelector(
+          '.settings-section__title, .publisher-entity-module__copy > strong, :scope > strong',
+        );
+        const text = (value) => value?.replace(/\s+/gu, ' ').trim() ?? '';
+        const expected = text(title?.textContent);
+        const action = entry.matches('button, a') ? entry : entry.querySelector('button, a');
+        if (entry.getAttribute('data-settings-navigation-entry') !== 'true')
+          return [
+            { title: expected, reason: 'the catalog entry is missing its navigation contract' },
+          ];
+        if (!expected || text(entry.textContent) !== expected)
+          return [
+            { title: expected, reason: 'the navigation entry contains text besides its title' },
+          ];
+        if (
+          entry.querySelector(
+            '.settings-section__summary, .settings-section__status-chip, .settings-section__state, .settings-section__state-label, .settings-advertising-soon__badge, small, [role="status"]',
+          )
+        )
+          return [
+            {
+              title: expected,
+              reason: 'the navigation entry retains summary, count or state markup',
+            },
+          ];
+        if (
+          !action ||
+          (action.getAttribute('aria-label') && action.getAttribute('aria-label') !== expected) ||
+          action.hasAttribute('aria-describedby')
+        )
+          return [
+            { title: expected, reason: 'the accessible navigation name contains extra context' },
+          ];
+        if (
+          [...entry.querySelectorAll('svg')].some((icon) => !icon.closest('[aria-hidden="true"]'))
+        )
+          return [{ title: expected, reason: 'navigation icons must be decorative' }];
+        return [];
+      }),
+    );
+  if (violations.length) {
+    throw new Error(
+      `Scenario ${scenario.name} has noisy settings navigation: ${JSON.stringify(violations)}`,
+    );
+  }
 }
 
 async function assertPublisherEditorFullBleed(page, scenario) {

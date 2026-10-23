@@ -67,24 +67,36 @@ async function settledBox(locator) {
 async function assertOverviewState(entry, enabled, label) {
   const mobile = (await entry.page().evaluate(() => window.innerWidth)) <= 600;
   if (mobile) {
-    const stateLabel = entry.locator('.settings-section__state-label');
-    assert.equal(await stateLabel.innerText(), enabled === 'true' ? 'Включено' : 'Выключено');
-    const entryBox = await settledBox(entry);
-    assertBoxWithin(await settledBox(stateLabel), entryBox, `${label} readable state`);
-    assertBoxWithin(
-      await settledBox(entry.locator('.settings-section__summary')),
-      entryBox,
-      `${label} readable summary`,
-    );
-    assert.ok(
-      await stateLabel.evaluate((element) => {
-        const style = getComputedStyle(element);
-        return style.clipPath === 'none' && Number.parseFloat(style.fontSize) >= 12;
-      }),
-      `${label} state must be visible text rather than a color-only signal`,
+    const title = (await entry.locator('.settings-section__title').textContent()).trim();
+    assert.equal((await entry.textContent()).trim(), title, `${label} contains only its title`);
+    assert.equal(await entry.getAttribute('aria-label'), title);
+    assert.equal(await entry.getAttribute('aria-describedby'), null);
+    assert.equal(await entry.getAttribute('data-settings-navigation-entry'), 'true');
+    assert.equal(
+      await entry
+        .locator(
+          '.settings-section__summary, .settings-section__status-chip, .settings-section__state, .settings-section__state-label',
+        )
+        .count(),
+      0,
+      `${label} must remove extra text and state markup from the DOM`,
     );
   } else {
     assert.equal(await entry.locator('.settings-section__state').isVisible(), true);
+    const summary = entry.locator('.settings-section__summary');
+    const summaryId = await summary.getAttribute('id');
+    assert.ok(
+      summaryId &&
+        ((await entry.getAttribute('aria-describedby')) ?? '').split(/\s+/u).includes(summaryId),
+    );
+    assert.equal(
+      await summary.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.width <= 1 && bounds.height <= 1 && element.textContent.trim().length > 0;
+      }),
+      true,
+      'Desktop retains its compact accessible summary',
+    );
   }
 }
 
@@ -478,47 +490,7 @@ try {
         const enabled = await entry.getAttribute('data-enabled');
         assert.ok(enabled === 'true' || enabled === 'false');
         assert.equal(await entry.getAttribute('aria-expanded'), 'false');
-        const summaryId = await entry.locator('.settings-section__summary').getAttribute('id');
-        assert.ok(
-          summaryId &&
-            ((await entry.getAttribute('aria-describedby')) ?? '').split(/\s+/).includes(summaryId),
-          'The closed module keeps its summary connected as an accessible description',
-        );
-        assert.equal(
-          await entry.locator('.settings-section__summary').evaluate((summary) => {
-            const style = getComputedStyle(summary);
-            return (
-              style.display !== 'none' &&
-              style.visibility !== 'hidden' &&
-              !summary.closest('[aria-hidden="true"]')
-            );
-          }),
-          true,
-        );
         await assertOverviewState(entry, enabled, `${name}/${entity} closed overview`);
-        if (platform !== 'desktop' && entity === 'chat') {
-          for (const countTitle of ['Ссылки', 'Ограничения', 'Подписка']) {
-            const countEntry = page.getByRole('button', { name: countTitle, exact: true });
-            const countStatus = countEntry.locator('.settings-section__status-chip');
-            assert.equal(await countStatus.getAttribute('data-redundant-status'), 'true');
-            assert.equal(await countStatus.isVisible(), false);
-            assert.equal(
-              ((await countEntry.getAttribute('aria-describedby')) ?? '')
-                .split(/\s+/)
-                .includes(await countStatus.getAttribute('id')),
-              false,
-              `${countTitle} must not repeat its summary count in the accessible description`,
-            );
-          }
-        }
-        assert.equal(
-          await entry.locator('.settings-section__summary').evaluate((summary) => {
-            const bounds = summary.getBoundingClientRect();
-            return bounds.width <= 1 && bounds.height <= 1 && summary.textContent.trim().length > 0;
-          }),
-          platform === 'desktop',
-          'Mobile overview descriptions occupy a readable row; desktop retains its compact layout',
-        );
         assert.ok(
           await entry.evaluate((element) =>
             getComputedStyle(element).fontFamily.includes('Manrope VF'),
@@ -545,7 +517,7 @@ try {
         assert.equal(
           await moduleSwitch.isChecked(),
           enabled === 'true',
-          'Overview indicator must match the actual module setting',
+          'Navigation changes must preserve the actual module setting',
         );
         await assertReachableControl(
           moduleSwitch.locator('..'),
@@ -587,7 +559,7 @@ try {
         );
         assert.deepEqual(errors, []);
         console.log(
-          `PASS ${name}/${entity}: delayed search keeps ${readyBox.height}px geometry, responsive module rows, readable state, steel palette, reachable controls, alias/empty/clear search and no writes`,
+          `PASS ${name}/${entity}: delayed search keeps ${readyBox.height}px geometry, title-only mobile rows, unchanged desktop context, steel palette, reachable controls, alias/empty/clear search and no writes`,
         );
       } finally {
         releaseModule();

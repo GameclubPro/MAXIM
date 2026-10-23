@@ -18,16 +18,26 @@ assert.ok(
   ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(baseUrl).hostname),
   'Preview tests must stay local',
 );
-const server = await ensureMiniappDevServer(baseUrl);
+const profiles = [
+  ['desktop-light', { viewport: { width: 1440, height: 1000 } }, 'light'],
+  ['iphone-light', devices['iPhone 15'], 'light'],
+  ['android-dark', devices['Pixel 7'], 'dark'],
+  ['iphone-se-light', devices['iPhone SE'], 'light'],
+];
+const selectedProfile = process.env.MINIAPP_VK_TEST_PROFILE;
+assert.ok(
+  !selectedProfile || profiles.some(([name]) => name === selectedProfile),
+  'Unknown VK browser test profile',
+);
+const server = await ensureMiniappDevServer(baseUrl, {
+  reuseServer: process.env.MINIAPP_VK_TEST_REUSE_SERVER === '1',
+});
 const screenshots = await mkdtemp(path.join(tmpdir(), 'maxim-vk-workspace-'));
 const browser = await chromium.launch({ headless: true });
 try {
-  for (const [name, device, colorScheme] of [
-    ['desktop-light', { viewport: { width: 1440, height: 1000 } }, 'light'],
-    ['iphone-light', devices['iPhone 15'], 'light'],
-    ['android-dark', devices['Pixel 7'], 'dark'],
-    ['iphone-se-light', devices['iPhone SE'], 'light'],
-  ]) {
+  for (const [name, device, colorScheme] of profiles.filter(
+    ([name]) => !selectedProfile || name === selectedProfile,
+  )) {
     const context = await browser.newContext({ ...device, colorScheme });
     try {
       await context.route('**/*', (route) =>
@@ -45,7 +55,12 @@ try {
         .getByRole('link', { name: /разделы/iu })
         .first()
         .click();
-      await page.getByRole('button', { name: 'Открыть посты из VK', exact: true }).click();
+      await page
+        .getByRole('button', {
+          name: device.viewport.width <= 600 ? 'Посты из VK' : 'Открыть посты из VK',
+          exact: true,
+        })
+        .click();
       await page.locator('.vk-parsing-workspace').waitFor();
       await applyNativeVisualMode(page, {
         safeTop: 0,

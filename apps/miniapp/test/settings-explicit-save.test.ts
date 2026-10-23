@@ -61,7 +61,7 @@ test('chat comment settings belong to Publik instead of Major settings', () => {
   assert.match(publisherModulesSource, /updatePublisherModules/u);
 });
 
-test('overview settings tiles expose context, current state, and navigation affordance', () => {
+test('overview entries keep desktop context and a separate title-only smartphone presentation', () => {
   const renderSource = settingsSectionToggleSource.slice(
     settingsSectionToggleSource.indexOf('export function SettingsSectionToggle'),
   );
@@ -69,7 +69,10 @@ test('overview settings tiles expose context, current state, and navigation affo
   assert.match(renderSource, /const trimmedSummary = summary\?\.trim\(\) \?\? '';/u);
   assert.match(renderSource, /const trimmedStatus = status\?\.trim\(\) \?\? '';/u);
   assert.match(renderSource, /aria-label=\{title\}/u);
-  assert.match(renderSource, /aria-describedby=\{descriptionIds \|\| undefined\}/u);
+  assert.match(
+    renderSource,
+    /aria-describedby=\{navigationOnly \? undefined : descriptionIds \|\| undefined\}/u,
+  );
   assert.match(renderSource, /data-settings-search=\{searchText\}/u);
   assert.match(renderSource, /settings-section__icon-badge/u);
   assert.match(renderSource, /settings-section__title">\{title\}<\/span>/u);
@@ -78,11 +81,20 @@ test('overview settings tiles expose context, current state, and navigation affo
     /id=\{summaryId\} className="settings-section__summary">[\s\S]*?\{trimmedSummary\}/u,
   );
   assert.match(renderSource, /settings-section__status-chip/u);
+  assert.match(renderSource, /useSmartphoneLayout\(\)/u);
+  assert.match(renderSource, /const navigationOnly = useSmartphoneLayout\(\);/u);
+  assert.match(
+    renderSource,
+    /data-settings-navigation-entry=\{navigationOnly \? 'true' : undefined\}/u,
+  );
+  assert.match(renderSource, /!navigationOnly && trimmedSummary/u);
+  assert.match(renderSource, /!navigationOnly && trimmedStatus/u);
+  assert.match(renderSource, /!navigationOnly && \(paused \|\| typeof enabled === 'boolean'\)/u);
   assert.match(renderSource, /settings-section__chevron/u);
   assert.match(renderSource, /<AppIcon icon="NavArrowRight"/u);
 });
 
-test('settings search includes visible metadata and domain aliases', () => {
+test('settings search retains its metadata index and domain aliases independently of rendered entry copy', () => {
   assert.match(settingsSectionToggleSource, /SETTINGS_SECTION_SEARCH_ALIASES/u);
   assert.match(
     settingsOverviewFilterSource,

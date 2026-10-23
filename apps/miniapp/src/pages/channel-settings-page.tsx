@@ -1,3 +1,4 @@
+import { SettingsOverviewGroups } from '../components/ui/settings-overview-groups';
 import { getNetworkSettingsSectionPresentation } from './settings/settings-workspace-sections';
 import { ChannelQuickButtonsFields } from './settings/channel-quick-buttons-fields';
 import { ChannelCommentsFields } from './settings/channel-comments-fields';
@@ -5,6 +6,7 @@ import { ChannelPostSuggestionsFields } from './settings/channel-post-suggestion
 import { ChannelPostSignatureFields } from './settings/channel-post-signature-fields';
 import { createChannelSettingsFieldAdapter } from '../features/network-settings/settings-field-bindings';
 import { SettingsOverviewSearchPlaceholder } from '../components/ui/settings-overview-search-placeholder';
+import { SettingsOverviewLoading } from '../components/ui/settings-overview-skeleton';
 import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   type ChannelPostSignatureSettings,
@@ -2209,9 +2211,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     return (
       <div className="page-stack page-enter" data-managed-entity-workspace="channel-settings">
         {workspaceHeader}
-        <GlassCard className="settings-section">
-          <SkeletonCard lines={6} />
-        </GlassCard>
+        <SettingsOverviewLoading desktopLines={6} />
       </div>
     );
   }
@@ -2233,9 +2233,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     return (
       <div className="page-stack page-enter" data-managed-entity-workspace="channel-settings">
         {workspaceHeader}
-        <GlassCard className="settings-section">
-          <SkeletonCard lines={6} />
-        </GlassCard>
+        <SettingsOverviewLoading desktopLines={6} />
       </div>
     );
   }
@@ -3170,12 +3168,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       {settingsScreenQuery.isFetching && !settingsScreenQuery.isFetchedAfterMount ? (
         <p role="status">Проверяем права. Сохранённые настройки уже доступны для просмотра.</p>
       ) : null}
-      <MarketplaceProfileCard
-        api={api}
-        entityId={chatId ?? ''}
-        entityType="channel"
-        profile="moderation"
-      />
 
       {channelHeader?.accessDiagnostics?.state === 'bot_access_lost' ? (
         <Suspense fallback={null}>
@@ -3196,446 +3188,515 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         />
       </Suspense>
 
-      <GlassCard
-        className={cn(
-          'channel-settings-card channel-post-signature-entry',
-          postSignature.enabled && 'is-on',
-          postSignatureSaveState === 'error' && 'is-error',
-        )}
-        elevated
-      >
-        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <SettingsSectionToggle
-            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.title}
-            enabled={postSignature.enabled}
-            summary={postSignatureCardSummary}
-            status={postSignatureCardStatus}
-            icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.icon}
-            tone={postSignatureTone}
-            open={expandedSections.postSignature}
-            controls="channel-settings-post-signature"
-            onClick={() => toggleSection('postSignature')}
-          />
-        </div>
-
-        <SettingsDrilldownPanel
-          id="channel-settings-post-signature"
-          icon={
-            <SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.icon} />
-          }
-          open={expandedSections.postSignature}
-          title={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.title}
-          summary={postSignaturePanelSummary}
-          tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.tone}
-          className={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.panelClassName}
-          onClose={closePostSignatureSection}
+      <SettingsOverviewGroups>
+        <GlassCard
+          className={cn(
+            'channel-settings-card channel-post-signature-entry',
+            postSignature.enabled && 'is-on',
+            postSignatureSaveState === 'error' && 'is-error',
+          )}
+          elevated
         >
-          <div
-            id="channel-settings-post-signature"
-            className={cn(
-              'settings-section__collapse channel-post-signature',
-              expandedSections.postSignature && 'is-open',
-              postSignature.enabled && 'is-on',
-            )}
-          >
-            {expandedSections.postSignature ? (
-              <div className="settings-section__collapse-inner channel-post-signature__panel-body">
-                <ChannelPostSignatureFields
-                  fields={createChannelSettingsFieldAdapter({
-                    settings: postSignature,
-                    onChange: (next, paths) => {
-                      latestPostSignatureRef.current = next;
-                      latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
-                      setPostSignatureDraft(next);
-                      if (postSignatureSaveInFlightRef.current?.chatId !== chatId)
-                        setPostSignatureSaveState('idle');
-                      if (paths.some((path) => path === 'enabled' || path === 'presentation'))
-                        savePostSignature(next);
-                    },
-                    errors: {
-                      text: postSignatureTextError ?? undefined,
-                      url: postSignatureUrlError ?? undefined,
-                    },
-                  })}
-                  onBlur={() => savePostSignature(latestPostSignatureRef.current ?? postSignature)}
-                  fallbackUrl={fallbackPostSignatureUrl}
-                >
-                  <div
-                    className={cn(
-                      'channel-post-signature__preview',
-                      !postSignature.enabled && 'is-disabled',
-                    )}
-                  >
-                    <div className="channel-post-signature__preview-head">
-                      <span>Предпросмотр</span>
-                      <small>
-                        {postSignature.enabled
-                          ? postSignature.presentation === 'button'
-                            ? 'Кнопка'
-                            : 'Ссылка'
-                          : 'Выключено'}
-                      </small>
-                    </div>
-                    <div className="channel-post-signature__message-preview">
-                      <span className="channel-post-signature__message-lines" aria-hidden>
-                        <i />
-                        <i />
-                      </span>
-                      {postSignature.presentation === 'button' ? (
-                        <button
-                          type="button"
-                          className="channel-post-signature__message-button"
-                          disabled={!postSignature.enabled || !effectivePostSignatureUrl}
-                          onClick={() =>
-                            effectivePostSignatureUrl && openLink(effectivePostSignatureUrl)
-                          }
-                        >
-                          {postSignatureLabel}
-                        </button>
-                      ) : (
-                        <span className="channel-post-signature__message-signature">
-                          <IconoirLink aria-hidden />
-                          {effectivePostSignatureUrl ? (
-                            <a
-                              href={effectivePostSignatureUrl}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                openLink(effectivePostSignatureUrl);
-                              }}
-                            >
-                              {postSignatureLabel}
-                            </a>
-                          ) : (
-                            <strong>{postSignatureLabel}</strong>
-                          )}
-                        </span>
-                      )}
-                    </div>
-                    <small
-                      className={cn(
-                        'channel-post-signature__preview-url',
-                        postSignatureUrlError && 'is-error',
-                      )}
-                      title={effectivePostSignatureUrl || undefined}
-                    >
-                      {postSignatureUrlError ||
-                        effectivePostSignatureUrl ||
-                        'Ссылка канала недоступна'}
-                    </small>
-                  </div>
-                </ChannelPostSignatureFields>
-
-                {postSignatureSaveState !== 'idle' || isPostSignatureDirty ? (
-                  <div
-                    className={cn(
-                      'channel-post-signature__save-state',
-                      postSignatureSaveState === 'saving' && 'is-saving',
-                      postSignatureSaveState === 'error' && 'is-error',
-                      postSignatureSaveState === 'idle' && isPostSignatureDirty && 'is-dirty',
-                    )}
-                    role="status"
-                    aria-live="polite"
-                  >
-                    <span>
-                      {postSignatureSaveState === 'saving'
-                        ? 'Сохраняем...'
-                        : postSignatureSaveState === 'error'
-                          ? 'Не сохранено'
-                          : isPostSignatureDirty
-                            ? 'Изменено'
-                            : 'Сохранено'}
-                    </span>
-                    {postSignatureSaveState === 'error' ? (
-                      <button
-                        type="button"
-                        aria-label="Повторить сохранение подписи"
-                        title="Повторить"
-                        onClick={() => savePostSignature(postSignature)}
-                      >
-                        <IconoirRefreshDouble aria-hidden />
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        </SettingsDrilldownPanel>
-      </GlassCard>
-
-      <GlassCard className="channel-settings-card" elevated>
-        <div className="settings-section__head settings-section__head--interactive">
-          <SettingsSectionToggle
-            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.title}
-            enabled={draft.quickButtonsEnabled}
-            summary="Кнопки из строк нового поста"
-            status={draft.quickButtonsEnabled ? 'Вкл' : 'Выкл'}
-            icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.icon}
-            tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.tone}
-            open={expandedSections.quickButtons}
-            controls="channel-settings-quick-buttons"
-            onClick={() => toggleSection('quickButtons')}
-          />
-        </div>
-        <SettingsDrilldownPanel
-          id="channel-settings-quick-buttons"
-          icon={
-            <SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.icon} />
-          }
-          open={expandedSections.quickButtons}
-          title={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.title}
-          tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.tone}
-          onClose={() => toggleSection('quickButtons')}
-          footer={renderChannelSectionFooter('quickButtons')}
-          confirmCloseWhen={isDirty}
-          onDiscardChanges={discardChannelSettingsChanges}
-        >
-          <ChannelQuickButtonsFields
-            fields={createChannelSettingsFieldAdapter({
-              settings: draft,
-              onChange: (next) => setDraft(next),
-            })}
-          />
-        </SettingsDrilldownPanel>
-      </GlassCard>
-
-      <GlassCard className="channel-settings-card" elevated>
-        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <SettingsSectionToggle
-            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.title}
-            enabled={draft.commentsEnabled}
-            summary={commentsCardSummary}
-            status={commentsCardStatus}
-            icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.icon}
-            tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.tone}
-            open={expandedSections.comments}
-            controls="channel-settings-comments"
-            onClick={() => toggleSection('comments')}
-          />
-        </div>
-
-        <SettingsDrilldownPanel
-          id="channel-settings-comments"
-          icon={<SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.icon} />}
-          open={expandedSections.comments}
-          title={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.title}
-          summary={commentsCardSummary}
-          tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.tone}
-          className={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.panelClassName}
-          onClose={() => toggleSection('comments')}
-          footer={renderChannelSectionFooter('comments')}
-          confirmCloseWhen={isDirty}
-          onDiscardChanges={discardChannelSettingsChanges}
-        >
-          <div
-            id="channel-settings-comments"
-            className={cn('settings-section__collapse', expandedSections.comments && 'is-open')}
-          >
-            {expandedSections.comments ? (
-              <div className="settings-section__collapse-inner">
-                <ChannelCommentsFields
-                  fields={createChannelSettingsFieldAdapter({
-                    settings: draft,
-                    onChange: (next) => setDraft(next),
-                  })}
-                />
-              </div>
-            ) : null}
-          </div>
-        </SettingsDrilldownPanel>
-      </GlassCard>
-
-      <GlassCard className="channel-settings-card" elevated>
-        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <SettingsSectionToggle
-            title="Предложения"
-            enabled={draft.postSuggestionsEnabled}
-            summary={postSuggestionsCardSummary}
-            status={postSuggestionsCardStatus}
-            icon="spark"
-            tone="mint"
-            open={expandedSections.postSuggestions}
-            controls="channel-settings-post-suggestions"
-            onClick={() => toggleSection('postSuggestions')}
-          />
-        </div>
-
-        <SettingsDrilldownPanel
-          id="channel-settings-post-suggestions"
-          icon={<SettingsSectionIcon name="spark" />}
-          open={expandedSections.postSuggestions}
-          title="Предложения"
-          summary={postSuggestionsCardSummary}
-          variant="screen"
-          tone="mint"
-          className="settings-drilldown__panel--notice settings-drilldown__panel--post-suggestions settings-drilldown__panel--post-suggestions-screen"
-          overlayClassName="settings-drilldown--post-suggestions-screen"
-          onClose={() => toggleSection('postSuggestions')}
-          footer={renderChannelSectionFooter('postSuggestions')}
-          confirmCloseWhen={isDirty}
-          onDiscardChanges={discardChannelSettingsChanges}
-        >
-          <div
-            id="channel-settings-post-suggestions"
-            className={cn(
-              'settings-section__collapse',
-              expandedSections.postSuggestions && 'is-open',
-            )}
-          >
-            {expandedSections.postSuggestions ? (
-              <div className="settings-section__collapse-inner">
-                <ChannelPostSuggestionsFields
-                  fields={createChannelSettingsFieldAdapter({
-                    settings: draft,
-                    onChange: (next) => setDraft(next),
-                  })}
-                />
-              </div>
-            ) : null}
-          </div>
-        </SettingsDrilldownPanel>
-      </GlassCard>
-
-      {legacyBroadcastWorkspaceRequested ? (
-        <GlassCard className="channel-settings-card" elevated>
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
             <SettingsSectionToggle
-              title="Автопостинг"
-              summary={broadcastHeaderSummary}
-              status={broadcastCardStatus}
-              icon="send"
-              tone="sky"
-              open={expandedSections.broadcast}
-              controls="channel-settings-broadcast"
-              onClick={() => toggleSection('broadcast')}
+              title={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.title}
+              enabled={postSignature.enabled}
+              summary={postSignatureCardSummary}
+              status={postSignatureCardStatus}
+              icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.icon}
+              tone={postSignatureTone}
+              open={expandedSections.postSignature}
+              controls="channel-settings-post-signature"
+              onClick={() => toggleSection('postSignature')}
             />
           </div>
 
           <SettingsDrilldownPanel
-            id="channel-settings-broadcast"
-            open={expandedSections.broadcast}
-            title="Автопостинг"
-            summary={broadcastHeaderSummary}
-            variant="screen"
-            tone="sky"
-            className="settings-drilldown__panel--campaign settings-drilldown__panel--broadcast settings-drilldown__panel--broadcast-screen"
-            onClose={() => toggleSection('broadcast')}
-            footer={activeBroadcastWorkspaceView === 'compose' ? broadcastDrilldownFooter : null}
+            id="channel-settings-post-signature"
+            icon={
+              <SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.icon} />
+            }
+            open={expandedSections.postSignature}
+            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.title}
+            summary={postSignaturePanelSummary}
+            tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.tone}
+            className={SHARED_CHANNEL_SECTION_PRESENTATIONS.postSignature.panelClassName}
+            onClose={closePostSignatureSection}
           >
             <div
-              id="channel-settings-broadcast"
-              className={cn('settings-section__collapse', expandedSections.broadcast && 'is-open')}
+              id="channel-settings-post-signature"
+              className={cn(
+                'settings-section__collapse channel-post-signature',
+                expandedSections.postSignature && 'is-open',
+                postSignature.enabled && 'is-on',
+              )}
             >
-              {expandedSections.broadcast ? (
-                <div className="settings-section__collapse-inner">
-                  <div className="channel-broadcast-studio broadcast-studio-screen broadcast-studio-screen--channel">
-                    <div className="broadcast-studio-screen__chrome">
-                      <BroadcastWorkspaceChrome
-                        showTabs={showBroadcastWorkspaceTabs && !handoffRequested}
-                        value={activeBroadcastWorkspaceView}
-                        autopostCount={orderedManagedAutopostRules.length}
-                        historyCount={orderedManagedBroadcasts.length}
-                        compatibilityOnly
-                        disabled={isBroadcastBusy}
-                        showReset={showBroadcastResetAction}
-                        resetLabel={broadcastResetActionLabel}
-                        resetPending={clearBroadcastHandoffMutation.isPending}
-                        onChange={setBroadcastWorkspaceView}
-                        onReset={handleClearBroadcastComposer}
-                      />
+              {expandedSections.postSignature ? (
+                <div className="settings-section__collapse-inner channel-post-signature__panel-body">
+                  <ChannelPostSignatureFields
+                    fields={createChannelSettingsFieldAdapter({
+                      settings: postSignature,
+                      onChange: (next, paths) => {
+                        latestPostSignatureRef.current = next;
+                        latestPostSignatureKeyRef.current = postSignatureSettingsKey(next);
+                        setPostSignatureDraft(next);
+                        if (postSignatureSaveInFlightRef.current?.chatId !== chatId)
+                          setPostSignatureSaveState('idle');
+                        if (paths.some((path) => path === 'enabled' || path === 'presentation'))
+                          savePostSignature(next);
+                      },
+                      errors: {
+                        text: postSignatureTextError ?? undefined,
+                        url: postSignatureUrlError ?? undefined,
+                      },
+                    })}
+                    onBlur={() =>
+                      savePostSignature(latestPostSignatureRef.current ?? postSignature)
+                    }
+                    fallbackUrl={fallbackPostSignatureUrl}
+                  >
+                    <div
+                      className={cn(
+                        'channel-post-signature__preview',
+                        !postSignature.enabled && 'is-disabled',
+                      )}
+                    >
+                      <div className="channel-post-signature__preview-head">
+                        <span>Предпросмотр</span>
+                        <small>
+                          {postSignature.enabled
+                            ? postSignature.presentation === 'button'
+                              ? 'Кнопка'
+                              : 'Ссылка'
+                            : 'Выключено'}
+                        </small>
+                      </div>
+                      <div className="channel-post-signature__message-preview">
+                        <span className="channel-post-signature__message-lines" aria-hidden>
+                          <i />
+                          <i />
+                        </span>
+                        {postSignature.presentation === 'button' ? (
+                          <button
+                            type="button"
+                            className="channel-post-signature__message-button"
+                            disabled={!postSignature.enabled || !effectivePostSignatureUrl}
+                            onClick={() =>
+                              effectivePostSignatureUrl && openLink(effectivePostSignatureUrl)
+                            }
+                          >
+                            {postSignatureLabel}
+                          </button>
+                        ) : (
+                          <span className="channel-post-signature__message-signature">
+                            <IconoirLink aria-hidden />
+                            {effectivePostSignatureUrl ? (
+                              <a
+                                href={effectivePostSignatureUrl}
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  openLink(effectivePostSignatureUrl);
+                                }}
+                              >
+                                {postSignatureLabel}
+                              </a>
+                            ) : (
+                              <strong>{postSignatureLabel}</strong>
+                            )}
+                          </span>
+                        )}
+                      </div>
+                      <small
+                        className={cn(
+                          'channel-post-signature__preview-url',
+                          postSignatureUrlError && 'is-error',
+                        )}
+                        title={effectivePostSignatureUrl || undefined}
+                      >
+                        {postSignatureUrlError ||
+                          effectivePostSignatureUrl ||
+                          'Ссылка канала недоступна'}
+                      </small>
                     </div>
+                  </ChannelPostSignatureFields>
 
-                    {activeBroadcastWorkspaceView === 'compose' ? (
-                      <div className="broadcast-compose-flow broadcast-compose-flow--screen">
-                        <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
-                          <div className="broadcast-stage-card__head">
-                            <div className="broadcast-stage-card__title-wrap">
-                              <strong>Сообщение</strong>
+                  {postSignatureSaveState !== 'idle' || isPostSignatureDirty ? (
+                    <div
+                      className={cn(
+                        'channel-post-signature__save-state',
+                        postSignatureSaveState === 'saving' && 'is-saving',
+                        postSignatureSaveState === 'error' && 'is-error',
+                        postSignatureSaveState === 'idle' && isPostSignatureDirty && 'is-dirty',
+                      )}
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <span>
+                        {postSignatureSaveState === 'saving'
+                          ? 'Сохраняем...'
+                          : postSignatureSaveState === 'error'
+                            ? 'Не сохранено'
+                            : isPostSignatureDirty
+                              ? 'Изменено'
+                              : 'Сохранено'}
+                      </span>
+                      {postSignatureSaveState === 'error' ? (
+                        <button
+                          type="button"
+                          aria-label="Повторить сохранение подписи"
+                          title="Повторить"
+                          onClick={() => savePostSignature(postSignature)}
+                        >
+                          <IconoirRefreshDouble aria-hidden />
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </SettingsDrilldownPanel>
+        </GlassCard>
+
+        <GlassCard className="channel-settings-card" elevated>
+          <div className="settings-section__head settings-section__head--interactive">
+            <SettingsSectionToggle
+              title={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.title}
+              enabled={draft.quickButtonsEnabled}
+              summary="Кнопки из строк нового поста"
+              status={draft.quickButtonsEnabled ? 'Вкл' : 'Выкл'}
+              icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.icon}
+              tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.tone}
+              open={expandedSections.quickButtons}
+              controls="channel-settings-quick-buttons"
+              onClick={() => toggleSection('quickButtons')}
+            />
+          </div>
+          <SettingsDrilldownPanel
+            id="channel-settings-quick-buttons"
+            icon={
+              <SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.icon} />
+            }
+            open={expandedSections.quickButtons}
+            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.title}
+            tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.quickButtons.tone}
+            onClose={() => toggleSection('quickButtons')}
+            footer={renderChannelSectionFooter('quickButtons')}
+            confirmCloseWhen={isDirty}
+            onDiscardChanges={discardChannelSettingsChanges}
+          >
+            <ChannelQuickButtonsFields
+              fields={createChannelSettingsFieldAdapter({
+                settings: draft,
+                onChange: (next) => setDraft(next),
+              })}
+            />
+          </SettingsDrilldownPanel>
+        </GlassCard>
+
+        <GlassCard className="channel-settings-card" elevated>
+          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+            <SettingsSectionToggle
+              title={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.title}
+              enabled={draft.commentsEnabled}
+              summary={commentsCardSummary}
+              status={commentsCardStatus}
+              icon={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.icon}
+              tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.tone}
+              open={expandedSections.comments}
+              controls="channel-settings-comments"
+              onClick={() => toggleSection('comments')}
+            />
+          </div>
+
+          <SettingsDrilldownPanel
+            id="channel-settings-comments"
+            icon={<SettingsSectionIcon name={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.icon} />}
+            open={expandedSections.comments}
+            title={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.title}
+            summary={commentsCardSummary}
+            tone={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.tone}
+            className={SHARED_CHANNEL_SECTION_PRESENTATIONS.comments.panelClassName}
+            onClose={() => toggleSection('comments')}
+            footer={renderChannelSectionFooter('comments')}
+            confirmCloseWhen={isDirty}
+            onDiscardChanges={discardChannelSettingsChanges}
+          >
+            <div
+              id="channel-settings-comments"
+              className={cn('settings-section__collapse', expandedSections.comments && 'is-open')}
+            >
+              {expandedSections.comments ? (
+                <div className="settings-section__collapse-inner">
+                  <ChannelCommentsFields
+                    fields={createChannelSettingsFieldAdapter({
+                      settings: draft,
+                      onChange: (next) => setDraft(next),
+                    })}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </SettingsDrilldownPanel>
+        </GlassCard>
+
+        <GlassCard className="channel-settings-card" elevated>
+          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+            <SettingsSectionToggle
+              title="Предложения"
+              enabled={draft.postSuggestionsEnabled}
+              summary={postSuggestionsCardSummary}
+              status={postSuggestionsCardStatus}
+              icon="spark"
+              tone="mint"
+              open={expandedSections.postSuggestions}
+              controls="channel-settings-post-suggestions"
+              onClick={() => toggleSection('postSuggestions')}
+            />
+          </div>
+
+          <SettingsDrilldownPanel
+            id="channel-settings-post-suggestions"
+            icon={<SettingsSectionIcon name="spark" />}
+            open={expandedSections.postSuggestions}
+            title="Предложения"
+            summary={postSuggestionsCardSummary}
+            variant="screen"
+            tone="mint"
+            className="settings-drilldown__panel--notice settings-drilldown__panel--post-suggestions settings-drilldown__panel--post-suggestions-screen"
+            overlayClassName="settings-drilldown--post-suggestions-screen"
+            onClose={() => toggleSection('postSuggestions')}
+            footer={renderChannelSectionFooter('postSuggestions')}
+            confirmCloseWhen={isDirty}
+            onDiscardChanges={discardChannelSettingsChanges}
+          >
+            <div
+              id="channel-settings-post-suggestions"
+              className={cn(
+                'settings-section__collapse',
+                expandedSections.postSuggestions && 'is-open',
+              )}
+            >
+              {expandedSections.postSuggestions ? (
+                <div className="settings-section__collapse-inner">
+                  <ChannelPostSuggestionsFields
+                    fields={createChannelSettingsFieldAdapter({
+                      settings: draft,
+                      onChange: (next) => setDraft(next),
+                    })}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </SettingsDrilldownPanel>
+        </GlassCard>
+
+        {legacyBroadcastWorkspaceRequested ? (
+          <GlassCard className="channel-settings-card" elevated>
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <SettingsSectionToggle
+                title="Автопостинг"
+                summary={broadcastHeaderSummary}
+                status={broadcastCardStatus}
+                icon="send"
+                tone="sky"
+                open={expandedSections.broadcast}
+                controls="channel-settings-broadcast"
+                onClick={() => toggleSection('broadcast')}
+              />
+            </div>
+
+            <SettingsDrilldownPanel
+              id="channel-settings-broadcast"
+              open={expandedSections.broadcast}
+              title="Автопостинг"
+              summary={broadcastHeaderSummary}
+              variant="screen"
+              tone="sky"
+              className="settings-drilldown__panel--campaign settings-drilldown__panel--broadcast settings-drilldown__panel--broadcast-screen"
+              onClose={() => toggleSection('broadcast')}
+              footer={activeBroadcastWorkspaceView === 'compose' ? broadcastDrilldownFooter : null}
+            >
+              <div
+                id="channel-settings-broadcast"
+                className={cn(
+                  'settings-section__collapse',
+                  expandedSections.broadcast && 'is-open',
+                )}
+              >
+                {expandedSections.broadcast ? (
+                  <div className="settings-section__collapse-inner">
+                    <div className="channel-broadcast-studio broadcast-studio-screen broadcast-studio-screen--channel">
+                      <div className="broadcast-studio-screen__chrome">
+                        <BroadcastWorkspaceChrome
+                          showTabs={showBroadcastWorkspaceTabs && !handoffRequested}
+                          value={activeBroadcastWorkspaceView}
+                          autopostCount={orderedManagedAutopostRules.length}
+                          historyCount={orderedManagedBroadcasts.length}
+                          compatibilityOnly
+                          disabled={isBroadcastBusy}
+                          showReset={showBroadcastResetAction}
+                          resetLabel={broadcastResetActionLabel}
+                          resetPending={clearBroadcastHandoffMutation.isPending}
+                          onChange={setBroadcastWorkspaceView}
+                          onReset={handleClearBroadcastComposer}
+                        />
+                      </div>
+
+                      {activeBroadcastWorkspaceView === 'compose' ? (
+                        <div className="broadcast-compose-flow broadcast-compose-flow--screen">
+                          <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
+                            <div className="broadcast-stage-card__head">
+                              <div className="broadcast-stage-card__title-wrap">
+                                <strong>Сообщение</strong>
+                              </div>
+                              <span
+                                className={cn(
+                                  'broadcast-stage-card__status',
+                                  broadcastContentReady ? 'is-ready' : 'is-pending',
+                                )}
+                              >
+                                {broadcastContentReady
+                                  ? 'Готов'
+                                  : broadcastImagesPreparing
+                                    ? 'Фото...'
+                                    : broadcastHasDirectContent
+                                      ? 'Проверка'
+                                      : 'Пусто'}
+                              </span>
                             </div>
-                            <span
-                              className={cn(
-                                'broadcast-stage-card__status',
-                                broadcastContentReady ? 'is-ready' : 'is-pending',
-                              )}
-                            >
-                              {broadcastContentReady
-                                ? 'Готов'
-                                : broadcastImagesPreparing
-                                  ? 'Фото...'
-                                  : broadcastHasDirectContent
-                                    ? 'Проверка'
-                                    : 'Пусто'}
-                            </span>
+
+                            <div className="broadcast-stage-card__body">
+                              <Suspense fallback={null}>
+                                <LazyBroadcastContentComposer
+                                  text={broadcastText}
+                                  maxLength={MAX_BROADCAST_TEXT_LENGTH}
+                                  images={broadcastImages}
+                                  videoLabel={editingBroadcastHasVideo ? 'Видео' : null}
+                                  disabled={isBroadcastBusy}
+                                  textError={broadcastTextError}
+                                  imageError={broadcastImageError}
+                                  onTextChange={(nextText) => {
+                                    setBroadcastText(nextText);
+                                    if (broadcastTextError) {
+                                      setBroadcastTextError('');
+                                    }
+                                  }}
+                                  onImagesChange={(nextImages) => {
+                                    applyBroadcastImages(nextImages);
+                                    if (nextImages.length > 0) {
+                                      setBroadcastVideoCleared(true);
+                                    }
+                                    setBroadcastImageError('');
+                                    if (broadcastTextError) {
+                                      setBroadcastTextError('');
+                                    }
+                                  }}
+                                  onImagePreparationChange={setBroadcastImagesPreparing}
+                                  onClearVideo={() => {
+                                    setBroadcastVideoCleared(true);
+                                  }}
+                                  onError={(message) => {
+                                    setBroadcastImageError(message);
+                                    pushToast({
+                                      tone: 'danger',
+                                      title: 'Фото не добавлено',
+                                      description: message,
+                                    });
+                                    maxNotify('error');
+                                  }}
+                                  buttons={normalizedBroadcastButtons}
+                                  systemButtons={broadcastSystemButtons}
+                                  buttonsStatusLabel={broadcastVisibleButtonStatus}
+                                  buttonsActive={broadcastHasVisibleButtons}
+                                  buttonsError={!broadcastButtonDraftValid}
+                                  onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
+                                />
+                              </Suspense>
+                            </div>
                           </div>
 
-                          <div className="broadcast-stage-card__body">
-                            <Suspense fallback={null}>
-                              <LazyBroadcastContentComposer
-                                text={broadcastText}
-                                maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                                images={broadcastImages}
-                                videoLabel={editingBroadcastHasVideo ? 'Видео' : null}
-                                disabled={isBroadcastBusy}
-                                textError={broadcastTextError}
-                                imageError={broadcastImageError}
-                                onTextChange={(nextText) => {
-                                  setBroadcastText(nextText);
-                                  if (broadcastTextError) {
-                                    setBroadcastTextError('');
+                          <div className="broadcast-stage-card broadcast-stage-card--planner">
+                            <div className="broadcast-stage-card__head">
+                              <div className="broadcast-stage-card__title-wrap">
+                                <strong>Когда</strong>
+                              </div>
+                            </div>
+
+                            <div className="broadcast-stage-card__body">
+                              <Suspense fallback={null}>
+                                <LazyBroadcastSchedulePlanner
+                                  resetKey={broadcastPlannerResetKey}
+                                  value={broadcastScheduledSlots}
+                                  occupiedSlots={broadcastOccupiedSlots}
+                                  error={broadcastScheduleError || broadcastCycleError}
+                                  disabled={isBroadcastBusy}
+                                  managedBroadcasts={managedBroadcasts}
+                                  calendarSlots={broadcastCalendarQuery.data?.slots ?? []}
+                                  targetAwareAvailability
+                                  sourceChatId={chatId}
+                                  managedBroadcastsLoading={
+                                    settingsScreenQuery.isLoading ||
+                                    settingsScreenQuery.isFetching ||
+                                    broadcastCalendarQuery.isFetching
                                   }
-                                }}
-                                onImagesChange={(nextImages) => {
-                                  applyBroadcastImages(nextImages);
-                                  if (nextImages.length > 0) {
-                                    setBroadcastVideoCleared(true);
+                                  currentTargetLabel={broadcastTargetContextLabel}
+                                  targetContextLabel={broadcastTargetContextLabel}
+                                  calendarRefreshing={broadcastCalendarQuery.isFetching}
+                                  excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                  excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
+                                  onEditBroadcast={handleEditManagedBroadcastById}
+                                  onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                                  pendingEditBroadcastId={
+                                    openManagedBroadcastEditorMutation.isPending
+                                      ? openManagedBroadcastEditorMutation.variables
+                                      : null
                                   }
-                                  setBroadcastImageError('');
-                                  if (broadcastTextError) {
-                                    setBroadcastTextError('');
+                                  pendingDeleteBroadcastId={
+                                    cancelManagedBroadcastMutation.isPending
+                                      ? cancelManagedBroadcastMutation.variables
+                                      : null
                                   }
-                                }}
-                                onImagePreparationChange={setBroadcastImagesPreparing}
-                                onClearVideo={() => {
-                                  setBroadcastVideoCleared(true);
-                                }}
-                                onError={(message) => {
-                                  setBroadcastImageError(message);
-                                  pushToast({
-                                    tone: 'danger',
-                                    title: 'Фото не добавлено',
-                                    description: message,
-                                  });
-                                  maxNotify('error');
-                                }}
-                                buttons={normalizedBroadcastButtons}
-                                systemButtons={broadcastSystemButtons}
-                                buttonsStatusLabel={broadcastVisibleButtonStatus}
-                                buttonsActive={broadcastHasVisibleButtons}
-                                buttonsError={!broadcastButtonDraftValid}
-                                onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
-                              />
-                            </Suspense>
+                                  timingMode={broadcastTimingMode}
+                                  cycle={broadcastCycleDraft}
+                                  onTimingModeChange={(nextMode) => {
+                                    setBroadcastTimingMode(nextMode);
+                                    setBroadcastScheduleError('');
+                                    setBroadcastCycleError('');
+                                  }}
+                                  onCycleChange={(nextCycle) => {
+                                    setBroadcastCycleDraft(nextCycle);
+                                    setBroadcastCycleError('');
+                                  }}
+                                  onSelectionStateChange={handleBroadcastPlannerStateChange}
+                                  onChange={(nextValue) => {
+                                    setBroadcastScheduledSlots(nextValue);
+                                    if (broadcastScheduleError) {
+                                      setBroadcastScheduleError('');
+                                    }
+                                  }}
+                                />
+                              </Suspense>
+                            </div>
                           </div>
                         </div>
-
-                        <div className="broadcast-stage-card broadcast-stage-card--planner">
+                      ) : activeBroadcastWorkspaceView === 'calendar' ? (
+                        <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
                           <div className="broadcast-stage-card__head">
                             <div className="broadcast-stage-card__title-wrap">
-                              <strong>Когда</strong>
+                              <strong>Календарь</strong>
                             </div>
                           </div>
 
                           <div className="broadcast-stage-card__body">
                             <Suspense fallback={null}>
                               <LazyBroadcastSchedulePlanner
-                                resetKey={broadcastPlannerResetKey}
-                                value={broadcastScheduledSlots}
+                                resetKey={`calendar-${broadcastPlannerResetKey}`}
+                                value={[]}
                                 occupiedSlots={broadcastOccupiedSlots}
-                                error={broadcastScheduleError || broadcastCycleError}
                                 disabled={isBroadcastBusy}
                                 managedBroadcasts={managedBroadcasts}
                                 calendarSlots={broadcastCalendarQuery.data?.slots ?? []}
-                                targetAwareAvailability
                                 sourceChatId={chatId}
                                 managedBroadcastsLoading={
                                   settingsScreenQuery.isLoading ||
@@ -3659,315 +3720,259 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                     ? cancelManagedBroadcastMutation.variables
                                     : null
                                 }
-                                timingMode={broadcastTimingMode}
-                                cycle={broadcastCycleDraft}
-                                onTimingModeChange={(nextMode) => {
-                                  setBroadcastTimingMode(nextMode);
-                                  setBroadcastScheduleError('');
-                                  setBroadcastCycleError('');
-                                }}
-                                onCycleChange={(nextCycle) => {
-                                  setBroadcastCycleDraft(nextCycle);
-                                  setBroadcastCycleError('');
-                                }}
+                                viewMode="calendar"
                                 onSelectionStateChange={handleBroadcastPlannerStateChange}
                                 onChange={(nextValue) => {
+                                  setBroadcastTimingMode('scheduled');
                                   setBroadcastScheduledSlots(nextValue);
-                                  if (broadcastScheduleError) {
-                                    setBroadcastScheduleError('');
-                                  }
+                                  setBroadcastScheduleError('');
+                                  setBroadcastWorkspaceView('compose');
                                 }}
                               />
                             </Suspense>
                           </div>
                         </div>
-                      </div>
-                    ) : activeBroadcastWorkspaceView === 'calendar' ? (
-                      <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
-                        <div className="broadcast-stage-card__head">
-                          <div className="broadcast-stage-card__title-wrap">
-                            <strong>Календарь</strong>
+                      ) : activeBroadcastWorkspaceView === 'autoposts' ? (
+                        <div className="broadcast-stage-card broadcast-stage-card--feed">
+                          <div className="broadcast-stage-card__head">
+                            <div className="broadcast-stage-card__title-wrap">
+                              <strong>Автопосты</strong>
+                              <small>
+                                {managedAutopostRulesQuery.isLoading
+                                  ? 'Загрузка'
+                                  : orderedManagedAutopostRules.length > 0
+                                    ? `${orderedManagedAutopostRules.length} шт.`
+                                    : 'Пусто'}
+                              </small>
+                            </div>
                           </div>
-                        </div>
 
-                        <div className="broadcast-stage-card__body">
-                          <Suspense fallback={null}>
-                            <LazyBroadcastSchedulePlanner
-                              resetKey={`calendar-${broadcastPlannerResetKey}`}
-                              value={[]}
-                              occupiedSlots={broadcastOccupiedSlots}
-                              disabled={isBroadcastBusy}
-                              managedBroadcasts={managedBroadcasts}
-                              calendarSlots={broadcastCalendarQuery.data?.slots ?? []}
-                              sourceChatId={chatId}
-                              managedBroadcastsLoading={
-                                settingsScreenQuery.isLoading ||
-                                settingsScreenQuery.isFetching ||
-                                broadcastCalendarQuery.isFetching
-                              }
-                              currentTargetLabel={broadcastTargetContextLabel}
-                              targetContextLabel={broadcastTargetContextLabel}
-                              calendarRefreshing={broadcastCalendarQuery.isFetching}
-                              excludeBroadcastId={editingManagedBroadcast?.id ?? null}
-                              excludeAutopostRuleId={editingManagedAutopostRule?.id ?? null}
-                              onEditBroadcast={handleEditManagedBroadcastById}
-                              onDeleteBroadcast={handleDeleteManagedBroadcastById}
-                              pendingEditBroadcastId={
-                                openManagedBroadcastEditorMutation.isPending
-                                  ? openManagedBroadcastEditorMutation.variables
-                                  : null
-                              }
-                              pendingDeleteBroadcastId={
-                                cancelManagedBroadcastMutation.isPending
-                                  ? cancelManagedBroadcastMutation.variables
-                                  : null
-                              }
-                              viewMode="calendar"
-                              onSelectionStateChange={handleBroadcastPlannerStateChange}
-                              onChange={(nextValue) => {
-                                setBroadcastTimingMode('scheduled');
-                                setBroadcastScheduledSlots(nextValue);
-                                setBroadcastScheduleError('');
-                                setBroadcastWorkspaceView('compose');
-                              }}
-                            />
-                          </Suspense>
-                        </div>
-                      </div>
-                    ) : activeBroadcastWorkspaceView === 'autoposts' ? (
-                      <div className="broadcast-stage-card broadcast-stage-card--feed">
-                        <div className="broadcast-stage-card__head">
-                          <div className="broadcast-stage-card__title-wrap">
-                            <strong>Автопосты</strong>
-                            <small>
-                              {managedAutopostRulesQuery.isLoading
-                                ? 'Загрузка'
-                                : orderedManagedAutopostRules.length > 0
-                                  ? `${orderedManagedAutopostRules.length} шт.`
-                                  : 'Пусто'}
-                            </small>
-                          </div>
-                        </div>
+                          <div className="broadcast-stage-card__body">
+                            <div className="managed-broadcasts-list">
+                              {orderedManagedAutopostRules.length === 0 &&
+                              !managedAutopostRulesQuery.isLoading ? (
+                                <div className="managed-broadcasts-list__empty">
+                                  Автопостов пока нет. Соберите сообщение и сохраните автопост.
+                                </div>
+                              ) : null}
 
-                        <div className="broadcast-stage-card__body">
-                          <div className="managed-broadcasts-list">
-                            {orderedManagedAutopostRules.length === 0 &&
-                            !managedAutopostRulesQuery.isLoading ? (
-                              <div className="managed-broadcasts-list__empty">
-                                Автопостов пока нет. Соберите сообщение и сохраните автопост.
-                              </div>
-                            ) : null}
-
-                            <Suspense fallback={<SkeletonCard lines={2} />}>
-                              {orderedManagedAutopostRules.map((rule) => (
-                                <LazyManagedAutopostRuleCard
-                                  key={rule.id}
-                                  rule={rule}
-                                  nextLabel={formatCompactManagedBroadcastDateTime(
-                                    rule.nextSendAt,
-                                    rule.scheduleTimezone,
-                                  )}
-                                  facts={buildManagedAutopostRuleFacts(rule, 'Текущий канал')}
-                                  isBusy={isBroadcastBusy}
-                                  onPause={() =>
-                                    updateManagedAutopostRuleMutation.mutate({
-                                      ruleId: rule.id,
-                                      status: 'PAUSED',
-                                    })
-                                  }
-                                  onDelete={() => handleDeleteManagedAutopostRule(rule)}
-                                />
-                              ))}
-                            </Suspense>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="broadcast-stage-card broadcast-stage-card--feed">
-                        <div className="broadcast-stage-card__head">
-                          <div className="broadcast-stage-card__title-wrap">
-                            <strong>История</strong>
-                            <small>
-                              {settingsScreenQuery.isLoading
-                                ? 'Загрузка'
-                                : filteredBroadcasts.length > 0
-                                  ? `${filteredBroadcasts.length} записей`
-                                  : 'Пусто'}
-                            </small>
-                          </div>
-                        </div>
-
-                        <div className="broadcast-stage-card__body">
-                          <BroadcastHistoryFilterTabs
-                            value={broadcastHistoryFilter}
-                            counts={broadcastHistoryCounts}
-                            onChange={setBroadcastHistoryFilter}
-                          />
-
-                          <div className="managed-broadcasts-list">
-                            {filteredBroadcasts.length === 0 && !settingsScreenQuery.isLoading ? (
-                              <div className="managed-broadcasts-list__empty">
-                                История пока пустая.
-                              </div>
-                            ) : null}
-
-                            <Suspense fallback={<SkeletonCard lines={2} />}>
-                              {filteredBroadcasts.map((broadcast) => {
-                                const cardTone = resolveManagedBroadcastCardTone(broadcast);
-                                const cardMetric = resolveManagedBroadcastMetric(
-                                  broadcast,
-                                  broadcastNowMs,
-                                );
-                                const cardFacts = buildManagedBroadcastFactChips(broadcast);
-                                const canEditBroadcastSchedule =
-                                  broadcast.scheduleMode === 'calendar' &&
-                                  broadcast.status !== 'COMPLETED' &&
-                                  broadcast.status !== 'CANCELED';
-                                const canCancelBroadcast =
-                                  broadcast.status !== 'COMPLETED' &&
-                                  broadcast.status !== 'CANCELED';
-                                const isDeletingBroadcast =
-                                  cancelManagedBroadcastMutation.isPending &&
-                                  cancelManagedBroadcastMutation.variables === broadcast.id;
-                                const isOpeningBroadcastEditor =
-                                  openManagedBroadcastEditorMutation.isPending &&
-                                  openManagedBroadcastEditorMutation.variables === broadcast.id;
-                                const isRetryingBroadcast =
-                                  retryManagedBroadcastMutation.isPending &&
-                                  retryManagedBroadcastMutation.variables === broadcast.id;
-                                const cardBadge = isOpeningBroadcastEditor
-                                  ? 'Открываем'
-                                  : resolveManagedBroadcastCardBadge(broadcast);
-
-                                return (
-                                  <LazyManagedBroadcastHistoryCard
-                                    key={broadcast.id}
-                                    broadcast={broadcast}
-                                    tone={cardTone}
-                                    badge={cardBadge}
-                                    title={resolveManagedBroadcastCardTitle(broadcast)}
-                                    metric={cardMetric}
-                                    facts={cardFacts}
-                                    canEdit={canEditBroadcastSchedule}
-                                    canCancel={canCancelBroadcast}
+                              <Suspense fallback={<SkeletonCard lines={2} />}>
+                                {orderedManagedAutopostRules.map((rule) => (
+                                  <LazyManagedAutopostRuleCard
+                                    key={rule.id}
+                                    rule={rule}
+                                    nextLabel={formatCompactManagedBroadcastDateTime(
+                                      rule.nextSendAt,
+                                      rule.scheduleTimezone,
+                                    )}
+                                    facts={buildManagedAutopostRuleFacts(rule, 'Текущий канал')}
                                     isBusy={isBroadcastBusy}
-                                    isDeleting={isDeletingBroadcast}
-                                    isRetrying={isRetryingBroadcast}
-                                    onEdit={() => handleEditManagedBroadcast(broadcast)}
-                                    onRetry={() =>
-                                      retryManagedBroadcastMutation.mutate(broadcast.id)
+                                    onPause={() =>
+                                      updateManagedAutopostRuleMutation.mutate({
+                                        ruleId: rule.id,
+                                        status: 'PAUSED',
+                                      })
                                     }
-                                    onDelete={() => handleDeleteManagedBroadcast(broadcast)}
+                                    onDelete={() => handleDeleteManagedAutopostRule(rule)}
                                   />
-                                );
-                              })}
-                            </Suspense>
+                                ))}
+                              </Suspense>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    )}
+                      ) : (
+                        <div className="broadcast-stage-card broadcast-stage-card--feed">
+                          <div className="broadcast-stage-card__head">
+                            <div className="broadcast-stage-card__title-wrap">
+                              <strong>История</strong>
+                              <small>
+                                {settingsScreenQuery.isLoading
+                                  ? 'Загрузка'
+                                  : filteredBroadcasts.length > 0
+                                    ? `${filteredBroadcasts.length} записей`
+                                    : 'Пусто'}
+                              </small>
+                            </div>
+                          </div>
+
+                          <div className="broadcast-stage-card__body">
+                            <BroadcastHistoryFilterTabs
+                              value={broadcastHistoryFilter}
+                              counts={broadcastHistoryCounts}
+                              onChange={setBroadcastHistoryFilter}
+                            />
+
+                            <div className="managed-broadcasts-list">
+                              {filteredBroadcasts.length === 0 && !settingsScreenQuery.isLoading ? (
+                                <div className="managed-broadcasts-list__empty">
+                                  История пока пустая.
+                                </div>
+                              ) : null}
+
+                              <Suspense fallback={<SkeletonCard lines={2} />}>
+                                {filteredBroadcasts.map((broadcast) => {
+                                  const cardTone = resolveManagedBroadcastCardTone(broadcast);
+                                  const cardMetric = resolveManagedBroadcastMetric(
+                                    broadcast,
+                                    broadcastNowMs,
+                                  );
+                                  const cardFacts = buildManagedBroadcastFactChips(broadcast);
+                                  const canEditBroadcastSchedule =
+                                    broadcast.scheduleMode === 'calendar' &&
+                                    broadcast.status !== 'COMPLETED' &&
+                                    broadcast.status !== 'CANCELED';
+                                  const canCancelBroadcast =
+                                    broadcast.status !== 'COMPLETED' &&
+                                    broadcast.status !== 'CANCELED';
+                                  const isDeletingBroadcast =
+                                    cancelManagedBroadcastMutation.isPending &&
+                                    cancelManagedBroadcastMutation.variables === broadcast.id;
+                                  const isOpeningBroadcastEditor =
+                                    openManagedBroadcastEditorMutation.isPending &&
+                                    openManagedBroadcastEditorMutation.variables === broadcast.id;
+                                  const isRetryingBroadcast =
+                                    retryManagedBroadcastMutation.isPending &&
+                                    retryManagedBroadcastMutation.variables === broadcast.id;
+                                  const cardBadge = isOpeningBroadcastEditor
+                                    ? 'Открываем'
+                                    : resolveManagedBroadcastCardBadge(broadcast);
+
+                                  return (
+                                    <LazyManagedBroadcastHistoryCard
+                                      key={broadcast.id}
+                                      broadcast={broadcast}
+                                      tone={cardTone}
+                                      badge={cardBadge}
+                                      title={resolveManagedBroadcastCardTitle(broadcast)}
+                                      metric={cardMetric}
+                                      facts={cardFacts}
+                                      canEdit={canEditBroadcastSchedule}
+                                      canCancel={canCancelBroadcast}
+                                      isBusy={isBroadcastBusy}
+                                      isDeleting={isDeletingBroadcast}
+                                      isRetrying={isRetryingBroadcast}
+                                      onEdit={() => handleEditManagedBroadcast(broadcast)}
+                                      onRetry={() =>
+                                        retryManagedBroadcastMutation.mutate(broadcast.id)
+                                      }
+                                      onDelete={() => handleDeleteManagedBroadcast(broadcast)}
+                                    />
+                                  );
+                                })}
+                              </Suspense>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ) : null}
-            </div>
-          </SettingsDrilldownPanel>
-        </GlassCard>
-      ) : null}
+                ) : null}
+              </div>
+            </SettingsDrilldownPanel>
+          </GlassCard>
+        ) : null}
 
-      {chatId ? (
-        <GlassCard className="channel-settings-card" elevated>
-          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-            <SettingsSectionToggle
-              title="Опросы"
-              summary="Создание, публикация и результаты"
-              status="Голоса"
+        {chatId ? (
+          <GlassCard className="channel-settings-card" elevated>
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <SettingsSectionToggle
+                title="Опросы"
+                summary="Создание, публикация и результаты"
+                status="Голоса"
+                icon={<StatsUpSquare aria-hidden focusable="false" />}
+                tone="mint"
+                open={expandedSections.polls}
+                controls="channel-settings-polls"
+                onClick={togglePollsSection}
+              />
+            </div>
+
+            <SettingsDrilldownPanel
+              id="channel-settings-polls"
               icon={<StatsUpSquare aria-hidden focusable="false" />}
-              tone="mint"
               open={expandedSections.polls}
-              controls="channel-settings-polls"
-              onClick={togglePollsSection}
-            />
-          </div>
-
-          <SettingsDrilldownPanel
-            id="channel-settings-polls"
-            icon={<StatsUpSquare aria-hidden focusable="false" />}
-            open={expandedSections.polls}
-            title="Опросы"
-            variant="screen"
-            tone="mint"
-            className="settings-drilldown__panel--campaign settings-drilldown__panel--polls"
-            onClose={requestPollsSectionClose}
-          >
-            <div
-              id="channel-settings-polls-collapse"
-              className={cn('settings-section__collapse', expandedSections.polls && 'is-open')}
+              title="Опросы"
+              variant="screen"
+              tone="mint"
+              className="settings-drilldown__panel--campaign settings-drilldown__panel--polls"
+              onClose={requestPollsSectionClose}
             >
-              {expandedSections.polls ? (
-                <div className="settings-section__collapse-inner">
-                  <Suspense fallback={<SkeletonCard lines={4} />}>
-                    <LazyManagedPollWorkspace
-                      key={`channel:${chatId}`}
-                      ref={pollWorkspaceRef}
-                      api={api}
-                      entityType="channel"
-                      entityId={chatId}
-                      onClosePanel={() => closeSection('polls')}
-                    />
-                  </Suspense>
-                </div>
-              ) : null}
+              <div
+                id="channel-settings-polls-collapse"
+                className={cn('settings-section__collapse', expandedSections.polls && 'is-open')}
+              >
+                {expandedSections.polls ? (
+                  <div className="settings-section__collapse-inner">
+                    <Suspense fallback={<SkeletonCard lines={4} />}>
+                      <LazyManagedPollWorkspace
+                        key={`channel:${chatId}`}
+                        ref={pollWorkspaceRef}
+                        api={api}
+                        entityType="channel"
+                        entityId={chatId}
+                        onClosePanel={() => closeSection('polls')}
+                      />
+                    </Suspense>
+                  </div>
+                ) : null}
+              </div>
+            </SettingsDrilldownPanel>
+          </GlassCard>
+        ) : null}
+
+        {chatId ? (
+          <GlassCard className="channel-settings-card" elevated>
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <SettingsSectionToggle
+                title="Розыгрыши"
+                summary="Запуск, участники и итоги"
+                status=""
+                icon="gift"
+                tone="amber"
+                open={expandedSections.giveaway}
+                controls="channel-settings-giveaway"
+                onClick={toggleGiveawaySection}
+              />
             </div>
-          </SettingsDrilldownPanel>
-        </GlassCard>
-      ) : null}
 
-      {chatId ? (
-        <GlassCard className="channel-settings-card" elevated>
-          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-            <SettingsSectionToggle
-              title="Розыгрыши"
-              summary="Запуск, участники и итоги"
-              status=""
-              icon="gift"
-              tone="amber"
-              open={expandedSections.giveaway}
-              controls="channel-settings-giveaway"
-              onClick={toggleGiveawaySection}
-            />
-          </div>
-
-          <SettingsDrilldownPanel
-            id="channel-settings-giveaway"
-            icon={<SettingsSectionIcon name="gift" />}
-            open={expandedSections.giveaway}
-            title="Розыгрыши"
-            summary="Запуск и итоги"
-            tone="amber"
-            className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway settings-drilldown__panel--channel-giveaway"
-            onClose={requestGiveawaySectionClose}
-          >
-            <div
+            <SettingsDrilldownPanel
               id="channel-settings-giveaway"
-              className={cn('settings-section__collapse', expandedSections.giveaway && 'is-open')}
+              icon={<SettingsSectionIcon name="gift" />}
+              open={expandedSections.giveaway}
+              title="Розыгрыши"
+              summary="Запуск и итоги"
+              tone="amber"
+              className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway settings-drilldown__panel--channel-giveaway"
+              onClose={requestGiveawaySectionClose}
             >
-              {expandedSections.giveaway ? (
-                <div className="settings-section__collapse-inner">
-                  <Suspense fallback={<SkeletonCard lines={4} />}>
-                    <LazyManagedGiveawayCard
-                      ref={giveawayCardRef}
-                      api={api}
-                      entityType="channel"
-                      entityId={chatId}
-                      onClosePanel={() => closeSection('giveaway')}
-                    />
-                  </Suspense>
-                </div>
-              ) : null}
-            </div>
-          </SettingsDrilldownPanel>
-        </GlassCard>
-      ) : null}
+              <div
+                id="channel-settings-giveaway"
+                className={cn('settings-section__collapse', expandedSections.giveaway && 'is-open')}
+              >
+                {expandedSections.giveaway ? (
+                  <div className="settings-section__collapse-inner">
+                    <Suspense fallback={<SkeletonCard lines={4} />}>
+                      <LazyManagedGiveawayCard
+                        ref={giveawayCardRef}
+                        api={api}
+                        entityType="channel"
+                        entityId={chatId}
+                        onClosePanel={() => closeSection('giveaway')}
+                      />
+                    </Suspense>
+                  </div>
+                ) : null}
+              </div>
+            </SettingsDrilldownPanel>
+          </GlassCard>
+        ) : null}
+        <MarketplaceProfileCard
+          api={api}
+          entityId={chatId ?? ''}
+          entityType="channel"
+          profile="moderation"
+        />
+      </SettingsOverviewGroups>
 
       <Suspense fallback={null}>
         <LazyBroadcastButtonsSheet

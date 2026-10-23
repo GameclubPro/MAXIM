@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ComponentProps } from 'react';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SkeletonCard } from '../../components/ui/skeleton';
+import { SettingsOverviewSkeleton } from '../../components/ui/settings-overview-skeleton';
 
 const LazyAdminContactToggle = lazy(() => import('../../components/admin-contact-toggle'));
 const LazyBroadcastPublishBar = lazy(() => import('../../components/broadcast-publish-bar'));
@@ -58,7 +59,7 @@ export function SettingsPollsSection(props: ComponentProps<typeof LazySettingsPo
           style={{ order: 24 }}
           aria-label="Загрузка опросов"
         >
-          <SkeletonCard lines={2} />
+          <SettingsOverviewSkeleton />
         </GlassCard>
       }
     >
@@ -74,7 +75,7 @@ export function SettingsStorefrontSection(
     <Suspense
       fallback={
         <GlassCard className="settings-section settings-home-entry" style={{ order: 31 }}>
-          <SkeletonCard lines={2} />
+          <SettingsOverviewSkeleton />
         </GlassCard>
       }
     >

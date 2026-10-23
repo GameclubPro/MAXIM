@@ -12,6 +12,10 @@ const modulesCss = readFileSync(
   new URL('../src/pages/publisher-entity-modules-page.css', import.meta.url),
   'utf8',
 );
+const suggestionsSource = readFileSync(
+  new URL('../src/components/publisher-suggestions-panel.tsx', import.meta.url),
+  'utf8',
+);
 test('Publik entity modules route is registered only for the publisher profile', () => {
   assert.match(
     appSource,
@@ -38,11 +42,23 @@ test('blocked Publik modules explain readiness and run one bounded targeted rech
   assert.match(modulesCss, /\.publisher-entity-modules-page__recheck \{[\s\S]*?min-height: 44px;/u);
 });
 
-test('channel suggestions expose only the Publisher module switch', () => {
+test('channel suggestions keep desktop controls and open mobile controls inside a workspace', () => {
   assert.match(
     modulesSource,
     /<strong>Предложения<\/strong>[\s\S]*?checked=\{entity\.moduleSettings\.channelSuggestionsEnabled === true\}/u,
   );
+  assert.match(modulesSource, /entity\.entityType === 'channel' && !smartphoneLayout/u);
+  assert.match(modulesSource, /<LazyPublisherSuggestionsPanel/u);
+  assert.match(suggestionsSource, /title="Предложения"/u);
+  assert.match(suggestionsSource, /variant="screen"/u);
+  assert.match(suggestionsSource, /disabled=\{pending \|\| !enabled\}/u);
+  for (const key of [
+    'channelSuggestionsEnabled',
+    'channelSuggestionsRequireSubscription',
+    'channelSuggestionsDeleteOnUnsubscribe',
+  ]) {
+    assert.match(suggestionsSource, new RegExp(`onChange\\(\\{ ${key} \\}\\)`, 'u'));
+  }
   assert.match(
     modulesSource,
     /onChange=\{\(channelSuggestionsEnabled\) =>[\s\S]*?mutation\.mutate\(\{ channelSuggestionsEnabled \}\)/u,

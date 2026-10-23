@@ -2,6 +2,7 @@ import { AppIcon } from './app-icon';
 import type { AppIconName } from './app-icon-names';
 import type { ReactElement } from 'react';
 import { cn } from '../../lib/cn';
+import { useSmartphoneLayout } from '../../lib/use-smartphone-layout';
 import './settings-section-toggle.css';
 import './settings-section-icons.css';
 
@@ -105,6 +106,7 @@ export function SettingsSectionToggle({
   controls,
   onClick,
 }: SettingsSectionToggleProps) {
+  const navigationOnly = useSmartphoneLayout();
   const trimmedSummary = summary?.trim() ?? '';
   const trimmedStatus = status?.trim() ?? '';
   const statusRepeatsState =
@@ -143,7 +145,8 @@ export function SettingsSectionToggle({
       aria-expanded={open}
       aria-controls={controls}
       aria-label={title}
-      aria-describedby={descriptionIds || undefined}
+      aria-describedby={navigationOnly ? undefined : descriptionIds || undefined}
+      data-settings-navigation-entry={navigationOnly ? 'true' : undefined}
       data-settings-search={searchText}
       data-enabled={enabled}
       onClick={onClick}
@@ -154,14 +157,14 @@ export function SettingsSectionToggle({
 
       <span className="settings-section__toggle-main">
         <span className="settings-section__title">{title}</span>
-        {trimmedSummary ? (
+        {!navigationOnly && trimmedSummary ? (
           <span id={summaryId} className="settings-section__summary">
             {trimmedSummary}
           </span>
         ) : null}
       </span>
 
-      {trimmedStatus ? (
+      {!navigationOnly && trimmedStatus ? (
         <span
           id={statusId}
           className={cn('settings-section__status-chip', `is-${tone}`)}
@@ -171,7 +174,7 @@ export function SettingsSectionToggle({
         </span>
       ) : null}
 
-      {paused || typeof enabled === 'boolean' ? (
+      {!navigationOnly && (paused || typeof enabled === 'boolean') ? (
         <>
           <span
             className={cn(
