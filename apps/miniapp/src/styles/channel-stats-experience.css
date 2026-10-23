@@ -306,51 +306,6 @@
     line-height: 1.1;
   }
 
-  .channel-audience-board__metrics {
-    gap: 0;
-    overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    background: var(--surface-card-muted);
-  }
-
-  .channel-audience-metric {
-    min-height: 68px;
-    grid-template-columns: 28px minmax(0, 1fr);
-    column-gap: 7px;
-    row-gap: 2px;
-    padding: 8px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--success);
-    box-shadow: none;
-  }
-
-  .channel-audience-metric + .channel-audience-metric {
-    border-left: 1px solid var(--border-subtle);
-  }
-
-  .channel-audience-metric svg {
-    width: 22px;
-    height: 22px;
-    color: currentColor;
-  }
-
-  .channel-audience-metric b {
-    color: currentColor;
-    font-size: 1.08rem;
-    font-weight: 820;
-  }
-
-  .channel-audience-metric small,
-  .channel-audience-metric em {
-    color: var(--text-secondary);
-    font-size: 0.65rem;
-    font-weight: 650;
-    letter-spacing: 0;
-  }
-
   .channel-audience-board__plot {
     min-height: 210px;
     margin: 0;
@@ -460,47 +415,6 @@
   .channel-stats-graph__tooltip span,
   .channel-stats-graph__tooltip em {
     color: var(--text-secondary);
-  }
-
-  .channel-audience-board__legend {
-    gap: 0;
-    margin: 0;
-    overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    background: var(--surface-card-muted);
-  }
-
-  .channel-audience-board__legend span {
-    min-height: 58px;
-    grid-template-columns: 24px minmax(0, 1fr);
-    column-gap: 7px;
-    padding: 8px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--success);
-    box-shadow: none;
-    font-size: 0.68rem;
-  }
-
-  .channel-audience-board__legend span + span {
-    border-left: 1px solid var(--border-subtle);
-  }
-
-  .channel-audience-board__legend svg {
-    width: 21px;
-    height: 21px;
-  }
-
-  .channel-audience-board__legend b {
-    font-size: 1.05rem;
-    font-weight: 820;
-  }
-
-  .channel-audience-board__legend em {
-    color: var(--text-secondary);
-    font-size: 0.65rem;
   }
 
   .channel-summary-table-card {
@@ -977,14 +891,6 @@
     border-radius: 8px;
   }
 
-  body.channel-stats-page-open .channel-audience-board__metrics,
-  body.channel-stats-page-open .channel-audience-board__legend {
-    overflow: visible;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-  }
-
   html[data-max-theme='dark'] body.events-page-open .events-primary-tab.is-active,
   html[data-max-theme='dark']
     body.events-page-open
@@ -1066,36 +972,6 @@
 
     .channel-summary-card--compact > strong {
       font-size: 1.24rem;
-    }
-
-    .channel-audience-metric {
-      grid-template-columns: 24px minmax(0, 1fr);
-      column-gap: 5px;
-      padding: 7px 6px;
-    }
-
-    .channel-audience-metric svg {
-      width: 20px;
-      height: 20px;
-    }
-
-    .channel-audience-metric b {
-      font-size: 1rem;
-    }
-
-    .channel-audience-board__legend span {
-      grid-template-columns: 20px minmax(0, 1fr);
-      column-gap: 5px;
-      padding: 7px 6px;
-    }
-
-    .channel-audience-board__legend svg {
-      width: 19px;
-      height: 19px;
-    }
-
-    .channel-audience-board__legend b {
-      font-size: 0.98rem;
     }
 
     .channel-events-section__head {

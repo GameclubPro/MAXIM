@@ -4,13 +4,7 @@ import type {
   ChannelStatsResponse,
   ChannelStatsSummary,
 } from '@maxim/contracts/channel-stats';
-import {
-  ArrowUpCircle as IconArrowUpCircle,
-  GraphUp as IconGraphUp,
-  Group as IconGroup,
-  OpenNewWindow as IconOpenNewWindow,
-  StatsUpSquare as IconStatsUpSquare,
-} from 'iconoir-react';
+import { OpenNewWindow as IconOpenNewWindow } from 'iconoir-react';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { SegmentedControl } from '../ui/segmented-control';
 import { formatCount, formatPeriodRange, periodOptions } from '../../lib/channel-stats-format';
@@ -90,11 +84,11 @@ const dayShortLabels = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] 
 
 const CHART_VIEWBOX_WIDTH = 390;
 
-const CHART_VIEWBOX_HEIGHT = 210;
+const CHART_VIEWBOX_HEIGHT = 260;
 
-const AUDIENCE_CHART_LEFT_PAD = 64;
+const AUDIENCE_CHART_LEFT_PAD = 52;
 
-const AUDIENCE_CHART_RIGHT_PAD = 12;
+const AUDIENCE_CHART_RIGHT_PAD = 8;
 
 const COMPACT_COUNT_FORMATTER = new Intl.NumberFormat('ru-RU', {
   notation: 'compact',
@@ -723,9 +717,9 @@ function buildAudienceChart(
   const height = CHART_VIEWBOX_HEIGHT;
   const leftPad = AUDIENCE_CHART_LEFT_PAD;
   const rightPad = AUDIENCE_CHART_RIGHT_PAD;
-  const lineTop = 28;
-  const lineBottom = 158;
-  const lineFloor = 174;
+  const lineTop = 20;
+  const lineBottom = 222;
+  const lineFloor = 222;
   const dividerY = lineBottom;
   const activityRailY = 174;
   const eventRailY = 190;
@@ -1015,7 +1009,9 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     });
   };
   const stopChartScrub = () => {
-    setIsTooltipVisible(false);
+    const clientX = queuedPointerClientXRef.current;
+    const rect = pointerRectRef.current;
+    if (clientX !== null && rect) updateActiveIndexFromClientX(clientX, rect);
     pointerRectRef.current = null;
     cancelPendingPointerFrame();
   };
@@ -1078,10 +1074,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const tooltipX = activePoint ? clamp((activePoint.x / chart.width) * 100, 15, 85) : 50;
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
   const axisLabelX = Math.max(16, chart.leftPad - 5);
-  const periodLabel =
-    firstPoint && lastPoint
-      ? `${formatChartDayMonth(firstPoint.at)} — ${formatChartDayMonth(lastPoint.at)}`
-      : '—';
 
   return (
     <div className={graphClassName}>
@@ -1093,77 +1085,59 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         </div>
       ) : (
         <>
-          <div
-            className="channel-stats-graph__canvas channel-stats-graph__canvas--audience"
-            tabIndex={0}
-            role="slider"
-            aria-label="Динамика аудитории"
-            aria-valuemin={1}
-            aria-valuemax={chart.points.length}
-            aria-valuenow={safeActiveIndex + 1}
-            aria-valuetext={activeGuideLabel}
-            onPointerDown={(event) => {
-              captureChartPointer(event);
-              const rect = plotRef.current?.getBoundingClientRect();
-              if (!rect) return;
-              pointerRectRef.current = rect;
-              setIsTooltipVisible(true);
-              updateActiveIndexFromClientX(event.clientX, rect);
-            }}
-            onPointerMove={(event) => {
-              if (event.buttons !== 1) {
-                return;
-              }
-
-              setIsTooltipVisible(true);
-              schedulePointerIndexUpdate(event.clientX);
-            }}
-            onPointerUp={stopChartScrub}
-            onPointerCancel={stopChartScrub}
-            onPointerLeave={stopChartScrub}
-            onBlur={stopChartScrub}
-            onKeyDown={(event) => {
-              const nextIndex = resolveChannelStatsSliderIndex(
-                safeActiveIndex,
-                chart.points.length,
-                event.key,
-              );
-              if (nextIndex !== null) {
-                event.preventDefault();
-                setIsTooltipVisible(true);
-                setActiveIndex(nextIndex);
-              }
-            }}
-          >
+          <div className="channel-stats-graph__canvas channel-stats-graph__canvas--audience">
             <div className="channel-audience-board__heading">
-              <span aria-hidden="true" />
-              <strong>Подписчики</strong>
+              <strong>Динамика аудитории</strong>
             </div>
+            <div
+              ref={plotRef}
+              className="channel-audience-board__plot"
+              tabIndex={0}
+              role="slider"
+              aria-label="Динамика аудитории"
+              aria-valuemin={1}
+              aria-valuemax={chart.points.length}
+              aria-valuenow={safeActiveIndex + 1}
+              aria-valuetext={activeGuideLabel}
+              onPointerDown={(event) => {
+                captureChartPointer(event);
+                const rect = plotRef.current?.getBoundingClientRect();
+                if (!rect) return;
+                pointerRectRef.current = rect;
+                setIsTooltipVisible(true);
+                updateActiveIndexFromClientX(event.clientX, rect);
+              }}
+              onPointerMove={(event) => {
+                if (event.buttons !== 1) {
+                  return;
+                }
 
-            <div className="channel-audience-board__metrics">
-              <span className="channel-audience-metric">
-                <IconGroup aria-hidden focusable="false" width={24} height={24} strokeWidth={2} />
-                <b>
-                  {formatAudienceCount(firstPoint?.displayValue ?? null, firstPoint?.confidence)}
-                </b>
-                <small>{firstPoint ? formatChartDayMonth(firstPoint.at) : '—'}</small>
-                <em>Начало периода</em>
-              </span>
-              <span className="channel-audience-metric">
-                <IconArrowUpCircle
-                  aria-hidden
-                  focusable="false"
-                  width={25}
-                  height={25}
-                  strokeWidth={2}
-                />
-                <b>{formatAudienceCount(lastPoint?.displayValue ?? null, lastPoint?.confidence)}</b>
-                <small>{lastPoint ? formatChartDayMonth(lastPoint.at) : '—'}</small>
-                <em>Конец периода</em>
-              </span>
-            </div>
-
-            <div ref={plotRef} className="channel-audience-board__plot">
+                setIsTooltipVisible(true);
+                schedulePointerIndexUpdate(event.clientX);
+              }}
+              onPointerUp={stopChartScrub}
+              onPointerCancel={() => {
+                stopChartScrub();
+                setIsTooltipVisible(false);
+              }}
+              onPointerLeave={stopChartScrub}
+              onBlur={() => {
+                stopChartScrub();
+                setIsTooltipVisible(false);
+              }}
+              onKeyDown={(event) => {
+                const nextIndex = resolveChannelStatsSliderIndex(
+                  safeActiveIndex,
+                  chart.points.length,
+                  event.key,
+                );
+                if (nextIndex !== null) {
+                  event.preventDefault();
+                  setIsTooltipVisible(true);
+                  setActiveIndex(nextIndex);
+                }
+              }}
+            >
               {activePoint && isTooltipVisible ? (
                 <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                   <small>{formatChartDetailDate(activePoint.at, stats.period.bucket)}</small>
@@ -1182,30 +1156,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 className="channel-stats-graph__svg"
                 aria-hidden
               >
-                <defs>
-                  <linearGradient
-                    id="channel-audience-line"
-                    x1={chart.leftPad}
-                    x2={chart.width - chart.rightPad}
-                    y1={chart.plotTop}
-                    y2={chart.plotBottom}
-                  >
-                    <stop offset="0" stopColor="#24b767" />
-                    <stop offset="0.48" stopColor="#139b48" />
-                    <stop offset="1" stopColor="#0c8d3f" />
-                  </linearGradient>
-                  <linearGradient
-                    id="channel-audience-area"
-                    x1="0"
-                    x2="0"
-                    y1={chart.plotTop}
-                    y2={chart.floorY}
-                  >
-                    <stop offset="0" stopColor="#16a34a" stopOpacity="0.28" />
-                    <stop offset="0.58" stopColor="#16a34a" stopOpacity="0.12" />
-                    <stop offset="1" stopColor="#16a34a" stopOpacity="0" />
-                  </linearGradient>
-                </defs>
                 {chart.axisLabels.map((label) => (
                   <text
                     key={`${label.label}-${label.y}`}
@@ -1347,7 +1297,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                       {showDate ? (
                         <text
                           x={point.x}
-                          y="202"
+                          y={chart.height - 10}
                           textAnchor={dateTextAnchor}
                           className="channel-stats-graph__x-label"
                         >
@@ -1368,33 +1318,46 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 <span className="is-previous">Предыдущий период</span>
               ) : null}
             </div>
-            <div className="channel-audience-board__legend">
-              <span className={`is-${getSignedTone(totalGrowth)}`}>
-                <IconGraphUp aria-hidden focusable="false" width={18} height={18} strokeWidth={2} />
-                <b>{formatSignedCount(totalGrowth)}</b>
-                <em>Прирост</em>
+            <output className="channel-audience-selection" aria-live="polite" aria-atomic="true">
+              <span>
+                {activePoint
+                  ? formatChartDetailDate(activePoint.at, stats.period.bucket)
+                  : 'Нет данных'}
               </span>
-              <span className={`is-${getSignedTone(averageGrowth)}`}>
-                <IconStatsUpSquare
-                  aria-hidden
-                  focusable="false"
-                  width={18}
-                  height={18}
-                  strokeWidth={2}
-                />
-                <b>{formatSignedDecimalCount(averageGrowth)}</b>
-                <em>{averageGrowthLabel}</em>
+              <strong>{activeParticipantsLabel}</strong>
+              <span className={`is-${getSignedTone(activeDelta)}`}>
+                {activeDeltaLabel} {activeBucketLabel.toLocaleLowerCase('ru-RU')}
               </span>
-            </div>
+            </output>
+            <details className="channel-audience-details">
+              <summary>
+                Изменение за период{' '}
+                <b className={`is-${getSignedTone(totalGrowth)}`}>
+                  {formatSignedCount(totalGrowth)}
+                </b>
+              </summary>
+              <dl>
+                <div>
+                  <dt>Начало периода</dt>
+                  <dd>
+                    {formatAudienceCount(firstPoint?.displayValue ?? null, firstPoint?.confidence)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Конец периода</dt>
+                  <dd>
+                    {formatAudienceCount(lastPoint?.displayValue ?? null, lastPoint?.confidence)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{averageGrowthLabel}</dt>
+                  <dd className={`is-${getSignedTone(averageGrowth)}`}>
+                    {formatSignedDecimalCount(averageGrowth)}
+                  </dd>
+                </div>
+              </dl>
+            </details>
           </div>
-
-          <output className="channel-stats-graph__sr" aria-live="polite">
-            {activeComparablePreviousPoint
-              ? `${activeGuideLabel}. Прошлый период: ${formatCount(
-                  activeComparablePreviousPoint.displayValue,
-                )}. Период ${periodLabel}.`
-              : `${activeGuideLabel}. Период ${periodLabel}.`}
-          </output>
         </>
       )}
     </div>
@@ -1508,7 +1471,12 @@ export function ChannelStatsOverview({
   const averageViews24h = resolveChannelReachMetric(summary.reach, 'averageViews24h');
   const averageViews48h = resolveChannelReachMetric(summary.reach, 'averageViews48h');
   const err48 = resolveChannelReachMetric(summary.reach, 'err48Percent');
-  const summaryDailyRows = summary.daily.slice(-9).reverse();
+  const [expandedPeriod, setExpandedPeriod] = useState<string | null>(null);
+  const periodKey = `${stats.channel.id}/${stats.period.from}/${stats.period.to}`;
+  const showAllDays = expandedPeriod === periodKey;
+  const summaryDailyRows = (
+    showAllDays ? summary.daily.slice() : summary.daily.slice(-9)
+  ).reverse();
   const hasTopPosts = stats.official.content.topPosts.length > 0;
   const hasBestWindows = stats.signals.bestWindows.some((window) => window.posts > 0);
   const hasDetailPanels = hasTopPosts || hasBestWindows;
@@ -1563,24 +1531,17 @@ export function ChannelStatsOverview({
       ) : null}
       <div className="channel-insights__summary-metrics channel-insights__summary-metrics--compact">
         <article className="channel-summary-card channel-summary-card--compact">
-          <small>Подписчики</small>
+          <small>Подписчики сейчас</small>
           <strong>{formatCount(summary.subscribers.current)}</strong>
-          <span>Сейчас</span>
         </article>
         <article className="channel-summary-card channel-summary-card--compact">
           <small aria-label="Средние просмотры за 24 часа">
-            Ср. просмотры за <span className="channel-summary-card__unit">24 ч</span>
+            Просмотры / <span className="channel-summary-card__unit">24 ч</span>
           </small>
           <strong>{formatCount(averageViews24h.value)}</strong>
           <span>{formatReachCaption(averageViews24h)}</span>
         </article>
       </div>
-      {reachCalculatedAt ? (
-        <p className="channel-insights__calculated-at">
-          Охват рассчитан{' '}
-          <time dateTime={reachCalculatedAt}>{formatPostDateTime(reachCalculatedAt)}</time> · МСК
-        </p>
-      ) : null}
 
       <div className="channel-insights__overview-top">
         <div className="channel-insights__primary-stack">
@@ -1591,7 +1552,24 @@ export function ChannelStatsOverview({
 
         {summaryDailyRows.length > 0 ? (
           <section className="channel-summary-table-card" aria-label="Динамика подписчиков по дням">
-            <table className="channel-summary-table" aria-label="Динамика подписчиков по дням">
+            <div className="channel-summary-table-heading">
+              <strong>По дням</strong>
+              {summary.daily.length > 9 ? (
+                <button
+                  type="button"
+                  aria-expanded={showAllDays}
+                  aria-controls="channel-daily-table"
+                  onClick={() => setExpandedPeriod(showAllDays ? null : periodKey)}
+                >
+                  {showAllDays ? 'Последние 9 дней' : `Весь период · ${summary.daily.length}`}
+                </button>
+              ) : null}
+            </div>
+            <table
+              id="channel-daily-table"
+              className="channel-summary-table"
+              aria-label="Динамика подписчиков по дням"
+            >
               <thead>
                 <tr>
                   <th scope="col">День</th>
@@ -1672,6 +1650,13 @@ export function ChannelStatsOverview({
           </section>
         ) : null}
       </div>
+
+      {reachCalculatedAt ? (
+        <p className="channel-insights__calculated-at">
+          Охват рассчитан{' '}
+          <time dateTime={reachCalculatedAt}>{formatPostDateTime(reachCalculatedAt)}</time> · МСК
+        </p>
+      ) : null}
 
       <details className="channel-insights__reach-details">
         <summary>Просмотры и охват за 48 часов</summary>

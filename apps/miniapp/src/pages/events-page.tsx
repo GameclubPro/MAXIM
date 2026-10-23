@@ -1,3 +1,4 @@
+import { useExpandedText } from '../lib/use-expanded-text';
 import { isMaxMemberRestoreAvailable } from '@maxim/contracts/max-capabilities';
 import type {
   LogsDashboardRange,
@@ -2099,6 +2100,25 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<EventsSection>(
     () => parseChatStatisticsRouteQuery(location.search).section,
   );
+  const expandedText = useExpandedText();
+  const sectionTabsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const track = sectionTabsRef.current;
+    const selected = track?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (!track || !selected) return;
+    const revealSelected = () => {
+      const item = selected.getBoundingClientRect();
+      const bounds = track.getBoundingClientRect();
+      if (item.left < bounds.left || item.right > bounds.right) {
+        track.scrollLeft += item.left - bounds.left - (track.clientWidth - item.width) / 2;
+      }
+    };
+    revealSelected();
+    const observer = new ResizeObserver(revealSelected);
+    observer.observe(track);
+    observer.observe(selected);
+    return () => observer.disconnect();
+  }, [section, expandedText]);
   const moderationView =
     new URLSearchParams(location.search).get('moderationView') === 'history'
       ? 'history'
@@ -3261,8 +3281,12 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
         className="events-stage__workspace-header"
       />
 
-      <div className="events-primary-tabs" role="group" aria-label="Раздел статистики">
-        <div className="events-primary-tabs__track">
+      <div
+        className={`events-primary-tabs${expandedText ? ' is-expanded-text' : ''}`}
+        role="group"
+        aria-label="Раздел статистики"
+      >
+        <div ref={sectionTabsRef} className="events-primary-tabs__track">
           <button
             type="button"
             aria-pressed={section === 'moderation'}

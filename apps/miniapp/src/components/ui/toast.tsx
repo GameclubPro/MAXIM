@@ -7,10 +7,9 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { cn } from '../../lib/cn';
 import type { ToastTone } from './ui-types';
 import { appendToast } from './toast-state';
-import './toast.css';
+import ToastStack from './toast-stack';
 
 type ToastInput = {
   title: string;
@@ -20,11 +19,12 @@ type ToastInput = {
   replaceKey?: string;
 };
 
-type ToastItem = {
+export type ToastItem = {
   id: number;
   title: string;
   description?: string;
   tone: ToastTone;
+  durationMs: number;
   replaceKey?: string;
 };
 
@@ -43,14 +43,22 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const pushToast = useCallback(
-    ({ title, description, tone = 'info', durationMs = 3200, replaceKey }: ToastInput) => {
+    ({ title, description, tone = 'info', durationMs, replaceKey }: ToastInput) => {
       const id = idRef.current + 1;
       idRef.current = id;
 
-      setToasts((current) => appendToast(current, { id, title, description, tone, replaceKey }));
-      window.setTimeout(() => removeToast(id), durationMs);
+      setToasts((current) =>
+        appendToast(current, {
+          id,
+          title,
+          description,
+          tone,
+          replaceKey,
+          durationMs: durationMs ?? (tone === 'danger' ? 0 : description ? 6500 : 4000),
+        }),
+      );
     },
-    [removeToast],
+    [],
   );
 
   const value = useMemo(() => ({ pushToast }), [pushToast]);
@@ -58,24 +66,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="toast-stack" aria-live="polite" aria-atomic="false">
-        {toasts.map((toast) => (
-          <article key={toast.id} className={cn('toast', `toast--${toast.tone}`)}>
-            <div className="toast__body">
-              <h4>{toast.title}</h4>
-              {toast.description ? <p>{toast.description}</p> : null}
-            </div>
-            <button
-              type="button"
-              className="toast__close"
-              onClick={() => removeToast(toast.id)}
-              aria-label="Закрыть уведомление"
-            >
-              ×
-            </button>
-          </article>
-        ))}
-      </div>
+      {toasts.length > 0 ? <ToastStack toasts={toasts} onDismiss={removeToast} /> : null}
     </ToastContext.Provider>
   );
 }
