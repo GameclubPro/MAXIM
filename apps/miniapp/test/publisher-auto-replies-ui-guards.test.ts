@@ -150,9 +150,17 @@ test('auto-reply controls and fixed media geometry stay usable on narrow WebView
     pageCss,
     /@media \(max-width: 340px\)[\s\S]*?\.publisher-auto-reply-editor__tester-row/u,
   );
+  const keyboardSaveBarRule = pageCss.match(
+    /([^{}]*publisher-auto-reply-editor__save-bar[^{}]*)\{([^{}]*display:\s*none;[^{}]*)\}/u,
+  );
+  assert.ok(keyboardSaveBarRule, 'the save bar hides while the keyboard is open');
   assert.match(
-    pageCss,
-    /html\[data-max-keyboard-open='true'\] \.publisher-auto-reply-editor__save-bar \{[\s\S]*?display: none;/u,
+    keyboardSaveBarRule[1],
+    /html\[data-max-keyboard-open='true'\] \.publisher-auto-reply-editor__save-bar/u,
+  );
+  assert.match(
+    keyboardSaveBarRule[1],
+    /\.publisher-auto-reply-editor\.is-keyboard-open \.publisher-auto-reply-editor__save-bar/u,
   );
   assert.doesNotMatch(pageCss, /font-size:\s*(?:clamp|min|max)\([^;]*vw/u);
 });

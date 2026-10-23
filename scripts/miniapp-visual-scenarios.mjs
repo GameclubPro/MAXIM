@@ -12,6 +12,12 @@ const GLOBAL_SOURCE_GLOBS = [
 ];
 
 const FEATURE_SOURCE_GLOBS = {
+  networks: [
+    'apps/miniapp/src/pages/network*.tsx',
+    'apps/miniapp/src/pages/network*.css',
+    'apps/miniapp/src/features/networks/*',
+    'apps/miniapp/src/lib/network-*.ts',
+  ],
   broadcast: [
     'apps/miniapp/src/components/broadcast-*.tsx',
     'apps/miniapp/src/components/broadcast-*.css',
@@ -124,6 +130,24 @@ const FEATURE_SOURCE_GLOBS = {
 };
 
 const ROUTE_DEFINITIONS = {
+  networks: {
+    pattern: '/networks',
+    previewPath: '/networks',
+    manifestEntry: 'src/pages/networks-page.tsx',
+    readySelector: '.networks-page',
+    coldScenario: 'networks',
+    features: ['networks'],
+    sourceGlobs: FEATURE_SOURCE_GLOBS.networks,
+  },
+  'network-settings': {
+    pattern: '/networks/:type/settings/:section?',
+    previewPath: '/networks/chat/settings',
+    manifestEntry: 'src/pages/network-settings-route.tsx',
+    readySelector: '.network-route-error',
+    coldScenario: 'network-settings-missing-scope',
+    features: ['networks', 'settings'],
+    sourceGlobs: FEATURE_SOURCE_GLOBS.networks,
+  },
   home: {
     pattern: '/',
     previewPath: '/',
@@ -202,6 +226,7 @@ const ROUTE_DEFINITIONS = {
     sourceGlobs: [
       'apps/miniapp/src/pages/channel-settings-page.tsx',
       'apps/miniapp/src/styles/channel-post-signature.css',
+      'apps/miniapp/src/styles/channel-post-signature-entry.css',
       ...FEATURE_SOURCE_GLOBS.settings,
     ],
   },
@@ -309,6 +334,8 @@ export const MINIAPP_RUNTIME_ROUTES = Object.freeze(
 );
 
 export const MINIAPP_VISUAL_BOTTOM_SCENARIO_SOURCES = Object.freeze([
+  'chat-settings-reports',
+  'chat-settings-retention',
   'chat-settings-rules',
   'chat-settings-profanity',
   'chat-settings-commercial',
@@ -345,6 +372,19 @@ export const MINIAPP_VISUAL_BOTTOM_SCENARIO_SOURCES = Object.freeze([
 ]);
 
 const baseScenarios = [
+  ...defineRouteScenarios('networks', [
+    ['networks', { searchParams: { networks: '1' } }],
+    ['networks-channels', { searchParams: { networks: '1', type: 'channel' } }],
+    ['networks-statistics', { searchParams: { networks: '1', category: 'important' } }],
+    [
+      'networks-communities',
+      { searchParams: { networks: '1', category: 'important', tab: 'communities' } },
+    ],
+    ['networks-settings', { searchParams: { networks: '1' } }],
+  ]),
+  ...defineRouteScenarios('network-settings', [
+    ['network-settings-missing-scope', { searchParams: { networks: '1' } }],
+  ]),
   ...defineRouteScenarios('home', [
     'home',
     ['home-channels', { searchParams: { view: 'channel' } }],
@@ -835,6 +875,9 @@ const baseScenarios = [
     'chat-settings-greeting',
     'chat-settings-profanity',
     'chat-settings-commercial',
+    'chat-settings-reports',
+    'chat-settings-reports-journal',
+    'chat-settings-retention',
     'chat-settings-duplicates',
     'chat-settings-help',
     'chat-settings-duplicates-flow',
@@ -1055,6 +1098,22 @@ export const MINIAPP_VISUAL_SCENARIOS = Object.freeze([
 ]);
 
 export const MINIAPP_VISUAL_PRESETS = Object.freeze({
+  mobile: Object.freeze({
+    device: 'all',
+    target: 'smartphone',
+    checks: Object.freeze({ layout: true, contrast: true, accessibility: true }),
+    scenarioNames: Object.freeze(
+      MINIAPP_VISUAL_SCENARIOS.filter(
+        (scenario) =>
+          !scenario.features.includes('legacy') &&
+          !scenario.name.includes('broadcast') &&
+          !scenario.name.includes('publisher-policy') &&
+          !/^publications-(?:actions|edit-discard|retry-choice|legacy|compose)$/u.test(
+            scenario.name,
+          ),
+      ).map((scenario) => scenario.name),
+    ),
+  }),
   moderation: Object.freeze({
     device: 'iphone-se',
     target: 'native',

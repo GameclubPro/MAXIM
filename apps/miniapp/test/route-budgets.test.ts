@@ -81,6 +81,36 @@ test('manifest asset collection deduplicates transitive chunks and supports base
   assert.deepEqual([...incremental.css], ['assets/events.css']);
 });
 
+test('network editing budgets count the lazy signature stylesheet and deduplicate shared CSS', () => {
+  const stylesheet = 'src/styles/channel-post-signature.css';
+  for (const id of ['network-settings', 'network-settings-full']) {
+    const budget = routeBudgets.budgets.find((item: { id: string }) => item.id === id);
+    assert.ok(budget?.entries.includes(stylesheet), `${id} must measure the lazy editor CSS`);
+  }
+  const recovery = routeBudgets.budgets.find(
+    (item: { id: string }) => item.id === 'network-settings-recovery-cold',
+  );
+  assert.ok(recovery && !recovery.entries.includes(stylesheet));
+
+  const manifest = {
+    'src/pages/settings/channel-post-signature-fields.tsx': {
+      file: 'assets/signature-fields.js',
+      css: ['assets/shared.css'],
+    },
+    [stylesheet]: {
+      file: 'assets/signature.css',
+      isDynamicEntry: true,
+      css: ['assets/shared.css'],
+    },
+  };
+  const assets = collectManifestAssets(manifest, [
+    'src/pages/settings/channel-post-signature-fields.tsx',
+    resolveManifestEntry(manifest, stylesheet),
+  ]);
+  assert.deepEqual([...assets.js], ['assets/signature-fields.js']);
+  assert.deepEqual([...assets.css].sort(), ['assets/shared.css', 'assets/signature.css']);
+});
+
 test('route coverage fails when a dynamic page manifest entry has no budget', () => {
   const manifest = {
     'src/pages/chats-page.tsx': { isDynamicEntry: true },

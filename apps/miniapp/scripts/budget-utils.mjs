@@ -128,6 +128,9 @@ function collectEntryAssets(manifest, entryKey, visited, assets) {
   if (typeof chunk.file === 'string' && chunk.file.endsWith('.js')) {
     assets.js.add(chunk.file);
   }
+  if (typeof chunk.file === 'string' && chunk.file.endsWith('.css')) {
+    assets.css.add(chunk.file);
+  }
   for (const cssFile of chunk.css ?? []) {
     assets.css.add(cssFile);
   }

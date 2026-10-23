@@ -5,6 +5,7 @@ import { cn } from '../../lib/cn';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';
 import './time-field.css';
+import './time-field-compact.css';
 
 const LazyTimeFieldExactInput = lazy(() =>
   import('./time-field-exact-input').then((module) => ({

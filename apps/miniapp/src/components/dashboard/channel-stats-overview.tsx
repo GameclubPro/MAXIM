@@ -58,6 +58,7 @@ type PreviousAudienceChartPoint = {
 };
 
 type AudienceChartModel = {
+  width: number;
   points: AudienceChartPoint[];
   previousPoints: PreviousAudienceChartPoint[];
   linePath: string;
@@ -91,9 +92,9 @@ const CHART_VIEWBOX_WIDTH = 390;
 
 const CHART_VIEWBOX_HEIGHT = 210;
 
-const AUDIENCE_CHART_LEFT_PAD = 26;
+const AUDIENCE_CHART_LEFT_PAD = 64;
 
-const AUDIENCE_CHART_RIGHT_PAD = 6;
+const AUDIENCE_CHART_RIGHT_PAD = 12;
 
 const COMPACT_COUNT_FORMATTER = new Intl.NumberFormat('ru-RU', {
   notation: 'compact',
@@ -580,19 +581,16 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function resolveSparseLabelIndices(length: number, activeIndex: number): Set<number> {
-  if (length <= 4) {
+function resolveSparseLabelIndices(length: number, plotWidth: number): Set<number> {
+  const labelCount = plotWidth < 240 ? 3 : 4;
+  if (length <= labelCount) {
     return new Set(Array.from({ length }, (_, index) => index));
   }
 
   const lastIndex = Math.max(0, length - 1);
-  const anchors = [
-    0,
-    Math.round(lastIndex / 3),
-    Math.round((lastIndex * 2) / 3),
-    lastIndex,
-    clamp(activeIndex, 0, lastIndex),
-  ];
+  const anchors = Array.from({ length: labelCount }, (_, index) =>
+    Math.round((lastIndex * index) / (labelCount - 1)),
+  );
 
   return new Set(anchors);
 }
@@ -603,14 +601,14 @@ function resolveChartIndexFromClientX(
   pointsLength: number,
   leftPad = 0,
   rightPad = 0,
+  viewBoxWidth = CHART_VIEWBOX_WIDTH,
 ): number {
   if (pointsLength <= 1) {
     return 0;
   }
 
-  const plotLeft = rect.left + (rect.width * leftPad) / CHART_VIEWBOX_WIDTH;
-  const plotRight =
-    rect.left + (rect.width * (CHART_VIEWBOX_WIDTH - rightPad)) / CHART_VIEWBOX_WIDTH;
+  const plotLeft = rect.left + (rect.width * leftPad) / viewBoxWidth;
+  const plotRight = rect.left + (rect.width * (viewBoxWidth - rightPad)) / viewBoxWidth;
   const ratio = clamp((clientX - plotLeft) / Math.max(plotRight - plotLeft, 1), 0, 1);
   return Math.round(ratio * (pointsLength - 1));
 }
@@ -679,6 +677,7 @@ function buildAudienceAreaPath(
 
 function buildEmptyAudienceChart(): AudienceChartModel {
   return {
+    width: CHART_VIEWBOX_WIDTH,
     points: [],
     previousPoints: [],
     linePath: '',
@@ -707,7 +706,10 @@ function buildEmptyAudienceChart(): AudienceChartModel {
   };
 }
 
-function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
+function buildAudienceChart(
+  stats: ChannelStatsResponse,
+  width = CHART_VIEWBOX_WIDTH,
+): AudienceChartModel {
   const participantSeries = stats.official.series.participants;
   const membershipSeries = stats.official.series.membership;
   const previousParticipantSeries = stats.comparison.series?.participants ?? [];
@@ -718,7 +720,6 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
     return buildEmptyAudienceChart();
   }
 
-  const width = CHART_VIEWBOX_WIDTH;
   const height = CHART_VIEWBOX_HEIGHT;
   const leftPad = AUDIENCE_CHART_LEFT_PAD;
   const rightPad = AUDIENCE_CHART_RIGHT_PAD;
@@ -886,6 +887,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
     : [];
 
   return {
+    width,
     points,
     previousPoints,
     linePath,
@@ -919,8 +921,11 @@ function buildAudienceChart(stats: ChannelStatsResponse): AudienceChartModel {
 }
 
 function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
-  const chart = useMemo(() => buildAudienceChart(stats), [stats]);
+  const plotRef = useRef<HTMLDivElement>(null);
+  const [plotWidth, setPlotWidth] = useState(CHART_VIEWBOX_WIDTH);
+  const chart = useMemo(() => buildAudienceChart(stats, plotWidth), [stats, plotWidth]);
   const labels = chart.points;
+  const hasChartData = chart.hasLine;
   const [activeIndex, setActiveIndex] = useState(() =>
     resolveInitialAudienceChartIndex(chart.points),
   );
@@ -928,6 +933,19 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const pointerRectRef = useRef<DOMRect | null>(null);
   const queuedPointerClientXRef = useRef<number | null>(null);
   const pointerFrameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const plot = plotRef.current;
+    if (!plot) return;
+    const measure = () => {
+      const width = plot.getBoundingClientRect().width;
+      if (width > 0) setPlotWidth(width);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(plot);
+    measure();
+    return () => observer.disconnect();
+  }, [hasChartData]);
 
   useEffect(() => {
     setActiveIndex(resolveInitialAudienceChartIndex(chart.points));
@@ -958,6 +976,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
       chart.points.length,
       chart.leftPad,
       chart.rightPad,
+      chart.width,
     );
     setActiveIndex((current) => (current === nextIndex ? current : nextIndex));
   };
@@ -1034,7 +1053,10 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const averageGrowth = totalGrowth !== null ? totalGrowth / knownPointSpan : null;
   const averageGrowthLabel = resolveAudienceChartAverageGrowthLabel(stats.period.bucket);
   const detailLabelIndices = new Set<number>();
-  const xAxisLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
+  const xAxisLabelIndices = resolveSparseLabelIndices(
+    labels.length,
+    chart.width - chart.leftPad - chart.rightPad,
+  );
   const activeParticipantsLabel = formatAudienceCount(
     activePoint?.displayValue ?? null,
     activePoint?.confidence,
@@ -1053,7 +1075,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
           : ''
       }`
     : 'Данные по аудитории недоступны';
-  const tooltipX = activePoint ? clamp((activePoint.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
+  const tooltipX = activePoint ? clamp((activePoint.x / chart.width) * 100, 15, 85) : 50;
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
   const axisLabelX = Math.max(16, chart.leftPad - 5);
   const periodLabel =
@@ -1063,8 +1085,12 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
 
   return (
     <div className={graphClassName}>
-      {chart.points.length === 0 ? (
-        <div className="channel-stats-graph__empty">Пока нет данных за период.</div>
+      {!hasChartData ? (
+        <div className="channel-stats-graph__empty">
+          {chart.points.length === 0
+            ? 'Пока нет данных за период.'
+            : 'Данные об аудитории за этот период недоступны.'}
+        </div>
       ) : (
         <>
           <div
@@ -1078,7 +1104,8 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             aria-valuetext={activeGuideLabel}
             onPointerDown={(event) => {
               captureChartPointer(event);
-              const rect = event.currentTarget.getBoundingClientRect();
+              const rect = plotRef.current?.getBoundingClientRect();
+              if (!rect) return;
               pointerRectRef.current = rect;
               setIsTooltipVisible(true);
               updateActiveIndexFromClientX(event.clientX, rect);
@@ -1136,7 +1163,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               </span>
             </div>
 
-            <div className="channel-audience-board__plot">
+            <div ref={plotRef} className="channel-audience-board__plot">
               {activePoint && isTooltipVisible ? (
                 <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                   <small>{formatChartDetailDate(activePoint.at, stats.period.bucket)}</small>
@@ -1151,7 +1178,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               ) : null}
 
               <svg
-                viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${chart.height}`}
+                viewBox={`0 0 ${chart.width} ${chart.height}`}
                 className="channel-stats-graph__svg"
                 aria-hidden
               >
@@ -1159,7 +1186,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   <linearGradient
                     id="channel-audience-line"
                     x1={chart.leftPad}
-                    x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
+                    x2={chart.width - chart.rightPad}
                     y1={chart.plotTop}
                     y2={chart.plotBottom}
                   >
@@ -1209,7 +1236,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                     key={`guide-${y}`}
                     x1={chart.leftPad}
                     y1={y}
-                    x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
+                    x2={chart.width - chart.rightPad}
                     y2={y}
                     className="channel-stats-graph__grid"
                   />
@@ -1217,7 +1244,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 <line
                   x1={chart.leftPad}
                   y1={chart.plotBottom}
-                  x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
+                  x2={chart.width - chart.rightPad}
                   y2={chart.plotBottom}
                   className="channel-stats-graph__baseline"
                 />
@@ -1262,7 +1289,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   const detailLabelX = clamp(
                     point.x,
                     chart.leftPad + 10,
-                    CHART_VIEWBOX_WIDTH - chart.rightPad - 10,
+                    chart.width - chart.rightPad - 10,
                   );
                   const dateTextAnchor =
                     index === 0 ? 'start' : index === chart.points.length - 1 ? 'end' : 'middle';
@@ -1335,6 +1362,12 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               </svg>
             </div>
 
+            <div className="channel-audience-board__series" aria-label="Периоды на графике">
+              <span>Выбранный период</span>
+              {chart.hasPreviousLine ? (
+                <span className="is-previous">Предыдущий период</span>
+              ) : null}
+            </div>
             <div className="channel-audience-board__legend">
               <span className={`is-${getSignedTone(totalGrowth)}`}>
                 <IconGraphUp aria-hidden focusable="false" width={18} height={18} strokeWidth={2} />
@@ -1479,6 +1512,12 @@ export function ChannelStatsOverview({
   const hasTopPosts = stats.official.content.topPosts.length > 0;
   const hasBestWindows = stats.signals.bestWindows.some((window) => window.posts > 0);
   const hasDetailPanels = hasTopPosts || hasBestWindows;
+  const coverageFrom = stats.meta.officialCoverageFrom;
+  const partialCoverageFrom =
+    coverageFrom !== null && Date.parse(coverageFrom) > Date.parse(stats.period.from)
+      ? coverageFrom
+      : null;
+  const reachCalculatedAt = summary.reach.asOf;
 
   const formatReachCaption = (
     metric: ReturnType<typeof resolveChannelReachMetric>,
@@ -1514,6 +1553,14 @@ export function ChannelStatsOverview({
           ariaLabel="Период статистики канала"
         />
       </div>
+      {stats.meta.refreshQueued || partialCoverageFrom ? (
+        <div className="channel-insights__data-status" role="status">
+          {stats.meta.refreshQueued ? <span>Обновляем данные канала</span> : null}
+          {partialCoverageFrom ? (
+            <span>Данные доступны с {formatPostDateTime(partialCoverageFrom)} · МСК</span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="channel-insights__summary-metrics channel-insights__summary-metrics--compact">
         <article className="channel-summary-card channel-summary-card--compact">
           <small>Подписчики</small>
@@ -1521,13 +1568,19 @@ export function ChannelStatsOverview({
           <span>Сейчас</span>
         </article>
         <article className="channel-summary-card channel-summary-card--compact">
-          <small>
-            Средние просмотры за <span className="channel-summary-card__unit">24 ч</span>
+          <small aria-label="Средние просмотры за 24 часа">
+            Ср. просмотры за <span className="channel-summary-card__unit">24 ч</span>
           </small>
           <strong>{formatCount(averageViews24h.value)}</strong>
           <span>{formatReachCaption(averageViews24h)}</span>
         </article>
       </div>
+      {reachCalculatedAt ? (
+        <p className="channel-insights__calculated-at">
+          Охват рассчитан{' '}
+          <time dateTime={reachCalculatedAt}>{formatPostDateTime(reachCalculatedAt)}</time> · МСК
+        </p>
+      ) : null}
 
       <div className="channel-insights__overview-top">
         <div className="channel-insights__primary-stack">
@@ -1541,10 +1594,12 @@ export function ChannelStatsOverview({
             <table className="channel-summary-table" aria-label="Динамика подписчиков по дням">
               <thead>
                 <tr>
-                  <th>День</th>
-                  <th>Подписчиков</th>
-                  <th>Прирост</th>
-                  <th>Движение</th>
+                  <th scope="col">День</th>
+                  <th scope="col" aria-label="Всего подписчиков">
+                    Всего
+                  </th>
+                  <th scope="col">Прирост</th>
+                  <th scope="col">Вход / выход</th>
                 </tr>
               </thead>
               <tbody>
@@ -1622,8 +1677,8 @@ export function ChannelStatsOverview({
         <summary>Просмотры и охват за 48 часов</summary>
         <div className="channel-insights__summary-metrics channel-insights__summary-metrics--compact">
           <article className="channel-summary-card channel-summary-card--compact">
-            <small>
-              Средние просмотры за <span className="channel-summary-card__unit">48 ч</span>
+            <small aria-label="Средние просмотры за 48 часов">
+              Ср. просмотры за <span className="channel-summary-card__unit">48 ч</span>
             </small>
             <strong>{formatCount(averageViews48h.value)}</strong>
             <span>{formatReachCaption(averageViews48h)}</span>

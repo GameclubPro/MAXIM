@@ -21,6 +21,7 @@ import {
   type ChatBooleanField,
 } from '../../features/network-settings/chat-field-intents';
 import { FieldNumber, FieldText } from '../../features/network-settings/settings-field-controls';
+import { useHintPopoverAutoPosition } from '../../lib/hint-popover';
 import type { SharedChatSettingsSectionProps } from './shared-chat-settings-section';
 import { DUPLICATE_DETECTION_OPTIONS } from '../settings-page.constants';
 import { EditToggleButton } from './settings-edit-toggle-button';
@@ -121,6 +122,7 @@ function DuplicateButtons({ fields, context }: Props) {
 
 export function SharedDuplicateSettingsFields({ fields, context }: Props) {
   const [openHintKey, setOpenHintKey] = useState<HintKey>(null);
+  useHintPopoverAutoPosition(openHintKey !== null, openHintKey, () => setOpenHintKey(null));
   const [editorOpen, setEditorOpen] = useState(false);
   const [windowBuffer, setWindowBuffer] = useState<string | null>(null);
   const master = fields.read('antiDuplicateEnabled');

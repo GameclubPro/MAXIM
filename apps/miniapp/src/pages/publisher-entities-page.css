@@ -1,4 +1,4 @@
-@layer pages {
+@layer workspace {
   .publisher-entities-page {
     --publisher-ready: var(--color-success);
     --publisher-attention: var(--color-warning);
@@ -536,6 +536,130 @@
   @keyframes publisher-entities-spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+  body[data-miniapp-profile='publisher'] .publisher-entities-page {
+    --publisher-avatar-border: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+    --publisher-avatar-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 8%, transparent);
+    gap: 12px;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__header {
+    gap: 12px;
+    padding: 14px 12px 12px;
+    border: 1px solid var(--publisher-accent-border);
+    border-radius: 22px;
+    background:
+      radial-gradient(ellipse at 100% 0%, var(--color-accent-soft), transparent 75%),
+      var(--color-surface);
+    box-shadow: 0 6px 20px var(--publisher-shadow-ink);
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__brand {
+    gap: 10px;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__brand h1 {
+    font-size: clamp(23px, 6vw, 27px);
+    font-weight: 820;
+    letter-spacing: -0.04em;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__avatar {
+    border: 1px solid var(--publisher-avatar-border);
+    box-shadow: 0 4px 12px var(--publisher-shadow-ink);
+  }
+
+  body[data-miniapp-profile='publisher']
+    :is(.publisher-entities-page__refresh, .publisher-entity-row__refresh) {
+    border-radius: 14px;
+    background: var(--color-surface-raised);
+    box-shadow: 0 2px 5px var(--publisher-shadow-ink);
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__search {
+    border-radius: 14px;
+    background: var(--color-surface-raised);
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__filters {
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--color-border);
+    border-radius: 15px;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__filters button {
+    border-radius: 10px;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__filters button.is-active {
+    background: var(--color-accent-soft);
+    box-shadow:
+      0 2px 5px var(--publisher-shadow-ink),
+      inset 0 0 0 1px var(--publisher-accent-border);
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__list {
+    border: 1px solid var(--color-border);
+    border-radius: 20px;
+    background: var(--color-surface);
+    box-shadow: 0 7px 22px var(--publisher-shadow-ink);
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entity-row__avatar {
+    border-radius: 13px;
+    box-shadow: var(--publisher-avatar-shadow);
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entity-row__arrow {
+    color: var(--color-accent);
+  }
+
+  body[data-miniapp-profile='publisher']
+    :is(.publisher-entities-page__inline-error, .publisher-entities-page__refresh-status) {
+    flex-wrap: wrap;
+    border-radius: 14px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__inline-error > span {
+    flex: 1 1 160px;
+    min-width: 0;
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__state {
+    gap: 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 22px;
+    background:
+      radial-gradient(ellipse at 50% 0%, var(--color-accent-soft), transparent 72%),
+      var(--color-surface);
+    box-shadow: 0 7px 22px var(--publisher-shadow-ink);
+  }
+
+  body[data-miniapp-profile='publisher'] .publisher-entities-page__state strong {
+    font-size: 1rem;
+    line-height: 1.35;
+  }
+
+  body[data-miniapp-profile='publisher']
+    :is(
+      .publisher-entities-page__state button,
+      .publisher-entities-page__state a,
+      .publisher-entities-page__load-more
+    ) {
+    border-radius: 12px;
+  }
+
+  @media (max-width: 350px) {
+    body[data-miniapp-profile='publisher'] .publisher-entities-page__header {
+      padding-inline: 10px;
+    }
+
+    body[data-miniapp-profile='publisher'] .publisher-entities-page__brand {
+      gap: 8px;
     }
   }
 }

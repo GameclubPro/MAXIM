@@ -43,7 +43,7 @@ import '../styles/settings-route-polish.css';
 import '../styles/settings-interaction-polish.css';
 import '../styles/settings-native-polish.css';
 import '../styles/settings-experience.css';
-import '../styles/channel-post-signature.css';
+import '../styles/channel-post-signature-entry.css';
 import './network-settings-page.css';
 export type { NetworkSettingsEditorScope, NetworkChannelSettingsSection };
 export interface NetworkSettingsPageProps {
@@ -84,11 +84,13 @@ const SharedSupplementaryChatSettingsFields = lazy(() =>
     default: module.SharedSupplementaryChatSettingsFields,
   })),
 );
-const ChannelPostSignatureFields = lazy(() =>
-  import('./settings/channel-post-signature-fields').then((module) => ({
-    default: module.ChannelPostSignatureFields,
-  })),
-);
+const ChannelPostSignatureFields = lazy(async () => {
+  const [module] = await Promise.all([
+    import('./settings/channel-post-signature-fields'),
+    import('../styles/channel-post-signature.css'),
+  ]);
+  return { default: module.ChannelPostSignatureFields };
+});
 const NetworkSettingsMetadataFields = lazy(() =>
   import('../features/network-settings/network-settings-metadata-fields').then((module) => ({
     default: module.NetworkSettingsMetadataFields,

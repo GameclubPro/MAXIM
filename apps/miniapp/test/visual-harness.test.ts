@@ -114,6 +114,32 @@ test('photo duplicate controls have a dedicated visual scenario', () => {
   assert.ok(scenario?.features.includes('duplicates'));
 });
 
+test('networks and independent policy panels remain in mobile visual coverage', () => {
+  const routes = new Map(MINIAPP_RUNTIME_ROUTES.map((route) => [route.id, route]));
+  assert.equal(routes.get('networks')?.pattern, '/networks');
+  assert.equal(routes.get('network-settings')?.pattern, '/networks/:type/settings/:section?');
+  for (const name of [
+    'networks',
+    'networks-channels',
+    'networks-statistics',
+    'networks-communities',
+    'networks-settings',
+    'network-settings-missing-scope',
+    'chat-settings-reports',
+    'chat-settings-reports-journal',
+    'chat-settings-retention',
+    'chat-settings-reports-bottom',
+    'chat-settings-retention-bottom',
+  ]) {
+    assert.ok(
+      MINIAPP_VISUAL_SCENARIOS.some((scenario) => scenario.name === name),
+      name,
+    );
+    assert.ok(MINIAPP_VISUAL_PRESETS.moderation.scenarioNames.includes(name), name);
+    assert.ok(MINIAPP_VISUAL_PRESETS.mobile.scenarioNames.includes(name), name);
+  }
+});
+
 test('limit controls are audited while enabled, including the bottom of the sheet', () => {
   for (const name of ['chat-settings-limits-active', 'chat-settings-limits-active-bottom']) {
     const scenario = MINIAPP_VISUAL_SCENARIOS.find((candidate) => candidate.name === name);
@@ -564,14 +590,15 @@ test('large publisher recipient picker reaches every target through real scroll 
   assert.ok(scenarioStart >= 0 && scenarioEnd > scenarioStart);
   assert.match(scenarioSource, /scrollPaginatedListToStatus\(page/u);
   assert.doesNotMatch(scenarioSource, /scrollIntoViewIfNeeded|\.scrollTop\s*=/u);
-  assert.match(scenarioSource, /data-target-position="200"/u);
+  assert.match(scenarioSource, /data-target-position="\$\{total\}"/u);
   assert.match(scenarioSource, /document\.elementFromPoint/u);
-  assert.match(scenarioSource, /'Показано 30 из 200'/u);
-  assert.match(scenarioSource, /'Показано 200 из 200'/u);
+  assert.match(scenarioSource, /loaded\.innerText\(\)/u);
+  assert.match(scenarioSource, /expectedStatus: `Показано \$\{total\} из \$\{total\}`/u);
   assert.match(
     captureSource,
-    /async function scrollPaginatedListToStatus[\s\S]*?Date\.now\(\) \+ timeoutMs[\s\S]*?page\.mouse\.wheel\(0, 1_200\)[\s\S]*?waitForFunction/u,
+    /async function scrollPaginatedListToStatus[\s\S]*?Date\.now\(\) \+ timeoutMs[\s\S]*?scrollCaptureList\(page, options\.list\)[\s\S]*?waitForFunction/u,
   );
+  assert.match(captureSource, /async function scrollCaptureList[\s\S]*?page\.mouse\.wheel/u);
 });
 
 test('Publik entry route and publisher source files select workspace visual scenarios', () => {

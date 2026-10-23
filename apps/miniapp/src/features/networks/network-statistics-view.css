@@ -192,7 +192,7 @@
   body[data-miniapp-profile='moderation'] .network-statistics-table-scroll table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 11px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
   body[data-miniapp-profile='moderation'] .network-statistics-table-scroll :is(th, td) {
@@ -210,14 +210,16 @@
   }
   body[data-miniapp-profile='moderation'] .network-statistics-table-scroll thead th {
     color: var(--major-muted);
-    font-size: 10px;
+    font-size: 12px;
+    line-height: 1.4;
     font-weight: 600;
   }
   body[data-miniapp-profile='moderation'] .network-statistics-table-scroll th small {
     display: block;
     margin-top: 5px;
     color: var(--major-muted);
-    font-size: 9px;
+    font-size: 11px;
+    line-height: 1.4;
     font-weight: 400;
   }
   body[data-miniapp-profile='moderation'] .network-statistics-actions {

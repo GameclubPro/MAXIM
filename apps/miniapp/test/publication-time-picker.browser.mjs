@@ -150,7 +150,18 @@ try {
         .locator('.broadcast-planner__dock')
         .getByRole('button', { name: 'Время', exact: true })
         .click();
-      await page.locator('.broadcast-planner__custom-time .time-field__button').click();
+      const compactTime = page.locator('.broadcast-planner__custom-time .time-field__button');
+      const compactMetrics = await compactTime.evaluate((button) => ({
+        height: button.getBoundingClientRect().height,
+        valueSize: Number.parseFloat(
+          getComputedStyle(button.querySelector('.time-field__value')).fontSize,
+        ),
+      }));
+      assert.ok(
+        compactMetrics.height >= 44 && compactMetrics.valueSize >= 14,
+        `Compact time fields remain readable and easy to tap: ${JSON.stringify(compactMetrics)}`,
+      );
+      await compactTime.click();
       await hour.fill('09');
       await minute.fill('17');
       await apply.click();
