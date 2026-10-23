@@ -173,6 +173,7 @@ test('isolates every native shard and keeps all compatibility checks blocking', 
     [
       'Outcome cohort online migrations with native PostgreSQL',
       'Quarantine proof bounds with native PostgreSQL',
+      'Statistics exchange with native PostgreSQL',
       'Check traffic policy revision and activation guards',
       'Participant report SQL, shared executor, journal and retention',
       'Retention admission and receipt recovery with PostgreSQL',
@@ -198,4 +199,32 @@ test('isolates every native shard and keeps all compatibility checks blocking', 
   const report = postgres.steps.find((step) => step.name === 'Save native shard result');
   assert.equal(report.if, "always() && matrix.shard != 'compatibility'");
   assert.equal(report.with.path, 'apps/api/postgres-races.json');
+});
+
+test('exchange native coverage runs against required stores in the blocking compatibility shard', () => {
+  const jobs = parse(workflow).jobs;
+  const postgres = jobs['postgres-races'];
+  const step = postgres.steps.find(
+    (candidate) => candidate.name === 'Statistics exchange with native PostgreSQL',
+  );
+  assert.ok(step, 'Missing required native exchange step');
+  assert.equal(step.if, "matrix.shard == 'compatibility'");
+  assert.equal(step['continue-on-error'], undefined);
+  assert.equal(step.env.MAXIM_TEST_POSTGRES_URL, '${{ env.DATABASE_URL }}');
+  assert.equal(step.env.TZ, 'UTC');
+  assert.equal(postgres.services.postgres.image, 'postgres:16');
+  assert.equal(postgres.services.redis.image, 'redis:7-alpine');
+  assert.match(postgres.env.DATABASE_URL, /@127\.0\.0\.1:5432\/race_test\?/u);
+  assert.equal(postgres.env.MAXIM_TEST_REDIS_URL, 'redis://127.0.0.1:6379');
+  const commands = step.run.trim().split('\n');
+  assert.deepEqual(commands, [
+    "npm test --workspace @maxim/api -- 'integrations/marketplace/.*postgres'",
+    'node --test --test-concurrency=1 infra/scripts/statistics-exchange-audit.test.mjs',
+  ]);
+  const selector = commands[0].match(/-- '([^']+)'$/u)?.[1];
+  assert.ok(selector);
+  const nativePath = 'src/integrations/marketplace/statistics-exchange-postgres.spec.ts';
+  assert.ok(new RegExp(selector, 'u').test(nativePath), 'Exchange cases must be selected');
+  assert.ok(statSync(resolve(root, 'apps/api', nativePath)).isFile());
+  assert.ok(jobs.required.needs.includes('postgres-races'));
 });
