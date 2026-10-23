@@ -2908,6 +2908,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
 
     return options;
   }, [dashboard]);
+  const selectedEventFilter = filterOptions.find((option) => option.value === eventsFilter);
 
   useEffect(() => {
     setExpandedViolationId(null);
@@ -3534,17 +3535,24 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
             {section === 'moderation' && dashboard ? (
               <label className="events-filter-menu">
                 <span>Тип события</span>
-                <select
-                  aria-label="Тип события"
-                  value={eventsFilter}
-                  onChange={(event) => handleEventsFilterChange(event.target.value as EventsFilter)}
-                >
-                  {filterOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label} · {dashboard ? option.count : '...'}
-                    </option>
-                  ))}
-                </select>
+                <span className="events-filter-menu__control">
+                  <span className="events-filter-menu__value" aria-hidden="true">
+                    {selectedEventFilter?.label} · {selectedEventFilter?.count}
+                  </span>
+                  <select
+                    aria-label="Тип события"
+                    value={eventsFilter}
+                    onChange={(event) =>
+                      handleEventsFilterChange(event.target.value as EventsFilter)
+                    }
+                  >
+                    {filterOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label} · {dashboard ? option.count : '...'}
+                      </option>
+                    ))}
+                  </select>
+                </span>
               </label>
             ) : null}
           </div>
