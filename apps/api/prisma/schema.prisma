@@ -4294,6 +4294,7 @@ model MarketplaceBinding {
   updatedAt           DateTime                          @default(now()) @map("updated_at") @db.Timestamptz(6)
   metadata            Json                              @default("{}")
   statisticsConsent   Boolean                           @default(false) @map("statistics_consent")
+  statisticsV2ConsentOnly Boolean                        @default(false) @map("statistics_v2_consent_only")
   collectionOwner     String                            @default("SHADOW") @map("collection_owner")
   collectionMetrics   Json                              @default("[]") @map("collection_metrics")
   appendEnabled       Boolean                           @default(false) @map("append_enabled")
@@ -4315,6 +4316,7 @@ model MarketplaceBinding {
   discoveryFrom       DateTime?                         @map("discovery_from") @db.Timestamptz(6)
   discoveryTo         DateTime?                         @map("discovery_to") @db.Timestamptz(6)
   historyAnomaly      Boolean                           @default(false) @map("history_anomaly")
+  collectionError     String?                           @map("collection_error")
   buttonDiagnostic    String?                           @map("button_diagnostic")
   nextCollectAt       DateTime                          @default(now()) @map("next_collect_at") @db.Timestamptz(6)
   nextAccessAt        DateTime                          @default(now()) @map("next_access_at") @db.Timestamptz(6)
@@ -4324,6 +4326,7 @@ model MarketplaceBinding {
   posts               MarketplacePostSample[]
   audience            MarketplaceAudienceObservation[]
   policyRequests      MarketplacePolicyRequest[]
+  exchangeEntities    StatisticsExchangeEntity[]
 
   @@unique([actorUserId, entityId, profile], map: "marketplace_bindings_actor_user_id_entity_id_profile_key")
   @@index([nextCollectAt, id], map: "marketplace_bindings_collect_idx")
@@ -4504,4 +4507,84 @@ model WebhookSourceReceiptDisposition {
   @@unique([receiptId, id], map: "webhook_source_receipt_dispositions_receipt_id_id_key")
   @@index([abandonmentId], map: "webhook_source_receipt_dispositions_abandonment_idx")
   @@map("webhook_source_receipt_dispositions")
+}
+
+model StatisticsExchangeGrant {
+  id String @id @db.Uuid
+  actorUserId String @unique @map("actor_user_id")
+  revision BigInt
+  state String
+  inputHash String @map("input_hash")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  nextPullAt DateTime @default(now()) @map("next_pull_at") @db.Timestamptz(6)
+  leaseId String? @map("lease_id") @db.Uuid
+  leaseUntil DateTime? @map("lease_until") @db.Timestamptz(6)
+  lastPullAt DateTime? @map("last_pull_at") @db.Timestamptz(6)
+  lastError String? @map("last_error")
+  pullCursor String? @map("pull_cursor")
+  producerRevision BigInt @default(0) @map("producer_revision")
+  pruneAfterCreatedAt DateTime? @map("prune_after_created_at") @db.Timestamptz(6)
+  pruneAfterId String? @map("prune_after_id") @db.Uuid
+  entities StatisticsExchangeEntity[]
+  generations StatisticsExchangeGeneration[]
+  imports StatisticsExchangeImport[]
+  remoteAccessVersion BigInt @default(0) @map("remote_access_version")
+  nextRemoteAccessAt DateTime @default(now()) @map("next_remote_access_at") @db.Timestamptz(6)
+  lastRemoteAccessAt DateTime? @map("last_remote_access_at") @db.Timestamptz(6)
+  remoteAccessError String? @map("remote_access_error")
+  @@index([state,nextRemoteAccessAt,id],map:"statistics_exchange_grants_remote_access_idx")
+  @@index([state,nextPullAt,id],map:"statistics_exchange_grants_pull_idx")
+  @@map("statistics_exchange_grants")
+}
+
+model StatisticsExchangeEntity {
+  grantId String @map("grant_id") @db.Uuid
+  entityId String @map("entity_id")
+  kind String
+  profile String
+  bindingId String? @map("binding_id") @db.Uuid
+  error String?
+  nextCheckAt DateTime @default(now()) @map("next_check_at") @db.Timestamptz(6)
+  remoteValidUntil DateTime? @map("remote_valid_until") @db.Timestamptz(6)
+  remoteBindingId String? @map("remote_binding_id") @db.Uuid
+  grant StatisticsExchangeGrant @relation(fields:[grantId],references:[id],onDelete:NoAction,onUpdate:NoAction)
+  binding MarketplaceBinding? @relation(fields:[bindingId],references:[id],onDelete:NoAction,onUpdate:NoAction)
+  @@id([grantId,entityId,kind])
+  @@index([bindingId,grantId],map:"statistics_exchange_entities_binding_idx")
+  @@map("statistics_exchange_entities")
+}
+
+model StatisticsExchangeGeneration {
+  id String @id @db.Uuid
+  grantId String @map("grant_id") @db.Uuid
+  grantRevision BigInt @map("grant_revision")
+  entityId String @map("entity_id")
+  kind String
+  origin String
+  producerRevision BigInt @map("producer_revision")
+  manifest Json
+  rows Json
+  retentionFrom DateTime @default(now()) @map("retention_from") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  grant StatisticsExchangeGrant @relation(fields:[grantId],references:[id],onDelete:NoAction,onUpdate:NoAction)
+  @@index([grantId,grantRevision,entityId,kind,origin,producerRevision(sort:Desc),createdAt(sort:Desc),id(sort:Desc)],map:"statistics_exchange_generations_latest_idx")
+  @@index([grantId,createdAt,id],map:"statistics_exchange_generations_grant_expiry_idx")
+  @@index([createdAt,id],map:"statistics_exchange_generations_expiry_idx")
+  @@index([retentionFrom,id],map:"statistics_exchange_generations_window_idx")
+  @@map("statistics_exchange_generations")
+}
+
+model StatisticsExchangeImport {
+  grantId String @map("grant_id") @db.Uuid
+  grantRevision BigInt @map("grant_revision")
+  entityId String @map("entity_id")
+  kind String
+  producerRevision BigInt @map("producer_revision")
+  manifest Json
+  rows Json
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  remoteValidUntil DateTime? @map("remote_valid_until") @db.Timestamptz(6)
+  grant StatisticsExchangeGrant @relation(fields:[grantId],references:[id],onDelete:NoAction,onUpdate:NoAction)
+  @@id([grantId,grantRevision,entityId,kind])
+  @@map("statistics_exchange_imports")
 }

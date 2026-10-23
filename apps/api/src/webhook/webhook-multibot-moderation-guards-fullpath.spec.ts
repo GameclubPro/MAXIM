@@ -39,8 +39,13 @@ jest.setTimeout(60_000);
 describeStores('native current-rule authorization across mirrored bot delivery', () => {
   let h: MultibotHarness | undefined;
   afterEach(async () => {
-    await h?.dispose();
-    h = undefined;
+    try {
+      await h?.dispose();
+    } finally {
+      // FLAG: Jest's spy registry must release completed native fixture graphs between cases.
+      jest.restoreAllMocks();
+      h = undefined;
+    }
   });
   async function fixture(bots = 4) {
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' });

@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY statistics_exchange_grants_remote_access_idx ON statistics_exchange_grants(state,next_remote_access_at,id);

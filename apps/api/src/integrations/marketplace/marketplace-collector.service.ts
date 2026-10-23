@@ -43,6 +43,7 @@ export class MarketplaceCollectorService {
       RETURNING *`;
     const row = rows[0];
     if (!row) return;
+    let failedStage = 'AUDIENCE_UNAVAILABLE';
     try {
       const metadata = this.state.present(row).metadata;
       if (metadata.audience !== null && row.checked_at) {
@@ -54,6 +55,7 @@ export class MarketplaceCollectorService {
           WHERE marketplace_audience_observations.observed_at<EXCLUDED.observed_at`;
       }
       if (row.checked_at) await this.native?.audience(row.id, lease, row.checked_at, metadata);
+      failedStage = 'POST_STATISTICS_UNAVAILABLE';
       if (row.kind === 'CHANNEL') {
         await this.seedNativeMilestones(row, lease);
         await this.sampleDue(row, lease);
@@ -76,9 +78,16 @@ export class MarketplaceCollectorService {
         fresh.statistics_consent &&
         (await this.state.hasActiveGrant(row.id, lease))
       ) {
+        failedStage = 'GENERATION_UNAVAILABLE';
         await this.statistics.createGeneration(fresh);
         await this.shareCollectedHistory(fresh, lease);
+        await this.prisma
+          .$executeRaw`UPDATE marketplace_bindings SET collection_error=NULL WHERE id=${row.id}::uuid AND lease_id=${lease}::uuid AND lease_until>now() AND ${marketplaceLocalGrantSql()}`;
       }
+    } catch (error: unknown) {
+      await this.prisma
+        .$executeRaw`UPDATE marketplace_bindings SET collection_error=${failedStage} WHERE id=${row.id}::uuid AND lease_id=${lease}::uuid AND lease_until>now()`;
+      throw error;
     } finally {
       await this.prisma.$executeRaw`UPDATE marketplace_bindings SET lease_id=NULL,lease_until=NULL,
         next_collect_at=GREATEST(next_collect_at,now()+interval '1 minute') WHERE id=${row.id}::uuid AND lease_id=${lease}::uuid`;

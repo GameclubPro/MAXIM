@@ -306,6 +306,7 @@ import {
 } from './admin-channel-suggestion-author';
 import { buildChannelSuggestionAdminMessagePayload as buildChannelSuggestionAdminMessagePayloadValue } from './admin-channel-suggestion-presentation';
 import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
+import { StatisticsExchangeAudienceService } from '../integrations/marketplace/statistics-exchange-audience.service';
 import { createAdminChannelStatsRuntimeContext } from './admin-channel-stats-runtime-context';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
 import { createAdminDomainAllowlistRuntimeContext } from './admin-domain-allowlist-runtime-context';
@@ -923,6 +924,9 @@ export class AdminService implements OnModuleDestroy {
         get channelStatsCollector() {
           return owner.channelStatsCollector;
         },
+        get statisticsExchange() {
+          return owner.statisticsExchange;
+        },
         getMembershipActivityFeedPage: (chatId, from, to, query, entityType, profileOptions) =>
           owner.logsDashboardRuntime.getMembershipActivityFeedPage(
             chatId,
@@ -1320,6 +1324,7 @@ export class AdminService implements OnModuleDestroy {
     @Optional()
     private readonly publisherCommentNotifications?: PublisherCommentNotificationService,
     @Optional() private readonly entityPresentation?: ManagedEntityPresentationService,
+    @Optional() private readonly statisticsExchange?: StatisticsExchangeAudienceService,
   ) {
     this.publisherCommentKeyboardRouting = new PublisherCommentKeyboardRouting(
       this.maxBotRegistry,

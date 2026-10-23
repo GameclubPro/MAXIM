@@ -44,6 +44,7 @@ export type MarketplaceBindingRow = {
   discovery_from: Date | null;
   discovery_to: Date | null;
   history_anomaly: boolean;
+  collection_error?: string | null;
   button_diagnostic: string | null;
   next_collect_at: Date;
   next_access_at: Date;
@@ -54,9 +55,10 @@ export type MarketplaceBindingRow = {
 // Trusted SQL aliases only; this is shared by claims, commits, exports, and ownership gates.
 export function marketplaceLocalGrantSql(
   alias: 'b' | 's' | 'preferred' | 'marketplace_bindings' = 'marketplace_bindings',
+  requireConsent = true,
 ): Prisma.Sql {
   const b = Prisma.raw(alias);
-  return Prisma.sql`${b}.state='ACTIVE' AND ${b}.statistics_consent=true AND ${b}.valid_until>now()
+  return Prisma.sql`${b}.state='ACTIVE' AND ${requireConsent ? Prisma.sql`${b}.statistics_consent=true` : Prisma.sql`true`} AND ${b}.valid_until>now()
     AND ${b}.checked_at IS NOT NULL AND ${b}.checked_at<=now()+interval '30 seconds'
     AND NOT EXISTS(SELECT 1 FROM chat_membership_activity_events e
       WHERE e.chat_id=${b}.entity_id AND e.user_id=${b}.actor_user_id
@@ -124,6 +126,11 @@ export class MarketplaceStateService {
     const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
       SELECT id FROM marketplace_bindings WHERE id=${id}::uuid AND ${marketplaceLocalGrantSql()}
         AND (${lease === undefined} OR (lease_id=${lease ?? null}::uuid AND lease_until>now()))`;
+    return rows.length > 0;
+  }
+  async hasActiveAccess(id: string): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM marketplace_bindings WHERE id=${id}::uuid AND ${marketplaceLocalGrantSql('marketplace_bindings', false)}`;
     return rows.length > 0;
   }
   async hasHealthyCollectionOwner(input: {

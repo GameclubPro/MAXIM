@@ -1,5 +1,13 @@
 import { MarketplaceStateModule } from '../integrations/marketplace/marketplace-state.module';
 import {
+  StatisticsExchangeController,
+  StatisticsExchangeOwnerController,
+} from '../integrations/marketplace/statistics-exchange.controller';
+import { StatisticsExchangeGrantsService } from '../integrations/marketplace/statistics-exchange-grants.service';
+import { StatisticsExchangeStatisticsService } from '../integrations/marketplace/statistics-exchange-statistics.service';
+import { StatisticsExchangeAudienceService } from '../integrations/marketplace/statistics-exchange-audience.service';
+import { StatisticsExchangeRuntimeService } from '../integrations/marketplace/statistics-exchange-runtime.service';
+import {
   MARKETPLACE_PUBLISHER_ACCESS_QUEUE,
   MarketplacePublisherAccessQueueService,
 } from '../integrations/marketplace/marketplace-publisher-access.queue';
@@ -201,6 +209,8 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminReportsController,
     AdvertisingPlacementController,
     MarketplaceIntegrationController,
+    StatisticsExchangeController,
+    StatisticsExchangeOwnerController,
     MarketplaceProfileController,
     AdminManagedEntitiesController,
     ManagedEntityPresentationController,
@@ -243,6 +253,10 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     MarketplaceCollectorService,
     MarketplaceNativeProjectionService,
     MarketplaceRuntimeService,
+    StatisticsExchangeGrantsService,
+    StatisticsExchangeStatisticsService,
+    StatisticsExchangeAudienceService,
+    StatisticsExchangeRuntimeService,
     MarketplaceIntegrationGuard,
     AdminService,
     {

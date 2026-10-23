@@ -680,6 +680,14 @@ const envSchema = z.object({
   VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(120_000),
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
   KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
+  SVYAZKA_STATISTICS_EXPORT_TOKEN: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .optional(),
+  SVYAZKA_STATISTICS_V2_USERS: z
+    .string()
+    .regex(/^(\*|[1-9]\d{0,19}(?:\s*,\s*[1-9]\d{0,19})*)$/u)
+    .default('323459159'),
   SVYAZKA_ANALYTICS_TOKEN: z
     .string()
     .regex(/^[a-f0-9]{64}$/u)
@@ -745,6 +753,16 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
       .join('; ');
     throw new Error(`Environment validation failed: ${details}`);
   }
+
+  if (
+    parsed.data.SVYAZKA_STATISTICS_EXPORT_TOKEN &&
+    [parsed.data.SVYAZKA_ANALYTICS_TOKEN, parsed.data.SVYAZKA_PROFILE_TOKEN].includes(
+      parsed.data.SVYAZKA_STATISTICS_EXPORT_TOKEN,
+    )
+  )
+    throw new Error(
+      'Environment validation failed: SVYAZKA_STATISTICS_EXPORT_TOKEN must use a separate credential',
+    );
 
   if (
     parsed.data.APP_SERVICE_NAME &&

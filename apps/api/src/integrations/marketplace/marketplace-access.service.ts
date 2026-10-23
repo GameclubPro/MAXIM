@@ -16,6 +16,8 @@ import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { getAppRole, roleRunsPublisher } from '../../runtime/app-role';
 import { PublisherIdentityAttestationService } from '../../publisher/publisher-identity-attestation.service';
+import { ConfigService } from '@nestjs/config';
+import { statisticsExchangeActorAllowed } from './statistics-exchange.settings';
 import { MarketplacePublisherAccessQueueService } from './marketplace-publisher-access.queue';
 import {
   MARKETPLACE_GRANT_MS,
@@ -33,16 +35,23 @@ export class MarketplaceAccessService {
     private readonly state: MarketplaceStateService,
     @Optional() private readonly publisherQueue?: MarketplacePublisherAccessQueueService,
     @Optional() private readonly publisherIdentity?: PublisherIdentityAttestationService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
-  async attest(raw: unknown): Promise<MarketplaceBindingRow> {
+  async attest(raw: unknown, exchangeV2 = false): Promise<MarketplaceBindingRow> {
     const input = marketplaceBindingInputSchema.parse(raw);
     if (!this.state.enabled()) throw new ServiceUnavailableException('Связка пока не подключена');
-    if (input.actorUserId !== MARKETPLACE_PILOT_USER_ID)
+    if (
+      exchangeV2
+        ? !this.config || !statisticsExchangeActorAllowed(this.config, input.actorUserId)
+        : input.actorUserId !== MARKETPLACE_PILOT_USER_ID
+    )
       throw new ForbiddenException('Модуль пока недоступен');
     if (input.profile === 'publisher' && !roleRunsPublisher(getAppRole())) {
       if (!this.publisherQueue)
         throw new ServiceUnavailableException('Проверка прав Публика пока недоступна');
-      const id = await this.publisherQueue.attest(input);
+      const id = await (exchangeV2
+        ? this.publisherQueue.attest(input, true)
+        : this.publisherQueue.attest(input));
       const binding = await this.state.read(id);
       if (
         !binding ||
@@ -168,7 +177,7 @@ export class MarketplaceAccessService {
       // FLAG: An older concurrent probe cannot replace newer denial or connection evidence.
       const rows = await tx.$queryRaw<MarketplaceBindingRow[]>`
         INSERT INTO marketplace_bindings(id,actor_user_id,entity_id,kind,profile,bot_id,state,checked_at,valid_until,metadata,next_access_at)
-        VALUES(${randomUUID()}::uuid,${input.actorUserId},${input.entityId},${input.kind},${input.profile},${resolvedBotId},'ACTIVE',${started},${new Date(started.getTime() + MARKETPLACE_GRANT_MS)},${JSON.stringify(metadata)}::jsonb,${new Date(started.getTime() + 3 * 60_000)})
+        VALUES(${randomUUID()}::uuid,${input.actorUserId},${input.entityId},${input.kind},${input.profile},${resolvedBotId},'ACTIVE',${started},${new Date(started.getTime() + MARKETPLACE_GRANT_MS)},${JSON.stringify(metadata)}::jsonb,${new Date(started.getTime() + (exchangeV2 ? 1 : 3) * 60_000)})
         ON CONFLICT(actor_user_id,entity_id,profile) DO UPDATE SET bot_id=EXCLUDED.bot_id,state='ACTIVE',checked_at=EXCLUDED.checked_at,
           valid_until=EXCLUDED.valid_until,metadata=EXCLUDED.metadata,revision=marketplace_bindings.revision+1,updated_at=now(),next_access_at=EXCLUDED.next_access_at
         WHERE marketplace_bindings.checked_at IS NULL OR marketplace_bindings.checked_at<=EXCLUDED.checked_at
@@ -183,15 +192,18 @@ export class MarketplaceAccessService {
       revision=revision+1,checked_at=${at},updated_at=now() WHERE actor_user_id=${input.actorUserId} AND entity_id=${input.entityId}
       AND profile=${input.profile} AND (checked_at IS NULL OR checked_at<=${at})`;
   }
-  async refresh(row: MarketplaceBindingRow): Promise<void> {
+  async refresh(row: MarketplaceBindingRow, exchangeV2 = false): Promise<void> {
     const started = new Date();
     try {
-      await this.attest({
-        actorUserId: row.actor_user_id,
-        entityId: row.entity_id,
-        kind: row.kind,
-        profile: row.profile,
-      });
+      await this.attest(
+        {
+          actorUserId: row.actor_user_id,
+          entityId: row.entity_id,
+          kind: row.kind,
+          profile: row.profile,
+        },
+        exchangeV2 || row.actor_user_id !== MARKETPLACE_PILOT_USER_ID,
+      );
     } catch (error) {
       if (error instanceof ForbiddenException)
         await this.deny(

@@ -1,4 +1,9 @@
 import { readTrimmedString } from './admin-legacy-utils';
+import { createHash } from 'node:crypto';
+import {
+  mergeChannelAudienceObservations,
+  type ChannelAudienceObservation,
+} from './admin-channel-stats-audience';
 import { toIsoString, toSafeInteger, resolveLogsDashboardFrom } from './admin-statistics-values';
 import { channelStatsQuerySchema } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
@@ -112,7 +117,20 @@ export class AdminChannelStatsRuntime {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const cacheKey = this.buildChannelStatsResponseCacheKey(chatId, user.userId, parsed.data);
+    let supplementalAudience: ChannelAudienceObservation[] = [];
+    try {
+      supplementalAudience =
+        (await this.context.statisticsExchange?.importedAudience(user.userId, chatId, 'CHANNEL')) ??
+        [];
+    } catch {
+      this.logger.warn({ chatId }, 'Supplemental audience observation unavailable');
+    }
+    // FLAG: Native responses may be shared; supplemental rows remain actor- and revision-scoped.
+    const audienceKey = supplementalAudience.length
+      ? `:actor=${user.userId}:audience=${createHash('sha256').update(JSON.stringify(supplementalAudience)).digest('hex')}`
+      : '';
+    const cacheKey =
+      this.buildChannelStatsResponseCacheKey(chatId, user.userId, parsed.data) + audienceKey;
     const cached = this.channelStatsResponseCache.get(cacheKey);
     if (cached && cached.expiresAtMs > Date.now()) {
       return cached.promise;
@@ -122,7 +140,7 @@ export class AdminChannelStatsRuntime {
       expiresAtMs: Date.now() + CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
       promise: Promise.resolve(null as never),
     };
-    const pending = this.buildChannelStatsResponse(chatId, parsed.data)
+    const pending = this.buildChannelStatsResponse(chatId, parsed.data, supplementalAudience)
       .then((response) => {
         entry.expiresAtMs =
           Date.now() +
@@ -249,6 +267,7 @@ export class AdminChannelStatsRuntime {
   async buildChannelStatsResponse(
     chatId: string,
     statsQuery: ChannelStatsQuery,
+    supplementalAudience: ChannelAudienceObservation[] = [],
   ): Promise<ChannelStatsResponse> {
     const now = new Date();
     const from = this.resolveChannelStatsFrom(statsQuery.range, now);
@@ -349,6 +368,7 @@ export class AdminChannelStatsRuntime {
         orderBy: { capturedAt: 'desc' },
         select: {
           participantsCount: true,
+          capturedAt: true,
         },
       }),
       this.prisma.channelAudienceSnapshot.findMany({
@@ -525,7 +545,37 @@ export class AdminChannelStatsRuntime {
     const refreshQueued = this.shouldRefreshChannelStats(latestAudienceSnapshot, syncState)
       ? this.scheduleChannelStatsRefresh(chatId)
       : false;
-    const audienceFresh = this.isChannelStatsAudienceFresh(latestAudienceSnapshot, syncState, now);
+    const supplemental = mergeChannelAudienceObservations([], supplementalAudience, now);
+    const selectedAudience = mergeChannelAudienceObservations(
+      latestAudienceSnapshot ? [latestAudienceSnapshot] : [],
+      supplemental,
+      now,
+    ).at(-1);
+    const supplementalCurrent =
+      selectedAudience &&
+      supplemental.some((row) => row === selectedAudience) &&
+      (!latestAudienceSnapshot || selectedAudience.capturedAt > latestAudienceSnapshot.capturedAt);
+    const supplementalFresh = Boolean(
+      supplementalCurrent &&
+      now.getTime() - selectedAudience.capturedAt.getTime() <= CHANNEL_STATS_REFRESH_STALE_MS,
+    );
+    const audienceFresh =
+      supplementalFresh || this.isChannelStatsAudienceFresh(latestAudienceSnapshot, syncState, now);
+    const selectedAudienceSnapshots = mergeChannelAudienceObservations(
+      audienceSnapshots,
+      supplemental,
+      now,
+    ).filter((row) => row.capturedAt >= from);
+    const selectedSummarySnapshots = mergeChannelAudienceObservations(
+      summaryAudienceSnapshots,
+      supplemental,
+      now,
+    ).filter((row) => row.capturedAt >= summaryAudienceFrom);
+    const baselineAudience = mergeChannelAudienceObservations(
+      previousAudienceSnapshot?.capturedAt ? [previousAudienceSnapshot] : [],
+      supplemental.filter((row) => row.capturedAt < from),
+      now,
+    ).at(-1);
     const hasMembershipCoverageFrom = (windowFrom: Date) =>
       Boolean(
         syncState?.membershipCoverageFrom &&
@@ -544,7 +594,7 @@ export class AdminChannelStatsRuntime {
     let maxSnapshotAvailable = audienceFresh;
     let title = localTitle;
     let participantsCount = audienceFresh
-      ? (latestAudienceSnapshot?.participantsCount ?? null)
+      ? (selectedAudience?.participantsCount ?? latestAudienceSnapshot?.participantsCount ?? null)
       : null;
     let status = latestAudienceSnapshot?.status ?? null;
     let isPublic = latestAudienceSnapshot?.isPublic ?? null;
@@ -552,7 +602,7 @@ export class AdminChannelStatsRuntime {
     let lastEventAt = latestAudienceSnapshot?.lastEventAt?.toISOString() ?? null;
     let avatarUrl = header?.avatarUrl?.trim() || null;
 
-    if (latestAudienceSnapshot) {
+    if (latestAudienceSnapshot || supplementalFresh) {
       title = chat?.title?.trim() || localTitle;
     } else {
       try {
@@ -617,7 +667,7 @@ export class AdminChannelStatsRuntime {
     );
     const summary = this.buildChannelStatsSummary({
       participantsCount,
-      audienceSnapshots: summaryAudienceSnapshots,
+      audienceSnapshots: selectedSummarySnapshots,
       summaryPosts,
       summaryWindowRows,
       fixedWindowPosts24h,
@@ -650,19 +700,19 @@ export class AdminChannelStatsRuntime {
     const participantSeries = this.buildParticipantSeries(
       bucketStarts,
       bucket,
-      previousAudienceSnapshot?.participantsCount ?? participantsCount,
-      audienceSnapshots,
+      baselineAudience?.participantsCount ??
+        previousAudienceSnapshot?.participantsCount ??
+        participantsCount,
+      selectedAudienceSnapshots,
       {
         carryForward: churnAvailable,
         currentParticipants: participantsCount,
         membershipSeries,
         useMembershipFlow: churnAvailable,
         carryForwardUntil:
-          audienceFresh || !latestAudienceSnapshot
+          audienceFresh || !selectedAudience
             ? null
-            : new Date(
-                latestAudienceSnapshot.capturedAt.getTime() + CHANNEL_STATS_REFRESH_STALE_MS,
-              ),
+            : new Date(selectedAudience.capturedAt.getTime() + CHANNEL_STATS_REFRESH_STALE_MS),
       },
     );
     const activityFeed = statsQuery.includeActivityPreview
@@ -768,7 +818,9 @@ export class AdminChannelStatsRuntime {
         churnAvailable,
         officialCoverageFrom: this.resolveOfficialCoverageFrom(
           syncState,
-          earliestAudienceSnapshot?.capturedAt ?? null,
+          [earliestAudienceSnapshot?.capturedAt, supplemental[0]?.capturedAt]
+            .filter((value): value is Date => Boolean(value))
+            .sort((a, b) => a.getTime() - b.getTime())[0] ?? null,
         ),
         refreshQueued,
       },

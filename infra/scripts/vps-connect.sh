@@ -104,6 +104,7 @@ Commands:
   postgres-audit webhook-queued-proof [--explain]
   postgres-audit commercial-quality [--explain]
   postgres-audit network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--membership=7d|30d] [--explain]
+  postgres-audit statistics-exchange <exact-actor-id> [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
   recover-publisher-catalog-migration [--apply]
@@ -573,6 +574,12 @@ ERROR
 
 postgres_audit() {
   local mode="${1:-all}"
+
+  if [[ "$mode" == 'statistics-exchange' ]]; then
+    node "$ROOT_DIR/infra/scripts/statistics-exchange-audit.mjs" --validate-scope "${@:2}" >/dev/null || return 2
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
 
   if [[ "$mode" == 'network-statistics' ]]; then
     node "$ROOT_DIR/infra/scripts/network-statistics-audit.mjs" "${@:2}" >/dev/null || return 2

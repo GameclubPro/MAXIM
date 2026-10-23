@@ -10,6 +10,7 @@ import type { MaxClientService } from '../max/max-client.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ResolveUserProfilesOptions } from './admin.service.support';
 import type { ChannelStatsCollectorService } from './channel-stats-collector.service';
+import type { StatisticsExchangeAudienceService } from '../integrations/marketplace/statistics-exchange-audience.service';
 
 export type AdminChannelStatsRuntimeContext = {
   readonly prisma: PrismaService;
@@ -17,6 +18,7 @@ export type AdminChannelStatsRuntimeContext = {
   readonly chatContextCache: ChatContextCacheService;
   readonly logger: Logger;
   readonly channelStatsCollector?: ChannelStatsCollectorService;
+  readonly statisticsExchange?: Pick<StatisticsExchangeAudienceService, 'importedAudience'>;
   getMembershipActivityFeedPage(
     chatId: string,
     from: Date,

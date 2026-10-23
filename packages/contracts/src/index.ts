@@ -19,3 +19,6 @@ export * from './karavan-storefront.js';
 export * from './publisher.js';
 export * from './publisher-auto-replies.js';
 export * from './reports.js';
+export * from './statistics-exchange.js';
+
+export * from './statistics-exchange-owner.js';

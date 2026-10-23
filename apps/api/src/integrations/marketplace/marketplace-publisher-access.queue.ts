@@ -19,6 +19,7 @@ export const marketplacePublisherAccessJobSchema = marketplaceBindingInputSchema
   .extend({
     profile: z.literal('publisher'),
     requestedAtMs: z.number().int().nonnegative(),
+    exchangeV2: z.boolean().optional(),
   })
   .strict();
 export type MarketplacePublisherAccessJob = z.infer<typeof marketplacePublisherAccessJobSchema>;
@@ -88,9 +89,13 @@ export class MarketplacePublisherAccessQueueService implements OnModuleDestroy {
     }
   }
 
-  async attest(input: MarketplaceBindingInput): Promise<string> {
+  async attest(input: MarketplaceBindingInput, exchangeV2 = false): Promise<string> {
     if (this.closing) throw this.pendingAccess();
-    const data = marketplacePublisherAccessJobSchema.parse({ ...input, requestedAtMs: Date.now() });
+    const data = marketplacePublisherAccessJobSchema.parse({
+      ...input,
+      requestedAtMs: Date.now(),
+      ...(exchangeV2 ? { exchangeV2: true } : {}),
+    });
     const pending = await this.queue.getJobCounts(
       'wait',
       'active',
@@ -110,7 +115,9 @@ export class MarketplacePublisherAccessQueueService implements OnModuleDestroy {
     } catch {
       throw this.pendingAccess();
     }
-    const identity = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+    const identity = createHash('sha256')
+      .update(JSON.stringify(exchangeV2 ? { ...input, exchangeV2 } : input))
+      .digest('hex');
     const job = await this.queue.add('attest', data, {
       jobId: `marketplace-access-${identity}-${Math.floor(data.requestedAtMs / 5000)}`,
       attempts: 1,

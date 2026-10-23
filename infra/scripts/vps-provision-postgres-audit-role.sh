@@ -37,6 +37,8 @@ local Docker-socket access under the production pg_hba rules, with:
     no actor/bot/binding IDs, cursor signatures or lease tokens
   - eight optional network-membership rollup/feed metadata columns;
     no canonical/source, actor, user or bot identities
+  - thirty-seven optional exchange measurement/authorization metadata columns;
+    IDs are join-only, errors are booleans, no message content or tokens
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported
   - 25 owner-proof columns across execution claims and action ledger; source keys,
     lease/dispatch tokens and command journal are join/check-only and never report output
@@ -143,7 +145,8 @@ BEGIN
         'webhook_execution_claims', 'max_action_ledger'
         , 'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
         'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
-        'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items'
+        'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
+        'statistics_exchange_grants', 'statistics_exchange_entities', 'statistics_exchange_imports', 'statistics_exchange_generations'
       )
     GROUP BY table_name
   LOOP
@@ -296,6 +299,42 @@ BEGIN
 END
 $publisher_slot_grants$;
 GRANT SELECT (id, entity_type) ON TABLE public.chats TO maxim_audit;
+-- FLAG: Optional exchange metadata grants are all-or-none; JSON is measurement
+-- transport, never message content. Join keys and raw errors never leave the report.
+DO $statistics_exchange_grants$
+BEGIN
+  IF NOT EXISTS (
+    WITH allowed(table_name,column_name) AS (VALUES ('statistics_exchange_grants','id'),('statistics_exchange_grants','actor_user_id'),('statistics_exchange_grants','revision'),('statistics_exchange_grants','state'),('statistics_exchange_grants','updated_at'),('statistics_exchange_grants','next_pull_at'),('statistics_exchange_grants','last_pull_at'),('statistics_exchange_grants','last_error'),('statistics_exchange_grants','producer_revision'),('statistics_exchange_grants','last_remote_access_at'),('statistics_exchange_grants','remote_access_error'),('statistics_exchange_entities','grant_id'),('statistics_exchange_entities','entity_id'),('statistics_exchange_entities','kind'),('statistics_exchange_entities','binding_id'),('statistics_exchange_entities','error'),('statistics_exchange_entities','remote_valid_until'),('statistics_exchange_entities','remote_binding_id'),('statistics_exchange_imports','grant_id'),('statistics_exchange_imports','grant_revision'),('statistics_exchange_imports','entity_id'),('statistics_exchange_imports','kind'),('statistics_exchange_imports','producer_revision'),('statistics_exchange_imports','manifest'),('statistics_exchange_imports','rows'),('statistics_exchange_imports','updated_at'),('statistics_exchange_imports','remote_valid_until'),('statistics_exchange_generations','id'),('statistics_exchange_generations','grant_id'),('statistics_exchange_generations','grant_revision'),('statistics_exchange_generations','entity_id'),('statistics_exchange_generations','kind'),('statistics_exchange_generations','origin'),('statistics_exchange_generations','producer_revision'),('statistics_exchange_generations','manifest'),('statistics_exchange_generations','rows'),('statistics_exchange_generations','created_at'))
+    SELECT 1 FROM allowed LEFT JOIN pg_attribute attribute
+      ON attribute.attrelid=to_regclass('public.'||allowed.table_name)
+      AND attribute.attname=allowed.column_name AND attribute.attnum>0 AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (id,actor_user_id,revision,state,updated_at,next_pull_at,last_pull_at,last_error,producer_revision,last_remote_access_at,remote_access_error) ON TABLE public.statistics_exchange_grants TO maxim_audit;
+    GRANT SELECT (grant_id,entity_id,kind,binding_id,error,remote_valid_until,remote_binding_id) ON TABLE public.statistics_exchange_entities TO maxim_audit;
+    GRANT SELECT (grant_id,grant_revision,entity_id,kind,producer_revision,manifest,rows,updated_at,remote_valid_until) ON TABLE public.statistics_exchange_imports TO maxim_audit;
+    GRANT SELECT (id,grant_id,grant_revision,entity_id,kind,origin,producer_revision,manifest,rows,created_at) ON TABLE public.statistics_exchange_generations TO maxim_audit;
+  END IF;
+  IF EXISTS (
+    WITH allowed(table_name,column_name) AS (VALUES ('statistics_exchange_grants','id'),('statistics_exchange_grants','actor_user_id'),('statistics_exchange_grants','revision'),('statistics_exchange_grants','state'),('statistics_exchange_grants','updated_at'),('statistics_exchange_grants','next_pull_at'),('statistics_exchange_grants','last_pull_at'),('statistics_exchange_grants','last_error'),('statistics_exchange_grants','producer_revision'),('statistics_exchange_grants','last_remote_access_at'),('statistics_exchange_grants','remote_access_error'),('statistics_exchange_entities','grant_id'),('statistics_exchange_entities','entity_id'),('statistics_exchange_entities','kind'),('statistics_exchange_entities','binding_id'),('statistics_exchange_entities','error'),('statistics_exchange_entities','remote_valid_until'),('statistics_exchange_entities','remote_binding_id'),('statistics_exchange_imports','grant_id'),('statistics_exchange_imports','grant_revision'),('statistics_exchange_imports','entity_id'),('statistics_exchange_imports','kind'),('statistics_exchange_imports','producer_revision'),('statistics_exchange_imports','manifest'),('statistics_exchange_imports','rows'),('statistics_exchange_imports','updated_at'),('statistics_exchange_imports','remote_valid_until'),('statistics_exchange_generations','id'),('statistics_exchange_generations','grant_id'),('statistics_exchange_generations','grant_revision'),('statistics_exchange_generations','entity_id'),('statistics_exchange_generations','kind'),('statistics_exchange_generations','origin'),('statistics_exchange_generations','producer_revision'),('statistics_exchange_generations','manifest'),('statistics_exchange_generations','rows'),('statistics_exchange_generations','created_at')), effective AS (
+      SELECT relation.relname AS table_name,attribute.attname AS column_name
+      FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+      WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM allowed)
+        AND attribute.attnum>0 AND NOT attribute.attisdropped
+        AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'SELECT')
+    ) SELECT 1 WHERE EXISTS (SELECT * FROM effective EXCEPT SELECT * FROM allowed)
+      OR (SELECT count(*) FROM effective) NOT IN (0,37)
+      OR EXISTS (SELECT 1 FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
+        WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM allowed)
+          AND (has_table_privilege('maxim_audit',relation.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+            OR EXISTS (SELECT 1 FROM pg_attribute attribute WHERE attribute.attrelid=relation.oid
+              AND attribute.attnum>0 AND NOT attribute.attisdropped
+              AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'INSERT,UPDATE,REFERENCES'))))
+  ) THEN RAISE EXCEPTION 'maxim_audit statistics-exchange metadata privileges are not exact'; END IF;
+END
+$statistics_exchange_grants$;
+
 -- FLAG: The pre-release statistics collector works on the existing schema. Only
 -- the complete fifteen-column metadata group is granted; partial catalogs get none.
 DO $network_statistics_grants$
@@ -931,6 +970,7 @@ BEGIN
               'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
               'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
               'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
+              'statistics_exchange_grants', 'statistics_exchange_entities', 'statistics_exchange_imports', 'statistics_exchange_generations',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'

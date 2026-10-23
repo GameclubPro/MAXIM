@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261022130000_network_allowlist_revision",
-  "baselineNamesSha256": "d4296c833a9f24684b4dd574a95134b3e69eade881b0a1ae893ba2a9b9b4c7ab",
-  "baselineContentsSha256": "a9754adf55d086bcddb60a468767e5a177e7b522cd7c0788f276a61de49cda9c",
+  "baselineThrough": "20261023020100_statistics_exchange_peer_authority_index",
+  "baselineNamesSha256": "5575caee171fab5d4f00890362e4380bf14e66677990f5500bd3db4fe3513929",
+  "baselineContentsSha256": "8ae75b3e73ea1ed9e452025dab91c982e04e63e112821ee12f5ec886b6a0f13c",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -139,6 +139,9 @@
     }
   },
   "nonConcurrentIndexExceptions": {
+    "20261023010000_add_statistics_exchange_v2": {
+      "reason": "All indexes belong to new empty server policy, immutable generation or isolated projection tables. The existing binding receives only compatible Boolean/text columns; no retained statistics are scanned, rewritten or indexed."
+    },
     "20260928120000_add_publisher_start_intents": {
       "reason": "The recovery index is created on a new empty intent table in the same additive transaction. No existing data or tables are modified."
     },

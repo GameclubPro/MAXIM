@@ -19,6 +19,34 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('limits statistics v2 rollout to validated actor IDs and a separate reverse credential', () => {
+    expect(validateEnv(createValidEnv()).SVYAZKA_STATISTICS_V2_USERS).toBe('323459159');
+    for (const cohort of ['*', '42', '42, 43'])
+      expect(
+        validateEnv(createValidEnv({ SVYAZKA_STATISTICS_V2_USERS: cohort }))
+          .SVYAZKA_STATISTICS_V2_USERS,
+      ).toBe(cohort);
+    for (const cohort of ['', '0', '42,', 'everyone'])
+      expect(() => validateEnv(createValidEnv({ SVYAZKA_STATISTICS_V2_USERS: cohort }))).toThrow(
+        /SVYAZKA_STATISTICS_V2_USERS/u,
+      );
+    expect(() => validateEnv(createValidEnv({ SVYAZKA_STATISTICS_EXPORT_TOKEN: 'short' }))).toThrow(
+      /SVYAZKA_STATISTICS_EXPORT_TOKEN/u,
+    );
+    expect(
+      validateEnv(createValidEnv({ SVYAZKA_STATISTICS_EXPORT_TOKEN: 'a'.repeat(64) }))
+        .SVYAZKA_STATISTICS_EXPORT_TOKEN,
+    ).toBe('a'.repeat(64));
+    for (const key of ['SVYAZKA_ANALYTICS_TOKEN', 'SVYAZKA_PROFILE_TOKEN'])
+      expect(() =>
+        validateEnv(
+          createValidEnv({
+            SVYAZKA_STATISTICS_EXPORT_TOKEN: 'a'.repeat(64),
+            [key]: 'a'.repeat(64),
+          }),
+        ),
+      ).toThrow(/separate credential/u);
+  });
   it('keeps the occurrence rollup reader independent, default off and finite', () => {
     expect(validateEnv(createValidEnv()).PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT).toBe('off');
     for (const stage of ['off', 'test', '5', '25', '100']) {

@@ -754,6 +754,51 @@ test('queue explain plans the fixed report without executing it or widening the 
   }
 });
 
+test('statistics exchange catalog routes only exact actors and keeps the bounded envelope', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['statistics-exchange', '111222333']).status, 0);
+  const sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /statistics_exchange_privileges_ready/u);
+  assert.match(sql, /IN \(37\)/u);
+  assert.match(sql, /statistics_exchange_grants_actor_user_id_key/u);
+  assert.match(sql, /'audit','statistics_exchange'/u);
+  assert.match(sql, /LIMIT 7/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /statement_timeout=2500ms/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /search_path=pg_catalog,public,pg_temp/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /timezone=UTC/u);
+  assert.equal(runAudit(data, ['statistics-exchange', '111222333', '--explain']).status, 0);
+  assert.match(
+    readFileSync(data.sql, 'utf8'),
+    /EXPLAIN \(FORMAT JSON\) EXECUTE statistics_exchange_audit_plan/u,
+  );
+  assert.equal(
+    runConnect(data, ['postgres-audit', 'statistics-exchange', '111222333', '--explain']).status,
+    0,
+  );
+  assert.match(readFileSync(data.sshArgs, 'utf8'), /statistics-exchange/u);
+  for (const args of [
+    [],
+    ['0'],
+    ['-1'],
+    ['01'],
+    ['1,2'],
+    ['1'.repeat(21)],
+    ['SELECT 1'],
+    ['--privileges'],
+    ['--provision'],
+    ['--validate-scope', '111222333'],
+    ['/tmp/private'],
+    ['1', '--file'],
+    ['1', '--explain', 'extra'],
+  ]) {
+    assert.equal(runAudit(data, ['statistics-exchange', ...args]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'statistics-exchange', ...args]).status, 2);
+  }
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit','statistics_exchange'/u);
+});
+
 test('commercial quality mode is opt-in, fixed, indexed and preserves the bounded audit envelope', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

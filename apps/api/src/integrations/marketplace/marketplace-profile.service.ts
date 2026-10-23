@@ -156,6 +156,9 @@ export class MarketplaceProfileService {
     if (input.action !== 'pause' && !binding.statistics_consent && input.statisticsConsent !== true)
       throw new ConflictException('Подтвердите использование статистики');
     const result = await this.relay(binding, input);
+    if (input.statisticsConsent === true)
+      await this.prisma
+        .$executeRaw`UPDATE marketplace_bindings SET statistics_v2_consent_only=false WHERE id=${binding.id}::uuid`;
     if (input.action !== 'pause' && !binding.statistics_consent) {
       const now = new Date();
       const from = new Date(now);
