@@ -2,7 +2,7 @@
   body[data-miniapp-profile='moderation'] .network-settings-workspace {
     display: grid;
     gap: 16px;
-    width: min(100%, 860px);
+    width: min(100%, 760px);
     margin: 0 auto;
   }
   body[data-miniapp-profile='moderation'] .network-settings-scope {
