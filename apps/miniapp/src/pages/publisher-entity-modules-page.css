@@ -909,7 +909,8 @@
     padding: 0;
   }
 
-  body[data-miniapp-profile='publisher'] .publisher-entity-module__heading {
+  body[data-miniapp-profile='publisher']
+    :is(.publisher-entity-module__heading, .publisher-comments-toggle) {
     min-height: 74px;
     padding: 12px;
   }
@@ -977,7 +978,7 @@
     }
 
     body[data-miniapp-profile='publisher']
-      :is(.publisher-entity-module, .publisher-entity-module__heading) {
+      :is(.publisher-entity-module, .publisher-entity-module__heading, .publisher-comments-toggle) {
       gap: 8px;
       padding-inline: 10px;
     }

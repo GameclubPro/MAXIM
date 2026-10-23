@@ -586,6 +586,58 @@
   @media (max-width: 359px) {
     body[data-miniapp-profile='moderation']
       .channel-insights[data-managed-entity-workspace]
+      .channel-events-section__head--period {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-events-section__head--period
+      .channel-insights__range {
+      width: 100%;
+      justify-self: stretch;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-events-section__metrics {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-events-section__metric--total {
+      grid-column: 1 / -1;
+      min-height: 96px;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-events-section
+      .membership-feed__item {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 6px;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-events-section
+      .membership-feed__rail {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-top: 0;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
+      .channel-events-section
+      .membership-feed__rail::after {
+      display: none;
+    }
+
+    body[data-miniapp-profile='moderation']
+      .channel-insights[data-managed-entity-workspace]
       .channel-summary-table-card {
       padding-inline: 8px;
     }

@@ -2,18 +2,20 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { chromium, devices } from 'playwright';
+import { chromium, devices, webkit } from 'playwright';
 import {
+  allocateMiniappBaseUrl,
   ensureMiniappDevServer,
   stopChildProcess,
 } from '../../../scripts/miniapp-local-server.mjs';
+import { captureBrowserLaunchOptions } from '../../../scripts/miniapp-smartphone.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
 import {
   applyNativeVisualMode,
   installNativeVisualModeInitScript,
 } from '../../../scripts/miniapp-native-visual-mode.mjs';
 
-const base = 'http://127.0.0.1:3014/app/';
+const base = await allocateMiniappBaseUrl('http://127.0.0.1:3014/app/');
 const output = await mkdtemp(path.join(tmpdir(), 'maxim-publisher-comments-'));
 const server = await ensureMiniappDevServer(base);
 const browser = await chromium.launch();
@@ -26,7 +28,125 @@ async function select(locator) {
       await locator.elementHandle(),
     );
 }
+
+async function assertModuleAlignment(page, label) {
+  const metrics = await page.locator('.publisher-entity-modules-page__modules').evaluate((list) => {
+    const reference = list.querySelector('.publisher-entity-module:not(.is-settings)');
+    const comments = list.querySelector('.publisher-comments-toggle');
+    const icon = (node) =>
+      node.querySelector('.publisher-entity-module__icon').getBoundingClientRect();
+    const copy = (node) =>
+      node.querySelector('.publisher-entity-module__copy').getBoundingClientRect();
+    const referenceAction = reference
+      .querySelector('.publisher-entity-module__action')
+      .getBoundingClientRect();
+    const commentsAction = comments.querySelector(':scope > svg').getBoundingClientRect();
+    const bounds = comments.getBoundingClientRect();
+    return {
+      iconOffset: icon(comments).left - icon(reference).left,
+      copyOffset: copy(comments).left - copy(reference).left,
+      actionOffset:
+        commentsAction.left +
+        commentsAction.width / 2 -
+        (referenceAction.left + referenceAction.width / 2),
+      touchHeight: bounds.height,
+      viewportOverflow: document.documentElement.scrollWidth - innerWidth,
+      insideViewport: bounds.left >= 0 && bounds.right <= innerWidth + 1,
+    };
+  });
+  assert.ok(
+    Math.abs(metrics.iconOffset) <= 1 &&
+      Math.abs(metrics.copyOffset) <= 1 &&
+      Math.abs(metrics.actionOffset) <= 1 &&
+      metrics.touchHeight >= 44 &&
+      metrics.insideViewport &&
+      metrics.viewportOverflow <= 1,
+    `${label}: comments must align with neighboring module controls: ${JSON.stringify(metrics)}`,
+  );
+}
+
+async function checkActualPublisherModuleLayout() {
+  const layoutBrowser = await webkit.launch(captureBrowserLaunchOptions('webkit', base));
+  try {
+    for (const width of [393, 280])
+      for (const colorScheme of ['dark', 'light']) {
+        const context = await layoutBrowser.newContext({
+          ...devices['iPhone SE'],
+          viewport: { width, height: 740 },
+          screen: { width, height: 804 },
+          colorScheme,
+          locale: 'ru-RU',
+          reducedMotion: 'reduce',
+        });
+        try {
+          const externalRequests = [];
+          await context.route('**/*', (route) => {
+            const url = new URL(route.request().url());
+            if (url.origin === 'https://st.max.ru' && url.pathname === '/js/max-web-app.js')
+              return route.fulfill({ contentType: 'application/javascript', body: '' });
+            if (url.origin !== new URL(base).origin || url.pathname.startsWith('/api/')) {
+              if (url.pathname.endsWith('/system/miniapp-boot-trace'))
+                return route.fulfill({ status: 204 });
+              externalRequests.push(url.href);
+              return route.abort('blockedbyclient');
+            }
+            return route.continue();
+          });
+          const profile = { platform: 'ios', safeTop: 20, safeBottom: 0 };
+          await installMaxBridgeShimInitScript(context, profile, { colorScheme });
+          await installNativeVisualModeInitScript(context);
+          const page = await context.newPage();
+          page.setDefaultTimeout(15_000);
+          const errors = [];
+          page.on('pageerror', (error) => errors.push(error.message));
+          for (const navigation of ['warm', 'cold']) {
+            if (navigation === 'warm') {
+              await page.goto(new URL('publik?preview=1&profile=publisher', base).href);
+              await page.locator('.publisher-entity-row').first().waitFor();
+              await page
+                .getByRole('link', { name: /разделы/iu })
+                .first()
+                .click();
+            } else {
+              await page.goto(
+                new URL('publisher/chat/preview-chat?preview=1&profile=publisher', base).href,
+              );
+            }
+            await page.locator('.publisher-comments-toggle').waitFor();
+            await applyNativeVisualMode(page, profile);
+            await page.evaluate(() => document.fonts.ready);
+            assert.equal(
+              await page.locator('body').getAttribute('data-miniapp-profile'),
+              'publisher',
+            );
+            const label = `WebKit ${width}px ${colorScheme} ${navigation}`;
+            await page.screenshot({
+              path: path.join(output, `modules-${width}-${colorScheme}-${navigation}.png`),
+            });
+            await assertModuleAlignment(page, label);
+            await page.getByRole('button', { name: 'Комментарии', exact: true }).click();
+            await page.getByRole('dialog', { name: 'Комментарии', exact: true }).waitFor();
+            await page.keyboard.press('Escape');
+            await page
+              .getByRole('dialog', { name: 'Комментарии', exact: true })
+              .waitFor({ state: 'hidden' });
+            console.log(`PASS ${label}: aligned icons, labels and actions; comments open/close`);
+          }
+          assert.deepEqual(errors, []);
+          assert.deepEqual(externalRequests, []);
+        } finally {
+          await context.close();
+        }
+      }
+  } finally {
+    await layoutBrowser.close();
+  }
+}
 try {
+  console.log(
+    `Publisher comments checks: owned server PID ${server.pid}, base ${base}, screenshots ${output}`,
+  );
+  await checkActualPublisherModuleLayout();
   for (const profile of [
     {
       name: 'iphone-se',
