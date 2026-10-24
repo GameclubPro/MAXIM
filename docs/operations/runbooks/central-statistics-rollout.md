@@ -64,6 +64,19 @@ current proof. Native regressions in `stats-central-postgres.spec.ts` cover both
 roles, revocation/recovery, return to the original bot and stale references.
 Do not recreate stores, lower floors or re-enable retired history exchange.
 
+Native source identity binds the durable access edge's creation, current roles
+and bot membership lifecycle, never the timestamp of an unchanged successful
+rights check. Current exact actor/bot grants and explicit denial/removal are
+still checked on each read. A routine `checked_at` refresh previously hid native
+history until the next peer attestation and churned authority epochs, producing
+intermittent `NO_DATA` and `READ_RESTART` despite active consumer leases.
+The PostgreSQL regression reproduces that loss and covers rechecks before/during
+a read, stable renewal epochs, real role denial, lifecycle changes and bot denial.
+Existing source fences change once at rollout; allow their normal renewal before
+acceptance. Verify repeated audience availability as well as active leases and
+successful summary envelopes. No migration, permission mutation or data purge
+is needed for this correction.
+
 ## Connection access after activation
 
 Central mode still uses the paged membership/access contract for Market-owned
