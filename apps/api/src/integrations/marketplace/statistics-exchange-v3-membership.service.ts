@@ -39,7 +39,6 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { Prisma } from '../../prisma/prisma-client';
 import { StatisticsExchangeGrantsService } from './statistics-exchange-grants.service';
-import { marketplaceLocalGrantSql } from './marketplace-state.service';
 
 const uuid = z.string().uuid();
 const SNAPSHOT_MS = 15 * 60_000;
@@ -379,7 +378,7 @@ export class StatisticsExchangeV3MembershipService {
     const rows = await this.prisma.$queryRaw<AccessRow[]>`
       SELECT e.entity_id AS "entityId",e.kind,e.profile,b.id AS "bindingId",coalesce(b.revision,0) AS "bindingRevision",
         b.checked_at AS "checkedAt",b.valid_until AS "validUntil",b.metadata,b.bot_id AS "botId",
-        coalesce((${grant.state === 'ACTIVE'} AND ${marketplaceLocalGrantSql('b')}),false) AS active
+        coalesce((${grant.state === 'ACTIVE'} AND ${this.grants.localGrantSql('b')}),false) AS active
       FROM (SELECT entity_id,kind,profile,binding_id FROM statistics_exchange_entities
         WHERE grant_id=${grant.id}::uuid
           AND (${query.entityId !== undefined} OR (kind||':'||entity_id) COLLATE "C">${after})
@@ -409,6 +408,7 @@ export class StatisticsExchangeV3MembershipService {
           { metric: 'REACH', horizon: 24 },
           { metric: 'REACH', horizon: 48 },
         );
+      const lease = this.grants.accessLease(row.checkedAt, row.validUntil, row.active);
       const record: ExchangeV3AccessEntity = {
         entityId: row.entityId,
         kind: row.kind,
@@ -416,8 +416,8 @@ export class StatisticsExchangeV3MembershipService {
         bindingId: row.bindingId,
         bindingRevision: Number(row.bindingRevision),
         status: grant.state === 'REVOKED' ? 'REVOKED' : row.active ? 'ACTIVE' : 'UNAVAILABLE',
-        checkedAt: row.checkedAt?.toISOString() ?? null,
-        validUntil: row.validUntil?.toISOString() ?? null,
+        checkedAt: lease.checkedAt?.toISOString() ?? null,
+        validUntil: lease.validUntil?.toISOString() ?? null,
         permittedScopes: scopes,
         isPublic,
         errorCode: row.active ? null : 'ACCESS_UNAVAILABLE',
@@ -449,6 +449,12 @@ export class StatisticsExchangeV3MembershipService {
       }
       entities.push(safe);
     }
+    if (grant.state === 'ACTIVE')
+      await this.grants.requestAccess(
+        grant.id,
+        Number(grant.revision),
+        rows.slice(0, entities.length),
+      );
     const bots = new Map(rows.map((r) => [exchangeEntityKey(r), r.botId]));
     const signatures = entities.map((e) => ({
       entityId: e.entityId,
@@ -546,7 +552,7 @@ export class StatisticsExchangeV3MembershipService {
     >`SELECT b.metadata FROM marketplace_bindings b
       JOIN statistics_exchange_entities e ON e.binding_id=b.id AND e.grant_id=${id}::uuid
       JOIN statistics_exchange_grants g ON g.id=e.grant_id AND g.state='ACTIVE'
-      WHERE b.id=${access.bindingId}::uuid AND e.access_binding_revision=${access.bindingRevision} AND ${marketplaceLocalGrantSql('b')}`;
+      WHERE b.id=${access.bindingId}::uuid AND e.access_binding_revision=${access.bindingRevision} AND ${this.grants.localGrantSql('b')}`;
     if (!rows[0]) throw new ForbiddenException('EXCHANGE_ACCESS_DENIED');
     const metadata = exchangeV3MetadataSchema.parse(rows[0].metadata),
       metadataVersion = hash(JSON.stringify(metadata));

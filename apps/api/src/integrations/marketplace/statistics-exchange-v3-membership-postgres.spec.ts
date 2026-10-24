@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 import {
   EXCHANGE_V3_COMPACT_PAGE_BYTES,
   exchangeV3EnvelopeBytes,
@@ -8,12 +9,20 @@ import {
   type ExchangeV3MembershipManifest,
 } from '@maxim/contracts/statistics-exchange-v3';
 import { type ExchangeEntityKey } from '@maxim/contracts';
-import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
+import {
+  PrismaClient,
+  createPrismaAdapter,
+  ManagedEntityAccessState,
+} from '../../prisma/prisma-client';
 import { type PrismaService } from '../../prisma/prisma.service';
 import { type MarketplaceAccessService } from './marketplace-access.service';
 import { MarketplaceStateService } from './marketplace-state.service';
 import { StatisticsExchangeGrantsService } from './statistics-exchange-grants.service';
 import { StatisticsExchangeV3MembershipService } from './statistics-exchange-v3-membership.service';
+import {
+  StatisticsAccessDemandService,
+  STATISTICS_ACCESS_DEMAND_KEYS,
+} from './statistics-access-demand.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const postgres = databaseUrl ? describe : describe.skip;
@@ -182,6 +191,129 @@ postgres('v3 immutable membership and compact access on PostgreSQL', () => {
       if (count > 100) await expect(grants.read(grantId)).rejects.toThrow('ROSTER_REQUIRES_V3');
     },
   );
+  it('reuses a12hour statistics proof without extending action rights or ignoring known denial', async () => {
+    config.set('STATISTICS_CENTRAL_ENABLED', true);
+    config.set('STATISTICS_CENTRAL_MODE', 'CENTRAL');
+    try {
+      await seed(1);
+      await service.put(grantId, input(await snapshot()));
+      const entity = entities[0]!;
+      await db.$executeRaw`UPDATE marketplace_bindings SET checked_at=now()-interval '12 hours',valid_until=now()-interval '11 hours' WHERE id=${entity.bindingId}::uuid`;
+      const original = await new MarketplaceStateService(db as PrismaService, config).read(
+        entity.bindingId,
+      );
+      const access = await service.exactAccess(grantId, entity.kind, entity.entityId);
+      expect(access?.status).toBe('ACTIVE');
+      expect(Date.parse(access!.checkedAt!)).toBeGreaterThan(Date.now() - 5000);
+      expect(Date.parse(access!.validUntil!) - Date.parse(access!.checkedAt!)).toBeLessThanOrEqual(
+        300000,
+      );
+      expect(
+        await new MarketplaceStateService(db as PrismaService, config).hasActiveAccess(
+          entity.bindingId,
+        ),
+      ).toBe(false);
+      expect(
+        (await db.marketplaceBinding.findUniqueOrThrow({ where: { id: entity.bindingId } }))
+          .checkedAt,
+      ).toEqual(original?.checked_at);
+      await db.$executeRaw`UPDATE managed_entity_access_edges SET state=${ManagedEntityAccessState.USER_DENIED}::"ManagedEntityAccessState",checked_at=now() WHERE user_id=${actor}`;
+      expect((await service.exactAccess(grantId, entity.kind, entity.entityId))?.status).toBe(
+        'UNAVAILABLE',
+      );
+      await db.$executeRaw`UPDATE managed_entity_access_edges SET state='GRANTED' WHERE user_id=${actor}`;
+      await db.$executeRaw`UPDATE marketplace_bindings SET statistics_revoked_at=now() WHERE id=${entity.bindingId}::uuid`;
+      expect((await service.exactAccess(grantId, entity.kind, entity.entityId))?.status).toBe(
+        'UNAVAILABLE',
+      );
+      await db.$executeRaw`UPDATE marketplace_bindings SET statistics_revoked_at=NULL WHERE id=${entity.bindingId}::uuid`;
+      await db.$executeRaw`UPDATE chat_bot_memberships SET lifecycle_event_at=now() WHERE chat_id=${entity.entityId}`;
+      expect((await service.exactAccess(grantId, entity.kind, entity.entityId))?.status).toBe(
+        'UNAVAILABLE',
+      );
+    } finally {
+      config.set('STATISTICS_CENTRAL_ENABLED', false);
+      config.set('STATISTICS_CENTRAL_MODE', 'LEGACY');
+    }
+  });
+
+  it('refreshes expired demand off HTTP, reuses cached missing bindings, and rejects stale revisions', async () => {
+    const redisUrl = process.env.MAXIM_TEST_REDIS_URL ?? '';
+    if (!['127.0.0.1', 'localhost'].includes(new URL(redisUrl).hostname))
+      throw new Error('Isolated Redis required');
+    config.set('STATISTICS_CENTRAL_ENABLED', true);
+    config.set('STATISTICS_CENTRAL_MODE', 'CENTRAL');
+    config.set('REDIS_URL', redisUrl);
+    const redis = new Redis(redisUrl),
+      demand = new StatisticsAccessDemandService(config);
+    const state = new MarketplaceStateService(db as PrismaService, config);
+    const attest = jest.fn<
+      ReturnType<MarketplaceAccessService['attest']>,
+      Parameters<MarketplaceAccessService['attest']>
+    >(async () => {
+      await db.$executeRaw`UPDATE marketplace_bindings SET checked_at=now(),valid_until=now()+interval '5 minutes' WHERE id=${entities[0]!.bindingId}::uuid`;
+      return (await state.read(entities[0]!.bindingId))!;
+    });
+    const activeGrants = new StatisticsExchangeGrantsService(
+      db as PrismaService,
+      config,
+      { attest } as unknown as MarketplaceAccessService,
+      state,
+      demand,
+    );
+    const activeService = new StatisticsExchangeV3MembershipService(
+      db as PrismaService,
+      config,
+      activeGrants,
+    );
+    try {
+      await redis.del(...STATISTICS_ACCESS_DEMAND_KEYS);
+      await demand.onModuleInit();
+      await seed(1);
+      await activeService.put(grantId, input(await snapshot()));
+      const entity = entities[0]!;
+      await db.$executeRaw`UPDATE marketplace_bindings SET checked_at=now()-interval '25 hours',valid_until=now()-interval '24 hours' WHERE id=${entity.bindingId}::uuid`;
+      expect((await activeService.exactAccess(grantId, entity.kind, entity.entityId))?.status).toBe(
+        'UNAVAILABLE',
+      );
+      await activeService.exactAccess(grantId, entity.kind, entity.entityId);
+      expect(attest).not.toHaveBeenCalled();
+      expect(await redis.zcard(STATISTICS_ACCESS_DEMAND_KEYS[0])).toBe(1);
+      expect(await activeGrants.refreshRequestedAccess()).toBe(true);
+      expect(attest).toHaveBeenCalledWith(
+        {
+          actorUserId: actor,
+          entityId: entity.entityId,
+          kind: entity.kind,
+          profile: entity.profile,
+        },
+        true,
+        true,
+      );
+      expect((await activeService.exactAccess(grantId, entity.kind, entity.entityId))?.status).toBe(
+        'ACTIVE',
+      );
+      expect(await redis.zcard(STATISTICS_ACCESS_DEMAND_KEYS[0])).toBe(0);
+      await db.$executeRaw`UPDATE statistics_exchange_entities SET binding_id=NULL WHERE grant_id=${grantId}::uuid`;
+      await activeService.exactAccess(grantId, entity.kind, entity.entityId);
+      expect(await activeGrants.refreshRequestedAccess()).toBe(true);
+      expect(attest).toHaveBeenCalledTimes(1);
+      expect((await activeService.exactAccess(grantId, entity.kind, entity.entityId))?.status).toBe(
+        'ACTIVE',
+      );
+      await demand.offer([{ grantId, revision: 1, entityId: entity.entityId, kind: entity.kind }]);
+      await db.$executeRaw`UPDATE statistics_exchange_grants SET revision=revision+1 WHERE id=${grantId}::uuid`;
+      expect(await activeGrants.refreshRequestedAccess()).toBe(true);
+      expect(attest).toHaveBeenCalledTimes(1);
+    } finally {
+      await demand.onModuleDestroy();
+      await redis.del(...STATISTICS_ACCESS_DEMAND_KEYS);
+      redis.disconnect();
+      config.set('STATISTICS_CENTRAL_ENABLED', false);
+      config.set('STATISTICS_CENTRAL_MODE', 'LEGACY');
+    }
+  });
+
   it('keeps a complete roster above100 usable in central mode with current per-platform denial', async () => {
     config.set('STATISTICS_CENTRAL_ENABLED', true);
     config.set('STATISTICS_CENTRAL_MODE', 'CENTRAL');
