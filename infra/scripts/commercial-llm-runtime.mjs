@@ -29,7 +29,7 @@ export const COMMERCIAL_LLM_RUNTIME = Object.freeze({
   alias: 'gemma4-commercial-shadow',
   imageRef:
     'ghcr.io/ggml-org/llama.cpp@sha256:8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40',
-  imageId: 'sha256:433c4af64d0e6218182ca6650fc5c4451afaa8aa0355b1c006f7474f8a1f6a92',
+  imageId: 'sha256:8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40',
   upstreamRevision: 'c7fc5094179bf8a9c73c18593db714f8da41a402',
   upstreamVersion: 'b11804',
   modelSha256: 'a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2',
@@ -211,6 +211,24 @@ export function assertCommercialLlmReceipt(receipt) {
     throw new Error('commercial_llm_receipt_refused');
   }
   return receipt;
+}
+
+// FLAG: Production Docker 29 identifies this image by its OCI manifest, not its config blob.
+export function assertCommercialLlmImage(image) {
+  if (
+    image?.Id !== pin.imageId ||
+    image.Descriptor?.digest !== pin.imageId ||
+    image.Descriptor?.mediaType !== 'application/vnd.oci.image.manifest.v1+json' ||
+    image.Architecture !== 'amd64' ||
+    image.Os !== 'linux' ||
+    !Array.isArray(image.RepoDigests) ||
+    !image.RepoDigests.includes(pin.imageRef) ||
+    image.Config?.Labels?.['org.opencontainers.image.revision'] !== pin.upstreamRevision ||
+    image.Config?.Labels?.['org.opencontainers.image.version'] !== pin.upstreamVersion
+  ) {
+    throw new Error('commercial_llm_image_pin_refused');
+  }
+  return image.Id;
 }
 
 export function assertCommercialLlmContainer(
@@ -771,13 +789,10 @@ async function install(sourceSha) {
     timeoutMs: 900000,
   });
   const image = JSON.parse(run('docker', ['image', 'inspect', pin.imageRef]));
-  if (
-    image.length !== 1 ||
-    image[0]?.Id !== pin.imageId ||
-    image[0]?.Config?.Labels?.['org.opencontainers.image.revision'] !== pin.upstreamRevision
-  ) {
+  if (!Array.isArray(image) || image.length !== 1) {
     throw new Error('commercial_llm_image_pin_refused');
   }
+  assertCommercialLlmImage(image[0]);
   emit('capacity', capacity(false));
   run(
     'docker',

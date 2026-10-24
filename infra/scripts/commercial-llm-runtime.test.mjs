@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import {
   assertCommercialLlmContainer,
+  assertCommercialLlmImage,
   assertCommercialLlmReceipt,
   checkCommercialLlmCapacity,
   COMMERCIAL_LLM_RUNTIME as pin,
@@ -41,6 +42,59 @@ const compose = JSON.parse(
   ),
 );
 const service = compose.services[pin.service];
+
+test('attests the actual Docker 29 manifest identity and rejects its distinct OCI config digest', () => {
+  const image = {
+    Id: 'sha256:8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40',
+    Descriptor: {
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      digest: 'sha256:8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40',
+      size: 1746,
+    },
+    Architecture: 'amd64',
+    Os: 'linux',
+    RepoDigests: [
+      'ghcr.io/ggml-org/llama.cpp@sha256:8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40',
+    ],
+    Config: {
+      Labels: {
+        'org.opencontainers.image.revision': 'c7fc5094179bf8a9c73c18593db714f8da41a402',
+        'org.opencontainers.image.version': 'b11804',
+      },
+    },
+  };
+  assert.equal(assertCommercialLlmImage(image), image.Id);
+  for (const mutate of [
+    (value) => {
+      value.Id = 'sha256:433c4af64d0e6218182ca6650fc5c4451afaa8aa0355b1c006f7474f8a1f6a92';
+    },
+    (value) => {
+      value.Descriptor.digest = `sha256:${'0'.repeat(64)}`;
+    },
+    (value) => {
+      value.Descriptor.mediaType = 'application/vnd.oci.image.index.v1+json';
+    },
+    (value) => {
+      value.Architecture = 'arm64';
+    },
+    (value) => {
+      value.Os = 'windows';
+    },
+    (value) => {
+      value.RepoDigests = [];
+    },
+    (value) => {
+      value.Config.Labels['org.opencontainers.image.revision'] = '0'.repeat(40);
+    },
+    (value) => {
+      value.Config.Labels['org.opencontainers.image.version'] = 'unreviewed';
+    },
+  ]) {
+    const invalid = structuredClone(image);
+    mutate(invalid);
+    assert.throws(() => assertCommercialLlmImage(invalid), /image_pin_refused/u);
+  }
+});
 
 function container() {
   return {
