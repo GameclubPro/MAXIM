@@ -70,7 +70,7 @@ Commands:
                               Continue reviewed recovery with an exact green controller
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
-  commercial-llm install|enable|disable|stop [--apply]
+  commercial-llm install|replace|enable|disable|stop [--apply]
   commercial-llm status|smoke|check-client
                               Inspect the model or run closed transport/client probes
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
@@ -540,9 +540,9 @@ commercial_llm() {
       [[ $# -le 1 ]] || { echo 'Unexpected commercial-llm arguments.' >&2; return 2; }
       remote_exec "$(shell_quote_args bash ./infra/scripts/vps-commercial-llm.sh "$operation")"
       ;;
-    install|stop|enable|disable)
+    install|replace|stop|enable|disable)
       [[ $# -le 2 && ( $# -eq 1 || "${2:-}" == --apply ) ]] || {
-        echo 'Usage: commercial-llm install|enable|disable|stop [--apply]' >&2
+        echo 'Usage: commercial-llm install|replace|enable|disable|stop [--apply]' >&2
         return 2
       }
       target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"

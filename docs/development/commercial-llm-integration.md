@@ -2,7 +2,7 @@
 
 ## Objective and authority
 
-Gemma 4 26B-A4B Q4_K_M supplies a second semantic opinion on Russian commercial
+Qwen3.5-9B Q5_K_M supplies a second semantic opinion on Russian commercial
 advertisements. The initial implementation is **shadow only**: the existing deterministic
 filter and all final delete/access/source/deadline guards remain the enforcement authority.
 An LLM positive cannot create a DELETE, mute, ban or reputation observation. An LLM negative
@@ -37,7 +37,7 @@ count. Repeated scan counts are observations of pages, not counts of unique mess
 
 Admission requires the existing governor to return `run`, at least 12 GiB host `MemAvailable`,
 and a dedicated fail-fast Redis lease/cooldown. There is one client request at a time and at
-most one admission per 30 seconds across overlapping consumers. A 120-second lease contains a
+most one admission per 10 seconds across overlapping consumers. A 120-second lease contains a
 90-second work budget and a 60-second absolute inference deadline. Ownership is checked before
 inference and persistence; loss aborts the request. Shutdown stops admission and aborts HTTP.
 DB statements retain the production timeout; there is no long transaction around inference.
@@ -50,10 +50,10 @@ tools, public port or outbound network access. This phase makes no claims about 
 
 ## Reproducibility and persistence
 
-The runtime image, GGUF and Google chat template are pinned by digest in
-`infra/scripts/commercial-llm-runtime.mjs`. Provisioning verifies exact byte counts and SHA256
+The runtime image, GGUF and embedded chat template are pinned by digest in
+`infra/scripts/commercial-llm-profiles.mjs`. Provisioning verifies exact byte counts and SHA256
 before starting the service. Weights live outside Git, Docker build contexts and API images.
-The bounded independent service is limited to 4 CPU, 24 GiB RAM, one slot and 4,096 context
+The bounded independent service is limited to 6 CPU, 12 GiB RAM, one slot and 4,096 context
 tokens; reasoning is disabled. Its attestation receipt is independent of the three application
 release components. See the operational runbook for the guarded installation commands.
 

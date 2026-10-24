@@ -1,7 +1,7 @@
 # Local commercial-ad model in shadow mode
 
-The optional `gemma-commercial-shadow` service runs the text-only Gemma 4 26B-A4B
-Q4_K_M model alongside MAXIM, Svyazka and Karavan. It supplies observations only.
+The optional `gemma-commercial-shadow` service (a retained internal DNS name) runs the text-only Qwen3.5-9B
+Q5_K_M model alongside MAXIM, Svyazka and Karavan. It supplies observations only.
 The model never owns a MAX token, database, Redis connection, message deletion or
 publication permission. Do not treat successful synthetic JSON as evidence of
 Russian advertisement-classification accuracy.
@@ -10,26 +10,33 @@ Russian advertisement-classification accuracy.
 
 - The official llama.cpp CPU image is pinned by its linux/amd64 manifest digest,
   upstream revision and Docker image ID in
-  `infra/scripts/commercial-llm-runtime.mjs`. The production Compose contract and
+  `infra/scripts/commercial-llm-profiles.mjs`. The production Compose contract and
   focused tests bind the same identity.
   Production Docker 29 uses its containerd image store, where the image ID is
   the pinned OCI manifest digest. The distinct config-blob digest is not a Docker
   image ID on this host. Installation checks the exact descriptor, repository
   digest, platform, upstream revision and version before creating the container.
-- Text weights are exactly 17,074,419,072 bytes, SHA-256
-  `a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2`.
-  The official Google chat template and Apache 2.0 license are independently pinned
-  and checked. The vision projector and draft model are omitted.
-- The runtime has a 4 CPU quota, 4 inference and prompt threads, low CPU shares,
-  24 GiB memory including swap, 128 PIDs, one inference slot and a 4096-token
+- Text weights are exactly 6,577,841,376 bytes, SHA-256
+  `dc2a39aef291f91a9116ad214058da0d86eb648743a124bd8c333787c4b9c91c`, from
+  `unsloth/Qwen3.5-9B-GGUF` revision `3885219b6810b007914f3a7950a8d1b469d598a5`.
+  The receipt's model-manifest digest binds the canonical pinned artifact descriptor
+  (repository, revision, filename, byte count and checksum). The Apache 2.0 license
+  is independently pinned. Vision and draft models are omitted.
+- The GGUF's embedded chat template is used with `--jinja`; its 7,816 bytes must hash
+  to `7f0e529032c25183bcd66c7f238da2d377f43be754a94e2725a58c4e16d2ed67` at `/props`
+  before the installation smoke can succeed. Do not substitute a similar upstream template.
+- The runtime has a 6 CPU quota, 6 inference and prompt threads, low CPU shares,
+  12 GiB memory including swap, 128 PIDs, one inference slot and a 4096-token
   context. Generation is capped at 128 tokens. Thinking, context shifting, tools,
   the web UI and slot inspection are disabled. Oversized prompts must fail as a
-  technical error rather than silently dropping message context.
+  technical error rather than silently dropping message context. The shared Redis
+  lease permits one inference at a time and one admission per 10 seconds; pressure
+  shedding remains mandatory. This is at most 8,640 admissions/day, not a throughput SLA.
 - The service has no host ports. Its only network is the internal
   `infra_commercial_llm_internal` network; only `api-moderation-background` may
   share it. The API role retains its ordinary network separately. The model
   cannot use this internal network for Internet access.
-- Model and template mounts are read-only. The process runs as UID/GID 1000,
+- The single model mount is read-only. The process runs as UID/GID 1000,
   with a read-only root, a 64 MiB temporary directory, dropped capabilities and
   no new privileges. It receives no project env file or secrets.
 - Artifacts and its atomic provenance receipt live under
@@ -94,6 +101,43 @@ moderation behavior. Observe the independently bounded shadow polling, technical
 errors, drop reasons and host impact after deployment. Accuracy acceptance needs
 independent human labels and separate false-positive/false-negative measures.
 
+## Replacing the installed Gemma generation
+
+After exact-SHA CI, synchronize this controller with `deploy main --plan`, then run:
+
+```bash
+./infra/scripts/vps-connect.sh commercial-llm replace
+./infra/scripts/vps-connect.sh commercial-llm replace --apply
+./infra/scripts/vps-connect.sh commercial-llm status
+./infra/scripts/vps-connect.sh deploy main --auto
+./infra/scripts/vps-connect.sh commercial-llm check-client
+```
+
+The replacement is finite: only the previously pinned Gemma generation can become
+this pinned Qwen generation. Its exact old receipt, container, artifacts and
+containment must match. The controller checks capacity and prepares verified new
+artifacts before stopping anything. A checksum-verified evaluation download may be
+copied from its fixed staging path; otherwise the pinned HTTPS download is used.
+
+`qwen35-9b-transition.json` durably records the old receipt and the target identity.
+Only the captured old container is stopped and removed, before creating the new
+one. A successful receipt requires the new generation's readiness, embedded
+template digest and closed synthetic smoke. Old weights, template, license and
+receipt remain available on disk; they consume no running-model resources.
+
+If interrupted, rerun `replace --apply` from the same exact green source. The
+controller reconciles the journal and the positively attested singleton, including
+interruption after removal, creation or receipt writing. A foreign receipt,
+container or changed recorded generation is refused. It never removes another
+container or rewrites transition evidence to force success. The prior controller
+cannot manage a Qwen receipt; reverting the model requires a separately reviewed
+reverse transition, not a raw Compose recreation or receipt edit.
+
+The runtime alias changes to `qwen35-9b-commercial-shadow`. Until the normal API
+release finishes, old clients reject that alias and may record bounded technical
+failures; they cannot misattribute a Qwen result to Gemma. Inference remains shadow
+only throughout. The API deploy preserves the already installed model container.
+
 ## Readback, stopping and rollback
 
 ```bash
@@ -127,7 +171,7 @@ stop that captured unrecorded generation only after complete containment and
 artifact verification, and reports `unrecorded_generation_stopped` without
 creating a successful-install receipt. Both paths recheck the container ID and
 refuse generation replacement; neither removes a different generation to force
-success. Model, template and license hashing each have a two-minute deadline.
+success. Model and license hashing each have a two-minute deadline.
 
 Application rollback stays component-scoped through the normal release wrapper.
 The optional inference service is independent; leaving it stopped does not

@@ -3,8 +3,13 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { commercialLlmCommand } from './commercial-llm-profiles.mjs';
 import {
   assertCommercialLlmContainer,
+  assertCommercialLlmTemplate,
+  assertCommercialLlmTransition,
+  replaceCommercialLlmGeneration,
+  COMMERCIAL_LLM_LEGACY_RUNTIME as legacyPin,
   assertCommercialLlmImage,
   assertCommercialLlmReceipt,
   checkCommercialLlmCapacity,
@@ -150,8 +155,8 @@ test('production inference stays optional, private and limited to its single bac
   assert.equal(service.env_file, undefined);
   assert.equal(service.secrets, undefined);
   assert.equal(service.depends_on, undefined);
-  assert.equal(service.cpus, 4);
-  assert.equal(Number(service.mem_limit), 24 * 1024 ** 3);
+  assert.equal(service.cpus, 6);
+  assert.equal(Number(service.mem_limit), 12 * 1024 ** 3);
   assert.equal(service.memswap_limit, service.mem_limit);
   const peers = Object.entries(compose.services)
     .filter(([, value]) => Object.hasOwn(value.networks ?? {}, 'commercial_llm_internal'))
@@ -343,6 +348,12 @@ test('receipts retain exact model and upstream image provenance', () => {
     licenseSha256: pin.licenseSha256,
     upstreamRevision: pin.upstreamRevision,
     upstreamVersion: pin.upstreamVersion,
+    cpuLimit: pin.cpuLimit,
+    memoryLimitBytes: pin.memoryLimitBytes,
+    contextTokens: 4096,
+    parallelRequests: 1,
+    generationThreads: pin.cpuLimit,
+    reasoning: false,
     smoke: 'closed-synthetic-json-v1',
   };
   assert.equal(assertCommercialLlmReceipt(receipt), receipt);
@@ -384,9 +395,212 @@ function recoveryReceipt() {
     licenseSha256: pin.licenseSha256,
     upstreamRevision: pin.upstreamRevision,
     upstreamVersion: pin.upstreamVersion,
+    cpuLimit: pin.cpuLimit,
+    memoryLimitBytes: pin.memoryLimitBytes,
+    contextTokens: 4096,
+    parallelRequests: 1,
+    generationThreads: pin.cpuLimit,
+    reasoning: false,
     smoke: 'closed-synthetic-json-v1',
   };
 }
+
+function replacementHarness(failure) {
+  let current = container();
+  current.Config.Labels['com.maxim.commercial-llm-model-sha256'] = legacyPin.modelSha256;
+  current.Config.Cmd = commercialLlmCommand(legacyPin);
+  current.HostConfig.NanoCpus = legacyPin.cpuLimit * 1e9;
+  current.HostConfig.Memory = current.HostConfig.MemorySwap = legacyPin.memoryLimitBytes;
+  current.Mounts = [
+    [legacyPin.modelPath, legacyPin.modelContainerPath],
+    [legacyPin.templatePath, '/models/chat_template.jinja'],
+  ].map(([Source, Destination]) => ({ Type: 'bind', Source, Destination, RW: false }));
+  let receipt = {
+    ...recoveryReceipt(),
+    ...Object.fromEntries(
+      [
+        'modelSha256',
+        'modelBytes',
+        'modelManifestSha256',
+        'templateSha256',
+        'licenseSha256',
+        'cpuLimit',
+        'memoryLimitBytes',
+      ].map((key) => [key, legacyPin[key]]),
+    ),
+    generationThreads: legacyPin.cpuLimit,
+  };
+  let transition;
+  let failed = false;
+  const calls = [];
+  const fail = (point) => {
+    if (point === failure && !failed) {
+      failed = true;
+      throw new Error(`interrupted_${point}`);
+    }
+  };
+  const io = {
+    inspect: () => structuredClone(current),
+    prepare: () => {
+      calls.push('prepare');
+      fail('prepare');
+    },
+    stop: (id) => {
+      assert.equal(id, 'a'.repeat(64));
+      calls.push('stop_old');
+      current.State.Running = false;
+      fail('stop');
+    },
+    remove: (id) => {
+      assert.equal(id, 'a'.repeat(64));
+      assert.equal(current.State.Running, false);
+      calls.push('remove_old');
+      current = null;
+      fail('remove');
+    },
+    create: () => {
+      assert.equal(current, null);
+      calls.push('create_target');
+      current = container();
+      current.Id = 'b'.repeat(64);
+      fail('create');
+    },
+    start: (id) => {
+      assert.equal(id, current.Id);
+      current.State.Running = true;
+    },
+    waitReady: (id) => {
+      assert.equal(id, current.Id);
+    },
+    smoke: (id) => {
+      assert.equal(id, current.Id);
+      fail('smoke');
+      calls.push('smoke_target');
+      return structuredClone(current);
+    },
+    record: (value) => {
+      calls.push('receipt');
+      receipt = structuredClone(value);
+      fail('receipt');
+    },
+    recordTransition: (value) => {
+      calls.push(`journal_${value.phase}`);
+      transition = structuredClone(value);
+      fail(value.phase);
+    },
+  };
+  return {
+    io,
+    calls,
+    run: () =>
+      replaceCommercialLlmGeneration({ sourceSha: 'f'.repeat(40), receipt, transition, io }),
+    get receipt() {
+      return receipt;
+    },
+    get transition() {
+      return transition;
+    },
+    get current() {
+      return current;
+    },
+  };
+}
+
+test('replacement journals the exact old receipt, stops it before target creation and attests before success', async () => {
+  const h = replacementHarness();
+  assert.equal((await h.run()).result, 'replaced');
+  assert.deepEqual(h.calls, [
+    'prepare',
+    'journal_prepared',
+    'stop_old',
+    'remove_old',
+    'create_target',
+    'journal_started',
+    'smoke_target',
+    'receipt',
+    'journal_complete',
+  ]);
+  assert.equal(h.receipt.modelSha256, pin.modelSha256);
+  assert.equal(h.transition.previousReceipt.modelSha256, legacyPin.modelSha256);
+  assert.equal(h.transition.targetContainerId, h.receipt.containerId);
+  assert.equal((await h.run()).result, 'already_replaced');
+  assert.equal(h.calls.filter((x) => x === 'create_target').length, 1);
+});
+
+for (const boundary of [
+  'prepare',
+  'prepared',
+  'stop',
+  'remove',
+  'create',
+  'started',
+  'smoke',
+  'receipt',
+  'complete',
+]) {
+  test(`interruption after ${boundary} resumes the captured transition without duplicate containers`, async () => {
+    const h = replacementHarness(boundary);
+    await assert.rejects(h.run(), /interrupted_/u);
+    if (['prepare', 'prepared'].includes(boundary)) assert.equal(h.current.State.Running, true);
+    if (boundary === 'smoke') assert.equal(h.receipt.modelSha256, legacyPin.modelSha256);
+    await h.run();
+    assert.equal(h.transition.phase, 'complete');
+    assert.equal(h.current.Id, h.receipt.containerId);
+    assert.equal(h.calls.filter((x) => x === 'remove_old').length, 1);
+    assert.equal(h.calls.filter((x) => x === 'create_target').length, 1);
+  });
+}
+
+test('replacement refuses foreign receipts, generations, containment and prepared-state drift', async () => {
+  for (const mutate of [
+    (h) => {
+      h.receipt.containerId = 'e'.repeat(64);
+    },
+    (h) => {
+      h.receipt.modelSha256 = '0'.repeat(64);
+    },
+    (h) => {
+      h.current.HostConfig.PortBindings = { '8080/tcp': [] };
+    },
+    (h) => {
+      h.current.HostConfig.NanoCpus = 8e9;
+    },
+    (h) => {
+      h.io.prepare = () => {
+        h.current.Id = 'e'.repeat(64);
+      };
+    },
+  ]) {
+    const h = replacementHarness();
+    mutate(h);
+    await assert.rejects(h.run());
+    assert.equal(h.calls.includes('stop_old'), false);
+    assert.equal(h.calls.includes('create_target'), false);
+  }
+  const h = replacementHarness('smoke');
+  await assert.rejects(h.run(), /interrupted_smoke/u);
+  h.current.Id = 'c'.repeat(64);
+  await assert.rejects(h.run(), /generation_changed/u);
+  assert.equal(h.receipt.modelSha256, legacyPin.modelSha256);
+  assert.throws(
+    () => assertCommercialLlmTransition(h.transition, 'e'.repeat(40)),
+    /transition_refused/u,
+  );
+});
+
+test('embedded template and application model provenance cannot silently drift', () => {
+  for (const props of [{}, { chat_template: 'different' }, { chat_template: null }])
+    assert.throws(() => assertCommercialLlmTemplate(props), /template_identity_refused/u);
+  const protocol = readFileSync(
+    resolve(root, 'apps/api/src/moderation/commercial/commercial-llm.protocol.ts'),
+    'utf8',
+  );
+  for (const value of [pin.alias, pin.modelSha256, pin.templateSha256])
+    assert.ok(protocol.includes(value));
+  assert.equal(service.command.includes('--chat-template-file'), false);
+  assert.equal(service.command.includes('--jinja'), true);
+  assert.equal(service.volumes.length, 1);
+});
 
 function recoveryIo({
   running = true,

@@ -4,6 +4,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  copyFileSync,
   createReadStream,
   existsSync,
   lstatSync,
@@ -21,83 +22,15 @@ import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readCurrentManifest, validateCompleteReleaseManifest } from './release-manifest.mjs';
 
-const stateDir = '/var/lib/maxim-deploy/commercial-llm';
-const modelDir = `${stateDir}/models`;
-export const COMMERCIAL_LLM_RUNTIME = Object.freeze({
-  schemaVersion: 1,
-  service: 'gemma-commercial-shadow',
-  alias: 'gemma4-commercial-shadow',
-  imageRef:
-    'ghcr.io/ggml-org/llama.cpp@sha256:8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40',
-  imageId: 'sha256:8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40',
-  upstreamRevision: 'c7fc5094179bf8a9c73c18593db714f8da41a402',
-  upstreamVersion: 'b11804',
-  modelSha256: 'a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2',
-  modelBytes: 17074419072,
-  modelManifestSha256: '001e5dafc3c77684c2307ebc6ab8e336e10c9b18eca52acf547d72fc83c3ca8c',
-  smokePromptSha256: '2576c4c69ea8cff5ec852e2a28ac9648e10a1be114faffa7499abaaab8450d1f',
-  templateSha256: 'ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4',
-  templateBytes: 18683,
-  licenseSha256: 'a66d4e37329585c918619de71e426057186cb725fbe572e7f28e498077798d52',
-  licenseBytes: 11358,
-  stateDir,
-  modelDir,
-  receiptPath: `${stateDir}/current.json`,
-  modelPath: `${modelDir}/a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2.gguf`,
-  templatePath: `${modelDir}/chat_template.jinja`,
-  licensePath: `${modelDir}/LICENSE`,
-  cpuLimit: 4,
-  memoryLimitBytes: 24 * 1024 ** 3,
-  pidLimit: 128,
-  diskReserveBytes: 10 * 1024 ** 3,
-  downloadReserveBytes: 2 * 1024 ** 3,
-  minimumAvailableMemoryBytes: 32 * 1024 ** 3,
-  downloadRateBytes: 16 * 1024 ** 2,
-  downloadDeadlineSeconds: 3600,
-});
+import {
+  COMMERCIAL_LLM_RUNTIME,
+  COMMERCIAL_LLM_LEGACY_RUNTIME,
+  COMMERCIAL_LLM_COMMAND,
+  commercialLlmCommand,
+} from './commercial-llm-profiles.mjs';
+export { COMMERCIAL_LLM_RUNTIME, COMMERCIAL_LLM_LEGACY_RUNTIME, COMMERCIAL_LLM_COMMAND };
 const pin = COMMERCIAL_LLM_RUNTIME;
-export const COMMERCIAL_LLM_COMMAND = Object.freeze([
-  '--model',
-  '/models/gemma4.gguf',
-  '--alias',
-  pin.alias,
-  '--host',
-  '0.0.0.0',
-  '--port',
-  '8080',
-  '--ctx-size',
-  '4096',
-  '--parallel',
-  '1',
-  '--threads',
-  '4',
-  '--threads-batch',
-  '4',
-  '--threads-http',
-  '2',
-  '--n-gpu-layers',
-  '0',
-  '--n-predict',
-  '128',
-  '--batch-size',
-  '128',
-  '--ubatch-size',
-  '128',
-  '--cache-ram',
-  '0',
-  '--chat-template-file',
-  '/models/chat_template.jinja',
-  '--chat-template-kwargs',
-  '{"enable_thinking":false}',
-  '--reasoning',
-  'off',
-  '--reasoning-budget',
-  '0',
-  '--no-webui',
-  '--no-slots',
-  '--no-agent',
-  '--no-context-shift',
-]);
+const { stateDir, modelDir } = pin;
 const composeArgs = [
   'compose',
   '--env-file',
@@ -190,22 +123,28 @@ export function patchCommercialLlmEnvironment(source, enabled) {
   return `${source}${source.endsWith('\n') || source.length === 0 ? '' : '\n'}${line}\n`;
 }
 
-export function assertCommercialLlmReceipt(receipt) {
+export function assertCommercialLlmReceipt(receipt, profile = COMMERCIAL_LLM_RUNTIME) {
   if (
     receipt?.schemaVersion !== 1 ||
     !safeSha.test(receipt.sourceSha ?? '') ||
     !Number.isFinite(Date.parse(receipt.installedAt ?? '')) ||
     !/^[0-9a-f]{64}$/u.test(receipt.containerId ?? '') ||
     !['installed', 'stopped'].includes(receipt.state) ||
-    receipt.imageRef !== pin.imageRef ||
-    receipt.imageId !== pin.imageId ||
-    receipt.modelSha256 !== pin.modelSha256 ||
-    receipt.modelBytes !== pin.modelBytes ||
-    receipt.modelManifestSha256 !== pin.modelManifestSha256 ||
-    receipt.templateSha256 !== pin.templateSha256 ||
-    receipt.licenseSha256 !== pin.licenseSha256 ||
-    receipt.upstreamRevision !== pin.upstreamRevision ||
-    receipt.upstreamVersion !== pin.upstreamVersion ||
+    receipt.imageRef !== profile.imageRef ||
+    receipt.imageId !== profile.imageId ||
+    receipt.modelSha256 !== profile.modelSha256 ||
+    receipt.modelBytes !== profile.modelBytes ||
+    receipt.modelManifestSha256 !== profile.modelManifestSha256 ||
+    receipt.templateSha256 !== profile.templateSha256 ||
+    receipt.licenseSha256 !== profile.licenseSha256 ||
+    receipt.upstreamRevision !== profile.upstreamRevision ||
+    receipt.upstreamVersion !== profile.upstreamVersion ||
+    receipt.cpuLimit !== profile.cpuLimit ||
+    receipt.memoryLimitBytes !== profile.memoryLimitBytes ||
+    receipt.contextTokens !== 4096 ||
+    receipt.parallelRequests !== 1 ||
+    receipt.generationThreads !== profile.cpuLimit ||
+    receipt.reasoning !== false ||
     receipt.smoke !== 'closed-synthetic-json-v1'
   ) {
     throw new Error('commercial_llm_receipt_refused');
@@ -233,7 +172,7 @@ export function assertCommercialLlmImage(image) {
 
 export function assertCommercialLlmContainer(
   container,
-  { requireHealthy = true, requireRunning = true } = {},
+  { requireHealthy = true, requireRunning = true, profile = COMMERCIAL_LLM_RUNTIME } = {},
 ) {
   const config = container?.Config;
   const host = container?.HostConfig;
@@ -261,10 +200,12 @@ export function assertCommercialLlmContainer(
     tmpfsOptions.get('gid') === '1000';
   const mountsExact =
     Array.isArray(mounts) &&
-    mounts.length === 2 &&
+    mounts.length === (profile.templateMode === 'file' ? 2 : 1) &&
     [
-      [pin.modelPath, '/models/gemma4.gguf'],
-      [pin.templatePath, '/models/chat_template.jinja'],
+      [profile.modelPath, profile.modelContainerPath],
+      ...(profile.templateMode === 'file'
+        ? [[profile.templatePath, '/models/chat_template.jinja']]
+        : []),
     ].every(([source, target]) =>
       mounts.some(
         (mount) =>
@@ -277,8 +218,8 @@ export function assertCommercialLlmContainer(
   // FLAG: The model is an isolated shadow auxiliary, never an API identity or a store client.
   if (
     !/^[0-9a-f]{64}$/u.test(container?.Id ?? '') ||
-    container.Image !== pin.imageId ||
-    config?.Image !== pin.imageRef ||
+    container.Image !== profile.imageId ||
+    config?.Image !== profile.imageRef ||
     config?.User !== '1000:1000' ||
     JSON.stringify(config?.Entrypoint) !== '["/app/llama-server"]' ||
     JSON.stringify([...(config?.Env ?? [])].sort()) !==
@@ -290,18 +231,18 @@ export function assertCommercialLlmContainer(
         ].sort(),
       ) ||
     labels?.['com.docker.compose.project'] !== 'infra' ||
-    labels?.['com.docker.compose.service'] !== pin.service ||
+    labels?.['com.docker.compose.service'] !== profile.service ||
     labels?.['com.maxim.commercial-llm-shadow'] !== 'true' ||
-    labels?.['com.maxim.commercial-llm-model-sha256'] !== pin.modelSha256 ||
+    labels?.['com.maxim.commercial-llm-model-sha256'] !== profile.modelSha256 ||
     (requireRunning && container.State?.Running !== true) ||
     (requireHealthy && container.State?.Health?.Status !== 'healthy') ||
     host?.ReadonlyRootfs !== true ||
     host?.Init !== true ||
-    host?.NanoCpus !== 4e9 ||
+    host?.NanoCpus !== profile.cpuLimit * 1e9 ||
     host?.CpuShares !== 128 ||
-    host?.Memory !== pin.memoryLimitBytes ||
-    host?.MemorySwap !== pin.memoryLimitBytes ||
-    host?.PidsLimit !== pin.pidLimit ||
+    host?.Memory !== profile.memoryLimitBytes ||
+    host?.MemorySwap !== profile.memoryLimitBytes ||
+    host?.PidsLimit !== profile.pidLimit ||
     JSON.stringify(host?.CapDrop) !== '["ALL"]' ||
     !host?.SecurityOpt?.includes('no-new-privileges:true') ||
     !tmpfsValid ||
@@ -310,7 +251,7 @@ export function assertCommercialLlmContainer(
     networks.length !== 1 ||
     networks[0] !== 'infra_commercial_llm_internal' ||
     !mountsExact ||
-    JSON.stringify(command) !== JSON.stringify(COMMERCIAL_LLM_COMMAND)
+    JSON.stringify(command) !== JSON.stringify(commercialLlmCommand(profile))
   ) {
     throw new Error('commercial_llm_runtime_attestation_refused');
   }
@@ -366,13 +307,13 @@ function capacity(needsDownload) {
   });
 }
 
-function inspectContainer({ requireHealthy = true, requireRunning = true } = {}) {
+function inspectContainer({ requireHealthy = true, requireRunning = true, profile = pin } = {}) {
   const ids = run('docker', [...composeArgs, 'ps', '-a', '-q', pin.service]);
   if (!/^[0-9a-f]{64}$/u.test(ids)) throw new Error('commercial_llm_singleton_required');
   const rows = JSON.parse(run('docker', ['inspect', ids]));
   if (!Array.isArray(rows) || rows.length !== 1)
     throw new Error('commercial_llm_singleton_required');
-  assertCommercialLlmContainer(rows[0], { requireHealthy, requireRunning });
+  assertCommercialLlmContainer(rows[0], { requireHealthy, requireRunning, profile });
   const network = JSON.parse(
     run('docker', ['network', 'inspect', 'infra_commercial_llm_internal']),
   );
@@ -588,6 +529,26 @@ function smoke(expectedContainerId) {
   if (expectedContainerId && container.Id !== expectedContainerId) {
     throw new Error('commercial_llm_generation_changed');
   }
+  assertCommercialLlmTemplate(
+    JSON.parse(
+      run(
+        'docker',
+        [
+          'exec',
+          container.Id,
+          'curl',
+          '--fail',
+          '--silent',
+          '--max-time',
+          '5',
+          '--max-filesize',
+          '65536',
+          'http://127.0.0.1:8080/props',
+        ],
+        { maxBuffer: 65536 },
+      ),
+    ),
+  );
   const response = run(
     'docker',
     [
@@ -736,7 +697,7 @@ function buildReceipt(sourceSha, containerId) {
     memoryLimitBytes: pin.memoryLimitBytes,
     contextTokens: 4096,
     parallelRequests: 1,
-    generationThreads: 4,
+    generationThreads: pin.cpuLimit,
     reasoning: false,
     smoke: 'closed-synthetic-json-v1',
   };
@@ -761,29 +722,7 @@ async function install(sourceSha) {
     readReceipt();
     throw new Error('commercial_llm_recorded_generation_missing');
   }
-  emit('capacity', capacity(!existsSync(pin.modelPath)));
-  await downloadArtifact({
-    path: pin.modelPath,
-    sha256: pin.modelSha256,
-    bytes: pin.modelBytes,
-    stage: 'model_download',
-    url: `https://registry.ollama.ai/v2/library/gemma4/blobs/sha256:${pin.modelSha256}`,
-  });
-  await downloadArtifact({
-    path: pin.templatePath,
-    sha256: pin.templateSha256,
-    bytes: pin.templateBytes,
-    stage: 'template_download',
-    url: 'https://huggingface.co/google/gemma-4-26B-A4B-it/raw/4d7ae4984b7db7de8f8457170b3f1a419ee76d52/chat_template.jinja',
-  });
-  await downloadArtifact({
-    path: pin.licensePath,
-    sha256: pin.licenseSha256,
-    bytes: pin.licenseBytes,
-    stage: 'license_download',
-    url: `https://registry.ollama.ai/v2/library/gemma4/blobs/sha256:${pin.licenseSha256}`,
-  });
-  emit('capacity', capacity(false));
+  await prepareTargetArtifacts();
   await longCommand('docker', ['pull', '--platform', 'linux/amd64', pin.imageRef], {
     stage: 'image_pull',
     timeoutMs: 900000,
@@ -831,10 +770,50 @@ async function waitUntilReady(expectedContainerId) {
   throw new Error('commercial_llm_readiness_deadline');
 }
 
-async function verifyPinnedArtifacts() {
-  await checksum(pin.modelPath, pin.modelSha256, pin.modelBytes);
-  await checksum(pin.templatePath, pin.templateSha256, pin.templateBytes);
-  await checksum(pin.licensePath, pin.licenseSha256, pin.licenseBytes);
+async function verifyPinnedArtifacts(profile = pin) {
+  await checksum(profile.modelPath, profile.modelSha256, profile.modelBytes);
+  if (profile.templateMode === 'file')
+    await checksum(profile.templatePath, profile.templateSha256, profile.templateBytes);
+  await checksum(profile.licensePath, profile.licenseSha256, profile.licenseBytes);
+}
+
+async function prepareTargetArtifacts() {
+  emit('capacity', capacity(!existsSync(pin.modelPath)));
+  if (!existsSync(pin.modelPath) && existsSync(pin.cachedModelPath)) {
+    await checksum(pin.cachedModelPath, pin.modelSha256, pin.modelBytes);
+    const partial = `${pin.modelPath}.partial`;
+    if (!existsSync(partial)) {
+      copyFileSync(pin.cachedModelPath, partial);
+      chmodSync(partial, 0o444);
+    }
+  }
+  await downloadArtifact({
+    path: pin.modelPath,
+    sha256: pin.modelSha256,
+    bytes: pin.modelBytes,
+    stage: 'model_download',
+    url: pin.modelUrl,
+  });
+  await downloadArtifact({
+    path: pin.licensePath,
+    sha256: pin.licenseSha256,
+    bytes: pin.licenseBytes,
+    stage: 'license_download',
+    url: pin.licenseUrl,
+  });
+  await verifyPinnedArtifacts();
+  emit('capacity', capacity(false));
+}
+
+export function assertCommercialLlmTemplate(props) {
+  const template = props?.chat_template;
+  if (
+    typeof template !== 'string' ||
+    Buffer.byteLength(template) !== pin.templateBytes ||
+    createHash('sha256').update(template).digest('hex') !== pin.templateSha256
+  ) {
+    throw new Error('commercial_llm_template_identity_refused');
+  }
 }
 
 // FLAG: Recovery may adopt only a positively attested generation with all pinned artifacts.
@@ -910,6 +889,197 @@ const runtimeIo = {
   emit,
 };
 
+export function assertCommercialLlmTransition(value, sourceSha) {
+  if (
+    value?.schemaVersion !== 1 ||
+    value.kind !== 'gemma4-to-qwen35-9b-v1' ||
+    value.sourceSha !== sourceSha ||
+    !safeSha.test(sourceSha ?? '') ||
+    value.targetModelSha256 !== pin.modelSha256 ||
+    !['prepared', 'started', 'complete'].includes(value.phase) ||
+    !Number.isFinite(Date.parse(value.startedAt ?? '')) ||
+    (value.targetContainerId !== null && !/^[0-9a-f]{64}$/u.test(value.targetContainerId ?? '')) ||
+    (value.phase !== 'prepared' && value.targetContainerId === null)
+  )
+    throw new Error('commercial_llm_transition_refused');
+  assertCommercialLlmReceipt(value.previousReceipt, COMMERCIAL_LLM_LEGACY_RUNTIME);
+  return value;
+}
+
+// FLAG: Replacement stops only the captured, fully attested old generation before creating one
+// target. The durable journal keeps its receipt; interruption never licenses an unrelated removal.
+export async function replaceCommercialLlmGeneration({ sourceSha, receipt, transition, io }) {
+  if (!safeSha.test(sourceSha ?? '')) throw new Error('commercial_llm_exact_source_required');
+  let journal = transition;
+  if (journal !== undefined) assertCommercialLlmTransition(journal, sourceSha);
+  else assertCommercialLlmReceipt(receipt, COMMERCIAL_LLM_LEGACY_RUNTIME);
+
+  const previous = journal?.previousReceipt ?? receipt;
+  const currentIsTarget = receipt?.modelSha256 === pin.modelSha256;
+  assertCommercialLlmReceipt(receipt, currentIsTarget ? pin : COMMERCIAL_LLM_LEGACY_RUNTIME);
+  if (!currentIsTarget && JSON.stringify(receipt) !== JSON.stringify(previous))
+    throw new Error('commercial_llm_transition_receipt_drift');
+  if (currentIsTarget && (!journal || journal.targetContainerId !== receipt.containerId))
+    throw new Error('commercial_llm_transition_receipt_drift');
+
+  const attest = (container) => {
+    if (!container) return null;
+    const legacy =
+      container.Config?.Labels?.['com.maxim.commercial-llm-model-sha256'] ===
+      COMMERCIAL_LLM_LEGACY_RUNTIME.modelSha256;
+    assertCommercialLlmContainer(container, {
+      profile: legacy ? COMMERCIAL_LLM_LEGACY_RUNTIME : pin,
+      requireHealthy: false,
+      requireRunning: false,
+    });
+    if (
+      legacy &&
+      (container.Id !== previous.containerId || journal?.targetContainerId || currentIsTarget)
+    )
+      throw new Error('commercial_llm_generation_changed');
+    if (
+      !legacy &&
+      (!journal || (journal.targetContainerId && container.Id !== journal.targetContainerId))
+    )
+      throw new Error('commercial_llm_generation_changed');
+    return legacy ? 'legacy' : 'target';
+  };
+  let observed = await io.inspect();
+  let kind = attest(observed);
+  if (!journal && kind !== 'legacy') throw new Error('commercial_llm_recorded_generation_missing');
+  if (journal?.targetContainerId && kind !== 'target')
+    throw new Error('commercial_llm_recorded_generation_missing');
+  if (journal?.phase === 'complete') {
+    if (!currentIsTarget || receipt.state !== 'installed')
+      throw new Error('commercial_llm_transition_receipt_drift');
+    assertCommercialLlmContainer(observed);
+    return { result: 'already_replaced', containerId: observed.Id };
+  }
+  await io.prepare();
+  if (!journal) {
+    journal = {
+      schemaVersion: 1,
+      kind: 'gemma4-to-qwen35-9b-v1',
+      sourceSha,
+      targetModelSha256: pin.modelSha256,
+      phase: 'prepared',
+      startedAt: new Date().toISOString(),
+      previousReceipt: previous,
+      targetContainerId: null,
+    };
+    await io.recordTransition(journal);
+  }
+  const capturedId = observed?.Id;
+  observed = await io.inspect();
+  kind = attest(observed);
+  if (observed?.Id !== capturedId) throw new Error('commercial_llm_generation_changed');
+  if (kind === 'legacy') {
+    await io.stop(observed.Id);
+    observed = await io.inspect();
+    if (attest(observed) !== 'legacy' || observed.State?.Running !== false)
+      throw new Error('commercial_llm_stop_readback_refused');
+    await io.remove(observed.Id);
+    observed = await io.inspect();
+    if (observed) throw new Error('commercial_llm_generation_changed');
+  }
+  if (!observed) {
+    await io.create();
+    observed = await io.inspect();
+    if (attest(observed) !== 'target') throw new Error('commercial_llm_target_missing');
+  }
+  if (!journal.targetContainerId) {
+    journal = { ...journal, phase: 'started', targetContainerId: observed.Id };
+    await io.recordTransition(journal);
+  }
+  const targetId = journal.targetContainerId;
+  observed = await io.inspect();
+  if (attest(observed) !== 'target') throw new Error('commercial_llm_target_missing');
+  if (!observed.State.Running) await io.start(targetId);
+  await io.waitReady(targetId);
+  const smoked = await io.smoke(targetId);
+  if (smoked?.Id !== targetId) throw new Error('commercial_llm_generation_changed');
+  observed = await io.inspect();
+  if (attest(observed) !== 'target') throw new Error('commercial_llm_target_missing');
+  assertCommercialLlmContainer(observed);
+  const nextReceipt = currentIsTarget ? receipt : buildReceipt(sourceSha, targetId);
+  await io.record(nextReceipt);
+  await io.recordTransition({
+    ...journal,
+    phase: 'complete',
+    completedAt: new Date().toISOString(),
+  });
+  return { result: 'replaced', containerId: targetId, retainedPreviousArtifacts: true };
+}
+
+async function replace(sourceSha) {
+  ensureDirectory(stateDir);
+  ensureDirectory(modelDir);
+  assertSafeFile(pin.receiptPath, { maximumBytes: 16384 });
+  const receipt = JSON.parse(readFileSync(pin.receiptPath, 'utf8'));
+  let transition;
+  if (lstatSync(pin.transitionPath, { throwIfNoEntry: false }) !== undefined) {
+    assertSafeFile(pin.transitionPath, { maximumBytes: 32768 });
+    transition = JSON.parse(readFileSync(pin.transitionPath, 'utf8'));
+  }
+  const outcome = await replaceCommercialLlmGeneration({
+    sourceSha,
+    receipt,
+    transition,
+    io: {
+      ...runtimeIo,
+      inspect: () => {
+        const ids = run('docker', [...composeArgs, 'ps', '-a', '-q', pin.service]);
+        if (!ids) return null;
+        if (!/^[0-9a-f]{64}$/u.test(ids)) throw new Error('commercial_llm_singleton_required');
+        const rows = JSON.parse(run('docker', ['inspect', ids]));
+        if (rows.length !== 1) throw new Error('commercial_llm_singleton_required');
+        const profile =
+          rows[0].Config?.Labels?.['com.maxim.commercial-llm-model-sha256'] ===
+          COMMERCIAL_LLM_LEGACY_RUNTIME.modelSha256
+            ? COMMERCIAL_LLM_LEGACY_RUNTIME
+            : pin;
+        const verified = inspectContainer({
+          requireHealthy: false,
+          requireRunning: false,
+          profile,
+        });
+        if (verified.Id !== ids) throw new Error('commercial_llm_generation_changed');
+        return verified;
+      },
+      prepare: async () => {
+        await verifyPinnedArtifacts(COMMERCIAL_LLM_LEGACY_RUNTIME);
+        await prepareTargetArtifacts();
+        const images = JSON.parse(run('docker', ['image', 'inspect', pin.imageRef]));
+        if (images.length !== 1) throw new Error('commercial_llm_image_pin_refused');
+        assertCommercialLlmImage(images[0]);
+      },
+      remove: (id) => run('docker', ['rm', id]),
+      create: () =>
+        run(
+          'docker',
+          [
+            ...composeArgs,
+            '--profile',
+            'commercial-llm',
+            'up',
+            '-d',
+            '--no-deps',
+            '--no-build',
+            '--pull',
+            'never',
+            pin.service,
+          ],
+          { timeout: 60000 },
+        ),
+      recordTransition: (value) => {
+        assertCommercialLlmTransition(value, sourceSha);
+        atomicWrite(pin.transitionPath, `${JSON.stringify(value, null, 2)}\n`);
+      },
+    },
+  });
+  emit('replace', outcome);
+}
+
 function status() {
   if (!receiptPresent()) {
     const existing = run('docker', [...composeArgs, 'ps', '-a', '-q', pin.service]);
@@ -939,15 +1109,22 @@ function status() {
 async function cli(argv) {
   const [operation = 'status', ...args] = argv;
   if (
-    !['install', 'status', 'stop', 'enable', 'disable', 'smoke', 'check-client'].includes(
-      operation,
-    ) ||
+    ![
+      'install',
+      'replace',
+      'status',
+      'stop',
+      'enable',
+      'disable',
+      'smoke',
+      'check-client',
+    ].includes(operation) ||
     args.some((arg) => arg !== '--apply') ||
     args.length > 1 ||
     (['status', 'smoke', 'check-client'].includes(operation) && args.length)
   ) {
     throw new Error(
-      'Usage: commercial-llm install|enable|disable|stop [--apply] | status | smoke | check-client',
+      'Usage: commercial-llm install|replace|enable|disable|stop [--apply] | status | smoke | check-client',
     );
   }
   if (operation === 'status') return status();
@@ -968,6 +1145,7 @@ async function cli(argv) {
     return;
   }
   if (operation === 'install') return install(sourceSha);
+  if (operation === 'replace') return replace(sourceSha);
   if (operation === 'enable' || operation === 'disable') {
     if (operation === 'enable') {
       const receipt = readReceipt();
