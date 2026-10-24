@@ -1,6 +1,7 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { useInfiniteQuery, useMutation } from '@tanstack/react-query';
 import type { PublicationSummary } from '@maxim/contracts/publication';
-import { Copy, Refresh, Trash, Xmark } from 'iconoir-react';
+
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ActionConfirmSheet } from '../../components/ui/action-confirm-sheet';
@@ -104,7 +105,7 @@ export function PublicationDraftsSheet({
               onClick={onClose}
               aria-label="Закрыть"
             >
-              <Xmark aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
             </button>
           </header>
           <div className="publication-drafts-sheet__body" aria-busy={drafts.isFetching || blocked}>
@@ -113,7 +114,7 @@ export function PublicationDraftsSheet({
               <p role="alert">
                 Не удалось загрузить черновики.{' '}
                 <button type="button" onClick={() => void drafts.refetch()}>
-                  <Refresh aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
                   Повторить
                 </button>
               </p>
@@ -154,7 +155,7 @@ export function PublicationDraftsSheet({
                   aria-label="Создать копию черновика"
                   onClick={() => onOpen(draft.id, true)}
                 >
-                  <Copy aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Copy" aria-hidden />
                 </button>
                 <button
                   type="button"
@@ -166,7 +167,7 @@ export function PublicationDraftsSheet({
                     setDeleting(draft);
                   }}
                 >
-                  <Trash aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
                 </button>
               </article>
             ))}

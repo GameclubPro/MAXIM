@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import { useEffect, useState } from 'react';
-import { Check, Xmark } from 'iconoir-react';
+
 import type {
   UpdateVkParsingSettingsRequest,
   VkParsingSettings,
@@ -110,7 +111,7 @@ export function VkTimeRange({
               setDraft({ start: '', end: '' });
             }}
           >
-            <Xmark aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           </button>
         ) : null}
         {dirty ? (
@@ -121,7 +122,7 @@ export function VkTimeRange({
             title="Сохранить время"
             onClick={() => void save()}
           >
-            <Check aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Check" aria-hidden />
             <span>{saving ? 'Сохраняю' : 'Сохранить'}</span>
           </button>
         ) : null}

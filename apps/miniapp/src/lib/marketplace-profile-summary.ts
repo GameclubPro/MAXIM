@@ -3,6 +3,13 @@ import type { MarketplaceProfileState } from '@maxim/contracts/marketplace-integ
 export function marketplaceQueryKey(profile: string, entityType: string, entityId: string) {
   return ['marketplace-profile', profile, entityType, entityId];
 }
+export function marketplaceProfileAvailable(state: MarketplaceProfileState): boolean {
+  if (state.statistics?.state === 'DISABLED') return false;
+  return (
+    state.binding.statisticsConsent ||
+    (state.capabilities !== undefined && state.statistics !== undefined)
+  );
+}
 export function marketplaceProfileTitle(state: MarketplaceProfileState, fresh = true) {
   const active = fresh && state.binding.state === 'ACTIVE';
   const publicState =
@@ -14,7 +21,7 @@ export function marketplaceProfileTitle(state: MarketplaceProfileState, fresh = 
         : 'DRAFT');
   const publicNow =
     active &&
-    state.binding.statisticsConsent &&
+    marketplaceProfileAvailable(state) &&
     publicState === 'PUBLIC' &&
     !!state.listing?.publicUrl;
   return !state.listing
@@ -25,7 +32,7 @@ export function marketplaceProfileTitle(state: MarketplaceProfileState, fresh = 
         ? 'Проверяем ваши права…'
         : !active
           ? 'Профиль пока недоступен'
-          : !state.binding.statisticsConsent
+          : !marketplaceProfileAvailable(state)
             ? 'Профиль пока недоступен'
             : publicState === 'REVIEW'
               ? 'Профиль на проверке биржи'

@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import type {
   ChatParticipantDetails,
   ChatParticipantImmunityUpdateRequest,
@@ -6,7 +7,7 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef, useState, type ComponentProps } from 'react';
-import { NavArrowLeft } from 'iconoir-react';
+
 import { getChatParticipantDetails } from '../../lib/api/participant-details-client';
 import { updateChatParticipantImmunity } from '../../lib/api/events-client';
 import { getChatSanctions } from '../../lib/api/chat-sanctions-client';
@@ -141,7 +142,7 @@ export function ChatParticipantCard({
             aria-label="К участнику"
             onClick={() => setSanctionsOpen(false)}
           >
-            <NavArrowLeft aria-hidden />
+            <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
           </button>
         }
       >

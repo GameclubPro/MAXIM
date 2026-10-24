@@ -1,10 +1,11 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import type {
   PublicationDelivery,
   PublicationPostActionCommand,
   PublicationPostActionRequest,
 } from '@maxim/contracts/publication';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Timer, Pin, Trash, Xmark } from 'iconoir-react';
+
 import { useState } from 'react';
 import { ActionConfirmSheet } from '../../components/ui/action-confirm-sheet';
 import { useToast } from '../../components/ui/toast';
@@ -24,11 +25,11 @@ const LABELS: Record<PublicationPostActionCommand, string> = {
   retry_pin: 'Повторить закрепление',
 };
 const ICONS = {
-  cancel_delete: Xmark,
-  reschedule_delete: Timer,
-  retry_delete: Trash,
-  retry_pin: Pin,
-};
+  cancel_delete: 'Xmark',
+  reschedule_delete: 'Timer',
+  retry_delete: 'Trash',
+  retry_pin: 'Pin',
+} as const;
 
 export function PublicationDeliveryActions({
   api,
@@ -114,7 +115,7 @@ export function PublicationDeliveryActions({
                 } else setCommand({ ...base, action });
               }}
             >
-              <Icon aria-hidden="true" />
+              <IconoirSprite variant="iconoir" icon={Icon} aria-hidden="true" />
             </button>
           );
         })}

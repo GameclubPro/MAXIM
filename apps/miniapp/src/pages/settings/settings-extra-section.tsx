@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
-import { InfoCircle } from 'iconoir-react';
+
 import type { ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
@@ -118,7 +119,7 @@ export function SettingsExtraSection({
                           data-hint-key="deleteBotMessages"
                           onClick={() => onToggleHint('deleteBotMessages')}
                         >
-                          <InfoCircle aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                         </button>
                       </div>
 
@@ -174,7 +175,7 @@ export function SettingsExtraSection({
                           data-hint-key="removeBotsFromGroup"
                           onClick={() => onToggleHint('removeBotsFromGroup')}
                         >
-                          <InfoCircle aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                         </button>
                       </div>
 

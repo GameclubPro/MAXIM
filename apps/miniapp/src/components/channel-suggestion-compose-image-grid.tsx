@@ -1,9 +1,5 @@
-import {
-  ArrowLeft,
-  ArrowRight,
-  Camera as IconoirCamera,
-  Xmark as IconoirXmark,
-} from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import type { PreparedSuggestionAttachment } from '../lib/channel-suggestion-media';
 import { formatDialogAttachmentSize } from '../lib/dialog-attachments';
 import { cn } from '../lib/cn';
@@ -64,7 +60,7 @@ export default function ChannelSuggestionComposeImageGrid({
             ) : previewUrl ? (
               <img src={previewUrl} alt={fileName} loading="lazy" />
             ) : (
-              <IconoirCamera aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
             )}
 
             {!preview ? (
@@ -77,7 +73,7 @@ export default function ChannelSuggestionComposeImageGrid({
                 aria-label={`Убрать ${fileName}`}
                 title={`Убрать ${fileName}`}
               >
-                <IconoirXmark aria-hidden focusable="false" />
+                <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden focusable="false" />
               </button>
             ) : null}
             <div className="channel-suggest-composer__image-caption">
@@ -95,7 +91,7 @@ export default function ChannelSuggestionComposeImageGrid({
                     aria-label={`Переместить фото ${attachmentIndex + 1} раньше`}
                     title="Переместить раньше"
                   >
-                    <ArrowLeft aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="ArrowLeft" aria-hidden />
                   </button>
                   <button
                     type="button"
@@ -105,7 +101,7 @@ export default function ChannelSuggestionComposeImageGrid({
                     aria-label={`Переместить фото ${attachmentIndex + 1} позже`}
                     title="Переместить позже"
                   >
-                    <ArrowRight aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="ArrowRight" aria-hidden />
                   </button>
                 </span>
               ) : null}
@@ -121,7 +117,7 @@ export default function ChannelSuggestionComposeImageGrid({
           aria-label="Готовим фото"
         >
           <span className="channel-suggest-composer__image-loader" aria-hidden>
-            <IconoirCamera aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
           </span>
         </div>
       ))}

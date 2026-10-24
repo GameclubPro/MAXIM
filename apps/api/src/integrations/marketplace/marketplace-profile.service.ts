@@ -2,6 +2,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -9,6 +10,7 @@ import {
   marketplaceBindingInputSchema,
   marketplaceProfileMutationSchema,
   marketplaceProfileRelayResponseSchema,
+  marketplaceProfileStatisticsSchema,
   marketplaceProfileStateSchema,
   type MarketplaceBindingInput,
   type MarketplaceProfileRelayResponse,
@@ -17,6 +19,8 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { profileStatisticsSummary } from './marketplace-profile-statistics';
+import { centralEnabled } from '../../statistics/stats-common';
+import { StatsReadService } from '../../statistics/stats-read.service';
 import { MarketplaceAccessService } from './marketplace-access.service';
 import {
   MarketplaceStateService,
@@ -56,6 +60,7 @@ export class MarketplaceProfileService {
     private readonly config: ConfigService,
     private readonly state: MarketplaceStateService,
     private readonly access: MarketplaceAccessService,
+    @Optional() private readonly centralStats?: StatsReadService,
   ) {}
   capability(userId: string) {
     return { available: userId === MARKETPLACE_PILOT_USER_ID && this.state.enabled() };
@@ -69,6 +74,13 @@ export class MarketplaceProfileService {
     if (userId !== MARKETPLACE_PILOT_USER_ID)
       throw new ForbiddenException('Модуль пока недоступен');
     return marketplaceBindingInputSchema.parse({ actorUserId: userId, kind, entityId, profile });
+  }
+  private statisticsAvailable(binding: MarketplaceBindingRow): boolean {
+    // FLAG: Automatic analytics never clears an explicit profile/publication revoke.
+    return (
+      binding.statistics_revoked_at == null &&
+      (binding.statistics_consent || centralEnabled(this.config))
+    );
   }
   async get(userId: string, kind: unknown, entityId: unknown, profile: unknown) {
     const binding = await this.access.attest(this.input(userId, kind, entityId, profile));
@@ -106,7 +118,7 @@ export class MarketplaceProfileService {
       if (
         input.action === 'toggle' &&
         input.appendEnabled &&
-        (!binding.statistics_consent ||
+        (!this.statisticsAvailable(binding) ||
           current.listing?.status !== 'PUBLISHED' ||
           !current.listing.publicUrl)
       )
@@ -130,6 +142,7 @@ export class MarketplaceProfileService {
           currentBinding.append_revision !== input.expectedRevision ||
           (!restrictive &&
             (currentBinding.state !== 'ACTIVE' ||
+              !this.statisticsAvailable(currentBinding) ||
               !currentBinding.valid_until ||
               currentBinding.valid_until.getTime() <= Date.now()))
         )
@@ -153,8 +166,12 @@ export class MarketplaceProfileService {
         return presented;
       });
     }
-    if (input.action !== 'pause' && !binding.statistics_consent && input.statisticsConsent !== true)
-      throw new ConflictException('Подтвердите использование статистики');
+    if (
+      input.action !== 'pause' &&
+      !this.statisticsAvailable(binding) &&
+      input.statisticsConsent !== true
+    )
+      throw new ConflictException('Профиль пока недоступен. Проверьте состояние позже.');
     const result = await this.relay(binding, input);
     if (input.action !== 'pause' && input.statisticsConsent === true) {
       const now = new Date();
@@ -198,6 +215,51 @@ export class MarketplaceProfileService {
     };
   }
   private async statistics(binding: MarketplaceBindingRow) {
+    if (centralEnabled(this.config)) {
+      const available = this.statisticsAvailable(binding);
+      if (!available || !this.centralStats) return profileStatisticsSummary(available);
+      try {
+        const result = await this.centralStats.localSummary(
+          { kind: binding.kind, maxId: binding.entity_id },
+          binding.actor_user_id,
+          binding.bot_id,
+          90,
+        );
+        const item = result.results.find(
+          (row) =>
+            row.status === 'READY' &&
+            row.entity.kind === binding.kind &&
+            row.entity.maxId === binding.entity_id &&
+            row.periodDays === 90,
+        );
+        if (item?.status !== 'READY') return profileStatisticsSummary(true);
+        const audience = item.summary.audience;
+        const from = new Date(result.asOf);
+        from.setUTCHours(0, 0, 0, 0);
+        from.setUTCDate(from.getUTCDate() - 89);
+        if (audience.state === 'UNAVAILABLE') {
+          if (audience.reason !== 'NO_DATA') return profileStatisticsSummary(true);
+          return marketplaceProfileStatisticsSchema.parse({
+            state: 'EMPTY',
+            observedDays: 0,
+            lastObservedAt: null,
+            from: from.toISOString(),
+            to: result.asOf,
+          });
+        }
+        // FLAG: An external calendar count is not a measured audience-history day.
+        if (audience.value.method.id !== 'AUDIENCE_SNAPSHOT') return profileStatisticsSummary(true);
+        return marketplaceProfileStatisticsSchema.parse({
+          state: 'AVAILABLE',
+          observedDays: audience.coverage.knownDays,
+          lastObservedAt: audience.value.observedAt,
+          from: from.toISOString(),
+          to: result.asOf,
+        });
+      } catch {
+        return profileStatisticsSummary(true);
+      }
+    }
     if (!binding.statistics_consent || !binding.generation_id)
       return profileStatisticsSummary(binding.statistics_consent);
     const generations = await this.prisma.$queryRaw<Array<{ manifest: unknown; rows: unknown }>>`
@@ -207,7 +269,7 @@ export class MarketplaceProfileService {
   private present(
     binding: MarketplaceBindingRow,
     result: MarketplaceProfileRelayResponse,
-    statistics = profileStatisticsSummary(binding.statistics_consent),
+    statistics = profileStatisticsSummary(this.statisticsAvailable(binding)),
   ) {
     return marketplaceProfileStateSchema.parse({
       ...result,

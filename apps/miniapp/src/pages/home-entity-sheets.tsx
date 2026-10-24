@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import {
   useEffect,
   useRef,
@@ -12,7 +13,7 @@ import type {
   ManagedEntityFavoriteLabelsResponse,
   ManagedEntityFavoriteType,
 } from '@maxim/contracts';
-import { EditPencil, Undo } from 'iconoir-react';
+
 import { AppIcon } from '../components/ui/app-icon';
 import {
   FilterGlyph,
@@ -398,7 +399,7 @@ function HomeFavoriteLabelsEditor({
               </span>
               <label className="favorite-label-editor__field">
                 <span className="favorite-picker__sr">Название категории: {defaultLabel}</span>
-                <EditPencil aria-hidden />
+                <IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden />
                 <input
                   type="text"
                   inputMode="text"
@@ -416,7 +417,7 @@ function HomeFavoriteLabelsEditor({
                 disabled={saving || !canReset}
                 onClick={() => resetDraft(favoriteType)}
               >
-                <Undo aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Undo" aria-hidden />
               </button>
             </div>
           );

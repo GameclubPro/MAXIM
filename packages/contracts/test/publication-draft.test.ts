@@ -29,6 +29,28 @@ const request = {
   },
 };
 describe('server draft contract', () => {
+  it('retains previously persisted minute UTC slots and recurrence values without normalizing', () => {
+    const state = {
+      ...request.state,
+      scheduledSlots: ['2026-10-20T00:00Z', '2026-10-21T00:00:00.123456789Z'],
+      recurrence: {
+        ...request.state.recurrence,
+        startsAt: '2026-10-20T00:00Z',
+        endsAt: '2026-10-21T00:00Z',
+      },
+    };
+    const parsed = savePublicationDraftRequestSchema.parse({ ...request, state });
+    expect(parsed.state).toEqual(state);
+    expect(JSON.parse(JSON.stringify(parsed.state))).toEqual(state);
+    for (const value of ['2026-10-20T00:00+03:00', '2026-02-30T00:00Z']) {
+      expect(
+        savePublicationDraftRequestSchema.safeParse({
+          ...request,
+          state: { ...state, scheduledSlots: [value] },
+        }).success,
+      ).toBe(false);
+    }
+  });
   it('allows incomplete drafts but keeps publishing content strict', () => {
     expect(savePublicationDraftRequestSchema.safeParse(request).success).toBe(true);
     expect(publicationContentInputSchema.safeParse(request.content).success).toBe(false);

@@ -1,4 +1,5 @@
-import { Filter, Flash, InfoCircleSolid, ShieldCheck } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import type { VkParsingSettings } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
 import {
@@ -17,13 +18,13 @@ type SettingsTogglesProps = {
 
 function renderSettingIcon(key: VkParsingSettingKey) {
   if (key === 'autoPublishEnabled') {
-    return <Flash aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="Flash" aria-hidden />;
   }
   if (key === 'stripLinksEnabled') {
-    return <Filter aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="Filter" aria-hidden />;
   }
 
-  return <ShieldCheck aria-hidden />;
+  return <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />;
 }
 
 export function SettingsToggles({
@@ -52,7 +53,7 @@ export function SettingsToggles({
               title={`Подробнее: ${item.label}`}
               onClick={() => onToggleHint(item.key)}
             >
-              <InfoCircleSolid aria-hidden />
+              <IconoirSprite variant="iconoir" icon="InfoCircleSolid" aria-hidden />
             </button>
           </div>
           <label className="settings-native-switch" aria-label={item.label}>

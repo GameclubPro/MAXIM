@@ -158,6 +158,18 @@
     "./channel-settings": {
       "types": "./dist/channel-settings.d.ts",
       "default": "./dist/channel-settings.js"
+    },
+    "./statistics-exchange-v3": {
+      "types": "./dist/statistics-exchange-v3.d.ts",
+      "default": "./dist/statistics-exchange-v3.js"
+    },
+    "./statistics-central": {
+      "types": "./dist/statistics-central.d.ts",
+      "default": "./dist/statistics-central.js"
+    },
+    "./statistics-central-validation": {
+      "types": "./dist/statistics-central-validation.d.ts",
+      "default": "./dist/statistics-central-validation.js"
     }
   },
   "files": [

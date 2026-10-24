@@ -1,4 +1,6 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { centralEnabled, StatsFailure } from '../../statistics/stats-common';
+import { ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -25,6 +27,7 @@ export class MarketplaceStatisticsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly state: MarketplaceStateService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
   async createGeneration(requested: MarketplaceBindingRow, asOf = new Date()): Promise<string> {
     return this.prisma.$transaction(
@@ -207,6 +210,7 @@ export class MarketplaceStatisticsService {
     );
   }
   async page(id: string, raw: unknown) {
+    if (this.config && centralEnabled(this.config)) throw new StatsFailure('UNAVAILABLE', 410);
     const query = pageQuery.parse(raw);
     const binding = await this.state.read(id);
     if (

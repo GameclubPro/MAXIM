@@ -22,3 +22,4 @@ export * from './reports.js';
 export * from './statistics-exchange.js';
 
 export * from './statistics-exchange-owner.js';
+export * from './statistics-exchange-v3.js';

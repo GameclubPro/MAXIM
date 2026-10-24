@@ -1,9 +1,6 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import type { ManagedBroadcastSummary } from '@maxim/contracts';
-import {
-  MoreHoriz as IconoirMoreHoriz,
-  RefreshDouble as IconoirRefreshDouble,
-  Xmark as IconoirXmark,
-} from 'iconoir-react';
+
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { ManagedBroadcastDeliveryMeter } from './managed-broadcast-delivery-meter';
 import { cn } from '../lib/cn';
@@ -141,7 +138,7 @@ export function ManagedBroadcastHistoryCard({
             aria-label={isRetrying ? 'Повторяем отправку' : 'Повторить отправку'}
             title={isRetrying ? 'Повторяем' : 'Повторить'}
           >
-            <IconoirRefreshDouble aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden focusable="false" />
             <span>{isRetrying ? '...' : 'Повторить'}</span>
           </button>
         ) : null}
@@ -159,7 +156,7 @@ export function ManagedBroadcastHistoryCard({
                 }
               }}
             >
-              <IconoirMoreHoriz aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="MoreHoriz" aria-hidden focusable="false" />
             </summary>
 
             <div className="managed-broadcast-card__menu-popover">
@@ -172,7 +169,7 @@ export function ManagedBroadcastHistoryCard({
                 }}
                 disabled={isBusy}
               >
-                <IconoirXmark aria-hidden focusable="false" />
+                <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden focusable="false" />
                 <span>{isDeleting ? 'Отменяем...' : 'Отменить'}</span>
               </button>
             </div>

@@ -1,6 +1,7 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { PublisherEntitiesSummary, PublisherEntity } from '@maxim/contracts/publisher';
-import { CheckCircle, NavArrowRight, Refresh, Search, WarningCircle, Xmark } from 'iconoir-react';
+
 import {
   useEffect,
   useLayoutEffect,
@@ -585,14 +586,19 @@ export function PublisherEntitiesPage({
               aria-live={refreshPhase ? 'polite' : undefined}
             >
               {entity.readiness.canPublish ? (
-                <CheckCircle aria-hidden />
+                <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden />
               ) : (
-                <WarningCircle aria-hidden />
+                <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
               )}
               <span>{refreshPhase ? 'Проверяем подключение' : presentation.label}</span>
             </span>
           </span>
-          <NavArrowRight className="publisher-entity-row__arrow" aria-hidden />
+          <IconoirSprite
+            variant="iconoir"
+            icon="NavArrowRight"
+            className="publisher-entity-row__arrow"
+            aria-hidden
+          />
         </Link>
         {canRecheck ? (
           <button
@@ -607,7 +613,7 @@ export function PublisherEntitiesPage({
             disabled={Boolean(entityRefresh || bulkRefresh)}
             onClick={() => void handleRefreshEntity(entity)}
           >
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
           </button>
         ) : null}
       </article>
@@ -653,14 +659,14 @@ export function PublisherEntitiesPage({
             disabled={Boolean(bulkRefresh || entityRefresh)}
             onClick={() => void handleRefreshEntities()}
           >
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
           </button>
         </div>
       </header>
 
       {bulkRefresh ? (
         <div className="publisher-entities-page__refresh-status" role="status" aria-live="polite">
-          <Refresh className="is-refreshing" aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" className="is-refreshing" aria-hidden />
           <span>
             {bulkRefresh.phase === 'enqueueing'
               ? 'Запускаю проверку MAX'
@@ -672,7 +678,7 @@ export function PublisherEntitiesPage({
       {hasCatalogControls ? (
         <>
           <div className="publisher-entities-page__search">
-            <Search aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Search" aria-hidden />
             <input
               ref={searchRef}
               type="search"
@@ -696,7 +702,7 @@ export function PublisherEntitiesPage({
                 aria-label="Очистить поиск"
                 title="Очистить поиск"
               >
-                <Xmark aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
               </button>
             ) : null}
           </div>
@@ -744,17 +750,17 @@ export function PublisherEntitiesPage({
 
       {searchSettling ? (
         <div className="publisher-entities-page__state" role="status">
-          <Search aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Search" aria-hidden />
           <strong>Ищу получателей</strong>
         </div>
       ) : entitiesQuery.isLoading && entities.length === 0 ? (
         <div className="publisher-entities-page__state" role="status">
-          <Refresh className="is-refreshing" aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" className="is-refreshing" aria-hidden />
           <strong>Загружаю {view === 'channel' ? 'каналы' : 'чаты'}</strong>
         </div>
       ) : entitiesQuery.isError && entities.length === 0 ? (
         <div className="publisher-entities-page__state has-error" role="alert">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <strong>Не удалось загрузить получателей</strong>
           <span>Проверьте соединение и повторите запрос.</span>
           <button
@@ -763,20 +769,20 @@ export function PublisherEntitiesPage({
               void queryClient.resetQueries({ queryKey: entitiesQueryKey, exact: true })
             }
           >
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
             <span>Повторить</span>
           </button>
         </div>
       ) : entities.length === 0 &&
         entitiesQuery.data?.pages.some((page) => page.accessVerificationPending) ? (
         <div className="publisher-entities-page__state" role="status">
-          <Refresh className="is-refreshing" aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" className="is-refreshing" aria-hidden />
           <strong>Проверяю ваши права</strong>
           <span>Чаты и каналы появятся по мере подтверждения.</span>
         </div>
       ) : shouldAutoOpenChannels ? (
         <div className="publisher-entities-page__state" role="status">
-          <Refresh className="is-refreshing" aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" className="is-refreshing" aria-hidden />
           <strong>Открываю каналы</strong>
         </div>
       ) : activeTypeCount === 0 && otherTypeCount > 0 ? (
@@ -794,7 +800,7 @@ export function PublisherEntitiesPage({
           </span>
           <Link to={buildPublisherEntityViewRoute(otherView, searchParams.toString())}>
             {view === 'channel' ? 'Открыть чаты' : 'Открыть каналы'}
-            <NavArrowRight aria-hidden />
+            <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
           </Link>
         </div>
       ) : activeTypeCount === 0 ? (
@@ -806,12 +812,12 @@ export function PublisherEntitiesPage({
           </span>
           <button type="button" disabled={openingBotDialog} onClick={handleOpenBotDialog}>
             <span>{openingBotDialog ? 'Открываю...' : 'Открыть диалог Публика'}</span>
-            <NavArrowRight aria-hidden />
+            <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
           </button>
         </div>
       ) : entities.length === 0 ? (
         <div className="publisher-entities-page__state" role="status">
-          <Search aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Search" aria-hidden />
           <strong>Ничего не найдено</strong>
           <button
             type="button"

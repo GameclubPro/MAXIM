@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import type { PublicationAsset } from '@maxim/contracts/publication';
-import { Xmark } from 'iconoir-react';
+
 import { cn } from '../../lib/cn';
 import type { PublisherPostImportAssetPreview } from './use-publisher-post-import-asset-previews';
 import './publication-retained-media.css';
@@ -50,7 +51,7 @@ export function PublicationRetainedMedia({
               }
               title="Убрать"
             >
-              <Xmark aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
             </button>
           </div>
         );

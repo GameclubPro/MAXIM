@@ -1,4 +1,5 @@
-import { Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import {
   forwardRef,
   useCallback,
@@ -478,7 +479,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
 
         {linkEditorOpen ? (
           <div className="max-rich-text-editor__link-panel">
-            <IconoirLink aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Link" aria-hidden focusable="false" />
             <input
               value={linkDraft}
               onChange={(event) => {
@@ -508,7 +509,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
               disabled={!interactive}
               aria-label="Закрыть"
             >
-              <IconoirXmark aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden focusable="false" />
             </button>
             {linkError ? <small>{linkError}</small> : null}
           </div>

@@ -1,8 +1,11 @@
 import type { MarketplaceProfileState } from '@maxim/contracts/marketplace-integration';
 import { ApiRequestError } from './api-request-error';
-import { marketplaceProfileTitle } from './marketplace-profile-summary';
+import {
+  marketplaceProfileAvailable,
+  marketplaceProfileTitle,
+} from './marketplace-profile-summary';
 import { describeUserFacingError } from './user-facing-error';
-export { marketplaceQueryKey } from './marketplace-profile-summary';
+export { marketplaceProfileAvailable, marketplaceQueryKey } from './marketplace-profile-summary';
 
 export type MarketplaceDetails = {
   title: string;
@@ -34,7 +37,7 @@ export function marketplaceProfileError(error: unknown, fallback: string) {
 }
 export function marketplaceProfileView(state: MarketplaceProfileState, fresh = true) {
   const active = fresh && state.binding.state === 'ACTIVE';
-  const consent = state.binding.statisticsConsent;
+  const available = marketplaceProfileAvailable(state);
   const caps = state.capabilities;
   const publicState =
     caps?.publicState ??
@@ -43,15 +46,15 @@ export function marketplaceProfileView(state: MarketplaceProfileState, fresh = t
       : state.listing?.status === 'PUBLISHED'
         ? 'ACCESS_REQUIRED'
         : 'DRAFT');
-  const publicNow = active && consent && publicState === 'PUBLIC' && !!state.listing?.publicUrl;
+  const publicNow = active && available && publicState === 'PUBLIC' && !!state.listing?.publicUrl;
   return {
     title: marketplaceProfileTitle(state, fresh),
     active,
     publicNow,
     canEdit: active && (caps?.canEdit ?? true),
-    canPublish: active && consent && !!caps?.canPublish,
+    canPublish: active && available && !!caps?.canPublish,
     canPause: active && !!caps?.canPause,
-    canAppend: active && consent && publicNow,
+    canAppend: active && available && publicNow,
     placement:
       caps?.placementState ?? (state.listing?.profileOnly ? 'BOT_REQUIRED' : 'UNAVAILABLE'),
     publicState,

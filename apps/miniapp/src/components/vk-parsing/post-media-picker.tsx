@@ -1,4 +1,5 @@
-import { Camera, Link as IconoirLink } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import { cn } from '../../lib/cn';
 import { PostVideoChoice } from './post-video-preview';
 
@@ -47,7 +48,7 @@ export function PostMediaPicker({
                 onClick={() => onTogglePhoto(url)}
               >
                 <img src={url} alt="" loading="lazy" />
-                <Camera aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Camera" aria-hidden />
               </button>
             );
           })}
@@ -84,7 +85,7 @@ export function PostMediaPicker({
                   disabled={disabled}
                   onChange={() => onToggleLink(url)}
                 />
-                <IconoirLink aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Link" aria-hidden />
                 <span>{url}</span>
               </label>
             );

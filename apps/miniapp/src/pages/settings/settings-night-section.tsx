@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
-import { InfoCircle } from 'iconoir-react';
+
 import type { ChatSettings, ChatClosureStatus } from '@maxim/contracts/settings';
 import { Suspense } from 'react';
 import SettingsChatClosureStatus from './settings-chat-closure-status';
@@ -186,7 +187,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                           data-hint-key="nightModeEnabled"
                           onClick={() => toggleHint('nightModeEnabled')}
                         >
-                          <InfoCircle aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                         </button>
                       </div>
 
@@ -306,7 +307,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                                 data-hint-key="nightBotMessage"
                                 onClick={() => toggleHint('nightBotMessage')}
                               >
-                                <InfoCircle aria-hidden />
+                                <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                               </button>
                             </div>
                           </div>
@@ -391,7 +392,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                                 data-hint-key="nightOpenMessage"
                                 onClick={() => toggleHint('nightOpenMessage')}
                               >
-                                <InfoCircle aria-hidden />
+                                <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                               </button>
                             </div>
                           </div>
@@ -502,7 +503,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                                 data-hint-key="nightBotButton"
                                 onClick={() => toggleHint('nightBotButton')}
                               >
-                                <InfoCircle aria-hidden />
+                                <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                               </button>
                             </div>
 
@@ -593,7 +594,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                           data-hint-key="nightForceClose"
                           onClick={() => toggleHint('nightForceClose')}
                         >
-                          <InfoCircle aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                         </button>
                       </div>
 

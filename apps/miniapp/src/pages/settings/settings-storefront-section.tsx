@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
-import { PlusCircle, Trash } from 'iconoir-react';
+
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
@@ -274,7 +275,7 @@ export function SettingsStorefrontSection({
                             onClick={() => handoffMutation.mutate()}
                             disabled={!chatId || handoffMutation.isPending}
                           >
-                            <PlusCircle aria-hidden />
+                            <IconoirSprite variant="iconoir" icon="PlusCircle" aria-hidden />
                             <span>
                               {handoffMutation.isPending ? 'Открываем...' : 'Добавить пользователя'}
                             </span>
@@ -338,7 +339,7 @@ export function SettingsStorefrontSection({
                                     onClick={() => setEntryToRevoke(entry)}
                                     disabled={revokeMutation.isPending}
                                   >
-                                    <Trash aria-hidden />
+                                    <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
                                   </button>
                                 )}
                               </div>

@@ -1,13 +1,5 @@
-import {
-  Copy,
-  EditPencil,
-  MoreHoriz,
-  Pause,
-  Play,
-  RefreshDouble,
-  WarningCircle,
-  Xmark,
-} from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from '../../components/max-markdown-preview';
@@ -151,7 +143,7 @@ export function PublicationFeedCard({
     menuActions.push({
       key: 'review-schedule',
       label: scheduleReviewLabel,
-      icon: <WarningCircle aria-hidden />,
+      icon: <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />,
       onClick: onReviewSchedule,
     });
   }
@@ -159,7 +151,7 @@ export function PublicationFeedCard({
     menuActions.push({
       key: 'edit',
       label: editLabel,
-      icon: <EditPencil aria-hidden />,
+      icon: <IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden />,
       onClick: onEdit,
     });
   }
@@ -167,7 +159,7 @@ export function PublicationFeedCard({
     menuActions.push({
       key: 'resume',
       label: 'Запустить',
-      icon: <Play aria-hidden />,
+      icon: <IconoirSprite variant="iconoir" icon="Play" aria-hidden />,
       onClick: onResume,
     });
   }
@@ -175,7 +167,7 @@ export function PublicationFeedCard({
     menuActions.push({
       key: 'pause',
       label: 'Пауза',
-      icon: <Pause aria-hidden />,
+      icon: <IconoirSprite variant="iconoir" icon="Pause" aria-hidden />,
       onClick: onPause,
     });
   }
@@ -183,7 +175,7 @@ export function PublicationFeedCard({
     menuActions.push({
       key: 'retry',
       label: 'Повторить',
-      icon: <RefreshDouble aria-hidden />,
+      icon: <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden />,
       onClick: onRetry,
     });
   }
@@ -191,7 +183,7 @@ export function PublicationFeedCard({
     menuActions.push({
       key: 'duplicate',
       label: 'Дублировать',
-      icon: <Copy aria-hidden />,
+      icon: <IconoirSprite variant="iconoir" icon="Copy" aria-hidden />,
       onClick: onDuplicate,
     });
   }
@@ -199,7 +191,7 @@ export function PublicationFeedCard({
     menuActions.push({
       key: 'cancel',
       label: cancelLabel,
-      icon: <Xmark aria-hidden />,
+      icon: <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />,
       danger: true,
       onClick: onCancel,
     });
@@ -284,7 +276,7 @@ export function PublicationFeedCard({
           onClick={() => setMenuOpen(true)}
           disabled={busy}
         >
-          <MoreHoriz aria-hidden focusable="false" />
+          <IconoirSprite variant="iconoir" icon="MoreHoriz" aria-hidden focusable="false" />
         </button>
       ) : null}
 
@@ -317,7 +309,7 @@ export function PublicationFeedCard({
                     onClick={() => setMenuOpen(false)}
                     aria-label="Закрыть меню"
                   >
-                    <Xmark aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
                   </button>
                 </header>
                 <div className="publication-action-menu__actions">

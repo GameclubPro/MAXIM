@@ -123,13 +123,16 @@ test('statistics navigation and chart controls retain explicit semantics', () =>
   }
   assert.match(channelStatsPageSource, /resolveChannelStatsSliderIndex\(/u);
   assert.match(channelStatsPageSource, /channel-posts-chart__row--linked/u);
-  assert.match(channelStatsPageSource, /IconOpenNewWindow/u);
+  assert.match(channelStatsPageSource, /<IconoirSprite\b[^>]*icon="OpenNewWindow"/u);
   assert.match(channelStatsPageSource, /откроется в новой вкладке/u);
 });
 
 test('statistics polish keeps controls unambiguous and channel events compact', () => {
-  assert.match(eventsPageSource, /NavArrowDown as IconNavArrowDown/u);
-  assert.match(eventsPageSource, /className="event-feed-item__toggle"[\s\S]*?<IconNavArrowDown/u);
+  assert.match(eventsPageSource, /AppIcon as IconoirSprite/u);
+  assert.match(
+    eventsPageSource,
+    /className="event-feed-item__toggle" aria-hidden="true"[\s\S]*?<IconoirSprite\b[^>]*icon="NavArrowDown"/u,
+  );
   assert.doesNotMatch(eventsPageSource, /isExpanded \? '−' : '\+'/u);
   assert.match(
     channelStatsPageSource,

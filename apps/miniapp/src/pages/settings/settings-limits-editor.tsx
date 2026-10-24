@@ -1,4 +1,5 @@
-import { InfoCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import type { ChatSettings } from '@maxim/contracts/settings';
 import { Suspense } from 'react';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
@@ -76,7 +77,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
               data-hint-key="antiSpam"
               onClick={() => toggleHint('antiSpam')}
             >
-              <InfoCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
             </button>
           </div>
 
@@ -134,7 +135,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
                 data-hint-key="deleteSpammers"
                 onClick={() => toggleHint('deleteSpammers')}
               >
-                <InfoCircle aria-hidden />
+                <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
               </button>
             </div>
           </div>
@@ -185,7 +186,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
               data-hint-key="messageCountLimit"
               onClick={() => toggleHint('messageCountLimit')}
             >
-              <InfoCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
             </button>
           </div>
 
@@ -295,7 +296,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
               data-hint-key="maxMessageLength"
               onClick={() => toggleHint('maxMessageLength')}
             >
-              <InfoCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
             </button>
           </div>
 
@@ -363,7 +364,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
               data-hint-key="photoCooldown"
               onClick={() => toggleHint('photoCooldown')}
             >
-              <InfoCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
             </button>
           </div>
 
@@ -452,7 +453,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
                 data-hint-key="stickerCooldown"
                 onClick={() => toggleHint('stickerCooldown')}
               >
-                <InfoCircle aria-hidden />
+                <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
               </button>
             </div>
 
@@ -706,7 +707,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
                 data-hint-key="messageLimitsBotMessage"
                 onClick={() => toggleHint('messageLimitsBotMessage')}
               >
-                <InfoCircle aria-hidden />
+                <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
               </button>
             </div>
           </div>
@@ -846,7 +847,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
                 data-hint-key="messageLimitsBotButton"
                 onClick={() => toggleHint('messageLimitsBotButton')}
               >
-                <InfoCircle aria-hidden />
+                <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
               </button>
             </div>
 

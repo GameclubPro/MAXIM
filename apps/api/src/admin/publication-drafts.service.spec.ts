@@ -33,6 +33,28 @@ const request = {
   },
 };
 
+const draftPresentation = {
+  id: 'draft',
+  title: '',
+  lifecycle: 'DRAFT',
+  version: 1,
+  contentPreview: '',
+  targetCount: 0,
+  targetPreviews: [],
+  targetOverflowCount: 0,
+  audienceSelection: 'SELECTED',
+  audienceMode: 'SNAPSHOT',
+  mediaCount: 0,
+  hasVideo: false,
+  schedule: null,
+  delivery: { total: 0, sent: 0, pending: 0, failed: 0, ambiguous: 0, canceled: 0 },
+  createdAt: '2026-10-20T00:00:00Z',
+  updatedAt: '2026-10-20T00:00:00Z',
+  content: { revision: 1, text: '', textFormat: 'plain', media: [], buttons: [] },
+  targets: [],
+  occurrences: [],
+};
+
 function setup() {
   const tx = {
     $executeRaw: jest.fn().mockResolvedValue(1),
@@ -70,7 +92,10 @@ function setup() {
       .mockReturnValue({ dispatchProfile: 'PUBLIK_V1', requiredBotId: 'publik' }),
   };
   const policy = { resolveDraftTargets: jest.fn().mockResolvedValue([]) };
-  const presenter = { loadPublisherTargetPresentations: jest.fn() };
+  const presenter = {
+    loadPublisherTargetPresentations: jest.fn().mockResolvedValue([]),
+    mapPublicationDetails: jest.fn().mockResolvedValue(draftPresentation),
+  };
   const service = new PublicationDraftsService(
     prisma as never,
     content as never,
@@ -85,6 +110,49 @@ function setup() {
 }
 
 describe('PublicationDraftsService', () => {
+  it('saves and restores raw JSON containing legacy minute UTC slots and recurrence values', async () => {
+    const { service, tx, get } = setup();
+    get.mockRestore();
+    const state = {
+      ...request.state,
+      scheduledSlots: ['2026-10-20T00:00Z', '2026-10-21T00:00:00.123456789Z'],
+      recurrence: {
+        ...request.state.recurrence,
+        startsAt: '2026-10-20T00:00Z',
+        endsAt: '2026-10-21T00:00Z',
+      },
+    };
+    let storedRule: unknown;
+    tx.publicationSchedule.upsert.mockImplementation(async (input) => {
+      storedRule = JSON.parse(JSON.stringify(input.create.rule));
+      return {};
+    });
+    tx.publication.findFirst.mockImplementation(async () => ({
+      id: 'draft',
+      version: 1,
+      targets: [],
+      schedule: { rule: storedRule },
+    }));
+    const saved = await service.save(null, actor, { ...request, state });
+    expect(storedRule).toEqual(state);
+    expect(saved.state).toEqual(state);
+    expect((await service.get('draft', actor)).state).toEqual(state);
+  });
+
+  it('restores an existing minute-only draft and still rejects malformed persisted state', async () => {
+    const { service, tx, get } = setup();
+    get.mockRestore();
+    const row = {
+      id: 'draft',
+      version: 1,
+      targets: [],
+      schedule: { rule: { ...request.state, scheduledSlots: ['2026-10-20T00:00Z'] } },
+    };
+    tx.publication.findFirst.mockResolvedValue(row);
+    expect((await service.get('draft', actor)).state).toEqual(row.schedule.rule);
+    row.schedule.rule.scheduledSlots = ['2026-02-30T00:00Z'];
+    expect((await service.get('draft', actor)).state).toBeNull();
+  });
   it.each([
     PublicationDraftsController,
     PublicationAssetsController,

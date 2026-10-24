@@ -754,6 +754,44 @@ test('queue explain plans the fixed report without executing it or widening the 
   }
 });
 
+test('central statistics catalog routes exact bounded IDs and remains opt-in', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  assert.equal(runAudit(data, ['central-statistics', '-123,-456']).status, 0);
+  let sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /central_statistics_privileges_ready/u);
+  assert.match(sql, /IN \(35\)/u);
+  assert.match(sql, /'audit','central_statistics'/u);
+  assert.match(sql, /LIMIT 1441/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /statement_timeout=2500ms/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /search_path=pg_catalog,public,pg_temp/u);
+  assert.match(readFileSync(data.dockerArgs, 'utf8'), /timezone=UTC/u);
+  assert.equal(runAudit(data, ['central-statistics', '-123', '--explain']).status, 0);
+  sql = readFileSync(data.sql, 'utf8');
+  assert.match(sql, /EXPLAIN \(FORMAT JSON\) EXECUTE central_statistics_audit_plan/u);
+  assert.equal(
+    runConnect(data, ['postgres-audit', 'central-statistics', '-123', '--explain']).status,
+    0,
+  );
+  for (const args of [
+    [],
+    ['0'],
+    ['1'],
+    ['-01'],
+    ['-1,-1'],
+    ['SELECT 1'],
+    ['--provision'],
+    ['/tmp/private'],
+    ['-1', '--file'],
+    ['-1', '--explain', 'extra'],
+  ]) {
+    assert.equal(runAudit(data, ['central-statistics', ...args]).status, 2);
+    assert.equal(runConnect(data, ['postgres-audit', 'central-statistics', ...args]).status, 2);
+  }
+  assert.equal(runAudit(data, ['all']).status, 0);
+  assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit','central_statistics'/u);
+});
+
 test('statistics exchange catalog routes only exact actors and keeps the bounded envelope', (t) => {
   const data = fixture();
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));

@@ -1,4 +1,5 @@
-import { Link as IconoirLink } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { cn } from '../lib/cn';
 import { useNativeBackHandler } from '../lib/native-back';
@@ -223,7 +224,11 @@ export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdown
                 }}
                 onClick={() => applyTool(tool.id)}
               >
-                {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
+                {tool.id === 'link' ? (
+                  <IconoirSprite variant="iconoir" icon="Link" aria-hidden focusable="false" />
+                ) : (
+                  tool.label
+                )}
               </button>
             ))}
           </div>
@@ -273,7 +278,11 @@ export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdown
                 }}
                 onClick={() => applyTool(tool.id)}
               >
-                {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
+                {tool.id === 'link' ? (
+                  <IconoirSprite variant="iconoir" icon="Link" aria-hidden focusable="false" />
+                ) : (
+                  tool.label
+                )}
               </button>
             ))}
           </div>

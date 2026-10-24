@@ -1,6 +1,7 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { lazy, Suspense, useEffect, useReducer, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Clock, RefreshDouble } from 'iconoir-react';
+
 import type { MessageRetentionState, UpdateMessageRetention } from '@maxim/contracts/settings';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
 import {
@@ -185,7 +186,7 @@ export function SettingsMessageRetentionEditor({
   return (
     <SettingsDrilldownPanel
       id="settings-message-retention"
-      icon={<Clock />}
+      icon={<IconoirSprite variant="iconoir" icon="Clock" />}
       open
       title="Удаление старых сообщений"
       className="message-retention-panel"
@@ -204,7 +205,11 @@ export function SettingsMessageRetentionEditor({
           disabled={save.isPending || query.isFetching}
           onClick={() => void refresh()}
         >
-          <RefreshDouble className={query.isFetching ? 'retention-refreshing' : undefined} />
+          <IconoirSprite
+            variant="iconoir"
+            icon="RefreshDouble"
+            className={query.isFetching ? 'retention-refreshing' : undefined}
+          />
         </button>
       }
       footer={
@@ -262,7 +267,7 @@ export function SettingsMessageRetentionEditor({
               disabled={query.isFetching || save.isPending}
               onClick={() => void refresh()}
             >
-              <RefreshDouble aria-hidden /> Повторить
+              <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden /> Повторить
             </button>
           </div>
         ) : null}
@@ -287,7 +292,7 @@ export function SettingsMessageRetentionEditor({
               }
               onClick={() => void (uncertainWrite ? refresh() : commit())}
             >
-              <RefreshDouble aria-hidden />{' '}
+              <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden />{' '}
               {uncertainWrite ? 'Проверить сохранение' : 'Повторить сохранение'}
             </button>
           </div>
@@ -303,7 +308,8 @@ export function SettingsMessageRetentionEditor({
                 disabled={closeBlocked}
                 onClick={discard}
               >
-                <RefreshDouble aria-hidden /> Принять настройки
+                <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden /> Принять
+                настройки
               </button>
               <button
                 type="button"
@@ -313,7 +319,7 @@ export function SettingsMessageRetentionEditor({
                   if (current) save.mutate({ ...current, expectedRevision: state.revision });
                 }}
               >
-                <Check aria-hidden /> Сохранить мой вариант
+                <IconoirSprite variant="iconoir" icon="Check" aria-hidden /> Сохранить мой вариант
               </button>
             </div>
           </div>

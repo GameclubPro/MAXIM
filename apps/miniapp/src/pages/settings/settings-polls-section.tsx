@@ -1,4 +1,5 @@
-import { StatsUpSquare } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { lazy, Suspense, useRef } from 'react';
 import type { ManagedPollWorkspaceHandle } from '../../components/managed-poll-workspace';
 import { GlassCard } from '../../components/ui/glass-card';
@@ -58,7 +59,9 @@ export function SettingsPollsSection({
           title="Опросы"
           summary="Создание, публикация и результаты"
           status="Голоса"
-          icon={<StatsUpSquare aria-hidden focusable="false" />}
+          icon={
+            <IconoirSprite variant="iconoir" icon="StatsUpSquare" aria-hidden focusable="false" />
+          }
           tone="mint"
           open={expanded}
           controls="settings-polls-content"
@@ -68,7 +71,9 @@ export function SettingsPollsSection({
 
       <SettingsDrilldownPanel
         id="settings-polls-content"
-        icon={<StatsUpSquare aria-hidden focusable="false" />}
+        icon={
+          <IconoirSprite variant="iconoir" icon="StatsUpSquare" aria-hidden focusable="false" />
+        }
         open={expanded}
         title="Опросы"
         tone="mint"

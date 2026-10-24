@@ -1,4 +1,6 @@
+import { centralEnabled } from '../../statistics/stats-common';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { getAppRole, roleRunsAction, roleRunsPublisher } from '../../runtime/app-role';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MarketplaceAccessService } from './marketplace-access.service';
@@ -21,6 +23,7 @@ export class MarketplaceRuntimeService implements OnModuleInit, OnModuleDestroy 
     private readonly collector: MarketplaceCollectorService,
     private readonly profile: MarketplaceProfileService,
     @Optional() private readonly publisherIdentity?: PublisherIdentityAttestationService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
   onModuleInit() {
     if (
@@ -56,9 +59,11 @@ export class MarketplaceRuntimeService implements OnModuleInit, OnModuleDestroy 
         if (!this.publisherIdentity || process.env.APP_SERVICE_NAME !== 'api-publisher') return;
         await this.publisherIdentity.assertAttested();
       }
-      const accessRows = await this.prisma.$queryRaw<
-        MarketplaceBindingRow[]
-      >`UPDATE marketplace_bindings SET next_access_at=now()+interval '1 minute' WHERE id IN (SELECT id FROM marketplace_bindings WHERE profile=${profile} AND statistics_consent=true AND state<>'REVOKED' AND next_access_at<=now() ORDER BY next_access_at,id FOR UPDATE SKIP LOCKED LIMIT 5) RETURNING *`;
+      const accessRows = this.config && centralEnabled(this.config)
+        ? []
+        : await this.prisma.$queryRaw<
+            MarketplaceBindingRow[]
+          >`UPDATE marketplace_bindings SET next_access_at=now()+interval '1 minute' WHERE id IN (SELECT id FROM marketplace_bindings WHERE profile=${profile} AND statistics_consent=true AND state<>'REVOKED' AND next_access_at<=now() ORDER BY next_access_at,id FOR UPDATE SKIP LOCKED LIMIT 5) RETURNING *`;
       for (const row of accessRows) {
         if (this.stopping) return;
         await this.access.refresh(row);

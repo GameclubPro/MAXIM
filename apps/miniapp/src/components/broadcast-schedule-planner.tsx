@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import type { ManagedBroadcastCalendarSlot, ManagedBroadcastSummary } from '@maxim/contracts';
 import {
   useEffect,
@@ -10,7 +11,7 @@ import {
   type PointerEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Xmark } from 'iconoir-react';
+
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { TimeField } from './ui/time-field';
 import { cn } from '../lib/cn';
@@ -2089,7 +2090,7 @@ export function BroadcastSchedulePlanner({
                                 }}
                               >
                                 <span>{label}</span>
-                                <Xmark aria-hidden />
+                                <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
                               </button>
                             ) : (
                               <span key={label} className="broadcast-planner__selected-chip">

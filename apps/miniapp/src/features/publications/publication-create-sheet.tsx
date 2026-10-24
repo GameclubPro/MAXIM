@@ -1,4 +1,5 @@
-import { EditPencil, Forward, Xmark } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
@@ -96,7 +97,7 @@ export function PublicationCreateSheet({
         <header className="publication-create-sheet__header">
           <strong id="publication-create-title">Новый пост</strong>
           <button type="button" onClick={onClose} disabled={busy} aria-label="Закрыть">
-            <Xmark aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           </button>
         </header>
         <div className="publication-create-sheet__actions">
@@ -107,14 +108,14 @@ export function PublicationCreateSheet({
             disabled={busy}
             aria-label="Написать"
           >
-            <EditPencil aria-hidden />
+            <IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden />
             <span>
               <strong>Написать пост</strong>
               <small>Текст, фото, видео и кнопки</small>
             </span>
           </button>
           <button type="button" onClick={onForward} disabled={busy} aria-label="Переслать">
-            <Forward aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Forward" aria-hidden />
             <span>
               <strong>{busy ? 'Открываю...' : 'Переслать из MAX'}</strong>
               <small>Взять за основу готовый пост</small>

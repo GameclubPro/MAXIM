@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { utcTimestampSchema } from './validator-compat.js';
 
 import {
   allowlistMatchTypeSchema,
@@ -81,5 +82,5 @@ export const domainAllowlistEntrySchema = navigationAllowlistEntrySchema;
 export type DomainAllowlistEntry = NavigationAllowlistEntry;
 
 export const scheduleDomainRemovalRequestSchema = z.object({
-  removeAfterAt: z.string().datetime().nullable(),
+  removeAfterAt: utcTimestampSchema.nullable(),
 });

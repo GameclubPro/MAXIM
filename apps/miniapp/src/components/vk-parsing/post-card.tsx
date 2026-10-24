@@ -1,14 +1,5 @@
-import {
-  Camera,
-  CheckCircle,
-  EditPencil,
-  Link as IconoirLink,
-  OpenNewWindow,
-  Play,
-  RefreshCircle,
-  ShieldCheck,
-  WarningCircle,
-} from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import type {
   ChannelPostSignatureSettings,
   VkParsingPost,
@@ -66,16 +57,16 @@ type PostCardProps = {
 
 function renderStatusIcon(post: VkParsingPost) {
   if (post.status === 'FAILED') {
-    return <WarningCircle aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />;
   }
   if (post.status === 'PUBLISHED') {
-    return <CheckCircle aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden />;
   }
   if (post.status === 'SKIPPED') {
-    return <ShieldCheck aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />;
   }
   if (post.status === 'CHANGED_AFTER_PUBLISH') {
-    return <RefreshCircle aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />;
   }
 
   return null;
@@ -164,9 +155,9 @@ export function PostCard({
             >
               {publishState ? (
                 publishState.tone === 'danger' ? (
-                  <WarningCircle aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
                 ) : (
-                  <RefreshCircle aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />
                 )
               ) : (
                 renderStatusIcon(post)
@@ -182,21 +173,21 @@ export function PostCard({
             aria-label="Открыть пост VK"
             title="Открыть пост VK"
           >
-            <OpenNewWindow aria-hidden />
+            <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
           </a>
         </div>
       </div>
 
       {blockedReason && !['Пост уже в очереди.', 'Пост отправляется.'].includes(blockedReason) ? (
         <div className="vk-parsing-post-card__issue" role="status">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <span>{blockedReason}</span>
         </div>
       ) : null}
 
       {visiblePostIssue ? (
         <div className="vk-parsing-post-card__issue" role="status">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <span>
             <strong>{visiblePostIssue.title}</strong>
             {visiblePostIssue.detail}
@@ -292,7 +283,7 @@ export function PostCard({
                 >
                   {failedPhotos.includes(url) ? (
                     <span className="vk-photo-unavailable">
-                      <Camera aria-hidden />
+                      <IconoirSprite variant="iconoir" icon="Camera" aria-hidden />
                       <span>Фото недоступно</span>
                     </span>
                   ) : (
@@ -327,9 +318,9 @@ export function PostCard({
             >
               <span>
                 {unsupportedVideoFallbackUrl ? (
-                  <IconoirLink aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Link" aria-hidden />
                 ) : (
-                  <WarningCircle aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
                 )}
               </span>
               <strong>
@@ -352,7 +343,7 @@ export function PostCard({
                   aria-label="Открыть VK-клип"
                   title="Открыть VK-клип"
                 >
-                  <OpenNewWindow aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
                 </a>
               ) : null}
             </div>
@@ -361,7 +352,7 @@ export function PostCard({
           {isReviewMode ? (
             <div className="vk-parsing-review-state" role="status">
               <span className="vk-parsing-review-state__icon">
-                <ShieldCheck aria-hidden />
+                <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
               </span>
               <strong>
                 {post.sourcePublishMode === 'BOT_REVIEW' ? botReviewLabel : 'Ручная проверка'}
@@ -371,19 +362,19 @@ export function PostCard({
             <div className="vk-parsing-post-card__facts">
               {photoCount > 0 ? (
                 <span>
-                  <Camera aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Camera" aria-hidden />
                   {photoCount}
                 </span>
               ) : null}
               {videoCount > 0 ? (
                 <span>
-                  <Play aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Play" aria-hidden />
                   {videoCount}
                 </span>
               ) : null}
               {linkCount > 0 ? (
                 <span>
-                  <IconoirLink aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Link" aria-hidden />
                   {linkCount}
                 </span>
               ) : null}
@@ -392,13 +383,13 @@ export function PostCard({
                   className="vk-parsing-status-pill is-warning"
                   title="В посте есть признаки рекламы"
                 >
-                  <ShieldCheck aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
                   Реклама
                 </span>
               ) : null}
               {unsupportedSummary ? (
                 <span title={unsupportedSummary}>
-                  <WarningCircle aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
                   {unsupportedSummary}
                 </span>
               ) : null}
@@ -420,7 +411,7 @@ export function PostCard({
                 target="_blank"
                 rel="noreferrer"
               >
-                <OpenNewWindow aria-hidden />
+                <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
                 MAX
               </a>
             </div>
@@ -443,7 +434,7 @@ export function PostCard({
                   disabled={isSubmittingBotReview}
                   onClick={() => onSendForBotReview(post.id)}
                 >
-                  <ShieldCheck aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
                   {isSubmittingBotReview ? 'Отправляем...' : 'На согласование'}
                 </button>
               ) : null}
@@ -454,7 +445,7 @@ export function PostCard({
                   disabled={isRetrying}
                   onClick={() => onRetryPost(post.id)}
                 >
-                  <RefreshCircle aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />
                   {isRetrying ? 'В очереди...' : 'Повторить'}
                 </button>
               ) : null}
@@ -471,7 +462,7 @@ export function PostCard({
                 onFocus={() => void loadPostEditor()}
                 onClick={() => onStartEditing(post)}
               >
-                <EditPencil aria-hidden />
+                <IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden />
                 {post.status === 'CHANGED_AFTER_PUBLISH'
                   ? 'Подготовить новый пост'
                   : 'Редактировать'}

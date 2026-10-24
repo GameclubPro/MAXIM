@@ -1,9 +1,10 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import {
   CHANNEL_POST_SIGNATURE_DEFAULT_TEXT,
   type ChannelPostSignatureSettings,
 } from '@maxim/contracts/channel-post-signature';
 import { lazy, Suspense, useEffect, useId, useState } from 'react';
-import { Post, RefreshCircle, WarningCircle } from 'iconoir-react';
+
 import type { ApiTransport } from '../lib/api/transport';
 import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
 import { ActionConfirmSheet } from './ui/action-confirm-sheet';
@@ -156,7 +157,9 @@ export function VkParsingCard({
             else void feedQuery.refetch();
           }}
         >
-          <RefreshCircle
+          <IconoirSprite
+            variant="iconoir"
+            icon="RefreshCircle"
             className={state.isRefreshing || isSyncing ? 'is-refreshing' : undefined}
             aria-hidden
           />
@@ -198,7 +201,7 @@ export function VkParsingCard({
       {feedQuery.error ? (
         feed ? (
           <div className="vk-inline-warning" role="status">
-            <WarningCircle aria-hidden />
+            <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
             <span>Не удалось обновить посты</span>
             <button type="button" onClick={() => void feedQuery.refetch()}>
               Повторить
@@ -256,7 +259,7 @@ export function VkParsingCard({
               )}
               {posts.length === 0 ? (
                 <div className="vk-workspace-empty">
-                  <Post aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Post" aria-hidden />
                   <strong>
                     {isSyncing
                       ? 'Загружаем посты'

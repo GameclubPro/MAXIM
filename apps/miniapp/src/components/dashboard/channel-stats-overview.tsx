@@ -1,10 +1,11 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import type {
   ChannelStatsBucket,
   ChannelStatsRange,
   ChannelStatsResponse,
   ChannelStatsSummary,
 } from '@maxim/contracts/channel-stats';
-import { OpenNewWindow as IconOpenNewWindow } from 'iconoir-react';
+
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { SegmentedControl } from '../ui/segmented-control';
 import { formatCount, formatPeriodRange, periodOptions } from '../../lib/channel-stats-format';
@@ -1408,7 +1409,9 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
                     {formatPostDateTime(post.publishedAt)} · МСК
                   </span>
                   {post.url ? (
-                    <IconOpenNewWindow
+                    <IconoirSprite
+                      variant="iconoir"
+                      icon="OpenNewWindow"
                       className="channel-posts-chart__external-icon"
                       aria-hidden="true"
                       width={16}

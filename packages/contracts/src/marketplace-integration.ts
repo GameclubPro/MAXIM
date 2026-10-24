@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { utcTimestampSchema, utf16Max } from './marketplace-validator-compat.js';
 
 export const marketplaceEntityIdSchema = z.string().regex(/^-[1-9]\d{0,19}$/u);
 export const marketplaceKindSchema = z.enum(['CHAT', 'CHANNEL']);
 export const marketplaceProfileSchema = z.enum(['moderation', 'publisher']);
-const timestamp = z.string().datetime();
+const timestamp = utcTimestampSchema;
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const marketplaceBindingInputSchema = z
   .object({
@@ -14,8 +15,8 @@ export const marketplaceBindingInputSchema = z
   })
   .strict();
 export const marketplaceBindingMetadataSchema = z.object({
-  title: z.string().max(300),
-  description: z.string().max(4000),
+  title: utf16Max(z.string(), 300),
+  description: utf16Max(z.string(), 4000),
   imageUrl: z.string().url().nullable(),
   publicUrl: z.string().url().nullable(),
   audience: z.number().int().min(0).max(2147483647).nullable(),
@@ -98,10 +99,10 @@ export const marketplaceStatisticsPageSchema = z.object({
 });
 export const marketplaceProfileDetailsSchema = z
   .object({
-    title: z.string().trim().min(1).max(300),
-    description: z.string().trim().max(1500),
-    topic: z.string().trim().min(1).max(100),
-    region: z.string().trim().min(1).max(80),
+    title: utf16Max(z.string().trim().min(1), 300),
+    description: utf16Max(z.string().trim(), 1500),
+    topic: utf16Max(z.string().trim().min(1), 100),
+    region: utf16Max(z.string().trim().min(1), 80),
   })
   .strict();
 export const marketplaceProfileMutationSchema = z
@@ -133,17 +134,17 @@ export const marketplaceProfileRelayResponseSchema = z
       .object({
         id: z.string().uuid(),
         status: z.enum(['DRAFT', 'PUBLISHED', 'PAUSED']),
-        title: z.string().max(300),
-        description: z.string().max(1500),
-        topic: z.string().max(100),
-        region: z.string().max(80),
+        title: utf16Max(z.string(), 300),
+        description: utf16Max(z.string(), 1500),
+        topic: utf16Max(z.string(), 100),
+        region: utf16Max(z.string(), 80),
         publicUrl: z.string().url().nullable(),
         profileOnly: z.boolean(),
       })
       .nullable(),
     choices: z.object({
-      topics: z.array(z.string().max(100)).max(200),
-      regions: z.array(z.string().max(100)).max(500),
+      topics: z.array(utf16Max(z.string(), 100)).max(200),
+      regions: z.array(utf16Max(z.string(), 100)).max(500),
     }),
     capabilities: z
       .object({

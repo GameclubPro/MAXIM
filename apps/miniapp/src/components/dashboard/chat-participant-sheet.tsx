@@ -1,20 +1,10 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import type {
   ChatParticipantDetails,
   ChatParticipantItem,
   ChatSanctionsPage,
 } from '@maxim/contracts';
-import {
-  InfoCircle,
-  Prohibition,
-  Search,
-  ShieldCheck,
-  SoundOff,
-  UserCircle,
-  NavArrowRight,
-  NavArrowLeft,
-  OpenNewWindow,
-  Refresh,
-} from 'iconoir-react';
+
 import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent } from 'react';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { isTopmostModalDialog } from '../../lib/dialog-focus';
@@ -306,7 +296,7 @@ function InfoButton({
         onToggle(hintKey);
       }}
     >
-      <InfoCircle aria-hidden />
+      <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
     </button>
   );
 }
@@ -529,7 +519,7 @@ export function ChatParticipantSheet({
               disabled={isBusy}
               onClick={backToOverview}
             >
-              <NavArrowLeft aria-hidden />
+              <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
             </button>
           ) : undefined
         }
@@ -619,7 +609,7 @@ export function ChatParticipantSheet({
                         aria-label={immunityDescription}
                         title={immunityDescription}
                       >
-                        <ShieldCheck aria-hidden />
+                        <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
                         <span aria-hidden={Boolean(immunityDescription)}>{immunityValue}</span>
                       </span>
                     ) : null}
@@ -656,7 +646,7 @@ export function ChatParticipantSheet({
               <div className="participant-card__notice" role="alert">
                 <p>{loadError}</p>
                 <button type="button" className="button button--ghost" onClick={onRetry}>
-                  <Refresh aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
                   Повторить
                 </button>
               </div>
@@ -671,7 +661,7 @@ export function ChatParticipantSheet({
                   Не удалось проверить статус в чате. Персональные действия временно недоступны.
                 </p>
                 <button type="button" className="button button--ghost" onClick={onRetry}>
-                  <Refresh aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
                   Обновить
                 </button>
               </div>
@@ -697,11 +687,11 @@ export function ChatParticipantSheet({
                       setActiveComposer('immunity');
                     }}
                   >
-                    <ShieldCheck aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
                     <span>
                       Защита<small>{protectionLabel}</small>
                     </span>
-                    <NavArrowRight aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
                   </button>
                   <button
                     type="button"
@@ -713,11 +703,11 @@ export function ChatParticipantSheet({
                       setActiveComposer('mute');
                     }}
                   >
-                    <SoundOff aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="SoundOff" aria-hidden />
                     <span>
                       Без сообщений<small>{muteLabel}</small>
                     </span>
-                    <NavArrowRight aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
                   </button>
                   {onSanctionsActivate ? (
                     <button
@@ -726,11 +716,11 @@ export function ChatParticipantSheet({
                       onClick={onSanctionsActivate}
                       disabled={isBusy}
                     >
-                      <ShieldCheck aria-hidden />
+                      <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
                       <span>
                         Ограничения<small>{sanctionsLabel}</small>
                       </span>
-                      <NavArrowRight aria-hidden />
+                      <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
                     </button>
                   ) : null}
                 </div>
@@ -742,9 +732,9 @@ export function ChatParticipantSheet({
                     onClick={onProfileActivate}
                     disabled={isBusy}
                   >
-                    <UserCircle aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="UserCircle" aria-hidden />
                     <span>{isOpeningProfile ? 'Открываем...' : 'Профиль в MAX'}</span>
-                    <OpenNewWindow aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
                   </button>
 
                   <button
@@ -754,9 +744,9 @@ export function ChatParticipantSheet({
                     disabled={isBusy}
                     title="Проверить участника по базе спамеров"
                   >
-                    <Search aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="Search" aria-hidden />
                     <span>Проверка по базе спама</span>
-                    <NavArrowRight aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
                   </button>
 
                   {canManageParticipant ? (
@@ -766,7 +756,7 @@ export function ChatParticipantSheet({
                       onClick={onBan}
                       disabled={isBusy}
                     >
-                      <Prohibition aria-hidden />
+                      <IconoirSprite variant="iconoir" icon="Prohibition" aria-hidden />
                       <span>Заблокировать</span>
                     </button>
                   ) : null}

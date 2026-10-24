@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import { type FormEvent } from 'react';
-import { InfoCircleSolid, PlusCircle, RefreshCircle, Trash } from 'iconoir-react';
+
 import type { VkParsingSource } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
 import { formatVkSourceProblem, formatVkSourceSyncLabel } from './format';
@@ -61,7 +62,7 @@ export function SourcesBar({
             title="Добавить источник"
             disabled={isAdding || !sourceUrl.trim()}
           >
-            <PlusCircle aria-hidden />
+            <IconoirSprite variant="iconoir" icon="PlusCircle" aria-hidden />
           </button>
         </form>
 
@@ -74,7 +75,7 @@ export function SourcesBar({
           title="О VK-источниках"
           onClick={() => onToggleHint('source')}
         >
-          <InfoCircleSolid aria-hidden />
+          <IconoirSprite variant="iconoir" icon="InfoCircleSolid" aria-hidden />
         </button>
 
         <button
@@ -85,7 +86,7 @@ export function SourcesBar({
           disabled={isRefreshing || sources.length === 0}
           onClick={onRefresh}
         >
-          <RefreshCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />
         </button>
         {openHintKey === 'source' ? (
           <div id="vk-parsing-source-hint" className="vk-parsing-hint-popover" role="status">
@@ -140,7 +141,7 @@ export function SourcesBar({
                   disabled={isRemoving}
                   onClick={() => onRemoveSource(source.id)}
                 >
-                  <Trash aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
                 </button>
               </span>
             );

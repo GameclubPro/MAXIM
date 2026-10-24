@@ -1,6 +1,7 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import type { BotSpeechMediaImage } from '@maxim/contracts/settings';
 import { hasCustomBotSpeechText } from '@maxim/contracts/bot-speech';
-import { Camera as IconoirCamera } from 'iconoir-react';
+
 import {
   type ChangeEvent,
   useCallback,
@@ -344,7 +345,7 @@ export function BotSpeechMessageEditorSheet({
                   )}
                   aria-disabled={isPreparingImage}
                 >
-                  <IconoirCamera aria-hidden focusable="false" />
+                  <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
                   <span>
                     {isPreparingImage
                       ? 'Готовим фото'
@@ -378,7 +379,7 @@ export function BotSpeechMessageEditorSheet({
                     }}
                     disabled={isPreparingImage}
                   >
-                    <IconoirCamera aria-hidden focusable="false" />
+                    <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
                     <span>
                       {isPreparingImage
                         ? 'Готовим фото'

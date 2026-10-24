@@ -245,7 +245,7 @@ postgres('marketplace durable owner policy changes', () => {
     expect((await state.read(id))!.statistics_revoked_at).toEqual(denied);
     await expect(
       mutate({ action: 'save', requestId: randomUUID(), expectedRevision: 1 }),
-    ).rejects.toThrow('Подтвердите');
+    ).rejects.toThrow('Профиль пока недоступен');
     const response = await mutate({
       action: 'save',
       requestId: randomUUID(),

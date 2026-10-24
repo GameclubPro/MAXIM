@@ -1,7 +1,8 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { NavArrowLeft, NavArrowRight, Xmark, ShieldCheck } from 'iconoir-react';
+
 import type { UpdateCommentRestrictionRequest } from '@maxim/contracts/channel-dialog';
 import {
   commentModerationKey,
@@ -163,7 +164,11 @@ export default function CommentModerationSheet({ context, target: initialTarget,
             onClick={back}
             disabled={mutation.isPending}
           >
-            {confirm || (target && !initialTarget) ? <NavArrowLeft /> : <Xmark />}
+            {confirm || (target && !initialTarget) ? (
+              <IconoirSprite variant="iconoir" icon="NavArrowLeft" />
+            ) : (
+              <IconoirSprite variant="iconoir" icon="Xmark" />
+            )}
           </button>
         </header>
         <div className="comment-moderation-sheet__content">
@@ -284,12 +289,12 @@ export default function CommentModerationSheet({ context, target: initialTarget,
                       setConfirm(false);
                     }}
                   >
-                    <ShieldCheck aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
                     <span>
                       <strong>{item.displayName || `Участник ${item.userId}`}</strong>
                       <small>{commentRestrictionLabel(item)}</small>
                     </span>
-                    <NavArrowRight aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
                   </button>
                 ))}
               {list.data?.pages[0]?.items.length === 0 ? <p>Активных ограничений нет.</p> : null}

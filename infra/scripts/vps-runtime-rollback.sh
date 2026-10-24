@@ -102,6 +102,7 @@ maxim_topology_require_commercial_ocr_baseline_guard "$TARGET_FULL_SHA"
 maxim_topology_require_max_api_metrics_minute_reader "$TARGET_FULL_SHA"
 maxim_topology_require_managed_network_foundation "$TARGET_FULL_SHA"
 maxim_topology_require_network_settings_v2 "$TARGET_FULL_SHA"
+maxim_topology_require_exact_statistics_rollup_reader "$TARGET_FULL_SHA"
 if maxim_topology_git_compose_has_service "$TARGET_FULL_SHA" "$MAXIM_MEDIA_ANALYSIS_SERVICE"; then
   TARGET_HAS_MEDIA_ANALYSIS=1
   if maxim_topology_git_has_commercial_ocr_raster_smoke "$TARGET_FULL_SHA"; then
@@ -542,6 +543,7 @@ echo "Runtime rollback: $CURRENT_HEAD -> $TARGET_HEAD"
 echo "Services: ${SERVICES[*]}"
 ensure_rollback_migrations_compatible
 maxim_check_deploy_disk_capacity 1 0
+require_market_statistics_lock_dispatch "$TARGET_FULL_SHA" || exit 1
 git switch --detach "$TARGET_FULL_SHA"
 maxim_topology_refuse_dirty_api_build_inputs
 

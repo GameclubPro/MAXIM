@@ -4,7 +4,10 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Optional,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { StatsEntity } from '@maxim/contracts/statistics-central';
 import {
   managedEntityTypeSchema,
   type ManagedEntityFavoriteType,
@@ -19,6 +22,8 @@ import {
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { Prisma, type Prisma as PrismaTypes } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { centralEnabled, StatsFailure } from '../statistics/stats-common';
+import { StatsReadService } from '../statistics/stats-read.service';
 import {
   NetworkAuthorizationService,
   NETWORK_AUTHORIZATION_CONCURRENCY,
@@ -62,6 +67,7 @@ type Generation = {
   proofs: Map<string, string>;
 };
 type AudienceRow = { chat_id: string; participants_count: number; observed_at: Date };
+type AudienceRead = { rows: AudienceRow[]; verifyAccess?: () => Promise<void> };
 type GrowthRow = { chat_id: string; at: Date; joined: bigint; left_count: bigint };
 type MembershipCoverageRow = {
   chat_id: string;
@@ -135,6 +141,8 @@ export class NetworkStatisticsService {
     private readonly managed: ManagedEntitiesService,
     private readonly networks: ManagedEntityNetworksService,
     private readonly authorization: NetworkAuthorizationService,
+    @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly stats?: StatsReadService,
   ) {}
 
   async read(
@@ -305,29 +313,42 @@ export class NetworkStatisticsService {
     let scopeRows: ScopeRow[] = [];
     let membershipCoverageRows: MembershipCoverageRow[] = [];
     let titles: Array<{ id: string; title: string | null }> = [];
+    let verifyAudienceAccess: (() => Promise<void>) | undefined;
     if (ids.length) {
       const selected = Prisma.join(ids);
-      [audienceRows, growthRows, viewRows, scopeRows, membershipCoverageRows, titles] =
-        await this.prisma.$transaction(
-          async (tx) => {
-            await tx.$executeRaw`SET LOCAL statement_timeout='2500ms'`;
-            await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
-            // FLAG: Acquire the RepeatableRead snapshot before choosing its window.
-            // A singleton advanced before that snapshot stays eligible; advances
-            // committed afterwards retain their previous MVCC version for this read.
-            const [clock] = await tx.$queryRaw<
-              Array<{ as_of: Date }>
-            >`SELECT clock_timestamp() AS as_of`;
-            g.to = clock.as_of;
-            g.from = networkStatisticsPeriodStart(g.to, g.range);
-            const fromComplete = new Date(Math.ceil(g.from.getTime() / HOUR_MS) * HOUR_MS);
-            const toComplete = new Date(Math.floor(g.to.getTime() / HOUR_MS) * HOUR_MS);
-            const audience = await tx.$queryRaw<AudienceRow[]>`
+      [
+        audienceRows,
+        growthRows,
+        viewRows,
+        scopeRows,
+        membershipCoverageRows,
+        titles,
+        verifyAudienceAccess,
+      ] = await this.prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SET LOCAL statement_timeout='2500ms'`;
+          await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
+          // FLAG: Acquire the RepeatableRead snapshot before choosing its window.
+          // A singleton advanced before that snapshot stays eligible; advances
+          // committed afterwards retain their previous MVCC version for this read.
+          const [clock] = await tx.$queryRaw<
+            Array<{ as_of: Date }>
+          >`SELECT clock_timestamp() AS as_of`;
+          g.to = clock.as_of;
+          g.from = networkStatisticsPeriodStart(g.to, g.range);
+          const fromComplete = new Date(Math.ceil(g.from.getTime() / HOUR_MS) * HOUR_MS);
+          const toComplete = new Date(Math.floor(g.to.getTime() / HOUR_MS) * HOUR_MS);
+          const audienceRead: AudienceRead =
+            this.config && centralEnabled(this.config)
+              ? await this.readAudience(g, ids, tx)
+              : {
+                  rows: await tx.$queryRaw<AudienceRow[]>`
           SELECT chat_id,participants_count,observed_at FROM managed_entity_audience_observations
           WHERE chat_id IN (${selected}) AND entity_type=${g.entityType === 'chat' ? 'CHAT' : 'CHANNEL'}::"ChatEntityType"
             AND observed_at<=${g.to}
-        `;
-            const growth = await tx.$queryRaw<GrowthRow[]>`
+        `,
+                };
+          const growth = await tx.$queryRaw<GrowthRow[]>`
           WITH membership AS (
             SELECT chat_id,bucket_start AS at,joined_users::bigint AS joined,left_users::bigint AS left_count
             FROM chat_membership_activity_rollups WHERE chat_id IN (${selected})
@@ -341,21 +362,21 @@ export class NetworkStatisticsService {
           ) SELECT chat_id,${bucketSql(Prisma.sql`at`)} AS at,sum(joined)::bigint AS joined,sum(left_count)::bigint AS left_count
           FROM membership GROUP BY chat_id,2 ORDER BY 2,chat_id
         `;
-            const views =
-              g.entityType === 'channel' ? await this.readViews(tx, ids, g.from, g.to, bucket) : [];
-            const scope =
-              g.entityType === 'channel'
-                ? await tx.$queryRaw<ScopeRow[]>`
+          const views =
+            g.entityType === 'channel' ? await this.readViews(tx, ids, g.from, g.to, bucket) : [];
+          const scope =
+            g.entityType === 'channel'
+              ? await tx.$queryRaw<ScopeRow[]>`
           SELECT a.chat_id,a.observed_post_count::bigint AS post_count,a.observed_post_count::bigint AS observed_count,
             a.first_observed_at AS first_baseline_at,a.last_observed_at,
             a.last_success_at,a.discovery_complete_at,a.full_refresh_at,a.stalled_at
           FROM channel_view_archive_states a WHERE a.chat_id IN (${selected})
         `
-                : [];
-            // FLAG: An empty membership result is not evidence of zero growth. These
-            // four indexed edge probes describe retained observations, not continuous
-            // webhook delivery; membership coverage therefore remains partial.
-            const membershipCoverage = await tx.$queryRaw<MembershipCoverageRow[]>`
+              : [];
+          // FLAG: An empty membership result is not evidence of zero growth. These
+          // four indexed edge probes describe retained observations, not continuous
+          // webhook delivery; membership coverage therefore remains partial.
+          const membershipCoverage = await tx.$queryRaw<MembershipCoverageRow[]>`
           SELECT c.id AS chat_id,
             LEAST(s.membership_coverage_from,first_feed.event_at,first_rollup.bucket_start) AS observed_from,
             GREATEST(last_feed.event_at,last_rollup.bucket_start) AS observed_at
@@ -373,14 +394,32 @@ export class NetworkStatisticsService {
             WHERE r.chat_id=c.id AND r.bucket_start<=${g.to} ORDER BY bucket_start DESC LIMIT 1) last_rollup ON true
           WHERE c.id IN (${selected})
         `;
-            const names = await tx.chat.findMany({
-              where: { id: { in: ids } },
-              select: { id: true, title: true },
-            });
-            return [audience, growth, views, scope, membershipCoverage, names] as const;
-          },
-          { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, timeout: 15_000 },
-        );
+          const names = await tx.chat.findMany({
+            where: { id: { in: ids } },
+            select: { id: true, title: true },
+          });
+          return [
+            audienceRead.rows,
+            growth,
+            views,
+            scope,
+            membershipCoverage,
+            names,
+            audienceRead.verifyAccess,
+          ] as const;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead, timeout: 15_000 },
+      );
+    }
+    if (verifyAudienceAccess) {
+      try {
+        // FLAG: Release the observation transaction's connection before the fresh
+        // access check. Nested pool reservations can deadlock concurrent readers.
+        await verifyAudienceAccess();
+      } catch (error) {
+        this.handleAudienceError(error);
+        audienceRows = [];
+      }
     }
     return this.present(
       g,
@@ -391,6 +430,46 @@ export class NetworkStatisticsService {
       membershipCoverageRows,
       titles,
     );
+  }
+
+  private async readAudience(
+    g: Generation,
+    ids: string[],
+    tx: PrismaTypes.TransactionClient,
+  ): Promise<AudienceRead> {
+    if (!this.stats) return { rows: [] };
+    const entities: StatsEntity[] = ids.map((maxId) => ({
+      kind: g.entityType === 'chat' ? 'CHAT' : 'CHANNEL',
+      maxId,
+    }));
+    try {
+      // FLAG: Use the same snapshot and cutoff as the native interval metrics.
+      // The central reader independently fences current native and peer authority.
+      const result = await this.stats.localAudienceCurrent(entities, g.userId, g.to, tx);
+      return {
+        rows: result.rows.map((row) => ({
+          chat_id: row.entity.maxId,
+          participants_count: row.value,
+          observed_at: row.observedAt,
+        })),
+        verifyAccess: result.verifyAccess,
+      };
+    } catch (error) {
+      this.handleAudienceError(error);
+      return { rows: [] };
+    }
+  }
+
+  private handleAudienceError(error: unknown): void {
+    if (error instanceof StatsFailure) {
+      if (error.getStatus() === 503) return;
+      if (error.getStatus() === 403 || error.getStatus() === 409)
+        throw new ConflictException({
+          code: 'NETWORK_STATISTICS_ACCESS_CHANGED',
+          message: 'Доступ изменился. Обновите статистику сетки.',
+        });
+    }
+    throw error;
   }
 
   private readViews(

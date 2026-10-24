@@ -1,4 +1,5 @@
-import { Check, Xmark } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import { useEffect, useRef, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { COMMENT_THEMES, type CommentTheme } from '../lib/comment-theme';
@@ -70,7 +71,7 @@ export default function CommentThemeSheet({
             title="Закрыть"
             onClick={onClose}
           >
-            <Xmark aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           </button>
         </header>
         <div
@@ -109,7 +110,11 @@ export default function CommentThemeSheet({
                 <i />
                 <i />
                 <i />
-                <Check className="comment-theme-sheet__selected" />
+                <IconoirSprite
+                  variant="iconoir"
+                  icon="Check"
+                  className="comment-theme-sheet__selected"
+                />
               </span>
               <span className="comment-theme-sheet__label">{option.label}</span>
             </button>

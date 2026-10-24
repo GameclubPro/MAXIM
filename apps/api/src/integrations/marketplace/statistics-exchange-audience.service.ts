@@ -1,4 +1,7 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { centralEnabled } from '../../statistics/stats-common';
+import { StatsReadService } from '../../statistics/stats-read.service';
+import { StatsAccessService } from '../../statistics/stats-access.service';
+import { ConflictException, Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
 import { exchangeMeasurementSchema } from '@maxim/contracts';
@@ -15,6 +18,8 @@ export class StatisticsExchangeAudienceService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly state: MarketplaceStateService,
+    @Optional() private readonly central?: StatsReadService,
+    @Optional() private readonly centralAccess?: StatsAccessService,
   ) {}
 
   async importedAudience(
@@ -22,6 +27,16 @@ export class StatisticsExchangeAudienceService {
     entityId: string,
     kind: 'CHAT' | 'CHANNEL',
   ): Promise<StatisticsExchangeAudienceObservation[]> {
+    if (centralEnabled(this.config)) {
+      if (!this.central || !this.centralAccess) return [];
+      const proofs = await this.prisma.$transaction((tx) =>
+        this.centralAccess!.nativeProof(tx, { kind, maxId: entityId }, actor, 'OWNER_ANALYTICS'),
+      );
+      const proof = proofs[0];
+      return proof
+        ? this.central.localHistory({ kind, maxId: entityId }, actor, proof.bot_ref)
+        : [];
+    }
     if (!statisticsExchangeActorAllowed(this.config, actor)) return [];
     const projections = await this.prisma.$queryRaw<
       Array<{

@@ -1,10 +1,11 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import {
   MAX_PUBLISHER_AUTO_REPLY_PREVIEW_MESSAGE_LENGTH,
   type PublisherAutoReplyMatchKind,
   type PublisherAutoReplyPreviewResponse,
 } from '@maxim/contracts/publisher-auto-replies';
 import { useMutation } from '@tanstack/react-query';
-import { CheckCircle, Play, WarningCircle, Xmark } from 'iconoir-react';
+
 import { useMemo, useRef, useState } from 'react';
 import { previewPublisherAutoReplyMatch } from '../lib/api/publisher-auto-replies-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -43,7 +44,7 @@ function MatchFeedback({ result }: { result: PublisherAutoReplyPreviewResponse }
   if (result.outcome === 'ambiguous') {
     return (
       <div className="publisher-auto-reply-editor__preview-result is-ambiguous" role="status">
-        <WarningCircle aria-hidden />
+        <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
         <span>
           <strong>Неоднозначное совпадение</strong>
           <small>Сообщение подходит нескольким правилам.</small>
@@ -55,7 +56,7 @@ function MatchFeedback({ result }: { result: PublisherAutoReplyPreviewResponse }
   if (result.outcome === 'no_match' || !result.selected) {
     return (
       <div className="publisher-auto-reply-editor__preview-result is-empty" role="status">
-        <Xmark aria-hidden />
+        <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
         <span>
           <strong>Совпадения нет</strong>
           <small>Ни одно правило не выбрано.</small>
@@ -72,7 +73,11 @@ function MatchFeedback({ result }: { result: PublisherAutoReplyPreviewResponse }
       )}
       role="status"
     >
-      {result.selected.matchedDraft ? <CheckCircle aria-hidden /> : <WarningCircle aria-hidden />}
+      {result.selected.matchedDraft ? (
+        <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden />
+      ) : (
+        <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
+      )}
       <span>
         <strong>
           {result.selected.matchedDraft ? 'Правило совпадёт' : 'Совпадёт другое правило'}
@@ -232,7 +237,11 @@ export function AutoReplyMatchTester({
           disabled={disabled || previewMutation.isPending || !message.trim()}
           onClick={runPreview}
         >
-          {previewMutation.isPending ? <Spinner size="sm" label={null} /> : <Play aria-hidden />}
+          {previewMutation.isPending ? (
+            <Spinner size="sm" label={null} />
+          ) : (
+            <IconoirSprite variant="iconoir" icon="Play" aria-hidden />
+          )}
           <span>Проверить</span>
         </button>
       </div>

@@ -1,17 +1,7 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import type { ManagedGiveawayParticipantState } from '@maxim/contracts/giveaway';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Check,
-  CheckCircle,
-  Clock,
-  WarningTriangle,
-  User,
-  NavArrowRight,
-  RefreshDouble,
-  ShieldCheck,
-  Trophy,
-  Xmark,
-} from 'iconoir-react';
+
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -290,16 +280,16 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             : 'default';
   const StateIcon =
     fatalError || unavailable
-      ? WarningTriangle
+      ? 'WarningTriangle'
       : phase === 'CANCELED' || expired
-        ? Xmark
+        ? 'Xmark'
         : participant?.isWinner && !expired
-          ? Trophy
+          ? 'Trophy'
           : verified
-            ? CheckCircle
+            ? 'CheckCircle'
             : phase === 'DRAWING' || phase === 'SCHEDULED'
-              ? Clock
-              : ShieldCheck;
+              ? 'Clock'
+              : 'ShieldCheck';
   const publicWinners = giveaway?.winners.filter((winner) => winner.status !== 'REROLLED') ?? [];
   const postUrl =
     phase === 'COMPLETED'
@@ -346,7 +336,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
         {prizes.length ? (
           <div className="giveaway-page__prizes">
             <h3>
-              <Trophy aria-hidden="true" /> Призы
+              <IconoirSprite variant="iconoir" icon="Trophy" aria-hidden="true" /> Призы
             </h3>
             <ol>
               {prizes.slice(0, 3).map((prize) => (
@@ -410,7 +400,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             aria-label="Закрыть розыгрыш"
             title="Закрыть"
           >
-            <Xmark />
+            <IconoirSprite variant="iconoir" icon="Xmark" />
           </button>
         </header>
         {!personalStatusFirst ? promotion : null}
@@ -422,7 +412,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             className={`giveaway-page__verification ${loading || checking || phase === 'DRAWING' ? 'is-checking' : ''} ${statusTone === 'success' || statusTone === 'winner' ? 'is-verified' : ''}`}
             aria-hidden="true"
           >
-            <StateIcon />
+            <IconoirSprite variant="iconoir" icon={StateIcon} />
           </div>
           <p className="giveaway-page__eyebrow">
             {phase === 'COMPLETED'
@@ -483,12 +473,12 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             ) : null}
             <div className="giveaway-page__counts">
               <span>
-                <User aria-hidden="true" />
+                <IconoirSprite variant="iconoir" icon="User" aria-hidden="true" />
                 <strong>{giveaway.entriesCount.toLocaleString('ru-RU')}</strong>
                 <small>заявок</small>
               </span>
               <span>
-                <Trophy aria-hidden="true" />
+                <IconoirSprite variant="iconoir" icon="Trophy" aria-hidden="true" />
                 <strong>{giveaway.prizes.length}</strong>
                 <small>мест</small>
               </span>
@@ -521,9 +511,9 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
                 <li key={condition.id} data-state={condition.state}>
                   <span className="giveaway-page__condition-mark" aria-hidden="true">
                     {condition.state === 'verified' ? (
-                      <Check />
+                      <IconoirSprite variant="iconoir" icon="Check" />
                     ) : condition.state === 'checking' ? (
-                      <RefreshDouble />
+                      <IconoirSprite variant="iconoir" icon="RefreshDouble" />
                     ) : (
                       index + 1
                     )}
@@ -552,7 +542,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
                         openMaxBotLink(condition.link!);
                       }}
                     >
-                      <NavArrowRight />
+                      <IconoirSprite variant="iconoir" icon="NavArrowRight" />
                     </button>
                   ) : null}
                 </li>
@@ -570,7 +560,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
         ) : null}
         {participant?.entryId && verified && (entryOpen || phase === 'DRAWING') ? (
           <div className="giveaway-page__ticket">
-            <CheckCircle aria-hidden="true" />
+            <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden="true" />
             <span>
               Заявка принята<strong>№ {participant.entryId}</strong>
             </span>
@@ -589,9 +579,9 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
                       <small>{winnerLabels[winner.status]}</small>
                     </div>
                     {winner.status === 'EXPIRED' ? (
-                      <Clock aria-hidden="true" />
+                      <IconoirSprite variant="iconoir" icon="Clock" aria-hidden="true" />
                     ) : (
-                      <Trophy aria-hidden="true" />
+                      <IconoirSprite variant="iconoir" icon="Trophy" aria-hidden="true" />
                     )}
                   </li>
                 ))}
@@ -629,11 +619,16 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
           }}
         >
           {busy ? (
-            <RefreshDouble className="giveaway-page__spin" aria-hidden="true" />
+            <IconoirSprite
+              variant="iconoir"
+              icon="RefreshDouble"
+              className="giveaway-page__spin"
+              aria-hidden="true"
+            />
           ) : claimable || verified ? (
-            <CheckCircle aria-hidden="true" />
+            <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden="true" />
           ) : (
-            <ShieldCheck aria-hidden="true" />
+            <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden="true" />
           )}
           <span>{actionLabel}</span>
         </button>
@@ -646,7 +641,7 @@ function GiveawayParticipation({ api, giveawayId }: { api: ApiTransport; giveawa
             {phase === 'COMPLETED' && giveaway?.resultsUrl
               ? 'К опубликованным итогам'
               : 'К посту розыгрыша'}
-            <NavArrowRight aria-hidden="true" />
+            <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden="true" />
           </button>
         ) : null}
       </footer>

@@ -1,4 +1,5 @@
-import { InfoCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { resolveCommercialSanctionAction, type ChatSettings } from '@maxim/contracts/settings';
 import { Suspense } from 'react';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
@@ -111,7 +112,7 @@ export function SettingsCommercialFilterEditor(props: SettingsCommercialFilterSe
               data-hint-key="textFiltersCommercial"
               onClick={() => toggleHint('textFiltersCommercial')}
             >
-              <InfoCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
             </button>
           </div>
 
@@ -169,7 +170,7 @@ export function SettingsCommercialFilterEditor(props: SettingsCommercialFilterSe
                     data-hint-key="commercialSensitivity"
                     onClick={() => toggleHint('commercialSensitivity')}
                   >
-                    <InfoCircle aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                   </button>
                 </div>
                 <span className="chip chip--warning">
@@ -253,7 +254,7 @@ export function SettingsCommercialFilterEditor(props: SettingsCommercialFilterSe
                     data-hint-key="textFiltersBotMessage"
                     onClick={() => toggleHint('textFiltersBotMessage')}
                   >
-                    <InfoCircle aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                   </button>
                 </div>
               </div>
@@ -326,7 +327,7 @@ export function SettingsCommercialFilterEditor(props: SettingsCommercialFilterSe
                     data-hint-key="textFiltersWarnMessage"
                     onClick={() => toggleHint('textFiltersWarnMessage')}
                   >
-                    <InfoCircle aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                   </button>
                 </div>
               </div>
@@ -440,7 +441,7 @@ export function SettingsCommercialFilterEditor(props: SettingsCommercialFilterSe
                     data-hint-key="textFiltersBotButton"
                     onClick={() => toggleHint('textFiltersBotButton')}
                   >
-                    <InfoCircle aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                   </button>
                 </div>
 

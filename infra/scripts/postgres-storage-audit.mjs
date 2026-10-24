@@ -61,6 +61,13 @@ WITH relations AS MATERIALIZED (
 )
 SELECT json_build_object(
   'schema_version', 1, 'audit', 'postgres_storage', 'sampled_at', clock_timestamp(),
+  'channel_statistics_rollup', (SELECT json_build_object(
+    'table_present', target IS NOT NULL,
+    'total_bytes', pg_total_relation_size(target),
+    'exact_columns_ready', (SELECT count(*)=2 FROM pg_attribute
+      WHERE attrelid=target AND attname IN ('views_total_exact','views_delta_exact')
+        AND atttypid='bigint'::regtype AND NOT attnotnull AND NOT attisdropped)
+  ) FROM (SELECT to_regclass('public.channel_stats_bucket_rollups') AS target) exact_relation),
   'postmaster_started_at', pg_postmaster_start_time(),
   'stats_reset_at', (SELECT stats_reset FROM pg_stat_database WHERE datname = current_database()),
   'database_counters', (SELECT json_build_object(

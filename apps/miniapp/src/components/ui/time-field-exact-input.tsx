@@ -1,4 +1,5 @@
-import { Minus, Plus } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './app-icon';
+
 import { useRef, useState } from 'react';
 import { parseExactTimePart, shiftExactTimePart } from './time-field-exact-model';
 import './time-field-exact-input.css';
@@ -96,7 +97,11 @@ export function TimeFieldExactInput({
                         if (next !== null) update(part.key, next);
                       }}
                     >
-                      {delta < 0 ? <Minus aria-hidden /> : <Plus aria-hidden />}
+                      {delta < 0 ? (
+                        <IconoirSprite variant="iconoir" icon="Minus" aria-hidden />
+                      ) : (
+                        <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
+                      )}
                     </button>
                   );
                 })}

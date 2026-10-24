@@ -1,4 +1,5 @@
-import { Check, NavArrowDown, Xmark } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import {
   type CSSProperties,
   useDeferredValue,
@@ -406,7 +407,7 @@ export function PublicationTargetPicker({
           <small>{readinessLabel}</small>
         </span>
         <span className="publication-target-row__check" aria-hidden>
-          {selected ? <Check /> : null}
+          {selected ? <IconoirSprite variant="iconoir" icon="Check" /> : null}
         </span>
       </button>
     );
@@ -454,7 +455,7 @@ export function PublicationTargetPicker({
             {expanded ? 'Свернуть' : 'Изменить'}
           </span>
         ) : null}
-        <NavArrowDown aria-hidden />
+        <IconoirSprite variant="iconoir" icon="NavArrowDown" aria-hidden />
       </button>
 
       {expanded ? (
@@ -486,7 +487,7 @@ export function PublicationTargetPicker({
                 aria-label="Закрыть выбор получателей"
                 title="Закрыть"
               >
-                <Xmark aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
               </button>
             </header>
           ) : null}
@@ -509,7 +510,7 @@ export function PublicationTargetPicker({
                     disabled={disabled}
                     aria-label={`Убрать ${getPublicationTargetTitle(target)}`}
                   >
-                    <Xmark aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
                   </button>
                 </span>
               ))}

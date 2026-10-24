@@ -1,8 +1,9 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import {
   MAX_PUBLICATION_DELETE_AFTER_MINUTES,
   type PublicationPostPublish,
 } from '@maxim/contracts/publication';
-import { Bell, NavArrowDown, Pin, Timer } from 'iconoir-react';
+
 import { useId, useState, type ReactNode } from 'react';
 import { PublicationNumberInput } from './publication-number-input';
 import { publicationPostPublishLabels } from './publication-post-actions-presentation';
@@ -70,12 +71,12 @@ export function PublicationPostPublishFields({
           <strong id={id}>После публикации</strong>
           <small>{summary || 'Закрепление и автоудаление'}</small>
         </span>
-        <NavArrowDown aria-hidden />
+        <IconoirSprite variant="iconoir" icon="NavArrowDown" aria-hidden />
       </button>
       <div id={`${id}-fields`} className="publication-post-publish__fields" hidden={!expanded}>
         <PostActionSwitch
           label="Закрепить пост"
-          icon={<Pin aria-hidden="true" />}
+          icon={<IconoirSprite variant="iconoir" icon="Pin" aria-hidden="true" />}
           checked={value.pin !== 'none'}
           disabled={disabled}
           onChange={(enabled) => {
@@ -87,7 +88,7 @@ export function PublicationPostPublishFields({
           <div className="publication-post-publish__nested">
             <PostActionSwitch
               label="С уведомлением"
-              icon={<Bell aria-hidden="true" />}
+              icon={<IconoirSprite variant="iconoir" icon="Bell" aria-hidden="true" />}
               checked={value.pin === 'notify'}
               disabled={disabled}
               onChange={(enabled) => {
@@ -99,7 +100,7 @@ export function PublicationPostPublishFields({
         ) : null}
         <PostActionSwitch
           label="Удалить автоматически"
-          icon={<Timer aria-hidden="true" />}
+          icon={<IconoirSprite variant="iconoir" icon="Timer" aria-hidden="true" />}
           checked={value.deleteAfterMinutes !== null}
           disabled={disabled}
           onChange={(enabled) => {

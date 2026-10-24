@@ -1,4 +1,5 @@
-import { Search } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './app-icon';
+
 import { useRef, useState } from 'react';
 import { useSettingsOverviewFilter } from '../../lib/settings-overview-filter';
 import { XmarkGlyph } from './compact-icons';
@@ -32,7 +33,7 @@ export function SettingsOverviewSearch({
   return (
     <div className="settings-overview-search-wrap">
       <label className="settings-overview-search">
-        <Search aria-hidden focusable="false" />
+        <IconoirSprite variant="iconoir" icon="Search" aria-hidden focusable="false" />
         <input
           ref={inputRef}
           type="search"

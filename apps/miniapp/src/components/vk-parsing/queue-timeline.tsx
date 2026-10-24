@@ -1,6 +1,7 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import { useEffect, useState } from 'react';
 import { DateTime } from 'luxon';
-import { Check, Send, Xmark } from 'iconoir-react';
+
 import type { VkParsingPost } from '@maxim/contracts';
 import { TimeField } from '../ui/time-field';
 import { ActionConfirmSheet } from '../ui/action-confirm-sheet';
@@ -111,7 +112,7 @@ function QueueItem({
               setDraft(server);
             }}
           >
-            <Xmark aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           </button>
           <button
             type="button"
@@ -120,7 +121,7 @@ function QueueItem({
               if (parsed) onSchedule(parsed);
             }}
           >
-            <Check aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Check" aria-hidden />
             <span>Сохранить время</span>
           </button>
         </div>
@@ -154,7 +155,7 @@ function QueueItem({
           disabled={unavailable}
           onClick={() => onAction('publish')}
         >
-          <Send aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Send" aria-hidden />
         </button>
         <button
           type="button"
@@ -164,7 +165,7 @@ function QueueItem({
           disabled={unavailable}
           onClick={() => onAction('cancel')}
         >
-          <Xmark aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
         </button>
       </div>
       {quarantined || post.publishLockedAt ? (

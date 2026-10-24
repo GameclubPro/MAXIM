@@ -1,6 +1,6 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import type { VkParsingFeedPagination } from '@maxim/contracts';
 import { VK_PARSING_PAGE_SIZE } from './types';
-import { NavArrowLeft, NavArrowRight } from 'iconoir-react';
 
 type PaginationProps = {
   pagination: VkParsingFeedPagination | null | undefined;
@@ -31,7 +31,7 @@ export function Pagination({
         disabled={pagination.offset === 0 || isFetching}
         onClick={() => onPageOffsetChange(Math.max(0, pageOffset - VK_PARSING_PAGE_SIZE))}
       >
-        <NavArrowLeft aria-hidden />
+        <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
       </button>
       <span>
         {pagination.total === 0 ? 0 : pagination.offset + 1}-
@@ -45,7 +45,7 @@ export function Pagination({
         disabled={!pagination.hasMore || isFetching}
         onClick={() => onPageOffsetChange(pagination.nextOffset ?? pageOffset)}
       >
-        <NavArrowRight aria-hidden />
+        <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
       </button>
     </div>
   );

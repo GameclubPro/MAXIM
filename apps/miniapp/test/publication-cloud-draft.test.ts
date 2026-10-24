@@ -25,6 +25,32 @@ const initial = (): PublicationDraft => ({
   ...createEmptyPublicationDraft(),
   text: 'Первый текст',
 });
+
+test('cloud draft save and reopening preserve legacy minute-only schedule instants', async () => {
+  const { api } = setup();
+  const draft: PublicationDraft = {
+    ...initial(),
+    timingMode: 'schedule',
+    scheduledSlots: ['2026-10-20T00:00Z', '2026-10-21T00:00:00.123456789Z'],
+    recurrence: {
+      ...initial().recurrence,
+      startsAt: '2026-10-20T00:00Z',
+      endsAt: '2026-10-21T00:00Z',
+    },
+  };
+  const saved = await saveServerPublicationDraft(
+    api,
+    null,
+    serverDraftRequest(draft, 'minute-only-legacy-draft'),
+  );
+  const reopened = draftFromServer(await getServerPublicationDraft(api, saved.publication.id));
+  assert.deepEqual(reopened.scheduledSlots, draft.scheduledSlots);
+  assert.deepEqual(reopened.recurrence, draft.recurrence);
+  assert.equal(
+    serverDraftRequest(reopened, 'minute-only-resave').state.recurrence.startsAt,
+    draft.recurrence.startsAt,
+  );
+});
 function setup(draft = initial()) {
   const api = createPreviewApiTransport();
   const writes: Parameters<typeof saveServerPublicationDraft>[] = [];

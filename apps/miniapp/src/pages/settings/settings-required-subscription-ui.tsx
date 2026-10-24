@@ -1,4 +1,5 @@
-import { NavArrowDown, Plus } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { useId, useState, type ReactNode } from 'react';
 import { useHintPopoverAutoPosition } from '../../lib/hint-popover';
 import { cn } from '../../lib/cn';
@@ -41,9 +42,14 @@ export function RequiredSubscriptionSourceDisclosure({
         aria-controls={contentId}
         onClick={() => setOpen((current) => !current)}
       >
-        <Plus aria-hidden />
+        <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
         <span>Добавить источник</span>
-        <NavArrowDown aria-hidden className={open ? 'is-open' : undefined} />
+        <IconoirSprite
+          variant="iconoir"
+          icon="NavArrowDown"
+          aria-hidden
+          className={open ? 'is-open' : undefined}
+        />
       </button>
       <div id={contentId} hidden={!open} className="required-subscription__add-content">
         {open ? children : null}

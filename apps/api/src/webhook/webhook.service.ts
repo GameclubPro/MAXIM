@@ -1,4 +1,5 @@
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { withStatsMembershipInvalidation } from '../statistics/stats-native-observation';
 import { captureVoiceSourceInput, persistVoiceSource } from '../moderation/voice-webhook-source';
 import {
   captureChannelPostDemand,
@@ -3470,7 +3471,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     rawClient: Required<ManagedEntityLocalActivityRawClient>,
     projections: readonly MembershipActivityProjection[],
   ): Promise<void> {
-    await rawClient.$executeRaw(Prisma.sql`
+    const statement = Prisma.sql`
       WITH incoming (
         "id",
         "dedupe_key",
@@ -3538,7 +3539,8 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
           AND COALESCE(BTRIM(EXCLUDED."sender_name"), '') <> ''
         )
         OR existing."event_at" < EXCLUDED."event_at"
-    `);
+    `;
+    await rawClient.$executeRaw(withStatsMembershipInvalidation(statement));
   }
 
   private buildMembershipActivityProjections(update: MaxUpdate): MembershipActivityProjection[] {

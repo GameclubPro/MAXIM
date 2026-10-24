@@ -1,4 +1,5 @@
-import { NavArrowRight } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import { Link } from 'react-router';
 import type { ManagedEntityType } from '@maxim/contracts';
 import { cn } from '../lib/cn';
@@ -39,7 +40,11 @@ export function PublicationWorkspaceHandoff({
             <span className="settings-section__title">Расписания</span>
           </span>
           <span className="settings-section__chevron" aria-hidden>
-            <NavArrowRight className="settings-section__chevron-icon" />
+            <IconoirSprite
+              variant="iconoir"
+              icon="NavArrowRight"
+              className="settings-section__chevron-icon"
+            />
           </span>
         </>
       ) : variant === 'settings-entry' ? (
@@ -56,7 +61,9 @@ export function PublicationWorkspaceHandoff({
       ) : (
         <span>Открыть расписания</span>
       )}
-      {variant === 'settings-tile' ? null : <NavArrowRight aria-hidden />}
+      {variant === 'settings-tile' ? null : (
+        <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
+      )}
     </Link>
   );
 }

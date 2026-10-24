@@ -1,4 +1,5 @@
-import { Refresh, VideoCamera, WarningCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { useId } from 'react';
 import { cn } from '../../lib/cn';
 import { PUBLICATION_VIDEO_MAX_SIZE_MB } from './publication-video-preparation';
@@ -51,7 +52,7 @@ export function PublicationVideoTool({
       aria-busy={preparing || undefined}
       title={`${label}. Максимум ${PUBLICATION_VIDEO_MAX_SIZE_MB} МБ`}
     >
-      <VideoCamera aria-hidden focusable="false" />
+      <IconoirSprite variant="iconoir" icon="VideoCamera" aria-hidden focusable="false" />
       {showLabel ? <span className="broadcast-content-composer__tool-label">Видео</span> : null}
       {preparing || needsReselection || errorId ? (
         <span
@@ -63,9 +64,9 @@ export function PublicationVideoTool({
           aria-hidden
         >
           {needsReselection || errorId ? (
-            <WarningCircle aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden focusable="false" />
           ) : (
-            <Refresh aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden focusable="false" />
           )}
         </span>
       ) : null}

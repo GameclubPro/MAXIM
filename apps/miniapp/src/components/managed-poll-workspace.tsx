@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import {
   MANAGED_POLL_MAX_OPTIONS,
   MANAGED_POLL_MIN_OPTIONS,
@@ -13,19 +14,7 @@ import {
 } from '@maxim/contracts/poll';
 import type { BroadcastImage, ManagedEntityType } from '@maxim/contracts';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  CheckCircle,
-  Camera,
-  EditPencil,
-  Eye,
-  NavArrowLeft,
-  OpenNewWindow,
-  Plus,
-  RefreshCircle,
-  SendDiagonal,
-  Trash,
-  User,
-} from 'iconoir-react';
+
 import {
   forwardRef,
   useCallback,
@@ -377,7 +366,7 @@ function PollVoterDetails({
                     <div className="managed-poll-voters__names">
                       {optionVoters.map((voter) => (
                         <span key={voter.id} className="managed-poll-voters__name">
-                          <User aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="User" aria-hidden />
                           {resolveVoterName(voter)}
                         </span>
                       ))}
@@ -481,7 +470,7 @@ function PollResultCard({
 
       {poll.imageCount > 0 ? (
         <span className="managed-poll-item__media-count" aria-label={`Фото: ${poll.imageCount}`}>
-          <Camera aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Camera" aria-hidden />
           {poll.imageCount}
         </span>
       ) : null}
@@ -524,7 +513,7 @@ function PollResultCard({
               title="Открыть публикацию"
               onClick={() => openMaxBotLink(poll.publicationUrl ?? '')}
             >
-              <OpenNewWindow aria-hidden />
+              <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
             </button>
           ) : null}
           {canShowVoters ? (
@@ -534,7 +523,7 @@ function PollResultCard({
               aria-expanded={votersOpen}
               onClick={onToggleVoters}
             >
-              <Eye aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Eye" aria-hidden />
               {votersOpen ? 'Скрыть' : 'Участники'}
             </button>
           ) : null}
@@ -546,7 +535,7 @@ function PollResultCard({
                 onClick={onEdit}
                 disabled={busy}
               >
-                <EditPencil aria-hidden />
+                <IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden />
                 Изменить
               </button>
               <button
@@ -557,7 +546,7 @@ function PollResultCard({
                 onClick={onDelete}
                 disabled={busy}
               >
-                <Trash aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
               </button>
             </>
           ) : null}
@@ -568,7 +557,7 @@ function PollResultCard({
               onClick={onClose}
               disabled={busy}
             >
-              <CheckCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden />
               Завершить
             </button>
           ) : null}
@@ -579,7 +568,7 @@ function PollResultCard({
               onClick={onRefreshPublication}
               disabled={busy}
             >
-              <RefreshCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />
               Обновить публикацию
             </button>
           ) : null}
@@ -590,7 +579,7 @@ function PollResultCard({
               onClick={onResetPublication}
               disabled={busy}
             >
-              <RefreshCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />
               Вернуть в черновики
             </button>
           ) : null}
@@ -663,7 +652,7 @@ function PollEditor({
           aria-label="Назад к списку"
           title="Назад к списку"
         >
-          <NavArrowLeft aria-hidden />
+          <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
         </button>
         <div>
           <h2>{draft.pollId ? 'Черновик' : 'Новый опрос'}</h2>
@@ -773,7 +762,7 @@ function PollEditor({
                     onClick={() => removeOption(option.key)}
                     disabled={busy}
                   >
-                    <Trash aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
                   </button>
                 ) : null}
                 {optionError ? (
@@ -793,7 +782,7 @@ function PollEditor({
             onClick={addOption}
             disabled={busy}
           >
-            <Plus aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
             Добавить вариант
           </button>
         ) : null}
@@ -814,7 +803,7 @@ function PollEditor({
           onClick={onPublish}
           disabled={busy}
         >
-          <SendDiagonal aria-hidden />
+          <IconoirSprite variant="iconoir" icon="SendDiagonal" aria-hidden />
           Опубликовать
         </button>
       </footer>
@@ -1492,7 +1481,7 @@ export const ManagedPollWorkspace = forwardRef<
           onClick={startNewPoll}
           disabled={isBusy}
         >
-          <Plus aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
           Новый
         </button>
       </div>

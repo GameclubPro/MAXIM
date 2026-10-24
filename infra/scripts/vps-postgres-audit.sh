@@ -57,6 +57,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
   ./infra/scripts/vps-postgres-audit.sh network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--membership=7d|30d] [--explain]
   ./infra/scripts/vps-postgres-audit.sh statistics-exchange <exact-actor-id> [--explain]
+  ./infra/scripts/vps-postgres-audit.sh central-statistics <negative-chat-ID-CSV, max 12> [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
   ./infra/scripts/vps-postgres-audit.sh monitor-signals <window-minutes>
@@ -108,7 +109,12 @@ PUBLISHER_SLOT_ARGS=()
 MODERATION_OUTCOME_ARGS=()
 NETWORK_STATISTICS_ARGS=()
 STATISTICS_EXCHANGE_ARGS=()
+CENTRAL_STATISTICS_ARGS=()
 case "$AUDIT_MODE" in
+  central-statistics)
+    CENTRAL_STATISTICS_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/central-statistics-audit.mjs" --validate-scope "${CENTRAL_STATISTICS_ARGS[@]}" >/dev/null || exit 2
+    ;;
   statistics-exchange)
     STATISTICS_EXCHANGE_ARGS=("${@:2}")
     node "$ROOT_DIR/infra/scripts/statistics-exchange-audit.mjs" --validate-scope "${STATISTICS_EXCHANGE_ARGS[@]}" >/dev/null || exit 2
@@ -227,10 +233,10 @@ esac
 
 # FLAG: This report attests public relations. Pin resolution before the shared
 # privilege admission as well as the report, including pg_temp last explicitly.
-if [[ "$AUDIT_MODE" == 'publisher-slots' || "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' || "$AUDIT_MODE" == 'network-statistics' || "$AUDIT_MODE" == 'statistics-exchange' ]]; then
+if [[ "$AUDIT_MODE" == 'publisher-slots' || "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' || "$AUDIT_MODE" == 'network-statistics' || "$AUDIT_MODE" == 'statistics-exchange' || "$AUDIT_MODE" == 'central-statistics' ]]; then
   POSTGRES_AUDIT_OPTIONS+=' -c search_path=pg_catalog,public,pg_temp'
 fi
-if [[ "$AUDIT_MODE" == 'statistics-exchange' ]]; then POSTGRES_AUDIT_OPTIONS+=' -c timezone=UTC'; fi
+if [[ "$AUDIT_MODE" == 'statistics-exchange' || "$AUDIT_MODE" == 'central-statistics' ]]; then POSTGRES_AUDIT_OPTIONS+=' -c timezone=UTC'; fi
 
 emit_prelude() {
   cat <<'SQL'
@@ -525,6 +531,7 @@ SELECT CASE
               'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
               'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
               'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
+              'stats_entities', 'stats_authorities', 'stats_measurements', 'stats_ingest_requests', 'stats_changes',
               'statistics_exchange_grants', 'statistics_exchange_entities', 'statistics_exchange_imports', 'statistics_exchange_generations',
                 'chat_settings',
                 'moderation_delete_intents',
@@ -2379,11 +2386,15 @@ emit_legacy_default_webhook_audit() {
 
 emit_sql() {
   emit_prelude
+  local central_privilege_args=(--privileges)
+  if [[ "$AUDIT_MODE" == 'central-statistics' ]]; then central_privilege_args+=(--require-all); fi
+  node "$ROOT_DIR/infra/scripts/central-statistics-audit.mjs" "${central_privilege_args[@]}"
   local exchange_privilege_args=(--privileges)
   if [[ "$AUDIT_MODE" == 'statistics-exchange' ]]; then exchange_privilege_args+=(--require-all); fi
   node "$ROOT_DIR/infra/scripts/statistics-exchange-audit.mjs" "${exchange_privilege_args[@]}"
   local network_privilege_args=(--privileges)
-  if [[ "$AUDIT_MODE" == 'network-statistics' ]]; then network_privilege_args+=(--require-all); fi
+  if [[ "$AUDIT_MODE" == 'network-statistics' || "$AUDIT_MODE" == 'central-statistics' ]]; then network_privilege_args+=(--require-all); fi
+  if [[ "$AUDIT_MODE" == 'central-statistics' ]]; then network_privilege_args+=(--observations); fi
   local network_argument
   for network_argument in "${NETWORK_STATISTICS_ARGS[@]}"; do
     if [[ "$network_argument" == '--observations' ]]; then network_privilege_args+=(--observations); fi
@@ -2411,6 +2422,9 @@ emit_sql() {
   if [[ "$AUDIT_MODE" == 'webhook-quarantine' ]]; then quarantine_privilege_args+=(--require-all); fi
   node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "${quarantine_privilege_args[@]}"
   case "$AUDIT_MODE" in
+    central-statistics)
+      node "$ROOT_DIR/infra/scripts/central-statistics-audit.mjs" "${CENTRAL_STATISTICS_ARGS[@]}"
+      ;;
     statistics-exchange)
       node "$ROOT_DIR/infra/scripts/statistics-exchange-audit.mjs" "${STATISTICS_EXCHANGE_ARGS[@]}"
       ;;

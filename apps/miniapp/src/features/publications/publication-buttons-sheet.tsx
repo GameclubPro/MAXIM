@@ -1,11 +1,7 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { MAX_PUBLICATION_BUTTONS, publicationButtonSchema } from '@maxim/contracts/publication';
-import {
-  NavArrowDown,
-  NavArrowUp,
-  Plus as IconoirPlus,
-  Xmark as IconoirXmark,
-} from 'iconoir-react';
+
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -351,7 +347,7 @@ export function PublicationButtonsSheet({
             {workingButtons.length}/{MAX_PUBLICATION_BUTTONS}
           </span>
           <button ref={closeButtonRef} type="button" onClick={requestClose} aria-label="Закрыть">
-            <IconoirXmark aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden focusable="false" />
           </button>
         </header>
 
@@ -377,7 +373,12 @@ export function PublicationButtonsSheet({
                         aria-label={`Убрать кнопку ${index + 1}`}
                         title="Убрать"
                       >
-                        <IconoirXmark aria-hidden focusable="false" />
+                        <IconoirSprite
+                          variant="iconoir"
+                          icon="Xmark"
+                          aria-hidden
+                          focusable="false"
+                        />
                       </button>
                     </div>
 
@@ -466,7 +467,7 @@ export function PublicationButtonsSheet({
                           disabled={disabled || index === 0}
                           aria-label={`Переместить кнопку ${index + 1} выше`}
                         >
-                          <NavArrowUp aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="NavArrowUp" aria-hidden />
                         </button>
                         <button
                           type="button"
@@ -474,7 +475,7 @@ export function PublicationButtonsSheet({
                           disabled={disabled || index === workingButtons.length - 1}
                           aria-label={`Переместить кнопку ${index + 1} ниже`}
                         >
-                          <NavArrowDown aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="NavArrowDown" aria-hidden />
                         </button>
                       </div>
                     ) : null}
@@ -491,7 +492,7 @@ export function PublicationButtonsSheet({
                 disabled={disabled}
               >
                 <span>
-                  <IconoirPlus aria-hidden focusable="false" />
+                  <IconoirSprite variant="iconoir" icon="Plus" aria-hidden focusable="false" />
                 </span>
                 <strong>{workingButtons.length === 0 ? 'Добавить' : 'Ещё'}</strong>
               </button>

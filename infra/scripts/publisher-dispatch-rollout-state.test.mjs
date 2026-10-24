@@ -528,6 +528,7 @@ test('CLI patches selection atomically, preserves permissions, and reads only ex
   const path = join(directory, '.env');
   const original = 'MAX_PUBLISHER_DISPATCH_ENABLED=true\r\nSECRET=private-value';
   writeFileSync(path, original, { mode: 0o640 });
+  chmodSync(path, 0o640);
   assert.equal(runHelper(['read-selection-env', path]).stdout, 'off\n');
   assert.equal(runHelper(['read-selection-env-configured', path]).stdout, 'false\n');
   assert.equal(runHelper(['patch-selection-env', path, 'test']).status, 0);
@@ -948,6 +949,7 @@ test('rollup CLI preserves dotenv permissions and verifies only the installed so
   const path = join(directory, '.env');
   const original = 'PUBLISHER_TEMPORAL_SELECTION_ROLLOUT=test\r\nOTHER=private';
   writeFileSync(path, original, { mode: 0o640 });
+  chmodSync(path, 0o640);
   assert.equal(runHelper(['read-rollup-env', path]).stdout, 'off\n');
   assert.equal(runHelper(['read-rollup-env-configured', path]).stdout, 'false\n');
   assert.equal(runHelper(['patch-rollup-env', path, '25']).status, 0);

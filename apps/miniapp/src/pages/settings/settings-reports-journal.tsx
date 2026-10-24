@@ -1,6 +1,7 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { RefreshDouble, NavArrowDown } from 'iconoir-react';
+
 import type { ReportJournalFilters, ReportsPage, ReportSummary } from '@maxim/contracts/settings';
 import { ActionConfirmSheet } from '../../components/ui/action-confirm-sheet';
 import type { ApiTransport } from '../../lib/api/transport';
@@ -269,7 +270,7 @@ function ReportJournalResults({
             if (selected) void detail.refetch({ cancelRefetch: false });
           }}
         >
-          <RefreshDouble aria-hidden />
+          <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden />
         </button>
       </div>
       {list.isPending && <p role="status">Загрузка…</p>}
@@ -306,7 +307,7 @@ function ReportJournalResults({
                   <small>/{item.threshold}</small>
                 </b>
                 <small className="reports-journal__vote-label">голоса</small>
-                <NavArrowDown aria-hidden />
+                <IconoirSprite variant="iconoir" icon="NavArrowDown" aria-hidden />
               </span>
             </button>
             {selected === item.id && (
