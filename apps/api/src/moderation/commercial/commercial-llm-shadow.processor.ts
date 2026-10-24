@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { Prisma } from '../../prisma/prisma-client';
 import type { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
-import type { CommercialLlmClient } from './commercial-llm.client';
+import type { CommercialLlmClassifier } from './commercial-llm.protocol';
 import {
   COMMERCIAL_LLM_MODEL_SHA256,
   COMMERCIAL_LLM_PROMPT_SHA256,
@@ -25,7 +25,7 @@ export class CommercialLlmShadowProcessor {
   constructor(
     private readonly store: CommercialLlmShadowStore,
     private readonly lease: CommercialLlmShadowLease,
-    private readonly client: Pick<CommercialLlmClient, 'classify'>,
+    private readonly client: CommercialLlmClassifier,
     private readonly governor: Pick<BackgroundRuntimeGovernorService, 'decide'>,
     private readonly hasHeadroom = commercialLlmHostHasHeadroom,
   ) {}
@@ -69,11 +69,11 @@ export class CommercialLlmShadowProcessor {
         return { outcome: signal?.aborted ? 'stopped' : 'idle', ...coverage };
       if (!(await valid())) return { outcome: 'lease_lost', ...coverage };
       let observation: Prisma.InputJsonObject;
+      let route: string | undefined;
       try {
-        observation = {
-          status: 'COMPLETE',
-          ...(await this.client.classify(candidate.excerpt, workSignal)),
-        };
+        const result = await this.client.classify(candidate.excerpt, workSignal, valid);
+        route = result.cascade?.route;
+        observation = { status: 'COMPLETE', ...result };
       } catch {
         if (signal?.aborted) return { outcome: 'stopped', ...coverage };
         if (workSignal.aborted) return { outcome: 'lease_lost', ...coverage };
@@ -97,6 +97,10 @@ export class CommercialLlmShadowProcessor {
         ...(observation.durationMs !== undefined
           ? { durationMs: Number(observation.durationMs) }
           : {}),
+        ...(persisted && typeof observation.modelAlias === 'string'
+          ? { modelAlias: observation.modelAlias }
+          : {}),
+        ...(persisted && route ? { route } : {}),
       };
     } finally {
       clearInterval(monitor);
