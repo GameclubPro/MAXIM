@@ -967,7 +967,13 @@ test('quarantine proof fixes the minute, bounds owner reads and withholds privat
   t.after(() => rmSync(data.directory, { force: true, recursive: true }));
   const mode = 'webhook-quarantine-proof';
   const minute = '2026-10-15T01:37:00Z';
-  for (const options of [[], ['--explain']]) {
+  for (const options of [
+    [],
+    ['--explain'],
+    ['--private-blocker-ids'],
+    ['--private-blocker-ids', '--explain'],
+    ['--explain', '--private-blocker-ids'],
+  ]) {
     const result = runAudit(data, [mode, minute, ...options]);
     assert.equal(result.status, 0, result.stderr);
     const sql = readFileSync(data.sql, 'utf8');
@@ -979,7 +985,11 @@ test('quarantine proof fixes the minute, bounds owner reads and withholds privat
     assert.match(sql, /'replay_authorized', false/u);
     assert.match(sql, /'settlement_authorized', false/u);
     assert.doesNotMatch(sql, /FROM max_action_ledger|EXPLAIN ANALYZE/u);
-    assert.equal(sql.includes('EXPLAIN (FORMAT JSON)'), options.length > 0);
+    assert.equal(sql.includes('EXPLAIN (FORMAT JSON)'), options.includes('--explain'));
+    assert.equal(
+      sql.includes("'private_blocker_receipt_id'"),
+      options.includes('--private-blocker-ids'),
+    );
     assert.match(readFileSync(data.dockerArgs, 'utf8'), /maxim_audit/u);
     assert.match(readFileSync(data.dockerArgs, 'utf8'), /search_path=pg_catalog,public,pg_temp/u);
     assert.equal(runConnect(data, ['postgres-audit', mode, minute, ...options]).status, 0);
@@ -993,6 +1003,9 @@ test('quarantine proof fixes the minute, bounds owner reads and withholds privat
     ['/tmp/query.sql'],
     [minute, '--apply'],
     [minute, '--explain', 'extra'],
+    [minute, '--private-blocker-ids', '--private-blocker-ids'],
+    [minute, '--explain', '--explain'],
+    [minute, '--private-blocker-ids', '--apply'],
   ]) {
     assert.equal(runAudit(data, [mode, ...args]).status, 2);
     assert.equal(runConnect(data, ['postgres-audit', mode, ...args]).status, 2);

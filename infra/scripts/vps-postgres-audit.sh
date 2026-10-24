@@ -40,7 +40,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh duplicate [--status <STATUS>] [--explain]
   ./infra/scripts/vps-postgres-audit.sh poll-publication <poll-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-quarantine <UTC-minute> [--explain]
-  ./infra/scripts/vps-postgres-audit.sh webhook-quarantine-proof <UTC-minute> [--explain]
+  ./infra/scripts/vps-postgres-audit.sh webhook-quarantine-proof <UTC-minute> [--explain] [--private-blocker-ids]
   ./infra/scripts/vps-postgres-audit.sh rules-cleanup <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-comments <chat-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh publisher-publications [--explain]
@@ -179,7 +179,11 @@ case "$AUDIT_MODE" in
     SOURCE_ENVELOPE_OWNER="$2"
     RULES_CLEANUP_EXPLAIN="${3:-}"
     ;;
-  webhook-quarantine|webhook-quarantine-proof)
+  webhook-quarantine-proof)
+    QUARANTINE_PROOF_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/webhook-quarantine-proof-audit.mjs" "${QUARANTINE_PROOF_ARGS[@]}" >/dev/null || exit 2
+    ;;
+  webhook-quarantine)
     if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "$3" != '--explain' ) ]]; then usage; exit 2; fi
     node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "$2" --explain >/dev/null || exit 2
     QUARANTINE_MINUTE="$2"
@@ -2520,9 +2524,7 @@ emit_sql() {
       node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "${quarantine_args[@]}"
       ;;
     webhook-quarantine-proof)
-      local quarantine_proof_args=("$QUARANTINE_MINUTE")
-      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then quarantine_proof_args+=("$RULES_CLEANUP_EXPLAIN"); fi
-      node "$ROOT_DIR/infra/scripts/webhook-quarantine-proof-audit.mjs" "${quarantine_proof_args[@]}"
+      node "$ROOT_DIR/infra/scripts/webhook-quarantine-proof-audit.mjs" "${QUARANTINE_PROOF_ARGS[@]}"
       ;;
     poll-publication)
       local poll_args=("$POLL_PUBLICATION_ID")
