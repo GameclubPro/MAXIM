@@ -142,6 +142,10 @@ test(
     await db.query(
       readFileSync(new URL('./test-fixtures/network-statistics.sql', import.meta.url), 'utf8'),
     );
+    // FLAG: The production indexed discriminator is an enum, not the text fixture.
+    await db.query(`CREATE TYPE "ChatEntityType" AS ENUM ('CHAT','CHANNEL');
+      ALTER TABLE managed_entity_audience_observations
+        ALTER COLUMN entity_type TYPE "ChatEntityType" USING entity_type::"ChatEntityType";`);
     await db.query(
       'CREATE INDEX channel_posts_chat_id_latest_snapshot_at_idx ON channel_posts(chat_id,latest_snapshot_at DESC)',
     );

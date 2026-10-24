@@ -229,7 +229,7 @@ export function buildCentralStatisticsAuditSql(args) {
     SELECT r.max_id,k.kind,a.observed_at,s.captured_at,p.latest_snapshot_at
     FROM requested r CROSS JOIN (VALUES ('CHANNEL'),('CHAT')) k(kind)
     LEFT JOIN LATERAL (SELECT observed_at FROM public.managed_entity_audience_observations
-      WHERE chat_id=r.max_id AND entity_type=k.kind LIMIT 1) a ON true
+      WHERE chat_id=r.max_id AND entity_type=k.kind::public."ChatEntityType" LIMIT 1) a ON true
     LEFT JOIN LATERAL (SELECT captured_at FROM public.channel_audience_snapshots
       WHERE chat_id=r.max_id AND k.kind='CHANNEL' ORDER BY captured_at DESC LIMIT 1) s ON true
     LEFT JOIN LATERAL (SELECT latest_snapshot_at FROM public.channel_posts
