@@ -1,4 +1,3 @@
-import { readTrimmedString } from './admin-legacy-utils';
 import { createHash } from 'node:crypto';
 import {
   mergeChannelAudienceObservations,
@@ -19,17 +18,15 @@ import {
   type ChannelStatsBucket,
   type ChannelStatsQuery,
   type ChannelStatsResponse,
-  type ManagedEntityBotCapability,
   type ManagedEntityType,
   type MembershipActivityPage,
   type MembershipActivityQuery,
 } from '@maxim/contracts';
 import { Prisma } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
-import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
+import type { MaxClientService } from '../max/max-client.service';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { PrismaService } from '../prisma/prisma.service';
-import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import type { AdminChannelStatsRuntimeContext } from './admin-channel-stats-runtime-context';
 import {
   selectChannelStatsContentBucketRows,
@@ -243,17 +240,6 @@ export class AdminChannelStatsRuntime {
     for (const key of this.channelStatsResponseCache.keys()) {
       if (key.startsWith(prefix)) this.channelStatsResponseCache.delete(key);
     }
-  }
-
-  private resolveAssistBotAssignment(
-    chatId: string,
-    capability: ManagedEntityBotCapability,
-  ): Promise<string | undefined> {
-    return this.context.resolveAssistBotAssignment(chatId, capability);
-  }
-
-  private readTrimmedString(value: unknown): string | null {
-    return readTrimmedString(value);
   }
 
   private toIsoString(value: unknown): string | null {
@@ -694,9 +680,9 @@ export class AdminChannelStatsRuntime {
       useAudienceSnapshotFallbackForCurrent: audienceFresh,
     });
     const topReactions = isOverviewMode ? [] : this.buildTopReactions(periodPosts);
-    const topPosts = isOverviewMode
-      ? []
-      : await this.hydrateTopPostPreviews(chatId, this.buildTopPosts(postViewMetrics));
+    // FLAG: Missing previews are valid optional data. The existing collector owns
+    // MAX refreshes; a read must not wait for per-post network requests.
+    const topPosts = isOverviewMode ? [] : this.buildTopPosts(postViewMetrics);
     const participantSeries = this.buildParticipantSeries(
       bucketStarts,
       bucket,
@@ -2296,67 +2282,6 @@ export class AdminChannelStatsRuntime {
         previewUrl: metric.post.previewUrl,
         viewsDelta: this.toSafeInteger(metric.post.latestViews),
       }));
-  }
-
-  async hydrateTopPostPreviews(
-    chatId: string,
-    topPosts: ChannelStatsResponse['official']['content']['topPosts'],
-  ): Promise<ChannelStatsResponse['official']['content']['topPosts']> {
-    const missingPreviewPosts = topPosts.filter((post) => !this.readTrimmedString(post.previewUrl));
-    if (missingPreviewPosts.length === 0) {
-      return topPosts;
-    }
-
-    const botId = await this.resolveAssistBotAssignment(chatId, 'channel_stats');
-    const previewByMessageId = new Map<string, string>();
-    await mapWithConcurrencyLimit(missingPreviewPosts, 2, async (post) => {
-      try {
-        const snapshot = await this.maxClient.getMessageSnapshot(chatId, post.messageId, {
-          trafficClass: 'background',
-          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-          sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
-          ...(botId ? { botId } : {}),
-        });
-        const previewUrl = this.readTrimmedString(snapshot?.previewUrl);
-        if (previewUrl) {
-          previewByMessageId.set(post.messageId, previewUrl);
-        }
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            messageId: post.messageId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to hydrate channel stats top post preview',
-        );
-      }
-    });
-
-    if (previewByMessageId.size === 0) {
-      return topPosts;
-    }
-
-    await Promise.all(
-      Array.from(previewByMessageId.entries()).map(([messageId, previewUrl]) =>
-        this.prisma.channelPost.updateMany({
-          where: {
-            chatId,
-            messageId,
-            previewUrl: null,
-          },
-          data: {
-            previewUrl,
-          },
-        }),
-      ),
-    );
-    this.invalidateChannelStatsResponseCache(chatId);
-
-    return topPosts.map((post) => ({
-      ...post,
-      previewUrl: post.previewUrl ?? previewByMessageId.get(post.messageId) ?? null,
-    }));
   }
 
   buildTopReactions(
