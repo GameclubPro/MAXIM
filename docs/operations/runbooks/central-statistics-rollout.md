@@ -92,9 +92,12 @@ wait queue; pause and slow decisions retain their retry interval, and shutdown d
 check. Publisher handoff preserves that background admission. A deferred check never renews
 rights, revokes an unknown user, or advances measurement/import-success timestamps. During
 pressure some consumer leases can expire and remain unreadable until fresh checks succeed.
-The access batch processes its bounded selected rows sequentially; it must not spend twelve
-shared bot slots on four parallel three-request checks. Explicit user access checks remain
-interactive and retain all fresh authorization checks.
+The access batch claims one due binding immediately before its sequential check, up to twenty
+attempts or ten seconds per visit. It must neither spend twelve shared bot slots on four parallel
+checks nor postpone unstarted rows when a previous check exhausts the time budget, fails or
+shutdown begins. Native regressions cover those interruptions and independent progress of one
+hundred actors. Explicit user access checks remain interactive and retain all fresh authorization
+checks.
 
 After both peers have compatible v3 readers, use the guarded v3 rollout flags for
 accounts above 100 platforms. Keep the v2 limit unchanged, and verify the complete

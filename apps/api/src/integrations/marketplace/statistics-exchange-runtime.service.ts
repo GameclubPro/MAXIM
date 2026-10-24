@@ -102,21 +102,18 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
   async refreshAccessBatch(): Promise<void> {
     if (!this.enabled() || !this.access) return;
     const deadline = Date.now() + 10_000;
-    for (let page = 0; page < 5 && !this.stopping && Date.now() < deadline; page++) {
-      // FLAG: Keep the bounded claim, but admit MAX checks sequentially so four
-      // bindings cannot consume twelve shared bot slots at once.
-      const rows = await this.prisma.$queryRaw<MarketplaceBindingRow[]>`
+    for (let attempt = 0; attempt < 20 && !this.stopping && Date.now() < deadline; attempt++) {
+      // FLAG: Claim only the next admitted check. A slow/failed check or shutdown
+      // must not postpone unstarted bindings; MAX admission remains sequential.
+      const [row] = await this.prisma.$queryRaw<MarketplaceBindingRow[]>`
         UPDATE marketplace_bindings SET next_access_at=now()+interval '1 minute'
         WHERE id IN(SELECT b.id FROM marketplace_bindings b
           WHERE b.statistics_consent=true AND b.state<>'REVOKED' AND b.next_access_at<=now()
             AND EXISTS(SELECT 1 FROM statistics_exchange_entities e JOIN statistics_exchange_grants g ON g.id=e.grant_id
               WHERE e.binding_id=b.id AND g.state='ACTIVE')
-          ORDER BY b.next_access_at,b.id FOR UPDATE OF b SKIP LOCKED LIMIT 4) RETURNING *`;
-      if (!rows.length) return;
-      for (const row of rows) {
-        if (this.stopping || Date.now() >= deadline) return;
-        await this.access.refresh(row, true);
-      }
+          ORDER BY b.next_access_at,b.id FOR UPDATE OF b SKIP LOCKED LIMIT 1) RETURNING *`;
+      if (!row) return;
+      await this.access.refresh(row, true);
     }
   }
   async refreshRemoteAccessBatch(): Promise<void> {
