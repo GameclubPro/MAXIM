@@ -142,7 +142,7 @@ function functionBlock(source, name) {
 
 // FLAG: These doubles exercise callers' fail-closed boundaries only. Journal,
 // immutable SQL holds and the actual protected flock have their own store/native tests.
-function fixture({ missingHelper = false, rejectAfter = 0 } = {}) {
+function fixture({ missingHelper = false, rejectAfter = 0, localBranchExists = true } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-cold-entrypoints-'));
   const bin = join(directory, 'bin');
   const log = join(directory, 'calls.log');
@@ -208,6 +208,10 @@ maxim_require_ordinary_effect_authority() {
 set -euo pipefail
 printf 'git:%s\\n' "$*" >>"$COLD_ENTRY_TEST_LOG"
 case "$1" in
+  show-ref)
+    [[ "$*" == 'show-ref --verify --quiet refs/heads/main' ]] || exit 98
+    [[ "$COLD_ENTRY_TEST_LOCAL_BRANCH" == 1 ]]
+    exit $? ;;
   fetch|checkout|switch|pull)
     [[ "\${COLD_ENTRY_TEST_PLAN:-0}" == 1 ]] || exit 98
     exit 0 ;;
@@ -264,6 +268,7 @@ exit 98
     COLD_ENTRY_TEST_SOURCE_ROOT: root,
     COLD_ENTRY_TEST_SHA: sourceSha,
     COLD_ENTRY_TEST_REJECT_AFTER: String(rejectAfter),
+    COLD_ENTRY_TEST_LOCAL_BRANCH: localBranchExists ? '1' : '0',
   };
   return {
     directory,
@@ -340,22 +345,31 @@ for (const [name, args] of scripts) {
   });
 }
 
-test('deploy plan synchronizes source without checking ordinary effect admission or changing runtime', () => {
-  const state = fixture();
-  try {
-    const result = state.run('vps-pull-build-up.sh', ['main', '--plan'], {
-      COLD_ENTRY_TEST_PLAN: '1',
-    });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    const log = state.readLog();
-    assert.match(log, /git:fetch/u);
-    assert.equal((log.match(/market-statistics-source-checked/gu) ?? []).length, 2);
-    assert.doesNotMatch(log, /authority-checked|npm:|docker:.*\b(?:up|run|start|stop|build|rm)\b/u);
-    assert.equal(readFileSync(join(state.directory, '.env'), 'utf8'), 'NODE_ENV=production\n');
-  } finally {
-    state.cleanup();
-  }
-});
+for (const localBranchExists of [true, false]) {
+  test(`deploy plan synchronizes source without runtime effects (local branch: ${localBranchExists})`, () => {
+    const state = fixture({ localBranchExists });
+    try {
+      const result = state.run('vps-pull-build-up.sh', ['main', '--plan'], {
+        COLD_ENTRY_TEST_PLAN: '1',
+      });
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      const log = state.readLog();
+      assert.match(log, /git:fetch/u);
+      assert.equal(
+        (log.match(/market-statistics-source-checked/gu) ?? []).length,
+        localBranchExists ? 2 : 1,
+      );
+      assert.match(
+        log,
+        localBranchExists ? /git:checkout main\n/u : /git:checkout -b main origin\/main\n/u,
+      );
+      assert.doesNotMatch(log, /authority-checked|npm:|docker:.*\b(?:up|run|start|stop|build|rm)\b/u);
+      assert.equal(readFileSync(join(state.directory, '.env'), 'utf8'), 'NODE_ENV=production\n');
+    } finally {
+      state.cleanup();
+    }
+  });
+}
 
 test('reclaim dry run reaches only the read-only inventory path without ordinary effect admission', () => {
   const state = fixture();
