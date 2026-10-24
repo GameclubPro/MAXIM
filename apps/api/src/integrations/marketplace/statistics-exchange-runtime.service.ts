@@ -40,7 +40,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
           .finally(() => {
             this.accessActive = null;
           });
-      if (!this.remoteAccessActive)
+      if (!centralEnabled(this.config) && !this.remoteAccessActive)
         this.remoteAccessActive = this.refreshRemoteAccessBatch()
           .catch(() => this.logger.warn('EXCHANGE_REMOTE_ACCESS_UNAVAILABLE'))
           .finally(() => {
@@ -65,23 +65,27 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
   private enabled() {
     return (
       !this.stopping &&
-      !centralEnabled(this.config) &&
       roleRunsAction(getAppRole()) &&
-      !!this.config.get<string>('SVYAZKA_STATISTICS_EXPORT_TOKEN')
+      !!this.config.get<string>(
+        centralEnabled(this.config) ? 'SVYAZKA_ANALYTICS_TOKEN' : 'SVYAZKA_STATISTICS_EXPORT_TOKEN',
+      )
     );
   }
   async tick(): Promise<void> {
     if (!this.enabled()) return;
-    // FLAG: Indexed interval expiry removes payloads once their earliest measurement ages out.
+    const central = centralEnabled(this.config);
+    // FLAG: Central history retires archive work, not the binding leases used by its consumers.
     if (this.nextCleanupAt <= Date.now()) {
-      await this.prisma.$executeRaw`DELETE FROM statistics_exchange_generations WHERE id IN(
+      if (!central) {
+        await this.prisma.$executeRaw`DELETE FROM statistics_exchange_generations WHERE id IN(
         SELECT id FROM statistics_exchange_generations WHERE retention_from<(date_trunc('day',now() AT TIME ZONE 'UTC')-interval '89 days') AT TIME ZONE 'UTC'
         ORDER BY retention_from,id LIMIT 100)`;
-      await this.prisma.$executeRaw`DELETE FROM statistics_exchange_downloads WHERE id IN(
+        await this.prisma.$executeRaw`DELETE FROM statistics_exchange_downloads WHERE id IN(
         SELECT id FROM statistics_exchange_downloads WHERE expires_at<=now() ORDER BY expires_at,id LIMIT 100 FOR UPDATE SKIP LOCKED)`;
-      await this.prisma.$executeRaw`DELETE FROM statistics_exchange_v3_generations WHERE id IN(
+        await this.prisma.$executeRaw`DELETE FROM statistics_exchange_v3_generations WHERE id IN(
         SELECT id FROM statistics_exchange_v3_generations WHERE retention_from<(date_trunc('day',now() AT TIME ZONE 'UTC')-interval '89 days') AT TIME ZONE 'UTC'
         ORDER BY retention_from,id LIMIT 100 FOR UPDATE SKIP LOCKED)`;
+      }
       await this.prisma
         .$executeRaw`DELETE FROM statistics_exchange_membership_snapshots WHERE id IN(
         SELECT id FROM statistics_exchange_membership_snapshots WHERE expires_at<=now() ORDER BY expires_at,id LIMIT 100 FOR UPDATE SKIP LOCKED)`;
@@ -112,7 +116,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
     }
   }
   async refreshRemoteAccessBatch(): Promise<void> {
-    if (!this.enabled()) return;
+    if (!this.enabled() || centralEnabled(this.config)) return;
     const rows = await this.prisma.$queryRaw<Array<{ id: string; revision: bigint }>>`
       UPDATE statistics_exchange_grants SET next_remote_access_at=now()+interval '1 minute'
       WHERE id IN(SELECT id FROM statistics_exchange_grants WHERE state='ACTIVE' AND next_remote_access_at<=now()
@@ -124,30 +128,34 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
   }
 
   private async pullGrant(grant: StatisticsExchangeGrantRow, lease: string, deadline: number) {
+    const central = centralEnabled(this.config);
     let nextCursor = grant.pull_cursor,
       nextDelayMs = 60000,
       completedEntities = 0;
     let phase = 'RECOVERY';
     let error: { code: string; phase: string; entityKey: string | null } | null = null;
     try {
-      phase = 'RIGHTS';
-      const result = await this.statistics.pull(grant.id, Number(grant.revision), {
-        leaseId: lease,
-        afterEntityKey: grant.pull_cursor,
-        maxEntities: 3,
-        deadline,
-      });
-      completedEntities = result.completedEntities;
-      nextCursor = result.nextCursor;
-      nextDelayMs = result.nextDelayMs;
-      error = result.lastError;
+      if (!central) {
+        phase = 'RIGHTS';
+        const result = await this.statistics.pull(grant.id, Number(grant.revision), {
+          leaseId: lease,
+          afterEntityKey: grant.pull_cursor,
+          maxEntities: 3,
+          deadline,
+        });
+        completedEntities = result.completedEntities;
+        nextCursor = result.nextCursor;
+        nextDelayMs = result.nextDelayMs;
+        error = result.lastError;
+      }
       // FLAG: Recover missing bindings after active-entity progress; a denied recovery never blocks that page lane.
       if (Date.now() < deadline - 1000) {
         phase = 'RECOVERY';
         try {
           const recoveryPending = await this.grants.recoverUnavailable(grant.id);
           if (recoveryPending) {
-            nextDelayMs = Math.min(nextDelayMs, 60000);
+            // FLAG: One missing binding per bounded visit; large rosters must not wait a minute per entity.
+            nextDelayMs = Math.min(nextDelayMs, central ? 1000 : 60000);
             error ??= { code: 'EXCHANGE_ACCESS_PENDING', phase: 'RECOVERY', entityKey: null };
           }
         } catch (caught) {
@@ -164,7 +172,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
       error = { code: failure.code, phase, entityKey: null };
       nextDelayMs = exchangeRetryDelay(failure, (grant.failure_count ?? 0) + 1);
     } finally {
-      await this.prune(grant.id, lease).catch(() => undefined);
+      if (!central) await this.prune(grant.id, lease).catch(() => undefined);
       // FLAG: Page progress/READY are not a completed import. Persist only fixed codes and exact entity keys.
       await this.prisma
         .$executeRaw`UPDATE statistics_exchange_grants SET lease_id=NULL,lease_until=NULL,
