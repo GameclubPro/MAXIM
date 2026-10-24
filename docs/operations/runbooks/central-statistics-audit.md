@@ -44,6 +44,11 @@ indexed native probes therefore report raw audience and view observation times.
 They do not authorize access or establish the canonical selected value. A new
 lease or ingest timestamp does not refresh an old observation.
 
+The native audience discriminator is PostgreSQL `ChatEntityType`. Cast the bounded
+probe value to that enum, keeping the indexed column unchanged. The disposable
+PostgreSQL regression uses the production enum; a text-only fixture misses this
+operator boundary and cannot validate the live report.
+
 Global receipt and change samples are explicitly separate from the requested
 entity scope: each reads at most 257 recent rows and reports at most 256. The
 unpublished feed head likewise uses a capped oldest-first partial-index probe.
