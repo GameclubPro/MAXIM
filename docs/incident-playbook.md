@@ -168,6 +168,12 @@ full-path suite. Never remove uncertainty/order fences or clear Redis to repair 
    progress, retries and action outcomes under comparable load. Rate-limited batch logs are not a
    throughput denominator. Missing samples or low counts remain incomplete. Distinguish urgent
    nomination delay from queue wait after nomination; a completed job is not permission evidence.
+   `MAX action failure window summary` records all unignored user-facing failures in its stated
+   process-local window, including the first individually logged warning. Group counts retain
+   bot/lane/source, classified cause and invocation-owned HTTP evidence; overflow is explicit in
+   `unclassifiedFailures`. Do not add first-warning counts to summary totals or sum overlapping
+   health windows. Graceful shutdown flushes the current summary; an abrupt process loss can leave
+   an unreported partial window. These diagnostics neither alter action metrics nor prove effects.
 8. Reproduce a proposed correction with a failing local regression before deploying it. Use real
    PostgreSQL/Redis for query plans, retained-history bounds, leases and duplicate settlement. Stop
    only verified owned collectors during a release change; preserve capacity collection where possible.

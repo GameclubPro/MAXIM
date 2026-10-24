@@ -43,3 +43,13 @@ Interpret the report narrowly:
 
 Keep the UTC incident window, exact runtime SHA and report time with the evidence.
 Diagnostics never mutate poll status, membership, callbacks or publication ledgers.
+
+## Background pressure
+
+The background render-repair pass consults the shared runtime governor before selection and
+each repair. Pause admits no work; slow admits at most one repair and retains the governor's
+retry interval. A five-second dispatch budget stops new repairs without cancelling an edit
+already in progress. Shutdown stops further admission and drains the owned pass. SQL revision,
+error and publication evidence remain unchanged when admission is deferred; a skipped repair
+is not a successful render or proof that a publication was deleted. Interactive poll operations
+retain their existing exact access and publication guards.
