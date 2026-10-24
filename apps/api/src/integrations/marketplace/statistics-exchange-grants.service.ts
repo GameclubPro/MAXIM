@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
@@ -26,9 +27,17 @@ import { MarketplaceAccessService } from './marketplace-access.service';
 import {
   MarketplaceStateService,
   marketplaceLocalGrantSql,
+  marketplaceStatisticsGrantSql,
+  STATISTICS_ACCESS_CACHE_MS,
+  MARKETPLACE_GRANT_MS,
   type MarketplaceBindingRow,
 } from './marketplace-state.service';
 import { statisticsExchangeActorAllowed } from './statistics-exchange.settings';
+import { centralEnabled } from '../../statistics/stats-common';
+import {
+  StatisticsAccessDemandService,
+  type StatisticsAccessDemand,
+} from './statistics-access-demand.service';
 
 export type StatisticsExchangeGrantRow = {
   id: string;
@@ -74,7 +83,105 @@ export class StatisticsExchangeGrantsService {
     private readonly config: ConfigService,
     private readonly access: MarketplaceAccessService,
     private readonly state: MarketplaceStateService,
+    @Optional() private readonly demand?: StatisticsAccessDemandService,
   ) {}
+
+  localGrantSql(
+    alias: Parameters<typeof marketplaceLocalGrantSql>[0] = 'marketplace_bindings',
+    requireConsent = true,
+  ): Prisma.Sql {
+    return centralEnabled(this.config)
+      ? marketplaceStatisticsGrantSql(alias, requireConsent)
+      : marketplaceLocalGrantSql(alias, requireConsent);
+  }
+
+  accessLease(checkedAt: Date | null, validUntil: Date | null, active: boolean) {
+    if (!centralEnabled(this.config) || !active || !checkedAt) return { checkedAt, validUntil };
+    // FLAG: This is a fresh local policy evaluation, not a new MAX observation.
+    // The original proof stays in SQL; peer authority remains at most five minutes.
+    const now = new Date();
+    return {
+      checkedAt: now,
+      validUntil: new Date(
+        Math.min(
+          now.getTime() + MARKETPLACE_GRANT_MS,
+          checkedAt.getTime() + STATISTICS_ACCESS_CACHE_MS,
+        ),
+      ),
+    };
+  }
+
+  async requestAccess(
+    id: string,
+    revision: number,
+    entities: Array<{
+      entityId: string;
+      kind: 'CHAT' | 'CHANNEL';
+      checkedAt: Date | null;
+    }>,
+  ): Promise<void> {
+    if (!centralEnabled(this.config) || !this.demand) return;
+    const refreshBefore = Date.now() - STATISTICS_ACCESS_CACHE_MS + MARKETPLACE_GRANT_MS;
+    await this.demand.offer(
+      entities
+        .filter((entity) => !entity.checkedAt || entity.checkedAt.getTime() <= refreshBefore)
+        .map((entity) => ({
+          grantId: id,
+          revision,
+          entityId: entity.entityId,
+          kind: entity.kind,
+        })),
+    );
+  }
+
+  async refreshRequestedAccess(): Promise<boolean> {
+    if (!centralEnabled(this.config) || !this.demand) return false;
+    const claim = await this.demand.claim();
+    if (!claim) return false;
+    // A failed attempt keeps the original deadline and the shared minute backoff.
+    await this.refreshExactAccess(claim.request);
+    await this.demand.finish(claim);
+    return true;
+  }
+
+  private async refreshExactAccess(request: StatisticsAccessDemand): Promise<void> {
+    const grant = await this.row(request.grantId);
+    if (!grant || grant.state !== 'ACTIVE' || Number(grant.revision) !== request.revision) return;
+    this.assertActor(grant.actor_user_id);
+    const [entity] = await this.prisma.$queryRaw<Array<ExchangeEntityKey>>`
+      SELECT entity_id AS "entityId",kind,profile FROM statistics_exchange_entities
+      WHERE grant_id=${grant.id}::uuid AND entity_id=${request.entityId} AND kind=${request.kind}`;
+    if (!entity) return;
+    const [known] = await this.prisma.$queryRaw<Array<MarketplaceBindingRow & { usable: boolean }>>`
+      SELECT b.*,(${this.localGrantSql('b', false)}) AS usable FROM marketplace_bindings b
+      WHERE b.actor_user_id=${grant.actor_user_id} AND b.entity_id=${entity.entityId} AND b.profile=${entity.profile}`;
+    if (
+      known &&
+      (known.state === 'REVOKED' || known.statistics_revoked_at || known.kind !== entity.kind)
+    )
+      return;
+    const binding =
+      known?.usable &&
+      known.checked_at &&
+      known.checked_at.getTime() > Date.now() - STATISTICS_ACCESS_CACHE_MS + MARKETPLACE_GRANT_MS
+        ? known
+        : await this.access.attest({ actorUserId: grant.actor_user_id, ...entity }, true, true);
+    await this.prisma.$transaction(async (tx) => {
+      // FLAG: A delayed refresh cannot revive a removed entity or a newer grant.
+      const [current] = await tx.$queryRaw<StatisticsExchangeGrantRow[]>`
+        SELECT * FROM statistics_exchange_grants WHERE id=${grant.id}::uuid FOR UPDATE`;
+      if (!current || current.state !== 'ACTIVE' || current.revision !== grant.revision) return;
+      const enabled = await tx.$executeRaw`UPDATE marketplace_bindings SET
+        statistics_v2_consent_only=CASE WHEN statistics_consent=false THEN true ELSE statistics_v2_consent_only END,
+        statistics_consent=true,revision=revision+CASE WHEN statistics_consent=false THEN 1 ELSE 0 END
+        WHERE id=${binding.id}::uuid AND actor_user_id=${grant.actor_user_id} AND entity_id=${entity.entityId}
+          AND kind=${entity.kind} AND profile=${entity.profile} AND statistics_revoked_at IS NULL
+          AND ${this.localGrantSql('marketplace_bindings', false)}`;
+      if (!enabled) return;
+      await tx.$executeRaw`UPDATE statistics_exchange_entities SET binding_id=${binding.id}::uuid,error=NULL
+        WHERE grant_id=${grant.id}::uuid AND entity_id=${entity.entityId} AND kind=${entity.kind} AND profile=${entity.profile}`;
+    });
+  }
 
   assertActor(actor: string): void {
     if (!statisticsExchangeActorAllowed(this.config, actor))
@@ -135,6 +242,12 @@ export class StatisticsExchangeGrantsService {
     return rows[0] ?? null;
   }
 
+  private async hasLocalAccess(id: string): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM marketplace_bindings WHERE id=${id}::uuid AND ${this.localGrantSql('marketplace_bindings', false)}`;
+    return rows.length > 0;
+  }
+
   async read(id: string): Promise<ExchangeGrant> {
     const grant = await this.row(id);
     if (!grant) throw new NotFoundException('Согласие не найдено');
@@ -151,21 +264,40 @@ export class StatisticsExchangeGrantsService {
       >
     >`
       SELECT e.entity_id AS exchange_entity_id,e.kind AS exchange_kind,e.profile AS exchange_profile,e.error AS exchange_error,
-        b.*,(${marketplaceLocalGrantSql('b')}) AS local_active
+        b.*,(${this.localGrantSql('b')}) AS local_active
       FROM statistics_exchange_entities e LEFT JOIN marketplace_bindings b ON b.id=e.binding_id
       WHERE e.grant_id=${grant.id}::uuid ORDER BY e.kind,e.entity_id LIMIT 101`;
     if (rows.length > 100) throw new ConflictException('ROSTER_REQUIRES_V3');
     const actorAllowed = statisticsExchangeActorAllowed(this.config, grant.actor_user_id);
+    if (grant.state === 'ACTIVE' && actorAllowed)
+      await this.requestAccess(
+        grant.id,
+        Number(grant.revision),
+        rows.map((row) => ({
+          entityId: row.exchange_entity_id,
+          kind: row.exchange_kind,
+          checkedAt: row.checked_at,
+        })),
+      );
     const entities = rows.map((row) => {
       const binding = row.id ? row : null;
       const active =
         grant.state === 'ACTIVE' && actorAllowed && binding !== null && row.local_active === true;
+      const lease = binding
+        ? this.accessLease(binding.checked_at, binding.valid_until, active)
+        : null;
       return {
         entityId: row.exchange_entity_id,
         kind: row.exchange_kind,
         profile: row.exchange_profile,
         status: grant.state === 'REVOKED' ? 'REVOKED' : active ? 'ACTIVE' : 'UNAVAILABLE',
-        binding: binding ? this.state.present(binding) : null,
+        binding: binding
+          ? this.state.present({
+              ...binding,
+              checked_at: lease!.checkedAt,
+              valid_until: lease!.validUntil,
+            })
+          : null,
         error: active ? null : (row.exchange_error ?? 'ACCESS_UNAVAILABLE'),
       };
     });
@@ -209,7 +341,7 @@ export class StatisticsExchangeGrantsService {
         const known = await this.prisma.$queryRaw<
           MarketplaceBindingRow[]
         >`SELECT * FROM marketplace_bindings WHERE actor_user_id=${input.actorUserId} AND entity_id=${entity.entityId} AND kind=${entity.kind} AND profile=${entity.profile}`;
-        if (known[0] && (await this.state.hasActiveAccess(known[0].id))) binding = known[0];
+        if (known[0] && (await this.hasLocalAccess(known[0].id))) binding = known[0];
       }
       bindings.push({ entity, binding });
     }
@@ -241,7 +373,7 @@ export class StatisticsExchangeGrantsService {
             await tx.$executeRaw`UPDATE marketplace_bindings SET statistics_v2_consent_only=CASE WHEN statistics_consent=false THEN true ELSE statistics_v2_consent_only END,
             statistics_consent=true,next_collect_at=now(),revision=revision+1,updated_at=now()
             WHERE id=${binding.id}::uuid AND statistics_revoked_at IS NULL
-              AND ${marketplaceLocalGrantSql('marketplace_bindings', false)} AND checked_at=${binding.checked_at}`;
+              AND ${this.localGrantSql('marketplace_bindings', false)} AND checked_at=${binding.checked_at}`;
           }
           // FLAG: An authenticated new server selection supplies only bounded initial peer proof.
           // Replaying the same revision above never extends this deadline.
@@ -303,7 +435,7 @@ export class StatisticsExchangeGrantsService {
       statistics_consent=true,next_collect_at=now(),revision=revision+1,updated_at=now()
       FROM jsonb_to_recordset(${selected}::jsonb) e("entityId" text,kind text,profile text)
       WHERE b.actor_user_id=${input.actorUserId} AND b.entity_id=e."entityId" AND b.kind=e.kind AND b.profile=e.profile
-        AND b.statistics_revoked_at IS NULL AND ${marketplaceLocalGrantSql('b', false)}`;
+        AND b.statistics_revoked_at IS NULL AND ${this.localGrantSql('b', false)}`;
     // FLAG: Initial authenticated peer proof is bounded; replaying the same revision never reaches this write.
     await tx.$executeRaw`INSERT INTO statistics_exchange_entities
       (grant_id,entity_id,kind,profile,binding_id,error,remote_valid_until)
@@ -311,10 +443,11 @@ export class StatisticsExchangeGrantsService {
         CASE WHEN b.id IS NULL THEN 'ACCESS_UNAVAILABLE' ELSE NULL END,now()+interval '5 minutes'
       FROM jsonb_to_recordset(${selected}::jsonb) e("entityId" text,kind text,profile text)
       LEFT JOIN marketplace_bindings b ON b.actor_user_id=${input.actorUserId} AND b.entity_id=e."entityId"
-        AND b.kind=e.kind AND b.profile=e.profile AND ${marketplaceLocalGrantSql('b')}`;
+        AND b.kind=e.kind AND b.profile=e.profile AND ${this.localGrantSql('b')}`;
   }
 
   async recoverUnavailable(id: string): Promise<boolean> {
+    if (centralEnabled(this.config)) return false;
     const grant = await this.row(id);
     if (!grant || grant.state !== 'ACTIVE') return false;
     this.assertActor(grant.actor_user_id);
@@ -347,7 +480,7 @@ export class StatisticsExchangeGrantsService {
       if (!active) return;
       const enabled =
         await tx.$executeRaw`UPDATE marketplace_bindings SET statistics_v2_consent_only=CASE WHEN statistics_consent=false THEN true ELSE statistics_v2_consent_only END,statistics_consent=true,next_collect_at=now(),revision=revision+1 WHERE id=${binding.id}::uuid
-        AND statistics_revoked_at IS NULL AND ${marketplaceLocalGrantSql('marketplace_bindings', false)}`;
+        AND statistics_revoked_at IS NULL AND ${this.localGrantSql('marketplace_bindings', false)}`;
       if (!enabled) return;
       await tx.$executeRaw`UPDATE statistics_exchange_entities SET binding_id=${binding.id}::uuid,error=NULL WHERE grant_id=${id}::uuid AND entity_id=${entity.entityId} AND kind=${entity.kind}`;
     });

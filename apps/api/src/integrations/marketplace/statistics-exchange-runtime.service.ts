@@ -33,7 +33,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
   onModuleInit() {
     if (!this.enabled()) return;
     this.timer = setInterval(() => {
-      // FLAG: Rights have an independent bounded lane; archive I/O cannot delay revocation checks.
+      // FLAG: Central rights refresh consumes expiring demand, never a fleet sweep.
       if (!this.accessActive)
         this.accessActive = this.refreshAccessBatch()
           .catch(() => this.logger.warn('EXCHANGE_ACCESS_UNAVAILABLE'))
@@ -74,7 +74,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
   async tick(): Promise<void> {
     if (!this.enabled()) return;
     const central = centralEnabled(this.config);
-    // FLAG: Central history retires archive work, not the binding leases used by its consumers.
+    // FLAG: Central history retains cleanup, but no idle grant may schedule MAX work.
     if (this.nextCleanupAt <= Date.now()) {
       if (!central) {
         await this.prisma.$executeRaw`DELETE FROM statistics_exchange_generations WHERE id IN(
@@ -91,6 +91,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
         SELECT id FROM statistics_exchange_membership_snapshots WHERE expires_at<=now() ORDER BY expires_at,id LIMIT 100 FOR UPDATE SKIP LOCKED)`;
       this.nextCleanupAt = Date.now() + 60_000;
     }
+    if (central) return;
     const lease = randomUUID();
     const rows = await this.prisma.$queryRaw<StatisticsExchangeGrantRow[]>`
       UPDATE statistics_exchange_grants SET lease_id=${lease}::uuid,lease_until=now()+interval '2 minutes',last_attempt_at=now()
@@ -100,8 +101,20 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
     await Promise.allSettled(rows.map((grant) => this.pullGrant(grant, lease, deadline)));
   }
   async refreshAccessBatch(): Promise<void> {
-    if (!this.enabled() || !this.access) return;
+    if (!this.enabled()) return;
     const deadline = Date.now() + 10_000;
+    if (centralEnabled(this.config)) {
+      for (let count = 0; count < 4 && !this.stopping && Date.now() < deadline; count++) {
+        try {
+          if (!(await this.grants.refreshRequestedAccess())) return;
+        } catch {
+          this.logger.warn('EXCHANGE_ACCESS_UNAVAILABLE');
+          return;
+        }
+      }
+      return;
+    }
+    if (!this.access) return;
     for (let page = 0; page < 5 && !this.stopping && Date.now() < deadline; page++) {
       // FLAG: Keep the bounded claim, but admit MAX checks sequentially so four
       // bindings cannot consume twelve shared bot slots at once.

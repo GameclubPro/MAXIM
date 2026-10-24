@@ -88,3 +88,10 @@ Explicit `STATISTICS_EXCHANGE_V3_ENABLED=false` uses the same fenced deploy path
 v1/v2 readers and retained data remain available under their existing rules. Disabling v3 never
 permits an API rollback below the installed migration/reader floor. Enabling the flag and passing
 runtime parity do not establish bidirectional exchange acceptance or inside-MAX acceptance.
+
+Central-mode statistics access uses the demand/cache policy in
+[the central rollout runbook](operations/runbooks/central-statistics-rollout.md#connection-access-after-activation).
+An ACTIVE response's `checkedAt` is the current local authority evaluation; its `validUntil`
+is at most five minutes later and never later than the retained MAX proof's 24-hour expiry.
+The database retains the original MAX clock for lifecycle/denial ordering. Paging an actively
+used roster may request bounded refresh, but no idle-roster timer performs MAX rights checks.
