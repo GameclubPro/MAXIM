@@ -27,13 +27,15 @@ export class MarketplacePublisherAccessProcessor extends WorkerHost {
       (!parsed.data.exchangeV2 && parsed.data.actorUserId !== MARKETPLACE_PILOT_USER_ID)
     )
       throw new UnrecoverableError('Invalid marketplace access request');
-    const { requestedAtMs, exchangeV2, ...input } = parsed.data;
+    const { requestedAtMs, exchangeV2, background, ...input } = parsed.data;
     if (Date.now() - requestedAtMs > 8000 || requestedAtMs > Date.now() + 1000)
       return { state: 'RETRY' };
     try {
-      const binding = await (exchangeV2
-        ? this.access.attest(input, true)
-        : this.access.attest(input));
+      const binding = await (background
+        ? this.access.attest(input, exchangeV2 === true, true)
+        : exchangeV2
+          ? this.access.attest(input, true)
+          : this.access.attest(input));
       return { state: 'ACTIVE', bindingId: binding.id };
     } catch (error) {
       // Queue payloads and error storage never include MAX responses or credentials.

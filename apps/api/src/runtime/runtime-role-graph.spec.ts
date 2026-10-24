@@ -174,6 +174,14 @@ describe('runtime role dependency graphs', () => {
               context.get(WebhookDependencyQuarantineService),
             );
           }
+          if (providerNames.has('MarketplaceAccessService')) {
+            const { MarketplaceAccessService } =
+              await import('../integrations/marketplace/marketplace-access.service');
+            const access = context.get(MarketplaceAccessService) as unknown as {
+              governor: unknown;
+            };
+            expect(access.governor).toBe(context.get(BackgroundRuntimeGovernorService));
+          }
           const legacyHolds = context.get(WebhookLegacyHoldService);
           expect(() => legacyHolds.onApplicationBootstrap()).not.toThrow();
           expect(WebhookLegacyHoldService.forPrisma(context.get(PrismaService))).toBe(legacyHolds);

@@ -5,6 +5,7 @@ import type { ManagedEntitiesService } from '../../admin/managed-entities.servic
 import type { MaxClientService } from '../../max/max-client.service';
 import type { MarketplaceStateService } from './marketplace-state.service';
 import type { PublisherIdentityAttestationService } from '../../publisher/publisher-identity-attestation.service';
+import type { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
 
 describe('marketplace fresh access checks', () => {
   const previousRole = process.env.APP_ROLE;
@@ -76,7 +77,16 @@ describe('marketplace fresh access checks', () => {
         .mockResolvedValue({ userId: '323459159', isBot: false, isAdmin: true, isOwner: false }),
     };
     const state = { enabled: () => true };
+    const governor = {
+      decide: jest
+        .fn<
+          ReturnType<BackgroundRuntimeGovernorService['decide']>,
+          Parameters<BackgroundRuntimeGovernorService['decide']>
+        >()
+        .mockResolvedValue({ action: 'run', retryAfterMs: 0, reason: 'healthy' }),
+    } satisfies Pick<BackgroundRuntimeGovernorService, 'decide'>;
     return {
+      governor,
       database,
       entities,
       max,
@@ -90,6 +100,8 @@ describe('marketplace fresh access checks', () => {
         {
           assertAttested: jest.fn().mockResolvedValue(undefined),
         } as unknown as PublisherIdentityAttestationService,
+        undefined,
+        governor,
       ),
     };
   };
@@ -177,5 +189,104 @@ describe('marketplace fresh access checks', () => {
       'channel',
     );
     expect(max.getChatSnapshot).not.toHaveBeenCalled();
+  });
+  it('defers background rights before SQL or MAX without changing access evidence', async () => {
+    const { service, governor, database, max } = make();
+    governor.decide.mockResolvedValue({ action: 'pause', retryAfterMs: 60_000, reason: 'max_api' });
+    await expect(service.attest(input, false, true)).rejects.toThrow(ServiceUnavailableException);
+    expect(database.publisherEntityBinding.findUnique).not.toHaveBeenCalled();
+    expect(database.$transaction).not.toHaveBeenCalled();
+    expect(database.$executeRaw).not.toHaveBeenCalled();
+    expect(max.getChatSnapshot).not.toHaveBeenCalled();
+    governor.decide.mockResolvedValue({ action: 'run', retryAfterMs: 0, reason: 'healthy' });
+    await expect(service.attest(input, false, true)).rejects.toThrow(ServiceUnavailableException);
+    expect(governor.decide).toHaveBeenCalledTimes(1);
+    await service.attest(input);
+    expect(max.getChatSnapshot).toHaveBeenCalledWith(
+      '-100',
+      expect.objectContaining({ trafficClass: 'interactive' }),
+    );
+  });
+  it('uses background quota while preserving every fresh rights probe and final binding check', async () => {
+    const { service, max, database } = make();
+    await service.attest(input, false, true);
+    const options = expect.objectContaining({
+      bypassCache: true,
+      trafficClass: 'background',
+      sourceTag: 'marketplace_access_refresh',
+    });
+    expect(max.getChatSnapshot).toHaveBeenCalledWith('-100', options);
+    expect(max.getCurrentChatMemberAccess).toHaveBeenCalledWith('-100', options);
+    expect(max.getChatMemberAccess).toHaveBeenCalledWith('-100', '323459159', options);
+    expect(database.$transaction).toHaveBeenCalledTimes(1);
+  });
+  it('admits only one background operation and drains it on shutdown without queued followups', async () => {
+    const { service, governor, max } = make();
+    let release!: (value: Awaited<ReturnType<BackgroundRuntimeGovernorService['decide']>>) => void;
+    governor.decide.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const first = service.attest(input, false, true).catch((error: unknown) => error);
+    await expect(service.attest(input, false, true)).rejects.toThrow(ServiceUnavailableException);
+    let drained = false;
+    const closing = service.onModuleDestroy().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    release({ action: 'run', retryAfterMs: 0, reason: 'healthy' });
+    expect(await first).toBeInstanceOf(ServiceUnavailableException);
+    await closing;
+    expect(max.getChatSnapshot).not.toHaveBeenCalled();
+    await expect(service.attest(input, false, true)).rejects.toThrow(ServiceUnavailableException);
+  });
+  it('admits one slow check and preserves the governor cooldown before the next check', async () => {
+    const { service, governor, max } = make();
+    const clock = jest.spyOn(Date, 'now');
+    let now = Date.now();
+    clock.mockImplementation(() => now);
+    try {
+      governor.decide.mockResolvedValue({
+        action: 'slow',
+        retryAfterMs: 60_000,
+        reason: 'pressure',
+      });
+      await service.attest(input, false, true);
+      await expect(service.attest(input, false, true)).rejects.toThrow(ServiceUnavailableException);
+      expect(max.getChatSnapshot).toHaveBeenCalledTimes(1);
+      now += 60_001;
+      await service.attest(input, false, true);
+      expect(max.getChatSnapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it('retains background admission until sibling reads settle after an early failure', async () => {
+    const { service, max, database } = make();
+    let release!: (value: null) => void;
+    const pendingRead = new Promise<null>((resolve) => {
+      release = resolve;
+    });
+    max.getChatSnapshot.mockRejectedValue(new Error('synthetic unavailable'));
+    max.getChatMemberAccess.mockReturnValue(pendingRead);
+    const first = service.attest(input, false, true).catch((error: unknown) => error);
+    for (let turn = 0; turn < 10 && !max.getChatSnapshot.mock.calls.length; turn++)
+      await Promise.resolve();
+    expect(max.getChatSnapshot).toHaveBeenCalledTimes(1);
+    await expect(service.attest(input, false, true)).rejects.toThrow(ServiceUnavailableException);
+    let drained = false;
+    const closing = service.onModuleDestroy().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    release(null);
+    expect(await first).toEqual(new Error('synthetic unavailable'));
+    await closing;
+    expect(database.$transaction).not.toHaveBeenCalled();
+    expect(database.$executeRaw).not.toHaveBeenCalled();
   });
 });
