@@ -561,6 +561,111 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
     expect(facts.map((f) => f.producer)).toEqual(['EXCHANGE']);
   });
 
+  it('keeps native history and authority epochs stable across unchanged grant checks while fencing real access changes', async () => {
+    await db.chat.create({
+      data: { id: entity.maxId, title: 'Native renewed proof', entityType: 'CHANNEL' },
+    });
+    await db.chatBotMembership.create({
+      data: {
+        chatId: entity.maxId,
+        botId: 'native-renewal',
+        status: 'ACTIVE',
+        botAccessState: 'CONFIRMED_ADMIN',
+      },
+    });
+    await db.managedEntityAccessEdge.create({
+      data: {
+        chatId: entity.maxId,
+        userId: source.actorMaxUserId,
+        botId: 'native-renewal',
+        entityType: 'CHANNEL',
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+        checkedAt: new Date(Date.now() - DAY_MS),
+      },
+    });
+    await db.channelAudienceSnapshot.create({
+      data: {
+        chatId: entity.maxId,
+        capturedAt: new Date(Date.now() - 1000),
+        participantsCount: 44,
+      },
+    });
+    const renew = () =>
+      access.attest({
+        contractVersion: 1,
+        requestId: randomUUID(),
+        operations: [{ ...consumer, checkedAt: now() }],
+      });
+    await renew();
+    const before = (await summary()).results[0]!;
+    expect(before).toMatchObject({
+      status: 'READY',
+      summary: { audience: { state: 'AVAILABLE', value: { value: 44 } } },
+    });
+    const grants = () => db.$queryRaw<Array<{ id: string; epoch: bigint }>>`
+      SELECT id,epoch FROM stats_authorities WHERE actor_max_id=${source.actorMaxUserId}
+      AND bot_ref='native-renewal' AND entity_id IN(SELECT id FROM stats_entities WHERE max_id=${entity.maxId}) ORDER BY id`;
+    const original = await grants();
+    const update = (data: {
+      checkedAt?: Date;
+      state?: 'GRANTED' | 'USER_DENIED';
+      userRole?: 'ADMIN' | 'MEMBER';
+    }) =>
+      db.managedEntityAccessEdge.updateMany({
+        where: { chatId: entity.maxId, userId: source.actorMaxUserId },
+        data,
+      });
+    await update({ checkedAt: new Date() });
+    // The reader must retain an independently authorized observation before the next peer renewal.
+    expect((await summary()).results[0]).toMatchObject({
+      status: 'READY',
+      summary: { audience: { state: 'AVAILABLE', value: { value: 44 } } },
+    });
+    const nativeProof = access.nativeProof.bind(access);
+    const duringRead = jest.spyOn(access, 'nativeProof').mockImplementationOnce(async (...args) => {
+      const proof = await nativeProof(...args);
+      await update({ checkedAt: new Date(Date.now() + 1) });
+      return proof;
+    });
+    try {
+      expect((await summary()).results[0]).toMatchObject({
+        status: 'READY',
+        summary: { audience: { state: 'AVAILABLE', value: { value: 44 } } },
+      });
+    } finally {
+      duringRead.mockRestore();
+    }
+    await renew();
+    expect(await grants()).toEqual(original);
+    await update({ state: 'USER_DENIED', userRole: 'MEMBER' });
+    expect((await summary()).results[0]).toMatchObject({
+      status: 'READY',
+      summary: { audience: { state: 'UNAVAILABLE' } },
+    });
+    await update({ state: 'GRANTED', userRole: 'ADMIN', checkedAt: new Date() });
+    await renew();
+    await db.chatBotMembership.updateMany({
+      where: { chatId: entity.maxId },
+      data: { lifecycleEventAt: new Date() },
+    });
+    expect((await summary()).results[0]).toMatchObject({
+      status: 'READY',
+      summary: { audience: { state: 'UNAVAILABLE' } },
+    });
+    await renew();
+    expect((await grants())[0]!.epoch).toBeGreaterThan(original[0]!.epoch);
+    await db.chatBotMembership.updateMany({
+      where: { chatId: entity.maxId },
+      data: { botAccessState: 'DENIED', botAccessCheckedAt: new Date(Date.now() + 1000) },
+    });
+    expect((await summary()).results[0]).toMatchObject({
+      status: 'READY',
+      summary: { audience: { state: 'UNAVAILABLE' } },
+    });
+  });
+
   it('reads network audience in bounded batches with a true snapshot and current rights after releasing pool connections', async () => {
     await db.chat.create({
       data: { id: entity.maxId, title: 'Network audience snapshot', entityType: 'CHANNEL' },

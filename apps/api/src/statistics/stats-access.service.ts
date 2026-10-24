@@ -267,6 +267,9 @@ export class StatsAccessService {
   ) {
     if (entities.length > 100) throw new StatsFailure('INVALID_REQUEST', 400);
     if (!entities.length) return [];
+    // FLAG: Successful rechecks refresh checked_at without changing access. Bind the
+    // source to the durable edge identity and actual roles/lifecycle; the predicates
+    // below still reject current denial/removal before and after every read.
     return tx.$queryRaw<
       Array<{
         kind: StatsEntity['kind'];
@@ -276,7 +279,7 @@ export class StatsAccessService {
         public_reach: boolean;
       }>
     >`SELECT requested.kind,requested."maxId" AS max_id,proof.* FROM jsonb_to_recordset(${JSON.stringify(entities)}::jsonb) AS requested(kind text,"maxId" text) CROSS JOIN LATERAL (SELECT a.bot_id AS bot_ref,
-    concat(a.checked_at::text,'|',a.state::text,'|',a.user_role::text,'|',a.bot_role::text,'|',COALESCE(m.lifecycle_event_at,p.lifecycle_event_at)::text) AS fence,
+    concat('native-v2|',a.created_at::text,'|',a.state::text,'|',a.user_role::text,'|',a.bot_role::text,'|',COALESCE(m.lifecycle_event_at,p.lifecycle_event_at)::text) AS fence,
     EXISTS(SELECT 1 FROM marketplace_bindings b WHERE b.actor_user_id=a.user_id AND b.entity_id=a.chat_id AND b.bot_id=a.bot_id AND b.state='ACTIVE' AND b.profile_snapshot->'listing'->>'status'='PUBLISHED' AND b.public_url IS NOT NULL AND b.public_verified_until>now()) AS public_reach
     FROM managed_entity_access_edges a JOIN chats c ON c.id=a.chat_id
     LEFT JOIN chat_bot_memberships m ON m.chat_id=a.chat_id AND m.bot_id=a.bot_id AND m.status='ACTIVE'
