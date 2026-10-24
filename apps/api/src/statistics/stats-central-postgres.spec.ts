@@ -137,6 +137,22 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
       horizons: [0, 24, 48],
       cursor: null,
     });
+  it('keeps validated entity foreign keys aligned with Prisma update and delete actions', async () => {
+    const constraints = await db.$queryRaw<
+      Array<{ conname: string; confupdtype: string; confdeltype: string; convalidated: boolean }>
+    >`SELECT conname, confupdtype::text, confdeltype::text, convalidated
+      FROM pg_constraint
+      WHERE conrelid IN ('stats_authorities'::regclass, 'stats_measurements'::regclass, 'stats_changes'::regclass)
+        AND confrelid = 'stats_entities'::regclass AND contype = 'f'
+      ORDER BY conname`;
+    expect(constraints).toEqual(
+      [
+        'stats_authorities_entity_id_fkey',
+        'stats_changes_entity_id_fkey',
+        'stats_measurements_entity_id_fkey',
+      ].map((conname) => ({ conname, confupdtype: 'c', confdeltype: 'c', convalidated: true })),
+    );
+  });
   it('stores EXCHANGE-only identity without native Chat and retries exactly once even after authority renewal', async () => {
     const r = request([audience('1', 10)]);
     const accepted = await ingest.ingest(r);
