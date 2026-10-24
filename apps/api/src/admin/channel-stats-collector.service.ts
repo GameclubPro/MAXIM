@@ -56,7 +56,9 @@ const CHANNEL_STATS_SCHEDULED_VIEWS_SYNC_MAX_CHANNELS = 6;
 const CHANNEL_STATS_MILESTONE_CATCH_UP_MAX_POSTS = 200;
 const CHANNEL_STATS_PRIORITY_MILESTONE_MAX_POSTS = 20;
 const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MIN_CHANNELS = 4;
-const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_CHANNELS = 12;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_CHANNELS = 24;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_SLOW_MAX_CHANNELS = 12;
+const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_PASS_BUDGET_MS = 60_000;
 const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_PAGES = 2;
 const CHANNEL_STATS_ENDPOINT_SLOW_MAX_PAGES = 1;
 const CHANNEL_STATS_PRIORITY_RECENT_VIEWS_STALE_MS = 30 * 60 * 1000;
@@ -617,7 +619,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         ),
       )
       .sort((left, right) => this.compareScheduledAudienceSyncCandidates(left, right))
-      .slice(0, this.resolveScheduledAudienceCatchUpMaxChannels({ priorityViewsLane, slowActive }));
+      .slice(
+        0,
+        this.resolveScheduledAudienceCatchUpMaxChannels({
+          priorityViewsLane,
+          slowActive: this.isBackgroundSyncSlowActive(),
+        }),
+      );
     const audienceResult = await this.syncScheduledAudienceCatchUp(audienceCandidates);
     if (audienceResult.throttled) {
       return;
@@ -627,7 +635,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       return;
     }
 
-    if (slowActive) {
+    if (this.isBackgroundSyncSlowActive()) {
       return;
     }
 
@@ -834,9 +842,30 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       viewsMode?: 'full' | 'discovery';
     },
   ): Promise<boolean> {
+    const discovery = options?.viewsMode === 'discovery';
+    const deadlineMs = discovery
+      ? Date.now() + CHANNEL_STATS_PRIORITY_RECENT_VIEWS_PASS_BUDGET_MS
+      : Number.POSITIVE_INFINITY;
     for (const [index, channel] of channels.entries()) {
       if (index > 0) {
         await this.sleepBetweenChannels('scheduled');
+      }
+
+      // FLAG: A healthy admission at pass start does not authorize a larger batch
+      // after moderation pressure rises. Finish current work, then yield the pass.
+      if (
+        this.shuttingDown ||
+        Date.now() >= deadlineMs ||
+        (await this.isBackgroundWorkPaused('scheduled', {
+          allowMaxApiCapacitySlowPath: discovery,
+        })) ||
+        this.shuttingDown ||
+        Date.now() >= deadlineMs ||
+        (discovery &&
+          this.isBackgroundSyncSlowActive() &&
+          index >= CHANNEL_STATS_PRIORITY_RECENT_VIEWS_SLOW_MAX_CHANNELS)
+      ) {
+        return true;
       }
 
       const audienceSyncedAt = syncedAudienceAtByChatId.get(channel.id);
@@ -1021,7 +1050,12 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       );
     }
 
-    return Math.min(requiredChannelsPerPass, CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_CHANNELS);
+    return Math.min(
+      requiredChannelsPerPass,
+      this.isBackgroundSyncSlowActive()
+        ? CHANNEL_STATS_PRIORITY_RECENT_VIEWS_SLOW_MAX_CHANNELS
+        : CHANNEL_STATS_PRIORITY_RECENT_VIEWS_MAX_CHANNELS,
+    );
   }
 
   private resolveScheduledAudienceFreshnessMs(
