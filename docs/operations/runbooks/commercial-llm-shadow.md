@@ -194,3 +194,91 @@ public exposure and containment drift, preserve unrelated dotenv bytes, reject
 insufficient independent capacity, validate receipts and reject incomplete or
 unexpected synthetic JSON. Run the planner-selected infrastructure checks and
 normal exact-SHA CI before production operations.
+
+## Optional GPU workstation first pass
+
+The background shadow consumer can use a PC running the pinned Qwen3.5-4B Q5_K_M
+CUDA runtime before the server's 9B. Both remain observations only: the ordinary
+commercial filter and MAX actions never wait for either model. No fine-tuning or
+change to deletion authority is part of this installation.
+
+The PC initiates strict-key SSH to `maxim-vps`, invoking the reviewed
+`commercial-llm workstation-bridge` command. The command attests the active
+background API image against the immutable release manifest and starts only its
+compiled Redis bridge. It holds no deploy lock during the session, opens no port,
+loads no DB/MAX client and ends after 30 minutes or a missing heartbeat. The local
+worker reconnects with bounded backoff. No reverse tunnel or sshd change is needed.
+
+A dedicated Redis namespace has one worker lease, a six-second readiness heartbeat
+and one request/response slot with a three-second total primary budget. Owner and
+request nonce CAS reject stale workers, duplicate and late replies. There is no
+BullMQ job or durable backlog. An unavailable PC is skipped immediately; saturation,
+timeout or malformed output falls back once to 9B after a fresh governor, memory
+and global inference-lease check. Pressure sheds the observation entirely. The
+ordinary 10-second global admission, single selector and bounded recent-sample scan
+remain in force; faster PC inference does not increase that admission ceiling.
+
+All 4B `COMMERCIAL` and `UNSURE` answers require 9B confirmation. A random 10% of
+4B negatives also goes to 9B for disagreement auditing. Other negatives retain the
+actual 4B artifact/template/runtime provenance. The pipeline version and full
+primary identity bind the sample fingerprint; no local result is labelled as 9B.
+Synthetic accuracy does not establish performance on independently labelled live
+messages, and model confidence numbers do not control routing.
+
+### Install and operate the PC
+
+`infra/scripts/commercial-llm-workstation-profile.mjs` pins the model, official
+llama.cpp b11804 CUDA 12.8 archive and its CUDA support archive. Place those three
+artifacts in `~/.local/share/maxim-llm/` before installation. Their filenames, sizes
+and SHA-256 checks are mandatory. The model comes from
+`unsloth/Qwen3.5-4B-GGUF` revision `e87f176479d0855a907a41277aca2f8ee7a09523`;
+the two runtime archives come from the official `ggml-org/llama.cpp` b11804 release.
+The local prerequisites are Linux/WSL, Node 24, Python 3, `flock`, `tar`, working
+NVIDIA CUDA support and the existing strictly verified `maxim-vps` SSH alias.
+
+```bash
+node infra/scripts/commercial-llm-workstation.mjs install
+~/.local/bin/maxim-llm start
+~/.local/bin/maxim-llm status
+~/.local/bin/maxim-llm stop
+```
+
+The installer verifies artifacts, extracts an isolated runtime and copies an
+immutable script bundle; it never uses the active source checkout for a running
+supervisor. Startup verifies installed files and symbolic links and the embedded
+chat template. The loopback endpoint `127.0.0.1:18084` requires a private random
+API key file. One 4096-token GPU slot, four CPU threads, 128 output tokens and
+thinking-off match the measured workstation profile. Model logs are disabled;
+status stores only phase, heartbeat, success time, counters and process identity.
+No message excerpts or responses are persisted locally.
+
+A failed or timed-out inference ends that SSH session and stops/reaps the exact
+owned model before restart. Linux parent-death signals also contain orphaned
+children if the supervisor exits unexpectedly. Singleton `flock` and PID start
+identity protect start/stop. `stop` disables future automatic resume; `start`
+re-enables it. A Windows user-logon entry can call
+`wsl.exe -d Ubuntu-24.04 --exec /home/yourname/.local/bin/maxim-llm resume` without
+passwords, elevated tasks, forced wake or changed sleep settings. `resume` respects
+an explicit stop. A sleeping/offline PC leaves the server fallback available.
+
+Deliver the API and host controller through normal exact-SHA CI/deployment first.
+After local start, validate the closed synthetic cascade through:
+
+```bash
+./infra/scripts/vps-connect.sh commercial-llm check-workstation
+~/.local/bin/maxim-llm stop
+./infra/scripts/vps-connect.sh commercial-llm check-workstation-offline
+~/.local/bin/maxim-llm start
+```
+
+The checks use the ordinary global lease, wait at most 30 seconds for admission,
+and classify only two built-in synthetic examples. They exercise primary-negative,
+secondary-commercial and offline-secondary routes without MAX calls or review-row
+writes. Finish with one connected status and fresh content-free shadow observation;
+retain any admission/coverage gaps rather than treating an old heartbeat as success.
+
+Focused native coverage includes `commercial-llm-workstation.redis-integration`,
+`commercial-llm-workstation-bridge`, the cascade routing tests and existing
+`commercial-llm-shadow-postgres` cases through the public API test commands and
+`with-test-stores.mjs`. Local protocol/process tests run with
+`node --test infra/scripts/commercial-llm-workstation.test.mjs`.

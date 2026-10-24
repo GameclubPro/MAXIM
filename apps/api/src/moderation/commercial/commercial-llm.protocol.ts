@@ -39,6 +39,35 @@ export type CommercialLlmDecision = {
   reasonCodes: CommercialLlmReasonCode[];
 };
 
+export type CommercialLlmObservationResult = CommercialLlmDecision & {
+  modelAlias: string;
+  modelSha256: string;
+  promptSha256: string;
+  runtimeVersion: string;
+  runtimeImageSha256?: string;
+  runtimeArtifactSha256?: string;
+  runtimeSupportSha256?: string;
+  chatTemplateSha256: string;
+  policyVersion: string;
+  durationMs: number;
+  cascade?: {
+    version: string;
+    route: string;
+    primaryClassification?: CommercialLlmClassification;
+    primaryModelSha256: string;
+    primaryDurationMs?: number;
+    secondaryDurationMs?: number;
+  };
+};
+
+export interface CommercialLlmClassifier {
+  classify(
+    excerpt: string,
+    signal?: AbortSignal,
+    mayContinue?: () => Promise<boolean>,
+  ): Promise<CommercialLlmObservationResult>;
+}
+
 export const COMMERCIAL_LLM_RESPONSE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -103,25 +132,31 @@ export function buildCommercialLlmRequest(excerpt: string) {
 
 // FLAG: Bind the instruction, response grammar and generation budget together.
 // An identity change prevents reuse of older observations under a changed protocol.
-export const COMMERCIAL_LLM_PROMPT_SHA256 = createHash('sha256')
-  .update(
-    JSON.stringify([
-      COMMERCIAL_LLM_POLICY_VERSION,
-      COMMERCIAL_LLM_SYSTEM_PROMPT,
-      COMMERCIAL_LLM_CHAT_TEMPLATE_SHA256,
-      buildCommercialLlmRequest('protocol-identity').response_format,
-      {
-        temperature: 0,
-        seed: 0,
-        cache_prompt: true,
-        max_tokens: COMMERCIAL_LLM_MAX_OUTPUT_TOKENS,
-        stream: false,
-      },
-      'server-reasoning-off-budget-zero',
-      'untrusted-user-json-message-v1',
-    ]),
-  )
-  .digest('hex');
+export function commercialLlmPromptSha256(chatTemplateSha256: string): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        COMMERCIAL_LLM_POLICY_VERSION,
+        COMMERCIAL_LLM_SYSTEM_PROMPT,
+        chatTemplateSha256,
+        buildCommercialLlmRequest('protocol-identity').response_format,
+        {
+          temperature: 0,
+          seed: 0,
+          cache_prompt: true,
+          max_tokens: COMMERCIAL_LLM_MAX_OUTPUT_TOKENS,
+          stream: false,
+        },
+        'server-reasoning-off-budget-zero',
+        'untrusted-user-json-message-v1',
+      ]),
+    )
+    .digest('hex');
+}
+
+export const COMMERCIAL_LLM_PROMPT_SHA256 = commercialLlmPromptSha256(
+  COMMERCIAL_LLM_CHAT_TEMPLATE_SHA256,
+);
 
 export function parseCommercialLlmDecision(value: unknown): CommercialLlmDecision | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;

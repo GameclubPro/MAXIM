@@ -175,41 +175,48 @@ export class CommercialLlmClient {
     } catch {
       throw new CommercialLlmError('INVALID_RESPONSE');
     }
-    if (
-      !envelope ||
-      typeof envelope !== 'object' ||
-      Array.isArray(envelope) ||
-      envelope.model !== COMMERCIAL_LLM_MODEL_ALIAS ||
-      !Array.isArray(envelope.choices) ||
-      envelope.choices.length !== 1
-    )
-      throw new CommercialLlmError('INVALID_RESPONSE');
-    const choice = object(envelope.choices[0]);
-    const message = object(choice.message);
-    // FLAG: A token-limit response, reasoning, refusal or tool request is incomplete
-    // classification, even when its visible content happens to be valid JSON.
-    if (
-      choice.finish_reason !== 'stop' ||
-      message.role !== 'assistant' ||
-      typeof message.content !== 'string' ||
-      (message.refusal !== undefined && message.refusal !== null) ||
-      (message.tool_calls !== undefined &&
-        (!Array.isArray(message.tool_calls) || message.tool_calls.length !== 0)) ||
-      (message.reasoning_content !== undefined &&
-        message.reasoning_content !== null &&
-        message.reasoning_content !== '') ||
-      message.function_call !== undefined
-    )
-      throw new CommercialLlmError('INVALID_RESPONSE');
-    let decision: CommercialLlmDecision | null;
-    try {
-      decision = parseCommercialLlmDecision(JSON.parse(message.content));
-    } catch {
-      throw new CommercialLlmError('INVALID_RESPONSE');
-    }
-    if (!decision) throw new CommercialLlmError('INVALID_RESPONSE');
-    return decision;
+    return parseCommercialLlmEnvelope(envelope, COMMERCIAL_LLM_MODEL_ALIAS);
   }
+}
+
+export function parseCommercialLlmEnvelope(
+  envelope: Record<string, unknown>,
+  expectedAlias: string,
+): CommercialLlmDecision {
+  if (
+    !envelope ||
+    typeof envelope !== 'object' ||
+    Array.isArray(envelope) ||
+    envelope.model !== expectedAlias ||
+    !Array.isArray(envelope.choices) ||
+    envelope.choices.length !== 1
+  )
+    throw new CommercialLlmError('INVALID_RESPONSE');
+  const choice = object(envelope.choices[0]);
+  const message = object(choice.message);
+  // FLAG: A token-limit response, reasoning, refusal or tool request is incomplete
+  // classification, even when its visible content happens to be valid JSON.
+  if (
+    choice.finish_reason !== 'stop' ||
+    message.role !== 'assistant' ||
+    typeof message.content !== 'string' ||
+    (message.refusal !== undefined && message.refusal !== null) ||
+    (message.tool_calls !== undefined &&
+      (!Array.isArray(message.tool_calls) || message.tool_calls.length !== 0)) ||
+    (message.reasoning_content !== undefined &&
+      message.reasoning_content !== null &&
+      message.reasoning_content !== '') ||
+    message.function_call !== undefined
+  )
+    throw new CommercialLlmError('INVALID_RESPONSE');
+  let decision: CommercialLlmDecision | null;
+  try {
+    decision = parseCommercialLlmDecision(JSON.parse(message.content));
+  } catch {
+    throw new CommercialLlmError('INVALID_RESPONSE');
+  }
+  if (!decision) throw new CommercialLlmError('INVALID_RESPONSE');
+  return decision;
 }
 
 function object(value: unknown): Record<string, unknown> {

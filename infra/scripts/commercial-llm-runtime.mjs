@@ -21,6 +21,7 @@ import {
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readCurrentManifest, validateCompleteReleaseManifest } from './release-manifest.mjs';
+import { WORKSTATION_IDENTITY } from './commercial-llm-workstation-profile.mjs';
 
 import {
   COMMERCIAL_LLM_RUNTIME,
@@ -637,7 +638,7 @@ export function validateCommercialLlmClientSmokeResponse(response) {
   };
 }
 
-function checkClient() {
+function inspectBackgroundClient() {
   run('node', ['infra/scripts/release-manifest.mjs', 'validate-current']);
   const manifest = readCurrentManifest('/var/lib/maxim-deploy');
   validateCompleteReleaseManifest(manifest);
@@ -659,6 +660,11 @@ function checkClient() {
   ) {
     throw new Error('commercial_llm_client_identity_refused');
   }
+  return id;
+}
+
+function checkClient() {
+  inspectBackgroundClient();
   inspectContainer();
   const response = JSON.parse(
     run(
@@ -675,6 +681,144 @@ function checkClient() {
     ),
   );
   emit('check_client', validateCommercialLlmClientSmokeResponse(response));
+}
+
+// FLAG: One bounded observational SSH session; never hold the deployment lock or expose a port.
+async function workstationBridge() {
+  const id = inspectBackgroundClient();
+  await new Promise((resolve, reject) => {
+    const child = spawn(
+      'docker',
+      [
+        'exec',
+        '-i',
+        id,
+        'node',
+        'apps/api/dist/apps/api/src/scripts/commercial-llm-workstation-bridge.js',
+      ],
+      { stdio: 'inherit', timeout: 31 * 60_000, killSignal: 'SIGTERM' },
+    );
+    const stop = () => child.kill('SIGTERM');
+    process.once('SIGTERM', stop);
+    process.once('SIGINT', stop);
+    child.once('error', () => reject(new Error('workstation_bridge_unavailable')));
+    child.once('close', (code) => {
+      process.removeListener('SIGTERM', stop);
+      process.removeListener('SIGINT', stop);
+      if (code === 0) resolve();
+      else reject(new Error('workstation_bridge_unavailable'));
+    });
+  });
+}
+
+function checkWorkstation(expectPrimary) {
+  const id = inspectBackgroundClient();
+  const response = JSON.parse(
+    run(
+      'docker',
+      [
+        'exec',
+        id,
+        'node',
+        'apps/api/dist/apps/api/src/scripts/commercial-llm-cascade-smoke.js',
+        expectPrimary ? '--expect-primary' : '--expect-offline',
+      ],
+      { timeout: 115000, maxBuffer: 16384 },
+    ),
+  );
+  emit('check_workstation', validateWorkstationSmokeResponse(response, expectPrimary));
+}
+
+export function validateWorkstationSmokeResponse(response, expectPrimary) {
+  if (
+    !hasExactKeys(response, [
+      'ok',
+      'casesPassed',
+      'casesTotal',
+      'expectPrimary',
+      'cascadeVersion',
+      'cases',
+    ]) ||
+    response.ok !== true ||
+    response.casesPassed !== 2 ||
+    response.casesTotal !== 2 ||
+    response.expectPrimary !== expectPrimary ||
+    response.cascadeVersion !== 'commercial-qwen4b9b-shadow-v1' ||
+    !Array.isArray(response.cases) ||
+    response.cases.length !== 2
+  )
+    throw new Error('workstation_smoke_refused');
+  const expected = [
+    {
+      name: 'personal-used-item',
+      classification: 'NOT_COMMERCIAL',
+      route: expectPrimary ? 'primary' : 'secondary_unavailable',
+    },
+    {
+      name: 'commercial-service',
+      classification: 'COMMERCIAL',
+      route: expectPrimary ? 'secondary_commercial' : 'secondary_unavailable',
+    },
+  ];
+  for (let i = 0; i < expected.length; i++) {
+    const item = response.cases[i];
+    if (
+      !hasExactKeys(item, [
+        'name',
+        'classification',
+        'route',
+        'modelAlias',
+        'modelSha256',
+        'promptSha256',
+        'durationMs',
+        'primaryDurationMs',
+        'secondaryDurationMs',
+      ]) ||
+      item.modelAlias !==
+        (expectPrimary && i === 0 ? WORKSTATION_IDENTITY.modelAlias : pin.alias) ||
+      ![item.primaryDurationMs, item.secondaryDurationMs].every(
+        (value) => value === null || (Number.isSafeInteger(value) && value >= 0 && value <= 80000),
+      ) ||
+      !Object.entries(expected[i]).every(([key, value]) => item[key] === value) ||
+      item.promptSha256 !== pin.smokePromptSha256 ||
+      item.modelSha256 !==
+        (expectPrimary && i === 0 ? WORKSTATION_IDENTITY.modelSha256 : pin.modelSha256) ||
+      !Number.isSafeInteger(item.durationMs) ||
+      item.durationMs < 0 ||
+      item.durationMs > 80000
+    )
+      throw new Error('workstation_smoke_refused');
+  }
+  return {
+    ok: true,
+    casesPassed: 2,
+    casesTotal: 2,
+    expectPrimary,
+    cascadeVersion: response.cascadeVersion,
+    cases: response.cases.map(
+      ({
+        name,
+        classification,
+        route,
+        modelAlias,
+        modelSha256,
+        promptSha256,
+        durationMs,
+        primaryDurationMs,
+        secondaryDurationMs,
+      }) => ({
+        name,
+        classification,
+        route,
+        modelAlias,
+        modelSha256,
+        promptSha256,
+        durationMs,
+        primaryDurationMs,
+        secondaryDurationMs,
+      }),
+    ),
+  };
 }
 
 function buildReceipt(sourceSha, containerId) {
@@ -1118,10 +1262,21 @@ async function cli(argv) {
       'disable',
       'smoke',
       'check-client',
+      'workstation-bridge',
+      'check-workstation',
+      'check-workstation-offline',
     ].includes(operation) ||
     args.some((arg) => arg !== '--apply') ||
     args.length > 1 ||
-    (['status', 'smoke', 'check-client'].includes(operation) && args.length)
+    ([
+      'status',
+      'smoke',
+      'check-client',
+      'workstation-bridge',
+      'check-workstation',
+      'check-workstation-offline',
+    ].includes(operation) &&
+      args.length)
   ) {
     throw new Error(
       'Usage: commercial-llm install|replace|enable|disable|stop [--apply] | status | smoke | check-client',
@@ -1130,6 +1285,9 @@ async function cli(argv) {
   if (operation === 'status') return status();
   if (operation === 'smoke') return smoke();
   if (operation === 'check-client') return checkClient();
+  if (operation === 'workstation-bridge') return workstationBridge();
+  if (operation === 'check-workstation') return checkWorkstation(true);
+  if (operation === 'check-workstation-offline') return checkWorkstation(false);
   const sourceSha = process.env.MAXIM_EXPECTED_DEPLOY_SHA;
   sourceAdmission(sourceSha);
   if (!args.includes('--apply')) {

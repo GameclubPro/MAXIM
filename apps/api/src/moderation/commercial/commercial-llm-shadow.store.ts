@@ -8,6 +8,10 @@ import {
   COMMERCIAL_LLM_RUNTIME_VERSION,
   COMMERCIAL_LLM_POLICY_VERSION,
 } from './commercial-llm.protocol';
+import {
+  COMMERCIAL_LLM_CASCADE_VERSION,
+  COMMERCIAL_LLM_WORKSTATION_IDENTITY,
+} from './commercial-llm-workstation.protocol';
 
 export const COMMERCIAL_LLM_LOOKBACK_MS = 15 * 60_000;
 export const COMMERCIAL_LLM_SCAN_LIMIT = 64;
@@ -61,6 +65,8 @@ export function commercialLlmCandidate(row: Sample, now: Date): ShadowCandidate 
         COMMERCIAL_LLM_PROMPT_SHA256,
         COMMERCIAL_LLM_RUNTIME_VERSION,
         COMMERCIAL_LLM_POLICY_VERSION,
+        COMMERCIAL_LLM_CASCADE_VERSION,
+        COMMERCIAL_LLM_WORKSTATION_IDENTITY,
       ]),
     )
     .digest('hex');
