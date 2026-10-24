@@ -716,14 +716,15 @@ function checkWorkstation(expectPrimary) {
   const response = JSON.parse(
     run(
       'docker',
-      [
-        'exec',
-        id,
-        'node',
-        'apps/api/dist/apps/api/src/scripts/commercial-llm-cascade-smoke.js',
-        expectPrimary ? '--expect-primary' : '--expect-offline',
-      ],
-      { timeout: 115000, maxBuffer: 16384 },
+      ['exec', '-i', id, 'node', '-', expectPrimary ? '--expect-primary' : '--expect-offline'],
+      {
+        input: readFileSync(
+          new URL('./commercial-llm-workstation-smoke.cjs', import.meta.url),
+          'utf8',
+        ),
+        timeout: 115000,
+        maxBuffer: 16384,
+      },
     ),
   );
   emit('check_workstation', validateWorkstationSmokeResponse(response, expectPrimary));
