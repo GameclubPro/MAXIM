@@ -104,6 +104,11 @@ access. Publisher handoff retains its exact identity and background admission.
 Archive pulls, reverse-import access and legacy history remain retired in central mode.
 Snapshot metadata cleanup remains active. Neither cache reads nor renewal advance
 measurement/import-success timestamps. Legacy mode retains its existing five-minute policy.
+Its access batch claims one due binding immediately before its sequential check, up to twenty
+attempts or ten seconds per visit. It must neither spend twelve shared bot slots on four parallel
+checks nor postpone unstarted rows when a previous check exhausts the time budget, fails or
+shutdown begins. Native regressions cover those interruptions and independent progress of one
+hundred actors.
 
 After both peers have compatible v3 readers, use the guarded v3 rollout flags for
 accounts above 100 platforms. Keep the v2 limit unchanged, and verify the complete
