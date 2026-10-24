@@ -56,6 +56,22 @@ Neither disabling a flag nor a failed rollout permits an old reader or resets th
 producer identity. Preserve installed compatibility floors and recovery journals.
 Do not recreate stores, lower floors or re-enable retired history exchange.
 
+## Connection access after activation
+
+Central mode still uses the paged membership/access contract for Market-owned
+consumer registration. Keep the independent bounded binding-refresh and missing-
+binding recovery lanes running with the analytics credential. Only archive pulls,
+legacy payload retention and reverse-import access are retired. A successful
+membership refresh must never advance measurement or import-success timestamps;
+expired and explicitly revoked bindings stay unreadable until fresh allowed proof.
+
+After both peers have compatible v3 readers, use the guarded v3 rollout flags for
+accounts above 100 platforms. Keep the v2 limit unchanged, and verify the complete
+paged roster plus fresh MAXIM-only consumer leases after activation. Snapshot
+metadata expiry remains active. Native regressions live in
+`statistics-exchange-postgres.spec.ts` and
+`statistics-exchange-v3-membership-postgres.spec.ts`.
+
 Focused checks: `statistics-central-rollout-state.test.mjs`, existing
 `statistics-exchange-rollout-state.test.mjs`, Market admission/cutover PostgreSQL
 tests and the exact statistics rollback tests. Report local, exact-SHA CI, released,

@@ -720,6 +720,74 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     ).toEqual([701, 999]);
   });
 
+  it('renews central access and recovers membership without retired history', async () => {
+    await grants.put(grantId, input());
+    await db.$executeRaw`UPDATE marketplace_bindings SET valid_until=now()-interval '1 second',next_access_at=now()-interval '1 minute' WHERE id=${bindingId}::uuid`;
+    expect((await grants.read(grantId)).entities[0]!.status).toBe('UNAVAILABLE');
+    const central = new ConfigService({
+      STATISTICS_CENTRAL_ENABLED: true,
+      STATISTICS_CENTRAL_MODE: 'CENTRAL',
+      SVYAZKA_ANALYTICS_TOKEN: 'a'.repeat(64),
+      // The retired reverse-export credential is deliberately absent.
+    });
+    const refresh = jest.fn<
+      ReturnType<MarketplaceAccessService['refresh']>,
+      Parameters<MarketplaceAccessService['refresh']>
+    >(async (row) => {
+      await db.$executeRaw`UPDATE marketplace_bindings SET checked_at=now(),valid_until=now()+interval '5 minutes' WHERE id=${row.id}::uuid AND state='ACTIVE'`;
+    });
+    const pull = jest.fn<
+      ReturnType<StatisticsExchangeStatisticsService['pull']>,
+      Parameters<StatisticsExchangeStatisticsService['pull']>
+    >();
+    const refreshRemoteAccess = jest.fn<
+      ReturnType<StatisticsExchangeStatisticsService['refreshRemoteAccess']>,
+      Parameters<StatisticsExchangeStatisticsService['refreshRemoteAccess']>
+    >();
+    const recoverUnavailable = jest
+      .fn<
+        ReturnType<StatisticsExchangeGrantsService['recoverUnavailable']>,
+        Parameters<StatisticsExchangeGrantsService['recoverUnavailable']>
+      >()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
+    const runtime = new StatisticsExchangeRuntimeService(
+      db as PrismaService,
+      central,
+      { pull, refreshRemoteAccess } as unknown as StatisticsExchangeStatisticsService,
+      { recoverUnavailable } as unknown as StatisticsExchangeGrantsService,
+      { refresh } as unknown as MarketplaceAccessService,
+    );
+    const prune = jest.spyOn(runtime, 'prune');
+    const previousRole = process.env.APP_ROLE;
+    process.env.APP_ROLE = 'action';
+    try {
+      await runtime.refreshAccessBatch();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(refresh.mock.calls[0]![1]).toBe(true);
+      expect((await grants.read(grantId)).entities[0]!.status).toBe('ACTIVE');
+      await runtime.tick();
+      await runtime.refreshRemoteAccessBatch();
+      expect(recoverUnavailable).toHaveBeenCalledWith(grantId);
+      expect(pull).not.toHaveBeenCalled();
+      expect(refreshRemoteAccess).not.toHaveBeenCalled();
+      expect(prune).not.toHaveBeenCalled();
+      const [progress] = await db.$queryRaw<
+        Array<{ bounded_retry: boolean; last_pull_at: Date | null; lease_id: string | null }>
+      >`
+        SELECT next_pull_at<=now()+interval '2 seconds' AS bounded_retry,last_pull_at,lease_id FROM statistics_exchange_grants WHERE id=${grantId}::uuid`;
+      expect(progress).toEqual({ bounded_retry: true, last_pull_at: null, lease_id: null });
+      await db.$executeRaw`UPDATE marketplace_bindings SET state='REVOKED',valid_until=NULL,next_access_at=now()-interval '1 minute' WHERE id=${bindingId}::uuid`;
+      await runtime.refreshAccessBatch();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect((await grants.read(grantId)).entities[0]!.status).toBe('UNAVAILABLE');
+    } finally {
+      await runtime.onModuleDestroy();
+      if (previousRole === undefined) delete process.env.APP_ROLE;
+      else process.env.APP_ROLE = previousRole;
+    }
+  });
+
   it('keeps100actor rights and reverse work bounded and independent under archive latency', async () => {
     const seed = randomUUID(),
       previousRole = process.env.APP_ROLE;
