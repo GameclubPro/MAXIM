@@ -41,8 +41,8 @@ Detailed constraints selected by the routing table in [infrastructure agent note
   fault-fixture container's fatal exit/restart and next canonical hash. It is CI-only, bounded
   below two minutes, and must never reuse production volumes, credentials, or MAX destinations.
 - Public health/webhooks go to `api-ingress`; `/api/v1/` and closed owner APIs go to `api-admin`; queue roles do not own public HTTP traffic.
-- Optional `gemma-commercial-shadow` is an independently pinned text-inference auxiliary with a
-  4 CPU/24 GiB budget and one internal network shared only with `api-moderation-background`.
+- Optional `gemma-commercial-shadow` (retained internal name) runs the pinned Qwen3.5-9B Q5_K_M
+  text model with a 6 CPU/12 GiB budget and one internal network shared only with `api-moderation-background`.
   Its profile stays opt-in, has no host ports or application secrets, and never grants deletion
   authority. Install, flag staging, provenance and shutdown use the protected-lock operation in
   [the local commercial model runbook](../operations/runbooks/commercial-llm-shadow.md).

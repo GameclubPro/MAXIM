@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { commercialLlmCommand } from './commercial-llm-profiles.mjs';
@@ -816,6 +817,43 @@ test('same-generation proof is retained through readiness, smoke and stopped rea
     /stop_readback_refused/u,
   );
   assert.equal(notStopped.receipts.length, 0);
+});
+
+test('client smoke identity matches the actual API protocol after a model transition', async () => {
+  const source = stripTypeScriptTypes(
+    readFileSync(
+      resolve(root, 'apps/api/src/moderation/commercial/commercial-llm.protocol.ts'),
+      'utf8',
+    ),
+  );
+  const protocol = await import(
+    `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
+  );
+  assert.equal(pin.alias, protocol.COMMERCIAL_LLM_MODEL_ALIAS);
+  assert.equal(pin.modelSha256, protocol.COMMERCIAL_LLM_MODEL_SHA256);
+  assert.equal(pin.templateSha256, protocol.COMMERCIAL_LLM_CHAT_TEMPLATE_SHA256);
+  assert.equal(pin.smokePromptSha256, protocol.COMMERCIAL_LLM_PROMPT_SHA256);
+  assert.notEqual(pin.smokePromptSha256, legacyPin.smokePromptSha256);
+  const response = {
+    ok: true,
+    casesPassed: 2,
+    casesTotal: 2,
+    modelSha256: protocol.COMMERCIAL_LLM_MODEL_SHA256,
+    promptSha256: protocol.COMMERCIAL_LLM_PROMPT_SHA256,
+    cases: [
+      { name: 'commercial-service', classification: 'COMMERCIAL', durationMs: 1000 },
+      { name: 'personal-used-item', classification: 'NOT_COMMERCIAL', durationMs: 1000 },
+    ],
+  };
+  assert.deepEqual(validateCommercialLlmClientSmokeResponse(response), response);
+  assert.throws(
+    () =>
+      validateCommercialLlmClientSmokeResponse({
+        ...response,
+        promptSha256: legacyPin.smokePromptSha256,
+      }),
+    /commercial_llm_client_smoke_refused/u,
+  );
 });
 
 test('production-prompt smoke forwards only exact synthetic case results and bounded latency', () => {

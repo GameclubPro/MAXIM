@@ -52,6 +52,7 @@ export const COMMERCIAL_LLM_RUNTIME = Object.freeze({
   modelSha256: qwenArtifact.sha256,
   modelBytes: qwenArtifact.bytes,
   modelManifestSha256: createHash('sha256').update(JSON.stringify(qwenArtifact)).digest('hex'),
+  smokePromptSha256: '67aee2db688b67368346a246448c885585d5abcc4ce2b7d3bcd3e77963059aec',
   modelPath: `${modelDir}/${qwenArtifact.sha256}.gguf`,
   cachedModelPath: `${stateDir}/qwen9b-20261024/${qwenArtifact.sha256}.gguf`,
   modelUrl: `https://huggingface.co/${qwenArtifact.repository}/resolve/${qwenArtifact.revision}/${qwenArtifact.file}`,
