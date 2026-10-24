@@ -199,3 +199,107 @@ test('closed cascade readback refuses model/route drift and unknown content fiel
     }
   }
 });
+
+test('online smoke waits for readiness to return between two examples sharing one lease', async () => {
+  const { runWorkstationSmoke } = await import('./commercial-llm-workstation-smoke.cjs');
+  let ready = true,
+    calls = 0,
+    reads = 0,
+    released = false,
+    disconnected = false;
+  const deps = {
+    redis: {
+      connect: async () => {},
+      get: async () => {
+        reads++;
+        return ready ? JSON.stringify({ identity }) : null;
+      },
+      disconnect: () => {
+        disconnected = true;
+      },
+    },
+    lease: {
+      acquire: async () => 'owned',
+      owns: async () => true,
+      release: async () => {
+        released = true;
+      },
+    },
+    client: {
+      classify: async () => {
+        assert.equal(
+          ready,
+          true,
+          'the next example must not fall back during heartbeat restoration',
+        );
+        const first = calls++ === 0;
+        ready = false;
+        setTimeout(() => {
+          ready = true;
+        }, 20);
+        return {
+          classification: first ? 'NOT_COMMERCIAL' : 'COMMERCIAL',
+          modelAlias: first ? identity.modelAlias : pin.alias,
+          modelSha256: first ? identity.modelSha256 : pin.modelSha256,
+          promptSha256: pin.smokePromptSha256,
+          durationMs: 10,
+          cascade: {
+            route: first ? 'primary' : 'secondary_commercial',
+            primaryDurationMs: 5,
+            secondaryDurationMs: first ? undefined : 5,
+          },
+        };
+      },
+    },
+    hasHeadroom: async () => true,
+    heartbeatKey: 'synthetic',
+    matchesIdentity: (value) => value.modelAlias === identity.modelAlias,
+    cascadeVersion: 'commercial-qwen4b9b-shadow-v1',
+  };
+  const value = await runWorkstationSmoke(deps, true);
+  assert.equal(value.casesPassed, 2);
+  assert.equal(calls, 2);
+  assert.ok(reads >= 3);
+  assert.ok(released && disconnected);
+  validateWorkstationSmokeResponse(value, true);
+});
+
+test('smoke readiness has its own short precondition deadline and rejects foreign identity', async () => {
+  const { waitForWorkstationReady } = await import('./commercial-llm-workstation-smoke.cjs');
+  for (const value of [null, '{}', JSON.stringify({ identity: { modelAlias: 'foreign' } })]) {
+    await assert.rejects(
+      waitForWorkstationReady(
+        { get: async () => value },
+        'synthetic',
+        (item) => item?.modelAlias === identity.modelAlias,
+        new AbortController().signal,
+        20,
+      ),
+      /primary_not_ready/,
+    );
+  }
+});
+
+test('workstation host smoke uses the attested container and compiled classifiers without changing production timing', () => {
+  const controller = readFileSync(
+    new URL('infra/scripts/commercial-llm-runtime.mjs', root),
+    'utf8',
+  );
+  const harness = readFileSync(
+    new URL('infra/scripts/commercial-llm-workstation-smoke.cjs', root),
+    'utf8',
+  );
+  assert.match(
+    controller,
+    /function checkWorkstation\(expectPrimary\) \{\s*const id = inspectBackgroundClient\(\)/u,
+  );
+  assert.match(controller, /commercial-llm-workstation-smoke\.cjs/u);
+  for (const module of [
+    'commercial-llm-cascade.client.js',
+    'commercial-llm-workstation.mailbox.js',
+    'commercial-llm-shadow.lease.js',
+  ])
+    assert.ok(harness.includes(module));
+  assert.doesNotMatch(harness, /prototype\.|MAX_API|new Prisma|fetch\(/u);
+  assert.equal(api.COMMERCIAL_LLM_PRIMARY_TIMEOUT_MS, 3000);
+});

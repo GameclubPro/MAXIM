@@ -271,8 +271,14 @@ After local start, validate the closed synthetic cascade through:
 ~/.local/bin/maxim-llm start
 ```
 
-The checks use the ordinary global lease, wait at most 30 seconds for admission,
-and classify only two built-in synthetic examples. They exercise primary-negative,
+The host checks load the reviewed `commercial-llm-workstation-smoke.cjs` harness
+through stdin inside the attested API container. It imports the actual compiled
+classifiers and ordinary global lease, waits at most 30 seconds for admission,
+and classifies only two built-in synthetic examples. Before each online example
+it waits at most two seconds for the PC readiness heartbeat to return. This is a
+synthetic-test precondition: two examples share one lease and arrive faster than
+the normal ten-second production admission. Production requests still fall back
+immediately when the PC is unavailable, and their three-second budget is unchanged. They exercise primary-negative,
 secondary-commercial and offline-secondary routes without MAX calls or review-row
 writes. Finish with one connected status and fresh content-free shadow observation;
 retain any admission/coverage gaps rather than treating an old heartbeat as success.
