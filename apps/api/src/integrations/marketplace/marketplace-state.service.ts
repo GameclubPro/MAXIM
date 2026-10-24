@@ -9,6 +9,7 @@ import {
 
 export const MARKETPLACE_PILOT_USER_ID = '323459159';
 export const MARKETPLACE_GRANT_MS = 5 * 60_000;
+export const STATISTICS_ACCESS_CACHE_MS = 24 * 60 * 60_000;
 export type MarketplaceBindingRow = {
   id: string;
   actor_user_id: string;
@@ -58,8 +59,28 @@ export function marketplaceLocalGrantSql(
   alias: 'b' | 's' | 'preferred' | 'marketplace_bindings' = 'marketplace_bindings',
   requireConsent = true,
 ): Prisma.Sql {
+  return marketplaceGrantEvidenceSql(alias, requireConsent, false);
+}
+
+// FLAG: Only central statistics may reuse the original MAX proof for a day.
+// This never changes checked_at or extends publication/moderation authority.
+export function marketplaceStatisticsGrantSql(
+  alias: 'b' | 's' | 'preferred' | 'marketplace_bindings' = 'marketplace_bindings',
+  requireConsent = true,
+): Prisma.Sql {
+  return marketplaceGrantEvidenceSql(alias, requireConsent, true);
+}
+
+function marketplaceGrantEvidenceSql(
+  alias: 'b' | 's' | 'preferred' | 'marketplace_bindings',
+  requireConsent: boolean,
+  statistics: boolean,
+): Prisma.Sql {
   const b = Prisma.raw(alias);
-  return Prisma.sql`${b}.state='ACTIVE' AND ${requireConsent ? Prisma.sql`${b}.statistics_consent=true AND ${b}.statistics_revoked_at IS NULL` : Prisma.sql`true`} AND ${b}.valid_until>now()
+  const expiry = statistics
+    ? Prisma.sql`${b}.checked_at>now()-interval '24 hours'`
+    : Prisma.sql`${b}.valid_until>now()`;
+  return Prisma.sql`${b}.state='ACTIVE' AND ${requireConsent ? Prisma.sql`${b}.statistics_consent=true AND ${b}.statistics_revoked_at IS NULL` : Prisma.sql`true`} AND ${expiry}
     AND ${b}.checked_at IS NOT NULL AND ${b}.checked_at<=now()+interval '30 seconds'
     AND NOT EXISTS(SELECT 1 FROM chat_membership_activity_events e
       WHERE e.chat_id=${b}.entity_id AND e.user_id=${b}.actor_user_id

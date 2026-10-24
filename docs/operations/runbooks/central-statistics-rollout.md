@@ -67,21 +67,30 @@ Do not recreate stores, lower floors or re-enable retired history exchange.
 ## Connection access after activation
 
 Central mode still uses the paged membership/access contract for Market-owned
-consumer registration. Keep the independent bounded binding-refresh and missing-
-binding recovery lanes running with the analytics credential. Only archive pulls,
-legacy payload retention and reverse-import access are retired. A successful
-membership refresh must never advance measurement or import-success timestamps;
-expired and explicitly revoked bindings stay unreadable until fresh allowed proof.
+consumer registration. Statistics may reuse the original exact actor/entity/bot/profile
+MAX proof for up to 24 hours. Stored `checked_at` remains the MAX observation time;
+each successful local access evaluation returns a new peer lease of at most five minutes,
+capped by the original proof's 24-hour expiry. Known membership changes, bot lifecycle
+changes, negative access evidence and explicit statistics revocation invalidate the cache
+immediately. This policy does not extend public profile, publication or moderation authority.
 
-Background binding renewal and missing-binding recovery use background MAX capacity and
-the shared runtime governor. Each role admits one access check at a time without an in-memory
-wait queue; pause and slow decisions retain their retry interval, and shutdown drains the owned
-check. Publisher handoff preserves that background admission. A deferred check never renews
-rights, revokes an unknown user, or advances measurement/import-success timestamps. During
-pressure some consumer leases can expire and remain unreadable until fresh checks succeed.
-The access batch processes its bounded selected rows sequentially; it must not spend twelve
-shared bot slots on four parallel three-request checks. Explicit user access checks remain
-interactive and retain all fresh authorization checks.
+Access reads nominate only missing or nearly expired proofs (within five minutes of expiry).
+There is no central fleet-wide binding refresh or missing-binding scan. Active paged exchange
+is demand; an idle roster performs no MAX access requests. Initial connection and expired
+demand use the existing exact checks. Requests never wait for MAX: unavailable statistics
+remain unavailable until their background check succeeds.
+
+The shared Redis mailbox coalesces exact grant revision/entity requests, holds at most 128
+outstanding requests including retries, and expires each after five minutes without renewal
+by duplicate reads. One serial action-role lane claims at most four per visit, retaining a
+minute retry backoff and the existing background MAX governor. Full or unavailable admission
+is best effort; a later statistics read can retry. Redis command waits are capped at 100 ms,
+with no offline or local application wait queue. Stale grant revisions cannot restore removed
+access. Publisher handoff retains its exact identity and background admission.
+
+Archive pulls, reverse-import access and legacy history remain retired in central mode.
+Snapshot metadata cleanup remains active. Neither cache reads nor renewal advance
+measurement/import-success timestamps. Legacy mode retains its existing five-minute policy.
 
 After both peers have compatible v3 readers, use the guarded v3 rollout flags for
 accounts above 100 platforms. Keep the v2 limit unchanged, and verify the complete
