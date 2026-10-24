@@ -29,7 +29,19 @@ export type ModerationGuardProofDetail =
   | 'policy_revision_mismatch'
   | 'authorization_mismatch'
   | 'sanction_mismatch'
-  | 'original_mismatch';
+  | 'original_mismatch'
+  | 'intent_mismatch'
+  | 'receipt_unfinished'
+  | 'executor_missing'
+  | 'executor_mismatch'
+  | 'executor_unregistered'
+  | 'reason_key_mismatch'
+  | 'reason_rule_mismatch'
+  | 'reason_user_mismatch'
+  | 'receipt_clock_invalid'
+  | 'reason_clock_invalid'
+  | 'receipt_clock_future'
+  | 'binding_mismatch';
 
 type Diagnostic = Readonly<{
   guardBoundary: ModerationGuardFailureBoundary;

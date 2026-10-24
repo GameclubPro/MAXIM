@@ -310,6 +310,21 @@ Explicit chat/access errors, conflicting nested codes, other codes and attempted
 mutations cannot use this path. Keep both codeless and generic-code cases in the native
 PostgreSQL receipt regression; a mock with only an empty 404 body misses MAX's actual envelope.
 
+Initial sanction admission requires that same exact successful own DELETE receipt even if MAX
+still returns the current message. A concurrent durable delete may otherwise remove the source
+before its receipt commits and turn the final sanction guard into a failed whole handler.
+Missing, unfinished or mismatched proof declines the sanction before state changes, without
+waiting or starting another retry queue. The existing DELETE intent and its original deadline
+remain with the durable worker; the skipped sanction is not replayed after deletion completes.
+Returned current content, original evidence, rights, immunity and final guards remain checked.
+`guard.message_duplicate_sanction_delete_unconfirmed` counts this visible-source refusal;
+`guard.message_duplicate_sanction_source_unavailable` counts the initial unavailable-source refusal.
+Strict receipt failures carry fixed executor/reason/clock/binding detail labels without values.
+Conflicting top-level/nested MAX codes and mutation-marked errors never prove message absence.
+Run `message-duplicate-initial-dispatch-postgres` for competing-owner/same-chat progress and
+no replay, plus `message-duplicate-sanction-receipt-postgres` and the mirrored duplicate-notice
+full-path suite for persisted proof and final dispatch fences.
+
 The first inline delete check has an explicit `initial_unattempted` phase only when its
 durable intent has one lease attempt and no dispatch or remote-success markers. An unavailable
 current/original HTTP 404 at this boundary may end the inline action after an exact live-lease
