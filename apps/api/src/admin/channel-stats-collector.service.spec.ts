@@ -271,6 +271,13 @@ describe('ChannelStatsCollectorService', () => {
         }),
       }),
     );
+    expect(prisma.channelPost.upsert).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        create: expect.objectContaining({ previewUrl: 'https://cdn.max.ru/news/post-2.jpg' }),
+        update: expect.objectContaining({ previewUrl: 'https://cdn.max.ru/news/post-2.jpg' }),
+      }),
+    );
     expect(prisma.channelPostViewSnapshot.create).toHaveBeenCalledTimes(2);
     expect(prisma.channelPostViewSnapshot.create).toHaveBeenNthCalledWith(
       1,

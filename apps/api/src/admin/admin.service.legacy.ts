@@ -14102,12 +14102,6 @@ export class AdminService implements OnModuleDestroy {
     return this.channelStatsRuntime.buildAverageViewsSeriesFromPostMetrics(...args);
   }
 
-  private hydrateTopPostPreviews(
-    ...args: Parameters<AdminChannelStatsRuntime['hydrateTopPostPreviews']>
-  ): ReturnType<AdminChannelStatsRuntime['hydrateTopPostPreviews']> {
-    return this.channelStatsRuntime.hydrateTopPostPreviews(...args);
-  }
-
   private toSafeInteger(value: unknown) {
     return toSafeInteger(value);
   }

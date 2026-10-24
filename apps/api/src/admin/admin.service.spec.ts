@@ -16,7 +16,7 @@ import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildDeveloperForcedGlobalSpammerCacheKey } from '../moderation/developer-forced-global-spammer-cache';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
-import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import type { MaxClientService } from '../max/max-client.service';
 import { AdminService } from './admin.service';
 import { createGroupCommandPermitFixture } from '../common/group-command-authority.spec-support';
 import { resolveAdminManagedEntitiesRefreshJitterMs } from './admin-managed-entities-refresh.queue';
@@ -17795,79 +17795,6 @@ describe('AdminService.getChannelStats', () => {
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
-  it('hydrates missing previews for selected top posts from MAX message snapshots', async () => {
-    const prisma = createPrismaMock();
-    const maxClient = {
-      getMessageSnapshot: jest.fn().mockResolvedValue({
-        chatId: 'channel-1',
-        messageId: 'mid-top-1',
-        publishedAt: '2026-06-08T17:56:14.328Z',
-        publishedAtMs: 1780941374328,
-        url: 'https://max.ru/news/top-1',
-        previewUrl: 'https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx',
-        views: 5926,
-        reactionsTotal: null,
-        reactions: [],
-      }),
-    };
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
-    const statsHelpers = service as unknown as {
-      hydrateTopPostPreviews: (
-        chatId: string,
-        topPosts: Array<{
-          messageId: string;
-          publishedAt: string;
-          url: string | null;
-          previewUrl: string | null;
-          viewsDelta: number;
-        }>,
-      ) => Promise<
-        Array<{
-          messageId: string;
-          publishedAt: string;
-          url: string | null;
-          previewUrl: string | null;
-          viewsDelta: number;
-        }>
-      >;
-    };
-
-    const result = await statsHelpers.hydrateTopPostPreviews('channel-1', [
-      {
-        messageId: 'mid-top-1',
-        publishedAt: '2026-06-08T17:56:14.328Z',
-        url: 'https://max.ru/news/top-1',
-        previewUrl: null,
-        viewsDelta: 5926,
-      },
-    ]);
-
-    expect(result[0]?.previewUrl).toBe('https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx');
-    expect(maxClient.getMessageSnapshot).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-top-1',
-      expect.objectContaining({
-        trafficClass: 'background',
-        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
-      }),
-    );
-    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
-      where: {
-        chatId: 'channel-1',
-        messageId: 'mid-top-1',
-        previewUrl: null,
-      },
-      data: {
-        previewUrl: 'https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx',
-      },
-    });
-  });
-
   it('places views chart points by publication bucket', () => {
     const service = new AdminService(
       createPrismaMock() as never,
@@ -18653,7 +18580,7 @@ describe('AdminService.getChannelStats', () => {
     });
   });
 
-  it('returns official-first channel stats without reading channel settings', async () => {
+  it('returns stored channel stats without reading settings or waiting for post previews', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -18890,9 +18817,17 @@ describe('AdminService.getChannelStats', () => {
     ]);
     prisma.channelPost.findFirst.mockResolvedValue({ id: 'post-1' });
 
+    const stalledSnapshot =
+      createDeferred<Awaited<ReturnType<MaxClientService['getMessageSnapshot']>>>();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getChatSnapshot: jest.fn(),
+      getMessageSnapshot: jest
+        .fn<
+          ReturnType<MaxClientService['getMessageSnapshot']>,
+          Parameters<MaxClientService['getMessageSnapshot']>
+        >()
+        .mockReturnValue(stalledSnapshot.promise),
       getChatMemberProfiles: jest.fn().mockResolvedValue(
         new Map([
           [
@@ -18941,6 +18876,8 @@ describe('AdminService.getChannelStats', () => {
       },
       { range: '7d' },
     );
+
+    expect(maxClient.getMessageSnapshot).not.toHaveBeenCalled();
 
     expect(result.channel).toEqual({
       id: 'channel-1',
