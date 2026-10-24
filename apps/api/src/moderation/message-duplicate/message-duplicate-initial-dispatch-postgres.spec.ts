@@ -25,7 +25,7 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     h = undefined;
   });
 
-  async function fixture(bots: number) {
+  async function fixture(bots: number, duplicateBotMessageEnabled = true) {
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' });
     const s = h;
     await s.redis.set(
@@ -44,7 +44,7 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
       maxMessageLengthEnabled: false,
       antiDuplicateEnabled: true,
       duplicateCompareMode: 'TEXT',
-      duplicateBotMessageEnabled: true,
+      duplicateBotMessageEnabled,
       duplicateWarnEnabled: true,
       duplicateMuteEnabled: true,
       duplicateBanEnabled: true,
@@ -194,6 +194,108 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     expect(s.effects).toEqual([]);
     return intent;
   }
+
+  it('declines sanction before state changes while a competing DELETE owner is unfinished and the source is still visible', async () => {
+    const f = await fixture(4, false);
+    const { s, chatId, duplicateId, text } = f;
+    const token = randomUUID();
+    let intentId = '';
+    let deadline: Date | undefined;
+    const ensure = s.intents.ensureIntentWithMessageActionClaim.bind(s.intents);
+    jest
+      .spyOn(s.intents, 'ensureIntentWithMessageActionClaim')
+      .mockImplementation(async (input) => {
+        const result = await ensure(input);
+        if (input.intent.messageId === duplicateId && result.intent?.intentId) {
+          intentId = result.intent.intentId;
+          // FLAG: Model a different durable worker holding this exact row. The inline
+          // caller must not invent its receipt or begin sanctions while it is unfinished.
+          const owned = await s.prisma.moderationDeleteIntent.update({
+            where: { id: intentId },
+            data: {
+              status: 'IN_PROGRESS',
+              leaseToken: token,
+              leaseExpiresAt: new Date(Date.now() + 30_000),
+              leasedFromStatus: 'PENDING',
+              attemptCount: 1,
+            },
+          });
+          deadline = owned.retryUntilAt;
+        }
+        return result;
+      });
+    const guard = s.duplicateGuard.assertMessageStillActionable.bind(s.duplicateGuard);
+    let initialRead = false;
+    let finalRead = false;
+    jest
+      .spyOn(s.duplicateGuard, 'assertMessageStillActionable')
+      .mockImplementation(async (input) => {
+        if (input.sanctionIntentId) {
+          if (input.sanctionPhase === 'initial_unattempted') {
+            initialRead = true;
+            expect(s.messages.has(duplicateId)).toBe(true);
+          } else {
+            finalRead = true;
+            throw Object.assign(new Error('Source disappeared before final sanction'), {
+              response: { status: 404, data: { code: 'not.found' } },
+            });
+          }
+        }
+        return guard(input);
+      });
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    const at = Date.now();
+    const ids = await Promise.all(
+      s.bots.map((bot) => s.ingest({ chatId, messageId: duplicateId, text, at, botId: bot.id })),
+    );
+    expect((await waitForReceipts(s, ids)).map((row) => row.status).sort()).toEqual([
+      'DUPLICATE',
+      'DUPLICATE',
+      'DUPLICATE',
+      'PROCESSED',
+    ]);
+    expect(initialRead).toBe(true);
+    expect(finalRead).toBe(false);
+    expect(s.effects).toEqual([]);
+    expect(await s.prisma.moderationEvent.count({ where: { chatId } })).toBe(0);
+    expect(await s.prisma.maxActionLedgerEntry.count({ where: { chatId } })).toBe(0);
+    const retained = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { id: intentId },
+    });
+    expect(retained).toMatchObject({
+      status: 'IN_PROGRESS',
+      leaseToken: token,
+      retryUntilAt: deadline,
+      remoteDeleteSucceededAt: null,
+      completedAt: null,
+    });
+    for (const id of ids) await s.moderation.processWebhookEvent(id);
+    expect(handler).toHaveBeenCalledTimes(1);
+    const next = await s.ingest({
+      chatId,
+      messageId: `following-${randomUUID()}`,
+      text: 'Independent later message progresses without waiting for the duplicate deletion',
+      at: Date.now(),
+    });
+    expect((await waitForReceipts(s, [next]))[0]!.status).toBe('PROCESSED');
+    // FLAG: Only the simulated worker releases its own test lease. Production recovery
+    // and source deadlines are unchanged; the real DELETE still obtains fresh authority.
+    expect(
+      await s.prisma.moderationDeleteIntent.updateMany({
+        where: { id: intentId, status: 'IN_PROGRESS', leaseToken: token },
+        data: {
+          status: 'RETRYABLE',
+          leaseToken: null,
+          leaseExpiresAt: null,
+          leasedFromStatus: null,
+        },
+      }),
+    ).toEqual({ count: 1 });
+    await expect(s.intents.attemptIntent(intentId)).resolves.toMatchObject({ kind: 'confirmed' });
+    expect(s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+    expect(s.effects.filter((effect) => effect.method !== 'delete')).toEqual([]);
+    expect(s.failures).toEqual([]);
+  });
 
   it.each(
     (['current', 'original'] as const).flatMap((source) =>

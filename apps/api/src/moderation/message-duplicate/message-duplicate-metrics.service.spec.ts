@@ -57,11 +57,15 @@ describe('privacy-safe message duplicate diagnostics', () => {
     expect(jest.getTimerCount()).toBe(0);
     service.recordGuardRejection('secret free-form error');
     service.recordGuardRejection('message_duplicate_content_changed');
+    service.recordGuardRejection('message_duplicate_sanction_delete_unconfirmed');
+    service.recordGuardRejection('message_duplicate_sanction_source_unavailable');
     service.recordContentRejection('split_album');
     jest.advanceTimersByTime(30_000);
     expect(log.mock.calls[0]?.[0].counters).toEqual({
       'guard.other_rejection': 1,
       'guard.message_duplicate_content_changed': 1,
+      'guard.message_duplicate_sanction_delete_unconfirmed': 1,
+      'guard.message_duplicate_sanction_source_unavailable': 1,
       'content.split_album': 1,
     });
     expect(JSON.stringify(log.mock.calls)).not.toMatch(/private|secret|https/);

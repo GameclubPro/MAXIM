@@ -13,7 +13,12 @@ import Redis from 'ioredis';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import type { MaxUpdate } from '@maxim/contracts';
-import type { ChatSettings } from '../../prisma/prisma-client';
+import type {
+  ChatSettings,
+  ModerationDeleteIntent,
+  ModerationDeleteIntentReason,
+  Prisma,
+} from '../../prisma/prisma-client';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import type { DuplicateModerationActionRequest } from '../duplicate-moderation.actions';
 import type { EnsureModerationDeleteIntentInput } from '../moderation-delete-intent.types';
@@ -45,6 +50,23 @@ import { MessageDuplicateAdmissionService } from './message-duplicate-admission.
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL ?? '';
 const localRedis = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(redisUrl);
 const shortHash = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 32);
+
+type SanctionDeleteReceipt = Pick<
+  ModerationDeleteIntent,
+  | 'id'
+  | 'status'
+  | 'chatId'
+  | 'messageId'
+  | 'subjectUserId'
+  | 'remoteDeleteSucceededAt'
+  | 'remoteDeleteSucceededBotId'
+  | 'succeededBotId'
+> & {
+  reasons: Pick<
+    ModerationDeleteIntentReason,
+    'reasonKey' | 'ruleCode' | 'userId' | 'metadata' | 'createdAt'
+  >[];
+};
 
 async function createFlow(overrides: Partial<ChatSettings> = {}) {
   const suffix = randomUUID();
@@ -231,21 +253,30 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
         }: {
           where: { id: string };
           select?: { reasons?: { where?: { reasonKey?: string } } };
-        }) => {
+        }): Promise<SanctionDeleteReceipt | null> => {
           const record = records.get(where.id);
           if (!record) return null;
           const reasonKey = select?.reasons?.where?.reasonKey;
           return {
+            id: where.id,
+            status: record.deletedAt ? 'SUCCEEDED' : 'PENDING',
             chatId,
             messageId: record.input.messageId,
-            subjectUserId: record.input.subjectUserId,
+            subjectUserId: record.input.subjectUserId ?? null,
             remoteDeleteSucceededAt: record.deletedAt,
+            remoteDeleteSucceededBotId: record.deletedAt ? 'bot' : null,
+            succeededBotId: record.deletedAt ? 'bot' : null,
             reasons:
               reasonKey && reasonKey !== record.input.reasonKey
                 ? []
                 : [
                     {
-                      metadata: record.verifiedReceiptMetadata ?? record.input.event?.metadata,
+                      reasonKey: record.input.reasonKey,
+                      ruleCode: record.input.ruleCode ?? record.input.reasonKey,
+                      userId: record.input.event?.userId ?? record.input.subjectUserId ?? null,
+                      metadata: (record.verifiedReceiptMetadata ??
+                        record.input.event?.metadata ??
+                        null) as Prisma.JsonValue,
                       createdAt: record.at,
                     },
                   ],
@@ -256,6 +287,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
   };
   const bots = {
     isKnownBotUserId: (userId: string) => userId === '999',
+    isRegisteredModerationBotId: (botId: string) => botId === 'bot',
     getDefaultBotId: () => 'bot',
     resolveExecutableBotId: (botId: string) => (botId === 'bot' ? botId : null),
   };

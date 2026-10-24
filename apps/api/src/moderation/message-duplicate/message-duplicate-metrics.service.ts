@@ -151,6 +151,8 @@ export const MESSAGE_DUPLICATE_METRIC_COUNTERS = [
   'guard.message_duplicate_author_immune',
   'guard.message_duplicate_author_not_member',
   'guard.message_duplicate_unproven_absence',
+  'guard.message_duplicate_sanction_delete_unconfirmed',
+  'guard.message_duplicate_sanction_source_unavailable',
   'guard.message_duplicate_identity_changed',
   'guard.message_duplicate_content_changed',
   'guard.message_duplicate_history_changed',

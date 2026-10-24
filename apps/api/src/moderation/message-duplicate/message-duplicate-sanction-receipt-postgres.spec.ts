@@ -163,7 +163,7 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       const originalRaw = (originalUpdate.raw as { message: Record<string, unknown> }).message;
       originalRaw.recipient = { chat_id: chatId, chat_type: 'chat' };
       const sourceError = { response: { status: 404, data: lookupErrorData } };
-      const currentLookup = jest.fn(async () => {
+      const currentLookup = jest.fn(async (): Promise<Record<string, unknown> | null> => {
         throw sourceError;
       });
       const originalLookup = jest.fn(async () => originalRaw);
@@ -290,6 +290,57 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
         expect(s.authorization.isAllowed).toHaveBeenCalledTimes(2);
         expect(s.legacyHolds.isAnyMessageSourceHeld).toHaveBeenCalled();
         expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
+        expectNoEffects(s);
+        expect(await snapshot()).toEqual(before);
+      },
+    );
+
+    it.each([
+      'missing success',
+      'unfinished receipt',
+      'unverified reason',
+      'valid receipt',
+    ] as const)(
+      'requires exact own DELETE proof before initial sanction with visible source: %s',
+      async (kind) => {
+        const s = await fixture();
+        const raw = (
+          duplicateUpdate(s.binding.messageId, s.binding.eventTimestampMs).raw as {
+            message: Record<string, unknown>;
+          }
+        ).message;
+        raw.recipient = { chat_id: s.request.chatId, chat_type: 'chat' };
+        s.currentLookup.mockResolvedValue(raw);
+        if (kind === 'unverified reason')
+          await prisma.moderationDeleteIntentReason.update({
+            where: { id: s.reasonId },
+            data: {
+              metadata: { ...s.metadata, moderationDeleteVerified: false } as Prisma.InputJsonValue,
+            },
+          });
+        if (kind === 'missing success' || kind === 'unfinished receipt')
+          await prisma.moderationDeleteIntent.update({
+            where: { id: s.intentId },
+            data:
+              kind === 'missing success'
+                ? { remoteDeleteSucceededAt: null, remoteDeleteSucceededBotId: null }
+                : { status: 'AMBIGUOUS' },
+          });
+        const before = await snapshot();
+        const result = s.service.assertMessageStillActionable({
+          ...s.request,
+          sanctionPhase: 'initial_unattempted',
+        });
+        if (kind === 'valid receipt') {
+          await expect(result).resolves.toBe('allowed');
+          expect(s.beforeFinalAuthority).toHaveBeenCalledTimes(1);
+        } else {
+          await expect(result).rejects.toMatchObject({
+            code: 'message_duplicate_sanction_delete_unconfirmed',
+          });
+          expect(s.beforeFinalAuthority).not.toHaveBeenCalled();
+          expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+        }
         expectNoEffects(s);
         expect(await snapshot()).toEqual(before);
       },

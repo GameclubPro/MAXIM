@@ -231,6 +231,7 @@ export class MessageDuplicateDeleteGuardService {
   ): Promise<'allowed' | 'absent'> {
     const { binding } = params;
     const notice = params.notice;
+    const initialSanction = params.sanctionPhase === 'initial_unattempted';
     const canonicalBinding = parseMessageDuplicateBinding({
       duplicateSource: MESSAGE_DUPLICATE_SOURCE,
       messageDuplicate: binding,
@@ -337,10 +338,9 @@ export class MessageDuplicateDeleteGuardService {
       throw new Error('Message duplicate author access unavailable');
     let raw: Record<string, unknown> | null;
     let currentReadFailure: unknown = null;
-    const sanctionBoundary =
-      params.sanctionPhase === 'initial_unattempted'
-        ? 'duplicate_sanction_initial'
-        : 'duplicate_sanction_final';
+    const sanctionBoundary = initialSanction
+      ? 'duplicate_sanction_initial'
+      : 'duplicate_sanction_final';
     try {
       raw = await this.lookupMessage(
         'current',
@@ -368,16 +368,21 @@ export class MessageDuplicateDeleteGuardService {
       // FLAG: Only the initial sanction authorization may decline unavailable evidence
       // before any sanction state or remote mutation. This grants no absence, DELETE
       // receipt, retry or claim reset; final member/notice rechecks retain the failure.
-      if (params.sanctionPhase === 'initial_unattempted')
+      if (initialSanction)
         throw new MessageDuplicateGuardRejectedError(
-          'message_duplicate_sanction_source_unavailable',
+          currentReadFailure === null
+            ? 'message_duplicate_sanction_delete_unconfirmed'
+            : 'message_duplicate_sanction_source_unavailable',
         );
       throw currentReadFailure;
     };
     if (!raw && !receiptIntentId) return 'absent';
-    if (!raw) {
+    if (!raw || initialSanction) {
       // FLAG: Absence alone cannot authorize a sanction. Require our exact successful DELETE
       // receipt and its immutable binding; an unrelated deletion or an ambiguous send is insufficient.
+      // Initial admission also requires this receipt while MAX still returns the source:
+      // a concurrent DELETE can disappear before the next guard without a committed receipt.
+      // Decline before sanction state, without waiting, resetting claims or replaying the handler.
       const receipt =
         noticeReceipt ??
         (await this.prisma.moderationDeleteIntent.findUnique({
@@ -462,33 +467,44 @@ export class MessageDuplicateDeleteGuardService {
           };
           rejectUnavailableCurrentSource('own_delete_binding_unproven', detail());
         }
+        if (initialSanction)
+          throw new MessageDuplicateGuardRejectedError(
+            'message_duplicate_sanction_delete_unconfirmed',
+          );
         throw new MessageDuplicateGuardRejectedError('message_duplicate_unproven_absence');
       }
-      if (currentReadFailure !== null) {
+      if (currentReadFailure !== null || initialSanction) {
         // FLAG: Preserve the original failure unless the retained receipt proves this
         // exact v3 binding and its own confirmed executor. A healthy peer may continue;
         // this historical bot identity never grants today's route or mutation authority.
         const reason = receipt.reasons[0];
         const receiptBotId = receipt.remoteDeleteSucceededBotId;
-        if (
-          canonicalBinding?.version !== 3 ||
-          canonicalBinding.enforcementScope !== 'full' ||
-          receipt.id !== params.sanctionIntentId ||
-          receipt.status !== 'SUCCEEDED' ||
-          !receiptBotId ||
-          receipt.succeededBotId !== receiptBotId ||
-          !this.bots.isRegisteredModerationBotId(receiptBotId) ||
-          reason.reasonKey !== `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}` ||
-          reason.ruleCode !== 'DUPLICATE_DELETE' ||
-          reason.userId !== binding.senderId ||
-          !Number.isFinite(receipt.remoteDeleteSucceededAt.getTime()) ||
-          !Number.isFinite(reason.createdAt.getTime()) ||
-          receipt.remoteDeleteSucceededAt.getTime() > Date.now() ||
-          JSON.stringify(recorded) !== JSON.stringify(canonicalBinding)
-        )
-          rejectUnavailableCurrentSource('own_delete_sanction_receipt_unproven');
+        const succeededAtMs = receipt.remoteDeleteSucceededAt.getTime();
+        const detail = (): ModerationGuardProofDetail | undefined => {
+          if (canonicalBinding?.version !== 3 || canonicalBinding.enforcementScope !== 'full')
+            return 'binding_invalid';
+          if (receipt.id !== params.sanctionIntentId) return 'intent_mismatch';
+          if (receipt.status !== 'SUCCEEDED') return 'receipt_unfinished';
+          if (!receiptBotId) return 'executor_missing';
+          if (receipt.succeededBotId !== receiptBotId) return 'executor_mismatch';
+          if (!this.bots.isRegisteredModerationBotId(receiptBotId)) return 'executor_unregistered';
+          if (reason.reasonKey !== `MESSAGE_DUPLICATE:v1:${binding.eventTimestampMs}`)
+            return 'reason_key_mismatch';
+          if (reason.ruleCode !== 'DUPLICATE_DELETE') return 'reason_rule_mismatch';
+          if (reason.userId !== binding.senderId) return 'reason_user_mismatch';
+          if (!Number.isFinite(succeededAtMs)) return 'receipt_clock_invalid';
+          if (!Number.isFinite(reason.createdAt.getTime())) return 'reason_clock_invalid';
+          if (succeededAtMs > Date.now()) return 'receipt_clock_future';
+          if (JSON.stringify(recorded) !== JSON.stringify(canonicalBinding))
+            return 'binding_mismatch';
+          return undefined;
+        };
+        const proofDetail = detail();
+        if (proofDetail)
+          rejectUnavailableCurrentSource('own_delete_sanction_receipt_unproven', proofDetail);
       }
-    } else {
+    }
+    if (raw) {
       const message = this.parser.parse({
         type: 'message_created',
         updateId: 'message-duplicate-guard',
@@ -771,19 +787,31 @@ function isPreDispatchDuplicateReadRateLimited(error: unknown): boolean {
 function isConfirmedMessageAbsence(error: unknown): boolean {
   const response = (error as { response?: { status?: unknown; data?: unknown } } | null | undefined)
     ?.response;
-  if (response?.status !== 404) return false;
+  if (
+    response?.status !== 404 ||
+    wasMaxMessageSendAttempted(error) ||
+    wasMaxMemberMutationAttempted(error) ||
+    isMaxMutationOutcomeAmbiguous(error)
+  )
+    return false;
   const body = response.data;
   if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
   const row = body as Record<string, unknown>;
-  const nestedError =
-    row.error && typeof row.error === 'object' && !Array.isArray(row.error)
-      ? (row.error as Record<string, unknown>)
-      : null;
-  const code = nestedError?.code ?? row.code;
+  // FLAG: One message-specific code cannot override a conflicting access/generic code.
+  // Unavailable evidence must not remove history or manufacture an absence receipt.
+  if (row.error != null && (typeof row.error !== 'object' || Array.isArray(row.error)))
+    return false;
+  const codes = [row.code, (row.error as Record<string, unknown> | null)?.code].filter(
+    (code) => code != null,
+  );
   return (
-    typeof code === 'string' &&
-    ['message.not.found', 'message_not_found', 'message.not_found'].includes(
-      code.trim().toLowerCase(),
+    codes.length > 0 &&
+    codes.every(
+      (code) =>
+        typeof code === 'string' &&
+        ['message.not.found', 'message_not_found', 'message.not_found'].includes(
+          code.trim().toLowerCase(),
+        ),
     )
   );
 }

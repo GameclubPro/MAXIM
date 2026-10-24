@@ -1127,6 +1127,47 @@ describe('message duplicate final delete guard', () => {
     };
   }
 
+  it.each(['missing', 'pending', 'unverified'])(
+    'declines initial sanction with a visible source and %s DELETE proof',
+    async (kind) => {
+      const s = full();
+      const receipt = ownDeleteReceipt(s);
+      if (kind === 'pending') receipt.status = 'IN_PROGRESS';
+      if (kind === 'unverified') receipt.reasons[0]!.metadata.moderationDeleteVerified = false;
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(
+        kind === 'missing' ? null : receipt,
+      );
+      const before = structuredClone(receipt);
+      const finalAuthority = jest.fn();
+      await expect(
+        s.service.assertMessageStillActionable({
+          ...s.request,
+          sanctionPhase: 'initial_unattempted',
+          beforeFinalAuthority: finalAuthority,
+        }),
+      ).rejects.toBeInstanceOf(MessageDuplicateGuardRejectedError);
+      expect(finalAuthority).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(receipt).toEqual(before);
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.current_lookup_confirmed_absent');
+    },
+  );
+
+  it('checks returned current content even after confirming the initial sanction DELETE receipt', async () => {
+    const s = full();
+    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(ownDeleteReceipt(s));
+    const request = { ...s.request, sanctionPhase: 'initial_unattempted' as const };
+    await expect(s.service.assertMessageStillActionable(request)).resolves.toBe('allowed');
+    s.max.getExactMessageRow.mockResolvedValue({
+      ...(duplicateUpdate().raw as { message: Record<string, unknown> }).message,
+      body: { mid: s.binding.messageId, text: 'Changed live source' },
+    });
+    await expect(s.service.assertMessageStillActionable(request)).rejects.toMatchObject({
+      code: 'message_duplicate_content_changed',
+    });
+  });
+
   it.each([{}, { code: 'not.found' }, { error: { code: 'not.found' } }])(
     'uses an exact own DELETE receipt after an unavailable current GET 404 (%j) without claiming absence',
     async (body) => {
@@ -1304,49 +1345,68 @@ describe('message duplicate final delete guard', () => {
   );
 
   it.each([
-    'id',
-    'status',
-    'bot',
-    'unknown_bot',
-    'publisher_bot',
-    'reason_key',
-    'rule',
-    'verified',
-    'late_reason',
-    'source_digest',
-    'fingerprint',
-    'compare_mode',
-    'media_hashes',
-  ])('preserves the bare current 404 when own DELETE receipt has changed %s', async (change) => {
-    const s = full();
-    const error = { response: { status: 404, data: {} } };
-    const receipt = ownDeleteReceipt(s);
-    const reason = receipt.reasons[0]!;
-    if (change === 'id') receipt.id = 'another';
-    if (change === 'status') receipt.status = 'AMBIGUOUS';
-    if (change === 'bot') receipt.succeededBotId = 'bot';
-    if (change === 'unknown_bot')
-      receipt.succeededBotId = receipt.remoteDeleteSucceededBotId = 'unknown';
-    if (change === 'publisher_bot')
-      receipt.succeededBotId = receipt.remoteDeleteSucceededBotId = 'id613002203036_2_bot';
-    if (change === 'reason_key') reason.reasonKey = 'another';
-    if (change === 'rule') reason.ruleCode = 'OTHER_DELETE';
-    if (change === 'verified') reason.metadata.moderationDeleteVerified = false;
-    if (change === 'late_reason') reason.createdAt = new Date(Date.now() + 1000);
-    if (change === 'source_digest') reason.metadata.messageDuplicate.sourceDigest = '1'.repeat(64);
-    if (change === 'fingerprint') reason.metadata.messageDuplicate.fingerprint = '2'.repeat(64);
-    if (change === 'compare_mode') reason.metadata.messageDuplicate.compareMode = 'TEXT';
-    if (change === 'media_hashes') reason.metadata.messageDuplicate.mediaHashes = ['3'.repeat(64)];
-    s.max.getExactMessageRow.mockRejectedValue(error);
-    s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(receipt);
-    await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
-    expect(s.originalLookup).not.toHaveBeenCalled();
-    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
-    expect(readModerationGuardFailure(error)).toMatchObject({
-      guardBoundary: 'duplicate_sanction_final',
-      guardProofFailure: expect.stringMatching(/^own_delete_(binding|sanction_receipt)_unproven$/u),
-    });
-  });
+    ['id', 'intent_mismatch'],
+    ['status', 'receipt_unfinished'],
+    ['bot', 'executor_mismatch'],
+    ['missing_bot', 'executor_missing'],
+    ['unknown_bot', 'executor_unregistered'],
+    ['publisher_bot', 'executor_unregistered'],
+    ['reason_key', 'reason_key_mismatch'],
+    ['rule', 'reason_rule_mismatch'],
+    ['reason_user', 'reason_user_mismatch'],
+    ['verified', 'reason_unverified'],
+    ['late_reason', 'reason_after_delete'],
+    ['invalid_receipt_clock', 'receipt_clock_invalid'],
+    ['invalid_reason_clock', 'reason_clock_invalid'],
+    ['future_receipt_clock', 'receipt_clock_future'],
+    ['source_digest', 'binding_mismatch'],
+    ['fingerprint', 'binding_mismatch'],
+    ['compare_mode', 'binding_mismatch'],
+    ['media_hashes', 'binding_mismatch'],
+  ])(
+    'preserves the bare current 404 when own DELETE receipt has changed %s',
+    async (change, detail) => {
+      const s = full();
+      const error = { response: { status: 404, data: {} } };
+      const receipt = ownDeleteReceipt(s);
+      const reason = receipt.reasons[0]!;
+      if (change === 'id') receipt.id = 'another';
+      if (change === 'status') receipt.status = 'AMBIGUOUS';
+      if (change === 'bot') receipt.succeededBotId = 'bot';
+      if (change === 'missing_bot') Object.assign(receipt, { remoteDeleteSucceededBotId: null });
+      if (change === 'unknown_bot')
+        receipt.succeededBotId = receipt.remoteDeleteSucceededBotId = 'unknown';
+      if (change === 'publisher_bot')
+        receipt.succeededBotId = receipt.remoteDeleteSucceededBotId = 'id613002203036_2_bot';
+      if (change === 'reason_key') reason.reasonKey = 'another';
+      if (change === 'rule') reason.ruleCode = 'OTHER_DELETE';
+      if (change === 'reason_user') reason.userId = 'other';
+      if (change === 'invalid_receipt_clock') receipt.remoteDeleteSucceededAt = new Date(NaN);
+      if (change === 'invalid_reason_clock') reason.createdAt = new Date(NaN);
+      if (change === 'future_receipt_clock')
+        receipt.remoteDeleteSucceededAt = new Date(Date.now() + 1000);
+      if (change === 'verified') reason.metadata.moderationDeleteVerified = false;
+      if (change === 'late_reason') reason.createdAt = new Date(Date.now() + 1000);
+      if (change === 'source_digest')
+        reason.metadata.messageDuplicate.sourceDigest = '1'.repeat(64);
+      if (change === 'fingerprint') reason.metadata.messageDuplicate.fingerprint = '2'.repeat(64);
+      if (change === 'compare_mode') reason.metadata.messageDuplicate.compareMode = 'TEXT';
+      if (change === 'media_hashes')
+        reason.metadata.messageDuplicate.mediaHashes = ['3'.repeat(64)];
+      s.max.getExactMessageRow.mockRejectedValue(error);
+      s.prisma.moderationDeleteIntent.findUnique.mockResolvedValue(receipt);
+      await expect(s.service.assertMessageStillActionable(s.request)).rejects.toBe(error);
+      expect(s.originalLookup).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(readModerationGuardFailure(error)).toMatchObject({
+        guardBoundary: 'duplicate_sanction_final',
+        guardProofFailure: expect.stringMatching(
+          /^own_delete_(binding|sanction_receipt)_unproven$/u,
+        ),
+        guardProofDetail: detail,
+      });
+    },
+  );
 
   it.each([
     { response: { status: 403, data: {} } },
@@ -1561,6 +1621,28 @@ describe('message duplicate final delete guard', () => {
         { response: { status: 200, data: { code: 'message.not.found' } } },
       ],
       ['malformed body', { response: { status: 404, data: [{ code: 'message.not.found' }] } }],
+      [
+        'conflicting access code',
+        {
+          response: {
+            status: 404,
+            data: { code: 'chat.denied', error: { code: 'message.not.found' } },
+          },
+        },
+      ],
+      [
+        'conflicting nested generic code',
+        {
+          response: {
+            status: 404,
+            data: { code: 'message.not.found', error: { code: 'not.found' } },
+          },
+        },
+      ],
+      [
+        'malformed nested error',
+        { response: { status: 404, data: { code: 'message.not.found', error: 'chat.denied' } } },
+      ],
       ['transport', new Error('Private source unavailable https://secret.example')],
     ].flatMap(([reason, error]) =>
       (['current', 'original'] as const).map((stage) => ({ reason, error, stage })),
@@ -1577,6 +1659,20 @@ describe('message duplicate final delete guard', () => {
     expect(s.metrics.record).not.toHaveBeenCalledWith(`guard.${stage}_lookup_confirmed_absent`);
     expect(JSON.stringify(s.metrics.record.mock.calls)).not.toMatch(/secret|https/);
   });
+
+  it.each(['send', 'member'] as const)(
+    'never treats mutation-marked %s 404 as absence',
+    async (kind) => {
+      const s = setup();
+      const error = { response: { status: 404, data: { code: 'message.not.found' } } };
+      if (kind === 'send') markMaxMessageSendAttempted(error);
+      else markMaxMemberMutationAttempted(error);
+      s.originalLookup.mockRejectedValue(error);
+      await expect(s.service.assertIntentStillActionable(s.params)).rejects.toBe(error);
+      expect(s.history.remove).not.toHaveBeenCalled();
+      expect(s.metrics.record).not.toHaveBeenCalledWith('guard.original_lookup_confirmed_absent');
+    },
+  );
 
   it('uses server receipt ordering instead of comparing the MAX clock with the database clock', async () => {
     const s = full();
