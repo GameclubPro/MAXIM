@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import { PublicationLatePolicyFields } from '../features/publications/publication-late-policy-fields';
 import { SearchField } from '../components/ui/search-field';
 import { formatPublicationLatePolicy } from '../features/publications/publication-late-policy-presentation';
@@ -13,7 +14,7 @@ import { publicationQueryKeys as queryKeys } from '../features/publications/publ
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { type PublicationSummary } from '@maxim/contracts/publication';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
-import { Clock, FilterList, NavArrowLeft, Plus, Refresh, Trash, Xmark } from 'iconoir-react';
+
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
@@ -808,7 +809,7 @@ export function PublicationsPage({
             aria-controls="publication-filters"
             title="Фильтры"
           >
-            <FilterList aria-hidden />
+            <IconoirSprite variant="iconoir" icon="FilterList" aria-hidden />
           </button>
         </div>
 
@@ -819,7 +820,7 @@ export function PublicationsPage({
             onClick={() => setFiltersOpen(true)}
             aria-label="Изменить активные фильтры"
           >
-            <FilterList aria-hidden />
+            <IconoirSprite variant="iconoir" icon="FilterList" aria-hidden />
             {[
               entityFilter !== 'all' &&
                 ENTITY_FILTERS.find((filter) => filter.value === entityFilter)?.label,
@@ -879,7 +880,7 @@ export function PublicationsPage({
                 aria-label="Сбросить фильтры"
                 title="Сбросить фильтры"
               >
-                <Xmark aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
               </button>
             ) : null}
           </div>
@@ -915,7 +916,7 @@ export function PublicationsPage({
             aria-controls="legacy-publication-filters"
             title="Фильтры"
           >
-            <FilterList aria-hidden />
+            <IconoirSprite variant="iconoir" icon="FilterList" aria-hidden />
           </button>
         </div>
 
@@ -926,7 +927,7 @@ export function PublicationsPage({
             onClick={() => setLegacyFiltersOpen(true)}
             aria-label="Изменить активные фильтры архива"
           >
-            <FilterList aria-hidden />
+            <IconoirSprite variant="iconoir" icon="FilterList" aria-hidden />
             {[
               legacyKindFilter !== 'all' &&
                 LEGACY_KIND_FILTERS.find((filter) => filter.value === legacyKindFilter)?.label,
@@ -986,7 +987,7 @@ export function PublicationsPage({
                 aria-label="Сбросить фильтры"
                 title="Сбросить фильтры"
               >
-                <Xmark aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
               </button>
             ) : null}
           </div>
@@ -1100,7 +1101,7 @@ export function PublicationsPage({
             </strong>
             {isPublisherProfile && view !== 'history' && !query.trim() && publisherCanCreate ? (
               <button type="button" className="publications-primary" onClick={requestCreateEditor}>
-                <Plus aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
                 <span>Новая публикация</span>
               </button>
             ) : null}
@@ -1225,7 +1226,7 @@ export function PublicationsPage({
             aria-label="Вернуться к постам"
             title="Назад"
           >
-            <NavArrowLeft aria-hidden />
+            <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
           </button>
           <span>
             <h1>Старые публикации</h1>
@@ -1376,7 +1377,7 @@ export function PublicationsPage({
 
         {draft.timingMode !== 'now' ? (
           <div className="publication-schedule-timezone">
-            <Clock aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Clock" aria-hidden />
             <span>
               {formatTimezoneLabel(
                 draft.timingMode === 'schedule' && draft.scheduleKind === 'slots'
@@ -1478,7 +1479,7 @@ export function PublicationsPage({
           <div className="publications-calendar-error" role="alert">
             <span>Не удалось загрузить занятые слоты.</span>
             <button type="button" onClick={() => void calendarAvailabilityQuery.refetch()}>
-              <Refresh aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
               <span>Повторить</span>
             </button>
           </div>
@@ -1577,7 +1578,7 @@ export function PublicationsPage({
             aria-label="Назад"
             title="Назад"
           >
-            <NavArrowLeft aria-hidden />
+            <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
           </button>
           <span>
             <h1 ref={editorTitleRef} tabIndex={-1}>
@@ -1594,7 +1595,7 @@ export function PublicationsPage({
             title="Очистить"
             disabled={isBusy || editing || cloudDraft.status === 'saving'}
           >
-            <Trash aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
           </button>
         </header>
 

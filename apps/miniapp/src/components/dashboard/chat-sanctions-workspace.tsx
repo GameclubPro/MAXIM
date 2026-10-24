@@ -1,18 +1,9 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import type { ChatSanctionItem, ChatSanctionsQuery } from '@maxim/contracts';
 import { isMaxMemberRestoreAvailable } from '@maxim/contracts/max-capabilities';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
-import {
-  Prohibition,
-  SoundOff,
-  Refresh,
-  Search,
-  Xmark,
-  NavArrowRight,
-  UserCircle,
-  ShieldCheck,
-  Clock,
-} from 'iconoir-react';
+
 import type { ApiTransport } from '../../lib/api/transport';
 import { getChatSanctions } from '../../lib/api/chat-sanctions-client';
 import { describeUserFacingError } from '../../lib/user-facing-error';
@@ -238,7 +229,7 @@ export function ChatSanctionsWorkspace({
           {isOpeningProfile ? (
             <Spinner size="sm" label={null} />
           ) : (
-            <UserCircle width={20} height={20} aria-hidden />
+            <IconoirSprite variant="iconoir" icon="UserCircle" width={20} height={20} aria-hidden />
           )}
           {isOpeningProfile ? 'Открываем...' : onParticipantActivate ? 'Участник' : 'Профиль в MAX'}
         </button>
@@ -254,7 +245,7 @@ export function ChatSanctionsWorkspace({
             setSelected(null);
           }}
         >
-          <Clock width={20} height={20} aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Clock" width={20} height={20} aria-hidden />
           История
         </button>
       </div>
@@ -268,7 +259,7 @@ export function ChatSanctionsWorkspace({
             setConfirmOpen(true);
           }}
         >
-          <ShieldCheck width={20} height={20} aria-hidden />
+          <IconoirSprite variant="iconoir" icon="ShieldCheck" width={20} height={20} aria-hidden />
           {selected.action === 'BAN'
             ? isMaxMemberRestoreAvailable()
               ? 'Снять блокировку'
@@ -283,7 +274,7 @@ export function ChatSanctionsWorkspace({
     <section className="sanctions-workspace" aria-label="Ограничения участников">
       <div className="sanctions-workspace__toolbar">
         <label className="sanctions-workspace__search">
-          <Search width={19} height={19} aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Search" width={19} height={19} aria-hidden />
           <input
             aria-label="Поиск ограничений"
             type="search"
@@ -303,7 +294,7 @@ export function ChatSanctionsWorkspace({
               aria-label="Очистить поиск"
               onClick={() => setSearch('')}
             >
-              <Xmark width={20} height={20} aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Xmark" width={20} height={20} aria-hidden />
             </button>
           ) : null}
         </label>
@@ -315,7 +306,7 @@ export function ChatSanctionsWorkspace({
           disabled={busy}
           onClick={() => void feed.refetch()}
         >
-          <Refresh width={21} height={21} aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" width={21} height={21} aria-hidden />
         </button>
       </div>
       <div className="sanctions-workspace__filters">
@@ -354,7 +345,7 @@ export function ChatSanctionsWorkspace({
             aria-label="Все участники"
             onClick={() => setUserId('')}
           >
-            <Xmark width={20} height={20} aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" width={20} height={20} aria-hidden />
           </button>
         </div>
       ) : null}
@@ -393,7 +384,7 @@ export function ChatSanctionsWorkspace({
             onClick={() => void (feed.isFetchNextPageError ? feed.fetchNextPage() : feed.refetch())}
             disabled={busy}
           >
-            <Refresh width={18} height={18} aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" width={18} height={18} aria-hidden />
             Повторить
           </button>
         </div>
@@ -420,9 +411,15 @@ export function ChatSanctionsWorkspace({
         <div className="sanctions-workspace__empty">
           <span className="sanctions-workspace__empty-icon">
             {hasFilters ? (
-              <Search width={28} height={28} aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Search" width={28} height={28} aria-hidden />
             ) : (
-              <ShieldCheck width={28} height={28} aria-hidden />
+              <IconoirSprite
+                variant="iconoir"
+                icon="ShieldCheck"
+                width={28}
+                height={28}
+                aria-hidden
+              />
             )}
           </span>
           <strong>
@@ -434,7 +431,7 @@ export function ChatSanctionsWorkspace({
           </strong>
           {hasFilters && !feed.hasNextPage ? (
             <button type="button" className="button button--ghost" onClick={resetFilters}>
-              <Xmark width={18} height={18} aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Xmark" width={18} height={18} aria-hidden />
               Сбросить фильтры
             </button>
           ) : null}
@@ -494,9 +491,21 @@ export function ChatSanctionsWorkspace({
                 >
                   <span>
                     {item.action === 'BAN' ? (
-                      <Prohibition width={15} height={15} aria-hidden />
+                      <IconoirSprite
+                        variant="iconoir"
+                        icon="Prohibition"
+                        width={15}
+                        height={15}
+                        aria-hidden
+                      />
                     ) : (
-                      <SoundOff width={15} height={15} aria-hidden />
+                      <IconoirSprite
+                        variant="iconoir"
+                        icon="SoundOff"
+                        width={15}
+                        height={15}
+                        aria-hidden
+                      />
                     )}
                     {item.action === 'BAN' ? 'Блокировка' : 'Запрет писать'}
                   </span>
@@ -512,7 +521,9 @@ export function ChatSanctionsWorkspace({
                     />
                   ) : null}
                 </span>
-                <NavArrowRight
+                <IconoirSprite
+                  variant="iconoir"
+                  icon="NavArrowRight"
                   className="sanctions-workspace__arrow"
                   width={18}
                   height={18}

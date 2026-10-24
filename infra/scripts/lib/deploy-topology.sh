@@ -386,6 +386,27 @@ maxim_topology_require_network_settings_v2() {
   node "$(dirname "${BASH_SOURCE[0]}")/../assert-network-settings-v2-source.mjs" "$commit_sha"
 }
 
+maxim_topology_require_exact_statistics_rollup_reader() {
+  local commit_sha="$1" reader_source
+  # FLAG: Saturated legacy compatibility columns must never reach an older API reader.
+  # Nullable shadows preserve untouched history; changing the feature flag cannot lower this floor.
+  if ! reader_source="$(git show "${commit_sha}:apps/api/src/admin/stats-read-model-selectors.ts" 2>/dev/null)"; then
+    echo 'Rollback target predates the exact statistics rollup reader.' >&2
+    return 1
+  fi
+  if ! printf '%s' "$reader_source" | node -e '
+    const source=require("node:fs").readFileSync(0).toString("utf8");
+    const valid=source.length<=262144 &&
+      /export const EXACT_STATISTICS_ROLLUP_READER_VERSION\s*=\s*1\s*;/u.test(source) &&
+      source.includes("export async function selectChannelStatsContentBucketRows(") &&
+      source.includes("SUM(COALESCE(views_total_exact, views_total::bigint))");
+    process.exit(valid?0:1);
+  '; then
+    echo 'Rollback target lacks the exact statistics rollup fallback reader.' >&2
+    return 1
+  fi
+}
+
 maxim_topology_require_managed_entity_activation() {
   local commit_sha="$1"
   # FLAG: Known denials, pending activation, capability ceilings and receipt-only

@@ -1,4 +1,5 @@
-import { Plus, Post, Refresh, WarningCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import type { PublisherEntitiesSummary } from '@maxim/contracts/publisher';
 import { Link } from 'react-router';
 import { formatRussianCountLabel } from '../../lib/broadcast-audience';
@@ -81,7 +82,7 @@ export function PublicationHubHeader({
                 aria-label="Черновики"
                 title="Черновики"
               >
-                <Post aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Post" aria-hidden />
               </button>
             ) : null}
             <button
@@ -92,7 +93,7 @@ export function PublicationHubHeader({
               title={canCreate ? 'Создать публикацию' : 'Загрузка'}
               disabled={!canCreate}
             >
-              <Plus aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
               <span>Создать</span>
             </button>
           </>
@@ -106,7 +107,7 @@ export function PublicationHubHeader({
           role={sourcesHaveError ? 'alert' : 'status'}
         >
           <span className="publication-publisher-status__mark" aria-hidden>
-            <WarningCircle />
+            <IconoirSprite variant="iconoir" icon="WarningCircle" />
           </span>
           {shouldOpenEntityCabinet ? (
             <Link
@@ -131,7 +132,7 @@ export function PublicationHubHeader({
             disabled={sourcesFetching}
             onClick={onRefresh}
           >
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
           </button>
         </div>
       ) : null}

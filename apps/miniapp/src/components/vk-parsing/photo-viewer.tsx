@@ -1,4 +1,5 @@
-import { NavArrowLeft, NavArrowRight, WarningCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import { useRef, useState } from 'react';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
 
@@ -43,7 +44,7 @@ export function VkPhotoViewer({
         <div className="vk-photo-viewer__image">
           {failedUrls.includes(url) ? (
             <div role="status">
-              <WarningCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
               <p>Фото пока недоступно</p>
             </div>
           ) : (
@@ -63,7 +64,7 @@ export function VkPhotoViewer({
             disabled={urls.length < 2}
             onClick={() => move(-1)}
           >
-            <NavArrowLeft aria-hidden />
+            <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
           </button>
           <span role="status">
             {index + 1} из {urls.length}
@@ -76,7 +77,7 @@ export function VkPhotoViewer({
             disabled={urls.length < 2}
             onClick={() => move(1)}
           >
-            <NavArrowRight aria-hidden />
+            <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
           </button>
         </div>
       </div>

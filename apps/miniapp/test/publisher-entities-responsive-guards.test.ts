@@ -80,7 +80,7 @@ test('publisher entity actions keep native touch targets at least 44px tall', ()
   );
   assert.match(
     pageSource,
-    /className="publisher-entity-row__main"[\s\S]*?<NavArrowRight[\s\S]*?<\/Link>[\s\S]*?\{canRecheck \? \(/u,
+    /className="publisher-entity-row__main"[\s\S]*?<IconoirSprite\b[^>]*icon="NavArrowRight"[^>]*aria-hidden[\s\S]*?<\/Link>[\s\S]*?\{canRecheck \? \(/u,
   );
   assert.doesNotMatch(pageSource, /publisher-entity-row__module-action|<span>Модули<\/span>/u);
 });

@@ -1,4 +1,6 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { centralEnabled, StatsFailure } from '../../statistics/stats-common';
+import { ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -60,6 +62,7 @@ export class StatisticsExchangeV3Service {
     private readonly prisma: PrismaService,
     private readonly grants: StatisticsExchangeGrantsService,
     private readonly native: MarketplaceStatisticsService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   private publicChannel(binding: MarketplaceBindingRow): boolean {
@@ -80,6 +83,7 @@ export class StatisticsExchangeV3Service {
     });
   }
   async head(id: string, raw: unknown): Promise<ExchangeV3Head> {
+    if (this.config && centralEnabled(this.config)) throw new StatsFailure('UNAVAILABLE', 410);
     const query = querySchema.parse(raw);
     let current = await this.grants.binding(id, query.entityId, query.kind);
     const cutoff = exchangeRetentionFrom();
@@ -310,6 +314,7 @@ export class StatisticsExchangeV3Service {
     index: number | string,
     raw: unknown,
   ): Promise<ExchangeV3StatisticsPage> {
+    if (this.config && centralEnabled(this.config)) throw new StatsFailure('UNAVAILABLE', 410);
     const query = querySchema.omit({ knownContentHash: true }).parse(raw);
     const generationId = z.string().uuid().parse(generation),
       pageIndex = z.coerce.number().int().min(0).max(19).parse(index);

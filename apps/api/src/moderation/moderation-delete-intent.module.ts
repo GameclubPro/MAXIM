@@ -29,6 +29,7 @@ import { ProfanityDeleteGuardService } from './profanity/profanity-delete-guard.
 import { CommercialDeleteGuardService } from './commercial/commercial-delete-guard.service';
 import { CommercialTextRuntimePolicyModule } from './commercial/commercial-text-runtime-policy.module';
 import { CommercialReviewService } from './commercial/commercial-review.service';
+import { CommercialLlmShadowRunnerService } from './commercial/commercial-llm-shadow-runner.service';
 import { StopWordsDeleteGuardService } from './stop-words/stop-words-delete-guard.service';
 import { TrafficProtectionDeleteGuardService } from './traffic-protection-delete-guard.service';
 import { RuleEngineModule } from './rule-engine.module';
@@ -72,6 +73,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     ProfanityDeleteGuardService,
     CommercialDeleteGuardService,
     CommercialReviewService,
+    CommercialLlmShadowRunnerService,
     StopWordsDeleteGuardService,
     TrafficProtectionDeleteGuardService,
     CommercialOcrDeleteGuardService,

@@ -1,4 +1,5 @@
-import { Copy, Refresh, WarningCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import type { DraftSaveState } from './publication-draft-autosave';
 import {
   publicationDraftNeedsAttention,
@@ -39,7 +40,7 @@ export function PublicationDraftStatus({
   return (
     <div className="publication-draft-status is-error" role="alert">
       <span>
-        <WarningCircle aria-hidden />
+        <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
         <strong>{problem.title}</strong>
       </span>
       <small>{problem.detail}</small>
@@ -48,18 +49,18 @@ export function PublicationDraftStatus({
           <>
             {state.status === 'conflict' ? (
               <button type="button" disabled={busy} onClick={onReload}>
-                <Refresh aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
                 Обновить
               </button>
             ) : null}
             <button type="button" disabled={busy} onClick={onCopy}>
-              <Copy aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Copy" aria-hidden />
               Сохранить копию
             </button>
           </>
         ) : (
           <button type="button" disabled={busy} onClick={onRetry}>
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
             Повторить
           </button>
         )}

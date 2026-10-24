@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { utcTimestampSchema } from './validator-compat.js';
 
 const base = {
   requestId: z
@@ -12,7 +13,7 @@ export const publicationPostActionRequestSchema = z.discriminatedUnion('action',
   z.object({ ...base, action: z.literal('retry_delete') }).strict(),
   z.object({ ...base, action: z.literal('retry_pin') }).strict(),
   z
-    .object({ ...base, action: z.literal('reschedule_delete'), deleteAt: z.string().datetime() })
+    .object({ ...base, action: z.literal('reschedule_delete'), deleteAt: utcTimestampSchema })
     .strict(),
 ]);
 export type PublicationPostActionRequest = z.infer<typeof publicationPostActionRequestSchema>;

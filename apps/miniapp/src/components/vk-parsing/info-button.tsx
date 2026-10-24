@@ -1,4 +1,5 @@
-import { InfoCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import { useId, useState, type ReactNode } from 'react';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
 
@@ -15,7 +16,7 @@ export function VkInfoButton({ title, children }: { title: string; children: Rea
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}
       >
-        <InfoCircle aria-hidden />
+        <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
       </button>
       <SettingsDrilldownPanel
         id={`vk-info-${id}`}

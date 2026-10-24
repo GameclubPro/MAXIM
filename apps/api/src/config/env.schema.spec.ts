@@ -19,6 +19,16 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('keeps commercial LLM shadow opt-in and its endpoint inside the isolated service', () => {
+    expect(validateEnv(createValidEnv()).COMMERCIAL_LLM_SHADOW_ENABLED).toBe(false);
+    expect(
+      validateEnv(createValidEnv({ COMMERCIAL_LLM_SHADOW_ENABLED: 'true' }))
+        .COMMERCIAL_LLM_SHADOW_ENABLED,
+    ).toBe(true);
+    expect(() =>
+      validateEnv(createValidEnv({ COMMERCIAL_LLM_ENDPOINT: 'https://external.example' })),
+    ).toThrow(/COMMERCIAL_LLM_ENDPOINT/u);
+  });
   it('limits statistics v2 rollout to validated actor IDs and a separate reverse credential', () => {
     expect(validateEnv(createValidEnv()).SVYAZKA_STATISTICS_V2_USERS).toBe('323459159');
     for (const cohort of ['*', '42', '42, 43'])

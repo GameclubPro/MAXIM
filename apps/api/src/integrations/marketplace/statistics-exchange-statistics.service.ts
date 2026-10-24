@@ -1,3 +1,4 @@
+import { centralEnabled, StatsFailure } from '../../statistics/stats-common';
 import {
   ConflictException,
   ForbiddenException,
@@ -87,6 +88,7 @@ export class StatisticsExchangeStatisticsService {
   }
 
   async refreshRemoteAccess(id: string, expectedRevision: number): Promise<void> {
+    if (centralEnabled(this.config)) return;
     const remote = (path: string, deadline?: number) => this.remote(path, deadline, 3);
     if (this.v3 && (await this.v3.supported(id, remote)))
       return this.v3.refreshAccess(id, expectedRevision, remote);
@@ -185,6 +187,7 @@ export class StatisticsExchangeStatisticsService {
   }
 
   async page(id: string, raw: unknown): Promise<ExchangeStatisticsPage> {
+    if (centralEnabled(this.config)) throw new StatsFailure('UNAVAILABLE', 410);
     const query = exchangeStatisticsQuerySchema.parse(raw);
     const { grant, binding } = await this.grants.binding(id, query.entityId, query.kind);
     const publicChannel =
@@ -601,6 +604,7 @@ export class StatisticsExchangeStatisticsService {
       retryAfterMs: number | null;
     } | null;
   }> {
+    if (centralEnabled(this.config)) throw new StatsFailure('UNAVAILABLE', 410);
     const deadline = options?.deadline ?? Date.now() + 50_000;
     const v3Remote = (path: string, budget?: number) => this.remote(path, budget, 3);
     if (this.v3 && (await this.v3.supported(id, v3Remote, deadline)))
@@ -889,6 +893,7 @@ export class StatisticsExchangeStatisticsService {
   }
 
   async selected(id: string, entityId: string, kind: 'CHAT' | 'CHANNEL') {
+    if (centralEnabled(this.config)) throw new StatsFailure('UNAVAILABLE', 410);
     const native = await this.page(id, { entityId, kind });
     const allNative = await this.prisma.$queryRaw<
       StoredGeneration[]
@@ -937,6 +942,7 @@ export class StatisticsExchangeStatisticsService {
     });
   }
   async owner(actor: string, entityId: string, kind: 'CHAT' | 'CHANNEL') {
+    if (centralEnabled(this.config)) throw new StatsFailure('UNAVAILABLE', 410);
     if (!statisticsExchangeActorAllowed(this.config, actor)) return null;
     const grants = await this.prisma.$queryRaw<Array<{ id: string }>>`
       SELECT g.id FROM statistics_exchange_grants g JOIN statistics_exchange_entities e ON e.grant_id=g.id

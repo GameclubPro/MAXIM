@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Refresh } from 'iconoir-react';
+
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   duplicateDiagnosticsResponseSchema,
@@ -255,7 +256,7 @@ export default function SettingsDuplicateDiagnostics({
           disabled={busy || !userId}
           onClick={() => recheck.mutate({ scope, state: queryClient.getQueryState(queryKey) })}
         >
-          <Refresh aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
         </button>
       </div>
       {failed && (

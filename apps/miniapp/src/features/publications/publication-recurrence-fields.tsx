@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { Suspense, lazy, type Dispatch, type SetStateAction } from 'react';
-import { Plus, Xmark } from 'iconoir-react';
+
 import { TimeField } from '../../components/ui/time-field';
 import { cn } from '../../lib/cn';
 import { PUBLICATION_WEEKDAYS as WEEKDAYS } from './publication-page-options';
@@ -130,7 +131,7 @@ export function PublicationRecurrenceFields({
                 aria-label={`Удалить время ${index + 1}`}
                 disabled={isBusy}
               >
-                <Xmark aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
               </button>
             ) : null}
           </div>
@@ -153,7 +154,7 @@ export function PublicationRecurrenceFields({
             }
             disabled={isBusy}
           >
-            <Plus aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
             <span>Добавить время</span>
           </button>
         ) : null}

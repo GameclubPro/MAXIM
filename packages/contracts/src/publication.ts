@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { offsetTimestampSchema } from './validator-compat.js';
 import { MAX_HTTP_BUTTON_URL_LENGTH, normalizeHttpButtonUrl } from './button-url.js';
 
 export const MAX_PUBLICATION_IMAGES = 10;
@@ -337,7 +338,7 @@ export const publicationTargetSchema = publicationTargetInputSchema.extend({
 export type PublicationTarget = z.infer<typeof publicationTargetSchema>;
 
 const publicationTimezoneSchema = z.string().trim().min(1).max(128).default('Europe/Moscow');
-const publicationDateTimeSchema = z.string().datetime({ offset: true });
+const publicationDateTimeSchema = offsetTimestampSchema;
 const publicationLocalTimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u);
 
 // Omission preserves the five-minute behavior of persisted legacy schedules.

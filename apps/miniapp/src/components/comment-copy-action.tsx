@@ -1,4 +1,5 @@
-import { Copy } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import { useEffect, useRef, useState } from 'react';
 import { copyCommentText } from '../lib/copy-comment-text';
 import { useToast } from './ui/toast';
@@ -41,7 +42,7 @@ export default function CommentCopyAction({
         }
       }}
     >
-      <Copy aria-hidden />
+      <IconoirSprite variant="iconoir" icon="Copy" aria-hidden />
       Копировать
     </button>
   );

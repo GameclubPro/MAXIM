@@ -1,4 +1,5 @@
-import { CheckCircle, Clock, Pause, WarningCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import { useState } from 'react';
 import type {
   UpdateVkParsingSettingsRequest,
@@ -93,15 +94,15 @@ function resolveFrequencyPreset(minutes: number | null): FrequencyOption {
 
 function renderAutopostStatusIcon(tone: AutopostStatusTone) {
   if (tone === 'success') {
-    return <CheckCircle aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden />;
   }
   if (tone === 'danger') {
-    return <Pause aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="Pause" aria-hidden />;
   }
   if (tone === 'warning') {
-    return <WarningCircle aria-hidden />;
+    return <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />;
   }
-  return <Clock aria-hidden />;
+  return <IconoirSprite variant="iconoir" icon="Clock" aria-hidden />;
 }
 
 export function SchedulerPanel({
@@ -191,7 +192,7 @@ export function SchedulerPanel({
       </div>
 
       <div className="vk-autopost-panel__schedule">
-        <Clock aria-hidden />
+        <IconoirSprite variant="iconoir" icon="Clock" aria-hidden />
         <span>
           {settings.workHoursStart === settings.workHoursEnd
             ? 'Круглосуточно'

@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import { useExpandedText } from '../lib/use-expanded-text';
 import { isMaxMemberRestoreAvailable } from '@maxim/contracts/max-capabilities';
 import type {
@@ -18,12 +19,7 @@ import type {
   MembershipActivityItem,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  InfoCircle,
-  NavArrowDown as IconNavArrowDown,
-  NavArrowRight as IconNavArrowRight,
-  Refresh,
-} from 'iconoir-react';
+
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-experience.css';
 import '../styles/dashboard-events.css';
@@ -1516,7 +1512,7 @@ function SpammerDiagnosticsSheet({
             aria-describedby={reviewHelpOpen ? 'spammer-review-help' : undefined}
             onClick={() => setReviewHelpOpen((current) => !current)}
           >
-            <InfoCircle aria-hidden />
+            <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
           </button>
           {reviewHelpOpen ? (
             <p id="spammer-review-help" className="channel-settings-hint-popover" role="note">
@@ -3274,7 +3270,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                 void (section === 'activity' ? activityFeed : moderationFeed).retry();
               }}
             >
-              <Refresh width={20} height={20} aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Refresh" width={20} height={20} aria-hidden />
             </button>
           ) : null
         }
@@ -3804,7 +3800,13 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                             aria-label={`Открыть участника ${displayName}`}
                           >
                             <strong>{displayName}</strong>
-                            <IconNavArrowRight width={16} height={16} aria-hidden />
+                            <IconoirSprite
+                              variant="iconoir"
+                              icon="NavArrowRight"
+                              width={16}
+                              height={16}
+                              aria-hidden
+                            />
                           </button>
                           <button
                             type="button"
@@ -3830,7 +3832,13 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
                                 </span>
 
                                 <span className="event-feed-item__toggle" aria-hidden="true">
-                                  <IconNavArrowDown width={18} height={18} strokeWidth={2.2} />
+                                  <IconoirSprite
+                                    variant="iconoir"
+                                    icon="NavArrowDown"
+                                    width={18}
+                                    height={18}
+                                    strokeWidth={2.2}
+                                  />
                                 </span>
                               </span>
 

@@ -180,12 +180,18 @@ test('home sheets preserve accessible categories and authenticated label persist
     sheetsSource,
     /const subtitleId = subtitle \? `home-sheet-\$\{sheetKey\}-subtitle` : undefined;[\s\S]*?aria-describedby=\{subtitleId\}[\s\S]*?<span id=\{subtitleId\}>\{subtitle\}<\/span>/u,
   );
-  assert.match(sheetsSource, /className="favorite-label-editor__field"[\s\S]*?<EditPencil/u);
+  assert.match(
+    sheetsSource,
+    /className="favorite-label-editor__field"[\s\S]*?<IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden/u,
+  );
   assert.match(
     sheetsSource,
     /className=\{cn\('favorite-label-editor__row', canReset && 'has-reset'\)\}/u,
   );
-  assert.match(sheetsSource, /disabled=\{saving \|\| !canReset\}[\s\S]*?<Undo aria-hidden \/>/u);
+  assert.match(
+    sheetsSource,
+    /disabled=\{saving \|\| !canReset\}[\s\S]*?<IconoirSprite variant="iconoir" icon="Undo" aria-hidden \/>/u,
+  );
   assert.match(sheetsSource, /useNativeBackHandler\([\s\S]*?if \(!saving\) \{\s*onClose\(\);/u);
   assert.doesNotMatch(sheetsSource, /maxLength=\{HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH\}/u);
   assert.match(sheetsSource, /value\.split\('\\u0000'\)\.join\(''\)/u);

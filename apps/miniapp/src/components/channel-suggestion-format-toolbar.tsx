@@ -1,16 +1,17 @@
-import { Bold, Code, Italic, Link, Strikethrough, Type, Underline } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { cn } from '../lib/cn';
 
 const icons = {
-  heading: Type,
-  bold: Bold,
-  italic: Italic,
-  underline: Underline,
-  strike: Strikethrough,
-  code: Code,
-  link: Link,
-};
+  heading: 'Type',
+  bold: 'Bold',
+  italic: 'Italic',
+  underline: 'Underline',
+  strike: 'Strikethrough',
+  code: 'Code',
+  link: 'Link',
+} as const;
 
 export default function ChannelSuggestionFormatToolbar({
   disabled,
@@ -44,7 +45,7 @@ export default function ChannelSuggestionFormatToolbar({
             aria-label={tool.title}
             aria-pressed={activeTools.has(tool.id)}
           >
-            <Icon aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon={Icon} aria-hidden focusable="false" />
           </button>
         );
       })}

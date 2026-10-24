@@ -21,6 +21,16 @@ import { pathToFileURL } from 'node:url';
 const KEY = 'STATISTICS_EXCHANGE_V3_ENABLED';
 const MODES = new Set(['false', 'true']);
 const MAX_BYTES = 1024 * 1024;
+const CENTRAL_ENABLED = 'STATISTICS_CENTRAL_ENABLED';
+const CENTRAL_MODE = 'STATISTICS_CENTRAL_MODE';
+const CENTRAL_EPOCH = 'STATISTICS_CENTRAL_EXCHANGE_EPOCH';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const exchangeFields = { [KEY]: (value) => MODES.has(value) };
+const centralFields = {
+  [CENTRAL_ENABLED]: (value) => MODES.has(value),
+  [CENTRAL_MODE]: (value) => value === 'LEGACY' || value === 'CENTRAL',
+  [CENTRAL_EPOCH]: (value) => UUID.test(value),
+};
 
 function targetMode(mode) {
   if (mode !== 'false' && mode !== 'true') {
@@ -39,14 +49,14 @@ function closesQuote(text, quote) {
   return false;
 }
 
-function inspect(contents) {
+function inspect(contents, fields = exchangeFields) {
   const bytes = Buffer.isBuffer(contents) ? contents : Buffer.from(contents);
   if (bytes.length > MAX_BYTES)
     throw new Error('Statistics exchange dotenv exceeds its byte limit.');
   const decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   if (decoded.includes('\0')) throw new Error('Statistics exchange dotenv contains NUL bytes.');
   const lines = decoded.match(/[^\n]*\n|[^\n]+$/gu) ?? [];
-  const assignments = [];
+  const assignments = new Map();
   let multilineQuote = null;
   for (let index = 0; index < lines.length; index++) {
     const line = index === 0 ? lines[index].replace(/^\uFEFF/u, '') : lines[index];
@@ -62,41 +72,46 @@ function inspect(contents) {
       const quote = assignment[2][0];
       if (!closesQuote(assignment[2].slice(1), quote)) multilineQuote = quote;
     }
-    const match =
-      /^[ \t]*(?:export[ \t]+)?STATISTICS_EXCHANGE_V3_ENABLED[ \t]*=([^\r\n]*)\r?\n?$/u.exec(line);
-    if (!match) {
-      if (assignment?.[1] === KEY) throw new Error('Malformed statistics exchange dotenv flag.');
-      continue;
-    }
-    const value = match[1].trim();
-    if (!MODES.has(value)) throw new Error('Malformed statistics-exchange dotenv mode.');
-    assignments.push({ index, mode: value });
+    if (!assignment || !Object.hasOwn(fields, assignment[1])) continue;
+    const key = assignment[1];
+    const match = /^[ \t]*(?:export[ \t]+)?[\w.-]+[ \t]*=([^\r\n]*)\r?\n?$/u.exec(line);
+    const value = match?.[1].trim();
+    if (value === undefined || !fields[key](value))
+      throw new Error('Malformed statistics dotenv setting.');
+    if (assignments.has(key)) throw new Error('Duplicate statistics dotenv setting.');
+    assignments.set(key, { index, mode: value });
   }
   if (multilineQuote !== null) throw new Error('Unterminated quoted dotenv value.');
-  if (assignments.length > 1) throw new Error('Duplicate statistics-exchange dotenv mode.');
-  return { decoded, lines, assignment: assignments[0] };
+  return { decoded, lines, assignments };
 }
 
 export function readStatisticsExchangeEnv(contents) {
-  return inspect(contents).assignment?.mode ?? 'false';
+  return inspect(contents).assignments.get(KEY)?.mode ?? 'false';
+}
+
+function patchSettings(state, settings) {
+  const missing = [];
+  for (const [key, value] of Object.entries(settings)) {
+    const assignment = state.assignments.get(key);
+    if (!assignment) {
+      missing.push(`${key}=${value}`);
+      continue;
+    }
+    const index = assignment.index;
+    const original = state.lines[index];
+    const bom = index === 0 && original.startsWith('\uFEFF') ? '\uFEFF' : '';
+    const ending = original.endsWith('\r\n') ? '\r\n' : original.endsWith('\n') ? '\n' : '';
+    state.lines[index] = `${bom}${key}=${value}${ending}`;
+  }
+  const updated = state.lines.join('');
+  if (!missing.length) return updated;
+  const ending = state.decoded.includes('\r\n') ? '\r\n' : '\n';
+  return `${updated}${updated && !updated.endsWith('\n') ? ending : ''}${missing.join(ending)}${ending}`;
 }
 
 export function patchStatisticsExchangeEnv(contents, mode) {
   targetMode(mode);
-  const state = inspect(contents);
-  const replacement = `${KEY}=${mode}`;
-  if (state.assignment) {
-    const index = state.assignment.index;
-    const original = state.lines[index];
-    const bom = index === 0 && original.startsWith('\uFEFF') ? '\uFEFF' : '';
-    const ending = original.endsWith('\r\n') ? '\r\n' : original.endsWith('\n') ? '\n' : '';
-    state.lines[index] = `${bom}${replacement}${ending}`;
-    return state.lines.join('');
-  }
-  const ending = state.decoded.includes('\r\n') ? '\r\n' : '\n';
-  return state.decoded
-    ? `${state.decoded}${state.decoded.endsWith('\n') ? '' : ending}${replacement}${ending}`
-    : `${replacement}${ending}`;
+  return patchSettings(inspect(contents), { [KEY]: mode });
 }
 
 function privateRegularFile(stat) {
@@ -108,8 +123,7 @@ function privateRegularFile(stat) {
   }
 }
 
-export function patchStatisticsExchangeEnvFile(path, mode) {
-  targetMode(mode);
+function patchEnvFile(path, patch) {
   const filename = resolve(path);
   const previous = lstatSync(filename);
   privateRegularFile(previous);
@@ -124,7 +138,7 @@ export function patchStatisticsExchangeEnvFile(path, mode) {
       throw new Error('Statistics exchange dotenv identity changed or exceeds its byte limit.');
     }
     const contents = readFileSync(input);
-    const patched = patchStatisticsExchangeEnv(contents, mode);
+    const patched = patch(contents);
     if (patched === contents.toString('utf8')) return;
     temporary = resolve(
       dirname(filename),
@@ -163,6 +177,74 @@ export function patchStatisticsExchangeEnvFile(path, mode) {
   }
 }
 
+export function patchStatisticsExchangeEnvFile(path, mode) {
+  targetMode(mode);
+  patchEnvFile(path, (contents) => patchStatisticsExchangeEnv(contents, mode));
+}
+
+export function validateStatisticsCentralEpoch(epoch) {
+  if (typeof epoch !== 'string' || !UUID.test(epoch))
+    throw new Error('Central statistics activation requires a canonical producer UUID.');
+  return epoch;
+}
+
+export function readStatisticsCentralEnv(contents) {
+  const state = inspect(contents, centralFields);
+  const enabled = state.assignments.get(CENTRAL_ENABLED)?.mode ?? 'false';
+  const mode = state.assignments.get(CENTRAL_MODE)?.mode ?? 'LEGACY';
+  const epoch = state.assignments.get(CENTRAL_EPOCH)?.mode ?? null;
+  if ((enabled === 'true') !== (mode === 'CENTRAL') || (enabled === 'true' && !epoch))
+    throw new Error('Central statistics dotenv state is inconsistent.');
+  return { enabled, mode, epoch };
+}
+
+export function patchStatisticsCentralEnv(contents, epoch) {
+  validateStatisticsCentralEpoch(epoch);
+  const current = readStatisticsCentralEnv(contents);
+  // The producer identity is persistent, including after a failed rollout. A retry never rotates it.
+  if (current.epoch !== null && current.epoch !== epoch)
+    throw new Error('Central statistics producer epoch cannot be replaced.');
+  return patchSettings(inspect(contents, centralFields), {
+    [CENTRAL_ENABLED]: 'true',
+    [CENTRAL_MODE]: 'CENTRAL',
+    [CENTRAL_EPOCH]: epoch,
+  });
+}
+
+export function patchStatisticsCentralEnvFile(path, epoch) {
+  validateStatisticsCentralEpoch(epoch);
+  patchEnvFile(path, (contents) => patchStatisticsCentralEnv(contents, epoch));
+}
+
+export function verifyStatisticsCentralRuntimeEnv(value, epoch) {
+  validateStatisticsCentralEpoch(epoch);
+  if (!Array.isArray(value)) throw new Error('Central statistics runtime environment is absent.');
+  for (const [key, expected] of Object.entries({
+    [CENTRAL_ENABLED]: 'true',
+    [CENTRAL_MODE]: 'CENTRAL',
+    [CENTRAL_EPOCH]: epoch,
+  })) {
+    const matches = value.filter(
+      (entry) => typeof entry === 'string' && entry.startsWith(`${key}=`),
+    );
+    if (matches.length !== 1 || matches[0] !== `${key}=${expected}`)
+      throw new Error('Central statistics runtime setting does not match activation.');
+  }
+}
+
+export function verifyStatisticsCentralCompose(config, epoch, services) {
+  validateStatisticsCentralEpoch(epoch);
+  if (services.length !== 14 || new Set(services).size !== 14)
+    throw new Error('Central statistics verification requires the complete API topology.');
+  for (const service of services) {
+    const environment = config?.services?.[service]?.environment;
+    verifyStatisticsCentralRuntimeEnv(
+      environment && Object.entries(environment).map(([key, value]) => `${key}=${value}`),
+      epoch,
+    );
+  }
+}
+
 export function verifyStatisticsExchangeRuntimeEnv(value, mode) {
   targetMode(mode);
   if (!Array.isArray(value))
@@ -195,6 +277,22 @@ function main(argv) {
     verifyStatisticsExchangeRuntimeEnv(JSON.parse(readFileSync(0).toString('utf8')), args[0]);
   } else if (command === 'verify-compose' && args.length === 15) {
     verifyStatisticsExchangeCompose(
+      JSON.parse(readFileSync(0).toString('utf8')),
+      args[0],
+      args.slice(1),
+    );
+  } else if (command === 'validate-central-epoch' && args.length === 1) {
+    validateStatisticsCentralEpoch(args[0]);
+  } else if (command === 'read-central-env' && args.length === 1) {
+    process.stdout.write(`${JSON.stringify(readStatisticsCentralEnv(readFileSync(args[0])))}\n`);
+  } else if (command === 'patch-central-env' && args.length === 2) {
+    patchStatisticsCentralEnvFile(args[0], args[1]);
+  } else if (command === 'check-central-env' && args.length === 2) {
+    patchStatisticsCentralEnv(readFileSync(args[0]), args[1]);
+  } else if (command === 'verify-central-runtime-env' && args.length === 1) {
+    verifyStatisticsCentralRuntimeEnv(JSON.parse(readFileSync(0).toString('utf8')), args[0]);
+  } else if (command === 'verify-central-compose' && args.length === 15) {
+    verifyStatisticsCentralCompose(
       JSON.parse(readFileSync(0).toString('utf8')),
       args[0],
       args.slice(1),

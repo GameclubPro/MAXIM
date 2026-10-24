@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261023060100_statistics_exchange_retention_index",
-  "baselineNamesSha256": "f11b38d7a027f84db64e36af2e5eaf22a725fb9966fb7393aee78f30d0d3f4c5",
-  "baselineContentsSha256": "040a67a18deac6e5f2b905019fac325f538832f34e3f667444ba9de5494517b0",
+  "baselineThrough": "20261024020000_add_exact_channel_statistics_views",
+  "baselineNamesSha256": "ebd18edfd5d71151025a0502a0cb53897f2d1f992f09f446649be3ffca625b58",
+  "baselineContentsSha256": "7ae75dbf5380292aad0e4fb586dbd4459b767bb1e34ab5fbf2c2882850754ef4",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -245,6 +245,9 @@
     },
     "20261023050000_bounded_statistics_exchange_v3": {
       "reason": "All indexes belong to new empty bounded membership snapshot and immutable statistics page/generation tables. Existing grant/entity/import/download rows receive only additive nullable or constant-default columns; no retained native history is indexed or backfilled."
+    },
+    "20261024010000_add_central_statistics_store": {
+      "reason": "All indexes belong to five new empty independent statistics tables. Native history, bot assignments and product tables are neither indexed, rewritten nor backfilled."
     }
   }
 }

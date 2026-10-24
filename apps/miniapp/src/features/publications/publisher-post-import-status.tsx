@@ -1,14 +1,7 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import type { PublicationSummary } from '@maxim/contracts/publication';
 import type { PublisherPostImportSession } from '@maxim/contracts/publisher';
-import {
-  CheckCircle,
-  Forward,
-  NavArrowRight,
-  PageEdit,
-  RefreshDouble,
-  WarningCircle,
-  Xmark,
-} from 'iconoir-react';
+
 import { useState } from 'react';
 import { MaxMarkdownPreview } from '../../components/max-markdown-preview';
 import { cn } from '../../lib/cn';
@@ -83,13 +76,13 @@ export function PublisherPostImportStatus({
         >
           <span className="publisher-post-import-status__icon" aria-hidden>
             {session.status === 'waiting' ? (
-              <Forward />
+              <IconoirSprite variant="iconoir" icon="Forward" />
             ) : session.status === 'processing' ? (
-              <RefreshDouble className="is-spinning" />
+              <IconoirSprite variant="iconoir" icon="RefreshDouble" className="is-spinning" />
             ) : presentation.tone === 'ready' ? (
-              <CheckCircle />
+              <IconoirSprite variant="iconoir" icon="CheckCircle" />
             ) : (
-              <WarningCircle />
+              <IconoirSprite variant="iconoir" icon="WarningCircle" />
             )}
           </span>
           <span className="publisher-post-import-status__copy">
@@ -123,7 +116,7 @@ export function PublisherPostImportStatus({
               aria-label="Отменить перенос"
               title="Отменить"
             >
-              <Xmark aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
             </button>
           ) : null}
         </div>
@@ -141,7 +134,7 @@ export function PublisherPostImportStatus({
                 onClick={() => onOpenDraft(publication.id)}
                 disabled={busy}
               >
-                <PageEdit aria-hidden />
+                <IconoirSprite variant="iconoir" icon="PageEdit" aria-hidden />
                 <span>
                   <strong>{publication.title.trim() || 'Черновик'}</strong>
                   <MaxMarkdownPreview
@@ -151,7 +144,7 @@ export function PublisherPostImportStatus({
                     normalizeWhitespace
                   />
                 </span>
-                <NavArrowRight aria-hidden />
+                <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
               </button>
             ))}
           </div>

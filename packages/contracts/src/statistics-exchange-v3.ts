@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { utcTimestampSchema, utf16Max } from './marketplace-validator-compat.js';
 import {
   marketplaceBindingInputSchema,
   marketplaceBindingMetadataSchema,
@@ -22,7 +23,7 @@ export const EXCHANGE_V3_COMPACT_PAGE_BYTES = 64 * 1024;
 export const EXCHANGE_V3_STATISTICS_PAGE_BYTES = 128 * 1024;
 export const EXCHANGE_V3_METADATA_BYTES = 128 * 1024;
 export const EXCHANGE_V3_URL_BYTES = 4096;
-const timestamp = z.string().datetime();
+const timestamp = utcTimestampSchema;
 const revision = z.number().int().nonnegative().safe();
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const uuid = z.string().uuid();
@@ -273,9 +274,7 @@ export const exchangeV3AccessEntitySchema = exchangeEntityKeySchema
   );
 export const exchangeV3AccessQuerySchema = z
   .object({
-    cursor: z
-      .string()
-      .max(2048)
+    cursor: utf16Max(z.string(), 2048)
       .refine((v) => exchangeV3Utf8Bytes(v) <= 8192)
       .optional(),
     entityId: marketplaceBindingInputSchema.shape.entityId.optional(),
@@ -291,9 +290,7 @@ export const exchangeV3AccessPageSchema = z
     grantRevision: revision,
     accessRevision: revision,
     entities: z.array(exchangeV3AccessEntitySchema).max(EXCHANGE_V3_ACCESS_PAGE_SIZE),
-    nextCursor: z
-      .string()
-      .max(2048)
+    nextCursor: utf16Max(z.string(), 2048)
       .refine((v) => exchangeV3Utf8Bytes(v) <= 8192)
       .nullable(),
   })

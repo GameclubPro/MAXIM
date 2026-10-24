@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChatBubble, OpenNewWindow, RefreshCircle } from 'iconoir-react';
+
 import type { ApiTransport } from '../../lib/api/transport';
 import { getVkBotReviewState, updateVkBotReviewState } from '../../lib/api/vk-parsing-client';
 import type { VkBotReviewSettingsRequest } from '@maxim/contracts/vk-parsing';
@@ -39,7 +40,7 @@ export function BotReviewPanel({
   return (
     <section className="vk-bot-review-panel" aria-label="Согласование в личке">
       <div className="vk-bot-review-panel__heading">
-        <ChatBubble aria-hidden />
+        <IconoirSprite variant="iconoir" icon="ChatBubble" aria-hidden />
         <h3>Согласование в личке</h3>
         <VkInfoButton title="О согласовании">
           <p>
@@ -61,7 +62,7 @@ export function BotReviewPanel({
               className="button button--ghost"
               onClick={() => openLink(state.botUrl)}
             >
-              <OpenNewWindow aria-hidden />
+              <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
               {state.inboxConnected ? 'Открыть Публика' : 'Подключить личку'}
             </button>
             {!state.recipientConfigured ? (
@@ -71,7 +72,7 @@ export function BotReviewPanel({
                 disabled={!state.available || !state.inboxConnected || mutation.isPending}
                 onClick={() => mutation.mutate('CONNECT')}
               >
-                <ChatBubble aria-hidden />
+                <IconoirSprite variant="iconoir" icon="ChatBubble" aria-hidden />
                 Получать посты мне
               </button>
             ) : null}
@@ -99,7 +100,7 @@ export function BotReviewPanel({
               disabled={query.isFetching}
               onClick={() => void query.refetch()}
             >
-              <RefreshCircle aria-hidden />
+              <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />
             </button>
           </div>
           {state.recipientConfigured ? (

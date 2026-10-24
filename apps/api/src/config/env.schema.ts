@@ -456,6 +456,10 @@ const envSchema = z.object({
     .default(40_000_000),
   PHOTO_NATIVE_SANDBOX_SOCKET_PATH: z.literal('/run/maxim-photo/native-photo.sock').optional(),
   PHOTO_DUPLICATE_HISTORY_MAX_ITEMS: z.coerce.number().int().min(10).max(2_000).default(250),
+  COMMERCIAL_LLM_SHADOW_ENABLED: envBoolean(false),
+  COMMERCIAL_LLM_ENDPOINT: z
+    .literal('http://gemma-commercial-shadow:8080')
+    .default('http://gemma-commercial-shadow:8080'),
   COMMERCIAL_OCR_ROLLOUT_MODE: z.enum(COMMERCIAL_OCR_ROLLOUT_MODES).default('off'),
   IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: z
     .enum(IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODES)
@@ -681,6 +685,9 @@ const envSchema = z.object({
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
   KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
   STATISTICS_EXCHANGE_V3_ENABLED: envBoolean(false),
+  STATISTICS_CENTRAL_ENABLED: envBoolean(false),
+  STATISTICS_CENTRAL_MODE: z.enum(['LEGACY', 'CENTRAL']).default('LEGACY'),
+  STATISTICS_CENTRAL_EXCHANGE_EPOCH: z.string().uuid().optional(),
   SVYAZKA_STATISTICS_EXPORT_TOKEN: z
     .string()
     .regex(/^[a-f0-9]{64}$/u)

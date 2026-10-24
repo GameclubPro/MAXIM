@@ -1,12 +1,5 @@
-import {
-  ChatBubble,
-  LinkSlash,
-  OpenNewWindow,
-  Plus,
-  RefreshCircle,
-  Settings,
-  WarningCircle,
-} from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import { useState, type FormEvent } from 'react';
 import type {
   BulkUpdateVkParsingSourcesRequest,
@@ -109,7 +102,7 @@ export function SourceDashboard(props: SourceDashboardProps) {
           disabled={isRefreshing || !sources.length}
           onClick={onRefresh}
         >
-          <RefreshCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />
         </button>
       </div>
       <form className="vk-parsing-card__source-form" onSubmit={onSubmitSource}>
@@ -134,7 +127,7 @@ export function SourceDashboard(props: SourceDashboardProps) {
           title="Добавить группу"
           disabled={isAdding || !sourceUrl.trim()}
         >
-          <Plus aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
         </button>
       </form>
       {selectedBulkSourceIds.length > 0 ? (
@@ -179,7 +172,13 @@ export function SourceDashboard(props: SourceDashboardProps) {
                     className="vk-source-check"
                     title="Настройки согласования задаются отдельно"
                   >
-                    <ChatBubble width={20} height={20} aria-hidden />
+                    <IconoirSprite
+                      variant="iconoir"
+                      icon="ChatBubble"
+                      width={20}
+                      height={20}
+                      aria-hidden
+                    />
                   </span>
                 ) : (
                   <label className="vk-source-check">
@@ -206,7 +205,7 @@ export function SourceDashboard(props: SourceDashboardProps) {
                   aria-label={`Настройки группы ${source.title}`}
                   onClick={() => setConfiguredId(source.id)}
                 >
-                  <Settings aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Settings" aria-hidden />
                 </button>
               </header>
               <div className="vk-source-card__summary-row">
@@ -218,7 +217,7 @@ export function SourceDashboard(props: SourceDashboardProps) {
               </div>
               {problem ? (
                 <div className="vk-source-card__problem">
-                  <WarningCircle aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
                   <span>{problem}</span>
                 </div>
               ) : null}
@@ -239,7 +238,7 @@ export function SourceDashboard(props: SourceDashboardProps) {
             <div className="vk-source-detail-actions">
               <a href={configured.url} target="_blank" rel="noreferrer" className="vk-text-link">
                 {configured.screenName}
-                <OpenNewWindow aria-hidden />
+                <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
               </a>
               <button
                 type="button"
@@ -249,7 +248,7 @@ export function SourceDashboard(props: SourceDashboardProps) {
                 disabled={refreshingSourceId === configured.id || !configured.importEnabled}
                 onClick={() => onRefreshSource(configured.id)}
               >
-                <RefreshCircle aria-hidden />
+                <IconoirSprite variant="iconoir" icon="RefreshCircle" aria-hidden />
               </button>
             </div>
             <VkSettingSwitch
@@ -301,7 +300,7 @@ export function SourceDashboard(props: SourceDashboardProps) {
             ) : null}
             {automatic && !autoRunning ? (
               <div className="vk-inline-warning">
-                <WarningCircle aria-hidden />
+                <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
                 <span>Автопубликация выключена</span>
                 <button
                   type="button"
@@ -401,7 +400,7 @@ export function SourceDashboard(props: SourceDashboardProps) {
               disabled={isRemoving}
               onClick={() => setRemoving(configured)}
             >
-              <LinkSlash aria-hidden />
+              <IconoirSprite variant="iconoir" icon="LinkSlash" aria-hidden />
               Отключить группу
             </button>
           </div>

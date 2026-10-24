@@ -1,4 +1,5 @@
-import { Link as IconoirLink, SendDiagonal, Xmark } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import {
   VK_PARSING_MAX_PUBLISH_TEXT_LENGTH,
   type VkParsingPost,
@@ -98,7 +99,7 @@ export function PostEditor({
 
           {appendChannelLinkEnabled ? (
             <span className="vk-parsing-editor__channel-link">
-              <IconoirLink aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Link" aria-hidden />
               {channelLinkText}
             </span>
           ) : null}
@@ -148,7 +149,11 @@ export function PostEditor({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => applyTextModifier(tool.id)}
               >
-                {tool.id === 'link' ? <IconoirLink aria-hidden /> : tool.label}
+                {tool.id === 'link' ? (
+                  <IconoirSprite variant="iconoir" icon="Link" aria-hidden />
+                ) : (
+                  tool.label
+                )}
               </button>
             ))}
           </div>
@@ -176,7 +181,7 @@ export function PostEditor({
           disabled={isPublishing}
           onClick={onCancel}
         >
-          <Xmark aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           Отмена
         </button>
         <button
@@ -185,7 +190,7 @@ export function PostEditor({
           disabled={isEditorBusy || isOverLimit}
           onClick={onPublish}
         >
-          <SendDiagonal aria-hidden />
+          <IconoirSprite variant="iconoir" icon="SendDiagonal" aria-hidden />
           {isPublishing ? pendingLabel : submitLabel}
         </button>
       </div>

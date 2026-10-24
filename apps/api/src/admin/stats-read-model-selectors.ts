@@ -3,6 +3,8 @@ import type { ChannelStatsBucket } from '@maxim/contracts/channel-stats';
 import { Prisma, type SanctionAction } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 
+export const EXACT_STATISTICS_ROLLUP_READER_VERSION = 1;
+
 export type ModerationFeedReadModelRow = {
   id: string;
   action: SanctionAction;
@@ -185,7 +187,7 @@ export async function selectChannelStatsContentBucketRows(
         SELECT
           ${rollupBucketStartSql} AS bucket_start,
           COALESCE(SUM(posts), 0) AS posts,
-          COALESCE(SUM(views_total), 0) AS views_delta,
+          COALESCE(SUM(COALESCE(views_total_exact, views_total::bigint)), 0) AS views_delta,
           COALESCE(SUM(reactions), 0) AS reactions
         FROM channel_stats_bucket_rollups
         WHERE chat_id = ${params.chatId}

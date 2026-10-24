@@ -1,4 +1,5 @@
-import { ArrowUpRight, Undo } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { useEffect, useState } from 'react';
 import {
   KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH,
@@ -151,7 +152,7 @@ export function SettingsStorefrontTextEditor(props: Props) {
             setResetVersion((version) => version + 1);
           }}
         >
-          <Undo aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Undo" aria-hidden />
         </button>
       </div>
       {textField('karavanStorefrontMessageText', 'Текст сообщения', true)}
@@ -194,7 +195,7 @@ export function SettingsStorefrontTextEditor(props: Props) {
           {previewButtons.map((label, index) => (
             <div className="settings-storefront-editor__preview-button" key={index}>
               <span>{label}</span>
-              <ArrowUpRight aria-hidden />
+              <IconoirSprite variant="iconoir" icon="ArrowUpRight" aria-hidden />
             </div>
           ))}
         </div>

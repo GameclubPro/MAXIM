@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import {
   MANAGED_GIVEAWAY_MAX_PRIZES,
   MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS,
@@ -24,7 +25,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { NavArrowLeft, NavArrowRight, Trash } from 'iconoir-react';
+
 import { getChannels } from '../lib/api/root-client';
 import {
   cancelManagedGiveaway,
@@ -2604,7 +2605,7 @@ function ManagedGiveawayCardImpl(
                 aria-label={editorMode === 'create' ? 'Сбросить черновик' : 'Удалить розыгрыш'}
                 title={editorMode === 'create' ? 'Сбросить черновик' : 'Удалить розыгрыш'}
               >
-                <Trash aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
               </button>
             </div>
           </div>
@@ -3288,7 +3289,7 @@ function ManagedGiveawayCardImpl(
                 onClick={goToPreviousStep}
                 disabled={isBusy}
               >
-                <NavArrowLeft aria-hidden />
+                <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
                 Назад
               </button>
             ) : null}
@@ -3310,7 +3311,7 @@ function ManagedGiveawayCardImpl(
                   : 'Переходим…'
                 : nextStepLabel}
               {activeEditorStepIndex < editorSteps.length - 1 ? (
-                <NavArrowRight aria-hidden />
+                <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
               ) : null}
             </button>
           </div>

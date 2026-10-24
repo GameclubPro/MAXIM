@@ -189,14 +189,14 @@ jobs:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: node --test --test-concurrency=1 infra/scripts/webhook-quarantine-proof-audit.test.mjs infra/scripts/webhook-recovery-key-cohort-audit.test.mjs
-      - name: Statistics exchange with native PostgreSQL
+      - name: Shared statistics with native PostgreSQL
         if: matrix.shard == 'compatibility'
         env:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: |
-          npm test --workspace @maxim/api -- 'integrations/marketplace/.*postgres'
-          node --test --test-concurrency=1 infra/scripts/statistics-exchange-audit.test.mjs
+          npm test --workspace @maxim/api -- 'integrations/marketplace/.*postgres|statistics/.*postgres'
+          node --test --test-concurrency=1 infra/scripts/statistics-exchange-audit.test.mjs infra/scripts/central-statistics-audit.test.mjs
       - name: Native race shard
         if: matrix.shard != 'compatibility'
         run: npm run test:postgres-races --workspace @maxim/api -- -- --shard=${{ matrix.shard }} --json --outputFile=postgres-races.json

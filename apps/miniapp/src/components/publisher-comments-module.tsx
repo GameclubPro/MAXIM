@@ -1,8 +1,9 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import type {
   PublisherChatCommentSettings,
   UpdatePublisherEntityModuleSettingsRequest,
 } from '@maxim/contracts/publisher';
-import { ChatBubble, InfoCircle, NavArrowRight } from 'iconoir-react';
+
 import { lazy, Suspense, useId, useState } from 'react';
 import { updatePublisherChatCommentSetting } from '../pages/publisher-entity-modules-page-model';
 
@@ -79,12 +80,12 @@ export function PublisherCommentsModule({
         onClick={() => setOpen(true)}
       >
         <span className="publisher-entity-module__icon is-comments" aria-hidden>
-          <ChatBubble />
+          <IconoirSprite variant="iconoir" icon="ChatBubble" />
         </span>
         <span className="publisher-entity-module__copy">
           <strong>Комментарии</strong>
         </span>
-        <NavArrowRight aria-hidden />
+        <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
       </button>
       {open ? (
         <Suspense fallback={null}>
@@ -146,7 +147,7 @@ export function PublisherCommentsModule({
                             aria-haspopup="dialog"
                             onClick={() => setHint(mode)}
                           >
-                            <InfoCircle aria-hidden />
+                            <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                           </button>
                         </div>
                       ))}
@@ -177,7 +178,7 @@ export function PublisherCommentsModule({
                         })
                       }
                     >
-                      <InfoCircle aria-hidden />
+                      <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
                     </button>
                   </div>
                 )}

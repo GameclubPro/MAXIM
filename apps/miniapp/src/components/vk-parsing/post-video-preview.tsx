@@ -1,4 +1,5 @@
-import { CheckCircle, OpenNewWindow, Play } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
+
 import { cn } from '../../lib/cn';
 
 const DIRECT_VIDEO_EXTENSION_PATTERN = /\.(mp4|m4v|mov|webm|ogg|ogv)$/iu;
@@ -76,7 +77,7 @@ function VideoPoster() {
   return (
     <span className="vk-parsing-video-preview__poster" aria-hidden>
       <span className="vk-parsing-video-preview__play">
-        <Play aria-hidden />
+        <IconoirSprite variant="iconoir" icon="Play" aria-hidden />
       </span>
       <span className="vk-parsing-video-preview__rail" />
       <span className="vk-parsing-video-preview__rail" />
@@ -91,7 +92,11 @@ function VideoMeta({ url, index, selected }: { url: string; index: number; selec
   return (
     <span className="vk-parsing-video-preview__meta">
       <span className="vk-parsing-video-preview__title">
-        {selected ? <CheckCircle aria-hidden /> : <Play aria-hidden />}
+        {selected ? (
+          <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden />
+        ) : (
+          <IconoirSprite variant="iconoir" icon="Play" aria-hidden />
+        )}
         <strong>{label}</strong>
       </span>
       <span className="vk-parsing-video-preview__source">{sourceLabel}</span>
@@ -120,7 +125,7 @@ export function PostVideoPreview({ url, index = 0 }: PostVideoPreviewProps) {
         <VideoPoster />
         <VideoMeta url={url} index={index} />
         <span className="vk-parsing-video-preview__open" aria-hidden>
-          <OpenNewWindow aria-hidden />
+          <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
         </span>
       </a>
     );
@@ -143,7 +148,7 @@ export function PostVideoPreview({ url, index = 0 }: PostVideoPreviewProps) {
           aria-label="Открыть видео VK"
           title="Открыть видео VK"
         >
-          <OpenNewWindow aria-hidden />
+          <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
         </a>
       </div>
     </div>
@@ -193,7 +198,7 @@ export function PostVideoChoice({ url, index, checked, disabled, onToggle }: Pos
         aria-label="Открыть видео VK"
         title="Открыть видео VK"
       >
-        <OpenNewWindow aria-hidden />
+        <IconoirSprite variant="iconoir" icon="OpenNewWindow" aria-hidden />
       </a>
     </div>
   );

@@ -1,6 +1,7 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { Suspense, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Check, EditPencil, Plus, Search, Trash, Play, Refresh } from 'iconoir-react';
+
 import {
   LEGACY_STOP_WORD_PHRASES,
   normalizeStopWordsValue,
@@ -256,7 +257,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
           disabled={!input.trim() || Boolean(prepared?.errors.length)}
           onClick={applyInput}
         >
-          <Plus />
+          <IconoirSprite variant="iconoir" icon="Plus" />
         </button>
       </div>
       <div
@@ -285,7 +286,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
       </div>
       <div className="stop-words-editor__toolbar">
         <label className="stop-words-editor__search">
-          <Search aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Search" aria-hidden />
           <input
             type="search"
             aria-label="Поиск по списку"
@@ -316,7 +317,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
             else reload.mutate();
           }}
         >
-          <Refresh />
+          <IconoirSprite variant="iconoir" icon="Refresh" />
         </button>
       </div>
       {(status.data?.revision ?? 0) > (draft.stopWordsRevision ?? 0) ? (
@@ -345,7 +346,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
           disabled={!selected.length}
           onClick={() => setConfirmDelete(true)}
         >
-          <Trash />
+          <IconoirSprite variant="iconoir" icon="Trash" />
         </button>
       </div>
       <div
@@ -403,7 +404,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
                     setEditingRule({ ...rule });
                   }}
                 >
-                  <EditPencil />
+                  <IconoirSprite variant="iconoir" icon="EditPencil" />
                 </button>
               </>
             ) : (
@@ -420,7 +421,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
                   setSelected((current) => current.filter((id) => id !== value));
                 }}
               >
-                <Trash />
+                <IconoirSprite variant="iconoir" icon="Trash" />
               </button>
             )}
           </div>
@@ -450,7 +451,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
           disabled={!testText.trim() || tester.isPending || Boolean(prepared?.errors.length)}
           onClick={() => tester.mutate({ policy: previewPolicy, text: testText })}
         >
-          <Play aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Play" aria-hidden />
           {tester.isPending ? 'Проверяем' : 'Проверить'}
         </button>
         {tester.isError ? (
@@ -503,7 +504,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
             aria-label="Изменить объяснение"
             onClick={() => setSpeechEditor('explanation')}
           >
-            <EditPencil />
+            <IconoirSprite variant="iconoir" icon="EditPencil" />
           </button>
         </Toggle>
         <Toggle
@@ -518,7 +519,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
             aria-label="Изменить предупреждение"
             onClick={() => setSpeechEditor('warning')}
           >
-            <EditPencil />
+            <IconoirSprite variant="iconoir" icon="EditPencil" />
           </button>
         </Toggle>
         <Toggle
@@ -607,7 +608,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
                     })
                   }
                 >
-                  <Trash />
+                  <IconoirSprite variant="iconoir" icon="Trash" />
                 </button>
               </div>
             ))}
@@ -619,7 +620,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
                 updateSanctions({ botButtons: [...sanctions.botButtons, { text: '', url: '' }] })
               }
             >
-              <Plus aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
               Добавить кнопку
             </button>
           </div>
@@ -675,7 +676,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
         onDiscardChanges={() => setEditingRule(null)}
         footer={
           <button type="button" className="button button--accent" onClick={saveRule}>
-            <Check aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Check" aria-hidden />
             Применить
           </button>
         }
@@ -738,7 +739,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
                     setPresetsOpen(false);
                   }}
                 >
-                  <Plus aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
                   Добавить набор
                 </button>
               </details>

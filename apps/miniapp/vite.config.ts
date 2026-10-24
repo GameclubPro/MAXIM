@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import { contractsSourceAliases } from '../../scripts/vite-contracts-source.mjs';
+import { sharedSettingsChunkSources } from './shared-settings-chunks';
 
 export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), '');
@@ -46,6 +47,13 @@ export default defineConfig(({ mode, command }) => {
           codeSplitting: {
             groups: [
               { name: 'initial', tags: ['$initial'], priority: 10 },
+              ...Object.entries(sharedSettingsChunkSources).map(([name, sources]) => ({
+                name,
+                test: (id: string) =>
+                  sources.some((source) => id.replaceAll('\\', '/').endsWith(source)),
+                includeDependenciesRecursively: false,
+                priority: 30,
+              })),
               ...Object.entries(routeChunkSources).map(([name, sources]) => ({
                 name,
                 test: (id: string) =>

@@ -1,13 +1,8 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import type { MembershipActivityItem, MembershipActivityPage } from '@maxim/contracts';
 import type { ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts/channel-stats';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Activity as IconActivity,
-  Refresh as IconRefresh,
-  Prohibition as IconProhibition,
-  UserPlus as IconUserPlus,
-  UserXmark as IconUserXmark,
-} from 'iconoir-react';
+
 import '../styles/channel-stats.css';
 import '../styles/channel-stats-route-polish.css';
 import '../styles/channel-stats-executive.css';
@@ -622,7 +617,13 @@ function ChannelStatsWorkspace({ api }: { api: ApiTransport }) {
             disabled={isBusy}
             onClick={refreshCurrentSection}
           >
-            <IconRefresh width={20} height={20} aria-hidden="true" />
+            <IconoirSprite
+              variant="iconoir"
+              icon="Refresh"
+              width={20}
+              height={20}
+              aria-hidden="true"
+            />
           </button>
         }
         className="channel-insights__sticky-header"
@@ -687,21 +688,39 @@ function ChannelStatsWorkspace({ api }: { api: ApiTransport }) {
             >
               <span className="channel-events-section__metric channel-events-section__metric--total">
                 <span className="channel-events-section__metric-icon" aria-hidden="true">
-                  <IconActivity width={17} height={17} strokeWidth={2.05} />
+                  <IconoirSprite
+                    variant="iconoir"
+                    icon="Activity"
+                    width={17}
+                    height={17}
+                    strokeWidth={2.05}
+                  />
                 </span>
                 <small>Событий</small>
                 <strong>{formatCount(activitySummary?.total ?? null)}</strong>
               </span>
               <span className="channel-events-section__metric channel-events-section__metric--joined">
                 <span className="channel-events-section__metric-icon" aria-hidden="true">
-                  <IconUserPlus width={17} height={17} strokeWidth={2.05} />
+                  <IconoirSprite
+                    variant="iconoir"
+                    icon="UserPlus"
+                    width={17}
+                    height={17}
+                    strokeWidth={2.05}
+                  />
                 </span>
                 <small>Вошли</small>
                 <strong>{formatCount(activitySummary?.joined ?? null)}</strong>
               </span>
               <span className="channel-events-section__metric channel-events-section__metric--left">
                 <span className="channel-events-section__metric-icon" aria-hidden="true">
-                  <IconUserXmark width={17} height={17} strokeWidth={2.05} />
+                  <IconoirSprite
+                    variant="iconoir"
+                    icon="UserXmark"
+                    width={17}
+                    height={17}
+                    strokeWidth={2.05}
+                  />
                 </span>
                 <small>Вышли</small>
                 <strong>{formatCount(activitySummary?.left ?? null)}</strong>
@@ -751,7 +770,13 @@ function ChannelStatsWorkspace({ api }: { api: ApiTransport }) {
                     title="Заблокировать в канале"
                     onClick={() => setBanTarget({ chatId, item })}
                   >
-                    <IconProhibition width={20} height={20} aria-hidden="true" />
+                    <IconoirSprite
+                      variant="iconoir"
+                      icon="Prohibition"
+                      width={20}
+                      height={20}
+                      aria-hidden="true"
+                    />
                   </button>
                 ) : null
               }

@@ -1,9 +1,6 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import type { ManagedAutopostRuleSummary } from '@maxim/contracts';
-import {
-  MoreHoriz as IconoirMoreHoriz,
-  Pause as IconoirPause,
-  Xmark as IconoirXmark,
-} from 'iconoir-react';
+
 import { cn } from '../lib/cn';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import './managed-broadcast-history-card.css';
@@ -122,7 +119,7 @@ export function ManagedAutopostRuleCard({
             aria-label="Поставить автопост на паузу"
             title="Пауза"
           >
-            <IconoirPause aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Pause" aria-hidden focusable="false" />
             <span>Пауза</span>
           </button>
         ) : null}
@@ -139,7 +136,7 @@ export function ManagedAutopostRuleCard({
               }
             }}
           >
-            <IconoirMoreHoriz aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="MoreHoriz" aria-hidden focusable="false" />
           </summary>
 
           <div className="managed-broadcast-card__menu-popover">
@@ -152,7 +149,7 @@ export function ManagedAutopostRuleCard({
               }}
               disabled={isBusy}
             >
-              <IconoirXmark aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden focusable="false" />
               <span>Отменить</span>
             </button>
           </div>

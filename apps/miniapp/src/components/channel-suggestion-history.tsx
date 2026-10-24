@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import type { ChannelDialogMessage } from '@maxim/contracts/channel-dialog';
-import { Attachment as IconoirAttachment } from 'iconoir-react';
+
 import { resolveSuggestionStatus } from '../lib/channel-suggestion-status';
 import { cn } from '../lib/cn';
 import { MaxMarkdownPreview } from './max-markdown-preview';
@@ -81,7 +82,12 @@ export default function ChannelSuggestionHistory({
 
               {hasMedia ? (
                 <span className="channel-suggest-card__media">
-                  <IconoirAttachment aria-hidden focusable="false" />
+                  <IconoirSprite
+                    variant="iconoir"
+                    icon="Attachment"
+                    aria-hidden
+                    focusable="false"
+                  />
                   {resolveSuggestionAttachmentLabel(message)}
                 </span>
               ) : null}

@@ -162,6 +162,14 @@
     "./statistics-exchange-v3": {
       "types": "./dist/statistics-exchange-v3.d.ts",
       "default": "./dist/statistics-exchange-v3.js"
+    },
+    "./statistics-central": {
+      "types": "./dist/statistics-central.d.ts",
+      "default": "./dist/statistics-central.js"
+    },
+    "./statistics-central-validation": {
+      "types": "./dist/statistics-central-validation.d.ts",
+      "default": "./dist/statistics-central-validation.js"
     }
   },
   "files": [
@@ -175,7 +183,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "vitest": "^4.1.10"

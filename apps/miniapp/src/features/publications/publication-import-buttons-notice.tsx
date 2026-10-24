@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import type { PublisherPostImportOmission } from '@maxim/contracts/publisher';
-import { Link as LinkIcon } from 'iconoir-react';
+
 import { shouldOfferPublisherButtonRecovery } from './publisher-post-import-model';
 import './publication-import-buttons-notice.css';
 
@@ -22,7 +23,7 @@ export function PublicationImportButtonsNotice({
 
   return (
     <div className="publication-import-buttons-notice" role="status">
-      <LinkIcon aria-hidden />
+      <IconoirSprite variant="iconoir" icon="Link" aria-hidden />
       <span>Кнопки не перенесены</span>
       <button type="button" onClick={onAdd} disabled={disabled}>
         Добавить

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
 
@@ -173,7 +173,7 @@ test('isolates every native shard and keeps all compatibility checks blocking', 
     [
       'Outcome cohort online migrations with native PostgreSQL',
       'Quarantine proof bounds with native PostgreSQL',
-      'Statistics exchange with native PostgreSQL',
+      'Shared statistics with native PostgreSQL',
       'Check traffic policy revision and activation guards',
       'Participant report SQL, shared executor, journal and retention',
       'Retention admission and receipt recovery with PostgreSQL',
@@ -201,13 +201,13 @@ test('isolates every native shard and keeps all compatibility checks blocking', 
   assert.equal(report.with.path, 'apps/api/postgres-races.json');
 });
 
-test('exchange native coverage runs against required stores in the blocking compatibility shard', () => {
+test('shared statistics native coverage runs against required stores in the blocking compatibility shard', () => {
   const jobs = parse(workflow).jobs;
   const postgres = jobs['postgres-races'];
   const step = postgres.steps.find(
-    (candidate) => candidate.name === 'Statistics exchange with native PostgreSQL',
+    (candidate) => candidate.name === 'Shared statistics with native PostgreSQL',
   );
-  assert.ok(step, 'Missing required native exchange step');
+  assert.ok(step, 'Missing required native statistics step');
   assert.equal(step.if, "matrix.shard == 'compatibility'");
   assert.equal(step['continue-on-error'], undefined);
   assert.equal(step.env.MAXIM_TEST_POSTGRES_URL, '${{ env.DATABASE_URL }}');
@@ -218,13 +218,22 @@ test('exchange native coverage runs against required stores in the blocking comp
   assert.equal(postgres.env.MAXIM_TEST_REDIS_URL, 'redis://127.0.0.1:6379');
   const commands = step.run.trim().split('\n');
   assert.deepEqual(commands, [
-    "npm test --workspace @maxim/api -- 'integrations/marketplace/.*postgres'",
-    'node --test --test-concurrency=1 infra/scripts/statistics-exchange-audit.test.mjs',
+    "npm test --workspace @maxim/api -- 'integrations/marketplace/.*postgres|statistics/.*postgres'",
+    'node --test --test-concurrency=1 infra/scripts/statistics-exchange-audit.test.mjs infra/scripts/central-statistics-audit.test.mjs',
   ]);
   const selector = commands[0].match(/-- '([^']+)'$/u)?.[1];
   assert.ok(selector);
   const nativePath = 'src/integrations/marketplace/statistics-exchange-postgres.spec.ts';
   assert.ok(new RegExp(selector, 'u').test(nativePath), 'Exchange cases must be selected');
   assert.ok(statSync(resolve(root, 'apps/api', nativePath)).isFile());
+  const centralPaths = readdirSync(resolve(root, 'apps/api/src/statistics'))
+    .filter((name) => name.endsWith('-postgres.spec.ts'))
+    .map((name) => `src/statistics/${name}`);
+  assert.ok(
+    centralPaths.length >= 3,
+    'Expected central store, native adapter and exact counter suites',
+  );
+  for (const path of centralPaths)
+    assert.ok(new RegExp(selector, 'u').test(path), `Missing native statistics suite: ${path}`);
   assert.ok(jobs.required.needs.includes('postgres-races'));
 });

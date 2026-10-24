@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { utcTimestampSchema } from './validator-compat.js';
 import {
   publicationDetailsSchema,
   publicationLatePolicySchema,
@@ -11,7 +12,7 @@ import {
 export const MAX_PUBLICATION_SERVER_DRAFTS = 50;
 export const MAX_PUBLICATION_DRAFT_STORAGE_BYTES = 128 * 1024 * 1024;
 const time = z.string().regex(/^(?:|(?:[01]\d|2[0-3]):[0-5]\d)$/u);
-const instant = z.string().datetime().nullable();
+const instant = utcTimestampSchema.nullable();
 const zone = z
   .string()
   .max(128)
@@ -30,7 +31,7 @@ export const publicationDraftStateSchema = z.object({
   scheduleKind: z.enum(['slots', 'recurrence']),
   scheduleTimezone: zone,
   latePolicy: publicationLatePolicySchema.optional(),
-  scheduledSlots: z.array(z.string().datetime()).max(MAX_PUBLICATION_EXPLICIT_SLOTS),
+  scheduledSlots: z.array(utcTimestampSchema).max(MAX_PUBLICATION_EXPLICIT_SLOTS),
   onceDate: z.string().max(10),
   onceTime: time,
   buttons: z

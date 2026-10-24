@@ -1,3 +1,4 @@
+import { StatsModule } from '../statistics/stats.module';
 import { StatisticsExchangeV3Controller } from '../integrations/marketplace/statistics-exchange-v3.controller';
 import { StatisticsExchangeV3MembershipService } from '../integrations/marketplace/statistics-exchange-v3-membership.service';
 import { StatisticsExchangeV3Service } from '../integrations/marketplace/statistics-exchange-v3.service';
@@ -185,6 +186,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
 
 @Module({
   imports: [
+    StatsModule,
     SuggestionSubscriptionModule,
     MessageRetentionStateModule,
     ...registerRuntimeQueues(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE),

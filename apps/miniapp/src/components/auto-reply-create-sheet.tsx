@@ -1,4 +1,5 @@
-import { ChatBubble, EditPencil, Xmark } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../lib/dialog-focus';
@@ -89,16 +90,16 @@ export function AutoReplyCreateSheet({
         <header className="auto-reply-create-sheet__header">
           <strong id="auto-reply-create-title">Новый автоответ</strong>
           <button type="button" onClick={onClose} disabled={busy} aria-label="Закрыть">
-            <Xmark aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           </button>
         </header>
         <div className="auto-reply-create-sheet__actions">
           <button ref={firstActionRef} type="button" onClick={onWrite} disabled={busy}>
-            <EditPencil aria-hidden />
+            <IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden />
             <span>Создать здесь</span>
           </button>
           <button type="button" onClick={onOpenBot} disabled={busy}>
-            <ChatBubble aria-hidden />
+            <IconoirSprite variant="iconoir" icon="ChatBubble" aria-hidden />
             <span>{busy ? 'Открываю...' : 'Открыть Публика'}</span>
           </button>
         </div>

@@ -1985,6 +1985,7 @@ model CommercialReviewSample {
   label          String?
   independentLabel String? @map("independent_label")
   qualityMetadata Json? @map("quality_metadata")
+  llmShadow      Json? @map("llm_shadow")
   independentReviewCount Int @default(0) @map("independent_review_count")
   reviewState    String @default("UNREVIEWED") @map("review_state")
   reviewPriority Int      @default(50) @map("review_priority")
@@ -2873,6 +2874,8 @@ model ChannelStatsBucketRollup {
   posts       Int      @default(0)
   viewsDelta  Int      @default(0) @map("views_delta")
   viewsTotal  Int      @default(0) @map("views_total")
+  viewsDeltaExact BigInt? @map("views_delta_exact")
+  viewsTotalExact BigInt? @map("views_total_exact")
   reactions   Int      @default(0)
   updatedAt   DateTime @default(now()) @map("updated_at")
 
@@ -4697,7 +4700,7 @@ model StatisticsExchangeMembershipSnapshot {
   expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
   entities StatisticsExchangeMembershipSnapshotEntity[]
   pages StatisticsExchangeMembershipSnapshotPage[]
-  @@unique([actorUserId,requestId])
+  @@unique([actorUserId,requestId],map:"statistics_exchange_membership_snapshot_actor_request_key")
   @@index([expiresAt,id],map:"statistics_exchange_membership_snapshots_expiry_idx")
   @@map("statistics_exchange_membership_snapshots")
 }
@@ -4707,9 +4710,9 @@ model StatisticsExchangeMembershipSnapshotEntity {
   entityId String @map("entity_id")
   kind String
   profile String
-  snapshot StatisticsExchangeMembershipSnapshot @relation(fields:[snapshotId],references:[id],onDelete:Cascade,onUpdate:NoAction)
+  snapshot StatisticsExchangeMembershipSnapshot @relation(fields:[snapshotId],references:[id],onDelete:Cascade,onUpdate:NoAction,map:"statistics_exchange_membership_snapshot_entity_snapshot_fk")
   @@id([snapshotId,ordinal])
-  @@unique([snapshotId,kind,entityId])
+  @@unique([snapshotId,kind,entityId],map:"statistics_exchange_membership_snapshot_entity_identity_key")
   @@map("statistics_exchange_membership_snapshot_entities")
 }
 model StatisticsExchangeMembershipSnapshotPage {
@@ -4752,4 +4755,97 @@ model StatisticsExchangeV3GenerationPage {
   generation StatisticsExchangeV3Generation @relation(fields:[generationId],references:[id],onDelete:Cascade,onUpdate:NoAction)
   @@id([generationId,pageIndex])
   @@map("statistics_exchange_v3_generation_pages")
+}
+
+// Independent statistics identity: no required native Chat/bot/product binding.
+model StatsEntity {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kind String
+  maxId String @map("max_id")
+  dataRevision BigInt @default(0) @map("data_revision")
+  health Json @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  authorities StatsAuthority[]
+  measurements StatsMeasurement[]
+  changes StatsChange[]
+  @@unique([kind,maxId])
+  @@map("stats_entities")
+}
+model StatsAuthority {
+  id String @id @db.Uuid
+  entityId String @map("entity_id") @db.Uuid
+  issuer String
+  role String
+  producer String
+  consumer String
+  actorMaxId String @map("actor_max_id")
+  botRef String @map("bot_ref")
+  purpose String
+  scopes Json
+  revision BigInt
+  epoch BigInt
+  producerEpoch String @map("producer_epoch") @db.Uuid
+  localAccessFence String @map("local_access_fence")
+  state String
+  peerValidUntil DateTime @map("peer_valid_until") @db.Timestamptz(6)
+  checkedAt DateTime @map("checked_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  nativeRef Json? @map("native_ref")
+  entity StatsEntity @relation(fields:[entityId],references:[id],onDelete:Cascade)
+  @@unique([issuer,role,entityId,producer,consumer,actorMaxId,botRef,purpose],map:"stats_authorities_scope_key")
+  @@index([actorMaxId,entityId,purpose,role],map:"stats_authorities_actor_entity_idx")
+  @@index([issuer,state,peerValidUntil,id],map:"stats_authorities_lease_idx")
+  @@map("stats_authorities")
+}
+model StatsMeasurement {
+  entityId String @map("entity_id") @db.Uuid
+  producer String
+  metric String
+  horizon Int
+  methodId String @map("method_id")
+  methodVersion Int @map("method_version")
+  day DateTime @db.Date
+  producerEpoch String @map("producer_epoch") @db.Uuid
+  seenRevision BigInt @map("seen_revision")
+  seenHash String @map("seen_hash")
+  valueRevision BigInt @map("value_revision")
+  valueHash String @map("value_hash")
+  deleted Boolean @default(false)
+  value Json?
+  coverage Json?
+  observedFrom DateTime? @map("observed_from") @db.Timestamptz(6)
+  observedTo DateTime? @map("observed_to") @db.Timestamptz(6)
+  deleteFence BigInt @default(0) @map("delete_fence")
+  collectedAuthorityId String? @map("collected_authority_id") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  entity StatsEntity @relation(fields:[entityId],references:[id],onDelete:Cascade)
+  @@id([entityId,producer,metric,horizon,methodId,methodVersion,day])
+  @@index([entityId,day,metric,horizon],map:"stats_measurements_entity_day_idx")
+  @@index([day,entityId],map:"stats_measurements_retention_idx")
+  @@map("stats_measurements")
+}
+model StatsIngestRequest {
+  producer String
+  producerEpoch String @map("producer_epoch") @db.Uuid
+  recordKind String @map("record_kind")
+  operationKey String @map("operation_key")
+  bodyHash String @map("body_hash")
+  result Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@id([producer,producerEpoch,recordKind,operationKey])
+  @@index([createdAt,producer,producerEpoch,recordKind,operationKey],map:"stats_ingest_requests_retention_idx")
+  @@map("stats_ingest_requests")
+}
+model StatsChange {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  entityId String @map("entity_id") @db.Uuid
+  entityRevision BigInt @map("entity_revision")
+  cause String
+  authorityId String? @map("authority_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedSeq BigInt? @unique @map("published_seq")
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+  entity StatsEntity @relation(fields:[entityId],references:[id],onDelete:Cascade)
+  @@index([createdAt,id],map:"stats_changes_retention_idx")
+  @@map("stats_changes")
 }

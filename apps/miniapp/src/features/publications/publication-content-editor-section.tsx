@@ -1,8 +1,9 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { MAX_PUBLICATION_IMAGES } from '@maxim/contracts/publication';
 import type { PublisherPostImportOmission } from '@maxim/contracts/publisher';
 import { useId, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
-import { Xmark } from 'iconoir-react';
+
 import { BroadcastContentComposer } from '../../components/broadcast-content-composer';
 import type { BroadcastSystemButtonPreview } from '../../lib/broadcast-system-buttons';
 import { describeUserFacingError } from '../../lib/user-facing-error';
@@ -224,7 +225,7 @@ export function PublicationContentEditorSection({
                     }))
                   }
                 >
-                  <Xmark aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
                 </button>
               </figure>
             );
@@ -306,7 +307,7 @@ export function PublicationContentEditorSection({
             aria-label="Отменить загрузку видео"
             title="Отменить загрузку видео"
           >
-            <Xmark aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           </button>
         </div>
       ) : null}

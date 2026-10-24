@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import { SettingsOverviewGroups } from '../components/ui/settings-overview-groups';
 import { getNetworkSettingsSectionPresentation } from './settings/settings-workspace-sections';
 import { ChannelQuickButtonsFields } from './settings/channel-quick-buttons-fields';
@@ -21,11 +22,7 @@ import type {
 import type { ChannelSettings, ChannelSettingsScreenResponse } from '@maxim/contracts/settings';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
-import {
-  Link as IconoirLink,
-  RefreshDouble as IconoirRefreshDouble,
-  StatsUpSquare,
-} from 'iconoir-react';
+
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-native-controls.css';
 import '../styles/settings-home-compact.css';
@@ -2142,7 +2139,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               aria-label="Не удалось сохранить. Повторить"
               title="Повторить сохранение"
             >
-              <IconoirRefreshDouble aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden focusable="false" />
             </button>
           </div>
         ) : null
@@ -3289,7 +3286,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           </button>
                         ) : (
                           <span className="channel-post-signature__message-signature">
-                            <IconoirLink aria-hidden />
+                            <IconoirSprite variant="iconoir" icon="Link" aria-hidden />
                             {effectivePostSignatureUrl ? (
                               <a
                                 href={effectivePostSignatureUrl}
@@ -3347,7 +3344,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           title="Повторить"
                           onClick={() => savePostSignature(postSignature)}
                         >
-                          <IconoirRefreshDouble aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden />
                         </button>
                       ) : null}
                     </div>
@@ -3879,7 +3876,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                 title="Опросы"
                 summary="Создание, публикация и результаты"
                 status="Голоса"
-                icon={<StatsUpSquare aria-hidden focusable="false" />}
+                icon={
+                  <IconoirSprite
+                    variant="iconoir"
+                    icon="StatsUpSquare"
+                    aria-hidden
+                    focusable="false"
+                  />
+                }
                 tone="mint"
                 open={expandedSections.polls}
                 controls="channel-settings-polls"
@@ -3889,7 +3893,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
             <SettingsDrilldownPanel
               id="channel-settings-polls"
-              icon={<StatsUpSquare aria-hidden focusable="false" />}
+              icon={
+                <IconoirSprite
+                  variant="iconoir"
+                  icon="StatsUpSquare"
+                  aria-hidden
+                  focusable="false"
+                />
+              }
               open={expandedSections.polls}
               title="Опросы"
               variant="screen"

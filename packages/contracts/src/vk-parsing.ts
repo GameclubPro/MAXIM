@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { utcTimestampSchema } from './validator-compat.js';
 
 import { broadcastTextFormatSchema } from './broadcast-common.js';
 import {
@@ -439,7 +440,7 @@ export const publishVkParsingPostRequestSchema = z
 export type PublishVkParsingPostRequest = z.infer<typeof publishVkParsingPostRequestSchema>;
 
 export const scheduleVkParsingPostRequestSchema = z.object({
-  scheduledAt: z.string().datetime(),
+  scheduledAt: utcTimestampSchema,
 });
 export type ScheduleVkParsingPostRequest = z.infer<typeof scheduleVkParsingPostRequestSchema>;
 

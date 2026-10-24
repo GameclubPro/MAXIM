@@ -1,4 +1,5 @@
-import { Refresh } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { cn } from '../../lib/cn';
 import type { InitialPublicationTargetRouteResult } from './use-initial-publication-target-route';
 
@@ -18,7 +19,7 @@ type PublicationTargetNoticesProps = {
 function RetryAction({ busy, onClick }: { busy: boolean; onClick: () => void }) {
   return (
     <button type="button" onClick={onClick} disabled={busy}>
-      <Refresh aria-hidden />
+      <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
       <span>{busy ? 'Проверяю' : 'Повторить'}</span>
     </button>
   );

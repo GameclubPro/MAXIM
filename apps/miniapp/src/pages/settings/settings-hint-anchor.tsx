@@ -1,4 +1,5 @@
-import { InfoCircle } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { cn } from '../../lib/cn';
 
 export function SettingsHintAnchor<HintKey extends string>({
@@ -33,7 +34,7 @@ export function SettingsHintAnchor<HintKey extends string>({
           onToggleHint(hintKey);
         }}
       >
-        <InfoCircle aria-hidden />
+        <IconoirSprite variant="iconoir" icon="InfoCircle" aria-hidden />
       </button>
       {isOpen ? (
         <p

@@ -1,18 +1,7 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import type { UpdatePublisherEntityModuleSettingsRequest } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  ChatBubble,
-  CheckCircle,
-  Download,
-  Key,
-  MailIn,
-  NavArrowLeft,
-  NavArrowRight,
-  Post,
-  Refresh,
-  Reply,
-  WarningCircle,
-} from 'iconoir-react';
+
 import { lazy, Suspense, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Link, useLocation, useParams } from 'react-router';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -96,7 +85,7 @@ function ModuleNavigationContent({
         {icon}
       </span>
       <strong>{title}</strong>
-      <NavArrowRight aria-hidden />
+      <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
     </>
   );
 }
@@ -294,7 +283,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     return (
       <section className="publisher-entity-modules-page">
         <div className="publisher-entity-modules-page__state has-error" role="alert">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <strong>Чат или канал не найден</strong>
           <Link to="/">Вернуться</Link>
         </div>
@@ -306,7 +295,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     return (
       <section className="publisher-entity-modules-page" aria-busy="true">
         <div className="publisher-entity-modules-page__state" role="status">
-          <Refresh className="is-refreshing" aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" className="is-refreshing" aria-hidden />
           <strong>Загружаю разделы</strong>
         </div>
       </section>
@@ -318,10 +307,10 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
     return (
       <section className="publisher-entity-modules-page">
         <div className="publisher-entity-modules-page__state has-error" role="alert">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <strong>Не удалось загрузить разделы</strong>
           <button type="button" onClick={() => void entityQuery.refetch()}>
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
             <span>Повторить</span>
           </button>
           <Link to={buildPublisherEntityListRoute(entityType)}>Вернуться к списку</Link>
@@ -350,7 +339,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           aria-label="Вернуться к списку"
           title="Назад"
         >
-          <NavArrowLeft aria-hidden />
+          <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
         </Link>
         <EntityAvatar
           title={entity.title}
@@ -379,7 +368,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             ])
           }
         >
-          <Refresh aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
         </button>
       </header>
 
@@ -399,9 +388,9 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           aria-live={entityRecheckPhase ? 'polite' : undefined}
         >
           {entity.readiness.canPublish ? (
-            <CheckCircle aria-hidden />
+            <IconoirSprite variant="iconoir" icon="CheckCircle" aria-hidden />
           ) : (
-            <WarningCircle aria-hidden />
+            <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           )}
           <span className="publisher-entity-modules-page__readiness-copy">
             <strong>{readiness.label}</strong>
@@ -417,7 +406,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               disabled={busy}
               onClick={() => void handleEntityRecheck()}
             >
-              <Refresh aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
               <span>
                 {entityRecheckPhase === 'enqueueing'
                   ? 'Запускаю'
@@ -438,7 +427,11 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               className="publisher-module-entry"
               data-settings-navigation-entry="true"
             >
-              <ModuleNavigationContent title="Посты" icon={<Post />} variant="posting" />
+              <ModuleNavigationContent
+                title="Посты"
+                icon={<IconoirSprite variant="iconoir" icon="Post" />}
+                variant="posting"
+              />
             </Link>
           ) : (
             <button
@@ -447,13 +440,17 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               data-settings-navigation-entry="true"
               disabled
             >
-              <ModuleNavigationContent title="Посты" icon={<Post />} variant="posting" />
+              <ModuleNavigationContent
+                title="Посты"
+                icon={<IconoirSprite variant="iconoir" icon="Post" />}
+                variant="posting"
+              />
             </button>
           )
         ) : (
           <article className="publisher-entity-module">
             <span className="publisher-entity-module__icon is-posting" aria-hidden>
-              <Post />
+              <IconoirSprite variant="iconoir" icon="Post" />
             </span>
             <span className="publisher-entity-module__copy">
               <strong>Посты</strong>
@@ -466,7 +463,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                 title="Создать пост"
               >
                 <span>Создать</span>
-                <NavArrowRight aria-hidden />
+                <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
               </Link>
             ) : null}
           </article>
@@ -489,12 +486,16 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               className="publisher-module-entry"
               data-settings-navigation-entry="true"
             >
-              <ModuleNavigationContent title="Автоответы" icon={<Reply />} variant="auto-replies" />
+              <ModuleNavigationContent
+                title="Автоответы"
+                icon={<IconoirSprite variant="iconoir" icon="Reply" />}
+                variant="auto-replies"
+              />
             </Link>
           ) : (
             <article className="publisher-entity-module">
               <span className="publisher-entity-module__icon is-auto-replies" aria-hidden>
-                <Key />
+                <IconoirSprite variant="iconoir" icon="Key" />
               </span>
               <span className="publisher-entity-module__copy">
                 <strong>Автоответы</strong>
@@ -507,7 +508,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                 title="Открыть автоответы"
               >
                 <span>Открыть</span>
-                <NavArrowRight aria-hidden />
+                <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
               </Link>
             </article>
           )
@@ -523,14 +524,18 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             aria-controls="publisher-suggestions-workspace"
             onClick={() => setSuggestionsOpen(true)}
           >
-            <ModuleNavigationContent title="Предложения" icon={<MailIn />} variant="suggestions" />
+            <ModuleNavigationContent
+              title="Предложения"
+              icon={<IconoirSprite variant="iconoir" icon="MailIn" />}
+              variant="suggestions"
+            />
           </button>
         ) : null}
 
         {entity.entityType === 'channel' && !smartphoneLayout ? (
           <article className="publisher-entity-module">
             <span className="publisher-entity-module__icon is-suggestions" aria-hidden>
-              <ChatBubble />
+              <IconoirSprite variant="iconoir" icon="ChatBubble" />
             </span>
             <span className="publisher-entity-module__copy">
               <strong>Предложения</strong>
@@ -552,7 +557,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           <>
             <div className="publisher-entity-module publisher-entity-module--subscription">
               <span className="publisher-entity-module__icon" aria-hidden>
-                <CheckCircle />
+                <IconoirSprite variant="iconoir" icon="CheckCircle" />
               </span>
               <span className="publisher-entity-module__copy">
                 <strong>Требовать подписку</strong>
@@ -568,7 +573,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
             </div>
             <div className="publisher-entity-module publisher-entity-module--subscription">
               <span className="publisher-entity-module__icon" aria-hidden>
-                <WarningCircle />
+                <IconoirSprite variant="iconoir" icon="WarningCircle" />
               </span>
               <span className="publisher-entity-module__copy">
                 <strong>Удалять посты после отписки</strong>
@@ -596,12 +601,16 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               aria-controls="publisher-vk-workspace"
               onClick={() => setVkOpen(true)}
             >
-              <ModuleNavigationContent title="Посты из VK" icon={<Download />} variant="vk" />
+              <ModuleNavigationContent
+                title="Посты из VK"
+                icon={<IconoirSprite variant="iconoir" icon="Download" />}
+                variant="vk"
+              />
             </button>
           ) : (
             <div className="publisher-entity-module">
               <span className="publisher-entity-module__icon is-vk" aria-hidden>
-                <Download />
+                <IconoirSprite variant="iconoir" icon="Download" />
               </span>
               <span className="publisher-entity-module__copy">
                 <strong>Посты из VK</strong>
@@ -616,7 +625,7 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                 onClick={() => setVkOpen((current) => !current)}
               >
                 <span>{vkOpen ? 'Закрыть' : 'Открыть'}</span>
-                <NavArrowRight aria-hidden />
+                <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
               </button>
             </div>
           )}
@@ -625,7 +634,12 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
               <LazyVkWorkspaceShell title={entity.title} onClose={() => setVkOpen(false)}>
                 {vkCapabilityQuery.isPending ? (
                   <div className="publisher-entity-vk-module__state" role="status">
-                    <Refresh className="is-refreshing" aria-hidden />
+                    <IconoirSprite
+                      variant="iconoir"
+                      icon="Refresh"
+                      className="is-refreshing"
+                      aria-hidden
+                    />
                     <span>Проверяю доступ к VK</span>
                   </div>
                 ) : vkCapabilityQuery.isError ? (
@@ -649,7 +663,12 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                   <Suspense
                     fallback={
                       <div className="publisher-entity-vk-module__state" role="status">
-                        <Refresh className="is-refreshing" aria-hidden />
+                        <IconoirSprite
+                          variant="iconoir"
+                          icon="Refresh"
+                          className="is-refreshing"
+                          aria-hidden
+                        />
                         <span>Открываю VK</span>
                       </div>
                     }

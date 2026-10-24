@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import { useEffect, useRef } from 'react';
-import { Xmark as IconoirXmark } from 'iconoir-react';
+
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { ManagedLinkButtonFields } from './managed-link-button-fields';
 import type { ApiTransport } from '../lib/api/transport';
@@ -202,7 +203,7 @@ export function BroadcastLinkButtonsEditor({
                   aria-label={`Убрать кнопку ${index + 1}`}
                   title="Убрать"
                 >
-                  <IconoirXmark aria-hidden focusable="false" />
+                  <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden focusable="false" />
                 </button>
               </div>
 

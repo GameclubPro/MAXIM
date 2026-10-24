@@ -90,6 +90,78 @@ require_deploy_lock() {
   validate_deploy_lock_path && validate_deploy_lock_descriptor
 }
 
+validate_market_statistics_deploy_admission() {
+  local market_scope=0 market_path market_metadata market_owner market_mode market_links
+  local market_source_dir="${source_dir:-}" market_release="${release:-}"
+  if [[ "${root:-}" == /var/www/svyazka || "$market_source_dir" == /var/www/svyazka/* ]]; then
+    market_scope=1
+  fi
+  for market_path in "$PWD" "${BASH_SOURCE[@]}"; do
+    if [[ "$market_path" == /var/www/svyazka || "$market_path" == /var/www/svyazka/* ]]; then
+      market_scope=1
+    fi
+  done
+  ((market_scope == 1)) || return 0
+  # FLAG: Market's installed statistics floor must fence legacy callers too.
+  # This root-owned trust chain is separate from deploy-user-writable releases.
+  for market_path in /etc /etc/maxim-deploy /etc/maxim-deploy/market-statistics; do
+    [[ -d "$market_path" && ! -L "$market_path" ]] || {
+      echo 'Market statistics deployment admission is not installed.' >&2; return 1;
+    }
+    market_metadata="$(stat -c '%u %a' -- "$market_path")" || return 1
+    read -r market_owner market_mode <<<"$market_metadata"
+    if [[ "$market_owner" != 0 || ! "$market_mode" =~ ^[0-7]{3,4}$ ]] \
+      || (( (8#$market_mode & 0022) != 0 )); then
+      echo 'Market statistics deployment admission has an unsafe trust directory.' >&2
+      return 1
+    fi
+  done
+  market_path=/etc/maxim-deploy/market-statistics/admission.mjs
+  [[ -f "$market_path" && ! -L "$market_path" ]] || return 1
+  market_metadata="$(stat -c '%u %a %h' -- "$market_path")" || return 1
+  read -r market_owner market_mode market_links <<<"$market_metadata"
+  if [[ "$market_owner" != 0 || ! "$market_mode" =~ ^[0-7]{3,4}$ || "$market_links" != 1 ]] \
+    || (( (8#$market_mode & 0022) != 0 )); then
+    echo 'Market statistics deployment admission has an unsafe installed reader.' >&2
+    return 1
+  fi
+  node "$market_path" --admit "$market_source_dir" "$market_release"
+}
+
+require_market_statistics_lock_dispatch() {
+  # FLAG: This installed cross-project floor survives MAXIM checkout/re-exec and ref rollback.
+  # Inspect reviewed Git bytes without executing candidate code or changing the checkout.
+  [[ -e /etc/maxim-deploy/market-statistics || -L /etc/maxim-deploy/market-statistics ]] || return 0
+  local target="$1" path size candidate
+  for path in infra/scripts/lib/deploy-lock.sh infra/scripts/vps-pull-build-up.sh \
+    infra/scripts/vps-runtime-rollback.sh infra/scripts/vps-connect.sh; do
+    size="$(git cat-file -s "${target}:${path}" 2>/dev/null)" || {
+      echo 'Candidate tooling loses the installed Market statistics admission floor.' >&2; return 1;
+    }
+    [[ "$size" =~ ^[0-9]{1,6}$ ]] && ((size > 0 && size <= 262144)) || return 1
+    candidate="$(git show "${target}:${path}")" || return 1
+    case "$path" in
+      infra/scripts/lib/deploy-lock.sh)
+        grep -Eq '^require_market_statistics_lock_dispatch\(\) \{' <<<"$candidate" \
+          && grep -Eq '^validate_market_statistics_deploy_admission\(\) \{' <<<"$candidate" \
+          && grep -Eq '^[[:space:]]*node "[$]market_path" --admit "[$]market_source_dir" "[$]market_release"$' <<<"$candidate" \
+          && grep -Eq '^[[:space:]]*validate_market_statistics_deploy_admission \|\| return 1$' <<<"$candidate" \
+          && grep -Eq '^[[:space:]]*if ! validate_market_statistics_deploy_admission; then$' <<<"$candidate" || return 1
+        ;;
+      infra/scripts/vps-pull-build-up.sh)
+        grep -Eq '^[[:space:]]*require_market_statistics_lock_dispatch "origin/[$]BRANCH" \|\| return 2$' <<<"$candidate" \
+          && grep -Eq '^[[:space:]]*require_market_statistics_lock_dispatch "refs/heads/[$]BRANCH" \|\| return 2$' <<<"$candidate" || return 1
+        ;;
+      infra/scripts/vps-runtime-rollback.sh)
+        grep -Eq '^[[:space:]]*require_market_statistics_lock_dispatch "[$]TARGET_FULL_SHA" \|\| exit 1$' <<<"$candidate" || return 1
+        ;;
+      infra/scripts/vps-connect.sh)
+        grep -Eq '^[[:space:]]*require_market_statistics_lock_dispatch "[$]expected_tooling_sha" \|\| exit 1$' <<<"$candidate" || return 1
+        ;;
+    esac
+  done
+}
+
 acquire_deploy_lock() {
   local lock_file identity
   if ! command -v flock >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then
@@ -100,6 +172,7 @@ acquire_deploy_lock() {
     validate_deploy_lock_path || return 1
     validate_deploy_lock_descriptor || return 1
     trap release_deploy_lock EXIT
+    validate_market_statistics_deploy_admission || return 1
     return 0
   fi
 
@@ -122,6 +195,10 @@ acquire_deploy_lock() {
     return 1
   fi
   trap release_deploy_lock EXIT
+  if ! validate_market_statistics_deploy_admission; then
+    release_deploy_lock || true
+    return 1
+  fi
 }
 
 release_deploy_lock() {

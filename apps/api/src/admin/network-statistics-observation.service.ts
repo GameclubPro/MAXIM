@@ -8,6 +8,11 @@ import {
   type NetworkViewObservationState,
 } from './network-view-observation';
 import type { MaxChannelMessageSnapshot, MaxClientService } from '../max/max-client.service';
+import {
+  captureStatsChatAudience,
+  statisticsCentralEnabled,
+  touchStatsEntity,
+} from '../statistics/stats-native-observation';
 
 type ObservationStateRow = {
   baseline_at: Date;
@@ -93,13 +98,18 @@ export class NetworkStatisticsObservationService {
     }
     if (options.authorized && !(await options.authorized())) return;
     const completed = rows.length < 100;
-    await this.prisma.$executeRaw`UPDATE channel_view_archive_states SET
-      cursor_at=${completed ? null : oldest},cursor_signature=${completed ? null : signature},
-      discovered_from=CASE WHEN ${oldest}::timestamptz IS NULL THEN discovered_from ELSE LEAST(discovered_from,${oldest}) END,
-      discovery_complete_at=CASE WHEN ${completed} THEN COALESCE(discovery_complete_at,${observedAt}) ELSE discovery_complete_at END,
-      full_refresh_at=CASE WHEN ${completed} THEN ${observedAt} ELSE full_refresh_at END,
-      last_success_at=${new Date()},stalled_at=NULL
-      WHERE chat_id=${chatId} AND last_attempt_at=${startedAt}`;
+    const completePage = async (tx: Prisma.TransactionClient) => {
+      const changed = await tx.$executeRaw`UPDATE channel_view_archive_states SET
+        cursor_at=${completed ? null : oldest},cursor_signature=${completed ? null : signature},
+        discovered_from=CASE WHEN ${oldest}::timestamptz IS NULL THEN discovered_from ELSE LEAST(discovered_from,${oldest}) END,
+        discovery_complete_at=CASE WHEN ${completed} THEN COALESCE(discovery_complete_at,${observedAt}) ELSE discovery_complete_at END,
+        full_refresh_at=CASE WHEN ${completed} THEN ${observedAt} ELSE full_refresh_at END,
+        last_success_at=${new Date()},stalled_at=NULL
+        WHERE chat_id=${chatId} AND last_attempt_at=${startedAt}`;
+      if (changed) await touchStatsEntity(tx, { kind: 'CHANNEL', maxId: chatId });
+    };
+    if (statisticsCentralEnabled()) await this.prisma.$transaction(completePage);
+    else await completePage(this.prisma);
   }
 
   async audience(
@@ -108,7 +118,7 @@ export class NetworkStatisticsObservationService {
     participantsCount: number | null,
     observedAt: Date,
     source: string,
-    tx: Prisma.TransactionClient = this.prisma,
+    tx?: Prisma.TransactionClient,
   ): Promise<void> {
     if (
       participantsCount === null ||
@@ -119,7 +129,8 @@ export class NetworkStatisticsObservationService {
       observedAt.getTime() > Date.now() + 30_000
     )
       return;
-    await tx.$executeRaw`
+    const store = async (database: Prisma.TransactionClient) => {
+      const changed = await database.$executeRaw`
       INSERT INTO managed_entity_audience_observations
         (chat_id, entity_type, participants_count, observed_at, source)
       VALUES (${chatId}, ${entityType === 'chat' ? 'CHAT' : 'CHANNEL'}::"ChatEntityType",
@@ -129,6 +140,18 @@ export class NetworkStatisticsObservationService {
         source=EXCLUDED.source
       WHERE managed_entity_audience_observations.observed_at < EXCLUDED.observed_at
     `;
+      if (entityType === 'chat')
+        await captureStatsChatAudience(
+          database,
+          { kind: 'CHAT', maxId: chatId },
+          participantsCount,
+          observedAt,
+        );
+      else if (changed) await touchStatsEntity(database, { kind: 'CHANNEL', maxId: chatId });
+    };
+    if (tx) await store(tx);
+    else if (statisticsCentralEnabled()) await this.prisma.$transaction(store);
+    else await store(this.prisma);
   }
 
   // FLAG: Caller owns the existing collection lease and transaction. The parent row lock
@@ -195,5 +218,6 @@ export class NetworkStatisticsObservationService {
       VALUES (${postId},${parents[0].chat_id},${interval.fromAt},${interval.toAt},${interval.delta},${interval.quality},${source})
       ON CONFLICT(channel_post_id,to_at) DO NOTHING
     `;
+    await touchStatsEntity(tx, { kind: 'CHANNEL', maxId: parents[0].chat_id });
   }
 }

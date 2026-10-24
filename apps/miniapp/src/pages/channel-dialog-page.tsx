@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import type {
   ChannelDialogAttachment,
   ChannelDialogMessage,
@@ -15,27 +16,7 @@ import {
   MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
 } from '@maxim/contracts/channel-dialog';
-import {
-  Attachment as IconoirAttachment,
-  Bell as IconoirBell,
-  BellOff as IconoirBellOff,
-  Bold as IconoirBold,
-  BubbleStar as IconoirEmoji,
-  Camera as IconoirCamera,
-  Code as IconoirCode,
-  Italic as IconoirItalic,
-  Link as IconoirLink,
-  MoreHoriz as IconoirMoreHoriz,
-  NavArrowDown as IconoirArrowDown,
-  ArrowUp as IconoirArrowUp,
-  Palette as IconoirPalette,
-  Plus as IconoirPlus,
-  ShieldCheck as IconoirShieldCheck,
-  Strikethrough as IconoirStrikethrough,
-  Type as IconoirType,
-  Underline as IconoirUnderline,
-  Xmark as IconoirXmark,
-} from 'iconoir-react';
+
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Fragment,
@@ -732,9 +713,9 @@ function DialogAvatar({
 
 function CommentAttachmentGlyph({ kind }: { kind: 'image' | 'file' }) {
   return kind === 'image' ? (
-    <IconoirCamera aria-hidden focusable="false" />
+    <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
   ) : (
-    <IconoirAttachment aria-hidden focusable="false" />
+    <IconoirSprite variant="iconoir" icon="Attachment" aria-hidden focusable="false" />
   );
 }
 
@@ -1021,7 +1002,7 @@ function SuggestComposeImageGrid({
           aria-label="Готовим фото"
         >
           <span className="channel-suggest-composer__image-loader" aria-hidden>
-            <IconoirCamera aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
           </span>
         </div>
       ))}
@@ -1054,19 +1035,19 @@ function SuggestionRequirements({ text }: { text: string }) {
 function SuggestMarkdownToolIcon({ tool }: { tool: MaxMarkdownTool }) {
   switch (tool) {
     case 'heading':
-      return <IconoirType aria-hidden focusable="false" />;
+      return <IconoirSprite variant="iconoir" icon="Type" aria-hidden focusable="false" />;
     case 'bold':
-      return <IconoirBold aria-hidden focusable="false" />;
+      return <IconoirSprite variant="iconoir" icon="Bold" aria-hidden focusable="false" />;
     case 'italic':
-      return <IconoirItalic aria-hidden focusable="false" />;
+      return <IconoirSprite variant="iconoir" icon="Italic" aria-hidden focusable="false" />;
     case 'underline':
-      return <IconoirUnderline aria-hidden focusable="false" />;
+      return <IconoirSprite variant="iconoir" icon="Underline" aria-hidden focusable="false" />;
     case 'strike':
-      return <IconoirStrikethrough aria-hidden focusable="false" />;
+      return <IconoirSprite variant="iconoir" icon="Strikethrough" aria-hidden focusable="false" />;
     case 'code':
-      return <IconoirCode aria-hidden focusable="false" />;
+      return <IconoirSprite variant="iconoir" icon="Code" aria-hidden focusable="false" />;
     case 'link':
-      return <IconoirLink aria-hidden focusable="false" />;
+      return <IconoirSprite variant="iconoir" icon="Link" aria-hidden focusable="false" />;
   }
 }
 
@@ -3772,7 +3753,7 @@ export function ChannelDialogPage({
               }}
               tabIndex={-1}
             />
-            <IconoirCamera aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
           </label>
         ) : (
           <>
@@ -3790,7 +3771,7 @@ export function ChannelDialogPage({
                 openFileInputPicker(imageInputRef.current);
               }}
             >
-              <IconoirCamera aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
             </button>
             <input
               ref={imageInputRef}
@@ -3874,7 +3855,7 @@ export function ChannelDialogPage({
                     setModerationSheet({ target: null });
                   }}
                 >
-                  <IconoirShieldCheck aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
                 </button>
               ) : null}
               <button
@@ -3894,7 +3875,7 @@ export function ChannelDialogPage({
                   setIsCommentToolsOpen(true);
                 }}
               >
-                <IconoirMoreHoriz aria-hidden focusable="false" />
+                <IconoirSprite variant="iconoir" icon="MoreHoriz" aria-hidden focusable="false" />
               </button>
             </div>
           </div>
@@ -4053,7 +4034,12 @@ export function ChannelDialogPage({
                             aria-label={tool.title}
                           >
                             {tool.id === 'link' ? (
-                              <IconoirLink aria-hidden focusable="false" />
+                              <IconoirSprite
+                                variant="iconoir"
+                                icon="Link"
+                                aria-hidden
+                                focusable="false"
+                              />
                             ) : (
                               <SuggestMarkdownToolIcon tool={tool.id} />
                             )}
@@ -4127,7 +4113,12 @@ export function ChannelDialogPage({
 
                             {hasMedia ? (
                               <span className="channel-suggest-card__media">
-                                <IconoirAttachment aria-hidden focusable="false" />
+                                <IconoirSprite
+                                  variant="iconoir"
+                                  icon="Attachment"
+                                  aria-hidden
+                                  focusable="false"
+                                />
                                 {resolveSuggestionAttachmentLabel(message)}
                               </span>
                             ) : null}
@@ -4353,7 +4344,12 @@ export function ChannelDialogPage({
                     })
                   ) : (
                     <div className="channel-dialog-empty">
-                      <IconoirEmoji className="channel-dialog-empty__icon" aria-hidden />
+                      <IconoirSprite
+                        variant="iconoir"
+                        icon="BubbleStar"
+                        className="channel-dialog-empty__icon"
+                        aria-hidden
+                      />
                       <strong>Комментариев пока нет</strong>
                     </div>
                   )}
@@ -4388,7 +4384,12 @@ export function ChannelDialogPage({
                 title="К последнему комментарию"
               >
                 <span className="channel-dialog-jump-latest__icon" aria-hidden>
-                  <IconoirArrowDown aria-hidden focusable="false" />
+                  <IconoirSprite
+                    variant="iconoir"
+                    icon="NavArrowDown"
+                    aria-hidden
+                    focusable="false"
+                  />
                 </span>
                 {unreadCount > 0 ? <b>{unreadCount}</b> : null}
               </button>
@@ -4532,7 +4533,12 @@ export function ChannelDialogPage({
                       aria-controls="channel-dialog-compose-emoji-panel"
                       disabled={isComposePending}
                     >
-                      <IconoirEmoji aria-hidden focusable="false" />
+                      <IconoirSprite
+                        variant="iconoir"
+                        icon="BubbleStar"
+                        aria-hidden
+                        focusable="false"
+                      />
                     </button>
 
                     {!editingMessage && canUploadCommentAttachments ? (
@@ -4569,7 +4575,12 @@ export function ChannelDialogPage({
                               }}
                               tabIndex={0}
                             />
-                            <IconoirCamera aria-hidden focusable="false" />
+                            <IconoirSprite
+                              variant="iconoir"
+                              icon="Camera"
+                              aria-hidden
+                              focusable="false"
+                            />
                           </label>
                           {dialogType === 'comments' ? (
                             <label
@@ -4602,7 +4613,12 @@ export function ChannelDialogPage({
                                 }}
                                 tabIndex={0}
                               />
-                              <IconoirAttachment aria-hidden focusable="false" />
+                              <IconoirSprite
+                                variant="iconoir"
+                                icon="Attachment"
+                                aria-hidden
+                                focusable="false"
+                              />
                             </label>
                           ) : null}
                         </>
@@ -4627,7 +4643,12 @@ export function ChannelDialogPage({
                               openFileInputPicker(imageInputRef.current);
                             }}
                           >
-                            <IconoirCamera aria-hidden focusable="false" />
+                            <IconoirSprite
+                              variant="iconoir"
+                              icon="Camera"
+                              aria-hidden
+                              focusable="false"
+                            />
                           </button>
                           <input
                             ref={imageInputRef}
@@ -4668,7 +4689,12 @@ export function ChannelDialogPage({
                                   openFileInputPicker(fileInputRef.current);
                                 }}
                               >
-                                <IconoirAttachment aria-hidden focusable="false" />
+                                <IconoirSprite
+                                  variant="iconoir"
+                                  icon="Attachment"
+                                  aria-hidden
+                                  focusable="false"
+                                />
                               </button>
                               <input
                                 ref={fileInputRef}
@@ -4734,7 +4760,7 @@ export function ChannelDialogPage({
                       }
                     }}
                   >
-                    <IconoirPlus aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
                   </button>
                   <label className="channel-dialog-compose__field">
                     <textarea
@@ -4797,7 +4823,7 @@ export function ChannelDialogPage({
                       {isComposePending ? (
                         <span className="channel-dialog-submit__loader" aria-hidden />
                       ) : (
-                        <IconoirArrowUp aria-hidden />
+                        <IconoirSprite variant="iconoir" icon="ArrowUp" aria-hidden />
                       )}
                     </button>
                   </div>
@@ -5099,7 +5125,7 @@ export function ChannelDialogPage({
                           }}
                           disabled={isCommentActionPending}
                         >
-                          <IconoirShieldCheck aria-hidden />
+                          <IconoirSprite variant="iconoir" icon="ShieldCheck" aria-hidden />
                           Ограничить автора
                         </button>
                       ) : null}
@@ -5114,7 +5140,7 @@ export function ChannelDialogPage({
                         disabled={isCommentActionPending}
                         aria-label="Показать больше реакций"
                       >
-                        <IconoirPlus aria-hidden />
+                        <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
                       </button>
                     </div>
                   </div>
@@ -5184,7 +5210,7 @@ export function ChannelDialogPage({
                     aria-label="Закрыть параметры обсуждения"
                     onClick={() => setIsCommentToolsOpen(false)}
                   >
-                    <IconoirXmark aria-hidden />
+                    <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
                   </button>
                 </header>
                 <button
@@ -5196,7 +5222,7 @@ export function ChannelDialogPage({
                     setIsThemeSettingsOpen(true);
                   }}
                 >
-                  <IconoirPalette aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Palette" aria-hidden />
                   <span>
                     <strong>Оформление</strong>
                     <small>Тема и фон комментариев</small>
@@ -5219,9 +5245,9 @@ export function ChannelDialogPage({
                     }}
                   >
                     {notificationMode === 'off' ? (
-                      <IconoirBellOff aria-hidden />
+                      <IconoirSprite variant="iconoir" icon="BellOff" aria-hidden />
                     ) : (
-                      <IconoirBell aria-hidden />
+                      <IconoirSprite variant="iconoir" icon="Bell" aria-hidden />
                     )}
                     <span>
                       <strong>Уведомления</strong>

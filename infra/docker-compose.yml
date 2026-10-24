@@ -421,6 +421,8 @@ services:
     environment:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-background
+      COMMERCIAL_LLM_SHADOW_ENABLED: ${COMMERCIAL_LLM_SHADOW_ENABLED:-false}
+      COMMERCIAL_LLM_ENDPOINT: http://gemma-commercial-shadow:8080
       APP_ROLE: moderation
       PHOTO_NATIVE_SANDBOX_SOCKET_PATH: /run/maxim-photo/native-photo.sock
       PRISMA_PG_POOL_MAX: 2
@@ -461,6 +463,9 @@ services:
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
     volumes:
       - photo_native_ipc:/run/maxim-photo:ro
+    networks:
+      - default
+      - commercial_llm_internal
     depends_on:
       postgres:
         condition: service_started
@@ -514,6 +519,81 @@ services:
       timeout: 8s
       retries: 3
       start_period: 20s
+
+  gemma-commercial-shadow:
+    image: ghcr.io/ggml-org/llama.cpp@sha256:8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40
+    profiles: [commercial-llm]
+    labels:
+      com.maxim.commercial-llm-shadow: 'true'
+      com.maxim.commercial-llm-model-sha256: a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2
+    restart: unless-stopped
+    init: true
+    user: '1000:1000'
+    cpus: 4.0
+    cpu_shares: 128
+    mem_limit: 24g
+    memswap_limit: 24g
+    pids_limit: 128
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,uid=1000,gid=1000
+    logging: *default-logging
+    networks:
+      - commercial_llm_internal
+    volumes:
+      - /var/lib/maxim-deploy/commercial-llm/models/a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2.gguf:/models/gemma4.gguf:ro
+      - /var/lib/maxim-deploy/commercial-llm/models/chat_template.jinja:/models/chat_template.jinja:ro
+    command:
+      - --model
+      - /models/gemma4.gguf
+      - --alias
+      - gemma4-commercial-shadow
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8080'
+      - --ctx-size
+      - '4096'
+      - --parallel
+      - '1'
+      - --threads
+      - '4'
+      - --threads-batch
+      - '4'
+      - --threads-http
+      - '2'
+      - --n-gpu-layers
+      - '0'
+      - --n-predict
+      - '128'
+      - --batch-size
+      - '128'
+      - --ubatch-size
+      - '128'
+      - --cache-ram
+      - '0'
+      - --chat-template-file
+      - /models/chat_template.jinja
+      - --chat-template-kwargs
+      - '{"enable_thinking":false}'
+      - --reasoning
+      - 'off'
+      - --reasoning-budget
+      - '0'
+      - --no-webui
+      - --no-slots
+      - --no-agent
+      - --no-context-shift
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --max-time, '5', http://127.0.0.1:8080/health]
+      interval: 15s
+      timeout: 8s
+      retries: 3
+      start_period: 180s
 
   ocr-native-sandbox:
     image: ${MAXIM_API_IMAGE:-maxim-api:local}
@@ -841,6 +921,11 @@ secrets:
     file: /var/lib/maxim-secrets/publik-init-data-keys.json
   max_publisher_dialog_signing_keys:
     file: /var/lib/maxim-secrets/publik-dialog-signing-keys.json
+
+networks:
+  default:
+  commercial_llm_internal:
+    internal: true
 
 volumes:
   photo_native_ipc:

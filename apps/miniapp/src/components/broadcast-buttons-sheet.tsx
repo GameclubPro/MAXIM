@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import type { BroadcastLinkButton } from '@maxim/contracts';
-import { Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
+
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { BroadcastLinkButtonsEditor } from './broadcast-link-buttons-editor';
@@ -128,7 +129,7 @@ export function BroadcastButtonsSheet({
 
         <div className="broadcast-buttons-sheet__head">
           <span className={cn('broadcast-buttons-sheet__icon', enabled && 'is-active')}>
-            <IconoirLink aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Link" aria-hidden focusable="false" />
           </span>
 
           <span className="broadcast-buttons-sheet__copy">
@@ -143,7 +144,7 @@ export function BroadcastButtonsSheet({
             onClick={onClose}
             aria-label="Закрыть"
           >
-            <IconoirXmark aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden focusable="false" />
           </button>
         </div>
 

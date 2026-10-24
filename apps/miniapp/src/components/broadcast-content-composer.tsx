@@ -1,9 +1,10 @@
+import { AppIcon as IconoirSprite } from './ui/app-icon';
 import {
   type BroadcastImage,
   type BroadcastLinkButton,
   type BroadcastTextFormat,
 } from '@maxim/contracts';
-import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
+
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import './broadcast-content-composer.css';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
@@ -437,7 +438,7 @@ export function BroadcastContentComposer({
               aria-disabled={!allowImages || isBusy || imagePreviewItems.length >= maxImageCount}
               onPointerDown={rememberImagePickerReturn}
             >
-              <IconoirCamera aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
               {showToolLabels ? (
                 <span className="broadcast-content-composer__tool-label">Фото</span>
               ) : null}
@@ -469,7 +470,7 @@ export function BroadcastContentComposer({
                 aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
                 title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
               >
-                <IconoirCamera aria-hidden focusable="false" />
+                <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
                 {showToolLabels ? (
                   <span className="broadcast-content-composer__tool-label">Фото</span>
                 ) : null}
@@ -504,7 +505,7 @@ export function BroadcastContentComposer({
               aria-label={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
               title={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
             >
-              <IconoirLink aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="Link" aria-hidden focusable="false" />
               {showToolLabels || showButtonsLabel ? (
                 <span className="broadcast-content-composer__tool-label">
                   {buttonsActive && previewButtons.length > 0
@@ -525,7 +526,7 @@ export function BroadcastContentComposer({
               aria-label="Отменить подготовку фото"
               title="Отменить подготовку фото"
             >
-              <IconoirXmark aria-hidden focusable="false" />
+              <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden focusable="false" />
             </button>
           ) : null}
           {isPreparingImage || previewImageCount > 0 || videoLabel ? (
@@ -581,7 +582,11 @@ export function BroadcastContentComposer({
                   : undefined
               }
             >
-              {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
+              {tool.id === 'link' ? (
+                <IconoirSprite variant="iconoir" icon="Link" aria-hidden focusable="false" />
+              ) : (
+                tool.label
+              )}
             </button>
           ))}
         </div>
@@ -658,7 +663,12 @@ export function BroadcastContentComposer({
                           aria-label={`Убрать фото ${item.index + 1}`}
                           title={`Убрать фото ${item.index + 1}`}
                         >
-                          <IconoirXmark aria-hidden focusable="false" />
+                          <IconoirSprite
+                            variant="iconoir"
+                            icon="Xmark"
+                            aria-hidden
+                            focusable="false"
+                          />
                         </button>
                       </figure>
                     ))}
@@ -684,7 +694,12 @@ export function BroadcastContentComposer({
                         aria-label="Убрать видео"
                         title="Убрать видео"
                       >
-                        <IconoirXmark aria-hidden focusable="false" />
+                        <IconoirSprite
+                          variant="iconoir"
+                          icon="Xmark"
+                          aria-hidden
+                          focusable="false"
+                        />
                       </button>
                     ) : null}
                   </span>

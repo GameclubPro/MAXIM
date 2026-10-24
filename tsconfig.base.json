@@ -21,6 +21,8 @@
         "packages/contracts/src/network-settings-metadata.ts"
       ],
       "@maxim/contracts/networks-stats": ["packages/contracts/src/networks-stats.ts"],
+      "@maxim/contracts/statistics-central": ["packages/contracts/src/statistics-central.ts"],
+      "@maxim/contracts/statistics-central-validation": ["packages/contracts/src/statistics-central-validation.ts"],
       "@maxim/contracts/statistics-exchange-v3": [
         "packages/contracts/src/statistics-exchange-v3.ts"
       ],

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { utcTimestampSchema, utf16Max } from './marketplace-validator-compat.js';
 import {
   marketplaceBindingInputSchema,
   marketplaceBindingMetadataSchema,
@@ -13,7 +14,7 @@ export const EXCHANGE_MAX_ROWS = 3000;
 export const EXCHANGE_METHOD = 'utc-buckets-v1' as const;
 export const exchangeMetricSchema = z.enum(['AUDIENCE', 'MEMBERSHIP', 'REACH', 'PUBLICATION_HOUR']);
 export const exchangeOriginSchema = z.enum(['MAXIM', 'EXCHANGE']);
-const timestamp = z.string().datetime();
+const timestamp = utcTimestampSchema;
 const revision = z.number().int().nonnegative().safe();
 export const exchangeEntityKeySchema = marketplaceBindingInputSchema
   .omit({ actorUserId: true })
@@ -28,7 +29,7 @@ export const exchangeEntitySchema = exchangeEntityKeySchema
 export const exchangeEntitiesPageSchema = z
   .object({
     entities: z.array(exchangeEntitySchema).max(100),
-    nextCursor: z.string().max(2048).nullable(),
+    nextCursor: utf16Max(z.string(), 2048).nullable(),
   })
   .strict();
 export const exchangeGrantInputSchema = z
@@ -48,7 +49,7 @@ export const exchangeGrantEntitySchema = exchangeEntityKeySchema
   .extend({
     status: z.enum(['ACTIVE', 'UNAVAILABLE', 'REVOKED']),
     binding: marketplaceBindingSchema.nullable(),
-    error: z.string().max(300).nullable(),
+    error: utf16Max(z.string(), 300).nullable(),
   })
   .strict();
 export const exchangeGrantSchema = z
@@ -125,7 +126,7 @@ export const exchangeStatisticsPageSchema = z
   .object({
     manifest: exchangeManifestSchema,
     rows: z.array(exchangeMeasurementSchema).max(EXCHANGE_PAGE_SIZE),
-    nextCursor: z.string().max(2048).nullable(),
+    nextCursor: utf16Max(z.string(), 2048).nullable(),
   })
   .strict();
 

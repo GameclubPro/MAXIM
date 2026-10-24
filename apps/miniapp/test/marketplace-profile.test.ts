@@ -107,7 +107,7 @@ test('automatic readiness arrives independently of profile mutations and never p
   assert.equal(draft.appendEnabled, false);
 });
 
-test('profile readiness distinguishes consent, public visibility and placement setup', async () => {
+test('profile readiness distinguishes availability, public visibility and placement setup', async () => {
   const { marketplaceProfileView } = await import('../src/lib/marketplace-profile-view');
   const api = createPreviewApiTransport({ search: '?marketplacePilot=1&profile=publisher' });
   const path = '/marketplace/entities/CHANNEL/preview-channel/profile?profile=publisher';
@@ -139,6 +139,13 @@ test('profile readiness distinguishes consent, public visibility and placement s
   assert.equal(marketplaceProfileView(state).publicNow, false);
   assert.equal(marketplaceProfileView(state).title, 'Профиль на проверке биржи');
   state.binding.statisticsConsent = false;
+  state.statistics = {
+    state: 'DISABLED',
+    observedDays: 0,
+    lastObservedAt: null,
+    from: null,
+    to: null,
+  };
   state.capabilities.publicState = 'PUBLIC';
   assert.equal(
     marketplaceProfileView(state).publicNow,
@@ -165,6 +172,41 @@ test('profile readiness distinguishes consent, public visibility and placement s
     'Older server cannot imply visibility',
   );
   assert.equal(marketplaceProfileView(state).placement, 'UNAVAILABLE');
+});
+
+test('ordinary analytics availability needs no separate consent and never overrides an explicit unavailable profile', async () => {
+  const { marketplaceProfileView, marketplaceProfileAvailable } =
+    await import('../src/lib/marketplace-profile-view');
+  const api = createPreviewApiTransport({ search: '?marketplacePilot=1&profile=publisher' });
+  const state = marketplaceProfileStateSchema.parse(
+    await api.request('/marketplace/entities/CHANNEL/preview-channel/profile?profile=publisher'),
+  );
+  state.binding.statisticsConsent = false;
+  state.binding.state = 'ACTIVE';
+  state.statistics = {
+    state: 'EMPTY',
+    observedDays: 0,
+    lastObservedAt: null,
+    from: null,
+    to: null,
+  };
+  state.capabilities = {
+    canEdit: true,
+    canPublish: true,
+    canPause: false,
+    publicState: 'DRAFT',
+    placementState: 'BOT_REQUIRED',
+    manageUrl: null,
+    connectUrl: 'https://max.ru/test',
+  };
+  assert.equal(marketplaceProfileAvailable(state), true);
+  assert.equal(marketplaceProfileView(state).canPublish, true);
+  assert.equal(state.binding.statisticsConsent, false, 'Compatibility policy is preserved');
+  state.statistics.state = 'DISABLED';
+  assert.equal(marketplaceProfileView(state).canPublish, false);
+  state.statistics.state = 'EMPTY';
+  state.binding.state = 'REVOKED';
+  assert.equal(marketplaceProfileView(state).canPublish, false);
 });
 
 test('profile errors hide internal exchange requirements while preserving actionable conflicts', async () => {

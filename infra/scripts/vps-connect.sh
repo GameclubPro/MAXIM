@@ -27,6 +27,7 @@ DEPLOY_DISK_MIN_FREE_BYTES_FROM_CALLER="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-}"
 DEPLOY_API_READY_TIMEOUT_SEC_FROM_CALLER="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-}"
 readonly MESSAGE_RETENTION_MODE_FROM_CALLER="${MAXIM_MESSAGE_RETENTION_MODE:-}"
 readonly STATISTICS_EXCHANGE_V3_FROM_CALLER="${STATISTICS_EXCHANGE_V3_ENABLED:-}"
+readonly STATISTICS_CENTRAL_EPOCH_FROM_CALLER="${MAXIM_STATISTICS_CENTRAL_EPOCH:-}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -37,6 +38,7 @@ fi
 
 MAXIM_MESSAGE_RETENTION_MODE="$MESSAGE_RETENTION_MODE_FROM_CALLER"
 STATISTICS_EXCHANGE_V3_ENABLED="$STATISTICS_EXCHANGE_V3_FROM_CALLER"
+MAXIM_STATISTICS_CENTRAL_EPOCH="$STATISTICS_CENTRAL_EPOCH_FROM_CALLER"
 
 MAXIM_VPS_SSH_TARGET="${MAXIM_VPS_SSH_TARGET:-maxim-vps}"
 MAXIM_VPS_REPO_DIR="${MAXIM_VPS_REPO_DIR:-/var/www/Chat_bot}"
@@ -68,6 +70,9 @@ Commands:
                               Continue reviewed recovery with an exact green controller
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
+  commercial-llm install|enable|disable|stop [--apply]
+  commercial-llm status|smoke|check-client
+                              Inspect the model or run closed transport/client probes
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
                               Requires MAXIM_ALLOW_SCALE_DEPLOY=1.
   rollback-runtime <ref> [...] Rebuild/recreate API roles from a previous git ref
@@ -107,6 +112,7 @@ Commands:
   postgres-audit commercial-quality [--explain]
   postgres-audit network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--membership=7d|30d] [--explain]
   postgres-audit statistics-exchange <exact-actor-id> [--explain]
+  postgres-audit central-statistics <negative-chat-ID-CSV, max 12> [--explain]
   recover-publication-post-actions-migration [--apply]
   recover-publication-priority-migration [--apply]
   recover-publisher-catalog-migration [--apply]
@@ -527,6 +533,26 @@ NODE
   remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_CONTROLLER_SHA=$controller_sha" bash ./infra/scripts/vps-source-abandonment-corrective.sh)" <"$request_file"
 }
 
+commercial_llm() {
+  local operation="${1:-status}" target_sha
+  case "$operation" in
+    status|smoke|check-client)
+      [[ $# -le 1 ]] || { echo 'Unexpected commercial-llm arguments.' >&2; return 2; }
+      remote_exec "$(shell_quote_args bash ./infra/scripts/vps-commercial-llm.sh "$operation")"
+      ;;
+    install|stop|enable|disable)
+      [[ $# -le 2 && ( $# -eq 1 || "${2:-}" == --apply ) ]] || {
+        echo 'Usage: commercial-llm install|enable|disable|stop [--apply]' >&2
+        return 2
+      }
+      target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+      node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+      remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-commercial-llm.sh "$@")"
+      ;;
+    *) echo 'Unknown commercial-llm operation.' >&2; return 2 ;;
+  esac
+}
+
 remote_from_args() {
   if [[ $# -eq 0 ]]; then
     echo "Missing remote command."
@@ -576,6 +602,12 @@ ERROR
 
 postgres_audit() {
   local mode="${1:-all}"
+
+  if [[ "$mode" == 'central-statistics' ]]; then
+    node "$ROOT_DIR/infra/scripts/central-statistics-audit.mjs" --validate-scope "${@:2}" >/dev/null || return 2
+    remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
+    return
+  fi
 
   if [[ "$mode" == 'statistics-exchange' ]]; then
     node "$ROOT_DIR/infra/scripts/statistics-exchange-audit.mjs" --validate-scope "${@:2}" >/dev/null || return 2
@@ -879,6 +911,7 @@ if [[ "$(git rev-parse --verify refs/heads/main 2>/dev/null || true)" != "$expec
   echo "Retained VPS main does not match the reviewed rollback tooling SHA." >&2
   exit 1
 fi
+require_market_statistics_lock_dispatch "$expected_tooling_sha" || exit 1
 git checkout main
 if [[ "$(git rev-parse HEAD)" != "$expected_tooling_sha" ]]; then
   echo "Synchronized rollback tooling does not match the reviewed SHA." >&2
@@ -1207,6 +1240,10 @@ deploy_main() {
     ''|true|false) ;;
     *) echo 'STATISTICS_EXCHANGE_V3_ENABLED must be true or false when supplied.' >&2; return 2 ;;
   esac
+  if [[ -n "${MAXIM_STATISTICS_CENTRAL_EPOCH:-}" && ! "$MAXIM_STATISTICS_CENTRAL_EPOCH" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+    echo 'MAXIM_STATISTICS_CENTRAL_EPOCH requires a canonical producer UUID.' >&2
+    return 2
+  fi
   maxim_validate_git_ssh_port "${MAXIM_DEPLOY_GIT_SSH_PORT:-default}"
   if ! expected_sha="$(git rev-parse --verify --end-of-options "${branch}^{commit}" 2>/dev/null)"; then
     echo "Cannot resolve local deploy branch to an exact commit: ${branch}" >&2
@@ -1233,6 +1270,9 @@ deploy_main() {
   fi
   if [[ -n "${STATISTICS_EXCHANGE_V3_ENABLED:-}" ]]; then
     remote_command="STATISTICS_EXCHANGE_V3_ENABLED=$(printf '%q' "$STATISTICS_EXCHANGE_V3_ENABLED") $remote_command"
+  fi
+  if [[ -n "${MAXIM_STATISTICS_CENTRAL_EPOCH:-}" ]]; then
+    remote_command="MAXIM_STATISTICS_CENTRAL_EPOCH=$(printf '%q' "$MAXIM_STATISTICS_CENTRAL_EPOCH") $remote_command"
   fi
   if [[ -n "${MAXIM_DEPLOY_EMERGENCY_REASON:-}" ]]; then
     remote_command="MAXIM_DEPLOY_EMERGENCY_REASON=$(printf '%q' "$MAXIM_DEPLOY_EMERGENCY_REASON") $remote_command"
@@ -1572,7 +1612,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_network_settings_v2 \
+    maxim_topology_require_exact_statistics_rollup_reader \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1587,15 +1627,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback must restore tooling with the installed v2 list-intent journal floor,
-  # as well as every preceding assignment, activation and permanent-hold reader.
+  # FLAG: API rollback must restore tooling with the exact statistics shadow reader,
+  # as well as preceding network intent, assignment, activation and permanent-hold floors.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_network_settings_v2
+    capability_marker=maxim_topology_require_exact_statistics_rollup_reader
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_network_settings_v2
+        capability_marker=maxim_topology_require_exact_statistics_rollup_reader
         break
       fi
     done
@@ -1785,6 +1825,9 @@ case "$command" in
     ;;
   preload-ci-image)
     preload_ci_image "$@"
+    ;;
+  commercial-llm)
+    commercial_llm "$@"
     ;;
   deploy-scale)
     deploy_scale "$@"

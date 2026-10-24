@@ -41,6 +41,11 @@ Detailed constraints selected by the routing table in [infrastructure agent note
   fault-fixture container's fatal exit/restart and next canonical hash. It is CI-only, bounded
   below two minutes, and must never reuse production volumes, credentials, or MAX destinations.
 - Public health/webhooks go to `api-ingress`; `/api/v1/` and closed owner APIs go to `api-admin`; queue roles do not own public HTTP traffic.
+- Optional `gemma-commercial-shadow` is an independently pinned text-inference auxiliary with a
+  4 CPU/24 GiB budget and one internal network shared only with `api-moderation-background`.
+  Its profile stays opt-in, has no host ports or application secrets, and never grants deletion
+  authority. Install, flag staging, provenance and shutdown use the protected-lock operation in
+  [the local commercial model runbook](../operations/runbooks/commercial-llm-shadow.md).
 - The domain-separated Publisher dialog signing key is mounted only in `api-admin`, `api-action`, and `api-publisher`. Keep the Publisher bot token exclusive to `api-publisher` and init-data verification keys exclusive to `api-admin`.
 - Plain Publisher private starts use `publisher-start`, consumed only by `api-publisher`; preserve its pre-send dispatch marker on retries and retain jobs longer than the one-day accepted event age.
 - Publisher temporal selection stays `off` by default. Use the exact-green, preview-first `publisher-selection-rollout <off|test|5|25|100> [--apply]` setter; it preserves dispatch, records each transition and rechecks all 14 roles. Acceptance and recovery are defined in [the temporal selection rollout](../operations/runbooks/publisher-temporal-selection-rollout.md); numeric stages never promote automatically.
@@ -50,6 +55,7 @@ Detailed constraints selected by the routing table in [infrastructure agent note
 - `admin-static` serves the closed Safety Desk on local port 3004 behind `admin.major-maksimov.ru` Basic Auth.
 - Current canonical user host is `https://major-maksimov.ru`; `/app/` is the only routine production mini app path.
 - Sibling Svyazka marketplace owns `/market/`, proxied with that prefix stripped to local port 4311. Its source, images, database, and releases are separate under `/var/www/svyazka`; preserve the route during nginx operations, but never include Svyazka in MAXIM container deploys or database operations.
+- Central statistics keeps an independent permanent Market admission floor in root-owned `/etc/maxim-deploy/market-statistics`, outside candidate releases. Bootstrap its reviewed Market installer under the existing shared helper **before** installing the helper's mandatory Market hook. That hook runs on fresh and valid same-owner inherited `acquire_deploy_lock`; never bypass it or replace/unlink the fixed deploy-lock inode. Once installed, MAXIM deploy checkout/pull, tooling bootstrap and ref rollback also reject candidate Git tooling that drops this dispatch or its future retention checks before replacing any checkout bytes. Static image-only rollback does not replace the helper. The trusted Market wrapper uses same-PID `exec bash`. Market's explicit cutover raises host reader/writer floor42 before its atomic SQL cutover; a failed SQL transaction never lowers the host floor. MAXIM data is never purged by the Market operation. Full sequencing and recovery live in Market's `docs/statistics-central-cutover.md`; MAXIM/Karavan deployment scopes remain independent.
 - Only Svyazka's exact `/market/api/media` upload route has a 9 MiB body limit; the rest of `/market/` stays at 64 KiB. Do not widen the entire prefix for uploads.
 - Karavan is another independent project under `/var/www/max-delivery-platform`. Include both siblings in host resource planning, but never in MAXIM deploy/restart/cleanup commands.
 - MAXIM CDN, Object Storage, and app2 delivery are paused. Do not deploy, publish, smoke, or propose them as MAXIM fallback. Karavan's remaining cloud transport and the shared DNS are separate dependencies; do not remove them during MAXIM maintenance. Historical context is non-authoritative under `docs/operations/archive/`.
@@ -201,6 +207,15 @@ Detailed constraints selected by the routing table in [infrastructure agent note
 
 ## Environment And Git Safety
 
+- Central statistics activation uses caller-only `MAXIM_STATISTICS_CENTRAL_EPOCH`
+  with the persistent Market producer UUID through the normal exact-green
+  `deploy main --auto`. It atomically persists three canonical dotenv keys under
+  the deployment/queue fence and verifies all fourteen roles, including same-SHA
+  releases. An existing epoch cannot be rotated. Follow the
+  [central rollout](../operations/runbooks/central-statistics-rollout.md) and the
+  independent Market cutover; never activate it by partial restarts or manual
+  dotenv edits.
+
 - Production `.env` is dotenv, not shell; values can contain unquoted spaces. Read individual keys or container environment and never print secret values.
 - If `/var/www/Chat_bot/.env` is missing, current deploy scripts restore it from a running role container, with `infra-api-1` only as legacy fallback.
 - If `git pull --ff-only` is blocked by a dirty VPS tree:
@@ -221,11 +236,22 @@ Detailed constraints selected by the routing table in [infrastructure agent note
 
 ## Postgres And Redis
 
+- Migration `20261024020000_add_exact_channel_statistics_views` adds two nullable `BIGINT`
+  shadow counters without a table rewrite or retained-row backfill. Existing trigger entrypoints
+  dualwrite exact values and saturated legacy integer projections; the runtime reads
+  `COALESCE(views_total_exact,views_total::bigint)` so untouched history stays exact and corrections
+  can decrease a saturated bucket correctly. Both API rollback paths and their tooling bootstrap
+  require `maxim_topology_require_exact_statistics_rollup_reader`; feature flags never lower this
+  installed floor. The metadata change retains a two-second lock timeout and fifteen-second
+  statement limit. Use reviewed `postgres-audit storage` before/after for exact relation size and
+  nullable-shadow schema evidence. A lock/timeout refusal preserves the old table; retain its
+  failed receipt for migration recovery. Do not run a direct INTEGER-to-BIGINT table rewrite.
 - Preserve PostgreSQL's 512 MiB Docker `/dev/shm` budget for dynamic/parallel-query shared memory. On Linux it is separate from the main `shared_buffers` allocation; changing `shared_buffers` requires a planned PostgreSQL restart, not an ordinary API deploy. Read actual settings and per-query memory multiplication before tuning for the larger host.
 - Production stateful named volumes are backed by paths under `/mnt/maxim-cold/runtime`. Preserve their existing driver options and Docker's cold-mount startup guard; never accept Compose volume recreation to fix metadata drift. `/mnt/maxim-cold` is a separate filesystem on the same NVMe RAID, not an independent disk or backup.
 - Keep production Prisma pool caps aligned with `apps/api/src/config/production-compose-prisma-pool.spec.ts`. The fourteen main API pools total 72 connections, plus the separate admin read pool of 6. Enqueue uses 24 connections for 12 shared preparation slots, with at most 4 per bot/work-class pair and one interactive preparation per process. Preserve the separate MAX rate limits; compare preparation, fresh receipt progress and database pressure before changing these budgets.
 - Live audits use indexed, bounded queries and short samples. Broad `webhook_events`/ledger aggregates can saturate I/O despite connection headroom.
 - Network statistics evidence uses opt-in `postgres-audit network-statistics <exact-negative-ID-CSV> [--observations] [--membership=7d|30d] [--explain]`, at most twelve entities and unchanged audit budgets. Membership adds an independent exact eight-column group with 720 rollup/1,000 per-type current-hour samples plus saturation sentinels; missing, capped or malformed evidence never proves complete growth. Provision reviewed grants and collect plain EXPLAIN/reports sequentially; see [network statistics audit](../operations/runbooks/network-statistics-audit.md).
+- Central statistics acceptance uses opt-in `postgres-audit central-statistics <exact-negative-ID-CSV> [--explain]`, at most twelve IDs, exact optional 35-column metadata grants and existing network metadata groups. Indexed probes cap each entity at 1,441 fact metadata rows and each issuer/role prefix at 65 authorities; recent global receipts/feed metadata are separate capped samples. No values, payloads, hashes or identifiers leave the report. Lease pairs are candidates, never proof of runtime rights, scopes or configured producer epoch. Native raw observation clocks remain separate from lease/storage clocks. See [central statistics audit](../operations/runbooks/central-statistics-audit.md).
 - `postgres-audit statistics-exchange <exact-actor-id> [--explain]` is opt-in and identifier-free in output. It uses one indexed actor/grant lookup, six entity samples plus a saturation sentinel and one current import/native export per entity; JSON inspection is physically bounded and capped at 3,000 measurements. Provision its complete optional 37-column group first. Pull clocks, actual observations, peer permission expiry, coverage and provenance remain separate; this does not prove remote rights or collector handoff. See [statistics exchange audit](../operations/runbooks/statistics-exchange-audit.md).
 - Run routine production database diagnostics only through `./infra/scripts/vps-connect.sh postgres-audit [queue|activity|duplicate|publication-schema|storage|all]`. The catalog accepts no SQL, file path, or stdin from the operator and runs through the bounded audit role/session. The `duplicate` report uses only identifier-free aggregates from capped index walks and exact column grants; after synchronizing a catalog change, re-run the reviewed audit-role provision step before using `duplicate` or `all`.
 - Duplicate settings diagnostics use schema v2. The audit role has exactly 38 columns across the duplicate settings/intent/reason group: the original 17 plus 21 intent and reason proof columns. Bounded owner-intent diagnostics may compare those metadata fields but must never emit identities, lease tokens or reason metadata. Saved IMAGE eligibility uses the master switch, MESSAGE comparison, image scope and valid INTERVAL/DAILY configuration; the retired photo toggle/presets appear only under `legacy_compatibility`. SQL does not establish runtime authority, current DAILY admission or bot capability freshness; inspect the separate runtime control and access diagnostics for those facts.

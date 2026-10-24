@@ -1,19 +1,11 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import type { BroadcastImage, BroadcastLinkButton } from '@maxim/contracts';
 import {
   type PublisherAutoReplyAsset,
   type PublisherAutoReplyRuleV2,
 } from '@maxim/contracts/publisher-auto-replies';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  EditPencil,
-  Key,
-  NavArrowLeft,
-  Plus,
-  Refresh,
-  Trash,
-  WarningCircle,
-  Xmark,
-} from 'iconoir-react';
+
 import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { AutoReplyCreateSheet } from '../components/auto-reply-create-sheet';
@@ -194,7 +186,7 @@ function AutoReplyAssetThumbnail({
         onClick={() => setReload((value) => value + 1)}
         aria-label={`Повторить загрузку фото ${asset.fileName || asset.id}`}
       >
-        <Refresh aria-hidden />
+        <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
       </button>
     );
   }
@@ -231,7 +223,7 @@ function RetainedAssetEditorItem({
         aria-label={`Убрать фото ${asset.fileName || asset.id}`}
         title="Убрать фото"
       >
-        <Xmark aria-hidden />
+        <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
       </button>
     </figure>
   );
@@ -610,12 +602,12 @@ function PublisherAutoReplyEditor({
   if (storageReadError) {
     return (
       <div className="publisher-auto-replies-page__state has-error" role="alert">
-        <WarningCircle aria-hidden />
+        <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
         <strong>Не удалось восстановить черновик</strong>
         <span>Повторите попытку или явно начните без локальной копии.</span>
         <div className="publisher-auto-replies-page__state-actions">
           <button type="button" onClick={retryHydration}>
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
             <span>Повторить</span>
           </button>
           <button type="button" onClick={() => void discard()}>
@@ -634,7 +626,7 @@ function PublisherAutoReplyEditor({
     >
       <header className="publisher-auto-reply-editor__header">
         <button type="button" onClick={requestClose} aria-label="Закрыть редактор" title="Назад">
-          <NavArrowLeft aria-hidden />
+          <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
         </button>
         <span>
           <strong>{rule ? 'Изменить автоответ' : 'Новый автоответ'}</strong>
@@ -643,7 +635,7 @@ function PublisherAutoReplyEditor({
 
       {conflict ? (
         <div className="publisher-auto-reply-editor__conflict" role="alert">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <span>Автоответ изменился. Откройте его заново.</span>
         </div>
       ) : null}
@@ -684,7 +676,7 @@ function PublisherAutoReplyEditor({
                   aria-label={`Удалить фразу «${phrase}»`}
                   title="Удалить фразу"
                 >
-                  <Xmark aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
                 </button>
               </span>
             ))}
@@ -734,7 +726,7 @@ function PublisherAutoReplyEditor({
               aria-label="Добавить фразу"
               title="Добавить фразу"
             >
-              <Plus aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
             </button>
           </div>
           <small
@@ -1089,7 +1081,7 @@ function AutoReplyRuleRow({
     <article className={cn('publisher-auto-reply-row', !rule.enabled && 'is-disabled')}>
       <div className="publisher-auto-reply-row__head">
         <span className="publisher-auto-reply-row__phrase">
-          <Key aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Key" aria-hidden />
           <strong>{rule.phrases[0] ?? 'Без фразы'}</strong>
           {rule.phrases.length > 1 ? (
             <button
@@ -1169,7 +1161,7 @@ function AutoReplyRuleRow({
             aria-label={`Редактировать автоответ «${rule.phrases[0] ?? 'без фразы'}»`}
             title="Редактировать"
           >
-            <EditPencil aria-hidden />
+            <IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden />
           </button>
           <button
             type="button"
@@ -1178,13 +1170,13 @@ function AutoReplyRuleRow({
             aria-label={`Удалить автоответ «${rule.phrases[0] ?? 'без фразы'}»`}
             title="Удалить"
           >
-            <Trash aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
           </button>
         </span>
       </footer>
       {conflict ? (
         <div className="publisher-auto-reply-row__conflict" role="alert">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <span>Автоответ обновлён.</span>
         </div>
       ) : null}
@@ -1452,7 +1444,7 @@ export function PublisherAutoRepliesPage({ api, userId }: { api: ApiTransport; u
     return (
       <section className="publisher-auto-replies-page">
         <div className="publisher-auto-replies-page__state has-error" role="alert">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <strong>Чат не найден</strong>
           <Link to="/">Вернуться</Link>
         </div>
@@ -1501,7 +1493,7 @@ export function PublisherAutoRepliesPage({ api, userId }: { api: ApiTransport; u
           aria-label="Вернуться к модулям"
           title="Назад"
         >
-          <NavArrowLeft aria-hidden />
+          <IconoirSprite variant="iconoir" icon="NavArrowLeft" aria-hidden />
         </button>
         <EntityAvatar
           title={entity?.title ?? 'Чат'}
@@ -1521,7 +1513,7 @@ export function PublisherAutoRepliesPage({ api, userId }: { api: ApiTransport; u
           aria-label="Обновить автоответы"
           title="Обновить"
         >
-          <Refresh aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
         </button>
       </header>
 
@@ -1550,7 +1542,7 @@ export function PublisherAutoRepliesPage({ api, userId }: { api: ApiTransport; u
               aria-label="Отменить создание через Публика"
               title="Отменить"
             >
-              <Xmark aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
             </button>
           </span>
         </div>
@@ -1584,24 +1576,24 @@ export function PublisherAutoRepliesPage({ api, userId }: { api: ApiTransport; u
         </div>
       ) : rulesQuery.isError || entityQuery.isError ? (
         <div className="publisher-auto-replies-page__state has-error" role="alert">
-          <WarningCircle aria-hidden />
+          <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
           <strong>Не удалось загрузить автоответы</strong>
           <button
             type="button"
             onClick={() => void Promise.all([rulesQuery.refetch(), entityQuery.refetch()])}
           >
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
             <span>Повторить</span>
           </button>
         </div>
       ) : rules.length === 0 ? (
         <div className="publisher-auto-replies-page__empty">
           <span aria-hidden>
-            <Key />
+            <IconoirSprite variant="iconoir" icon="Key" />
           </span>
           <strong>Нет автоответов</strong>
           <button type="button" onClick={() => setCreateSheetOpen(true)}>
-            <Plus aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
             <span>Добавить автоответ</span>
           </button>
         </div>
@@ -1631,7 +1623,7 @@ export function PublisherAutoRepliesPage({ api, userId }: { api: ApiTransport; u
           aria-label="Добавить автоответ"
           title="Добавить автоответ"
         >
-          <Plus aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Plus" aria-hidden />
         </button>
       ) : null}
 

@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import type { LegacyPublicationSummary } from '@maxim/contracts/publication';
-import { NavArrowRight } from 'iconoir-react';
+
 import { Link, useLocation } from 'react-router';
 import { formatRussianCountLabel } from '../../lib/broadcast-audience';
 import {
@@ -70,7 +71,7 @@ export function LegacyPublicationsEntry({
       <span className="legacy-publications-entry__count">
         {count === null ? '...' : `${count}${countIncomplete ? '+' : ''}`}
       </span>
-      <NavArrowRight aria-hidden />
+      <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
     </button>
   );
 }
@@ -125,7 +126,7 @@ export function LegacyPublicationsList({ items }: LegacyPublicationsListProps) {
             state={navigationState}
           >
             {content}
-            <NavArrowRight aria-hidden />
+            <IconoirSprite variant="iconoir" icon="NavArrowRight" aria-hidden />
           </Link>
         ) : (
           <div key={`${item.kind}:${item.id}`} className="legacy-publications-row is-read-only">

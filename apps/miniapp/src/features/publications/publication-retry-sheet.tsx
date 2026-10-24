@@ -1,4 +1,5 @@
-import { RefreshDouble, Xmark } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
+
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { PublicationRetryContentMode } from '@maxim/contracts/publication';
@@ -93,7 +94,7 @@ export function PublicationRetrySheet({
         <header className="publication-retry-sheet__header">
           <strong id="publication-retry-title">Повторить отправку</strong>
           <button type="button" onClick={onClose} disabled={busy} aria-label="Закрыть">
-            <Xmark aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           </button>
         </header>
         <div className="publication-retry-sheet__choices">
@@ -103,7 +104,7 @@ export function PublicationRetrySheet({
             onClick={() => onSelect('original')}
             disabled={busy}
           >
-            <RefreshDouble aria-hidden />
+            <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden />
             <span>
               <strong>Прежний вариант</strong>
               <small>Пост на момент отправки</small>
@@ -115,7 +116,7 @@ export function PublicationRetrySheet({
             onClick={() => onSelect('latest')}
             disabled={busy}
           >
-            <RefreshDouble aria-hidden />
+            <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden />
             <span>
               <strong>С последними правками</strong>
               <small>Пост с сохранёнными изменениями</small>

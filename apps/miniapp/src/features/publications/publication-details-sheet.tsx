@@ -1,3 +1,4 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type {
   PublicationDelivery,
@@ -6,7 +7,7 @@ import type {
   PublicationOccurrenceStatus,
   PublicationSummary,
 } from '@maxim/contracts/publication';
-import { EditPencil, Refresh, RefreshDouble, WarningCircle, Xmark } from 'iconoir-react';
+
 import { useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from '../../components/max-markdown-preview';
@@ -366,7 +367,7 @@ export function PublicationDetailsSheet({
             aria-label="Закрыть"
             disabled={busy}
           >
-            <Xmark aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
           </button>
         </header>
 
@@ -408,7 +409,7 @@ export function PublicationDetailsSheet({
                   role="status"
                   aria-atomic="true"
                 >
-                  <WarningCircle aria-hidden />
+                  <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
                   <span>
                     <strong>
                       {publisherAccessRechecking
@@ -438,7 +439,7 @@ export function PublicationDetailsSheet({
                             : 'Проверить подключения'
                       }
                     >
-                      <Refresh aria-hidden />
+                      <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
                     </button>
                   ) : null}
                 </div>
@@ -563,7 +564,7 @@ export function PublicationDetailsSheet({
                                 disabled={busy}
                                 aria-label={`${occurrence.requiresScheduleDecision ? 'Отправить пропущенный запуск' : 'Повторить запуск'}: ${formatDateTime(occurrence.scheduledAt, details.schedule?.timezone)}`}
                               >
-                                <RefreshDouble aria-hidden />
+                                <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden />
                                 <span className="publication-occurrences__retry-label">
                                   <span>
                                     {occurrence.requiresScheduleDecision
@@ -807,7 +808,7 @@ export function PublicationDetailsSheet({
               onClick={() => onEdit(publication.id)}
               disabled={busy}
             >
-              <EditPencil aria-hidden />
+              <IconoirSprite variant="iconoir" icon="EditPencil" aria-hidden />
               <span>{editLabel}</span>
             </button>
           ) : null}
@@ -818,7 +819,7 @@ export function PublicationDetailsSheet({
               onClick={() => onCancel(details ?? publication)}
               disabled={busy}
             >
-              <Xmark aria-hidden />
+              <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
               <span>
                 {actionCapabilities.hasFutureSends
                   ? 'Отменить будущие отправки'

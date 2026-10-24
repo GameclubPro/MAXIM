@@ -1,4 +1,5 @@
-import { Xmark } from 'iconoir-react';
+import { AppIcon as IconoirSprite } from './ui/app-icon';
+
 import { useLayoutEffect, useRef, useState } from 'react';
 import { cn } from '../lib/cn';
 import { maxImpact } from '../lib/max-bridge';
@@ -82,7 +83,7 @@ export default function CommentComposeEmojiPicker({
             onClose();
           }}
         >
-          <Xmark aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
         </button>
       </div>
       <div className="channel-dialog-compose__emoji-tabs" role="group" aria-label="Группа эмодзи">

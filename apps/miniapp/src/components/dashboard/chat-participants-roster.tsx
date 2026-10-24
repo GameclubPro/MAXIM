@@ -1,19 +1,10 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import type {
   ChatParticipantItem,
   ChatParticipantRoleFilter,
   ChatParticipantActivityFilter,
 } from '@maxim/contracts';
-import {
-  MoreHoriz,
-  UserXmark,
-  Search,
-  Xmark,
-  Refresh,
-  NavArrowRight,
-  ShieldCheck,
-  WarningCircle,
-  Clock,
-} from 'iconoir-react';
+
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { describeParticipantViolations } from '../../lib/chat-participants-feed';
 import {
@@ -347,7 +338,7 @@ export function ChatParticipantsRoster({
             title="Поиск участника"
             aria-label="Поиск участника"
           >
-            <Search width={18} height={18} aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Search" width={18} height={18} aria-hidden />
           </label>
           <input
             ref={searchRef}
@@ -375,7 +366,7 @@ export function ChatParticipantsRoster({
                 aria-label="Очистить поиск"
                 title="Очистить поиск"
               >
-                <Xmark width={18} height={18} aria-hidden />
+                <IconoirSprite variant="iconoir" icon="Xmark" width={18} height={18} aria-hidden />
               </button>
             ) : isBusy ? (
               <Spinner size="sm" label="Загружаем участников" />
@@ -390,7 +381,7 @@ export function ChatParticipantsRoster({
           aria-label="Обновить участников"
           title="Обновить участников"
         >
-          <Refresh width={20} height={20} aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" width={20} height={20} aria-hidden />
         </button>
         {onCleanupUnavailable ? (
           <details
@@ -399,7 +390,13 @@ export function ChatParticipantsRoster({
             onToggle={(event) => setMenuOpen(event.currentTarget.open)}
           >
             <summary aria-label="Управление участниками" title="Управление участниками">
-              <MoreHoriz width={20} height={20} aria-hidden />
+              <IconoirSprite
+                variant="iconoir"
+                icon="MoreHoriz"
+                width={20}
+                height={20}
+                aria-hidden
+              />
             </summary>
             <div className="participants-roster__manage-menu">
               <button
@@ -411,7 +408,13 @@ export function ChatParticipantsRoster({
                 }}
                 disabled={isCleanupUnavailableBusy || isBusy}
               >
-                <UserXmark width={18} height={18} aria-hidden />
+                <IconoirSprite
+                  variant="iconoir"
+                  icon="UserXmark"
+                  width={18}
+                  height={18}
+                  aria-hidden
+                />
                 <span>{isCleanupUnavailableBusy ? 'Проверяем...' : 'Удалить заблокированных'}</span>
               </button>
             </div>
@@ -490,7 +493,13 @@ export function ChatParticipantsRoster({
           className="participants-roster__status participants-roster__status--error"
           role="alert"
         >
-          <WarningCircle width={22} height={22} aria-hidden />
+          <IconoirSprite
+            variant="iconoir"
+            icon="WarningCircle"
+            width={22}
+            height={22}
+            aria-hidden
+          />
           <div>
             <strong>Не удалось загрузить участников</strong>
             <p>{visibleError}</p>
@@ -501,7 +510,8 @@ export function ChatParticipantsRoster({
             onClick={onRetry}
             disabled={isBusy}
           >
-            <Refresh width={18} height={18} aria-hidden /> Повторить
+            <IconoirSprite variant="iconoir" icon="Refresh" width={18} height={18} aria-hidden />{' '}
+            Повторить
           </button>
         </div>
       ) : null}
@@ -518,12 +528,13 @@ export function ChatParticipantsRoster({
 
       {isEmpty ? (
         <div className="participants-roster__status participants-roster__status--empty">
-          <Search width={28} height={28} aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Search" width={28} height={28} aria-hidden />
           <strong>{hasFilters ? 'Участники не найдены' : 'Нет доступных участников'}</strong>
           {isSearching ? <p>По запросу «{search.trim()}»</p> : null}
           {hasFilters ? (
             <button type="button" className="button button--ghost" onClick={resetFilters}>
-              <Xmark width={18} height={18} aria-hidden /> Сбросить фильтры
+              <IconoirSprite variant="iconoir" icon="Xmark" width={18} height={18} aria-hidden />{' '}
+              Сбросить фильтры
             </button>
           ) : null}
         </div>
@@ -567,7 +578,13 @@ export function ChatParticipantsRoster({
                         title={activity.detail}
                         aria-label={activity.detail}
                       >
-                        <Clock width={13} height={13} aria-hidden />
+                        <IconoirSprite
+                          variant="iconoir"
+                          icon="Clock"
+                          width={13}
+                          height={13}
+                          aria-hidden
+                        />
                         {activity.label}
                       </span>
                     ) : null}
@@ -590,7 +607,13 @@ export function ChatParticipantsRoster({
                         aria-label={immunityDescription ?? undefined}
                         title={immunityDescription ?? undefined}
                       >
-                        <ShieldCheck width={14} height={14} aria-hidden />
+                        <IconoirSprite
+                          variant="iconoir"
+                          icon="ShieldCheck"
+                          width={14}
+                          height={14}
+                          aria-hidden
+                        />
                         <span aria-hidden="true">
                           {isAlwaysImmunity(immunity) ? 'Всегда' : immunityValue}
                         </span>
@@ -608,7 +631,9 @@ export function ChatParticipantsRoster({
                     <span aria-hidden="true">{formatViolationCount(violationCount)}</span>
                   </span>
                   {canOpenDetails ? (
-                    <NavArrowRight
+                    <IconoirSprite
+                      variant="iconoir"
+                      icon="NavArrowRight"
                       className="participants-roster__chevron"
                       width={16}
                       height={16}

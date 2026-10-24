@@ -29,6 +29,7 @@ async function bootstrap() {
     { WebhookIngressMetricsService },
     { readMaxWebhookAckDeadlineAtMs, registerMaxWebhookHttpRouteLimits },
     { WebhookIngestionService },
+    { registerStatsHttpLimits },
   ] = await Promise.all([
     import('@fastify/cookie'),
     import('@nestjs/config'),
@@ -38,6 +39,7 @@ async function bootstrap() {
     import('./system/webhook-ingress-metrics.service'),
     import('./webhook/webhook-http-route-limit'),
     import('./webhook/webhook-ingestion.service'),
+    import('./statistics/stats-http-limits'),
   ]);
 
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -58,6 +60,7 @@ async function bootstrap() {
   app.useGlobalFilters(new SanitizedExceptionFilter());
   const fastify = app.getHttpAdapter().getInstance();
   await app.register(fastifyCookie);
+  registerStatsHttpLimits(fastify);
   registerMaxWebhookHttpRouteLimits(fastify, {
     bodyLimit: webhookBodyLimit,
     ackDeadlineMs: webhookAckDeadlineMs,

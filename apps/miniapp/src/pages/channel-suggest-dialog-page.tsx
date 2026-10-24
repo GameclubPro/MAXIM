@@ -1,13 +1,9 @@
+import { AppIcon as IconoirSprite } from '../components/ui/app-icon';
 import type { ChannelDialogMessage, ChannelDialogResponse } from '@maxim/contracts/channel-dialog';
 import type { MiniappProfile } from '@maxim/contracts/publisher';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { describeSuggestionSubscriptionError } from '../lib/channel-suggestion-subscription-error';
-import {
-  Attachment as IconoirAttachment,
-  SendDiagonalSolid as IconoirSend,
-  VideoCamera,
-  Page as FileTextIcon,
-} from 'iconoir-react';
+
 import {
   Suspense,
   lazy,
@@ -1411,7 +1407,7 @@ export function ChannelSuggestDialogPage({
             onPointerDownCapture={armImageInputWatcher}
             tabIndex={isComposerBusy ? -1 : 0}
           />
-          <IconoirAttachment aria-hidden focusable="false" />
+          <IconoirSprite variant="iconoir" icon="Attachment" aria-hidden focusable="false" />
         </label>
       ) : (
         <>
@@ -1429,7 +1425,7 @@ export function ChannelSuggestDialogPage({
               openFileInputPicker(imageInputRef.current);
             }}
           >
-            <IconoirAttachment aria-hidden focusable="false" />
+            <IconoirSprite variant="iconoir" icon="Attachment" aria-hidden focusable="false" />
           </button>
           <input
             ref={imageInputRef}
@@ -1451,7 +1447,7 @@ export function ChannelSuggestDialogPage({
         className={cn('channel-suggest-composer__tool', isComposerBusy && 'is-disabled')}
         title="Добавить видео до 24 МБ"
       >
-        <VideoCamera aria-hidden />
+        <IconoirSprite variant="iconoir" icon="VideoCamera" aria-hidden />
         <input
           className="channel-dialog-compose__attach-input"
           type="file"
@@ -1471,7 +1467,7 @@ export function ChannelSuggestDialogPage({
         className={cn('channel-suggest-composer__tool', isComposerBusy && 'is-disabled')}
         title="Добавить текст из файла"
       >
-        <FileTextIcon aria-hidden />
+        <IconoirSprite variant="iconoir" icon="Page" aria-hidden />
         <input
           className="channel-dialog-compose__attach-input"
           type="file"
@@ -1524,7 +1520,12 @@ export function ChannelSuggestDialogPage({
           {isSubmitPending ? (
             <span className="channel-dialog-submit__loader" aria-hidden />
           ) : (
-            <IconoirSend aria-hidden focusable="false" />
+            <IconoirSprite
+              variant="iconoir"
+              icon="SendDiagonalSolid"
+              aria-hidden
+              focusable="false"
+            />
           )}
           <span>{isSubmitPending ? 'Отправка' : 'Отправить'}</span>
         </button>
@@ -1711,7 +1712,12 @@ export function ChannelSuggestDialogPage({
                                   className="channel-suggest-composer__image-loader"
                                   aria-hidden
                                 >
-                                  <IconoirAttachment aria-hidden focusable="false" />
+                                  <IconoirSprite
+                                    variant="iconoir"
+                                    icon="Attachment"
+                                    aria-hidden
+                                    focusable="false"
+                                  />
                                 </span>
                               </div>
                             ))}

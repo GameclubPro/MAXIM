@@ -1,3 +1,4 @@
+import { centralEnabled } from '../../statistics/stats-common';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
@@ -64,6 +65,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
   private enabled() {
     return (
       !this.stopping &&
+      !centralEnabled(this.config) &&
       roleRunsAction(getAppRole()) &&
       !!this.config.get<string>('SVYAZKA_STATISTICS_EXPORT_TOKEN')
     );

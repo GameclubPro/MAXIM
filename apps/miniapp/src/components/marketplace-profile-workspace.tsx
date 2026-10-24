@@ -12,6 +12,7 @@ import {
   marketplaceDetails,
   mergeMarketplaceMutationState,
   marketplaceProfilePath,
+  marketplaceProfileAvailable,
   marketplaceQueryKey,
   marketplaceProfileView,
   marketplaceRetryInterval,
@@ -158,7 +159,7 @@ export default function MarketplaceProfileWorkspace({
   const busy = mutation.isPending;
   const canSave =
     view.canEdit &&
-    state.binding.statisticsConsent &&
+    marketplaceProfileAvailable(state) &&
     details.title.trim() &&
     details.topic &&
     details.region &&
@@ -174,7 +175,7 @@ export default function MarketplaceProfileWorkspace({
     setNotice('');
   };
   const published = state.listing?.status === 'PUBLISHED';
-  const profileUnavailable = !state.binding.statisticsConsent;
+  const profileUnavailable = !marketplaceProfileAvailable(state);
   const stats = state.statistics;
   const openLink = (url: string | null | undefined) => {
     if (url) openMaxBotLink(url);

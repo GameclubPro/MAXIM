@@ -1,6 +1,7 @@
+import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowUpRight, Refresh } from 'iconoir-react';
+
 import {
   advertisingSendSchema,
   advertisingStateSchema,
@@ -81,7 +82,7 @@ export default function SettingsAdvertisingWorkspace({
       <div className="advertising-workspace">
         <p role="alert">Не удалось открыть площадку. Проверьте доступ к чату и повторите.</p>
         <button className="button button--ghost" onClick={() => void query.refetch()}>
-          <Refresh aria-hidden />
+          <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
           Обновить
         </button>
       </div>
@@ -120,7 +121,7 @@ export default function SettingsAdvertisingWorkspace({
             disabled={pending || query.isFetching}
             onClick={() => void query.refetch()}
           >
-            <Refresh aria-hidden />
+            <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
           </button>
         }
       />
@@ -135,14 +136,14 @@ export default function SettingsAdvertisingWorkspace({
             title="Открыть площадку"
             onClick={() => openMaxBotLink(data.listing!.url)}
           >
-            <ArrowUpRight aria-hidden />
+            <IconoirSprite variant="iconoir" icon="ArrowUpRight" aria-hidden />
           </button>
         </div>
       ) : (
         <>
           <p>Активная площадка этого чата в Связке не найдена.</p>
           <button className="button button--ghost" onClick={() => openMaxBotLink(data.connectUrl)}>
-            <ArrowUpRight aria-hidden />
+            <IconoirSprite variant="iconoir" icon="ArrowUpRight" aria-hidden />
             Подключить в Связке
           </button>
         </>
@@ -151,7 +152,7 @@ export default function SettingsAdvertisingWorkspace({
         <figure className="advertising-workspace__preview" aria-label="Предпросмотр сообщения">
           <p>Реклама и взаимопиар в этом чате</p>
           <span>
-            Рекламная площадка <ArrowUpRight aria-hidden />
+            Рекламная площадка <IconoirSprite variant="iconoir" icon="ArrowUpRight" aria-hidden />
           </span>
         </figure>
       )}

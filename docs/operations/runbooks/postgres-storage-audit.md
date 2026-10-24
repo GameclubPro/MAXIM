@@ -39,6 +39,15 @@ and predicates. Uniqueness, constraint ownership, replica identity and clusterin
 are reported separately. These are review candidates, not automatic DROP targets;
 retain constraints and inspect dependencies and recovery cost before any DDL.
 
+The fixed `channel_statistics_rollup` entry always checks the one exact
+`public.channel_stats_bucket_rollups` relation, including when it is outside the
+top 32 or the general inventory is capped. It reports presence, total bytes and
+the two nullable BIGINT shadow columns without application-row grants. An absent
+table reports unknown size. Retain production evidence before and after migration
+`20261024020000_add_exact_channel_statistics_views`. That migration adds nullable
+columns without rewriting or backfilling retained rows; the two-second lock and
+fifteen-second statement limits remain fixed.
+
 Interpret the report as follows:
 
 - `total_bytes = table_bytes + indexes_bytes`; table bytes already include TOAST

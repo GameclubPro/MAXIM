@@ -18,6 +18,11 @@ test('storage inventory measures inaccessible application tables without reading
     const result = await db.query(postgresStorageAuditSql);
     const report = result.rows[0].json_build_object;
     assert.equal(report.audit, 'postgres_storage');
+    assert.deepEqual(report.channel_statistics_rollup, {
+      table_present: false,
+      total_bytes: null,
+      exact_columns_ready: false,
+    });
     assert.equal(report.relations_measured, 1);
     assert.equal(report.indexes_measured, 1);
     assert.equal(report.relation_limit_exceeded, false);
@@ -39,6 +44,41 @@ test('storage inventory measures inaccessible application tables without reading
     assert.doesNotMatch(JSON.stringify(report), /payload|c4ca4238/u);
     const plan = await db.query(`EXPLAIN (FORMAT JSON) ${postgresStorageAuditSql}`);
     assert.doesNotMatch(JSON.stringify(plan), /"Relation Name":"storage_fixture"/u);
+  } finally {
+    await db.close();
+  }
+});
+
+test('fixed rollup size and shadow schema evidence stays available outside top relations and over the inventory cap without row grants', async () => {
+  const db = new PGlite();
+  try {
+    await db.exec(
+      Array.from({ length: 513 }, (_, i) => `CREATE TABLE audit_cap_${i}(id int);`).join('\n'),
+    );
+    await db.exec(`CREATE TABLE channel_stats_bucket_rollups(id int PRIMARY KEY, views_total int);
+      INSERT INTO channel_stats_bucket_rollups VALUES(1,2147483647);
+      CREATE ROLE rollup_auditor; GRANT pg_read_all_stats TO rollup_auditor; SET ROLE rollup_auditor;`);
+    await assert.rejects(
+      db.query('SELECT * FROM channel_stats_bucket_rollups'),
+      /permission denied/u,
+    );
+    const report = (await db.query(postgresStorageAuditSql)).rows[0].json_build_object;
+    assert.equal(report.relation_limit_exceeded, true);
+    assert.equal(report.largest_relations.length, 0);
+    const exact = report.channel_statistics_rollup;
+    assert.equal(exact.table_present, true);
+    assert.ok(exact.total_bytes > 0);
+    assert.equal(exact.exact_columns_ready, false);
+    await db.exec(
+      'RESET ROLE; ALTER TABLE channel_stats_bucket_rollups ADD COLUMN views_total_exact bigint, ADD COLUMN views_delta_exact bigint; SET ROLE rollup_auditor;',
+    );
+    assert.equal(
+      (await db.query(postgresStorageAuditSql)).rows[0].json_build_object.channel_statistics_rollup
+        .exact_columns_ready,
+      true,
+    );
+    const plan = await db.query(`EXPLAIN(FORMAT JSON) ${postgresStorageAuditSql}`);
+    assert.doesNotMatch(JSON.stringify(plan), /"Relation Name":"channel_stats_bucket_rollups"/u);
   } finally {
     await db.close();
   }

@@ -40,10 +40,7 @@ function pendingPreDrainFixture() {
   const pending = join(directory, 'queue-predrain-pending.json');
   const script = join(directory, 'authority.sh');
   const log = join(directory, 'calls.log');
-  const source = readFileSync(
-    join(root, 'infra/scripts/lib/legacy-cold-maintenance.sh'),
-    'utf8',
-  );
+  const source = readFileSync(join(root, 'infra/scripts/lib/legacy-cold-maintenance.sh'), 'utf8');
   assert.equal(source.split('/var/lib/maxim-deploy/queue-predrain-pending.json').length, 3);
   writeFileSync(
     script,
@@ -171,6 +168,9 @@ acquire_deploy_lock() {
   FIXTURE_LOCK_OWNER="$BASHPID"
   printf '%s\\n' lock-acquired >>"$COLD_ENTRY_TEST_LOG"
   trap release_deploy_lock EXIT
+}
+require_market_statistics_lock_dispatch() {
+  printf '%s\\n' market-statistics-source-checked >>"$COLD_ENTRY_TEST_LOG"
 }
 require_deploy_lock() {
   [[ "\${FIXTURE_LOCK_OWNER:-}" == "$BASHPID" ]] || return 91
@@ -349,6 +349,7 @@ test('deploy plan synchronizes source without checking ordinary effect admission
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const log = state.readLog();
     assert.match(log, /git:fetch/u);
+    assert.equal((log.match(/market-statistics-source-checked/gu) ?? []).length, 2);
     assert.doesNotMatch(log, /authority-checked|npm:|docker:.*\b(?:up|run|start|stop|build|rm)\b/u);
     assert.equal(readFileSync(join(state.directory, '.env'), 'utf8'), 'NODE_ENV=production\n');
   } finally {

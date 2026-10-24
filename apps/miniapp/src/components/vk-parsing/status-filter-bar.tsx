@@ -1,5 +1,6 @@
+import { AppIcon as IconoirSprite } from '../ui/app-icon';
 import type { VkParsingPostFilterStatus } from '@maxim/contracts';
-import { NavArrowDown } from 'iconoir-react';
+
 import { cn } from '../../lib/cn';
 import { VK_PARSING_STATUS_FILTERS } from './types';
 
@@ -43,7 +44,7 @@ export function StatusFilterBar({ statusFilter, onSelectStatusFilter }: StatusFi
             </option>
           ))}
         </select>
-        <NavArrowDown aria-hidden focusable="false" />
+        <IconoirSprite variant="iconoir" icon="NavArrowDown" aria-hidden focusable="false" />
       </label>
     </div>
   );

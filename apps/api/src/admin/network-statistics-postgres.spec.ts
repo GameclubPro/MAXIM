@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type {
+  StatsAuthorityOperation,
+  StatsEntity,
+  StatsMetricKey,
+} from '@maxim/contracts/statistics-central';
 import { Prisma, PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ManagedEntitiesService } from './managed-entities.service';
@@ -8,6 +14,11 @@ import { NetworkStatisticsObservationService } from './network-statistics-observ
 import { NetworkAuthorizationService } from './network-authorization.service';
 import { NetworkStatisticsService, networkViewIntervalsSql } from './network-statistics.service';
 import { MaxClientService } from '../max/max-client.service';
+import { StatsAccessService } from '../statistics/stats-access.service';
+import { StatsIngestService } from '../statistics/stats-ingest.service';
+import { StatsReadService } from '../statistics/stats-read.service';
+import { MaximNativeStatsAdapter } from '../statistics/maxim-native-stats.adapter';
+import { StatsFailure } from '../statistics/stats-common';
 
 const databaseUrl =
   process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ||
@@ -669,4 +680,262 @@ native('network statistics native PostgreSQL observation and read boundaries', (
       await db.chat.delete({ where: { id: otherChatId } });
     }
   }, 30_000);
+});
+
+native('network canonical current audience with independent PostgreSQL source authority', () => {
+  let db: PrismaClient;
+  let config: ConfigService;
+  let access: StatsAccessService;
+  let ingest: StatsIngestService;
+  let reader: StatsReadService;
+  let statistics: NetworkStatisticsService;
+  let observations: NetworkStatisticsObservationService;
+  let entity: StatsEntity;
+  let producerEpoch: string;
+  let source: StatsAuthorityOperation;
+  let sourceEpoch: string;
+  let postId: string;
+  const actor = { userId: '323459159', username: null, displayName: null };
+  const audienceKey: StatsMetricKey = {
+    metric: 'AUDIENCE',
+    horizon: 0,
+    method: { id: 'AUDIENCE_SNAPSHOT', version: 1 },
+  };
+  const read = () => statistics.read(actor, 'channel', { favoriteType: 'important', range: '7d' });
+  const attest = async (operation: StatsAuthorityOperation) => {
+    const result = await access.attest({
+      contractVersion: 1,
+      requestId: randomUUID(),
+      operations: [operation],
+    });
+    return result.results[0]!.epoch;
+  };
+  const peerAudience = async (revision: string, value: number, at: Date) => {
+    await ingest.ingest({
+      contractVersion: 1,
+      requestId: randomUUID(),
+      producerEpoch,
+      entity,
+      operations: [
+        {
+          operation: 'REPLACE_DAY',
+          ...audienceKey,
+          sourceRevision: revision,
+          day: at.toISOString().slice(0, 10),
+          authority: { id: source.id, epoch: sourceEpoch },
+          value: { value, observedAt: at.toISOString() },
+          coverage: { state: 'COMPLETE', intervals: [], populationComplete: true },
+        },
+      ],
+    });
+  };
+  const nativeViews = async () => {
+    const at = new Date(Date.now() - 2 * 3600_000);
+    await db.$transaction((tx) => observations.views(tx, postId, 500, at, 'native'));
+    await db.$transaction((tx) =>
+      observations.views(tx, postId, 520, new Date(at.getTime() + 60_000), 'native'),
+    );
+  };
+  beforeAll(async () => {
+    const url = new URL(databaseUrl);
+    if (
+      !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+      !url.pathname.includes('race_test')
+    )
+      throw new Error('Disposable local race_test database required');
+    db = new PrismaClient({
+      adapter: createPrismaAdapter(databaseUrl, { max: 6, statement_timeout: 15_000 }),
+    });
+    observations = new NetworkStatisticsObservationService(db as PrismaService);
+  });
+  beforeEach(async () => {
+    entity = {
+      kind: 'CHANNEL',
+      maxId: `-${BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 15)}`) + 1n}`,
+    };
+    producerEpoch = randomUUID();
+    config = new ConfigService({
+      STATISTICS_CENTRAL_ENABLED: 'true',
+      STATISTICS_CENTRAL_MODE: 'CENTRAL',
+      STATISTICS_CENTRAL_EXCHANGE_EPOCH: producerEpoch,
+    });
+    access = new StatsAccessService(db as PrismaService, config);
+    ingest = new StatsIngestService(db as PrismaService, access);
+    reader = new StatsReadService(
+      db as PrismaService,
+      access,
+      new MaximNativeStatsAdapter(db as PrismaService),
+      config,
+    );
+    await db.chat.create({
+      data: { id: entity.maxId, title: 'Canonical network channel', entityType: 'CHANNEL' },
+    });
+    await db.chatBotMembership.createMany({
+      data: ['native-central-a', 'native-central-b'].map((botId) => ({
+        chatId: entity.maxId,
+        botId,
+        status: 'ACTIVE' as const,
+        botAccessState: 'CONFIRMED_ADMIN' as const,
+      })),
+    });
+    const authorize: ManagedEntitiesService['assertManagedEntityReadAccess'] = async (
+      chatId,
+      user,
+      entityType,
+    ) => {
+      const checkedAt = new Date();
+      for (const botId of ['native-central-a', 'native-central-b']) {
+        const data = {
+          entityType: entityType === 'chat' ? ('CHAT' as const) : ('CHANNEL' as const),
+          state: 'GRANTED' as const,
+          userRole: 'ADMIN' as const,
+          botRole: 'ADMIN' as const,
+          source: 'remote_admin_access',
+          checkedAt,
+        };
+        await db.managedEntityAccessEdge.upsert({
+          where: { chatId_userId_botId: { chatId, userId: user.userId, botId } },
+          create: { chatId, userId: user.userId, botId, ...data },
+          update: data,
+        });
+      }
+    };
+    statistics = new NetworkStatisticsService(
+      db as PrismaService,
+      { assertManagedEntityReadAccess: authorize } as ManagedEntitiesService,
+      {
+        resolveSelection: async () => ({
+          entityIds: [entity.maxId, entity.maxId],
+          compositionVersion: entity.maxId,
+          label: 'Важные',
+        }),
+      } as unknown as ManagedEntityNetworksService,
+      new NetworkAuthorizationService(db as PrismaService),
+      config,
+      reader,
+    );
+    source = {
+      id: randomUUID(),
+      revision: '1',
+      operation: 'ATTEST',
+      entity,
+      role: 'SOURCE',
+      actorMaxUserId: actor.userId,
+      botRef: 'exchange-native-fixture',
+      consumer: 'MAXIM',
+      purpose: 'OWNER_ANALYTICS',
+      scopes: [audienceKey],
+      checkedAt: new Date().toISOString(),
+      producerEpoch,
+      localAccessFence: 'network-peer-native-fixture',
+    };
+    sourceEpoch = await attest(source);
+    const post = await db.channelPost.create({
+      data: {
+        chatId: entity.maxId,
+        messageId: 'old-network-post',
+        publishedAt: new Date(Date.now() - 120 * 86400_000),
+      },
+    });
+    postId = post.id;
+  });
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await db.chatMembershipActivityRollup.deleteMany({ where: { chatId: entity.maxId } });
+    await db.chat.delete({ where: { id: entity.maxId } });
+    await db.$executeRaw`DELETE FROM stats_entities WHERE kind=${entity.kind} AND max_id=${entity.maxId}`;
+    await db.$executeRaw`DELETE FROM stats_ingest_requests WHERE producer_epoch=${producerEpoch}::uuid`;
+  });
+  afterAll(async () => db?.$disconnect());
+
+  it('uses one freshest audience counter, retains measured zero and keeps native Moscow intervals', async () => {
+    const at = new Date(Date.now() - 3 * 60_000);
+    await peerAudience('1', 999, at);
+    const nativeAt = new Date(at.getTime() + 60_000);
+    await observations.audience(entity.maxId, 'channel', 123, nativeAt, 'native');
+    await nativeViews();
+    const utcDay = new Date(Date.now() - 3 * 86400_000);
+    utcDay.setUTCHours(0, 0, 0, 0);
+    await db.chatMembershipActivityRollup.createMany({
+      data: [
+        {
+          chatId: entity.maxId,
+          bucketStart: new Date(utcDay.getTime() + 20 * 3600_000),
+          joinedUsers: 5,
+          leftUsers: 2,
+        },
+        {
+          chatId: entity.maxId,
+          bucketStart: new Date(utcDay.getTime() + 21 * 3600_000),
+          joinedUsers: 1,
+          leftUsers: 4,
+        },
+      ],
+    });
+    const first = await read();
+    expect(first.audience.value).toBe(123);
+    expect(first.audience.coverage.includedEntities).toBe(1);
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0]?.audienceObservedAt).toBe(nativeAt.toISOString());
+    const peerAt = new Date(nativeAt.getTime() + 60_000);
+    await peerAudience('2', 0, peerAt);
+    const current = await read();
+    expect(current.audience.value).toBe(0);
+    expect(current.items[0]?.audience).toBe(0);
+    expect(current.items[0]?.audienceObservedAt).toBe(peerAt.toISOString());
+    expect(current.audience.coverage.includedEntities).toBe(1);
+    expect(current.viewsGained?.value).toBe(20);
+    expect(current.netGrowth.value).toBe(0);
+    expect(current.period.timezone).toBe('Europe/Moscow');
+    const points = new Map(current.series.map((point) => [point.at, point.netGrowth]));
+    expect(points.get(new Date(utcDay.getTime() - 3 * 3600_000).toISOString())).toBe(3);
+    expect(points.get(new Date(utcDay.getTime() + 21 * 3600_000).toISOString())).toBe(-3);
+    expect(current.method).toBe('current-composition-observed-intervals-v2');
+  });
+
+  it('requires unexpired owner source proof for the same actor and preserves independent native data', async () => {
+    await observations.audience(
+      entity.maxId,
+      'channel',
+      123,
+      new Date(Date.now() - 120_000),
+      'native',
+    );
+    await peerAudience('1', 456, new Date(Date.now() - 60_000));
+    expect((await read()).audience.value).toBe(456);
+    await db.$executeRaw`UPDATE stats_authorities SET peer_valid_until=now()-interval '1 second' WHERE id=${source.id}::uuid`;
+    await attest({ ...source, id: randomUUID(), actorMaxUserId: '987654321' });
+    await attest({ ...source, id: randomUUID(), purpose: 'PUBLISHED_AGGREGATE' });
+    const expired = await read();
+    expect(expired.audience.value).toBe(123);
+    source = { ...source, revision: '2', checkedAt: new Date().toISOString() };
+    sourceEpoch = await attest(source);
+    expect((await read()).audience.value).toBe(456);
+    await attest({ ...source, revision: '3', operation: 'REVOKE' });
+    expect((await read()).audience.value).toBe(123);
+  });
+
+  it('keeps unrelated native metrics available during a temporary audience reader failure and recovers', async () => {
+    await peerAudience('1', 456, new Date(Date.now() - 60_000));
+    await nativeViews();
+    jest
+      .spyOn(reader, 'localAudienceCurrent')
+      .mockRejectedValueOnce(new StatsFailure('UNAVAILABLE', 503));
+    const unavailable = await read();
+    expect(unavailable.audience.value).toBeNull();
+    expect(unavailable.items[0]?.audience).toBeNull();
+    expect(unavailable.audience.coverage.status).toBe('unavailable');
+    expect(unavailable.viewsGained?.value).toBe(20);
+    expect((await read()).audience.value).toBe(456);
+  });
+
+  it('fails the response when canonical authority changes during the read', async () => {
+    await peerAudience('1', 456, new Date(Date.now() - 60_000));
+    jest
+      .spyOn(reader, 'localAudienceCurrent')
+      .mockRejectedValueOnce(new StatsFailure('READ_RESTART', 409));
+    await expect(read()).rejects.toMatchObject({
+      response: { code: 'NETWORK_STATISTICS_ACCESS_CHANGED' },
+    });
+  });
 });

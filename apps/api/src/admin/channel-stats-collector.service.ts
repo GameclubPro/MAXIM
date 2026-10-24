@@ -19,6 +19,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
 import { NetworkStatisticsObservationService } from './network-statistics-observation.service';
+import { statisticsCentralEnabled, touchStatsEntity } from '../statistics/stats-native-observation';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -1210,7 +1211,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   ) {
     for (const message of messages) {
       const store = async (database: Prisma.TransactionClient) => {
-        if (this.networkStatistics) {
+        if (this.networkStatistics || statisticsCentralEnabled()) {
           // FLAG: Materialize the unique parent before locking it. A concurrent
           // first insert from another owner must not overwrite a newer snapshot.
           await database.$executeRaw`
@@ -1278,10 +1279,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         });
 
         if (views === null) {
+          await touchStatsEntity(database, { kind: 'CHANNEL', maxId: chatId });
           return;
         }
 
         await this.networkStatistics?.views(database, post.id, views, capturedAt, 'major');
+        if (!this.networkStatistics)
+          await touchStatsEntity(database, { kind: 'CHANNEL', maxId: chatId });
 
         if (post.viewSnapshots[0]?.views !== views) {
           await database.channelPostViewSnapshot.create({
@@ -1327,7 +1331,8 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           });
         }
       };
-      if (this.networkStatistics) await this.prisma.$transaction(store);
+      if (this.networkStatistics || statisticsCentralEnabled())
+        await this.prisma.$transaction(store);
       else await store(this.prisma);
     }
   }

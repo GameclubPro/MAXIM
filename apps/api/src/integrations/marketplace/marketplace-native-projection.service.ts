@@ -7,6 +7,7 @@ import type { MaxChannelMessageSnapshot } from '../../max/max-client.service';
 import { MARKETPLACE_HORIZON_TOLERANCE_MS } from './marketplace-statistics';
 import { marketplaceLocalGrantSql } from './marketplace-state.service';
 import { NetworkStatisticsObservationService } from '../../admin/network-statistics-observation.service';
+import { touchStatsEntity } from '../../statistics/stats-native-observation';
 
 type NativeGrant = {
   entity_id: string;
@@ -133,8 +134,13 @@ export class MarketplaceNativeProjectionService {
         await tx.$executeRaw`UPDATE marketplace_bindings SET history_anomaly=true WHERE id=${bindingId}::uuid`;
         return;
       }
-      if (views === null) return;
+      if (views === null) {
+        await touchStatsEntity(tx, { kind: 'CHANNEL', maxId: grant.entity_id });
+        return;
+      }
       await this.networkStatistics?.views(tx, post.id, views, observedAt, 'marketplace');
+      if (!this.networkStatistics)
+        await touchStatsEntity(tx, { kind: 'CHANNEL', maxId: grant.entity_id });
       // Retain the legacy native reaction column; absence never overwrites a previous observation.
       if (!post.latest_snapshot_at || post.latest_snapshot_at <= observedAt)
         await tx.$executeRaw`INSERT INTO channel_post_view_snapshots(id,channel_post_id,views,reactions_total,captured_at)
@@ -218,6 +224,7 @@ export class MarketplaceNativeProjectionService {
       await tx.$executeRaw`UPDATE marketplace_bindings SET
         native_history_checked_at=GREATEST(native_history_checked_at,${checkedAt}),
         native_full_checked_at=GREATEST(native_full_checked_at,${options.full ? checkedAt : null}) WHERE id=${bindingId}::uuid`;
+      await touchStatsEntity(tx, { kind: 'CHANNEL', maxId: grant.entity_id });
     });
   }
 }
