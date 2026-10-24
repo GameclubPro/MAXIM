@@ -182,6 +182,29 @@ postgres('v3 immutable membership and compact access on PostgreSQL', () => {
       if (count > 100) await expect(grants.read(grantId)).rejects.toThrow('ROSTER_REQUIRES_V3');
     },
   );
+  it('keeps a complete roster above100 usable in central mode with current per-platform denial', async () => {
+    config.set('STATISTICS_CENTRAL_ENABLED', true);
+    config.set('STATISTICS_CENTRAL_MODE', 'CENTRAL');
+    try {
+      await seed(101, true);
+      const manifest = await snapshot();
+      expect(manifest.entityCount).toBe(101);
+      await service.put(grantId, input(manifest));
+      const first = await allAccess();
+      expect(first).toHaveLength(101);
+      expect(first.every((entity) => entity.status === 'ACTIVE')).toBe(true);
+      await db.$executeRaw`UPDATE marketplace_bindings SET state='REVOKED',valid_until=NULL WHERE id=${entities[0]!.bindingId}::uuid`;
+      const denied = await allAccess();
+      expect(denied.filter((entity) => entity.status === 'ACTIVE')).toHaveLength(100);
+      expect(denied.find((entity) => entity.entityId === entities[0]!.entityId)?.status).toBe(
+        'UNAVAILABLE',
+      );
+      await expect(grants.read(grantId)).rejects.toThrow('ROSTER_REQUIRES_V3');
+    } finally {
+      config.set('STATISTICS_CENTRAL_ENABLED', false);
+      config.set('STATISTICS_CENTRAL_MODE', 'LEGACY');
+    }
+  });
   it('keeps immutable pages and stable composition hash across health-only checks and duplicate bots', async () => {
     await seed(1);
     const requestId = randomUUID();
