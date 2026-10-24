@@ -2065,10 +2065,120 @@ describe('ChannelStatsCollectorService', () => {
     expect(resolveLimit(1)).toBe(4);
     expect(resolveLimit(837)).toBe(6);
     expect(resolveLimit(1_728)).toBe(12);
-    expect(resolveLimit(2_000)).toBe(12);
+    expect(resolveLimit(2_000)).toBe(14);
+    expect(resolveLimit(2_534)).toBe(18);
+    expect(resolveLimit(10_000)).toBe(24);
 
     await service.onModuleDestroy();
   });
+
+  it.each([
+    { scenario: 'healthy fleet', mode: 'run', expectedViews: 18, expectedAudience: 360 },
+    { scenario: 'slow fleet', mode: 'slow', expectedViews: 12, expectedAudience: 2 },
+    {
+      scenario: 'pressure during collection',
+      mode: 'pause_after_first',
+      expectedViews: 1,
+      expectedAudience: 0,
+    },
+    {
+      scenario: 'slowdown during collection',
+      mode: 'slow_after_first',
+      expectedViews: 12,
+      expectedAudience: 0,
+    },
+    {
+      scenario: 'slowdown in a smaller fleet',
+      mode: 'slow_after_first',
+      channelCount: 837,
+      expectedViews: 6,
+      expectedAudience: 2,
+    },
+    { scenario: 'discovery deadline', mode: 'deadline', expectedViews: 1, expectedAudience: 0 },
+    {
+      scenario: 'deadline during admission',
+      mode: 'admission_deadline',
+      expectedViews: 0,
+      expectedAudience: 0,
+    },
+    {
+      scenario: 'shutdown during collection',
+      mode: 'shutdown',
+      expectedViews: 1,
+      expectedAudience: 0,
+    },
+  ])(
+    'bounds recurring discovery for $scenario',
+    async ({ mode, channelCount = 2_534, expectedViews, expectedAudience }) => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-10-25T00:00:00Z'));
+      const prisma = createPrismaMock();
+      prisma.chat.findMany.mockResolvedValue(
+        Array.from({ length: channelCount }, (_, index) =>
+          createScheduledChannelCandidate({ id: `channel-${String(index).padStart(4, '0')}` }),
+        ),
+      );
+      let completed = 0;
+      let admissions = 0;
+      const governor = {
+        decide: jest.fn().mockImplementation(async () => {
+          admissions++;
+          if (mode === 'admission_deadline' && admissions === 2)
+            jest.setSystemTime(Date.now() + 60_000);
+          const action =
+            mode === 'slow' || (mode === 'slow_after_first' && completed > 0)
+              ? 'slow'
+              : mode === 'pause_after_first' && completed > 0
+                ? 'pause'
+                : 'run';
+          return { action, reason: 'test pressure', retryAfterMs: 60_000 };
+        }),
+      };
+      const service = new ChannelStatsCollectorService(
+        prisma as never,
+        {} as never,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        governor as never,
+      );
+      jest
+        .spyOn(
+          service as unknown as { resolveInterChannelDelayMs: () => number },
+          'resolveInterChannelDelayMs',
+        )
+        .mockReturnValue(0);
+      const sync = jest.spyOn(service, 'syncChannel').mockImplementation(async () => {
+        completed++;
+        if (mode === 'deadline') jest.setSystemTime(Date.now() + 60_000);
+        if (mode === 'shutdown') await service.onModuleDestroy();
+        return { audienceSynced: false, viewsSynced: true, throttled: false };
+      });
+      const audience = jest.spyOn(service, 'syncAudienceSnapshotIfStale').mockResolvedValue({
+        audienceSynced: true,
+        syncedAt: new Date(),
+        throttled: false,
+      });
+      await (
+        service as unknown as {
+          syncScheduledAudienceCatchUpOnly: (reason: 'scheduled') => Promise<void>;
+        }
+      ).syncScheduledAudienceCatchUpOnly('scheduled');
+      expect(sync).toHaveBeenCalledTimes(expectedViews);
+      expect(audience).toHaveBeenCalledTimes(expectedAudience);
+      expect(sync.mock.calls.map(([id]) => id)).toEqual(
+        Array.from({ length: expectedViews }, (_, i) => `channel-${String(i).padStart(4, '0')}`),
+      );
+      for (const [, options] of sync.mock.calls)
+        expect(options).toEqual({
+          reason: 'scheduled',
+          skipAudience: true,
+          maxPages: 2,
+          viewsMode: 'discovery',
+        });
+      expect(prisma.channelStatsSyncState.upsert).not.toHaveBeenCalled();
+      await service.onModuleDestroy();
+    },
+  );
 
   it('backs off recurring discovery under process-level background pressure', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
