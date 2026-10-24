@@ -5,7 +5,7 @@ export const COMMERCIAL_LLM_LEASE_KEY = 'commercial-llm-shadow:v1:lease';
 export const COMMERCIAL_LLM_COOLDOWN_KEY = 'commercial-llm-shadow:v1:cooldown';
 export const COMMERCIAL_LLM_STATUS_KEY = 'commercial-llm-shadow:v1:status';
 export const COMMERCIAL_LLM_LEASE_MS = 120_000;
-export const COMMERCIAL_LLM_INTERVAL_MS = 30_000;
+export const COMMERCIAL_LLM_INTERVAL_MS = 10_000;
 const RELEASE =
   "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
 const ADMIT = `

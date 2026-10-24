@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 
-export const COMMERCIAL_LLM_MODEL_ALIAS = 'gemma4-commercial-shadow';
+export const COMMERCIAL_LLM_MODEL_ALIAS = 'qwen35-9b-commercial-shadow';
 export const COMMERCIAL_LLM_MODEL_SHA256 =
-  'a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2';
+  'dc2a39aef291f91a9116ad214058da0d86eb648743a124bd8c333787c4b9c91c';
 export const COMMERCIAL_LLM_RUNTIME_VERSION = 'llama.cpp-b11804';
 export const COMMERCIAL_LLM_RUNTIME_IMAGE_SHA256 =
   '8badce92ec1860c764ca19c736422e81a12c65d76da57313651a7804bfe6ed40';
 export const COMMERCIAL_LLM_CHAT_TEMPLATE_SHA256 =
-  'ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4';
+  '7f0e529032c25183bcd66c7f238da2d377f43be754a94e2725a58c4e16d2ed67';
 export const COMMERCIAL_LLM_POLICY_VERSION = 'commercial-llm-shadow-v1';
 export const COMMERCIAL_LLM_MAX_EXCERPT_CHARS = 2500;
 export const COMMERCIAL_LLM_MAX_OUTPUT_TOKENS = 128;

@@ -14,6 +14,7 @@ import {
   createCommercialLlmRedis,
   COMMERCIAL_LLM_LEASE_KEY,
   COMMERCIAL_LLM_COOLDOWN_KEY,
+  COMMERCIAL_LLM_INTERVAL_MS,
 } from './commercial-llm-shadow.lease';
 import { CommercialLlmShadowProcessor } from './commercial-llm-shadow.processor';
 import {
@@ -222,6 +223,25 @@ const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
       expect((await first).outcome).toBe('COMPLETE');
       expect(await lease.acquire()).toBeNull();
       expect(classify).toHaveBeenCalledTimes(1);
+    });
+
+    it('enforces the shorter global cooldown while preserving long inference ownership', async () => {
+      const first = await lease.acquire();
+      expect(first).not.toBeNull();
+      const cooldown = await redis.pttl(COMMERCIAL_LLM_COOLDOWN_KEY);
+      expect(cooldown).toBeGreaterThan(COMMERCIAL_LLM_INTERVAL_MS - 1000);
+      expect(cooldown).toBeLessThanOrEqual(COMMERCIAL_LLM_INTERVAL_MS);
+      // FLAG: The test advances only its isolated cooldown; active inference still owns its lease.
+      await redis.pexpire(COMMERCIAL_LLM_COOLDOWN_KEY, 1);
+      await new Promise((done) => setTimeout(done, 20));
+      expect(await lease.acquire()).toBeNull();
+      await lease.release(first!);
+      const next = await lease.acquire();
+      expect(next).not.toBeNull();
+      await lease.release(first!);
+      expect(await lease.owns(next!)).toBe(true);
+      await lease.release(next!);
+      expect(await lease.acquire()).toBeNull();
     });
 
     it('fails closed on lost lease, pressure, shutdown and inference error', async () => {
