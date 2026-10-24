@@ -332,7 +332,11 @@ export class StatisticsExchangeGrantsService {
       >`SELECT entity_id FROM statistics_exchange_entities WHERE grant_id=${id}::uuid AND binding_id IS NULL LIMIT 1`;
       return pending.length > 0;
     }
-    const binding = await this.access.attest({ actorUserId: grant.actor_user_id, ...entity }, true);
+    const binding = await this.access.attest(
+      { actorUserId: grant.actor_user_id, ...entity },
+      true,
+      true,
+    );
     await this.prisma.$transaction(async (tx) => {
       const current = await tx.$queryRaw<
         StatisticsExchangeGrantRow[]

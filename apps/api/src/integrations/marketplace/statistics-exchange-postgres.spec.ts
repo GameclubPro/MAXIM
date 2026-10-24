@@ -11,7 +11,9 @@ import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
 import { type PrismaService } from '../../prisma/prisma.service';
 import { MarketplaceStateService } from './marketplace-state.service';
 import { MarketplaceStatisticsService } from './marketplace-statistics.service';
-import { type MarketplaceAccessService } from './marketplace-access.service';
+import { MarketplaceAccessService } from './marketplace-access.service';
+import type { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
+import type { MaxClientService } from '../../max/max-client.service';
 import { exchangeRetentionFrom } from './statistics-exchange-values';
 import {
   StatisticsExchangeGrantsService,
@@ -788,6 +790,52 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     }
   });
 
+  it('does not renew an expired consumer lease when background MAX admission is paused', async () => {
+    await grants.put(grantId, input());
+    await db.$executeRaw`UPDATE marketplace_bindings SET valid_until=now()-interval '1 second',next_access_at=now()-interval '1 minute' WHERE id=${bindingId}::uuid`;
+    const before = await state.read(bindingId);
+    const governor = {
+      decide: jest.fn<
+        ReturnType<BackgroundRuntimeGovernorService['decide']>,
+        Parameters<BackgroundRuntimeGovernorService['decide']>
+      >().mockResolvedValue({ action: 'pause', retryAfterMs: 60_000, reason: 'max_api' }),
+    } satisfies Pick<BackgroundRuntimeGovernorService, 'decide'>;
+    const snapshot = jest.fn<
+      ReturnType<MaxClientService['getChatSnapshot']>,
+      Parameters<MaxClientService['getChatSnapshot']>
+    >();
+    const access = new MarketplaceAccessService(
+      db as PrismaService,
+      {} as never,
+      { getChatSnapshot: snapshot } as unknown as MaxClientService,
+      state,
+      undefined,
+      undefined,
+      config,
+      governor,
+    );
+    const runtime = new StatisticsExchangeRuntimeService(
+      db as PrismaService, config, statistics, grants, access,
+    );
+    const previousRole = process.env.APP_ROLE;
+    process.env.APP_ROLE = 'action';
+    try {
+      await runtime.refreshAccessBatch();
+      const after = await state.read(bindingId);
+      expect(governor.decide).toHaveBeenCalledTimes(1);
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(after?.valid_until).toEqual(before?.valid_until);
+      expect(after?.checked_at).toEqual(before?.checked_at);
+      expect(after?.state).toBe(before?.state);
+      expect((await grants.read(grantId)).entities[0]!.status).toBe('UNAVAILABLE');
+    } finally {
+      await runtime.onModuleDestroy();
+      await access.onModuleDestroy();
+      if (previousRole === undefined) delete process.env.APP_ROLE;
+      else process.env.APP_ROLE = previousRole;
+    }
+  });
+
   it('keeps100actor rights and reverse work bounded and independent under archive latency', async () => {
     const seed = randomUUID(),
       previousRole = process.env.APP_ROLE;
@@ -867,7 +915,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
       expect(remoteMaximum).toBe(4);
       expect(pulled.size).toBe(4);
       expect(refreshed.size).toBe(100);
-      expect(maximum).toBe(4);
+      expect(maximum).toBe(1);
       expect(Date.now() - start).toBeLessThan(10_000);
       releaseReverse();
       await stalled;

@@ -1,7 +1,9 @@
 import {
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
+  type OnModuleDestroy,
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -17,6 +19,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { getAppRole, roleRunsPublisher } from '../../runtime/app-role';
 import { PublisherIdentityAttestationService } from '../../publisher/publisher-identity-attestation.service';
 import { ConfigService } from '@nestjs/config';
+import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
 import { statisticsExchangeActorAllowed } from './statistics-exchange.settings';
 import { MarketplacePublisherAccessQueueService } from './marketplace-publisher-access.queue';
 import {
@@ -27,7 +30,10 @@ import {
 } from './marketplace-state.service';
 
 @Injectable()
-export class MarketplaceAccessService {
+export class MarketplaceAccessService implements OnModuleDestroy {
+  private backgroundInFlight: Promise<MarketplaceBindingRow> | null = null;
+  private nextBackgroundAt = 0;
+  private stopping = false;
   constructor(
     private readonly prisma: PrismaService,
     private readonly entities: ManagedEntitiesService,
@@ -36,8 +42,56 @@ export class MarketplaceAccessService {
     @Optional() private readonly publisherQueue?: MarketplacePublisherAccessQueueService,
     @Optional() private readonly publisherIdentity?: PublisherIdentityAttestationService,
     @Optional() private readonly config?: ConfigService,
+    @Optional()
+    @Inject(BackgroundRuntimeGovernorService)
+    private readonly governor?: Pick<BackgroundRuntimeGovernorService, 'decide'>,
   ) {}
-  async attest(raw: unknown, exchangeV2 = false): Promise<MarketplaceBindingRow> {
+  async onModuleDestroy(): Promise<void> {
+    this.stopping = true;
+    await this.backgroundInFlight?.catch(() => undefined);
+  }
+  async attest(
+    raw: unknown,
+    exchangeV2 = false,
+    background = false,
+  ): Promise<MarketplaceBindingRow> {
+    if (this.stopping) throw this.pendingAccess();
+    if (!background) return this.attestNow(raw, exchangeV2, false);
+    // FLAG: Background access never queues in memory or borrows interactive capacity.
+    // Deferral cannot renew a lease or turn unknown rights into denial or permission.
+    if (this.backgroundInFlight || Date.now() < this.nextBackgroundAt) throw this.pendingAccess();
+    const operation = this.attestBackground(raw, exchangeV2);
+    this.backgroundInFlight = operation;
+    try {
+      return await operation;
+    } finally {
+      this.backgroundInFlight = null;
+    }
+  }
+  private pendingAccess(): ServiceUnavailableException {
+    return new ServiceUnavailableException({
+      code: 'MARKETPLACE_ACCESS_PENDING',
+      message: 'Проверка доступа отложена. Повторите позже.',
+    });
+  }
+  private async attestBackground(
+    raw: unknown,
+    exchangeV2: boolean,
+  ): Promise<MarketplaceBindingRow> {
+    if (!this.governor) throw this.pendingAccess();
+    const decision = await this.governor.decide({
+      component: 'marketplace-access-refresh',
+      sourceTag: 'marketplace_access_refresh',
+    });
+    if (decision.action !== 'run') this.nextBackgroundAt = Date.now() + decision.retryAfterMs;
+    if (this.stopping || decision.action === 'pause') throw this.pendingAccess();
+    return this.attestNow(raw, exchangeV2, true);
+  }
+  private async attestNow(
+    raw: unknown,
+    exchangeV2: boolean,
+    background: boolean,
+  ): Promise<MarketplaceBindingRow> {
     const input = marketplaceBindingInputSchema.parse(raw);
     if (!this.state.enabled()) throw new ServiceUnavailableException('Связка пока не подключена');
     if (
@@ -49,9 +103,11 @@ export class MarketplaceAccessService {
     if (input.profile === 'publisher' && !roleRunsPublisher(getAppRole())) {
       if (!this.publisherQueue)
         throw new ServiceUnavailableException('Проверка прав Публика пока недоступна');
-      const id = await (exchangeV2
-        ? this.publisherQueue.attest(input, true)
-        : this.publisherQueue.attest(input));
+      const id = await (background
+        ? this.publisherQueue.attest(input, exchangeV2, true)
+        : exchangeV2
+          ? this.publisherQueue.attest(input, true)
+          : this.publisherQueue.attest(input));
       const binding = await this.state.read(id);
       if (
         !binding ||
@@ -94,15 +150,19 @@ export class MarketplaceAccessService {
     const options = {
       botId,
       bypassCache: true,
-      trafficClass: 'interactive' as const,
-      sourceTag: 'marketplace_access',
+      trafficClass: background ? ('background' as const) : ('interactive' as const),
+      sourceTag: background ? 'marketplace_access_refresh' : 'marketplace_access',
       timeoutMs: 5_000,
     };
-    const [snapshot, bot, user] = await Promise.all([
+    const reads = [
       this.max.getChatSnapshot(input.entityId, options),
       this.max.getCurrentChatMemberAccess(input.entityId, options),
       this.max.getChatMemberAccess(input.entityId, input.actorUserId, options),
-    ]);
+    ] as const;
+    // FLAG: A failed sibling read must not release background admission while
+    // the other exact-rights requests are still using the shared bot quota.
+    if (background) await Promise.allSettled(reads);
+    const [snapshot, bot, user] = await Promise.all(reads);
     if (!bot || !user) throw new ServiceUnavailableException('Не удалось подтвердить доступ в MAX');
     if (
       !(bot.isAdmin || bot.isOwner) ||
@@ -203,6 +263,7 @@ export class MarketplaceAccessService {
           profile: row.profile,
         },
         exchangeV2 || row.actor_user_id !== MARKETPLACE_PILOT_USER_ID,
+        true,
       );
     } catch (error) {
       if (error instanceof ForbiddenException)

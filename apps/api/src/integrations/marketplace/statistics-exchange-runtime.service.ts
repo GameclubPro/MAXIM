@@ -103,7 +103,8 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
     if (!this.enabled() || !this.access) return;
     const deadline = Date.now() + 10_000;
     for (let page = 0; page < 5 && !this.stopping && Date.now() < deadline; page++) {
-      // Claim only the four calls that start now, leaving unstarted work available next tick.
+      // FLAG: Keep the bounded claim, but admit MAX checks sequentially so four
+      // bindings cannot consume twelve shared bot slots at once.
       const rows = await this.prisma.$queryRaw<MarketplaceBindingRow[]>`
         UPDATE marketplace_bindings SET next_access_at=now()+interval '1 minute'
         WHERE id IN(SELECT b.id FROM marketplace_bindings b
@@ -112,7 +113,10 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
               WHERE e.binding_id=b.id AND g.state='ACTIVE')
           ORDER BY b.next_access_at,b.id FOR UPDATE OF b SKIP LOCKED LIMIT 4) RETURNING *`;
       if (!rows.length) return;
-      await Promise.allSettled(rows.map((row) => this.access!.refresh(row, true)));
+      for (const row of rows) {
+        if (this.stopping || Date.now() >= deadline) return;
+        await this.access.refresh(row, true);
+      }
     }
   }
   async refreshRemoteAccessBatch(): Promise<void> {

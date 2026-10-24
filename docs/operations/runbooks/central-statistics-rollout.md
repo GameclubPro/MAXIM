@@ -86,6 +86,16 @@ legacy payload retention and reverse-import access are retired. A successful
 membership refresh must never advance measurement or import-success timestamps;
 expired and explicitly revoked bindings stay unreadable until fresh allowed proof.
 
+Background binding renewal and missing-binding recovery use background MAX capacity and
+the shared runtime governor. Each role admits one access check at a time without an in-memory
+wait queue; pause and slow decisions retain their retry interval, and shutdown drains the owned
+check. Publisher handoff preserves that background admission. A deferred check never renews
+rights, revokes an unknown user, or advances measurement/import-success timestamps. During
+pressure some consumer leases can expire and remain unreadable until fresh checks succeed.
+The access batch processes its bounded selected rows sequentially; it must not spend twelve
+shared bot slots on four parallel three-request checks. Explicit user access checks remain
+interactive and retain all fresh authorization checks.
+
 After both peers have compatible v3 readers, use the guarded v3 rollout flags for
 accounts above 100 platforms. Keep the v2 limit unchanged, and verify the complete
 paged roster plus fresh MAXIM-only consumer leases after activation. Snapshot

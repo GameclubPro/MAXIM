@@ -63,12 +63,35 @@ integration('marketplace Publisher request/reply with isolated Redis', () => {
     if (previousService === undefined) delete process.env.APP_SERVICE_NAME;
     else process.env.APP_SERVICE_NAME = previousService;
   });
-  const startWorker = (access: { attest: jest.Mock }) => {
+  const startWorker = (access: Pick<MarketplaceAccessService, 'attest'>) => {
     const processor = new MarketplacePublisherAccessProcessor(
       access as unknown as MarketplaceAccessService,
     );
     worker = new Worker('marketplace-publisher-access', (job) => processor.process(job), options);
   };
+
+  it('preserves background admission across the Publisher queue without sharing an interactive job', async () => {
+    const id = randomUUID();
+    const access = {
+      attest: jest
+        .fn<
+          ReturnType<MarketplaceAccessService['attest']>,
+          Parameters<MarketplaceAccessService['attest']>
+        >()
+        .mockResolvedValue({ id } as Awaited<ReturnType<MarketplaceAccessService['attest']>>),
+    } satisfies Pick<MarketplaceAccessService, 'attest'>;
+    startWorker(access);
+    const [background, interactive] = await Promise.all([
+      service.attest(input, true, true),
+      service.attest(input, true),
+    ]);
+    expect([background, interactive]).toEqual([id, id]);
+    expect(access.attest).toHaveBeenCalledWith(input, true, true);
+    expect(access.attest).toHaveBeenCalledWith(input, true);
+    const jobs = await queue.getJobs(['completed']);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((job) => job.data.background).filter(Boolean)).toEqual([true]);
+  });
 
   it('returns the exact worker binding and coalesces duplicate requests without any credential payload', async () => {
     const id = randomUUID();
