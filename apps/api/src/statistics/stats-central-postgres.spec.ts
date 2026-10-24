@@ -335,6 +335,61 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
     await db.$executeRaw`UPDATE stats_authorities SET peer_valid_until=now()-interval '1 second' WHERE id=${consumer.id}::uuid`;
     expect((await summary()).results[0]!.status).toBe('FORBIDDEN');
   });
+  for (const role of ['SOURCE', 'CONSUMER'] as const)
+    it(`renews a ${role} bot binding only at a newer revision and fences its old epoch`, async () => {
+      await ingest.ingest(request([audience('1', 20)]));
+      const original = role === 'SOURCE' ? source : consumer;
+      const attest = (operation: StatsAuthorityOperation) =>
+        access.attest({ contractVersion: 1, requestId: randomUUID(), operations: [operation] });
+      await attest({ ...original, revision: '2', operation: 'REVOKE' });
+      const rebound = {
+        ...original,
+        revision: '3',
+        botRef: `MAXIM_BINDING:${randomUUID()}`,
+        checkedAt: now(),
+      };
+      const result = await attest(rebound);
+      expect(result.results[0]).toMatchObject({ id: original.id, epoch: '3', state: 'ACTIVE' });
+      const stored = await db.$queryRaw<
+        Array<{ bot_ref: string; revision: bigint; epoch: bigint }>
+      >`
+        SELECT bot_ref,revision,epoch FROM stats_authorities WHERE id=${original.id}::uuid`;
+      expect(stored).toEqual([{ bot_ref: rebound.botRef, revision: 3n, epoch: 3n }]);
+      if (role === 'SOURCE') {
+        await expect(ingest.ingest(request([audience('2', 21)]))).rejects.toMatchObject({
+          response: { error: { code: 'FORBIDDEN' } },
+        });
+        sourceEpoch = '3';
+        await ingest.ingest(request([audience('2', 21)]));
+      } else {
+        expect((await summary()).results[0]!.status).toBe('FORBIDDEN');
+        context.consumerAuthority.epoch = '3';
+      }
+      expect((await summary()).results[0]!.status).toBe('READY');
+      await expect(attest({ ...rebound, botRef: original.botRef })).rejects.toMatchObject({
+        response: { error: { code: 'STALE_LOCAL_FENCE' } },
+      });
+      expect((await attest({ ...original, revision: '2' })).results[0]).toMatchObject({
+        status: 'SUPERSEDED',
+        epoch: '3',
+      });
+      await expect(
+        attest({ ...rebound, revision: '4', actorMaxUserId: '999999999' }),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'FORBIDDEN' } },
+      });
+      const final = await db.$queryRaw<Array<{ bot_ref: string; revision: bigint; epoch: bigint }>>`
+        SELECT bot_ref,revision,epoch FROM stats_authorities WHERE id=${original.id}::uuid`;
+      expect(final).toEqual(stored);
+      expect(
+        (await attest({ ...original, revision: '4', checkedAt: now() })).results[0],
+      ).toMatchObject({
+        id: original.id,
+        epoch: '4',
+        state: 'ACTIVE',
+        status: 'APPLIED',
+      });
+    });
   it('paginates filtered history with explicit unknowns, same revision, and restart on change', async () => {
     await ingest.ingest(request([audience('1', 10, day(2)), audience('2', 12, day(1))]));
     const req = {

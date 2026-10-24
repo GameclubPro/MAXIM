@@ -79,7 +79,6 @@ export class StatsAccessService {
               old.role !== op.role ||
               old.consumer !== op.consumer ||
               old.actor_max_id !== op.actorMaxUserId ||
-              old.bot_ref !== op.botRef ||
               old.purpose !== op.purpose)
           )
             throw new StatsFailure('FORBIDDEN', 403, request.requestId);
@@ -102,10 +101,14 @@ export class StatsAccessService {
             continue;
           }
           const scopeChanged = old && canonical(old.scopes) !== canonical(op.scopes);
+          // FLAG: A current issuer proof may change the bot only with a newer
+          // revision. The new epoch fences every prior consumer/source reference.
+          const botChanged = old && old.bot_ref !== op.botRef;
           if (
             old &&
             BigInt(op.revision) === old.revision &&
-            (scopeChanged ||
+            (botChanged ||
+              scopeChanged ||
               old.local_access_fence !== op.localAccessFence ||
               old.state !== (op.operation === 'ATTEST' ? 'ACTIVE' : 'REVOKED') ||
               old.producer_epoch !== op.producerEpoch)
@@ -133,7 +136,7 @@ export class StatsAccessService {
           const state = op.operation === 'ATTEST' ? 'ACTIVE' : 'REVOKED';
           await tx.$executeRaw`INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at)
       VALUES(${op.id}::uuid,${entity.id}::uuid,'EXCHANGE',${op.role},'EXCHANGE',${op.consumer},${op.actorMaxUserId},${op.botRef},${op.purpose},${JSON.stringify(op.scopes)}::jsonb,${BigInt(op.revision)},${epoch},${op.producerEpoch}::uuid,${op.localAccessFence},${state},${validUntil},${checked})
-      ON CONFLICT(id) DO UPDATE SET scopes=EXCLUDED.scopes,revision=EXCLUDED.revision,epoch=EXCLUDED.epoch,producer_epoch=EXCLUDED.producer_epoch,local_access_fence=EXCLUDED.local_access_fence,state=EXCLUDED.state,peer_valid_until=EXCLUDED.peer_valid_until,checked_at=EXCLUDED.checked_at,updated_at=now()`;
+      ON CONFLICT(id) DO UPDATE SET bot_ref=EXCLUDED.bot_ref,scopes=EXCLUDED.scopes,revision=EXCLUDED.revision,epoch=EXCLUDED.epoch,producer_epoch=EXCLUDED.producer_epoch,local_access_fence=EXCLUDED.local_access_fence,state=EXCLUDED.state,peer_valid_until=EXCLUDED.peer_valid_until,checked_at=EXCLUDED.checked_at,updated_at=now()`;
           if (changed) await touch(tx, entity.id, 'AUTHORITY', op.id);
           const current = {
             ...old,

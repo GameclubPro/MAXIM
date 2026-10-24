@@ -54,6 +54,14 @@ never persists activation. A repeated activation with the same epoch is safe;
 it must still use current exact-SHA green CI and the normal release fence.
 Neither disabling a flag nor a failed rollout permits an old reader or resets the
 producer identity. Preserve installed compatibility floors and recovery journals.
+
+An authority keeps its issuer, actor, entity, role, purpose and consumer identity.
+Its bot reference may change only with a strictly newer issuer revision, for
+example when Market changes from its own bot proof to a current MAXIM binding.
+That transition advances the authority epoch and invalidates old read/write
+references. Equal-revision changes fail; older revisions cannot replace the
+current proof. Native regressions in `stats-central-postgres.spec.ts` cover both
+roles, revocation/recovery, return to the original bot and stale references.
 Do not recreate stores, lower floors or re-enable retired history exchange.
 
 ## Connection access after activation
