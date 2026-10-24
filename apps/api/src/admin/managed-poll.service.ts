@@ -58,6 +58,7 @@ import {
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { classifyMaxSendAutoDeleteVerificationCause } from '../max/max-send-auto-delete-verification-error';
 import { RedisCounterService } from '../moderation/redis-counter.service';
+import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import {
   ChatEntityType,
   ManagedPollStatus,
@@ -103,6 +104,7 @@ const MANAGED_POLL_RENDER_MAX_ATTEMPTS = 2;
 const MANAGED_POLL_RENDER_REPAIR_ATTEMPTS = 3;
 const MANAGED_POLL_RENDER_REPAIR_DELAY_MS = 250;
 const MANAGED_POLL_BACKGROUND_REPAIR_BATCH_SIZE = 10;
+const MANAGED_POLL_BACKGROUND_REPAIR_DISPATCH_MS = 5_000;
 const MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS = 5 * 60_000;
 const MANAGED_POLL_RECENT_EVENT_HASH_LIMIT = 16;
 const MANAGED_POLL_AMBIGUOUS_PUBLICATION_ERROR = 'Публикация требует ручной проверки.';
@@ -185,6 +187,7 @@ export class ManagedPollService {
   private readonly localRenderChains = new Map<string, Promise<void>>();
   private readonly scheduledRenderRepairs = new Map<string, Promise<void>>();
   private readonly renderRetryUntil = new Map<string, number>();
+  private nextBackgroundRepairAt = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -196,9 +199,16 @@ export class ManagedPollService {
     @Optional() private readonly maxRoutedPublicationService?: MaxRoutedPublicationService,
     @Optional() _channelPostSignatureService?: ChannelPostSignatureService,
     @Optional() private readonly adminDialogLinkService?: AdminDialogLinkService,
+    @Optional() private readonly backgroundGovernor?: BackgroundRuntimeGovernorService,
   ) {}
 
-  async processPendingPollRenderRepairs(): Promise<number> {
+  async processPendingPollRenderRepairs(
+    options: { shouldContinue?: () => boolean } = {},
+  ): Promise<number> {
+    if (options.shouldContinue?.() === false || Date.now() < this.nextBackgroundRepairAt) return 0;
+    const decision = await this.pollRepairDecision();
+    if (decision.action === 'pause') return 0;
+    const dispatchUntil = performance.now() + MANAGED_POLL_BACKGROUND_REPAIR_DISPATCH_MS;
     const retryBefore = new Date(Date.now() - MANAGED_POLL_BACKGROUND_RETRY_DELAY_MS);
     const rows = await this.prisma.$queryRaw<Array<{ id: string; chatId: string }>>`
       SELECT "id", "chat_id" AS "chatId"
@@ -214,10 +224,23 @@ export class ManagedPollService {
       LIMIT ${MANAGED_POLL_BACKGROUND_REPAIR_BATCH_SIZE}
     `;
     let repaired = 0;
+    let attempted = 0;
     for (const row of rows) {
+      // FLAG: Repair is optional background work. Stop admission on pressure/shutdown,
+      // retaining SQL revision/error evidence and any already-running edit until it settles.
+      if (options.shouldContinue?.() === false || performance.now() >= dispatchUntil) break;
+      const currentDecision = await this.pollRepairDecision();
+      if (options.shouldContinue?.() === false || performance.now() >= dispatchUntil) break;
+      if (
+        currentDecision.action === 'pause' ||
+        (currentDecision.action === 'slow' && attempted > 0)
+      )
+        break;
+      attempted++;
       try {
         let renderSucceeded = false;
         const serialized = await this.runPollRenderSerialized(row.id, async () => {
+          if (options.shouldContinue?.() === false || performance.now() >= dispatchUntil) return;
           renderSucceeded = await this.renderPollPublication(
             row.chatId,
             row.id,
@@ -233,8 +256,21 @@ export class ManagedPollService {
           'Failed to repair managed poll publication in background',
         );
       }
+      if (decision.action === 'slow' || currentDecision.action === 'slow') break;
     }
     return repaired;
+  }
+
+  private async pollRepairDecision() {
+    const decision = this.backgroundGovernor
+      ? await this.backgroundGovernor.decide({
+          component: 'managed-poll-repair',
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_POLL,
+        })
+      : { action: 'run' as const, retryAfterMs: 0 };
+    if (decision.action !== 'run')
+      this.nextBackgroundRepairAt = Date.now() + Math.max(1_000, decision.retryAfterMs);
+    return decision;
   }
 
   async listChannelPolls(

@@ -158,6 +158,16 @@ transition. `sample_complete` describes only the bounded census. Missing journal
 claims, omitted proof and disagreeing paths stay explicit and never mean healthy operation.
 Preserve the runtime/source identity, exact interval, caps and uninspected-marker counts.
 
+For a concrete v2 cancellation preview, the same report accepts `--private-blocker-ids`.
+This opt-in adds only each sampled blocker's opaque receipt ID (or null for a missing or
+unsupported identity); all selection caps, proof limitations and privileges remain unchanged.
+Redirect the output into a private mode-0600 file outside Git. Default reports still omit IDs.
+Inspect incomplete samples and missing IDs before preparing a nomination; never silently drop
+them or treat the sampled set as a complete fleet census. IDs are inputs to the separate
+[read-only v2 preview](webhook-backlog-cancellation.md#exact-nominated-sources-v2), not permission
+to cancel or replay. Apply still requires a READY preview and explicit authorization for its
+concrete scope and stopped-fleet window.
+
 Local focused validation, including native plan/TOAST bounds:
 
 ```bash

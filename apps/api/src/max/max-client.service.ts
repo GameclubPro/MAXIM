@@ -30,6 +30,7 @@ import {
   projectMaxActionFailureDiagnostic,
   type MaxActionFailureFacts,
 } from './max-action-failure-diagnostic';
+import { MaxActionFailureLog } from './max-action-failure-log';
 import {
   observeMaxSendAdmission,
   observeMaxSendAcknowledgement,
@@ -768,7 +769,6 @@ const MAX_API_SOURCE_METRICS_TTL_SEC = 6 * 60 * 60;
 const MAX_API_SERVICE_CAPACITY_METRICS_TTL_SEC = 2 * 60;
 const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
 const MAX_API_RATE_LIMIT_LOG_COALESCE_MS = 60_000;
-const MAX_API_ACTION_FAILURE_LOG_COALESCE_MS = 30_000;
 const MAX_API_CIRCUIT_KEY_PREFIX = 'maxapi:circuit:v1';
 const DEFAULT_MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC = 60;
 const MAX_API_CRITICAL_NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
@@ -1059,7 +1059,9 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly priorityHttpSource = new AsyncLocalStorage<string | null>();
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
   private readonly rateLimitLogAtMsByKey = new Map<string, number>();
-  private readonly actionFailureLogAtMsByBot = new Map<string, number>();
+  private readonly actionFailureLog = new MaxActionFailureLog((summary) =>
+    this.logger.warn(summary, 'MAX action failure window summary'),
+  );
   private readonly registeredSourceMetricDimensions = new Set<string>();
   private readonly listBotChatsInFlight = new Map<string, Promise<MaxBotChat[]>>();
   private readonly currentChatMemberAccessInFlight = new Map<
@@ -1243,6 +1245,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    this.actionFailureLog.close();
     this.mediaUploadValidationCache.clear();
     for (const timer of this.higherPriorityActivityTimers.values()) clearInterval(timer);
     this.higherPriorityActivityTimers.clear();
@@ -7454,30 +7457,18 @@ export class MaxClientService implements OnModuleDestroy {
       return;
     }
 
-    const nowMs = Date.now();
-    for (const [botId, loggedAtMs] of this.actionFailureLogAtMsByBot) {
-      if (nowMs - loggedAtMs >= MAX_API_ACTION_FAILURE_LOG_COALESCE_MS) {
-        this.actionFailureLogAtMsByBot.delete(botId);
-      }
-    }
-    if (this.actionFailureLogAtMsByBot.has(params.botId)) {
-      return;
-    }
-    this.actionFailureLogAtMsByBot.set(params.botId, nowMs);
-
-    this.logger.warn(
-      {
-        statusCode: this.extractStatusCode(error),
-        errorCode: this.extractActionFailureErrorCode(error),
-        limitScope: error instanceof MaxApiInternalRateLimitError ? error.limitScope : null,
-        trafficClass: params.trafficClass,
-        lane: params.lane,
-        sourceTag: params.sourceTag,
-        botId: params.botId,
-        ...projectMaxActionFailureDiagnostic(params.facts, params.association),
-      },
-      'Recorded unignored user-facing MAX API action failure',
-    );
+    const entry = {
+      statusCode: this.extractStatusCode(error) ?? null,
+      errorCode: this.extractActionFailureErrorCode(error),
+      limitScope: error instanceof MaxApiInternalRateLimitError ? error.limitScope : null,
+      trafficClass: params.trafficClass,
+      lane: params.lane,
+      sourceTag: params.sourceTag,
+      botId: params.botId,
+      ...projectMaxActionFailureDiagnostic(params.facts, params.association),
+    };
+    if (this.actionFailureLog.record(entry))
+      this.logger.warn(entry, 'Recorded unignored user-facing MAX API action failure');
   }
 
   private buildQueuedActionMutationOptions(

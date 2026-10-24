@@ -125,9 +125,42 @@ test('quarantine proof admits only exact minute args and emits all guards before
     assert.equal(child.stdout, '');
     assert.equal(
       child.stderr,
-      'Usage: webhook-quarantine-proof-audit.mjs <UTC-minute> [--explain]\n',
+      'Usage: webhook-quarantine-proof-audit.mjs <UTC-minute> [--explain] [--private-blocker-ids]\n',
     );
   }
+});
+
+test('private blocker nomination exposes only capped opaque IDs without changing proof or authority', async (t) => {
+  const db = await fixture(t);
+  const ordinary = await report(db);
+  await db.exec('BEGIN READ ONLY');
+  try {
+    const value = (await db.query(buildQuarantineProofAuditSql(minute, false, true))).rows[0]
+      .json_build_object;
+    assert.equal(value.blockers[0].private_blocker_receipt_id, 'private-blocker');
+    delete value.blockers[0].private_blocker_receipt_id;
+    assert.ok(Date.parse(value.observed_at) >= Date.parse(ordinary.observed_at));
+    value.observed_at = ordinary.observed_at;
+    assert.deepEqual(value, ordinary);
+  } finally {
+    await db.exec('ROLLBACK');
+  }
+  for (const invalid of ['x'.repeat(129), 'invalid/identity', 'invalid\nidentity']) {
+    await db.exec('BEGIN');
+    try {
+      await db.query('UPDATE webhook_events SET id=$1 WHERE id=$2', [invalid, 'private-blocker']);
+      await db.query('UPDATE webhook_dependency_quarantines SET blocker_id=$1', [invalid]);
+      const value = (await db.query(buildQuarantineProofAuditSql(minute, false, true))).rows[0]
+        .json_build_object;
+      assert.equal(value.sampled_blockers, 1);
+      assert.equal(value.blockers[0].private_blocker_receipt_id, null);
+      assert.equal(value.settlement_authorized, false);
+      assert.doesNotMatch(JSON.stringify(value), /PRIVATE_|invalid[/\n]/u);
+    } finally {
+      await db.exec('ROLLBACK');
+    }
+  }
+  assert.throws(() => buildQuarantineProofAuditSql(minute, false, 'yes'));
 });
 
 test('closed-minute report preserves missing journals, empty/future windows and exact owner metadata', async (t) => {

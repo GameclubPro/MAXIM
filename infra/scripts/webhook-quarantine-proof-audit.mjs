@@ -108,8 +108,10 @@ const errorFamily = (value, admission) => `CASE
   WHEN ${value} = 'Handler completion claim changed' THEN 'completion_claim_changed'
   ELSE 'other' END`;
 
-export function buildQuarantineProofAuditSql(minute, explain = false) {
+export function buildQuarantineProofAuditSql(minute, explain = false, privateBlockerIds = false) {
   validateQuarantineMinute(minute);
+  if (typeof explain !== 'boolean' || typeof privateBlockerIds !== 'boolean')
+    throw new Error('Invalid quarantine proof options');
   // FLAG: Capping precedes every deeper lookup: 65->64 receipts, 5->4 links,
   // distinct over at most 256 retained links, then 17->16 blockers and <=3 claims each.
   // Stored keys are diagnostic metadata. Do not reconstruct source or infer replay authority.
@@ -299,6 +301,7 @@ export function buildQuarantineProofAuditSql(minute, explain = false) {
   ), blocker_output AS MATERIALIZED (
     SELECT b.blocker_ordinal, json_build_object(
       'blocker_ordinal', b.blocker_ordinal, 'blocker_found', b.blocker_found,
+      ${privateBlockerIds ? "'private_blocker_receipt_id', CASE WHEN b.blocker_found AND octet_length(b.blocker_id) BETWEEN 1 AND 128 AND b.blocker_id ~ '^[A-Za-z0-9_-]+$' THEN b.blocker_id ELSE NULL END," : ''}
       'status', ${receiptStatus('b.status')}, 'created_at', b.created_at,
       'processed_at', b.processed_at, 'retry_scheduled', b.next_enqueue_at IS NOT NULL,
       'timeout_boundary', b.timeout_quarantine_expires_at, 'execution_deadline_at', b.execution_deadline_at,
@@ -391,8 +394,10 @@ export function buildQuarantineProofAuditSql(minute, explain = false) {
   return `${explain ? 'EXPLAIN (FORMAT JSON) ' : ''}${query}\n`;
 }
 
-export function emitQuarantineProofAuditSql(minute, explain = false) {
-  const query = buildQuarantineProofAuditSql(minute, explain);
+export function emitQuarantineProofAuditSql(minute, explain = false, privateBlockerIds = false) {
+  // FLAG: Opaque blocker IDs are opt-in private nomination inputs, never recovery proof.
+  // The same capped walk and every ordinary report guard remain in force.
+  const query = buildQuarantineProofAuditSql(minute, explain, privateBlockerIds);
   return `SET LOCAL timezone = 'UTC';\nSET LOCAL search_path TO pg_catalog, public, pg_temp;\n${buildQuarantinePrivilegesSql(true)}${emitOwnerProofPrivilegesSql(true)}${quarantineProofIndexesSql.replace(/;$/u, '')}
 \\gset
 \\if :quarantine_proof_indexes_ready
@@ -404,13 +409,25 @@ ${query}`;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const [minute, option, ...extra] = process.argv.slice(2);
+  const [minute, ...options] = process.argv.slice(2);
   try {
-    if (extra.length || (option !== undefined && option !== '--explain'))
+    if (
+      options.length > 2 ||
+      new Set(options).size !== options.length ||
+      options.some((option) => option !== '--explain' && option !== '--private-blocker-ids')
+    )
       throw new Error('Invalid quarantine proof arguments');
-    process.stdout.write(emitQuarantineProofAuditSql(minute, option === '--explain'));
+    process.stdout.write(
+      emitQuarantineProofAuditSql(
+        minute,
+        options.includes('--explain'),
+        options.includes('--private-blocker-ids'),
+      ),
+    );
   } catch {
-    process.stderr.write('Usage: webhook-quarantine-proof-audit.mjs <UTC-minute> [--explain]\n');
+    process.stderr.write(
+      'Usage: webhook-quarantine-proof-audit.mjs <UTC-minute> [--explain] [--private-blocker-ids]\n',
+    );
     process.exitCode = 2;
   }
 }

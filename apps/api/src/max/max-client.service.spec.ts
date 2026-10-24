@@ -10264,7 +10264,16 @@ describe('MaxClientService inline keyboard guardrails', () => {
     jest.advanceTimersByTime(1);
     await expect(service.getChatTitle('chat-private-4', requestOptions)).rejects.toBe(error);
 
-    expect(diagnostics.warn).toHaveBeenCalledTimes(2);
+    expect(diagnostics.warn).toHaveBeenCalledTimes(3);
+    expect(diagnostics.warn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        totalFailures: 3,
+        unclassifiedFailures: 0,
+        groups: [expect.objectContaining({ count: 3, errorCode: 'service.unavailable' })],
+      }),
+      'MAX action failure window summary',
+    );
     expect(diagnostics.failure).toHaveBeenCalledTimes(4);
     expect(JSON.stringify(diagnostics.warn.mock.calls)).not.toContain('chat-private');
     expect(JSON.stringify(diagnostics.warn.mock.calls)).not.toContain('user-private');
@@ -11036,6 +11045,20 @@ describe('MaxClientService inline keyboard guardrails', () => {
         );
         expect(diagnostics.warn).toHaveBeenNthCalledWith(
           2,
+          expect.objectContaining({
+            totalFailures: 1,
+            groups: [
+              expect.objectContaining({
+                count: 1,
+                requestAssociation: 'linked',
+                endpointKind: 'chat_members',
+              }),
+            ],
+          }),
+          'MAX action failure window summary',
+        );
+        expect(diagnostics.warn).toHaveBeenNthCalledWith(
+          3,
           {
             statusCode: 404,
             errorCode: 'not.found',

@@ -299,9 +299,13 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     };
   }
 
-  it.each([false, true])(
-    'continues exact ordered successors during slow selection using real fences (earlier mirror=%s)',
-    async (withMirror) => {
+  it.each([
+    { withMirror: false, finishAfterSelection: false },
+    { withMirror: true, finishAfterSelection: false },
+    { withMirror: true, finishAfterSelection: true },
+  ])(
+    'continues exact ordered successors during slow selection using real fences (earlier mirror=$withMirror, late completion=$finishAfterSelection)',
+    async ({ withMirror, finishAfterSelection }) => {
       const chatId = `-${randomUUID()}`;
       const base = Math.max(Date.now(), executionCutoverAt.getTime() + 1);
       const sources: Array<Awaited<ReturnType<typeof semanticReceipt>>> = [];
@@ -345,6 +349,10 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       const completed: string[] = [];
       const workers: Promise<void>[] = [];
       const errors: unknown[] = [];
+      let releaseWorker!: () => void;
+      const workerGate = new Promise<void>((resolve) => {
+        releaseWorker = resolve;
+      });
       queue.add.mockImplementation(async (_name: string, job: { webhookEventId: string }) => {
         const index = sources.findIndex((source) => source.event.id === job.webhookEventId);
         const previous = await prisma.webhookEvent.findUniqueOrThrow({
@@ -353,7 +361,8 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
         expect(previous.status).toBe(WebhookStatus.PROCESSED);
         workers.push(
           (async () => {
-            await new Promise((resolve) => setTimeout(resolve, 20));
+            if (finishAfterSelection) await workerGate;
+            else await new Promise((resolve) => setTimeout(resolve, 20));
             const context = await worker.prepareExecution(job.webhookEventId, 'preparation-bot');
             expect(context).not.toBeNull();
             await worker.completeExecution(context!);
@@ -365,6 +374,7 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       });
       try {
         await poll();
+        releaseWorker();
         await Promise.all(workers);
         expect(errors).toEqual([]);
         expect(selector).toHaveBeenCalledTimes(1);
@@ -374,15 +384,23 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
         const completedCount = completed.length;
         expect(completedCount).toBeGreaterThan(0);
         expect(completedCount).toBeLessThanOrEqual(expectedCompletions);
+        if (finishAfterSelection) expect(completedCount).toBe(1);
         expect(completed).toEqual(
           sources.slice(1, completedCount + 1).map((source) => source.event.id),
         );
         expect(queue.add).toHaveBeenCalledTimes(completedCount);
         expect(prepareCore).not.toHaveBeenCalled();
-        if (mirror)
-          expect(
-            await prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirror.event.id } }),
-          ).toMatchObject({ status: WebhookStatus.DUPLICATE, enqueueAttempts: 0 });
+        if (mirror) {
+          const receipt = await prisma.webhookEvent.findUniqueOrThrow({
+            where: { id: mirror.event.id },
+          });
+          expect(receipt.enqueueAttempts).toBe(0);
+          // FLAG: Owner completion after selection cannot retroactively settle its mirror.
+          // A following logical source, however, requires that ordering head to be settled.
+          if (finishAfterSelection) expect(receipt.status).toBe(WebhookStatus.RECEIVED);
+          else if (completedCount > 1) expect(receipt.status).toBe(WebhookStatus.DUPLICATE);
+          else expect([WebhookStatus.RECEIVED, WebhookStatus.DUPLICATE]).toContain(receipt.status);
+        }
         const rows = await prisma.webhookEvent.findMany({
           where: { id: { in: sources.map((source) => source.event.id) } },
           orderBy: { createdAt: 'asc' },
@@ -398,7 +416,23 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
         expect(rows.slice(1, completedCount + 1).every((row) => row.enqueueAttempts === 1)).toBe(
           true,
         );
+        if (mirror) {
+          selector.mockImplementation(select);
+          await poll();
+          await Promise.all(workers);
+          expect(errors).toEqual([]);
+          expect(
+            await prisma.webhookEvent.findUniqueOrThrow({ where: { id: mirror.event.id } }),
+          ).toMatchObject({ status: WebhookStatus.DUPLICATE, enqueueAttempts: 0 });
+          expect(completed).toEqual(
+            sources.slice(1, completed.length + 1).map((source) => source.event.id),
+          );
+          expect(new Set(completed).size).toBe(completed.length);
+          expect(queue.add).toHaveBeenCalledTimes(completed.length);
+          expect(prepareCore).not.toHaveBeenCalled();
+        }
       } finally {
+        releaseWorker();
         await Promise.all(workers);
         selector.mockRestore();
         await service.onModuleDestroy();

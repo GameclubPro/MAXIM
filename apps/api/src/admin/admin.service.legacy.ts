@@ -1,3 +1,4 @@
+import { resolveAdminBotUserId } from './admin-bot-identity';
 import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
 import { assertPublisherSuggestionDeliveryReady } from './publisher-suggestion-setup-block';
 import {
@@ -20353,23 +20354,20 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     botId?: string | null,
   ): Promise<string | null> {
-    try {
-      const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
-        trafficClass: 'interactive',
-        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-        ...(botId ? { botId } : {}),
-      });
-      return this.readTrimmedString(access.userId);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve current bot user id for chat admin filtering',
-      );
-      return null;
-    }
+    return resolveAdminBotUserId({
+      chatId,
+      botId,
+      registry: this.maxBotRegistry,
+      maxClient: this.maxClient,
+      onUnavailable: (error) =>
+        this.logger.warn(
+          {
+            chatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to resolve current bot user id for chat admin filtering',
+        ),
+    });
   }
 
   private async resolveKnownBotUserIdsForChat(
