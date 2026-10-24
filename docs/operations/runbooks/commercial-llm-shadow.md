@@ -12,6 +12,10 @@ Russian advertisement-classification accuracy.
   upstream revision and Docker image ID in
   `infra/scripts/commercial-llm-runtime.mjs`. The production Compose contract and
   focused tests bind the same identity.
+  Production Docker 29 uses its containerd image store, where the image ID is
+  the pinned OCI manifest digest. The distinct config-blob digest is not a Docker
+  image ID on this host. Installation checks the exact descriptor, repository
+  digest, platform, upstream revision and version before creating the container.
 - Text weights are exactly 17,074,419,072 bytes, SHA-256
   `a8bdd07a49b895083bb1420bb895ad9ab3e3b8f7d5cc42c7582ca0fa765eede2`.
   The official Google chat template and Apache 2.0 license are independently pinned
