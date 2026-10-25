@@ -39,7 +39,10 @@ import {
 import type { SharedChatSettingsSectionProps } from './shared-chat-settings-section';
 import { SharedSpeechField as Speech } from './shared-bot-speech-field';
 import { SharedProfanitySettingsFields as LazySharedProfanitySettingsFields } from './shared-profanity-settings-fields';
-import { SharedCommercialSettingsFields as LazySharedCommercialSettingsFields } from './shared-commercial-settings-fields';
+const LazySharedCommercialSettingsFields = recoverableLazyNamedComponent<{
+  fields: ChatSettingsFieldAdapter;
+  actions: ReactNode;
+}>(() => import('./shared-commercial-settings-fields'), 'SharedCommercialSettingsFields');
 import './shared-chat-settings.css';
 
 type BodyProps = Pick<SharedChatSettingsSectionProps, 'fields' | 'context'>;
