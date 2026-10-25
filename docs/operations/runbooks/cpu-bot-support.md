@@ -25,15 +25,42 @@ The existing GPU commercial classifier and server moderation remain separate.
 
 ## Grounding and delivery
 
-`infra/scripts/support-llm-knowledge.json` contains selected customer instructions and
-source paths for review. Do not index operational runbooks, environment files or private
+`infra/scripts/support-llm-knowledge.json` contains reviewed customer instructions and
+source paths, plus an official MAX source catalog with retrieval time and content digests.
+The 2026-10-25 review covers moderation, rights, networks, Publisher posts/schedules,
+VK, comments, suggestions and platform questions. A retrieval date is not a publication
+or update date; retain unknown `Last-Modified` values and recheck changed official facts.
+Do not index operational runbooks, agent instructions, environment files or private
 customer histories. Update entries against current UI/code. The local installer includes
 the knowledge and scripts in its immutable bundle; an update requires reinstalling that
 bundle. Knowledge digests must match across the PC and host.
 
+The [customer support policy](../../bot-support-policy.md) comes from the project owner,
+not MAX platform rules. This chat helps administrators with bots. A participant asking
+how to place an advertisement or why it disappeared in another group is directed to that
+group's administrators, with a brief explanation of this support chat's purpose. Help
+administrators publish through Publik or check moderation settings; clarify an ambiguous
+role instead of refusing a relevant question. Placement/removal questions remain eligible
+without the word "bot", including common Russian spelling variants and complaints.
+For participant advertisement requests, the client returns the reviewed room-policy answer
+directly. A model's off-topic classification cannot suppress that required explanation.
+Exact questions about the commercial AI interface also use its reviewed FAQ directly:
+CPU evaluation repeatedly invented unavailable mode and sanction controls. Image questions
+retain the separate image-capability facts and inference. Explicit AI interface retrieval
+excludes instructions for unrelated settings.
+Administrator tasks and Publisher instructions use model inference; explicit help requests
+and answers to a recent role clarification require a `reply` result. Ordinary conversation
+and acknowledgements can still be skipped.
+
 Questions and context are untrusted user data. Responses are constrained JSON with
 `reply` or `skip`, bounded text and IDs from the selected knowledge. Internal paths,
 invented links, incomplete generations and technical errors cannot become public replies.
+Official documentation links are allowed only when they belong to the retrieved source
+catalog. Topic retrieval folds common Russian endings and discounts common words; the
+support policy and operator limitations are always included. Before inference the installed
+tokenizer checks the 4096-token context with space reserved for output and chat framing.
+If necessary, trim the oldest history and then lower-ranked facts, retaining both policies
+and the best topic. Unavailable tokenization or an irreducibly oversized prompt stays silent.
 The model has no tools. Account state, removal reasons, tariffs and other unavailable
 facts require operator verification. Generated source IDs are validation, not a guarantee
 that the wording is correct; evaluate real Russian support questions before wider use.
@@ -84,3 +111,11 @@ heartbeat and successful reply counts. A connected worker proves transport avail
 not answer correctness or completed delivery. Check local question quality and latency
 separately from a real user's fresh question and confirmed reply in the designated chat.
 There are no automatic public diagnostics or fallback error messages.
+
+For a knowledge update, finish source review, focused retrieval/policy checks, actual CPU
+answer evaluation and exact-source CI first. Merge and synchronize the reviewed host source,
+then stop `chat-stop` followed by `stop`, run the installer from that reviewed source and
+start the model again. Confirm the new bundle/model identity, run the read-only preview and
+start the chat worker. The existing weights are reused; this refreshes retrieval knowledge
+and answer policy. Never change a running immutable bundle in place. Reconnects start a
+fresh message baseline and participant history, while durable source fences remain intact.
