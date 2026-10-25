@@ -22,6 +22,8 @@ import {
   commercialLlmProofKey,
 } from './commercial-llm-enforcement.mailbox';
 import { CommercialLlmEnforcementProcessor } from './commercial-llm-enforcement.processor';
+import { CommercialLlmBudgetedSecondary } from './commercial-llm-budgeted-secondary';
+import { CommercialLlmCascadeClient } from './commercial-llm-cascade.client';
 import {
   buildCommercialLlmOffer,
   commercialLlmMayDelete,
@@ -149,7 +151,6 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
         ensureIntent,
         process: new CommercialLlmEnforcementProcessor(
           mailbox,
-          new CommercialLlmShadowLease(redis),
           { classify },
           { ensureIntent },
           mayRun,
@@ -168,6 +169,121 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
       expect(await mailbox.heartbeat(randomUUID())).toBe(false);
       expect(await mailbox.take(randomUUID())).toBeNull();
       expect(await redis.exists(keys.slot)).toBe(1);
+    });
+    it('checks a local negative while server capacity is occupied, with its own bounded admission', async () => {
+      const serverOwner = randomUUID();
+      await redis.set(COMMERCIAL_LLM_LEASE_KEY, serverOwner, 'PX', 120_000);
+      await redis.set(COMMERCIAL_LLM_COOLDOWN_KEY, '1', 'PX', 10_000);
+      const classifySecondary = jest.fn<
+        ReturnType<CommercialLlmClassifier['classify']>,
+        Parameters<CommercialLlmClassifier['classify']>
+      >();
+      const secondary = new CommercialLlmBudgetedSecondary(new CommercialLlmShadowLease(redis), {
+        classify: classifySecondary,
+      });
+      const cascade = new CommercialLlmCascadeClient(
+        {
+          classify: async () => ({
+            outcome: 'COMPLETE',
+            result: {
+              ...positive,
+              classification: 'NOT_COMMERCIAL',
+              reasonCodes: ['ORDINARY_DISCUSSION'],
+            },
+          }),
+        },
+        secondary,
+        async () => true,
+        () => false,
+      );
+      await ready();
+      expect(await mailbox.offer(offer())).toBe(true);
+      const h = processor(cascade.classify.bind(cascade));
+      expect(await h.process.run(worker, new AbortController().signal)).toMatchObject({
+        outcome: 'kept',
+        route: 'primary',
+      });
+      expect(classifySecondary).not.toHaveBeenCalled();
+      expect(h.ensureIntent).not.toHaveBeenCalled();
+      expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(serverOwner);
+      expect(await redis.exists(keys.slot)).toBe(0);
+      expect(await redis.pttl(keys.cooldown)).toBeGreaterThan(1_000);
+      expect(await mailbox.advertise(worker)).toBe(false);
+    });
+    it('skips a positive without waiting or authorizing deletion when server capacity is occupied', async () => {
+      const serverOwner = randomUUID();
+      await redis.set(COMMERCIAL_LLM_LEASE_KEY, serverOwner, 'PX', 120_000);
+      const classifySecondary = jest.fn<
+        ReturnType<CommercialLlmClassifier['classify']>,
+        Parameters<CommercialLlmClassifier['classify']>
+      >();
+      const cascade = new CommercialLlmCascadeClient(
+        { classify: async () => ({ outcome: 'COMPLETE', result: positive }) },
+        new CommercialLlmBudgetedSecondary(new CommercialLlmShadowLease(redis), {
+          classify: classifySecondary,
+        }),
+        async () => true,
+        () => false,
+      );
+      await ready();
+      const input = offer();
+      expect(await mailbox.offer(input)).toBe(true);
+      const h = processor(cascade.classify.bind(cascade));
+      expect(await h.process.run(worker, new AbortController().signal)).toMatchObject({
+        outcome: 'secondary_capacity_skipped',
+        failureKind: 'BUSY',
+      });
+      expect(classifySecondary).not.toHaveBeenCalled();
+      expect(h.ensureIntent).not.toHaveBeenCalled();
+      expect(await mailbox.hasProof(input.source)).toBe(false);
+      expect(await redis.exists(keys.slot)).toBe(0);
+      expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(serverOwner);
+    });
+    it('retains the server cooldown after success and releases only its own lease after failure', async () => {
+      const classify = jest
+        .fn<
+          ReturnType<CommercialLlmClassifier['classify']>,
+          Parameters<CommercialLlmClassifier['classify']>
+        >()
+        .mockResolvedValue(positive);
+      const secondary = new CommercialLlmBudgetedSecondary(new CommercialLlmShadowLease(redis), {
+        classify,
+      });
+      await expect(secondary.classify(text)).resolves.toBe(positive);
+      expect(await redis.exists(COMMERCIAL_LLM_LEASE_KEY)).toBe(0);
+      expect(await redis.pttl(COMMERCIAL_LLM_COOLDOWN_KEY)).toBeGreaterThan(9_000);
+      await expect(secondary.classify(text)).rejects.toMatchObject({ kind: 'BUSY' });
+      expect(classify).toHaveBeenCalledTimes(1);
+      await redis.del(COMMERCIAL_LLM_COOLDOWN_KEY);
+      classify.mockImplementationOnce(async () => {
+        throw new Error('offline');
+      });
+      await expect(secondary.classify(text)).rejects.toThrow('offline');
+      expect(await redis.exists(COMMERCIAL_LLM_LEASE_KEY)).toBe(0);
+      expect(await redis.pttl(COMMERCIAL_LLM_COOLDOWN_KEY)).toBeGreaterThan(9_000);
+    });
+    it('rejects a result after source revocation or lease replacement, preserving a successor', async () => {
+      const successor = randomUUID();
+      const secondary = new CommercialLlmBudgetedSecondary(new CommercialLlmShadowLease(redis), {
+        classify: async () => {
+          await redis.set(COMMERCIAL_LLM_LEASE_KEY, successor, 'PX', 120_000);
+          return positive;
+        },
+      });
+      await expect(secondary.classify(text)).rejects.toMatchObject({ kind: 'ABORTED' });
+      expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(successor);
+      await redis.del(COMMERCIAL_LLM_LEASE_KEY, COMMERCIAL_LLM_COOLDOWN_KEY);
+      let current = true;
+      const revoked = new CommercialLlmBudgetedSecondary(new CommercialLlmShadowLease(redis), {
+        classify: async () => {
+          current = false;
+          return positive;
+        },
+      });
+      await expect(revoked.classify(text, undefined, async () => current)).rejects.toMatchObject({
+        kind: 'ABORTED',
+      });
+      expect(await redis.exists(COMMERCIAL_LLM_LEASE_KEY)).toBe(0);
     });
     it('server confirmation registers exactly one bound delete; no model work is retried', async () => {
       await ready();

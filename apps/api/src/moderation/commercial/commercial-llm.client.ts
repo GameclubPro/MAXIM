@@ -20,6 +20,7 @@ import {
 export const COMMERCIAL_LLM_RESPONSE_MAX_BYTES = 16 * 1024;
 export const COMMERCIAL_LLM_DEFAULT_TIMEOUT_MS = 60_000;
 export type CommercialLlmFailureKind =
+  | 'BUSY'
   | 'INVALID_INPUT'
   | 'INVALID_ENDPOINT'
   | 'HTTP_ERROR'
