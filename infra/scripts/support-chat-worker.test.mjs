@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { supportChatSession, validateQuestion } from './support-chat-worker.mjs';
+import { SUPPORT_ANSWER_FOOTER } from './support-llm-client.mjs';
 
 const question = () => ({
   type: 'question',
@@ -9,6 +10,7 @@ const question = () => ({
   history: [],
   deadline: Date.now() + 30000,
 });
+const presentedAnswer = `Откройте настройки.\n\n1. Выберите чат.\n2. Проверьте права.\n\n${SUPPORT_ANSWER_FOOTER}`;
 const peer = `
 const readline = require('node:readline');
 const input = readline.createInterface({input:process.stdin});
@@ -18,7 +20,7 @@ input.on('line',line=>{
    process.stdout.write(JSON.stringify({type:'hello',chatId:'-78271094414679'})+'\\n');
    process.stdout.write(JSON.stringify({type:'question',id:'fixture-source',text:'Как подключить бота?',history:[],deadline:Date.now()+30000})+'\\n');
  } else if(value.type==='answer') {
-   if(value.reply!==true || value.text!=='Проверенный ответ') process.exit(2);
+   if(value.reply!==true || value.text!==${JSON.stringify(presentedAnswer)}) process.exit(2);
    process.stdout.write(JSON.stringify({type:'settled',id:value.id,outcome:'sent'})+'\\n');
    process.exit(0);
  }
@@ -35,7 +37,7 @@ test('SSH question boundary rejects expired deadlines, large context and invente
 });
 
 test(
-  'framed worker performs inference and receives an actual send settlement',
+  'framed worker forwards paragraphs and the single footer unchanged and receives settlement',
   { timeout: 10000 },
   async () => {
     const statuses = [];
@@ -48,7 +50,7 @@ test(
       invoke: async ({ text, history }) => {
         assert.equal(text, 'Как подключить бота?');
         assert.deepEqual(history, []);
-        return { action: 'reply', text: 'Проверенный ответ' };
+        return { action: 'reply', text: presentedAnswer };
       },
     });
     assert.ok(statuses.includes('sent'));

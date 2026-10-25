@@ -8,9 +8,54 @@ import {
   eligibleQuestion,
   knowledge,
   selectKnowledge,
+  SUPPORT_ANSWER_FOOTER,
   validateSupportAnswer,
 } from './support-llm-client.mjs';
 import { supportModelArgs, SUPPORT_MODEL } from './support-llm-profile.mjs';
+
+function presentedBody(result) {
+  assert.equal(result.action, 'reply');
+  assert.equal(result.text.split(SUPPORT_ANSWER_FOOTER).length, 2);
+  assert.ok(result.text.endsWith(`\n\n${SUPPORT_ANSWER_FOOTER}`));
+  assert.ok(result.text.length <= 1800);
+  return result.text.slice(0, -SUPPORT_ANSWER_FOOTER.length - 2);
+}
+
+async function completionFixture(t, answer) {
+  const fixture = { answer, requests: 0, timings: { prompt_n: 180, predicted_n: 24 } };
+  const server = createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const input = JSON.parse(raw);
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/tokenize') {
+      assert.equal(typeof input.content, 'string');
+      res.end(JSON.stringify({ tokens: [1, 2, 3] }));
+      return;
+    }
+    assert.equal(input.model, SUPPORT_MODEL.alias);
+    fixture.requests++;
+    res.end(
+      JSON.stringify({
+        model: SUPPORT_MODEL.alias,
+        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(fixture.answer) } }],
+        timings: fixture.timings,
+      }),
+    );
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    server.close();
+    await once(server, 'close');
+  });
+  fixture.input = {
+    text: 'Как подключить бота?',
+    key: 'fixture-key',
+    endpoint: `http://127.0.0.1:${server.address().port}`,
+  };
+  return fixture;
+}
 
 test('Russian followups keep bot context while ordinary conversation stays silent', () => {
   assert.equal(eligibleQuestion('Как подключить бота в канал'), true);
@@ -120,10 +165,12 @@ test('participant advertisement requests receive the owner policy without infere
     'Хочу подать обьяву в группу',
   ]) {
     const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
-    assert.equal(result.action, 'reply');
+    const body = presentedBody(result);
+    assert.ok(body.split('\n\n').length >= 3);
     assert.match(result.text, /чат поддержки администраторов/iu);
     assert.match(result.text, /администраторам именно той группы/iu);
     assert.deepEqual(result.sourceIds, ['support-room', 'operator']);
+    assert.equal(result.durationMs, 0);
   }
 });
 
@@ -306,11 +353,94 @@ test('exact commercial AI interface questions use the reviewed FAQ without inven
     'Включил Удалять рекламу с подписью ИИ-модерация текста. Где выбрать Строго и настроить бан за повторы?',
   ]) {
     const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
-    assert.equal(result.action, 'reply');
+    const body = presentedBody(result);
+    assert.ok(body.includes('\n\n'));
+    assert.equal(
+      body.replace(/\s+/gu, ' '),
+      knowledge.entries
+        .find((entry) => entry.id === 'commercial-ai-mode')
+        .answer.replace(/\s+/gu, ' '),
+    );
     assert.match(result.text, /такого переключателя в интерфейсе нет/iu);
     assert.match(result.text, /другие фильтры могут по-прежнему удалять/iu);
     assert.deepEqual(result.sourceIds, ['commercial-ai-mode']);
+    assert.equal(result.durationMs, 0);
   }
+});
+
+test('model replies preserve instructions, names, links and metadata with one readable signature', async (t) => {
+  assert.equal(SUPPORT_ANSWER_FOOTER, '✦ Ответ подготовлен ИИ-помощником «Майор Максимов»');
+  const prose =
+    '«Майор Максимов» помогает администраторам подключать ботов к своим чатам и каналам MAX. ' +
+    'Перед подключением проверьте, что вы администратор выбранного сообщества и можете назначать других администраторов. ' +
+    'После назначения бота откройте мини-приложение и убедитесь, что нужный чат появился в списке доступных сообществ.';
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: `${prose}\r\n\r\n**Порядок действий**\r\n- Откройте https://major-maksimov.ru/app/\r\n* Выберите «Майор Максимов».\r\n1. Сохраните настройки.`,
+    sourceIds: ['connect'],
+  });
+  const result = await answerSupport(fixture.input);
+  const body = presentedBody(result);
+  const paragraphs = body.split('\n\nПорядок действий\n')[0];
+  assert.ok(paragraphs.includes('\n\n'));
+  assert.equal(paragraphs.replace(/\s+/gu, ' '), prose);
+  assert.ok(body.includes('\n• Откройте https://major-maksimov.ru/app/\n'));
+  assert.ok(body.includes('\n• Выберите «Майор Максимов».\n1. Сохраните настройки.'));
+  assert.deepEqual(result.sourceIds, ['connect']);
+  assert.deepEqual(result.timings, fixture.timings);
+  assert.ok(Number.isInteger(result.durationMs) && result.durationMs >= 0);
+
+  fixture.answer.text = `Проверьте права бота.\n\n${SUPPORT_ANSWER_FOOTER}\n\n${SUPPORT_ANSWER_FOOTER}`;
+  assert.equal(presentedBody(await answerSupport(fixture.input)), 'Проверьте права бота.');
+});
+
+test('presentation accepts exactly 1800 characters, refuses overflow and leaves skips empty', async (t) => {
+  const body = 'я'.repeat(1800 - SUPPORT_ANSWER_FOOTER.length - 2);
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: body,
+    sourceIds: ['connect'],
+  });
+  const result = await answerSupport(fixture.input);
+  assert.equal(result.text.length, 1800);
+  assert.equal(presentedBody(result), body);
+  fixture.answer.text += 'я';
+  await assert.rejects(answerSupport(fixture.input), /support_response_presentation_budget/u);
+
+  const requests = fixture.requests;
+  assert.deepEqual(await answerSupport({ ...fixture.input, text: 'Спасибо!' }), {
+    action: 'skip',
+    text: '',
+    sourceIds: [],
+  });
+  assert.equal(fixture.requests, requests);
+  fixture.answer = { action: 'skip', text: '', sourceIds: [] };
+  const skipped = await answerSupport({ ...fixture.input, text: 'Бот MAXIM' });
+  assert.equal(fixture.requests, requests + 1);
+  assert.equal(skipped.action, 'skip');
+  assert.equal(skipped.text, '');
+  assert.deepEqual(skipped.sourceIds, []);
+});
+
+test('normalized model text cannot expose forbidden links or internal paths', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'h**tt**ps://evil.example/login',
+    sourceIds: ['connect'],
+  });
+  for (const [text, message] of [
+    ['h**tt**ps://evil.example/login', 'support_response_link'],
+    ['ap**ps**/private-config', 'support_response_internal'],
+    ['loc**al**host:1234', 'support_response_internal'],
+  ]) {
+    fixture.answer.text = text;
+    await assert.rejects(answerSupport(fixture.input), { message });
+  }
+  fixture.answer = { action: 'skip', text: 'loc**al**host:1234', sourceIds: [] };
+  const skipped = await answerSupport({ ...fixture.input, text: 'Бот MAXIM' });
+  assert.equal(skipped.action, 'skip');
+  assert.equal(skipped.text, '');
+  assert.deepEqual(skipped.sourceIds, []);
 });
 
 test('CPU profile prevents GPU offload and bounds context and concurrency', () => {
