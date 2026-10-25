@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { AdminMessageRetentionService } from './admin-message-retention.service';
+import type { EraserControlService } from '../message-retention/eraser-control.service';
 
 const user = { userId: 'u1', username: null, displayName: null, launchBotId: 'major' };
 function setup() {
@@ -49,6 +50,36 @@ function setup() {
 }
 
 describe('chat retention settings boundary', () => {
+  it('does not send weekly policies to the retired legacy executor', async () => {
+    const { service, prisma } = setup();
+    await expect(
+      service.update('-1', user, { enabled: false, hours: 168, expectedRevision: 0 }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+  it('routes Lastik settings independently from moderator deletion capabilities and availability', async () => {
+    const { prisma, access, capabilities, store } = setup();
+    const remote = {
+      read: jest.fn().mockResolvedValue({ enabled: false, hours: 168 }),
+      update: jest.fn().mockResolvedValue({ enabled: true, hours: 168 }),
+      owns: jest.fn().mockResolvedValue(false),
+    } satisfies Pick<EraserControlService, 'read' | 'update' | 'owns'>;
+    const service = new AdminMessageRetentionService(
+      prisma as never,
+      access as never,
+      capabilities as never,
+      store as never,
+      new ConfigService({ ERASER_ENABLED: true, MAX_PUBLISHER_BOT_ID: 'publisher' }),
+      remote as unknown as EraserControlService,
+    );
+    store.allows.mockReturnValue(false);
+    await expect(
+      service.update('-1', user, { enabled: true, hours: 168, expectedRevision: 0 }),
+    ).resolves.toMatchObject({ enabled: true, hours: 168 });
+    expect(access.assertChatAdminAccess).toHaveBeenCalledWith('-1', user);
+    expect(capabilities.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
+    expect(prisma.messageRetentionPolicy.update).not.toHaveBeenCalled();
+  });
   it('rejects malformed identifiers before access lookups or database reads', async () => {
     const { service, prisma, access } = setup();
     await expect(service.read('not-a-chat', user)).rejects.toMatchObject({ status: 400 });

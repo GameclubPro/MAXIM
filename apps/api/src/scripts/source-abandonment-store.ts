@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { confirmEraserSourceHolds } from '../message-retention/eraser-source-hold-barrier';
 import {
   Prisma,
   createPrismaClient,
@@ -311,6 +312,14 @@ export async function executeSourceAbandonmentStore(
 ): Promise<LegacyRecoveryStoreOutput> {
   request = parseSourceAbandonmentStoreRequest(JSON.stringify(request));
   const inventory = verifySourceAbandonmentInventory(request, inventoryBytes);
+  if (request.operation === 'install')
+    await confirmEraserSourceHolds(
+      prisma,
+      inventory.selectedOwners.map((row) => ({
+        chatId: row.chatId,
+        messageId: row.messageId,
+      })),
+    );
   const attestation = attestationFor(request, inventory);
   const base = {
     version: 1 as const,

@@ -7,10 +7,13 @@ export async function runRetentionRegressions(browser, base) {
     'pending-close',
     'lost-reply',
     'unconfirmed-read',
+    'late-commit',
     'write-retry',
     'remote-draft',
     'summary',
     'chat-change',
+    'connect-bot',
+    'mixed-hours',
   ]) {
     const context = await browser.newContext({
       viewport: { width: 360, height: 800 },
@@ -27,15 +30,60 @@ export async function runRetentionRegressions(browser, base) {
       const url = new URL('chat/preview-chat/settings?preview=1&device=android', base);
       await page.goto(url.href);
       await page.getByRole('button', { name: 'Удаление старых сообщений', exact: true }).waitFor();
-      await page.evaluate(async (fixtureUrl) => {
-        const fixture = await import(fixtureUrl);
-        fixture.mountRetentionFixture();
-      }, new URL('test/message-retention-fixture.mjs', base).href);
+      await page.evaluate(
+        async ({ fixtureUrl, mixed }) => {
+          const fixture = await import(fixtureUrl);
+          if (mixed) fixture.mountMixedRetentionFixture();
+          else fixture.mountRetentionFixture();
+        },
+        {
+          fixtureUrl: new URL('test/message-retention-fixture.mjs', base).href,
+          mixed: scenario === 'mixed-hours',
+        },
+      );
+      if (scenario === 'mixed-hours') {
+        const group = page.getByRole('radiogroup', { name: 'Удалять сообщения старше' });
+        const first = group.getByRole('radio', { name: '24 часа', exact: true });
+        await first.waitFor();
+        assert.equal(await first.getAttribute('tabindex'), '0');
+        await page.getByRole('switch', { name: 'Удаление по сроку' }).focus();
+        await page.keyboard.press('Tab');
+        assert.equal(await first.evaluate((node) => node === document.activeElement), true);
+        await page.keyboard.press('ArrowRight');
+        assert.equal(await group.getByRole('radio', { name: '48 часов' }).isChecked(), true);
+        await page.keyboard.press('End');
+        assert.equal(await group.getByRole('radio', { name: '1 неделя' }).isChecked(), true);
+        assert.deepEqual(errors, [], scenario);
+        continue;
+      }
       const entry = page.getByRole('button', { name: 'Удаление старых сообщений', exact: true });
       await entry.click();
       const panel = page.getByRole('dialog', { name: 'Удаление старых сообщений' });
       const toggle = panel.getByRole('switch', { name: 'Удаление по сроку' });
       await toggle.waitFor();
+      if (scenario === 'connect-bot') {
+        await page.evaluate(() =>
+          window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'missing' }),
+        );
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+        await panel
+          .getByText('Добавьте бота в чат администратором с правами чтения и удаления сообщений.', {
+            exact: true,
+          })
+          .waitFor();
+        const link = panel.getByRole('link', { name: 'Открыть бота «Ластик»', exact: true });
+        assert.equal(await link.getAttribute('href'), 'https://max.ru/id613000037577_5_bot');
+        await page.evaluate(() => (document.documentElement.style.fontSize = '200%'));
+        assert.equal(
+          await panel.evaluate((node) => node.scrollWidth > node.clientWidth + 2),
+          false,
+        );
+        await link.scrollIntoViewIfNeeded();
+        assert.equal(
+          await link.evaluate((node) => node.getBoundingClientRect().height >= 44),
+          true,
+        );
+      }
       if (scenario === 'permissions') {
         await page.evaluate(() =>
           window.__RETENTION_TEST__.failWrites({
@@ -129,6 +177,71 @@ export async function runRetentionRegressions(browser, base) {
           false,
         );
       }
+      if (scenario === 'late-commit') {
+        await page.evaluate(() => {
+          window.__RETENTION_TEST__.holdWrite();
+          window.__RETENTION_TEST__.loseNextReplyBeforeCommit();
+        });
+        await toggle.check();
+        await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+        await panel.getByText('Сохранение пока не подтверждено', { exact: true }).waitFor();
+        assert.deepEqual(
+          await page.evaluate(() => ({
+            enabled: window.__RETENTION_TEST__.serverState().enabled,
+            revision: window.__RETENTION_TEST__.serverState().revision,
+          })),
+          { enabled: false, revision: 0 },
+        );
+        assert.equal(await toggle.isDisabled(), true);
+        assert.equal(await panel.getByRole('radio', { name: '24 часа' }).isDisabled(), true);
+        assert.equal(
+          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
+          true,
+        );
+        await page.keyboard.press('Escape');
+        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+        await page.locator('.settings-drilldown__backdrop').click({ force: true });
+        assert.equal(
+          await page.getByRole('dialog', { name: 'Не сохранять изменения?' }).count(),
+          0,
+        );
+        assert.equal(await panel.isVisible(), true);
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+        assert.equal(
+          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
+          true,
+        );
+        await panel.getByRole('button', { name: 'Проверить сохранение', exact: true }).click();
+        await page.waitForFunction(() => window.__RETENTION_TEST__.writes.length === 2);
+        assert.equal(
+          await page.evaluate(() => {
+            const writes = window.__RETENTION_TEST__.writes;
+            return (
+              Boolean(writes[0].operationId) &&
+              JSON.stringify(writes[0]) === JSON.stringify(writes[1])
+            );
+          }),
+          true,
+        );
+        assert.equal(
+          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
+          true,
+        );
+        await page.evaluate(() => window.__RETENTION_TEST__.releaseWrite());
+        await panel.getByText('Сохранено', { exact: true }).waitFor();
+        assert.equal(
+          await page.evaluate(() => window.__RETENTION_TEST__.serverState().revision),
+          1,
+        );
+        assert.equal(
+          await page.evaluate(() => window.__RETENTION_TEST__.serverState().enabled),
+          true,
+        );
+        assert.equal(
+          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
+          false,
+        );
+      }
       if (scenario === 'write-retry') {
         await page.evaluate(() =>
           window.__RETENTION_TEST__.failWrites({
@@ -195,11 +308,8 @@ export async function runRetentionRegressions(browser, base) {
           window.__RETENTION_TEST__.replaceServer({ status: 'unavailable' });
           window.__RETENTION_TEST__.publishSummary({ status: 'unavailable' });
         });
-        await page.waitForFunction(
-          () =>
-            document.getElementById('settings-message-retention-entry-status')?.textContent ===
-            'Недоступно',
-        );
+        // The overview contains only the module name; connection/status belongs inside the panel.
+        assert.equal(await entry.innerText(), 'Удаление старых сообщений');
         assert.equal(
           await page.evaluate(
             () => window.__RETENTION_TEST__.requests.filter((method) => method === 'GET').length,
@@ -207,11 +317,8 @@ export async function runRetentionRegressions(browser, base) {
           1,
         );
         await entry.click();
-        await panel.getByText('Отключено оператором', { exact: true }).waitFor();
-        assert.equal(
-          await page.locator('#settings-message-retention-entry-status').textContent(),
-          'Недоступно',
-        );
+        await panel.getByText('Временно недоступно', { exact: true }).waitFor();
+        assert.equal(await page.locator('#settings-message-retention-entry-status').count(), 0);
       }
       if (scenario === 'chat-change') {
         await toggle.check();

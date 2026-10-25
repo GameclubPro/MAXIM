@@ -26,6 +26,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
 import { buildGroupCommandKey } from '../common/group-command-authority.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { confirmEraserSourceHolds } from '../message-retention/eraser-source-hold-barrier';
 
 type Database = PrismaService | PrismaClient;
 type ReadDatabase = Database | Prisma.TransactionClient;
@@ -311,6 +312,11 @@ async function installLegacyBatch(
   )
     throw new Error('Legacy installation requires one bounded distinct reviewed batch');
   const previewSha256 = buildLegacyRecoveryPreviewDigest(candidates, children);
+  await confirmEraserSourceHolds(
+    prisma,
+    candidates.map(({ source }) => ({ chatId: source.chatId, messageId: source.messageId })),
+    candidates.map(({ source }) => source.userId),
+  );
   return prisma.$transaction(
     async (tx) => {
       await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;

@@ -75,23 +75,59 @@ function setup() {
     governor as never,
     admission as unknown as MessageRetentionAdmissionService,
   );
-  return { guard, policy, candidate, intent, chat, binding, prisma, max, store, governor, admission };
+  return {
+    guard,
+    policy,
+    candidate,
+    intent,
+    chat,
+    binding,
+    prisma,
+    max,
+    store,
+    governor,
+    admission,
+  };
 }
 
 describe('retention destructive boundary', () => {
   afterEach(() => jest.useRealTimers());
+  it('refuses the legacy executor after a persisted Lastik handover before any remote checks', async () => {
+    const { guard, prisma, binding, max } = setup();
+    prisma.$queryRaw.mockResolvedValue([{ ...binding(), eraserOwned: true }]);
+    await expect(guard.assertAllowed('i1', 'bot')).rejects.toMatchObject({
+      disposition: 'skip',
+      reasonCode: 'activation_ended',
+    });
+    expect(max.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(max.getPinnedMessageId).not.toHaveBeenCalled();
+  });
   it('does not prepare remote evidence while more important work is waiting', async () => {
     const { guard, admission, max } = setup();
-    admission.decide.mockResolvedValue({ allowed: false, reason: 'higher_priority_ready', retryAfterMs: 5_000 });
-    await expect(guard.assertAllowed('i1', 'bot')).rejects.toMatchObject({ disposition: 'retry', reasonCode: 'capacity_paused' });
+    admission.decide.mockResolvedValue({
+      allowed: false,
+      reason: 'higher_priority_ready',
+      retryAfterMs: 5_000,
+    });
+    await expect(guard.assertAllowed('i1', 'bot')).rejects.toMatchObject({
+      disposition: 'retry',
+      reasonCode: 'capacity_paused',
+    });
     expect(max.getChatMembersAccess).not.toHaveBeenCalled();
     expect(max.getPinnedMessageId).not.toHaveBeenCalled();
   });
   it('rejects final dispatch if the quiet permit was revoked after preparation', async () => {
     const { guard, admission, max } = setup();
     await guard.assertAllowed('i1', 'bot', 'prepare');
-    admission.decide.mockResolvedValue({ allowed: false, reason: 'permit_expired', retryAfterMs: 5_000 });
-    await expect(guard.assertAllowed('i1', 'bot', 'dispatch')).rejects.toMatchObject({ disposition: 'retry', reasonCode: 'capacity_paused' });
+    admission.decide.mockResolvedValue({
+      allowed: false,
+      reason: 'permit_expired',
+      retryAfterMs: 5_000,
+    });
+    await expect(guard.assertAllowed('i1', 'bot', 'dispatch')).rejects.toMatchObject({
+      disposition: 'retry',
+      reasonCode: 'capacity_paused',
+    });
     expect(max.getChatMembersAccess).toHaveBeenCalledTimes(1);
     expect(max.getPinnedMessageId).toHaveBeenCalledTimes(1);
   });

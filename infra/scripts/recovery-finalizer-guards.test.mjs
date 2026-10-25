@@ -71,6 +71,7 @@ test('finalizer is syntax-valid and contains no runtime lifecycle, build, or mig
 test('finalizer binds every active component to the target ref and re-proves strict smokes', () => {
   const finalizer = read('infra/scripts/vps-finalize-release-recovery.sh');
   const runtime = functionBlock(finalizer, 'inspect_service_runtime');
+  const resolveImages = functionBlock(finalizer, 'resolve_target_images');
   const smokes = functionBlock(finalizer, 'run_strict_finalizer_smokes');
   const commit = functionBlock(finalizer, 'commit_recovered_release');
   const main = functionBlock(finalizer, 'main');
@@ -108,7 +109,12 @@ test('finalizer binds every active component to the target ref and re-proves str
     /maxim_topology_smoke_media_analysis_tesseract COMPOSE_FILES required sandbox/u,
   );
 
-  assert.match(commit, /for component in api-shared miniapp-major-static admin-static/u);
+  assert.match(
+    resolveImages,
+    /FINALIZER_COMPONENTS=\(api-shared miniapp-major-static admin-static\)/u,
+  );
+  assert.match(resolveImages, /FINALIZER_COMPONENTS\+=\(eraser\)/u);
+  assert.match(commit, /for component in "\$\{FINALIZER_COMPONENTS\[@\]\}"/u);
   assert.match(
     commit,
     /\$\{component\}\|\$\{COMPONENT_SOURCE_SHA\[\$component\]:-\$EXPECTED_RUNTIME_SHA\}\|/u,
@@ -305,10 +311,11 @@ test('split finalization writes the captured runtime identity and rechecks compa
 EXPECTED_RUNTIME_SHA='${runtime}'
 RECOVERY_BASE_MANIFEST=/private/transition.json
 MIGRATIONS_FILE=/private/migrations.txt
+FINALIZER_COMPONENTS=(api-shared miniapp-major-static admin-static)
 maxim_require_ordinary_effect_authority() { :; }
 verify_synchronized_checkout() { :; }
 verify_controller_runtime_compatibility() { :; }
-for component in api-shared miniapp-major-static admin-static; do
+for component in "\${FINALIZER_COMPONENTS[@]}"; do
   COMPONENT_IMAGE_REF["$component"]="$(expected_component_ref "$component")"
   COMPONENT_IMAGE_ID["$component"]='sha256:${'c'.repeat(64)}'
 done
@@ -350,6 +357,7 @@ API_ONLY_RECOVERY=1
 EXPECTED_RUNTIME_SHA=${shellQuote(runtime)}
 RECOVERY_BASE_MANIFEST=/private/current.invalid-deploy-20261019T000000Z-123.json
 MIGRATIONS_FILE=/private/migrations.txt
+FINALIZER_COMPONENTS=(api-shared miniapp-major-static admin-static)
 maxim_require_ordinary_effect_authority() { :; }
 verify_synchronized_checkout() { :; }
 verify_controller_runtime_compatibility() { :; }

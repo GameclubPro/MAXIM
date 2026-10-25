@@ -2,15 +2,18 @@ import { useEffect, useRef } from 'react';
 import { AppIcon } from '../../components/ui/app-icon';
 import { SegmentedControl } from '../../components/ui/segmented-control';
 import type { SettingsFieldState } from '../../features/network-settings/field-model';
-import './settings-message-retention.css';
+import type { MessageRetentionState } from '@maxim/contracts/settings';
+import { LASTIK_BOT_URL, openLastikBot } from '../../lib/lastik-bot';
+import './shared-message-retention-fields.css';
 
 export type SharedMessageRetentionFieldsProps = {
   enabled: SettingsFieldState<boolean>;
-  hours: SettingsFieldState<24 | 48>;
+  hours: SettingsFieldState<24 | 48 | 168>;
   disabled: boolean;
   enableDisabled?: boolean;
+  connectionStatus?: MessageRetentionState['connectionStatus'];
   onEnabledChange: (enabled: boolean) => void;
-  onHoursChange: (hours: 24 | 48) => void;
+  onHoursChange: (hours: 24 | 48 | 168) => void;
 };
 
 export function SharedMessageRetentionFields({
@@ -18,6 +21,7 @@ export function SharedMessageRetentionFields({
   hours,
   disabled,
   enableDisabled,
+  connectionStatus,
   onEnabledChange,
   onHoursChange,
 }: SharedMessageRetentionFieldsProps) {
@@ -27,6 +31,33 @@ export function SharedMessageRetentionFields({
   }, [enabled.kind]);
   return (
     <>
+      <div className="message-retention-bot">
+        <span className="message-retention-bot__icon" aria-hidden>
+          <AppIcon icon="Trash" />
+        </span>
+        <div className="message-retention-bot__copy">
+          <strong>
+            {connectionStatus === 'connected' ? '«Ластик» подключён' : 'Бот «Ластик»'}
+          </strong>
+          {connectionStatus !== 'connected' ? (
+            <p>
+              {connectionStatus === 'no_access'
+                ? 'Назначьте бота администратором с правами чтения и удаления сообщений.'
+                : 'Добавьте бота в чат администратором с правами чтения и удаления сообщений.'}
+            </p>
+          ) : null}
+        </div>
+        <a
+          className="button button--accent message-retention-bot__link"
+          href={LASTIK_BOT_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={openLastikBot}
+        >
+          Открыть бота «Ластик»
+          <AppIcon icon="NavArrowRight" aria-hidden />
+        </a>
+      </div>
       <div className="message-retention-settings__row">
         <label htmlFor="message-retention-enabled">Удаление по сроку</label>
         {enabled.kind === 'mixed' ? <span role="status">Разные значения</span> : null}
@@ -49,24 +80,24 @@ export function SharedMessageRetentionFields({
         </label>
       </div>
       <p className="message-retention-policy">
-        Удаляем только новые сообщения, полученные после включения. Старую историю не очищаем. 24
-        или 48 часов — минимальный возраст. Очистка ждёт периода низкой нагрузки, поэтому сообщения
-        могут оставаться в чате дольше. После повторного включения учёт начинается заново. Удалённые
-        сообщения восстановить нельзя.
+        Удаляются сообщения старше выбранного срока, включая историю до включения. Большая история
+        очищается постепенно.
       </p>
       <fieldset disabled={disabled || hours.kind === 'loading'}>
-        <legend>Минимальный возраст сообщений</legend>
+        <legend>Удалять сообщения старше</legend>
         {hours.kind === 'mixed' ? <p role="status">Разные значения</p> : null}
         <SegmentedControl
-          ariaLabel="Минимальный возраст сообщений"
-          value={hours.kind === 'common' ? String(hours.value) : ''}
+          ariaLabel="Удалять сообщения старше"
+          value={hours.kind === 'common' ? String(hours.value) : null}
           options={[
             { value: '24', label: '24 часа', disabled: disabled || hours.kind === 'loading' },
             { value: '48', label: '48 часов', disabled: disabled || hours.kind === 'loading' },
+            { value: '168', label: '1 неделя', disabled: disabled || hours.kind === 'loading' },
           ]}
-          onChange={(value) => onHoursChange(value === '24' ? 24 : 48)}
+          onChange={(value) => onHoursChange(value === '24' ? 24 : value === '168' ? 168 : 48)}
         />
       </fieldset>
+      <p className="message-retention-policy">Удалённые сообщения восстановить нельзя.</p>
     </>
   );
 }
@@ -83,7 +114,7 @@ export function SharedMessageRetentionExclusions() {
       />
       <div>
         <span>Исключения</span>
-        <p>Администраторы, закрепы, боты</p>
+        <p>Закрепы, правила, объявления розыгрышей и их итоги из наших модулей</p>
       </div>
     </div>
   );

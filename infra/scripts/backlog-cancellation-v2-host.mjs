@@ -17,7 +17,10 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createLegacyColdRuntime } from './legacy-cold-runtime.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
-import { readLegacyColdStoreConnection } from './legacy-cold-host.mjs';
+import {
+  readLegacyColdStoreConnection,
+  isLegacyColdStoreEnvironment,
+} from './legacy-cold-host.mjs';
 import {
   assertInheritedDeployLock,
   assertNoActiveLegacyColdMaintenance,
@@ -389,12 +392,7 @@ function verifyStoreEnvironment(connection) {
     !connection.environment.endsWith('\n')
   )
     throw new Error('V2 store connection unproved');
-  const lines = connection.environment.slice(0, -1).split('\n');
-  if (
-    lines.length !== 2 ||
-    !lines.some((line) => /^DATABASE_URL=\S+$/u.test(line)) ||
-    !lines.some((line) => /^REDIS_URL=\S+$/u.test(line))
-  )
+  if (!isLegacyColdStoreEnvironment(connection.environment))
     throw new Error('V2 helper accepts only exact store credentials');
 }
 

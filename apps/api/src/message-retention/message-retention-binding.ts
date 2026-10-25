@@ -21,6 +21,7 @@ export type RetentionBindingRow = {
   hours: number | null;
   revision: number | null;
   entityType: string | null;
+  eraserOwned?: boolean;
 };
 
 // FLAG: Keep destructive authority in one snapshot and limit reason work to two rows.
@@ -33,7 +34,8 @@ export function retentionBindingQuery(intentId: string): Prisma.Sql {
         candidate."author_id" AS "authorId", candidate."activation_id" AS "activationId",
         candidate."source_at" AS "sourceAt", candidate."status", candidate."shadow_only" AS "shadowOnly",
         policy."enabled", policy."activation_id" AS "policyActivationId", policy."hours", policy."revision",
-        chat."entity_type" AS "entityType"
+        chat."entity_type" AS "entityType",
+        EXISTS(SELECT 1 FROM eraser_chat_bindings eraser WHERE eraser.chat_id = intent.chat_id) AS "eraserOwned"
       FROM "moderation_delete_intents" intent
       LEFT JOIN "message_retention_candidates" candidate
         ON candidate."chat_id" = intent."chat_id" AND candidate."message_id" = intent."message_id"

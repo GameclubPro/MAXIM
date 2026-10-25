@@ -202,6 +202,11 @@ communities require an explicit designation before agent-initiated test mutation
 
 ## Moderation And Read Models
 
+- «Ластик» owns historical age-based deletion in its independent service. Moderator APIs only
+  authorize settings and durably deliver protection/ownership state; they never receive its bot
+  token or execute its jobs. Preserve `eraser_chat_bindings` across flag changes and rollback;
+  see [Eraser rollout](../operations/runbooks/eraser-rollout.md).
+
 - Chat context v4 separates large configured media into SHA256-bound, expiring cache blobs. A missing/corrupt blob reloads the complete SQL context, never omits an image. Keep the compact body bound to the shared context revision on reads and all mutations, invalidate v3 on v4 mutations, and preserve access-epoch/generation fences across rollback/re-upgrade. Run native chat-context media/cache tests plus managed-access and membership full-path regressions; local media strings have their own bounded budget, while decoded settings retain the full existing context budget.
 
 - `antiSpamEnabled` bans on the sixth plain-text/sticker message within six seconds. Exclude photos, video, files, voice, media batches, and forward-only links; do not expose threshold controls or route this burst through configurable escalation.

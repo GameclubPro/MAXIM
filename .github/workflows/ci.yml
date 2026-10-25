@@ -29,6 +29,7 @@ jobs:
       commercial_benchmark: ${{ steps.plan.outputs.commercial_benchmark }}
       miniapp: ${{ steps.plan.outputs.miniapp }}
       admin: ${{ steps.plan.outputs.admin }}
+      eraser: ${{ steps.plan.outputs.eraser }}
       docker: ${{ steps.plan.outputs.docker }}
       docker_matrix: ${{ steps.plan.outputs.docker_matrix }}
     steps:
@@ -371,6 +372,47 @@ jobs:
         timeout-minutes: 3
       - run: npm run check:admin
 
+  eraser:
+    name: Lastik
+    needs: impact
+    if: needs.impact.outputs.eraser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: eraser_test
+          POSTGRES_PASSWORD: eraser_test
+          POSTGRES_DB: eraser_test
+          TZ: UTC
+        ports:
+          - '127.0.0.1:5432:5432'
+        options: >-
+          --health-cmd "pg_isready -U eraser_test -d eraser_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - '127.0.0.1:6379:6379'
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit
+      - run: npm run check:eraser
+      - name: Validate independent PostgreSQL and Redis lifecycle
+        env:
+          TZ: UTC
+          MAXIM_TEST_POSTGRES_URL: postgresql://eraser_test:eraser_test@127.0.0.1:5432/eraser_test
+          MAXIM_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+        run: npm run test:stores --workspace @maxim/eraser
+
   docker:
     name: Docker (${{ matrix.component }})
     needs: impact
@@ -401,7 +443,7 @@ jobs:
           TRUSTED_BUILD_CACHE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           BUILD_CACHE_PATH: ${{ runner.temp }}/maxim-buildx-cache
         run: |
-          build_args=()
+          build_args=(--build-arg "COMMIT_SHA=${{ github.sha }}")
           if [[ -n "$VITE_API_BASE" ]]; then
             build_args+=(--build-arg "VITE_API_BASE=$VITE_API_BASE")
           fi
@@ -553,6 +595,7 @@ jobs:
       - commercial-benchmark
       - miniapp
       - admin
+      - eraser
       - docker
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

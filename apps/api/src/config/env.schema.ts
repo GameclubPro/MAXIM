@@ -417,6 +417,15 @@ const envSchema = z.object({
   MODERATION_DELETE_INTENT_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(2),
   MODERATION_DELETE_INTENT_RETENTION_DAYS: z.coerce.number().int().min(7).max(365).default(90),
   MESSAGE_RETENTION_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('off'),
+  ERASER_ENABLED: envBoolean(false),
+  ERASER_CONTROL_URL: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().url().optional(),
+  ),
+  ERASER_CONTROL_TOKEN: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(32).optional(),
+  ),
   MESSAGE_RETENTION_CANARY_CHAT_IDS: z.string().default(''),
   MODERATION_DELETE_INTENT_PURGE_MAX_BATCHES: z.coerce.number().int().min(1).max(100).default(40),
   MODERATION_DELETE_INTENT_CLEANUP_INTERVAL_MS: z.coerce
@@ -761,6 +770,28 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
       .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
       .join('; ');
     throw new Error(`Environment validation failed: ${details}`);
+  }
+
+  if (
+    parsed.data.ERASER_ENABLED &&
+    (!parsed.data.ERASER_CONTROL_URL || !parsed.data.ERASER_CONTROL_TOKEN)
+  )
+    throw new Error(
+      'Environment validation failed: ERASER_ENABLED requires independent control URL and token',
+    );
+  if (parsed.data.ERASER_CONTROL_URL) {
+    const origin = new URL(parsed.data.ERASER_CONTROL_URL);
+    if (
+      origin.username ||
+      origin.password ||
+      origin.search ||
+      origin.hash ||
+      !['http:', 'https:'].includes(origin.protocol) ||
+      !['', '/'].includes(origin.pathname)
+    )
+      throw new Error(
+        'Environment validation failed: ERASER_CONTROL_URL must be an HTTP origin without credentials or path',
+      );
   }
 
   if (

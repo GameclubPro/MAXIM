@@ -1,0 +1,4 @@
+services:
+  eraser:
+    image: ${MAXIM_ERASER_IMAGE:?MAXIM_ERASER_IMAGE must reference a prebuilt Lastik image}
+    build: !reset null

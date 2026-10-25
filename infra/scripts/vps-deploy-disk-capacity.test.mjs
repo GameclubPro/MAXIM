@@ -557,7 +557,7 @@ test('runtime recreation and migrations cannot trigger implicit image builds', (
 
     assert.ok(runCommands.length > 0, 'expected migration docker compose run commands');
     for (const command of runCommands) {
-      assert.match(command, /"\$\{MIGRATION_COMPOSE_FILES\[@\]\}"/u);
+      assert.match(command, /"\$\{(?:ERASER_)?MIGRATION_COMPOSE_FILES\[@\]\}"/u);
       assert.match(command, / --pull never /u);
       assert.doesNotMatch(command, / --no-build /u);
     }
@@ -569,6 +569,16 @@ test('runtime recreation and migrations cannot trigger implicit image builds', (
       'services:',
       '  api-ingress:',
       '    image: ${MAXIM_MIGRATION_API_IMAGE:?MAXIM_MIGRATION_API_IMAGE must reference a prebuilt API image}',
+      '    build: !reset null',
+      '',
+    ].join('\n'),
+  );
+  assert.equal(
+    read('infra/docker-compose.eraser-no-build.yml'),
+    [
+      'services:',
+      '  eraser:',
+      '    image: ${MAXIM_ERASER_IMAGE:?MAXIM_ERASER_IMAGE must reference a prebuilt Lastik image}',
       '    build: !reset null',
       '',
     ].join('\n'),

@@ -15,7 +15,10 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { isIP } from 'node:net';
-import { readLegacyColdStoreConnection } from './legacy-cold-host.mjs';
+import {
+  readLegacyColdStoreConnection,
+  isLegacyColdStoreEnvironment,
+} from './legacy-cold-host.mjs';
 import { createLegacyColdRuntime } from './legacy-cold-runtime.mjs';
 import { createLegacyColdClient } from './legacy-cold-client.mjs';
 import {
@@ -728,13 +731,7 @@ export async function createSourceAbandonmentSessionHostContext({
     'session_host_catalog_changed',
   );
   const environment = connection.environment;
-  requireFact(
-    typeof environment === 'string' &&
-      Buffer.byteLength(environment) <= 16 * 1024 &&
-      /^DATABASE_URL=\S+\nREDIS_URL=\S+\n$/u.test(environment) &&
-      !/[\r\0]/u.test(environment),
-    'session_host_environment_refused',
-  );
+  requireFact(isLegacyColdStoreEnvironment(environment), 'session_host_environment_refused');
   const topology = sourceAbandonmentSessionHostTopology({
     baseline,
     ...connection,

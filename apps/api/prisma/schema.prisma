@@ -3930,6 +3930,7 @@ model ManagedGiveaway {
   winners ManagedGiveawayWinner[]
 
   @@index([sourceChatId, status, createdAt], map: "managed_giveaways_source_chat_id_status_created_at_idx")
+  @@index([sourceChatId, id], map: "managed_giveaways_eraser_bootstrap_idx")
   @@index([status, startsAt], map: "managed_giveaways_status_starts_at_idx")
   @@index([status, endsAt], map: "managed_giveaways_status_ends_at_idx")
   @@index([status, lockedAt], map: "managed_giveaways_status_locked_at_idx")
@@ -4267,6 +4268,100 @@ model MessageRetentionQuota {
   healthySince DateTime? @map("healthy_since")
 
   @@map("message_retention_quotas")
+}
+
+// FLAG: An Eraser binding permanently fences the retired moderation-owned executor.
+model EraserChatBinding {
+  chatId      String   @id @map("chat_id")
+  legacyHours Int      @default(48) @map("legacy_hours")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("eraser_chat_bindings")
+}
+
+model EraserProtectedMessage {
+  chatId    String   @map("chat_id")
+  messageId String   @map("message_id")
+  held      Boolean  @default(false)
+  delivered Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([chatId, messageId])
+  @@index([chatId, delivered, messageId], map: "eraser_protected_messages_delivery_idx")
+  @@map("eraser_protected_messages")
+}
+
+model EraserProtectionOutbox {
+  chatId             String    @id @map("chat_id")
+  revision           Int       @default(0)
+  deliveredRevision  Int       @default(-1) @map("delivered_revision")
+  bootstrapCursor    String?   @map("bootstrap_cursor")
+  bootstrapComplete  Boolean   @default(false) @map("bootstrap_complete")
+  rulesAuditAt       DateTime? @map("rules_audit_at")
+  rulesAuditId       String?   @map("rules_audit_id")
+  rulesAuditComplete Boolean   @default(false) @map("rules_audit_complete")
+  holdCursor         String?   @map("hold_cursor")
+  holdsComplete      Boolean   @default(false) @map("holds_complete")
+  sourceCursor       String?   @map("source_cursor")
+  sourceStage        Int       @default(0) @map("source_stage")
+  nextAttemptAt      DateTime  @default(now()) @map("next_attempt_at")
+  leaseToken         String?   @map("lease_token")
+  leaseUntil         DateTime? @map("lease_until")
+  updatedAt          DateTime  @default(now()) @map("updated_at")
+
+  @@index([nextAttemptAt, chatId], map: "eraser_protection_outbox_due_idx")
+  @@map("eraser_protection_outbox")
+}
+
+model EraserProtectedBot {
+  chatId    String  @map("chat_id")
+  botId     String  @map("bot_id")
+  delivered Boolean @default(false)
+
+  @@id([chatId, botId])
+  @@index([chatId, delivered, botId], map: "eraser_protected_bots_delivery_idx")
+  @@map("eraser_protected_bots")
+}
+
+model EraserControlOperation {
+  id          String    @id
+  chatId      String    @map("chat_id")
+  actorUserId String    @map("actor_user_id")
+  request     Json
+  result      Json?
+  confirmedAt DateTime? @map("confirmed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([chatId, createdAt], map: "eraser_control_operations_chat_created_idx")
+  @@map("eraser_control_operations")
+}
+
+model EraserHeldAuthor {
+  authorId  String  @id @map("author_id")
+  delivered Boolean @default(false)
+
+  @@index([delivered, authorId], map: "eraser_held_authors_delivery_idx")
+  @@map("eraser_held_authors")
+}
+
+model EraserGlobalHoldState {
+  id                Int       @id
+  sourceCursor      String?   @map("source_cursor")
+  bootstrapComplete Boolean   @default(false) @map("bootstrap_complete")
+  leaseToken        String?   @map("lease_token")
+  leaseUntil        DateTime? @map("lease_until")
+
+  @@map("eraser_global_hold_state")
+}
+
+model EraserPublicationFence {
+  chatId    String   @map("chat_id")
+  sourceKey String   @map("source_key")
+  startedAt DateTime @map("started_at")
+
+  @@id([chatId, sourceKey])
+  @@index([chatId, startedAt], map: "eraser_publication_fences_started_idx")
+  @@map("eraser_publication_fences")
 }
 
 model PublisherStartIntent {

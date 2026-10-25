@@ -17,7 +17,7 @@ const dockerImageIdPattern = /^sha256:[0-9a-f]{64}$/u;
 const dockerContainerIdPattern = /^[0-9a-f]{64}$/u;
 const fullObjectIdSource = '(?:[0-9a-f]{40}|[0-9a-f]{64})';
 const immutableReleaseRefPattern = new RegExp(
-  `^(?:maxim-api:(?:runtime-rollback-)?${fullObjectIdSource}|maxim-miniapp-major:${fullObjectIdSource}|maxim-admin:${fullObjectIdSource}|maxim-miniapp-legacy:${fullObjectIdSource})$`,
+  `^(?:maxim-api:(?:runtime-rollback-)?${fullObjectIdSource}|maxim-miniapp-major:${fullObjectIdSource}|maxim-admin:${fullObjectIdSource}|maxim-eraser:${fullObjectIdSource}|maxim-miniapp-legacy:${fullObjectIdSource})$`,
   'u',
 );
 const maxDockerOutputBytes = 64 * 1024 * 1024;

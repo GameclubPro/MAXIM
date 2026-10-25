@@ -86,6 +86,7 @@ import { AdminStopWordsService } from './admin-stop-words.service';
 import { AdminStopWordsController } from './admin-stop-words.controller';
 import { AdminMessageRetentionController } from './admin-message-retention.controller';
 import { AdminMessageRetentionService } from './admin-message-retention.service';
+import { EraserControlService } from '../message-retention/eraser-control.service';
 import { MessageRetentionStateModule } from '../message-retention/message-retention-state.module';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import { AdminDuplicateDiagnosticsService } from './admin-duplicate-diagnostics.service';
@@ -252,6 +253,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
       ? [SuggestionSubscriptionMonitorService]
       : []),
     AdminMessageRetentionService,
+    EraserControlService,
     AdminReportsService,
     AdvertisingPlacementService,
     MarketplaceAccessService,

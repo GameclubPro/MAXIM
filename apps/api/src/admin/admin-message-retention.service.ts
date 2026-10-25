@@ -3,6 +3,8 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
@@ -19,6 +21,7 @@ import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descript
 import { ManagedEntitiesService } from './managed-entities.service';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import type { NetworkSettingsWriteOptions } from './network-settings-write';
+import { EraserControlService } from '../message-retention/eraser-control.service';
 
 @Injectable()
 export class AdminMessageRetentionService {
@@ -28,10 +31,12 @@ export class AdminMessageRetentionService {
     private readonly capabilities: AdminSettingsBotCapabilityService,
     private readonly store: MessageRetentionStore,
     private readonly config: ConfigService,
+    @Optional() private readonly eraser?: EraserControlService,
   ) {}
 
   async read(chatId: string, user: AuthUser): Promise<MessageRetentionState> {
     await this.authorize(chatId, user);
+    if (await this.useEraser(chatId)) return this.requireEraser().read(chatId);
     return this.snapshot(chatId);
   }
 
@@ -45,6 +50,10 @@ export class AdminMessageRetentionService {
     const parsed = updateMessageRetentionSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const request = parsed.data;
+    if (await this.useEraser(chatId))
+      return this.requireEraser().update(chatId, user.userId, request, networkWrite);
+    if (request.hours === 168)
+      throw new ServiceUnavailableException('Подключите Ластика, чтобы выбрать срок 1 неделя.');
     if (request.enabled) {
       if (!this.store.allows(chatId))
         throw new BadRequestException('Модуль пока недоступен в этом чате.');
@@ -108,6 +117,28 @@ export class AdminMessageRetentionService {
       await networkWrite?.onCommitted?.(tx, String(current.revision + 1));
     });
     return this.snapshot(chatId);
+  }
+
+  async resumeEraserOperation(
+    chatId: string,
+    user: AuthUser,
+    operationId: string,
+    options?: NetworkSettingsWriteOptions,
+  ): Promise<MessageRetentionState | null> {
+    if (!(await this.useEraser(chatId))) return null;
+    await this.authorize(chatId, user);
+    return this.requireEraser().resume(chatId, user.userId, operationId, options);
+  }
+
+  private requireEraser(): EraserControlService {
+    if (!this.eraser) throw new ServiceUnavailableException('Ластик временно недоступен.');
+    return this.eraser;
+  }
+
+  private async useEraser(chatId: string): Promise<boolean> {
+    if (this.config.get<boolean>('ERASER_ENABLED', false)) return true;
+    // FLAG: A switched-off or unreachable Lastik never falls back to moderator deletion.
+    return this.eraser ? this.eraser.owns(chatId) : false;
   }
 
   private async authorize(chatId: string, user: AuthUser): Promise<void> {

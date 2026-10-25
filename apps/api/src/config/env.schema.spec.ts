@@ -19,6 +19,27 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('requires independent Lastik control credentials only when its feature is enabled', () => {
+    expect(validateEnv(createValidEnv()).ERASER_ENABLED).toBe(false);
+    expect(() => validateEnv(createValidEnv({ ERASER_ENABLED: 'true' }))).toThrow(/ERASER_ENABLED/);
+    const enabled = validateEnv(
+      createValidEnv({
+        ERASER_ENABLED: 'true',
+        ERASER_CONTROL_URL: 'http://eraser:3000',
+        ERASER_CONTROL_TOKEN: 'a'.repeat(64),
+      }),
+    );
+    expect(enabled.ERASER_ENABLED).toBe(true);
+    for (const url of [
+      'file:///tmp/control',
+      'http://user:password@eraser:3000',
+      'http://eraser:3000/path',
+      'http://eraser:3000?secret=value',
+    ])
+      expect(() => validateEnv(createValidEnv({ ERASER_CONTROL_URL: url }))).toThrow(
+        /ERASER_CONTROL_URL/,
+      );
+  });
   it('keeps commercial LLM shadow opt-in and its endpoint inside the isolated service', () => {
     expect(validateEnv(createValidEnv()).COMMERCIAL_LLM_SHADOW_ENABLED).toBe(false);
     expect(

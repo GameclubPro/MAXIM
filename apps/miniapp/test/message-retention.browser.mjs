@@ -36,6 +36,21 @@ try {
       const entry = page.getByRole('button', { name: 'Удаление старых сообщений', exact: true });
       await entry.click();
       const panel = page.getByRole('dialog', { name: 'Удаление старых сообщений' });
+      const botLink = panel.getByRole('link', { name: 'Открыть бота «Ластик»', exact: true });
+      await botLink.waitFor();
+      assert.equal(await botLink.getAttribute('href'), 'https://max.ru/id613000037577_5_bot');
+      await page.evaluate(() => {
+        window.__LASTIK_LINK_TEST__ = { opened: [], closed: 0 };
+        const bridge = window.MAX?.WebApp ?? window.WebApp;
+        bridge.openMaxLink = (url) => window.__LASTIK_LINK_TEST__.opened.push(url);
+        bridge.close = () => window.__LASTIK_LINK_TEST__.closed++;
+      });
+      await botLink.click();
+      assert.deepEqual(await page.evaluate(() => window.__LASTIK_LINK_TEST__), {
+        opened: ['https://max.ru/id613000037577_5_bot'],
+        closed: 0,
+      });
+      await page.screenshot({ path: join(output, `${viewport.width}-${colorScheme}-connect.png`) });
       const toggle = panel.getByRole('switch', { name: 'Удаление по сроку' });
       await toggle.check();
       await panel.getByRole('radio', { name: '24 часа' }).check();
@@ -48,6 +63,17 @@ try {
       await panel.getByRole('radio', { name: '48 часов' }).check();
       await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
       await panel.getByText('Сохранено', { exact: true }).waitFor();
+      await panel.getByRole('radio', { name: '1 неделя' }).check();
+      await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+      await panel.getByText('Сохранено', { exact: true }).waitFor();
+      assert.equal(await panel.getByRole('radio', { name: '1 неделя' }).isChecked(), true);
+      assert.ok(
+        (await panel
+          .getByText('Закрепы, правила, объявления розыгрышей и их итоги из наших модулей', {
+            exact: true,
+          })
+          .count()) > 0,
+      );
       await page.waitForTimeout(250);
       const layout = await panel.evaluate((element) => {
         const bounds = element.getBoundingClientRect();
@@ -57,7 +83,7 @@ try {
           right: bounds.right,
           viewport: innerWidth,
           overflow: element.scrollWidth > element.clientWidth + 2,
-          clippedText: [...element.querySelectorAll('label, dt, dd, button')].some(
+          clippedText: [...element.querySelectorAll('label, dt, dd, button, a, strong')].some(
             (node) => node.scrollWidth > node.clientWidth + 2,
           ),
         };
@@ -142,9 +168,14 @@ try {
         assert.equal(await toggle.isChecked(), true);
         await panel.getByRole('button', { name: 'Сохранить мой вариант', exact: true }).click();
       } else {
-        await panel.getByText('Не удалось сохранить изменения.', { exact: true }).waitFor();
+        await panel.getByText('Сохранение пока не подтверждено', { exact: true }).waitFor();
         assert.equal(await panel.getByRole('radio', { name: '24 часа' }).isChecked(), true);
-        await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+        assert.equal(await toggle.isDisabled(), true);
+        assert.equal(
+          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
+          true,
+        );
+        await panel.getByRole('button', { name: 'Проверить сохранение', exact: true }).click();
       }
       await panel.getByText('Сохранено', { exact: true }).waitFor();
     }

@@ -27,7 +27,7 @@ Usage:
   ./infra/scripts/vps-release-rollback.sh <release-id> [components...]
 
 Components (default: all):
-  api-shared miniapp-major-static admin-static
+  api-shared miniapp-major-static admin-static eraser
 
 This rollback uses already-built immutable images. It does not switch Git refs, build images,
 or run Prisma migrations.
@@ -218,6 +218,7 @@ SOURCE_MANIFEST_RELEASE_ID=""
 SELECT_API=0
 SELECT_MINIAPP=0
 SELECT_ADMIN=0
+SELECT_ERASER=0
 SELECTED_COMPONENTS=()
 SERVICES=()
 TARGET_HAS_MEDIA_ANALYSIS=0
@@ -257,6 +258,11 @@ while IFS=$'\t' read -r record field1 field2 field3 field4 extra; do
         admin-static)
           SELECT_ADMIN=1
           export MAXIM_ADMIN_IMAGE="$field3"
+          ;;
+        eraser)
+          SELECT_ERASER=1
+          export MAXIM_ERASER_IMAGE="$field3"
+          export MAXIM_ERASER_SOURCE_SHA="$field2"
           ;;
         *)
           echo "Rollback plan returned an unknown component: $field1" >&2
@@ -307,6 +313,7 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   maxim_topology_require_traffic_protection_guard "$API_SOURCE_SHA"
   maxim_topology_require_participant_report_guard "$API_SOURCE_SHA"
   maxim_topology_require_message_retention_guard "$API_SOURCE_SHA"
+  maxim_topology_require_eraser_bridge "$API_SOURCE_SHA"
   maxim_topology_require_suggestion_subscription_guard "$API_SOURCE_SHA"
   maxim_topology_require_message_duplicate_delete_guard "$API_SOURCE_SHA"
   maxim_topology_require_multibot_authority "$API_SOURCE_SHA"
@@ -596,7 +603,9 @@ verify_inherited_release_components() {
   local component
   local expected_image_id
 
-  for component in api-shared miniapp-major-static admin-static; do
+  local inherited_components=(api-shared miniapp-major-static admin-static)
+  if recovery_base_field eraser imageId >/dev/null 2>&1; then inherited_components+=(eraser); fi
+  for component in "${inherited_components[@]}"; do
     if contains_service "$component" "${SELECTED_COMPONENTS[@]}"; then
       continue
     fi
@@ -610,6 +619,9 @@ verify_inherited_release_components() {
         ;;
       admin-static)
         verify_service_image_id admin-static "$expected_image_id"
+        ;;
+      eraser)
+        verify_service_image_id eraser "$expected_image_id"
         ;;
     esac
   done
@@ -716,6 +728,18 @@ fi
 if [[ "$SELECT_MINIAPP" -eq 1 ]]; then
   recreate_service miniapp-major-static
   verify_service_image_id miniapp-major-static "${COMPONENT_IMAGE_ID[miniapp-major-static]}"
+fi
+if [[ "$SELECT_ERASER" -eq 1 ]]; then
+  # shellcheck source=infra/scripts/lib/eraser-deploy.sh
+  source "$ROOT_DIR/infra/scripts/lib/eraser-deploy.sh"
+  maxim_eraser_require_stores COMPOSE_FILES
+  recreate_service eraser
+  verify_service_image_id eraser "${COMPONENT_IMAGE_ID[eraser]}"
+  maxim_eraser_smoke "${COMPONENT_SOURCE_SHA[eraser]}"
+  SMOKE_RESULTS+=(eraser-exact-source-ready)
+elif recovery_base_field eraser sourceSha >/dev/null 2>&1; then
+  node infra/scripts/eraser-smoke.mjs "$(recovery_base_field eraser sourceSha)"
+  SMOKE_RESULTS+=(eraser-inherited-source-ready)
 fi
 if [[ "$SELECT_ADMIN" -eq 1 ]]; then
   recreate_service admin-static

@@ -182,6 +182,7 @@ import {
   type MaxBotRouteRequest,
 } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { confirmEraserSourceHolds } from '../message-retention/eraser-source-hold-barrier';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
@@ -6985,6 +6986,18 @@ export class AdminService implements OnModuleDestroy {
 
     const resolvedBotId =
       command?.executionBotId ?? (await this.resolveManualActionBotAssignment(chatId));
+    // FLAG: Adopting an old human message must establish independent protection before
+    // changing its role. Force the first-binding race closed whenever Lastik is configured.
+    await confirmEraserSourceHolds(
+      this.prisma,
+      [{ chatId, messageId: sourceMessageId ?? '' }],
+      [],
+      this.configService.get<boolean>('ERASER_ENABLED', false) === true ||
+        Boolean(
+          this.configService.get<string>('ERASER_CONTROL_URL') &&
+          this.configService.get<string>('ERASER_CONTROL_TOKEN'),
+        ),
+    );
     const authority = new GroupCommandAuthorityService(this.prisma);
     const saved = await this.prisma.$transaction(async (tx) => {
       const applies = await advanceChatMutationOrder(tx, chatId, 'RULES', command);

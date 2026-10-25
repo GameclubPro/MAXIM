@@ -3,6 +3,7 @@
 import { pathToFileURL } from 'node:url';
 import {
   ACTIVE_RELEASE_COMPONENTS,
+  OPTIONAL_RELEASE_COMPONENTS,
   readReleaseManifest,
   validateManifest,
 } from './release-manifest.mjs';
@@ -33,6 +34,7 @@ export const ROLLBACK_COMPONENT_SERVICES = Object.freeze({
   'api-shared': API_SHARED_SERVICES,
   'miniapp-major-static': Object.freeze(['miniapp-major-static']),
   'admin-static': Object.freeze(['admin-static']),
+  eraser: Object.freeze(['eraser']),
 });
 
 const fullShaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
@@ -51,7 +53,14 @@ export function buildRollbackPlan({
     throw new Error('Immutable rollback requires a release with a known full targetSha.');
   }
 
-  const selectedIds = normalizeRequestedComponents(requestedComponents);
+  const selectedIds = normalizeRequestedComponents(
+    requestedComponents.length
+      ? requestedComponents
+      : [
+          ...ACTIVE_RELEASE_COMPONENTS,
+          ...OPTIONAL_RELEASE_COMPONENTS.filter((id) => manifest.components?.[id]),
+        ],
+  );
   const components = selectedIds.map((id) => {
     const component = manifest.components?.[id];
     if (!component) {
@@ -95,9 +104,10 @@ export function buildRollbackPlan({
 export function normalizeRequestedComponents(requestedComponents) {
   const requested =
     requestedComponents.length > 0 ? requestedComponents : ACTIVE_RELEASE_COMPONENTS;
+  const supported = [...ACTIVE_RELEASE_COMPONENTS, ...OPTIONAL_RELEASE_COMPONENTS];
   const seen = new Set();
   for (const id of requested) {
-    if (!ACTIVE_RELEASE_COMPONENTS.includes(id)) {
+    if (!supported.includes(id)) {
       throw new Error(`Unknown rollback component: ${id}`);
     }
     if (seen.has(id)) {
@@ -105,7 +115,7 @@ export function normalizeRequestedComponents(requestedComponents) {
     }
     seen.add(id);
   }
-  return ACTIVE_RELEASE_COMPONENTS.filter((id) => seen.has(id));
+  return supported.filter((id) => seen.has(id));
 }
 
 export function buildRollbackReleaseId(targetSha, now = new Date(), pid = process.pid) {

@@ -106,6 +106,9 @@ fi
 API_SERVICES=("${MAXIM_PRODUCTION_API_SERVICES[@]}")
 ACTIVE_STATIC_SERVICES=("miniapp-major-static" "admin-static")
 OPTIONAL_STATIC_SERVICES=("miniapp-static")
+# shellcheck source=infra/scripts/lib/eraser-deploy.sh
+source "$ROOT_DIR/infra/scripts/lib/eraser-deploy.sh"
+RELEASE_COMPONENTS=(api-shared miniapp-major-static admin-static)
 
 contains_service() {
   local needle="$1"
@@ -124,7 +127,7 @@ validate_requested_services() {
   local validated=()
 
   for service in "${SERVICES[@]}"; do
-    if ! contains_service "$service" "${API_SERVICES[@]}" "${ACTIVE_STATIC_SERVICES[@]}" "${OPTIONAL_STATIC_SERVICES[@]}"; then
+    if ! contains_service "$service" "${API_SERVICES[@]}" "${ACTIVE_STATIC_SERVICES[@]}" "${OPTIONAL_STATIC_SERVICES[@]}" eraser; then
       echo "Unknown or unsafe deploy service: $service" >&2
       echo "Stateful services are startup dependencies, not routine deploy targets." >&2
       exit 2
@@ -417,7 +420,12 @@ load_current_component_images() {
   MAXIM_MINIAPP_MAJOR_IMAGE="$(release_field miniapp-major-static imageRef || printf '%s' maxim-miniapp-major:unknown)"
   MAXIM_ADMIN_IMAGE="$(release_field admin-static imageRef || printf '%s' maxim-admin:unknown)"
   MAXIM_MINIAPP_LEGACY_IMAGE="${MAXIM_MINIAPP_LEGACY_IMAGE:-maxim-miniapp-legacy:local}"
-  export MAXIM_API_IMAGE MAXIM_MINIAPP_MAJOR_IMAGE MAXIM_ADMIN_IMAGE MAXIM_MINIAPP_LEGACY_IMAGE
+  MAXIM_ERASER_IMAGE="$(release_field eraser imageRef 2>/dev/null || printf '%s' maxim-eraser:unknown)"
+  MAXIM_ERASER_SOURCE_SHA="$(release_field eraser sourceSha 2>/dev/null || printf '%s' unknown)"
+  if maxim_eraser_configured || [[ "$MAXIM_ERASER_SOURCE_SHA" != unknown ]]; then
+    RELEASE_COMPONENTS+=(eraser)
+  fi
+  export MAXIM_API_IMAGE MAXIM_MINIAPP_MAJOR_IMAGE MAXIM_ADMIN_IMAGE MAXIM_MINIAPP_LEGACY_IMAGE MAXIM_ERASER_IMAGE MAXIM_ERASER_SOURCE_SHA
 }
 
 component_manifest_matches_runtime() {
@@ -437,6 +445,7 @@ component_manifest_matches_runtime() {
     api-shared) services=("${API_SERVICES[@]}") ;;
     miniapp-major-static) services=("miniapp-major-static") ;;
     admin-static) services=("admin-static") ;;
+    eraser) services=(eraser) ;;
     *) return 1 ;;
   esac
 
@@ -461,7 +470,7 @@ impact_plan_selects_component() {
   local result=1
 
   case "$component" in
-    api-shared|miniapp-major-static|admin-static) ;;
+    api-shared|miniapp-major-static|admin-static|eraser) ;;
     *)
       echo "Unknown deploy component during impact classification: $component" >&2
       exit 1
@@ -493,6 +502,7 @@ impact_plan_selects_component() {
       api-shared) path_selected="$MAXIM_IMPACT_PATH_API_SHARED" ;;
       miniapp-major-static) path_selected="$MAXIM_IMPACT_PATH_MINIAPP_MAJOR_STATIC" ;;
       admin-static) path_selected="$MAXIM_IMPACT_PATH_ADMIN_STATIC" ;;
+      eraser) path_selected="$MAXIM_IMPACT_PATH_ERASER" ;;
     esac
     if [[ "$path_selected" -eq 1 ]]; then
       result=0
@@ -515,6 +525,9 @@ derive_auto_services() {
   if impact_plan_selects_component admin-static; then
     SERVICES+=("admin-static")
   fi
+  if contains_service eraser "${RELEASE_COMPONENTS[@]}" && impact_plan_selects_component eraser; then
+    SERVICES+=(eraser)
+  fi
 }
 
 print_deploy_plan() {
@@ -522,7 +535,7 @@ print_deploy_plan() {
   local component
   local selected=()
 
-  for component in api-shared miniapp-major-static admin-static; do
+  for component in "${RELEASE_COMPONENTS[@]}"; do
     current_sha="$(release_field "$component" sourceSha || printf '%s' unknown)"
     if [[ "$component" == api-shared && ( -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "${COMMERCIAL_AI_DEPLOY_ENABLED:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ) ]] || impact_plan_selects_component "$component"; then
       selected+=("$component")
@@ -634,6 +647,10 @@ selected_target_images_are_preloaded() {
           image_ref="${MAXIM_ADMIN_IMAGE:-}"
           image_repository="maxim-admin"
           ;;
+        eraser)
+          image_ref="${MAXIM_ERASER_IMAGE:-}"
+          image_repository="maxim-eraser"
+          ;;
         miniapp-static)
           image_ref="${MAXIM_MINIAPP_LEGACY_IMAGE:-}"
           image_repository="maxim-miniapp-legacy"
@@ -675,7 +692,7 @@ prepare_deploy_disk_capacity() {
     # FLAG: Exact image reuse removes build work but still requires the component rollout reserve.
     for service in "${SERVICES[@]}"; do
       case "$service" in
-        miniapp-static|miniapp-major-static|admin-static)
+        miniapp-static|miniapp-major-static|admin-static|eraser)
           needs_static_build=1
           ;;
       esac
@@ -688,7 +705,7 @@ prepare_deploy_disk_capacity() {
 
   for service in "${SERVICES[@]}"; do
     case "$service" in
-      miniapp-static|miniapp-major-static|admin-static)
+      miniapp-static|miniapp-major-static|admin-static|eraser)
         needs_static_build=1
         ;;
       api-*)
@@ -977,9 +994,11 @@ sync_branch() {
   PRE_PULL_HEAD="$(git rev-parse --verify HEAD)" || return 2
   git fetch origin "$BRANCH"
   require_market_statistics_lock_dispatch "origin/$BRANCH" || return 2
+  maxim_topology_require_eraser_bridge "$(git rev-parse "origin/$BRANCH")" || return 2
 
   if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
     require_market_statistics_lock_dispatch "refs/heads/$BRANCH" || return 2
+    maxim_topology_require_eraser_bridge "$(git rev-parse "refs/heads/$BRANCH")" || return 2
     git checkout "$BRANCH"
   else
     git checkout -b "$BRANCH" "origin/$BRANCH"
@@ -1106,7 +1125,7 @@ verify_inherited_release_components() {
   local component
   local expected_image_id
 
-  for component in api-shared miniapp-major-static admin-static; do
+  for component in "${RELEASE_COMPONENTS[@]}"; do
     if contains_service "$component" "${DEPLOYED_COMPONENTS[@]}"; then
       continue
     fi
@@ -1124,6 +1143,9 @@ verify_inherited_release_components() {
         ;;
       admin-static)
         verify_service_image_id admin-static "$expected_image_id"
+        ;;
+      eraser)
+        verify_service_image_id eraser "$expected_image_id"
         ;;
     esac
   done
@@ -1155,6 +1177,10 @@ record_successful_release() {
       admin-static)
         image_ref="$MAXIM_ADMIN_IMAGE"
         service="admin-static"
+        ;;
+      eraser)
+        image_ref="$MAXIM_ERASER_IMAGE"
+        service=eraser
         ;;
       *)
         echo "Cannot record unknown release component: $component" >&2
@@ -1375,6 +1401,10 @@ ensure_requested_services_running() {
   local service
 
   for service in "${SERVICES[@]}"; do
+    # FLAG: Lastik's independent migration and startup wave run after this API catch-up.
+    if [[ "$service" == eraser ]]; then
+      continue
+    fi
     if [[ -n "$excluded_service" && "$service" == "$excluded_service" ]]; then
       continue
     fi
@@ -1475,7 +1505,7 @@ if [[ "$DEPLOY_MODE" == "auto" ]]; then
   fi
 fi
 if [[ -n "$RECOVERY_BASE_MANIFEST" ]]; then
-  for recovery_service in api-ingress miniapp-major-static admin-static; do
+  for recovery_service in "${RELEASE_COMPONENTS[@]/api-shared/api-ingress}"; do
     if ! contains_service "$recovery_service" "${SERVICES[@]}"; then
       SERVICES+=("$recovery_service")
     fi
@@ -1515,7 +1545,14 @@ if ! contains_service "admin-static" "${SERVICES[@]}" && impact_plan_selects_com
   SERVICES+=("admin-static")
   echo "Unreleased Safety Desk impact detected from the component manifest."
 fi
+if contains_service eraser "${RELEASE_COMPONENTS[@]}" && ! contains_service eraser "${SERVICES[@]}" && impact_plan_selects_component eraser; then
+  SERVICES+=(eraser)
+fi
 validate_requested_services
+if contains_service eraser "${SERVICES[@]}"; then
+  maxim_eraser_require_stores COMPOSE_FILES
+  maxim_eraser_refuse_dirty_build_inputs
+fi
 
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   maxim_topology_refuse_dirty_api_build_inputs
@@ -1548,6 +1585,11 @@ fi
 if contains_service "admin-static" "${SERVICES[@]}"; then
   export MAXIM_ADMIN_IMAGE="maxim-admin:${TARGET_SHA}"
   DEPLOYED_COMPONENTS+=("admin-static")
+fi
+if contains_service eraser "${SERVICES[@]}"; then
+  export MAXIM_ERASER_IMAGE="maxim-eraser:${TARGET_SHA}"
+  export MAXIM_ERASER_SOURCE_SHA="$TARGET_SHA"
+  DEPLOYED_COMPONENTS+=(eraser)
 fi
 if contains_service "miniapp-static" "${SERVICES[@]}"; then
   export MAXIM_MINIAPP_LEGACY_IMAGE="maxim-miniapp-legacy:${TARGET_SHA}"
@@ -1597,6 +1639,7 @@ for service in "${SERVICES_TO_BUILD[@]}"; do
     miniapp-static) candidate_image_ref="$MAXIM_MINIAPP_LEGACY_IMAGE" ;;
     miniapp-major-static) candidate_image_ref="$MAXIM_MINIAPP_MAJOR_IMAGE" ;;
     admin-static) candidate_image_ref="$MAXIM_ADMIN_IMAGE" ;;
+    eraser) candidate_image_ref="$MAXIM_ERASER_IMAGE" ;;
     *)
       echo "Refusing unexpected non-API build target: $service" >&2
       exit 2
@@ -1719,11 +1762,25 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   fi
   maxim_webhook_resume_after_api_fence COMPOSE_FILES
 fi
+if contains_service eraser "${SERVICES[@]}"; then
+  # FLAG: Own additive migrations only; never recreate Lastik PostgreSQL or Redis here.
+  ERASER_MIGRATION_COMPOSE_FILES=("${COMPOSE_FILES[@]}" -f infra/docker-compose.eraser-no-build.yml)
+  docker compose "${ERASER_MIGRATION_COMPOSE_FILES[@]}" run --rm --no-deps --pull never eraser node apps/eraser/dist/migrate.js
+  recreate_service_wave "Lastik" eraser
+fi
 recreate_service_wave "support static" "miniapp-static"
 recreate_service_wave "major static" "miniapp-major-static"
 recreate_service_wave "admin static" "admin-static"
 
 SMOKE_RESULTS=()
+if contains_service eraser "${SERVICES[@]}"; then
+  wait_for_url "http://127.0.0.1:3005/health" 120
+  maxim_eraser_smoke "$TARGET_SHA"
+  SMOKE_RESULTS+=(eraser-exact-source-ready)
+elif contains_service eraser "${RELEASE_COMPONENTS[@]}"; then
+  maxim_eraser_smoke "$MAXIM_ERASER_SOURCE_SHA"
+  SMOKE_RESULTS+=(eraser-inherited-source-ready)
+fi
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   wait_for_url "http://127.0.0.1:3001/api/health/live" 180
   # Ingress remains live while consumers are fenced, so real traffic can require a bounded drain.

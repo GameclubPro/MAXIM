@@ -12,6 +12,10 @@ import type { PreviewState } from './preview-transport-state';
 
 const policies = new WeakMap<PreviewState, Map<string, MessageRetentionState>>();
 const attempts = new WeakMap<PreviewState, { read: number; write: number }>();
+const operations = new WeakMap<
+  PreviewState,
+  Map<string, { body: string; result: MessageRetentionState }>
+>();
 
 export function getPreviewMessageRetention(
   state: PreviewState,
@@ -34,6 +38,9 @@ export function getPreviewMessageRetention(
     deletedCount: 0,
     skippedCount: 0,
     oldestDueAt: null,
+    connectionStatus: 'connected',
+    historyStatus: 'off',
+    historyScannedCount: 0,
   };
   if (!chats.has(chatId)) {
     const now = readPreviewClock(state.clock).getTime();
@@ -75,6 +82,23 @@ export const handlePreviewMessageRetention: PreviewRequestHandler = async ({
   if (method === 'GET') return structuredClone(current);
   if (method !== 'PUT' || segments.length !== 3) return PREVIEW_NOT_HANDLED;
   const input = updateMessageRetentionSchema.parse(JSON.parse(String(init.body)));
+  const operationKey = input.operationId ? `${chatId}:${input.operationId}` : undefined;
+  let completed = operations.get(state);
+  if (!completed) {
+    completed = new Map();
+    operations.set(state, completed);
+  }
+  const body = JSON.stringify(input);
+  const previous = operationKey ? completed.get(operationKey) : undefined;
+  if (previous) {
+    if (previous.body !== body)
+      throw new ApiRequestError(
+        409,
+        '{"code":"MESSAGE_RETENTION_OPERATION_CONFLICT"}',
+        'Операция уже использована для других настроек.',
+      );
+    return structuredClone(previous.result);
+  }
   if (++count.write === 1) {
     if (state.retentionScenario === 'write-error')
       throw new Error('Не удалось сохранить изменения.');
@@ -101,8 +125,11 @@ export const handlePreviewMessageRetention: PreviewRequestHandler = async ({
     revision: current.revision + 1,
     status: input.enabled ? 'running' : 'off',
     enabledAt: input.enabled && !current.enabled ? now : current.enabledAt,
-    captureAfter: !input.enabled ? null : !current.enabled ? now : current.captureAfter,
+    captureAfter: null,
+    historyStatus: input.enabled ? 'running' : 'off',
+    ...(input.operationId ? { lastOperationId: input.operationId } : {}),
   };
   chats.set(chatId, next);
+  if (operationKey) completed.set(operationKey, { body, result: structuredClone(next) });
   return structuredClone(next);
 };

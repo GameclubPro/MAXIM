@@ -679,7 +679,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
         createPrismaClient(
           url: string,
           config: Parameters<typeof createPrismaClient>[1],
-        ): Pick<PrismaClient, '$transaction' | '$disconnect'>;
+        ): Pick<PrismaClient, '$transaction' | '$disconnect' | '$queryRaw'>;
       };
       const loadBatch = createRequire(__filename);
       const batch = loadBatch(
@@ -726,6 +726,7 @@ native('modern exact-source offline inventory and store PostgreSQL authority', (
           const pool = createPrismaClient(url, config);
           return {
             $transaction: pool.$transaction.bind(pool),
+            $queryRaw: pool.$queryRaw.bind(pool),
             async $disconnect() {
               try {
                 await pool.$disconnect();

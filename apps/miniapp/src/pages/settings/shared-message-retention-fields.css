@@ -1,0 +1,134 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .message-retention-settings {
+    --retention-warning: #b77918;
+    --retention-danger: #d34655;
+    --retention-bot-border: color-mix(in srgb, var(--major-accent) 25%, var(--major-border));
+    --retention-bot-background: linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--major-accent) 9%, var(--major-surface, var(--color-surface))),
+      var(--major-surface, var(--color-surface))
+    );
+    display: grid;
+    gap: 20px;
+    min-width: 0;
+    color: var(--major-text, var(--color-text));
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    align-items: start;
+    gap: 14px 12px;
+    padding: 16px;
+    border: 1px solid var(--retention-bot-border);
+    border-radius: 18px;
+    background: var(--retention-bot-background);
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot__icon {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: var(--major-accent);
+    color: var(--major-on-accent);
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot__icon svg {
+    width: 22px;
+    height: 22px;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot__copy {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot__copy strong {
+    display: block;
+    font-size: 15px;
+    line-height: 1.45;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot__copy p {
+    margin: 5px 0 0;
+    color: var(--major-muted, var(--color-text-muted));
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot__link {
+    grid-column: 1 / -1;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 44px;
+    padding: 10px 12px;
+    white-space: normal;
+    text-align: center;
+    text-decoration: none;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot__link svg {
+    flex: 0 0 18px;
+    width: 18px;
+    height: 18px;
+  }
+  .message-retention-settings__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 44px;
+  }
+  .message-retention-settings fieldset {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-policy {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--major-muted, var(--color-text-muted));
+    overflow-wrap: anywhere;
+  }
+  .message-retention-settings legend {
+    margin-bottom: 10px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .message-retention-settings .segmented-control {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+  .message-retention-settings .segmented-control__item {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+  }
+  .message-retention-settings .segmented-control__item[aria-checked='true'] {
+    background: var(--major-accent);
+    color: var(--major-on-accent);
+  }
+  .message-retention-exclusions {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 16px 0;
+    border-top: 1px solid var(--major-border, var(--color-border));
+    border-bottom: 1px solid var(--major-border, var(--color-border));
+  }
+  .message-retention-exclusions > svg {
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    color: var(--major-muted, var(--color-text-muted));
+  }
+  .message-retention-exclusions span {
+    font-size: 12px;
+    color: var(--major-muted, var(--color-text-muted));
+  }
+  .message-retention-exclusions p {
+    margin: 4px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+}

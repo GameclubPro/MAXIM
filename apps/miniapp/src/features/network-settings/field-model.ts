@@ -35,7 +35,7 @@ export type ChatSettingsFieldValues = Omit<ChatSettings, 'botSpeechMedia' | 'sto
     'rules'
   > & {
     'messageRetention.enabled': boolean;
-    'messageRetention.hours': 24 | 48;
+    'messageRetention.hours': 24 | 48 | 168;
     'advertising.enabled': boolean;
   } & Prefixed<Omit<StopPolicy, 'version' | 'sanctions'>, 'stopWordsPolicy'> &
   Prefixed<Omit<StopSanctions, 'media'>, 'stopWordsPolicy.sanctions'> & {
