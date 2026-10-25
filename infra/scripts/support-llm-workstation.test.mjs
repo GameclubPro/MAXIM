@@ -167,6 +167,8 @@ test('CPU-only profile isolates GPU and caps context, concurrency, threads and o
     ['--port', '18085'],
     ['--threads', '8'],
     ['--threads-batch', '8'],
+    ['--cache-ram', '512'],
+    ['--checkpoint-min-step', '512'],
     ['--parallel', '1'],
     ['--ctx-size', '4096'],
     ['--n-predict', '384'],
