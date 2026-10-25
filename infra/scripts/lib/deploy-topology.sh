@@ -1359,12 +1359,14 @@ maxim_topology_prepare_commercial_ocr_target() {
   fi
   maxim_topology_require_api_commercial_ocr_version_config \
     "$compose_args_var" "$resolved_version" "$publisher_policy"
-  # FLAG: Active baseline is an explicit release operation and requires the target's guard.
-  if [[ "${MAXIM_COMMERCIAL_OCR_BASELINE:-0}" == 1 ]]; then
-    if ! maxim_topology_git_supports_commercial_ocr_baseline "$commit_sha"; then
-      echo "Target lacks strict commercial OCR baseline authority." >&2; return 1
-    fi
-    export COMMERCIAL_OCR_ROLLOUT_MODE=baseline
+  # FLAG: A requested mode is delivered only through the fenced shared-image release.
+  local requested_mode
+  requested_mode="$(maxim_topology_requested_commercial_ocr_deploy_mode)" || return
+  if [[ "$requested_mode" == baseline ]] && ! maxim_topology_git_supports_commercial_ocr_baseline "$commit_sha"; then
+    echo "Target lacks strict commercial OCR baseline authority." >&2; return 1
+  fi
+  if [[ -n "$requested_mode" ]]; then
+    export COMMERCIAL_OCR_ROLLOUT_MODE="$requested_mode"
     export COMMERCIAL_OCR_CANARY_CHAT_IDS=''
   fi
   maxim_topology_require_media_analysis_rollout_config "$compose_args_var" "$commit_sha"
@@ -1430,9 +1432,10 @@ maxim_topology_verify_api_commercial_ocr_version() {
       echo "$service does not run with the target COMMERCIAL_OCR_VERSION." >&2
       return 1
     fi
-    if [[ "${MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE:-shadow}" == baseline ]] &&
-      [[ "$mode_matches" -ne 1 || "$actual_mode" != baseline || "$canary_matches" -ne 1 || -n "$actual_canary" ]]; then
-      echo "$service does not run with the reviewed commercial OCR baseline authority." >&2
+    if [[ "${MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE:-shadow}" == baseline ||
+      "${MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE:-shadow}" == off ]] &&
+      [[ "$mode_matches" -ne 1 || "$actual_mode" != "$MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE" || "$canary_matches" -ne 1 || -n "$actual_canary" ]]; then
+      echo "$service does not run with the reviewed commercial OCR $MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE authority." >&2
       return 1
     fi
   done
@@ -1541,6 +1544,15 @@ maxim_topology_git_supports_commercial_ocr_baseline() {
     maxim_topology_require_commercial_ocr_baseline_guard "$commit_sha"
 }
 
+maxim_topology_requested_commercial_ocr_deploy_mode() {
+  case "${MAXIM_COMMERCIAL_OCR_BASELINE:-0}:${MAXIM_COMMERCIAL_OCR_OFF:-0}" in
+    0:0) ;;
+    1:0) printf '%s' baseline ;;
+    0:1) printf '%s' off ;;
+    *) echo "OCR baseline/off flags must be 0 or 1 and mutually exclusive." >&2; return 2 ;;
+  esac
+}
+
 maxim_topology_require_media_analysis_rollout_config() {
   local compose_args_var="$1"
   local commit_sha="$2"
@@ -1549,8 +1561,8 @@ maxim_topology_require_media_analysis_rollout_config() {
   selected_mode="$(docker compose "${compose_args_ref[@]}" config --format json 2>/dev/null | node -e '
     const config=JSON.parse(require("node:fs").readFileSync(0).toString("utf8"));
     const mode=config?.services?.["api-media-analysis"]?.environment?.COMMERCIAL_OCR_ROLLOUT_MODE;
-    if (!["shadow","baseline"].includes(mode)) process.exit(1);
-    if (mode === "baseline") {
+    if (!["off","shadow","baseline"].includes(mode)) process.exit(1);
+    if (mode === "baseline" || mode === "off") {
       const services=process.argv.slice(1);
       if (services.length!==14 || services.some(name => {
         const env=config?.services?.[name]?.environment;

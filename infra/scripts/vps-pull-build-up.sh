@@ -44,6 +44,7 @@ RETENTION_STATE_HELPER="$ROOT_DIR/infra/scripts/message-retention-rollout-state.
 STATISTICS_EXCHANGE_DEPLOY_ENABLED="${STATISTICS_EXCHANGE_V3_ENABLED:-}"
 STATISTICS_EXCHANGE_STATE_HELPER="$ROOT_DIR/infra/scripts/statistics-exchange-rollout-state.mjs"
 STATISTICS_CENTRAL_DEPLOY_EPOCH="${MAXIM_STATISTICS_CENTRAL_EPOCH:-}"
+COMMERCIAL_OCR_DEPLOY_MODE=""
 
 SERVICES=()
 if [[ $# -ge 2 ]]; then
@@ -465,7 +466,7 @@ impact_plan_selects_component() {
 
 derive_auto_services() {
   SERVICES=()
-  if [[ -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ]] || impact_plan_selects_component api-shared; then
+  if [[ -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ]] || impact_plan_selects_component api-shared; then
     SERVICES+=("api-ingress")
   fi
   if impact_plan_selects_component miniapp-major-static; then
@@ -483,11 +484,14 @@ print_deploy_plan() {
 
   for component in api-shared miniapp-major-static admin-static; do
     current_sha="$(release_field "$component" sourceSha || printf '%s' unknown)"
-    if [[ "$component" == api-shared && ( -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ) ]] || impact_plan_selects_component "$component"; then
+    if [[ "$component" == api-shared && ( -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ) ]] || impact_plan_selects_component "$component"; then
       selected+=("$component")
     fi
     echo "$component current=$current_sha target=$(git rev-parse HEAD)"
   done
+  if [[ -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" ]]; then
+    echo "Commercial OCR mode requested: $COMMERCIAL_OCR_DEPLOY_MODE (all API roles)."
+  fi
   if [[ -n "$RETENTION_DEPLOY_MODE" ]]; then
     echo "Retention runtime mode requested: $RETENTION_DEPLOY_MODE (all API roles; chat policies unchanged)."
   fi
@@ -1397,6 +1401,7 @@ validate_requested_services
 validate_api_ready_timeout
 validate_post_release_reclaim
 validate_retention_deploy_mode
+COMMERCIAL_OCR_DEPLOY_MODE="$(maxim_topology_requested_commercial_ocr_deploy_mode)"
 validate_statistics_exchange_deploy_flag
 validate_statistics_central_deploy_epoch
 acquire_deploy_lock
@@ -1438,7 +1443,7 @@ fi
 validate_admin_access_code
 warn_postgres_password_fallback
 
-if [[ -n "$RETENTION_DEPLOY_MODE" || -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" || -n "$STATISTICS_CENTRAL_DEPLOY_EPOCH" ]] && ! has_requested_api_service; then
+if [[ -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" || -n "$STATISTICS_CENTRAL_DEPLOY_EPOCH" ]] && ! has_requested_api_service; then
   SERVICES+=("api-ingress")
 fi
 BUILD_API_IMAGE=0
@@ -1595,10 +1600,10 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
     maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
     maxim_topology_stop_media_analysis_before_api_transition COMPOSE_FILES
   fi
-  if [[ "${MAXIM_COMMERCIAL_OCR_BASELINE:-0}" == 1 ]]; then
+  if [[ -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" ]]; then
     # FLAG: Persist authority only after the release journal and all producers are quiescent.
     maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES
-    node infra/scripts/commercial-ocr-rollout-state.mjs patch-rollout-env .env baseline >/dev/null
+    node infra/scripts/commercial-ocr-rollout-state.mjs patch-rollout-env .env "$COMMERCIAL_OCR_DEPLOY_MODE" >/dev/null
   fi
 
   persist_retention_deploy_mode

@@ -4142,10 +4142,25 @@ describe('ModerationService', () => {
       expect(harness.photoDuplicateEnqueueService.enqueue).not.toHaveBeenCalled();
     });
 
-    describe('commercial OCR', () => {
+    describe('image stop-list OCR', () => {
+      it('never schedules OCR solely because the commercial text filter is enabled', async () => {
+        const harness = createHarness({ settingsOverrides: { commercialAdsFilterEnabled: true } });
+        await harness.service.handleUpdate(
+          createPhotoAttachmentUpdate(112),
+          undefined,
+          'webhook-photo-112',
+        );
+        expect(harness.commercialOcrEnqueueService.enqueue).not.toHaveBeenCalled();
+        expect(harness.ruleEngine.detect).toHaveBeenCalled();
+      });
+
       it('enqueues an eligible complete album with exact source identity and image count', async () => {
         const harness = createHarness({
-          settingsOverrides: { commercialAdsFilterEnabled: true },
+          settingsOverrides: {
+            commercialAdsFilterEnabled: true,
+            messageLimitsImageTextScanEnabled: true,
+            messageLimitsBlockedWords: ['казино'],
+          },
         });
         const update = createPhotoAttachmentUpdate(100);
         const rawMessage = (update.raw as { message: { attachments: unknown[] } }).message;
@@ -4168,8 +4183,8 @@ describe('ModerationService', () => {
           eventTimestamp: update.message!.createdAt,
           imageCount: 2,
           actionEligible: true,
-          commercialScanRequested: true,
-          imageTextScanRequested: false,
+          commercialScanRequested: false,
+          imageTextScanRequested: true,
         });
       });
 
@@ -4177,18 +4192,30 @@ describe('ModerationService', () => {
         {
           name: 'non-photo message',
           configureHarness: () =>
-            createHarness({ settingsOverrides: { commercialAdsFilterEnabled: true } }),
+            createHarness({
+              settingsOverrides: {
+                commercialAdsFilterEnabled: true,
+                messageLimitsImageTextScanEnabled: true,
+                messageLimitsBlockedWords: ['казино'],
+              },
+            }),
           createCandidate: () => createUpdate(),
         },
         {
-          name: 'disabled commercial filter',
+          name: 'disabled image stop-list',
           configureHarness: () => createHarness(),
           createCandidate: () => createPhotoAttachmentUpdate(101),
         },
         {
           name: 'bot-authored message',
           configureHarness: () =>
-            createHarness({ settingsOverrides: { commercialAdsFilterEnabled: true } }),
+            createHarness({
+              settingsOverrides: {
+                commercialAdsFilterEnabled: true,
+                messageLimitsImageTextScanEnabled: true,
+                messageLimitsBlockedWords: ['казино'],
+              },
+            }),
           createCandidate: () => {
             const update = createPhotoAttachmentUpdate(102);
             update.message!.senderId = 'bot-ocr';
@@ -4205,7 +4232,11 @@ describe('ModerationService', () => {
           name: 'service-authored message',
           configureHarness: () => {
             const harness = createHarness({
-              settingsOverrides: { commercialAdsFilterEnabled: true },
+              settingsOverrides: {
+                commercialAdsFilterEnabled: true,
+                messageLimitsImageTextScanEnabled: true,
+                messageLimitsBlockedWords: ['казино'],
+              },
             });
             jest
               .spyOn(harness.service as any, 'handleServiceMembershipUpdate')
@@ -4226,7 +4257,13 @@ describe('ModerationService', () => {
         {
           name: 'message edit',
           configureHarness: () =>
-            createHarness({ settingsOverrides: { commercialAdsFilterEnabled: true } }),
+            createHarness({
+              settingsOverrides: {
+                commercialAdsFilterEnabled: true,
+                messageLimitsImageTextScanEnabled: true,
+                messageLimitsBlockedWords: ['казино'],
+              },
+            }),
           createCandidate: () => {
             const update = createPhotoAttachmentUpdate(104);
             update.type = 'message_edited';
@@ -4244,7 +4281,11 @@ describe('ModerationService', () => {
       it('only lowers the action latch for a photo message from a chat admin', async () => {
         const harness = createHarness({
           adminUserIds: ['user-1'],
-          settingsOverrides: { commercialAdsFilterEnabled: true },
+          settingsOverrides: {
+            commercialAdsFilterEnabled: true,
+            messageLimitsImageTextScanEnabled: true,
+            messageLimitsBlockedWords: ['казино'],
+          },
         });
         const update = createPhotoAttachmentUpdate(105);
 
@@ -4260,8 +4301,8 @@ describe('ModerationService', () => {
           eventTimestamp: update.message!.createdAt,
           imageCount: 1,
           actionEligible: false,
-          commercialScanRequested: true,
-          imageTextScanRequested: false,
+          commercialScanRequested: false,
+          imageTextScanRequested: true,
         });
       });
 
@@ -4271,6 +4312,8 @@ describe('ModerationService', () => {
             antiDuplicateEnabled: false,
             duplicatePhotoEnabled: false,
             commercialAdsFilterEnabled: true,
+            messageLimitsImageTextScanEnabled: true,
+            messageLimitsBlockedWords: ['казино'],
             deleteSpammersEnabled: true,
           },
         });
@@ -4297,8 +4340,8 @@ describe('ModerationService', () => {
           eventTimestamp: update.message!.createdAt,
           imageCount: 1,
           actionEligible: false,
-          commercialScanRequested: true,
-          imageTextScanRequested: false,
+          commercialScanRequested: false,
+          imageTextScanRequested: true,
         });
         expect(harness.ruleEngine.detect).not.toHaveBeenCalled();
       });
@@ -4346,7 +4389,11 @@ describe('ModerationService', () => {
         async ({ options, configure, suffix }) => {
           const harness = createHarness({
             ...options,
-            settingsOverrides: { commercialAdsFilterEnabled: true },
+            settingsOverrides: {
+              commercialAdsFilterEnabled: true,
+              messageLimitsImageTextScanEnabled: true,
+              messageLimitsBlockedWords: ['казино'],
+            },
           });
           configure(harness.service);
           const update = createPhotoAttachmentUpdate(suffix);
@@ -4365,8 +4412,8 @@ describe('ModerationService', () => {
                   eventTimestamp: update.message!.createdAt,
                   imageCount: 1,
                   actionEligible: false,
-                  commercialScanRequested: true,
-                  imageTextScanRequested: false,
+                  commercialScanRequested: false,
+                  imageTextScanRequested: true,
                 },
               ],
             ]),
@@ -4379,9 +4426,13 @@ describe('ModerationService', () => {
         },
       );
 
-      it('keeps COMMERCIAL_AD REVIEW_ONLY eligible for OCR', async () => {
+      it('keeps image stop-list work eligible beside a text REVIEW_ONLY result', async () => {
         const harness = createHarness({
-          settingsOverrides: { commercialAdsFilterEnabled: true },
+          settingsOverrides: {
+            commercialAdsFilterEnabled: true,
+            messageLimitsImageTextScanEnabled: true,
+            messageLimitsBlockedWords: ['казино'],
+          },
           violations: [
             {
               ruleCode: 'COMMERCIAL_AD',
@@ -4408,8 +4459,8 @@ describe('ModerationService', () => {
           eventTimestamp: update.message!.createdAt,
           imageCount: 1,
           actionEligible: true,
-          commercialScanRequested: true,
-          imageTextScanRequested: false,
+          commercialScanRequested: false,
+          imageTextScanRequested: true,
         });
       });
 

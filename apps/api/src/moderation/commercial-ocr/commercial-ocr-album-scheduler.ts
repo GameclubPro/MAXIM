@@ -1,6 +1,7 @@
 import type { ChatSettings } from '../../prisma/prisma-client';
 import { performance } from 'node:perf_hooks';
 import {
+  COMMERCIAL_OCR_DECISION_POLICY_VERSION,
   evaluateCommercialOcrDecision,
   type CommercialOcrDecision,
   type CommercialOcrDetector,
@@ -33,6 +34,7 @@ export async function runCommercialOcrAlbumSchedule<TContext, TStop>(params: {
   settings: ChatSettings;
   imageSources: readonly ('direct' | 'forward')[];
   detector?: CommercialOcrDetector;
+  commercialScanEnabled?: boolean;
   requireCompletePrimaryScan?: boolean;
   shouldResolveConfirmation?: (params: {
     imageIndex: number;
@@ -59,6 +61,23 @@ export async function runCommercialOcrAlbumSchedule<TContext, TStop>(params: {
 }): Promise<CommercialOcrAlbumScheduleResult<TStop>> {
   const expectedImageCount = params.imageSources.length;
   const evaluate = (images: readonly ScheduledImage[]) => {
+    // FLAG: Shared native traversal must not run the advertising detector or request its
+    // confirmation pass when the only remaining purpose is image stop-list matching.
+    if (params.commercialScanEnabled === false) {
+      return {
+        policyVersion: COMMERCIAL_OCR_DECISION_POLICY_VERSION,
+        action: 'NO_ACTION',
+        deleteSource: null,
+        caption: {
+          detection: null,
+          safeContextBucket: 'none',
+          deleteEligible: false,
+          rejectionReasons: [],
+        },
+        images: [],
+        reasonCodes: ['commercial-scan-disabled'],
+      } satisfies CommercialOcrDecision;
+    }
     const startedAt = performance.now();
     try {
       return evaluateCommercialOcrDecision({

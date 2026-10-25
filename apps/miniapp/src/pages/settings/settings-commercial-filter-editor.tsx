@@ -50,11 +50,9 @@ export function SettingsCommercialFilterEditor(props: SettingsCommercialFilterSe
     clearButtonGroupErrors,
     commercialSensitivityLabel,
     commercialSensitivitySliderValue,
-    commercialPhotoModerationMode,
     draft,
     handleCommercialSensitivitySliderChange,
     hasTextFiltersBotButtonError,
-    isSectionDirty,
     openBotEditorKey,
     openHintKey,
     openWarnEditorKey,
@@ -87,12 +85,6 @@ export function SettingsCommercialFilterEditor(props: SettingsCommercialFilterSe
       return `${count}-е: ${count === 1 && draft.textFiltersBotMessageEnabled ? 'объяснение' : sanctionLabels[action]}`;
     })
     .join(' · ');
-  const photoCoverage = {
-    OFF: 'Фильтр фото: выключен.',
-    OBSERVE: 'Фильтр фото: выключен.',
-    FULL: 'Фильтр фото: включён.',
-    UNKNOWN: 'Фильтр фото: недоступен.',
-  }[commercialPhotoModerationMode];
 
   return (
     <div className="settings-section__collapse-inner">
@@ -215,11 +207,8 @@ export function SettingsCommercialFilterEditor(props: SettingsCommercialFilterSe
           </div>
 
           <p className="settings-native-toggle__hint">
-            Подтверждённая реклама удаляется. Ниже можно выбрать наказание за повторы. Повторные
-            нарушения считаются за 24 часа. {photoCoverage}
-            {isSectionDirty('commercialFilter')
-              ? ' Для фото показаны последние сохранённые настройки.'
-              : ''}
+            Фильтр проверяет текст сообщения. Подтверждённая реклама удаляется. Ниже можно выбрать
+            наказание за повторы. Повторные нарушения считаются за 24 часа.
           </p>
           <p className="settings-native-toggle__hint">{ladder}</p>
 
