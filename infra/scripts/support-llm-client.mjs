@@ -257,9 +257,9 @@ const sentenceSegments = new Intl.Segmenter('ru', { granularity: 'sentence' });
 
 function presentSupportText(text) {
   const body = text
-    .replaceAll(SUPPORT_ANSWER_FOOTER, '')
     .replace(/\r\n?/gu, '\n')
     .replace(/\*\*([^*\n]+)\*\*/gu, '$1')
+    .replaceAll(SUPPORT_ANSWER_FOOTER, '')
     .split('\n')
     .map((line) => {
       line = line

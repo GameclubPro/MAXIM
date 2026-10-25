@@ -390,7 +390,7 @@ test('model replies preserve instructions, names, links and metadata with one re
   assert.deepEqual(result.timings, fixture.timings);
   assert.ok(Number.isInteger(result.durationMs) && result.durationMs >= 0);
 
-  fixture.answer.text = `Проверьте права бота.\n\n${SUPPORT_ANSWER_FOOTER}\n\n${SUPPORT_ANSWER_FOOTER}`;
+  fixture.answer.text = `Проверьте права бота.\n\n${SUPPORT_ANSWER_FOOTER}\n\n✦ **Ответ** подготовлен ИИ-помощником «Майор Максимов»`;
   assert.equal(presentedBody(await answerSupport(fixture.input)), 'Проверьте права бота.');
 });
 
