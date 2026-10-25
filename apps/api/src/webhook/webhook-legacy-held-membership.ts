@@ -1,4 +1,5 @@
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
 import { legacySnapshotDigest } from './webhook-legacy-source';
 import { WebhookParser } from './webhook.parser';
@@ -109,11 +110,15 @@ export function isPristinePostSealHeldJoin(
     // membership, hidden normalized fields, alternate targets and any prepared execution routing.
     const parsed = new WebhookParser().parse(raw, { botId: event.botId });
     const semanticKey = buildWebhookSemanticEventKey(parsed);
+    // FLAG: Recognize only the exact source key or its same-bot Publisher namespace.
+    // This projects an existing member hold; it grants no bot role or execution authority,
+    // rewrites no semantic key and never settles an independent moderation claim.
+    const observationKey = buildWebhookReceiptSemanticKey(parsed, event.botId);
     return (
       (Object.keys(sampledRaw).length === 0 ||
         legacySnapshotDigest(sampledRaw) === legacySnapshotDigest(raw)) &&
       semanticKey !== null &&
-      event.semanticKey === semanticKey &&
+      (event.semanticKey === semanticKey || event.semanticKey === observationKey) &&
       legacySnapshotDigest(parsed) === legacySnapshotDigest(update)
     );
   } catch {
