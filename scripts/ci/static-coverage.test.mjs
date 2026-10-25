@@ -139,9 +139,20 @@ test('Static keeps its budget, core checks and infrastructure coverage for full 
   const parsed = parse(workflow).jobs.static;
   assert.equal(parsed.needs, 'impact');
   assert.equal(parsed.if, undefined);
+  const redisSetup = parsed.steps.find(
+    (step) => step.name === 'Prepare private Redis infrastructure fixtures',
+  );
+  assert.match(redisSetup.run, /command -v redis-server/u);
+  assert.match(redisSetup.run, /apt-get install -y --no-install-recommends redis-server/u);
+  assert.ok(
+    parsed.steps.indexOf(redisSetup) <
+      parsed.steps.findIndex((step) => step.run === 'npm run check:infra'),
+    'Native Redis must be available before the infrastructure race fixtures',
+  );
   const infrastructure = new Set([
     "find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck",
     'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7',
+    redisSetup.run,
     'npm run check:infra',
   ]);
   for (const step of parsed.steps) {
@@ -161,6 +172,7 @@ test('Static keeps its budget, core checks and infrastructure coverage for full 
     'npm run check:docs',
     "find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck",
     'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7',
+    '|',
     'npm run check:infra',
   ]);
 });

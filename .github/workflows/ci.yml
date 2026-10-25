@@ -67,6 +67,13 @@ jobs:
       - name: Validate GitHub Actions workflows
         if: fromJSON(needs.impact.outputs.plan).mode == 'full'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: Prepare private Redis infrastructure fixtures
+        if: fromJSON(needs.impact.outputs.plan).mode == 'full'
+        run: |
+          if ! command -v redis-server >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends redis-server
+          fi
       - run: npm run check:infra
         if: fromJSON(needs.impact.outputs.plan).mode == 'full'
 
