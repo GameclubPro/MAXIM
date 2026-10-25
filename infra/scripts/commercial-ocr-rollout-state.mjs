@@ -115,14 +115,14 @@ export function buildCommercialOcrRolloutEnvUpdates(mode, cohort = null) {
       COMMERCIAL_OCR_CANARY_CHAT_IDS: ids,
     };
   }
-  if ((mode === 'shadow' || mode === 'baseline') && cohort === null) {
+  if (['off', 'shadow', 'baseline'].includes(mode) && cohort === null) {
     return {
       COMMERCIAL_OCR_ROLLOUT_MODE: mode,
       COMMERCIAL_OCR_CANARY_CHAT_IDS: '',
     };
   }
   throw new Error(
-    'Rollout environment mode must be baseline, shadow or canary with a normalized cohort.',
+    'Rollout environment mode must be off, baseline, shadow or canary with a normalized cohort.',
   );
 }
 
@@ -674,14 +674,14 @@ function parseCli(argv) {
   }
   if (
     command === 'patch-rollout-env' &&
-    ((['shadow', 'baseline'].includes(args[1]) && args.length === 2) ||
+    ((['off', 'shadow', 'baseline'].includes(args[1]) && args.length === 2) ||
       (args[1] === 'canary' && args.length === 3))
   ) {
     return { command, input: args[0], mode: args[1], cohort: args[2] ?? null };
   }
   if (
     command === 'verify-runtime-env' &&
-    ((['shadow', 'baseline'].includes(args[0]) && args.length === 3) ||
+    ((['off', 'shadow', 'baseline'].includes(args[0]) && args.length === 3) ||
       (args[0] === 'canary' && args.length === 4))
   ) {
     return {
@@ -735,7 +735,7 @@ function parseCli(argv) {
     }
   }
   throw new Error(
-    'Usage: commercial-ocr-rollout-state.mjs normalize-chat-ids <file> | patch-rollout-env <env-file> baseline | patch-rollout-env <env-file> shadow | patch-rollout-env <env-file> canary <cohort-json> | verify-runtime-identity <version> <service-name> | verify-runtime-env baseline <version> <service-name> | verify-runtime-env shadow <version> <service-name> | verify-runtime-env canary <version> <service-name> <cohort-json> | validate-control-options <cohort-json> <none|revision> <ttl-sec> <audit-stdin> | validate-certification-verification <verification-json> <expected-sha256> | build-control <cohort-json> <none|revision> <ttl-sec> <verification-json> <expected-sha256> <audit-stdin> | summarize-control [cohort-json] [--now <canonical-ISO-8601>]',
+    'Usage: commercial-ocr-rollout-state.mjs normalize-chat-ids <file> | patch-rollout-env <env-file> off | patch-rollout-env <env-file> baseline | patch-rollout-env <env-file> shadow | patch-rollout-env <env-file> canary <cohort-json> | verify-runtime-identity <version> <service-name> | verify-runtime-env off <version> <service-name> | verify-runtime-env baseline <version> <service-name> | verify-runtime-env shadow <version> <service-name> | verify-runtime-env canary <version> <service-name> <cohort-json> | validate-control-options <cohort-json> <none|revision> <ttl-sec> <audit-stdin> | validate-certification-verification <verification-json> <expected-sha256> | build-control <cohort-json> <none|revision> <ttl-sec> <verification-json> <expected-sha256> <audit-stdin> | summarize-control [cohort-json] [--now <canonical-ISO-8601>]',
   );
 }
 

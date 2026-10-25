@@ -4886,18 +4886,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   : 'Приём жалоб приостановлен оператором.'}
               </p>
             ),
-            commercialFilter: (
-              <p className="field__hint">
-                Проверка фото:{' '}
-                {settingsScreenQuery.data?.commercialPhotoModerationMode === 'FULL'
-                  ? 'включена'
-                  : settingsScreenQuery.data?.commercialPhotoModerationMode === 'OBSERVE'
-                    ? 'наблюдение без удаления'
-                    : settingsScreenQuery.data?.commercialPhotoModerationMode === 'OFF'
-                      ? 'выключена'
-                      : 'состояние неизвестно'}
-              </p>
-            ),
           },
           renderAdminContact: ({ enabledPath, urlPath, label }) => {
             if (!chatId) return null;
@@ -5499,9 +5487,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   commercialFilterHeaderSummary={commercialFilterHeaderSummary}
                   commercialSensitivityLabel={commercialSensitivityLabel}
                   commercialSensitivitySliderValue={commercialSensitivitySliderValue}
-                  commercialPhotoModerationMode={
-                    settingsScreenQuery.data?.commercialPhotoModerationMode ?? 'UNKNOWN'
-                  }
                   discardSectionChanges={discardSectionChanges}
                   draft={draft}
                   expanded={expandedSections.commercialFilter}

@@ -32,7 +32,6 @@ export type SettingsCommercialFilterSectionProps = SettingsSectionShellProps &
     commercialFilterHeaderSummary: string;
     commercialSensitivityLabel: string;
     commercialSensitivitySliderValue: number | null;
-    commercialPhotoModerationMode: 'OFF' | 'OBSERVE' | 'FULL' | 'UNKNOWN';
     handleCommercialSensitivitySliderChange: (value: number) => void;
     hasTextFiltersBotButtonError: boolean;
     textFiltersBotButtonErrors: BroadcastLinkButtonFieldErrors[];

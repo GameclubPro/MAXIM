@@ -1,7 +1,13 @@
 # Strict Commercial OCR Baseline
 
-Commercial OCR baseline actively deletes strongly confirmed photo advertisements
-in chats with `commercialAdsFilterEnabled`. It does not apply OCR-driven warnings,
+Commercial moderation is now text-only: `commercialAdsFilterEnabled` never schedules
+image analysis. The mini app no longer presents commercial photo coverage. The
+shared native pipeline remains available exclusively through the separately enabled
+image stop-list. The retained commercial policy, metadata and certification readers
+support historical evidence and bounded retirement; they are not a product entry point.
+
+The historical baseline deleted strongly confirmed photo advertisements
+in opted-in chats. It did not apply OCR-driven warnings,
 mutes or bans. Two consistent OCR passes, critical-evidence confidence at least
 900/1000, commercial score at least 90, complete album identity, safe-caption/script
 vetoes and the immutable source/deadline checks remain mandatory.
@@ -9,7 +15,8 @@ vetoes and the immutable source/deadline checks remain mandatory.
 ## Release
 
 Run local impact checks, real disposable PostgreSQL/Redis checks and exact-SHA CI.
-For initial activation use the normal guarded deploy:
+Historical activation used the normal guarded deploy (do not reactivate it for
+the text-only product):
 
 ```bash
 MAXIM_COMMERCIAL_OCR_BASELINE=1 ./infra/scripts/vps-connect.sh deploy main --auto
@@ -40,6 +47,22 @@ native UDS client. Output is aggregate counts/status/latency and native identity
 it sends/deletes nothing and stores no photo URLs, contacts or OCR text.
 
 ## Disable and recovery
+
+To disable commercial image analysis globally while retaining the text filter and
+the independently configured image stop-list, use the exact-green normal release:
+
+```bash
+MAXIM_COMMERCIAL_OCR_OFF=1 ./infra/scripts/vps-connect.sh deploy main --auto
+```
+
+This selects all API roles even without a code diff, stops producers and media under
+the ordinary release fence, and atomically persists `COMMERCIAL_OCR_ROLLOUT_MODE=off`
+with an empty canary scope. Both effective Compose and all fourteen running roles
+must agree. The off and baseline request flags are mutually exclusive. Retained
+commercial-only jobs skip analysis, combined jobs run only independently enabled
+purposes, and pending commercial delete intents lose their authority. No queue or
+history is cleared. Native OCR remains available for the separate image stop-list;
+`shadow` continues commercial analysis and is not a full disable.
 
 The existing per-chat commercial-filter switch immediately removes both text and
 photo authority, including pending commercial-only deletes. For an environment

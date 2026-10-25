@@ -1881,7 +1881,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         update,
         webhookEventId,
         updateType,
-        commercialAdsFilterEnabled: settings.commercialAdsFilterEnabled,
         imageTextScanEnabled: isStopWordsImageScanEnabled(settings),
         hasImageTextStopList: isStopWordsImageScanEnabled(settings),
         hasPhotoAttachment: mediaFlags.hasPhotoAttachment,

@@ -27,6 +27,7 @@ import {
   type CommercialOcrJob,
 } from './commercial-ocr.queue';
 import { fingerprintCommercialOcrSettingsProfile } from './commercial-ocr-settings-profile';
+import type { CommercialOcrRolloutMode } from './commercial-ocr.runtime';
 
 const sourceCreatedAt = '2026-08-12T08:00:00.000Z';
 const jobId = 'commercial-image-ocr__fixture';
@@ -63,7 +64,7 @@ type AccessFixture = {
 };
 
 type HarnessOptions = {
-  mode?: 'on' | 'shadow' | 'baseline';
+  mode?: CommercialOcrRolloutMode;
   nativeRuntimeFingerprint?: string;
   nativeComplete?: boolean;
   imageTextRolloutMode?: 'off' | 'shadow' | 'on';
@@ -501,6 +502,49 @@ describe('CommercialOcrModerationService', () => {
       expect(harness.metrics.recordCounter).toHaveBeenCalledWith(counter);
     },
   );
+
+  it('does not analyze a pending commercial-only job after OCR is switched off', async () => {
+    const harness = buildHarness({ mode: 'off' });
+    await expect(
+      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+    ).resolves.toMatchObject({ kind: 'completed' });
+    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    await harness.service.recordTechnicalIncomplete(job(), jobId, 'ocr_timeout');
+    expect(harness.prisma.webhookEvent.findUnique).not.toHaveBeenCalled();
+    expect(harness.maxClient.getExactMessageRow).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+    expect(harness.commercialReview.recordCandidate).not.toHaveBeenCalled();
+  });
+
+  it('disables commercial analysis in a combined job while preserving image stop-list processing', async () => {
+    const imageSettings = settings({
+      commercialAdsFilterEnabled: true,
+      messageLimitsImageTextScanEnabled: true,
+      messageLimitsBlockedWords: ['казино'],
+    });
+    const harness = buildHarness({
+      mode: 'off',
+      imageTextRolloutMode: 'on',
+      sandboxBoundaryVerified: true,
+      initialSettings: imageSettings,
+      analysis: { kind: 'complete', decision: noActionDecision(['commercial-scan-disabled']) },
+    });
+    await harness.service.processCommercialOcrJob(
+      job({ commercialScanRequested: true, imageTextScanRequested: true }),
+      jobId,
+      activeDeadlineAtMs,
+    );
+    expect(harness.analysisService.analyzeAlbum).toHaveBeenCalledWith(
+      expect.objectContaining({ commercialScanEnabled: false, imageTextStopListScanEnabled: true }),
+    );
+    expect(harness.runtimePolicy.resolveEffectivePolicy).not.toHaveBeenCalled();
+    expect(
+      harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+    ).not.toHaveBeenCalled();
+    expect(harness.commercialReview.recordCandidate).not.toHaveBeenCalled();
+  });
 
   it('persists a confirmed image stop-list deletion without storing recognized text', async () => {
     const imageSettings = settings({

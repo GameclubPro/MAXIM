@@ -759,6 +759,7 @@ describe('AdminSettingsService chat rules', () => {
       characterName: 'Майор Максимова',
     });
     expect(result.duplicatePhotoModerationMode).toBe('OFF');
+    expect(result.commercialPhotoModerationMode).toBe('OFF');
     expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
       'chat-1',
       'admin-1',

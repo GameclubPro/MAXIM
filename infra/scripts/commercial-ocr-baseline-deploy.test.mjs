@@ -138,17 +138,18 @@ maxim_topology_require_media_analysis_rollout_config compose_args target
 });
 
 test('post-deploy verification detects one stale or duplicate runtime mode without revealing its value', () => {
-  for (const testCase of ['valid', 'stale', 'duplicate']) {
-    const result = probe(
-      `
-export MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE=baseline
+  for (const mode of ['baseline', 'off']) {
+    for (const testCase of ['valid', 'stale', 'duplicate']) {
+      const result = probe(
+        `
+export MAXIM_EXPECTED_COMMERCIAL_OCR_ROLLOUT_MODE="$OCR_TEST_MODE"
 docker() {
   if [[ "$1" == compose ]]; then printf '%s' "\${*: -1}"; return 0; fi
   if [[ "$1" == inspect ]]; then
     printf '%s\\n' 'COMMERCIAL_OCR_VERSION=tesseract-rus-eng-v2' 'COMMERCIAL_OCR_CANARY_CHAT_IDS='
     if [[ "\${*: -1}" == api-action && "$OCR_TEST_CASE" == stale ]]; then
       printf '%s\\n' 'COMMERCIAL_OCR_ROLLOUT_MODE=private-invalid-mode'
-    else printf '%s\\n' 'COMMERCIAL_OCR_ROLLOUT_MODE=baseline'; fi
+    else printf '%s\\n' "COMMERCIAL_OCR_ROLLOUT_MODE=$OCR_TEST_MODE"; fi
     if [[ "\${*: -1}" == api-action && "$OCR_TEST_CASE" == duplicate ]]; then
       printf '%s\\n' 'COMMERCIAL_OCR_ROLLOUT_MODE=baseline'
     fi
@@ -159,17 +160,77 @@ docker() {
 compose_args=(-p infra -f infra/docker-compose.yml)
 maxim_topology_verify_api_commercial_ocr_version compose_args tesseract-rus-eng-v2
 `,
-      { OCR_TEST_CASE: testCase },
-    );
-    assert.equal(result.status, testCase === 'valid' ? 0 : 1, result.stderr);
-    assert.doesNotMatch(result.stdout + result.stderr, /private-invalid-mode/u);
+        { OCR_TEST_CASE: testCase, OCR_TEST_MODE: mode },
+      );
+      assert.equal(result.status, testCase === 'valid' ? 0 : 1, result.stderr);
+      assert.doesNotMatch(result.stdout + result.stderr, /private-invalid-mode/u);
+    }
   }
+});
+
+test('off requires coherent disabled authority across all fourteen roles', () => {
+  for (const invalidRole of [null, 'api-action', 'api-moderation', 'api-media-analysis']) {
+    const config = {
+      services: Object.fromEntries(
+        apiRoles.map((name) => [
+          name,
+          {
+            environment: {
+              COMMERCIAL_OCR_ROLLOUT_MODE: name === invalidRole ? 'canary' : 'off',
+              COMMERCIAL_OCR_CANARY_CHAT_IDS: '',
+            },
+          },
+        ]),
+      ),
+    };
+    const result = probe(
+      `
+docker() { printf '%s' "$OCR_TEST_CONFIG"; }
+compose_args=(-p infra -f infra/docker-compose.yml)
+maxim_topology_require_media_analysis_rollout_config compose_args target
+`,
+      { OCR_TEST_CONFIG: JSON.stringify(config) },
+    );
+    assert.equal(result.status, invalidRole === null ? 0 : 1, result.stderr);
+  }
+});
+
+test('off is explicit, rejects conflicting activation and selects an API release with no code diff', () => {
+  for (const [baseline, off, expected, status] of [
+    ['0', '0', '', 0],
+    ['1', '0', 'baseline', 0],
+    ['0', '1', 'off', 0],
+    ['1', '1', '', 2],
+    ['0', 'true', '', 2],
+  ]) {
+    const result = probe('maxim_topology_requested_commercial_ocr_deploy_mode', {
+      MAXIM_COMMERCIAL_OCR_BASELINE: baseline,
+      MAXIM_COMMERCIAL_OCR_OFF: off,
+    });
+    assert.equal(result.status, status, result.stderr);
+    assert.equal(result.stdout, expected);
+  }
+  const deploy = readFileSync(resolve(root, 'infra/scripts/vps-pull-build-up.sh'), 'utf8');
+  const derive = deploy.slice(
+    deploy.indexOf('derive_auto_services() {'),
+    deploy.indexOf('\nprint_deploy_plan() {'),
+  );
+  const result = probe(`
+${derive}
+COMMERCIAL_OCR_DEPLOY_MODE=off
+RETENTION_DEPLOY_MODE=''
+impact_plan_selects_component() { return 1; }
+derive_auto_services
+printf '%s' "\${SERVICES[*]}"
+`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'api-ingress');
 });
 
 test('activation persists only after journal, producer quiescence and media stop; rollback keeps v5 fence', () => {
   const read = (path) => readFileSync(resolve(root, path), 'utf8');
   const deploy = read('infra/scripts/vps-pull-build-up.sh');
-  const persist = deploy.indexOf('patch-rollout-env .env baseline');
+  const persist = deploy.indexOf('patch-rollout-env .env "$COMMERCIAL_OCR_DEPLOY_MODE"');
   assert.ok(persist > deploy.indexOf('maxim_webhook_quiesce_for_api_rollout COMPOSE_FILES'));
   assert.ok(
     persist >
