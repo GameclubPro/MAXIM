@@ -13,6 +13,7 @@ import {
   applyNativeVisualMode,
 } from '../../../scripts/miniapp-native-visual-mode.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
+import { checkStatisticsLaunchNavigation } from './statistics-launch-navigation.browser.mjs';
 
 const base = await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/');
 const server = await ensureMiniappDevServer(base);
@@ -20,6 +21,7 @@ const output = await mkdtemp(path.join(tmpdir(), 'maxim-personal-access-'));
 let browser;
 try {
   browser = await chromium.launch();
+  await checkStatisticsLaunchNavigation(browser, base);
   for (const [deviceName, device] of [
     ['iphone', devices['iPhone 15']],
     ['android', devices['Pixel 7']],

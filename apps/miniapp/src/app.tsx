@@ -504,16 +504,16 @@ function AppRouteShell({
 function AppRoutes({
   apiClient,
   launchInitData,
+  launchRouteAppliedRef,
   launchRouteResolver,
   me,
 }: {
   apiClient: ReturnType<typeof createApiTransport>;
   launchInitData: string | null;
+  launchRouteAppliedRef: RefObject<string | null>;
   launchRouteResolver: (initData: string) => string | null;
   me: Me;
 }) {
-  const launchRouteAppliedRef = useRef<string | null>(null);
-
   useEffect(() => {
     traceMiniappBoot('first_render', undefined, { once: true });
   }, []);
@@ -674,6 +674,9 @@ function ProfiledAppRoutes({
 }) {
   const [me, setMe] = useState<Me | null>();
   const location = useLocation();
+  // FLAG: Route-specific providers can remount AppRoutes. Keep the consumed launcher
+  // in the authenticated session so ordinary navigation cannot replay its old target.
+  const launchRouteAppliedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!/^\/(chat|channel)\/[^/]+\/dialog\/comments\/?$/u.test(location.pathname)) return;
@@ -744,6 +747,7 @@ function ProfiledAppRoutes({
     <AppRoutes
       apiClient={apiClient}
       launchInitData={launchInitData}
+      launchRouteAppliedRef={launchRouteAppliedRef}
       launchRouteResolver={launchRouteResolver}
       me={me}
     />
