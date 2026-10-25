@@ -349,6 +349,33 @@
     height: 44px;
     min-height: 44px;
   }
+  body[data-miniapp-profile='moderation'] .commercial-studio__flow {
+    display: grid;
+    gap: 20px;
+    margin: 4px 0;
+    padding: 0;
+    list-style: none;
+  }
+  body[data-miniapp-profile='moderation'] .commercial-studio__flow li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 14px;
+  }
+  body[data-miniapp-profile='moderation'] .commercial-studio__flow b,
+  body[data-miniapp-profile='moderation'] .commercial-studio__flow svg {
+    color: var(--color-accent);
+  }
+  body[data-miniapp-profile='moderation'] .commercial-studio__flow span {
+    display: grid;
+    gap: 4px;
+    flex: 1;
+  }
+  body[data-miniapp-profile='moderation'] .commercial-studio__flow small {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
   @media (prefers-reduced-motion: reduce) {
     body[data-miniapp-profile='moderation'] .commercial-studio__profiles > button {
       transition: none;

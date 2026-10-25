@@ -317,6 +317,7 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   maxim_topology_require_managed_entity_activation "$API_SOURCE_SHA"
   maxim_topology_require_fixed_moderator "$API_SOURCE_SHA"
   maxim_topology_require_commercial_text_delete_guard "$API_SOURCE_SHA"
+  maxim_topology_require_commercial_ai_delete_guard "$API_SOURCE_SHA"
   maxim_topology_require_commercial_ocr_baseline_guard "$API_SOURCE_SHA"
   maxim_topology_require_max_api_metrics_minute_reader "$API_SOURCE_SHA"
   maxim_topology_require_managed_network_foundation "$API_SOURCE_SHA"

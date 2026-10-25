@@ -99,6 +99,7 @@ integration('supplemental network settings with PostgreSQL', () => {
       new ConfigService({}),
     );
     const settings = {
+      commercialAiModerationMode: () => 'DELETE_ONLY' as const,
       getSettings: async (id: string) => {
         const row = await db.chatSettings.findUniqueOrThrow({ where: { chatId: id } });
         return {
@@ -125,6 +126,7 @@ integration('supplemental network settings with PostgreSQL', () => {
         `Generated ${(await db.chatSettings.findUniqueOrThrow({ where: { chatId: id } })).greetingBotMessageText}`,
     } satisfies Pick<
       AdminSettingsService,
+      | 'commercialAiModerationMode'
       | 'getSettings'
       | 'updateNetworkChatSettings'
       | 'finishNetworkSettingsFollowup'

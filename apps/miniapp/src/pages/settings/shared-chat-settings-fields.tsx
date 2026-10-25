@@ -42,6 +42,7 @@ import { SharedProfanitySettingsFields as LazySharedProfanitySettingsFields } fr
 const LazySharedCommercialSettingsFields = recoverableLazyNamedComponent<{
   fields: ChatSettingsFieldAdapter;
   actions: ReactNode;
+  mode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY';
 }>(() => import('./shared-commercial-settings-fields'), 'SharedCommercialSettingsFields');
 import './shared-chat-settings.css';
 
@@ -388,6 +389,7 @@ function Commercial(props: BodyProps) {
     <Suspense fallback={<Spinner label="Загружаем настройки" />}>
       <LazySharedCommercialSettingsFields
         fields={props.fields}
+        mode={props.context.commercialAiModerationMode}
         actions={<Sanctions {...props} prefix="textFilters" warningText buttons header={false} />}
       />
     </Suspense>

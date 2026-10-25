@@ -12,7 +12,6 @@ import {
 import {
   captureBrowserLaunchOptions,
   resolveCaptureDevice,
-  setPhoneKeyboard,
   settleVisualFrame,
 } from '../../../scripts/miniapp-smartphone.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
@@ -58,10 +57,11 @@ try {
           0,
           'Opening must not change saved thresholds',
         );
-        assert.equal(await panel.locator('details').getAttribute('open'), null);
+        assert.equal(await panel.locator('details').count(), 0);
+        assert.equal(await panel.locator('.commercial-studio__profiles').count(), 0);
         assert.match(
           await panel.locator('.commercial-studio__ai').innerText(),
-          /без автоматических удалений/u,
+          /Сомнения проверяет сильная модель/u,
         );
         await page.screenshot({ path: join(screenshots, `${device}-${theme}.png`) });
         assert.equal(
@@ -83,81 +83,26 @@ try {
           [],
           `${device}/${theme}: clipped control`,
         );
-        await panel.getByRole('button', { name: 'Строго', exact: true }).click();
+        const toggle = panel.getByRole('checkbox', { name: 'Удалять рекламу', exact: true });
+        await toggle.uncheck();
         await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
-        await panel
-          .getByRole('button', { name: 'Сохранить', exact: true })
-          .waitFor({ state: 'hidden' });
         await panel.waitFor({ state: 'hidden' });
         await clickSettingsOverviewEntry(page, 'Коммерческая реклама');
-        assert.equal(
-          await panel
-            .getByRole('button', { name: 'Строго', exact: true })
-            .getAttribute('aria-pressed'),
-          'true',
-        );
-        await panel.getByText('Повторные нарушения', { exact: true }).click();
-        await panel
-          .getByRole('button', {
-            name: 'Редактировать текст предупреждения об удалении рекламы',
-            exact: true,
-          })
-          .click();
-        const editor = page.locator('.bot-message-editor-sheet__panel').getByRole('textbox');
-        await editor.fill('Пожалуйста, не размещайте рекламу.');
-        await setPhoneKeyboard(page, { height: 220, open: true });
-        await settleVisualFrame(page);
-        const sheet = page.locator('.bot-message-editor-sheet__panel');
-        const bounds = await sheet.boundingBox();
-        const viewport = await page.evaluate(() => ({
-          height: visualViewport.height,
-          offset: visualViewport.offsetTop,
-        }));
-        assert.ok(
-          bounds.y >= viewport.offset - 2 &&
-            bounds.y + bounds.height <= viewport.offset + viewport.height + 2,
-          `${device}: editor must fit visible viewport`,
-        );
-        await page.screenshot({ path: join(screenshots, `${device}-${theme}-keyboard.png`) });
-        await setPhoneKeyboard(page, { open: false });
-        await sheet
-          .getByRole('button', { name: /Готово|Закрыть/u })
-          .last()
-          .click();
-        await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
-        await panel
-          .getByRole('button', { name: 'Сохранить', exact: true })
-          .waitFor({ state: 'hidden' });
-        await panel.waitFor({ state: 'hidden' });
-        await clickSettingsOverviewEntry(page, 'Коммерческая реклама');
-        await panel.getByRole('button', { name: 'Мягко', exact: true }).click();
+        assert.equal(await toggle.isChecked(), false);
+        await toggle.check();
         await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
         await page.getByRole('button', { name: 'Не сохранять', exact: true }).click();
         await clickSettingsOverviewEntry(page, 'Коммерческая реклама');
-        assert.equal(
-          await panel
-            .getByRole('button', { name: 'Строго', exact: true })
-            .getAttribute('aria-pressed'),
-          'true',
-          'Discard restores saved profile',
-        );
-        await panel
-          .getByRole('checkbox', { name: 'Фильтровать коммерческую рекламу', exact: true })
-          .uncheck();
-        assert.equal(
-          await panel
-            .getByRole('group', { name: 'Чувствительность коммерческого фильтра' })
-            .count(),
-          0,
-        );
+        assert.equal(await toggle.isChecked(), false);
+        await toggle.check();
         await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
-        await panel
-          .getByRole('button', { name: 'Сохранить', exact: true })
-          .waitFor({ state: 'hidden' });
+        await panel.waitFor({ state: 'hidden' });
+        await clickSettingsOverviewEntry(page, 'Коммерческая реклама');
+        assert.equal(await toggle.isChecked(), true);
         assert.deepEqual(errors, []);
         await context.close();
         console.log(
-          `PASS ${device}/${theme}: unchanged open, save, speech keyboard, discard, disable, layout`,
+          `PASS ${device}/${theme}: AI mode, unchanged open, save/reopen, discard, toggle, layout`,
         );
       }
     } finally {

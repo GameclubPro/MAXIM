@@ -30,6 +30,9 @@ import { CommercialDeleteGuardService } from './commercial/commercial-delete-gua
 import { CommercialTextRuntimePolicyModule } from './commercial/commercial-text-runtime-policy.module';
 import { CommercialReviewService } from './commercial/commercial-review.service';
 import { CommercialLlmShadowRunnerService } from './commercial/commercial-llm-shadow-runner.service';
+import { CommercialLlmEnforcementService } from './commercial/commercial-llm-enforcement.service';
+import { CommercialLlmEnforcementRunnerService } from './commercial/commercial-llm-enforcement-runner.service';
+import { CommercialLlmDeleteGuardService } from './commercial/commercial-llm-delete-guard.service';
 import { StopWordsDeleteGuardService } from './stop-words/stop-words-delete-guard.service';
 import { TrafficProtectionDeleteGuardService } from './traffic-protection-delete-guard.service';
 import { RuleEngineModule } from './rule-engine.module';
@@ -74,6 +77,9 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     CommercialDeleteGuardService,
     CommercialReviewService,
     CommercialLlmShadowRunnerService,
+    CommercialLlmEnforcementService,
+    CommercialLlmEnforcementRunnerService,
+    CommercialLlmDeleteGuardService,
     StopWordsDeleteGuardService,
     TrafficProtectionDeleteGuardService,
     CommercialOcrDeleteGuardService,
@@ -88,6 +94,7 @@ const actionRoleProviders = roleRunsAction(getAppRole())
     ...actionRoleProviders,
   ],
   exports: [
+    CommercialLlmEnforcementService,
     ModerationStateDeleteGuardService,
     RequiredSubscriptionExecutionGuardService,
     ModerationRuleSanctionGuardService,

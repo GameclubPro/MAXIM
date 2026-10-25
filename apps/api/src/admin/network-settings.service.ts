@@ -291,6 +291,9 @@ export class NetworkSettingsService {
     const nextOffset = offset + snapshots.length;
     const complete = nextOffset >= selection.entityIds.length;
     return networkSettingsReadResponseSchema.parse({
+      ...(request.section === 'commercialFilter'
+        ? { commercialAiModerationMode: this.settings.commercialAiModerationMode() }
+        : {}),
       entityType: request.entityType,
       target: request.target,
       section: request.section,

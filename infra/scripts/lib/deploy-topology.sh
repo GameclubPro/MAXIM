@@ -2414,3 +2414,33 @@ maxim_topology_require_max_api_metrics_minute_reader() {
     return 1
   fi
 }
+
+maxim_topology_require_commercial_ai_delete_guard() {
+  local commit_sha="$1" source_path source
+  # FLAG: Pending AI reasons retain their own reader floor even after the mode is disabled.
+  # Old executors must never treat an unknown AI reason as unguarded deletion authority.
+  for source_path in \
+    apps/api/src/moderation/commercial/commercial-llm-enforcement.protocol.ts \
+    apps/api/src/moderation/commercial/commercial-llm-delete-guard.service.ts \
+    apps/api/src/moderation/commercial/commercial-llm-effect-origin.ts \
+    apps/api/src/moderation/moderation-delete-intent.service.ts; do
+    source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)" || {
+      echo 'Rollback target predates guarded commercial AI deletion.' >&2; return 1;
+    }
+    if ! printf '%s' "$source" | node -e '
+      const source = require("node:fs").readFileSync(0).toString("utf8");
+      const path = process.argv[1];
+      if (source.length > 2 * 1024 * 1024) process.exit(1);
+      const required = path.endsWith("enforcement.protocol.ts")
+        ? ["COMMERCIAL_LLM_DELETE", "COMMERCIAL_LLM_EFFECT_MAX_AGE_MS = 60_000", "classifierSha256", "sourceWebhookEventId"]
+        : path.endsWith("delete-guard.service.ts")
+          ? ["CommercialLlmDeleteGuardService", "hasProof(source)", "getExactMessageRow(", "commercialLlmSourceCurrent(source)", "settingsSha256"]
+          : path.endsWith("effect-origin.ts")
+            ? ["withCommercialLlmEffectOrigin", "readCommercialLlmEffectOrigin", "scope.active = false", "await hasProof()"]
+            : ["commercialLlmGuard!.authorize(", "Commercial AI guard unavailable", "CommercialLlmGuardRejectedError", "readCommercialLlmEffectOrigin(", "verifiedReasonDeadlines", "independentBoundedDeadlineAtMs"];
+      process.exit(required.every(marker => source.includes(marker)) ? 0 : 1);
+    ' "$source_path"; then
+      echo 'Rollback target lacks the commercial AI source/proof/deadline guard.' >&2; return 1
+    fi
+  done
+}

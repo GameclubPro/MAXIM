@@ -21,10 +21,13 @@ const profiles = [
 export function SharedCommercialSettingsFields({
   fields,
   actions,
+  mode,
 }: {
   fields: ChatSettingsFieldAdapter;
   actions: ReactNode;
+  mode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY';
 }) {
+  const aiDeletes = mode === 'DELETE_ONLY';
   const id = useId();
   const [openHint, setOpenHint] = useState<'master' | 'sensitivity' | null>(null);
   const enabled = fields.read('commercialAdsFilterEnabled');
@@ -107,18 +110,21 @@ export function SharedCommercialSettingsFields({
         </div>
         <SharedNativeSettingsToggle
           className="commercial-studio__toggle"
-          title="Фильтр рекламы"
-          label="Фильтровать коммерческую рекламу"
+          title={aiDeletes ? 'Удалять рекламу' : 'Фильтр рекламы'}
+          label={aiDeletes ? 'Удалять рекламу' : 'Фильтровать коммерческую рекламу'}
           state={enabled}
           disabled={fields.readOnly}
           onChange={(next) => setChatBoolean(fields, 'commercialAdsFilterEnabled', next)}
         >
-          <div className="commercial-studio__caption">Проверка текста сообщений</div>
+          <div className="commercial-studio__caption">
+            {aiDeletes ? 'ИИ-модерация текста' : 'Проверка текста сообщений'}
+          </div>
         </SharedNativeSettingsToggle>
         {openHint === 'master' ? (
           <p id={`${id}-master`} className="commercial-studio__hint">
-            Фильтр ищет коммерческие предложения и удаляет подтверждённую рекламу. Разовые личные
-            продажи старается пропускать.
+            {aiDeletes
+              ? 'ИИ удаляет коммерческую рекламу после серверной проверки. Личные продажи и обычное общение старается пропускать. Автоматические баны и муты не применяются.'
+              : 'Фильтр ищет коммерческие предложения и удаляет подтверждённую рекламу. Разовые личные продажи старается пропускать.'}
           </p>
         ) : null}
       </div>
@@ -128,13 +134,47 @@ export function SharedCommercialSettingsFields({
           <AppIcon icon="Sparks" />
         </span>
         <div>
-          <strong>ИИ-анализ</strong>
-          <span>Пока без автоматических удалений</span>
+          <strong>
+            {aiDeletes ? 'Двойная проверка' : mode === 'OBSERVE' ? 'ИИ-анализ' : 'Текстовый фильтр'}
+          </strong>
+          <span>
+            {aiDeletes
+              ? 'Сомнения проверяет сильная модель'
+              : mode === 'OBSERVE'
+                ? 'Пока без автоматических удалений'
+                : 'По настройкам сообщества'}
+          </span>
         </div>
-        <span className="commercial-studio__badge">Тест</span>
+        <span className="commercial-studio__badge">
+          {aiDeletes ? 'ИИ' : mode === 'OBSERVE' ? 'Тест' : 'Правила'}
+        </span>
       </div>
 
-      {enabled.kind !== 'common' || enabled.value ? (
+      {aiDeletes ? (
+        <section className="commercial-studio__sensitivity" aria-label="Проверка рекламы">
+          <ol className="commercial-studio__flow">
+            <li>
+              <b>01</b>
+              <span>
+                <strong>Быстрый анализ</strong>
+                <small>Первичная модель проверяет текст</small>
+              </span>
+              <AppIcon icon="Sparks" />
+            </li>
+            <li>
+              <b>02</b>
+              <span>
+                <strong>Подтверждение</strong>
+                <small>Сервер проверяет рекламу и сомнения</small>
+              </span>
+              <AppIcon icon="ShieldCheck" />
+            </li>
+          </ol>
+          <p className="commercial-studio__hint">
+            При сбое или занятости ИИ сообщение остаётся. Другие фильтры работают отдельно.
+          </p>
+        </section>
+      ) : enabled.kind !== 'common' || enabled.value ? (
         <>
           <section
             className="commercial-studio__sensitivity"

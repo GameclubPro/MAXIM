@@ -457,6 +457,7 @@ const envSchema = z.object({
   PHOTO_NATIVE_SANDBOX_SOCKET_PATH: z.literal('/run/maxim-photo/native-photo.sock').optional(),
   PHOTO_DUPLICATE_HISTORY_MAX_ITEMS: z.coerce.number().int().min(10).max(2_000).default(250),
   COMMERCIAL_LLM_SHADOW_ENABLED: envBoolean(false),
+  COMMERCIAL_LLM_ENFORCEMENT_ENABLED: envBoolean(false),
   COMMERCIAL_LLM_ENDPOINT: z
     .literal('http://gemma-commercial-shadow:8080')
     .default('http://gemma-commercial-shadow:8080'),

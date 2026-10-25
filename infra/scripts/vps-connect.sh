@@ -26,6 +26,7 @@ DATABASE_BREAK_GLASS_REASON_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS_REASON
 DEPLOY_DISK_MIN_FREE_BYTES_FROM_CALLER="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-}"
 DEPLOY_API_READY_TIMEOUT_SEC_FROM_CALLER="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-}"
 readonly MESSAGE_RETENTION_MODE_FROM_CALLER="${MAXIM_MESSAGE_RETENTION_MODE:-}"
+readonly COMMERCIAL_AI_FROM_CALLER="${MAXIM_COMMERCIAL_LLM_ENFORCEMENT:-}"
 readonly COMMERCIAL_OCR_OFF_FROM_CALLER="${MAXIM_COMMERCIAL_OCR_OFF:-0}"
 readonly STATISTICS_EXCHANGE_V3_FROM_CALLER="${STATISTICS_EXCHANGE_V3_ENABLED:-}"
 readonly STATISTICS_CENTRAL_EPOCH_FROM_CALLER="${MAXIM_STATISTICS_CENTRAL_EPOCH:-}"
@@ -38,6 +39,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 MAXIM_COMMERCIAL_OCR_OFF="$COMMERCIAL_OCR_OFF_FROM_CALLER"
+MAXIM_COMMERCIAL_LLM_ENFORCEMENT="$COMMERCIAL_AI_FROM_CALLER"
 MAXIM_MESSAGE_RETENTION_MODE="$MESSAGE_RETENTION_MODE_FROM_CALLER"
 STATISTICS_EXCHANGE_V3_ENABLED="$STATISTICS_EXCHANGE_V3_FROM_CALLER"
 MAXIM_STATISTICS_CENTRAL_EPOCH="$STATISTICS_CENTRAL_EPOCH_FROM_CALLER"
@@ -1254,6 +1256,10 @@ deploy_main() {
     ''|on|off) ;;
     *) echo 'MAXIM_MESSAGE_RETENTION_MODE must be on or off when supplied.' >&2; return 2 ;;
   esac
+  case "${MAXIM_COMMERCIAL_LLM_ENFORCEMENT:-}" in
+    ''|true|false) ;;
+    *) echo 'MAXIM_COMMERCIAL_LLM_ENFORCEMENT must be true or false when supplied.' >&2; return 2 ;;
+  esac
   case "${STATISTICS_EXCHANGE_V3_ENABLED:-}" in
     ''|true|false) ;;
     *) echo 'STATISTICS_EXCHANGE_V3_ENABLED must be true or false when supplied.' >&2; return 2 ;;
@@ -1285,6 +1291,9 @@ deploy_main() {
   remote_command="MAXIM_EXPECTED_DEPLOY_SHA=$(printf '%q' "$expected_sha") $remote_command"
   if [[ -n "${MAXIM_MESSAGE_RETENTION_MODE:-}" ]]; then
     remote_command="MAXIM_MESSAGE_RETENTION_MODE=$(printf '%q' "$MAXIM_MESSAGE_RETENTION_MODE") $remote_command"
+  fi
+  if [[ -n "${MAXIM_COMMERCIAL_LLM_ENFORCEMENT:-}" ]]; then
+    remote_command="MAXIM_COMMERCIAL_LLM_ENFORCEMENT=$(printf '%q' "$MAXIM_COMMERCIAL_LLM_ENFORCEMENT") $remote_command"
   fi
   if [[ -n "${STATISTICS_EXCHANGE_V3_ENABLED:-}" ]]; then
     remote_command="STATISTICS_EXCHANGE_V3_ENABLED=$(printf '%q' "$STATISTICS_EXCHANGE_V3_ENABLED") $remote_command"
@@ -1631,7 +1640,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_exact_statistics_rollup_reader \
+    maxim_topology_require_commercial_ai_delete_guard \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1646,15 +1655,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback must restore tooling with the exact statistics shadow reader,
-  # as well as preceding network intent, assignment, activation and permanent-hold floors.
+  # FLAG: API rollback retains guarded AI deletion and the preceding statistics,
+  # network intent, assignment, activation and permanent-hold reader floors.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_exact_statistics_rollup_reader
+    capability_marker=maxim_topology_require_commercial_ai_delete_guard
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_exact_statistics_rollup_reader
+        capability_marker=maxim_topology_require_commercial_ai_delete_guard
         break
       fi
     done

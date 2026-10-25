@@ -76,6 +76,7 @@ import {
 import { resolveModerationSanctionExpiry } from './moderation-sanction-expiry.util';
 import { CommercialReviewService } from './commercial/commercial-review.service';
 import { buildCommercialTextQualityObservation } from './commercial/commercial-quality-observation';
+import { CommercialLlmEnforcementService } from './commercial/commercial-llm-enforcement.service';
 import {
   prepareCommercialQualityDelete,
   recordCommercialQualityExecution,
@@ -929,6 +930,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly requiredSubscriptionExecutionGuard?: RequiredSubscriptionExecutionGuardService,
     @Optional() private readonly moderationRuleFollowupService?: ModerationRuleFollowupService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
+    @Optional() private readonly commercialAi?: CommercialLlmEnforcementService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -2343,7 +2345,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         commercialCampaignContext,
       });
       this.markWebhookHotPathStage(hotPathProfile, 'rule-engine');
-
       if (detection.violations.length === 0 && this.reportSubmission) {
         this.markWebhookHotPathStage(hotPathProfile, 'report-submission');
         const reportHandled = await this.reportSubmission.handle(update, settings);
@@ -2353,8 +2354,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           return;
         }
       }
-
-      const violations = (
+      const detectedViolations = (
         await this.reconcileLinkAllowlistViolations({
           chatId,
           text,
@@ -2364,6 +2364,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           violations: detection.violations,
         })
       ).filter((violation) => violation.ruleCode !== 'TOPIC_FILTER_MISMATCH');
+      const violations =
+        this.commercialAi?.evaluate(
+          detectedViolations,
+          update,
+          settings,
+          !!reportCommand ||
+            latestSenderChatAdminCheck.isAdmin ||
+            this.isKnownRuntimeBotUserId(senderId),
+        ) ?? detectedViolations;
       // FLAG: Quality capture observes the actual decision before duplicate/other-rule
       // exits. It never chooses a sanction; callbacks retain this immutable source revision.
       let commercialQualityObservation: ReturnType<typeof buildCommercialTextQualityObservation> =
