@@ -1,6 +1,9 @@
 import { ConfigService } from '@nestjs/config';
-import { of } from 'rxjs';
+import type { HttpService } from '@nestjs/axios';
+import { AxiosHeaders } from 'axios';
+import { of, throwError } from 'rxjs';
 import { UnrecoverableError } from 'bullmq';
+import type { ActionHealthService } from '../system/action-health.service';
 import { fingerprintModerationSettings } from '../moderation/moderation-settings-fingerprint';
 import type { RequiredSubscriptionNoticeAuthority } from '../moderation/required-subscription-notice-authority';
 import { MaxBotContextService } from './max-bot-context.service';
@@ -265,10 +268,18 @@ function transportFixture() {
     MAX_ACTION_DISPATCH_ENABLED: true,
   });
   const http = {
-    request: jest.fn(() => {
-      order.push('http');
-      return of({ status: 200, data: { message: { body: { mid: 'notice-sent' } } } });
-    }),
+    request: jest
+      .fn<ReturnType<HttpService['request']>, Parameters<HttpService['request']>>()
+      .mockImplementation(() => {
+        order.push('http');
+        return of({
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config: { headers: new AxiosHeaders() },
+          data: { message: { body: { mid: 'notice-sent' } } },
+        });
+      }),
   };
   const ledger = {
     getCompletedSendDispatchResult: jest.fn(async () => null as any),
@@ -277,10 +288,13 @@ function transportFixture() {
     releaseSendDispatch: jest.fn(async () => undefined),
   };
   const links = { resolveBotIdForRead: jest.fn(async () => 'target-reader') };
+  const health: jest.Mocked<
+    Pick<ActionHealthService, 'recordSuccessForLane' | 'recordFailureForLane'>
+  > = { recordSuccessForLane: jest.fn(), recordFailureForLane: jest.fn() };
   const client = new MaxClientService(
     http as never,
     config,
-    { recordSuccessForLane: jest.fn(), recordFailureForLane: jest.fn() } as never,
+    health as never,
     { ...s.registry, getDefaultBot: () => bot, getBotById: () => bot } as never,
     context,
     undefined,
@@ -312,7 +326,7 @@ function transportFixture() {
     expect(options).toEqual(expect.objectContaining({ botId: 'peer-2', bypassCache: true }));
     return { userId: 'user-1', isAdmin: false, isOwner: false } as never;
   });
-  jest.spyOn(client, 'getExactMessageRow').mockImplementation(async () => {
+  const sourceLookup = jest.spyOn(client, 'getExactMessageRow').mockImplementation(async () => {
     order.push('source');
     return s.source;
   });
@@ -326,10 +340,42 @@ function transportFixture() {
       return new Map();
     });
   const authority = jest.spyOn(s.guard, 'assertAllowed');
-  return { ...s, client, http, quota, ledger, authority, order, links };
+  return { ...s, client, http, quota, ledger, authority, order, links, health, sourceLookup };
 }
 
 describe('required-subscription queued SEND boundary', () => {
+  it.each([403, 404, 429, 503, 'timeout'] as const)(
+    'refuses a source lookup %s before SEND while counting only transport pressure',
+    async (failure) => {
+      const s = transportFixture();
+      const error =
+        failure === 'timeout'
+          ? Object.assign(new Error('source lookup timed out'), { code: 'ETIMEDOUT' })
+          : { response: { status: failure, data: { code: 'not.found' } } };
+      s.sourceLookup.mockRestore();
+      s.http.request.mockReturnValue(throwError(() => error));
+      jest.spyOn(s.client as any, 'registerCriticalFailure').mockResolvedValue(undefined);
+      try {
+        await expect(s.client.executeActionJob(s.action)).rejects.toBe(error);
+        expect(s.http.request).toHaveBeenCalledTimes(failure === 404 ? 2 : 1);
+        expect(s.http.request.mock.calls.every(([request]) => request.method === 'get')).toBe(true);
+        expect(s.ledger.releaseSendDispatch).toHaveBeenCalledTimes(1);
+        expect(s.ledger.completeSendDispatch).not.toHaveBeenCalled();
+        expect(s.prisma.moderationDeleteIntent.findUnique).not.toHaveBeenCalled();
+        expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+        expect(s.health.recordSuccessForLane).not.toHaveBeenCalled();
+        if (failure === 403 || failure === 404) {
+          expect(s.health.recordFailureForLane).not.toHaveBeenCalled();
+        } else {
+          expect(s.health.recordFailureForLane).toHaveBeenCalledTimes(1);
+          expect(s.health.recordFailureForLane).toHaveBeenCalledWith('critical', true, 'peer-2');
+        }
+      } finally {
+        await s.client.onModuleDestroy();
+      }
+    },
+  );
+
   it('checks after preparation and quota through selected author/source bot and each current target read route', async () => {
     const s = transportFixture();
     try {

@@ -330,6 +330,12 @@ webhook queue. Moderation pre-dispatch reads now use the same existing 403/404 m
 exclusions as the delete mutation. Errors still propagate and preserve fail-closed
 authorization/absence handling; 429, server and network failures remain health signals.
 
+Queued required-subscription notices apply the same 403/404 health exclusion only to
+their exact source-message read before SEND. The original lookup error still rejects
+dispatch, releases only the untouched SEND claim and proves neither delivery nor deletion.
+Member checks and actual sends retain their existing health accounting; 429, 5xx and
+transport timeouts from the source read continue to signal MAX pressure.
+
 ## Priority Index Migration Recovery
 
 If `20260927160000_index_publication_materialization_priority` stops with a lock
