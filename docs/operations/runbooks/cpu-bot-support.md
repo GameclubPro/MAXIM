@@ -52,6 +52,13 @@ Administrator tasks and Publisher instructions use model inference; explicit hel
 and answers to a recent role clarification require a `reply` result. Ordinary conversation
 and acknowledgements can still be skipped.
 
+Successful answers use short paragraphs, numbered instructions and visible bullet points in
+plain text. The client also separates dense prose at sentence boundaries and adds the fixed
+footer `✦ Ответ подготовлен ИИ-помощником «Майор Максимов»` once, in its own paragraph.
+This applies to model answers and both reviewed direct-answer routes. The final text, including
+the footer, must fit the bridge's 1800-character limit; oversized answers fail silently rather
+than losing steps to truncation. Skipped questions and errors receive no footer or public reply.
+
 Questions and context are untrusted user data. Responses are constrained JSON with
 `reply` or `skip`, bounded text and IDs from the selected knowledge. Internal paths,
 invented links, incomplete generations and technical errors cannot become public replies.
