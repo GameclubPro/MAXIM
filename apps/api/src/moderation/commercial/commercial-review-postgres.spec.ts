@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createPrismaClient, type PrismaClient } from '../../prisma/prisma-client';
+import { setTimeout as delay } from 'node:timers/promises';
+import { createPrismaClient, Prisma, type PrismaClient } from '../../prisma/prisma-client';
 import { CommercialReviewService, type Candidate } from './commercial-review.service';
 import { COMMERCIAL_INTENT_QUALITY_DECISION_VERSION } from './commercial-policy-cohorts';
 
@@ -207,6 +208,79 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       ).ratings,
     ).toHaveLength(1);
   });
+  it('recovers a real concurrent insert conflict and retains the losing outcome on the winning row', async () => {
+    const seed = await current();
+    await prisma.commercialReviewSample.deleteMany({ where: { chatId } });
+    const applicationName = `commercial-review-race-${randomUUID()}`;
+    const contender = createPrismaClient(databaseUrl, {
+      max: 2,
+      application_name: applicationName,
+      statement_timeout: 8_000,
+    });
+    const upsert = jest.spyOn(contender.commercialReviewSample, 'upsert');
+    let capture: Promise<void> | undefined;
+    try {
+      await contender.$connect();
+      await prisma.$transaction(
+        async (tx) => {
+          await tx.commercialReviewSample.create({
+            data: {
+              id: seed.id,
+              chatId: seed.chatId,
+              userId: seed.userId,
+              messageId: seed.messageId,
+              source: seed.source,
+              score: seed.score,
+              evidenceHash: seed.evidenceHash,
+              reviewPriority: seed.reviewPriority,
+              observedAt: seed.observedAt,
+              expiresAt: seed.expiresAt,
+              evidence: seed.evidence as Prisma.InputJsonValue,
+              qualityMetadata: seed.qualityMetadata as Prisma.InputJsonValue,
+              label: 'COMMERCIAL',
+            },
+          });
+          capture = new CommercialReviewService(contender as never).recordCandidate({
+            ...candidate,
+            executionOutcome: 'CONFIRMED_DELETE',
+          });
+          // Hold the winning insert until Prisma's losing insert is actually waiting
+          // on its unique key; no timing-only sleep or injected database error.
+          let blocked = false;
+          const deadline = Date.now() + 3_000;
+          while (Date.now() < deadline) {
+            const rows = await prisma.$queryRaw<Array<{ blocked: boolean }>>(Prisma.sql`
+            SELECT EXISTS (
+              SELECT 1 FROM pg_stat_activity
+              WHERE application_name = ${applicationName}
+                AND wait_event_type = 'Lock'
+                AND query LIKE 'INSERT INTO "public"."commercial_review_samples"%'
+            ) AS blocked
+          `);
+            if (rows[0]?.blocked) {
+              blocked = true;
+              break;
+            }
+            await delay(10);
+          }
+          expect(blocked).toBe(true);
+        },
+        { timeout: 10_000 },
+      );
+      await capture;
+      expect(upsert).toHaveBeenCalledTimes(1);
+      await expect(upsert.mock.results[0]?.value).rejects.toMatchObject({ code: 'P2002' });
+      const winner = await current();
+      expect(winner.id).toBe(seed.id);
+      expect(winner.label).toBe('COMMERCIAL');
+      expect(winner.qualityMetadata).toMatchObject({ executionOutcome: 'CONFIRMED_DELETE' });
+      expect(await prisma.commercialReviewSample.count({ where: { chatId } })).toBe(1);
+    } finally {
+      await capture;
+      upsert.mockRestore();
+      await contender.$disconnect();
+    }
+  }, 20_000);
   it('serializes third-reviewer adjudication and rejects either original reviewer adjudicating their own disagreement', async () => {
     let row = await current();
     await service.labelItem(row.id, 'one', {

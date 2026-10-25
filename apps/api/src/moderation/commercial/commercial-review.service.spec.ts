@@ -7,6 +7,7 @@ import {
 } from './commercial-review.service';
 import { COMMERCIAL_INTENT_QUALITY_DECISION_VERSION } from './commercial-policy-cohorts';
 import { commercialReviewSamplingFrameResponseSchema } from '@maxim/contracts/safety-desk';
+import { Prisma } from '../../prisma/prisma-client';
 
 const updatedAt = new Date('2026-10-01T10:00:00.000Z');
 const key = (actor: string) =>
@@ -207,6 +208,42 @@ describe('CommercialReviewService independent quality boundary', () => {
       new Error('sensitive upstream data'),
     );
     await expect(service.recordCandidate(candidate)).resolves.toBeUndefined();
+    expect(prisma.commercialReviewSample.findUnique).not.toHaveBeenCalled();
+  });
+  it('merges the losing insert outcome into the exact winning sample without replacing its labels', async () => {
+    const row = createRow({ label: 'COMMERCIAL', ratings: [rating()] });
+    const { prisma, service } = createService([row]);
+    prisma.commercialReviewSample.upsert.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+    await service.recordCandidate({ ...candidate, executionOutcome: 'CONFIRMED_DELETE' });
+    const hash = prisma.commercialReviewSample.upsert.mock.calls[0]![0].where.evidenceHash;
+    expect(prisma.commercialReviewSample.findUnique).toHaveBeenCalledWith({
+      where: { evidenceHash: hash },
+      include: { ratings: true },
+    });
+    const write = prisma.commercialReviewSample.updateMany.mock.calls[0]![0];
+    expect(write.where).toMatchObject({ id: row.id, updatedAt: row.updatedAt });
+    expect(write.data.qualityMetadata.executionOutcome).toBe('CONFIRMED_DELETE');
+    for (const field of ['label', 'independentLabel', 'independentReviewCount', 'ratings'])
+      expect(write.data).not.toHaveProperty(field);
+    expect(prisma.commercialReviewSample.upsert).toHaveBeenCalledTimes(1);
+  });
+  it('does not recreate or enrich an absent unique-conflict winner', async () => {
+    const { prisma, service } = createService();
+    prisma.commercialReviewSample.upsert.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+    prisma.commercialReviewSample.findUnique.mockResolvedValue(null);
+    await expect(service.recordCandidate(candidate)).resolves.toBeUndefined();
+    expect(prisma.commercialReviewSample.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.commercialReviewSample.updateMany).not.toHaveBeenCalled();
   });
   it('preserves nullable experimental detection and deletion permission without accepting raw payloads', async () => {
     const { prisma, service } = createService();

@@ -15,6 +15,12 @@ domain-separated keyed digest. Edits retain one logical key and distinct immutab
 source snapshots; mirrored deliveries enrich the same revision. Source creation
 comes from the actual Message, never the webhook event clock.
 
+Concurrent first captures may collide on the evidence hash. The losing insert
+reloads that exact sample once and merges its observations through the existing
+revision and expiry guards, preserving labels and ratings. Missing winners and
+other storage failures remain explicit capture omissions; capture never retries
+a MAX action or establishes complete sampling coverage.
+
 `samplingProbability` describes capture (1 for hits/review/technical cases, about
 0.1 for non-hits). `randomEvaluationIncluded` identifies the same stable uniform
 10% evaluation frame across every stratum. Its `evaluationSamplingProbability` is

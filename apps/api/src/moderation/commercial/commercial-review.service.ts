@@ -378,24 +378,37 @@ export class CommercialReviewService {
       };
       // FLAG: Decisions and execution receipts are outcomes, never part of logical sample identity.
       const evidenceHash = commercialReviewEvidenceHash(input);
-      const row = await this.prisma.commercialReviewSample.upsert({
-        where: { evidenceHash },
-        create: {
-          userId: input.userId,
-          chatId: input.chatId,
-          messageId: input.messageId,
-          source: input.source,
-          score: evidence.score / 100,
-          evidenceHash,
-          evidence: evidence as Prisma.InputJsonValue,
-          qualityMetadata: qualityMetadata as Prisma.InputJsonValue,
-          reviewPriority: evidence.reviewPriority,
-          observedAt: now,
-          expiresAt: new Date(now.getTime() + REVIEW_TTL_DAYS * 86400_000),
-        },
-        update: {},
-        include: { ratings: true },
-      });
+      const row = await this.prisma.commercialReviewSample
+        .upsert({
+          where: { evidenceHash },
+          create: {
+            userId: input.userId,
+            chatId: input.chatId,
+            messageId: input.messageId,
+            source: input.source,
+            score: evidence.score / 100,
+            evidenceHash,
+            evidence: evidence as Prisma.InputJsonValue,
+            qualityMetadata: qualityMetadata as Prisma.InputJsonValue,
+            reviewPriority: evidence.reviewPriority,
+            observedAt: now,
+            expiresAt: new Date(now.getTime() + REVIEW_TTL_DAYS * 86400_000),
+          },
+          update: {},
+          include: { ratings: true },
+        })
+        .catch(async (error: unknown) => {
+          // FLAG: A concurrent insert may win Prisma's read/create upsert. Recover only
+          // its exact evidence row, then merge through the existing revision/expiry fence.
+          if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002')
+            throw error;
+          const winner = await this.prisma.commercialReviewSample.findUnique({
+            where: { evidenceHash },
+            include: { ratings: true },
+          });
+          if (!winner) throw error;
+          return winner;
+        });
       // Retries/confirmed execution enrich the same row without touching historical or independent labels.
       let current = row;
       for (let attempt = 0; attempt < 3 && current; attempt += 1) {
