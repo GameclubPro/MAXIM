@@ -1,0 +1,478 @@
+// FLAG: This pilot can read and reply only in the designated test CHAT. No webhook is changed.
+const { createHash, randomUUID } = require('node:crypto');
+const { setTimeout: pause } = require('node:timers/promises');
+const CHAT_ID = '-78271094414679';
+const PREFIX = `support-cpu-pilot:v1:${CHAT_ID}`;
+const SOURCE_AGE_MS = 180_000;
+const RETENTION_MS = 7 * 86400_000;
+const MODEL_SHA = '3b46d1066bc91cc2d613e3bc22ce691dd77e6f0d33c9060690d24ce6de494375';
+const DIGEST = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const LEASE_RENEW =
+  "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end redis.call('PEXPIRE',KEYS[1],15000) return 1";
+const LEASE_RELEASE =
+  "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DEL',KEYS[1]) end return 0";
+const SEND_CAS = `
+if redis.call('GET',KEYS[1])~=ARGV[1] or redis.call('GET',KEYS[2])~=ARGV[1] then return 0 end
+local now=redis.call('TIME'); local ms=now[1]*1000+math.floor(now[2]/1000)
+if ms>tonumber(ARGV[2]) or redis.call('GET',KEYS[3])~='PREPARED:'..ARGV[1] then return 0 end
+redis.call('SET',KEYS[3],'SENDING:'..ARGV[1],'PX',ARGV[3]); return 1`;
+
+function sourceMessage(row, now = Date.now()) {
+  if (!row || String(row.recipient?.chat_id) !== CHAT_ID || row.sender?.is_bot !== false)
+    return null;
+  const id = row.body?.mid,
+    text = row.body?.text,
+    userId = row.sender?.user_id;
+  let timestamp = Number(row.timestamp);
+  if (timestamp > 0 && timestamp < 1e12) timestamp *= 1000;
+  if (
+    typeof id !== 'string' ||
+    !id ||
+    id.length > 200 ||
+    typeof text !== 'string' ||
+    !text.trim() ||
+    text.length > 1200 ||
+    (typeof userId !== 'number' && typeof userId !== 'string') ||
+    !/^\d+$/u.test(String(userId)) ||
+    !Number.isFinite(timestamp) ||
+    timestamp > now + 5000 ||
+    now - timestamp > SOURCE_AGE_MS
+  )
+    return null;
+  const value = {
+    id,
+    text,
+    userId: String(userId),
+    timestamp,
+    edited: row.last_updated_time ?? row.body?.last_updated_time ?? null,
+  };
+  return { ...value, fingerprint: DIGEST(value) };
+}
+
+class PilotFence {
+  constructor(redis, owner = randomUUID()) {
+    this.redis = redis;
+    this.owner = owner;
+    this.lease = `${PREFIX}:lease`;
+    this.enabled = `${PREFIX}:enabled`;
+  }
+  key(id) {
+    return `${PREFIX}:source:${DIGEST(id)}`;
+  }
+  async acquire() {
+    if ((await this.redis.set(this.lease, this.owner, 'PX', 15000, 'NX')) !== 'OK') return false;
+    await this.redis.set(this.enabled, this.owner, 'PX', 15000);
+    return true;
+  }
+  async renew() {
+    if (Number(await this.redis.eval(LEASE_RENEW, 1, this.lease, this.owner)) !== 1) return false;
+    return Number(await this.redis.eval(LEASE_RENEW, 1, this.enabled, this.owner)) === 1;
+  }
+  async prepare(id) {
+    return (
+      (await this.redis.set(this.key(id), `PREPARED:${this.owner}`, 'PX', RETENTION_MS, 'NX')) ===
+      'OK'
+    );
+  }
+  async begin(id, deadline) {
+    return (
+      Number(
+        await this.redis.eval(
+          SEND_CAS,
+          3,
+          this.lease,
+          this.enabled,
+          this.key(id),
+          this.owner,
+          String(deadline),
+          String(RETENTION_MS),
+        ),
+      ) === 1
+    );
+  }
+  async settle(id, state, expected = 'SENDING') {
+    // FLAG: No transition ever makes an attempted SEND executable again, including lost ACKs.
+    return this.redis.eval(
+      "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end redis.call('SET',KEYS[1],ARGV[2],'PX',ARGV[3]); return 1",
+      1,
+      this.key(id),
+      `${expected}:${this.owner}`,
+      state,
+      String(RETENTION_MS),
+    );
+  }
+  async close() {
+    await this.redis.eval(LEASE_RELEASE, 1, this.enabled, this.owner);
+    await this.redis.eval(LEASE_RELEASE, 1, this.lease, this.owner);
+  }
+}
+
+class PilotHistory {
+  constructor() {
+    this.users = new Map();
+  }
+  read(userId) {
+    return (this.users.get(userId) ?? []).slice(-6);
+  }
+  push(userId, entry) {
+    if (!this.users.has(userId) && this.users.size >= 32)
+      this.users.delete(this.users.keys().next().value);
+    this.users.set(userId, [...this.read(userId), entry].slice(-6));
+  }
+}
+
+async function deliverAnswer(runtime, fence, source, answer, { signal, sessionEnd, heartbeatAt }) {
+  let attempted = false;
+  try {
+    const result = await runtime.client.sendMessageImmediateWithId(
+      CHAT_ID,
+      answer,
+      {
+        messageLink: { type: 'reply', mid: source.id },
+        beforeSend: async () => {
+          if (
+            signal.aborted ||
+            Date.now() > source.timestamp + SOURCE_AGE_MS ||
+            Date.now() - heartbeatAt() > 15000
+          )
+            throw new Error('support_source_expired');
+          await runtime.assertSourceAllowed(source);
+          const exact = sourceMessage(
+            await runtime.client.getExactMessageRow(CHAT_ID, source.id, runtime.options()),
+          );
+          if (!exact || exact.fingerprint !== source.fingerprint)
+            throw new Error('support_source_changed');
+          await runtime.assertAccess();
+          if (
+            signal.aborted ||
+            Date.now() > sessionEnd ||
+            Date.now() - heartbeatAt() > 15000 ||
+            !(await fence.begin(source.id, Math.min(sessionEnd, source.timestamp + SOURCE_AGE_MS)))
+          )
+            throw new Error('support_send_refused');
+          attempted = true;
+        },
+      },
+      {
+        ...runtime.options(),
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        timeoutMs: 12000,
+      },
+    );
+    if (!result?.messageId) throw new Error('support_ack_missing');
+    if (Number(await fence.settle(source.id, `SENT:${result.messageId}`)) !== 1)
+      throw new Error('support_receipt_lost');
+    return 'sent';
+  } catch {
+    await fence.settle(
+      source.id,
+      attempted ? 'UNKNOWN' : 'REFUSED',
+      attempted ? 'SENDING' : 'PREPARED',
+    );
+    return attempted ? 'unknown' : 'refused';
+  }
+}
+
+async function createRuntime() {
+  const cleanups = [];
+  const close = async () => {
+    for (const cleanup of cleanups.reverse())
+      await Promise.resolve()
+        .then(cleanup)
+        .catch(() => undefined);
+    cleanups.length = 0;
+  };
+  try {
+    require('reflect-metadata');
+    const base = './apps/api/dist/apps/api/src/';
+    const { Logger } = require('@nestjs/common');
+    Logger.overrideLogger(false);
+    const { ConfigService } = require('@nestjs/config');
+    const { HttpService } = require('@nestjs/axios');
+    const axios = require('axios').default;
+    const { validateEnv } = require(base + 'config/env.schema.js');
+    const { PrismaService } = require(base + 'prisma/prisma.service.js');
+    const { MaxBotRegistryService } = require(base + 'max/max-bot-registry.service.js');
+    const { MaxBotContextService } = require(base + 'max/max-bot-context.service.js');
+    const { MaxClientService } = require(base + 'max/max-client.service.js');
+    const { MaxBotLinkService } = require(base + 'max/max-bot-link.service.js');
+    const { ModerationDeleteIntentAccessWakeService } = require(
+      base + 'max/moderation-delete-intent-access-wake.service.js',
+    );
+    const { RedisCounterService } = require(base + 'moderation/redis-counter.service.js');
+    const { ActionHealthService } = require(base + 'system/action-health.service.js');
+    const { WebhookLegacyHoldService, assertLegacyActionAllowed } = require(
+      base + 'webhook/webhook-legacy-hold.service.js',
+    );
+    const Redis = require('ioredis');
+    const config = new ConfigService(validateEnv(process.env));
+    if (
+      config.get('APP_SERVICE_NAME') !== 'api-action' ||
+      config.get('MAX_ACTION_DISPATCH_ENABLED') !== true
+    )
+      throw new Error('support_role_refused');
+    const prisma = new PrismaService();
+    cleanups.push(() => prisma.$disconnect());
+    await prisma.$connect();
+    const registry = new MaxBotRegistryService(config),
+      context = new MaxBotContextService();
+    const health = new ActionHealthService(config);
+    cleanups.push(() => health.onModuleDestroy());
+    const counters = new RedisCounterService(config);
+    cleanups.push(() => counters.onModuleDestroy());
+    const links = new MaxBotLinkService(
+      prisma,
+      registry,
+      context,
+      new ModerationDeleteIntentAccessWakeService(prisma),
+      undefined,
+      counters,
+    );
+    cleanups.push(() => links.onModuleDestroy());
+    const holds = new WebhookLegacyHoldService(prisma);
+    const client = new MaxClientService(
+      new HttpService(axios.create({ timeout: 5000, maxRedirects: 0 })),
+      config,
+      health,
+      registry,
+      context,
+      undefined,
+      undefined,
+      undefined,
+      links,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      holds,
+    );
+    cleanups.push(() => client.onModuleDestroy());
+    const redis = new Redis(config.getOrThrow('REDIS_URL'), {
+      maxRetriesPerRequest: 1,
+      connectTimeout: 5000,
+      commandTimeout: 5000,
+      enableOfflineQueue: false,
+    });
+    cleanups.push(() => redis.disconnect());
+    await new Promise((resolve, reject) => {
+      if (redis.status === 'ready') resolve();
+      else {
+        redis.once('ready', resolve);
+        redis.once('error', reject);
+      }
+    });
+    let botId;
+    const current = () =>
+      prisma.chat.findUnique({
+        where: { id: CHAT_ID },
+        select: { entityType: true, fixedModeratorBotId: true, primaryBotId: true, botId: true },
+      });
+    const assertAccess = async () => {
+      const chat = await current();
+      const selected = chat?.fixedModeratorBotId ?? chat?.primaryBotId ?? chat?.botId;
+      if (chat?.entityType !== 'CHAT' || !selected || (botId && selected !== botId))
+        throw new Error('support_assignment_refused');
+      botId = selected;
+      if (!registry.getActionableBots().some((bot) => bot.id === botId))
+        throw new Error('support_bot_refused');
+      const options = {
+        botId,
+        bypassCache: true,
+        trafficClass: 'background',
+        timeoutMs: 5000,
+        sourceTag: 'support_cpu_pilot',
+      };
+      const snapshot = await client.getChatSnapshot(CHAT_ID, options);
+      const access = await client.getCurrentChatMemberAccess(CHAT_ID, options);
+      if (
+        snapshot.entityType !== 'chat' ||
+        (!access.isAdmin && !access.isOwner) ||
+        !(await links.getFreshChatBotExecutionProof({
+          chatId: CHAT_ID,
+          botId,
+          purpose: 'send_message',
+        }))
+      )
+        throw new Error('support_access_refused');
+      return { botId, title: snapshot.title };
+    };
+    return {
+      client,
+      redis,
+      assertAccess,
+      options: () => ({
+        botId,
+        trafficClass: 'background',
+        sourceTag: 'support_cpu_pilot',
+        timeoutMs: 5000,
+      }),
+      assertSourceAllowed: (source) =>
+        assertLegacyActionAllowed(holds, {
+          actionType: 'SEND_MESSAGE',
+          chatId: CHAT_ID,
+          botId,
+          messageId: source.id,
+          userId: source.userId,
+          createdAt: new Date(source.timestamp).toISOString(),
+          idempotencyKey: `${PREFIX}:${DIGEST(source.id)}`,
+          attempt: 0,
+          options: { messageLink: { type: 'reply', mid: source.id } },
+        }),
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+async function runBridge(runtime, { preview = false } = {}) {
+  const controller = new AbortController(),
+    fence = new PilotFence(runtime.redis);
+  const started = Date.now(),
+    endAt = started + 30 * 60_000;
+  let lastHeartbeat = started,
+    hello = false,
+    busy = null,
+    pending = Buffer.alloc(0),
+    lastPoll = 0,
+    lastReport = 0,
+    lastSampleAt = null;
+  const history = new PilotHistory();
+  const abort = () => controller.abort();
+  const deadlineTimer = setTimeout(abort, 30 * 60_000);
+  const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
+  process.once('SIGTERM', abort);
+  process.once('SIGINT', abort);
+  process.stdout.on('error', abort);
+  try {
+    const identity = await runtime.assertAccess();
+    if (preview) {
+      send({ type: 'preview', chatId: CHAT_ID, ...identity, readOnly: true });
+      return;
+    }
+    if (!(await fence.acquire())) throw new Error('support_worker_busy');
+    const receive = (async () => {
+      for await (const chunk of process.stdin) {
+        pending = Buffer.concat([pending, chunk]);
+        if (pending.length > 32768) throw new Error('support_frame_limit');
+        let n;
+        while ((n = pending.indexOf(10)) >= 0) {
+          const value = JSON.parse(pending.subarray(0, n).toString('utf8'));
+          pending = pending.subarray(n + 1);
+          if (
+            value.type === 'hello' &&
+            !hello &&
+            value.modelSha256 === MODEL_SHA &&
+            value.knowledgeSha256 === process.env.SUPPORT_KNOWLEDGE_SHA256
+          ) {
+            hello = true;
+            lastHeartbeat = Date.now();
+            send({ type: 'hello', chatId: CHAT_ID, ...identity });
+          } else if (value.type === 'heartbeat' && hello) lastHeartbeat = Date.now();
+          else if (
+            value.type === 'answer' &&
+            hello &&
+            busy &&
+            value.id === busy.id &&
+            typeof value.text === 'string' &&
+            value.text.length <= 1800 &&
+            typeof value.reply === 'boolean'
+          ) {
+            busy.answer = { reply: value.reply, text: value.text };
+          } else throw new Error('support_frame_refused');
+        }
+      }
+    })();
+    void receive.then(abort, abort);
+    while (!controller.signal.aborted && Date.now() < endAt) {
+      if (Date.now() - lastHeartbeat > 15000 || !(await fence.renew()))
+        throw new Error('support_heartbeat_lost');
+      if (hello && Date.now() - lastReport > 5000) {
+        lastReport = Date.now();
+        send({ type: 'heartbeat', sampleAt: lastSampleAt });
+      }
+      if (busy?.answer) {
+        const source = busy,
+          answer = source.answer;
+        busy = null;
+        if (!answer.reply || !answer.text.trim())
+          await fence.settle(source.id, 'SKIPPED', 'PREPARED');
+        else {
+          const outcome = await deliverAnswer(runtime, fence, source, answer.text, {
+            signal: controller.signal,
+            sessionEnd: endAt,
+            heartbeatAt: () => lastHeartbeat,
+          });
+          if (outcome === 'sent')
+            history.push(source.userId, { role: 'assistant', text: answer.text.slice(0, 300) });
+          send({ type: 'settled', id: source.id, outcome });
+        }
+      }
+      if (busy && Date.now() > busy.timestamp + SOURCE_AGE_MS) {
+        await fence.settle(busy.id, 'EXPIRED', 'PREPARED');
+        busy = null;
+      }
+      if (hello && !busy && Date.now() - lastPoll > 5000) {
+        lastPoll = Date.now();
+        const rows = await runtime.client.listMessages(CHAT_ID, {
+          count: 30,
+          ...runtime.options(),
+        });
+        lastSampleAt = Date.now();
+        const fresh = rows
+          .map((row) => sourceMessage(row))
+          .filter((source) => source && source.timestamp > started)
+          .sort((a, b) => a.timestamp - b.timestamp);
+        for (const source of fresh) {
+          if (!(await fence.prepare(source.id))) continue;
+          busy = source;
+          send({
+            type: 'question',
+            id: source.id,
+            text: source.text,
+            history: history.read(source.userId),
+            deadline: source.timestamp + SOURCE_AGE_MS,
+          });
+          history.push(source.userId, { role: 'user', text: source.text.slice(0, 300) });
+          break;
+        }
+      }
+      await pause(500, undefined, { signal: controller.signal }).catch(() => undefined);
+    }
+  } finally {
+    clearTimeout(deadlineTimer);
+    controller.abort();
+    process.stdin.destroy();
+    await fence.close().catch(() => undefined);
+    await runtime.close();
+    process.removeListener('SIGTERM', abort);
+    process.removeListener('SIGINT', abort);
+    process.stdout.removeListener('error', abort);
+  }
+}
+
+module.exports = {
+  CHAT_ID,
+  SOURCE_AGE_MS,
+  sourceMessage,
+  PilotFence,
+  PilotHistory,
+  deliverAnswer,
+  runBridge,
+};
+if (require.main === module || process.argv[1] === undefined || process.argv[1] === '-') {
+  createRuntime()
+    .then((runtime) => runBridge(runtime, { preview: process.env.SUPPORT_PREVIEW === '1' }))
+    .catch((error) => {
+      const code = /^support_[a-z0-9_]{1,80}$/u.test(error?.message ?? '')
+        ? error.message
+        : 'support_bridge_unavailable';
+      process.stderr.write(code + '\n');
+      process.exitCode = 1;
+    });
+}
