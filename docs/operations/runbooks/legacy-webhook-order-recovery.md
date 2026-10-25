@@ -29,6 +29,12 @@ Only an unqueued RECEIVED row with zero attempts and no claims qualifies. The ex
 snapshot; other errors, prior effects, unknown shapes and other event types stay fenced. This
 does not install new holds, settle an old execution, update membership, send a welcome or count
 as successful moderation. Existing permanent protections and administrator-command checks remain.
+The join may retain either its exact ordinary semantic key or the exact same-bot/source
+`publisher-observation:v1` key. Foreign bot/source keys and unknown namespace versions remain
+blocked. This recognizes receipt identity only: it grants no Publisher or moderation authority,
+never rewrites the stored namespace and preserves every independent execution claim. A compatible
+reader projects the existing sealed hold through normal ingress/preparation; do not rerun the
+historical recovery operation or clear the receipt to remove this deferral.
 
 ## Install compatible tooling
 

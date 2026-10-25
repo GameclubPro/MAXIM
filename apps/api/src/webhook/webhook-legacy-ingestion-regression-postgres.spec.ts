@@ -1,5 +1,6 @@
 import { legacyReceiptSourceDigest } from './webhook-legacy-receipt-disposition';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
 import { ConfigService } from '@nestjs/config';
 import { Queue, type ConnectionOptions } from 'bullmq';
 import Redis from 'ioredis';
@@ -37,6 +38,7 @@ import { WebhookService } from './webhook.service';
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
 const native = databaseUrl && redisUrl ? describe : describe.skip;
+const publisherBotId = 'publisher-held-fixture';
 
 // FLAG: These activation regressions use only newly owned native
 // race-test stores. The low-level seal is test setup, never a production activation path.
@@ -105,6 +107,7 @@ native('legacy disposition production ingestion activation regressions', () => {
       ENQUEUE_BATCH_SIZE: 64,
       ENQUEUE_CONCURRENCY: 1,
       READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS: 0,
+      MAX_PUBLISHER_BOT_ID: publisherBotId,
     });
     ingress = new WebhookService(prisma as never, config, {} as never);
     Object.assign(ingress, {
@@ -493,16 +496,15 @@ native('legacy disposition production ingestion activation regressions', () => {
     expect(await holds.settleHeldReceipt(randomUUID(), source.value)).toBe(false);
   });
 
-  it.each([
-    [false, undefined],
-    [true, undefined],
-    [false, false],
-    [true, false],
-    [false, true],
-    [true, true],
-  ] as const)(
-    'preserves a sealed member hold without endlessly retrying direct user_added (alreadyDeferred=%s, isChannel=%s)',
-    async (alreadyDeferred, isChannel) => {
+  it.each(
+    ['major-1', publisherBotId].flatMap((botId) =>
+      [false, true].flatMap((alreadyDeferred) =>
+        [undefined, false, true].map((isChannel) => ({ botId, alreadyDeferred, isChannel })),
+      ),
+    ),
+  )(
+    'preserves a sealed member hold without endlessly retrying direct user_added ($botId, deferred=$alreadyDeferred, channel=$isChannel)',
+    async ({ botId, alreadyDeferred, isChannel }) => {
       const source = await owner();
       await seal(source.candidate);
       const added = new WebhookParser().parse(
@@ -514,7 +516,7 @@ native('legacy disposition production ingestion activation regressions', () => {
           ...(isChannel === undefined ? {} : { is_channel: isChannel }),
           user: { user_id: source.userId, name: 'Local held member', is_bot: false },
         },
-        { botId: 'major-1' },
+        { botId },
       );
       // FLAG: Seed an older runtime's unprojected receipt; new ingress may already
       // install the exact disposition before returning from storeReceipt.
@@ -522,7 +524,7 @@ native('legacy disposition production ingestion activation regressions', () => {
         data: {
           botId: added.botId,
           dedupKey: `${added.botId}:${added.updateId}`,
-          semanticKey: buildWebhookSemanticEventKey(added),
+          semanticKey: buildWebhookReceiptSemanticKey(added, publisherBotId),
           normalizedPayload: added as unknown as Prisma.InputJsonValue,
           rawPayload: {},
           ...(alreadyDeferred
@@ -543,6 +545,10 @@ native('legacy disposition production ingestion activation regressions', () => {
       });
       const after = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: incoming.id } });
       expect(after.status).toBe('NO_REPLAY_HELD');
+      expect(after.semanticKey).toBe(before.semanticKey);
+      if (botId === publisherBotId)
+        expect(after.semanticKey).not.toBe(buildWebhookSemanticEventKey(added));
+      expect(await holds.materializeReceipt(incoming.id)).toBe('ALREADY_APPLIED_SAME_PROOF');
       const proof = await prisma.webhookLegacyReceiptDisposition.findUniqueOrThrow({
         where: { id: after.legacyDispositionId! },
       });
@@ -606,6 +612,9 @@ native('legacy disposition production ingestion activation regressions', () => {
     'string_timestamp',
     'invalid_channel_flag',
     'normalized_entity_type',
+    'publisher_foreign_bot',
+    'publisher_foreign_source',
+    'publisher_unknown_version',
   ])('keeps a held join fenced when %s is unproved', async (mutation) => {
     const source = await owner();
     await seal(source.candidate);
@@ -628,14 +637,23 @@ native('legacy disposition production ingestion activation regressions', () => {
     if (mutation === 'invalid_channel_flag') Object.assign(raw, { is_channel: 'true' });
     if (mutation === 'normalized_entity_type') added.message!.entityType = 'channel';
     added.raw = raw;
+    const semanticKey = buildWebhookSemanticEventKey(added);
+    const publisherKey = `publisher-observation:v1:${added.botId}:${semanticKey}`;
+    const storedKey =
+      mutation === 'publisher_foreign_bot'
+        ? `publisher-observation:v1:other-bot:${semanticKey}`
+        : mutation === 'publisher_foreign_source'
+          ? `${publisherKey}:other-source`
+          : mutation === 'publisher_unknown_version'
+            ? publisherKey.replace(':v1:', ':v2:')
+            : mutation === 'semantic_key'
+              ? `private-other-${randomUUID()}`
+              : semanticKey;
     const incoming = await prisma.webhookEvent.create({
       data: {
         botId: added.botId,
         dedupKey: `${added.botId}:${added.updateId}`,
-        semanticKey:
-          mutation === 'semantic_key'
-            ? `private-other-${randomUUID()}`
-            : buildWebhookSemanticEventKey(added),
+        semanticKey: storedKey,
         normalizedPayload: added as unknown as Prisma.InputJsonValue,
         rawPayload: mutation === 'sampled_source' ? { ...raw, chat_id: '-other-private-chat' } : {},
         ...(mutation === 'unknown_error' ? { errorMessage: 'unknown prior attempt' } : {}),
