@@ -84,6 +84,7 @@ Commands:
   allow-ssh-current-ip [sg]  Add current public IP/32 to the Yandex Cloud SSH security group
   ensure-ssh [sg]            Allow current public IP, then run doctor
   health                      Check local-on-VPS and public health endpoints
+  support-chat preview        Verify exact test-chat type, assigned bot and access without posting
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
   postgres-audit [queue|activity|duplicate|publication-schema|storage|all]
@@ -554,6 +555,14 @@ commercial_llm() {
       ;;
     *) echo 'Unknown commercial-llm operation.' >&2; return 2 ;;
   esac
+}
+
+support_chat() {
+  [[ $# -eq 1 && "$1" == preview ]] || {
+    echo 'Usage: support-chat preview' >&2
+    return 2
+  }
+  remote_exec "$(shell_quote_args node ./infra/scripts/support-chat-remote.mjs preview)"
 }
 
 remote_from_args() {
@@ -1838,6 +1847,9 @@ case "$command" in
     ;;
   commercial-llm)
     commercial_llm "$@"
+    ;;
+  support-chat)
+    support_chat "$@"
     ;;
   deploy-scale)
     deploy_scale "$@"
