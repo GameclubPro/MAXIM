@@ -12,6 +12,7 @@ import { CommercialLlmWorkstationMailbox } from './commercial-llm-workstation.ma
 import { CommercialLlmShadowLease, createCommercialLlmRedis } from './commercial-llm-shadow.lease';
 import { commercialLlmHostHasHeadroom } from './commercial-llm-shadow.processor';
 import { COMMERCIAL_LLM_ENFORCEMENT_KEYS } from './commercial-llm-enforcement.mailbox';
+import { CommercialLlmBudgetedSecondary } from './commercial-llm-budgeted-secondary';
 
 @Injectable()
 export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnModuleDestroy {
@@ -80,12 +81,14 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
     const redis = this.redis;
     const processor = new CommercialLlmEnforcementProcessor(
       mailbox,
-      new CommercialLlmShadowLease(redis),
       new CommercialLlmCascadeClient(
         new CommercialLlmWorkstationMailbox(redis),
-        new CommercialLlmClient({
-          endpoint: this.config.getOrThrow<string>('COMMERCIAL_LLM_ENDPOINT'),
-        }),
+        new CommercialLlmBudgetedSecondary(
+          new CommercialLlmShadowLease(redis),
+          new CommercialLlmClient({
+            endpoint: this.config.getOrThrow<string>('COMMERCIAL_LLM_ENDPOINT'),
+          }),
+        ),
         () => this.mayRun(),
       ),
       this.intents,

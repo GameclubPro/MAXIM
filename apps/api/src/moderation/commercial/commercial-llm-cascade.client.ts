@@ -64,7 +64,7 @@ export class CommercialLlmCascadeClient implements CommercialLlmClassifier {
       signal?.aborted
     )
       throw new CommercialLlmError('ABORTED');
-    const result = await this.secondary.classify(excerpt, signal);
+    const result = await this.secondary.classify(excerpt, signal, mayContinue);
     return {
       ...result,
       durationMs: Math.round(performance.now() - startedAt),

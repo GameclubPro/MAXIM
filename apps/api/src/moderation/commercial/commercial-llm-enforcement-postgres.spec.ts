@@ -12,7 +12,6 @@ import {
   commercialLlmProofKey,
 } from './commercial-llm-enforcement.mailbox';
 import {
-  CommercialLlmShadowLease,
   COMMERCIAL_LLM_LEASE_KEY,
   COMMERCIAL_LLM_COOLDOWN_KEY,
 } from './commercial-llm-shadow.lease';
@@ -147,7 +146,6 @@ jest.setTimeout(60_000);
       expect(await mailbox.offer(offer)).toBe(true);
       const processor = new CommercialLlmEnforcementProcessor(
         mailbox,
-        new CommercialLlmShadowLease(h.redis),
         { classify: async () => positive },
         { ensureIntent: (input) => h.intents.ensureIntent(input, { enqueue: false }) },
         async () => true,

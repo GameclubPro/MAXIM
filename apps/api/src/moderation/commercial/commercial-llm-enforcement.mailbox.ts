@@ -7,17 +7,14 @@ import {
   type CommercialLlmRequest,
   type CommercialLlmSource,
 } from './commercial-llm-enforcement.protocol';
-import {
-  COMMERCIAL_LLM_LEASE_KEY,
-  COMMERCIAL_LLM_COOLDOWN_KEY,
-} from './commercial-llm-shadow.lease';
-
 const prefix = 'commercial-llm-enforcement:v1';
+export const COMMERCIAL_LLM_PRIMARY_INTERVAL_MS = 2_000;
 export const COMMERCIAL_LLM_ENFORCEMENT_KEYS = {
   worker: `${prefix}:worker`,
   ready: `${prefix}:ready`,
   slot: `${prefix}:slot`,
   status: `${prefix}:status`,
+  cooldown: `${prefix}:primary-cooldown`,
 } as const;
 export const commercialLlmProofKey = (source: CommercialLlmSource) =>
   `${prefix}:proof:${commercialLlmSourceKey(source)}`;
@@ -49,13 +46,12 @@ export class CommercialLlmEnforcementMailbox {
     return (
       (await this.redis.eval(
         `
-      if redis.call('GET', KEYS[5]) ~= ARGV[1] or redis.call('EXISTS', KEYS[2], KEYS[3], KEYS[4]) > 0 then return 0 end
+      if redis.call('GET', KEYS[4]) ~= ARGV[1] or redis.call('EXISTS', KEYS[2], KEYS[3]) > 0 then return 0 end
       redis.call('SET', KEYS[1], ARGV[1], 'PX', 2500); return 1`,
-        5,
+        4,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
-        COMMERCIAL_LLM_LEASE_KEY,
-        COMMERCIAL_LLM_COOLDOWN_KEY,
+        COMMERCIAL_LLM_ENFORCEMENT_KEYS.cooldown,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
         worker,
       )) === 1
@@ -74,25 +70,27 @@ export class CommercialLlmEnforcementMailbox {
       worker,
       submittedAtMs: Date.now(),
     });
-    // FLAG: One slot, zero waiting list. Busy/offline/cooldown refuses immediately; no replay.
+    // FLAG: One slot, zero waiting list. Primary admission never consumes server capacity.
+    // The server's independent lease/cooldown is required immediately before its inference.
     return (
       (await this.redis.eval(
         `
-      if redis.call('GET', KEYS[1]) ~= ARGV[1] or redis.call('GET', KEYS[5]) ~= ARGV[1] or redis.call('EXISTS', KEYS[2], KEYS[3], KEYS[4]) > 0 then return 0 end
+      if redis.call('GET', KEYS[1]) ~= ARGV[1] or redis.call('GET', KEYS[4]) ~= ARGV[1] or redis.call('EXISTS', KEYS[2], KEYS[3]) > 0 then return 0 end
       local time = redis.call('TIME'); local now = time[1]*1000 + math.floor(time[2]/1000)
       if tonumber(ARGV[3]) <= now or tonumber(ARGV[4]) < now - 10000 or tonumber(ARGV[4]) > now + 5000 then return 0 end
       redis.call('SET', KEYS[2], ARGV[2], 'PX', tonumber(ARGV[3])-now)
+      redis.call('SET', KEYS[3], '1', 'PX', ARGV[5])
       redis.call('DEL', KEYS[1]); return 1`,
-        5,
+        4,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
-        COMMERCIAL_LLM_LEASE_KEY,
-        COMMERCIAL_LLM_COOLDOWN_KEY,
+        COMMERCIAL_LLM_ENFORCEMENT_KEYS.cooldown,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
         worker,
         JSON.stringify(request),
         offer.source.deadlineAtMs,
         offer.source.eventAtMs,
+        COMMERCIAL_LLM_PRIMARY_INTERVAL_MS,
       )) === 1
     );
   }

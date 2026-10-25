@@ -15,8 +15,12 @@ CAS admits one source into a single expiring slot; there is no inference waiting
 list, Bull queue, retry or historical replay. Admission is fire-and-forget on a
 separate fail-fast Redis connection, with one in-flight admission per producer.
 Busy, absent, pressured, stale, oversized, uncertain and failed work is skipped.
-The existing shared 10-second LLM admission ceiling and 12 GiB headroom guard
-remain. This permits at most six starts per minute, often fewer; it is **partial
+The workstation has an atomic two-second admission interval (at most thirty starts
+per minute). Only a requested server confirmation consumes the existing shared
+ten-second server lease/cooldown (at most six starts per minute). A local negative
+can complete while the server is busy; a positive or uncertain result with no
+server capacity is skipped immediately. Neither tier has a waiting list. The
+governor and 12 GiB headroom guard remain. Actual rates can be lower; this is **partial
 traffic coverage**, not a promise to classify every message. Failure leaves that
 message to independent moderation rules. Previously queued SHADOW observations
 never authorize deletion and the SHADOW runner stops in enforcement mode.
@@ -70,8 +74,15 @@ checks, not model accuracy measurements. The current readiness report has **zero
 independently labelled real samples**; synthetic cases and SHADOW outcomes do not
 establish precision or recall. Keep that limitation explicit during rollout.
 
-`commercial-ai-admission` logs cumulative offered/accepted/skipped/unavailable
-counts. `commercial-ai` records result, duration, heartbeat and last successful
-classification without raw message text. Redis status expires after 30 seconds;
+`commercial-ai-admission` schema v2 separates ineligible sources from eligible
+admissions: `offered = ineligible + eligible`, and `eligible = accepted + skipped +
+unavailable + inFlight`. Disabled chat settings, missing authority, empty/oversized
+text, invalid/stale clocks and unsanitized contacts have separate finite reasons.
+Producer saturation and absent advertised readiness are counted separately. The
+old offered counter included disabled chats and cannot establish eligible coverage.
+
+`commercial-ai` records result, cascade route, primary/secondary duration, heartbeat
+and last successful classification without raw message text. Server capacity skips
+are distinct from technical failures. Redis status expires after 30 seconds;
 missing status is a coverage gap, not proof of healthy idleness. Record registered
 intents separately from confirmed MAX DELETE outcomes.

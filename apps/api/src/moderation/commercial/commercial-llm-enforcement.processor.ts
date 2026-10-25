@@ -1,7 +1,7 @@
 import type { CommercialLlmClassifier } from './commercial-llm.protocol';
 import { withCommercialLlmEffectOrigin } from './commercial-llm-effect-origin';
 import type { CommercialLlmEnforcementMailbox } from './commercial-llm-enforcement.mailbox';
-import type { CommercialLlmShadowLease } from './commercial-llm-shadow.lease';
+import { CommercialLlmError } from './commercial-llm.client';
 import type { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import {
   commercialLlmMayDelete,
@@ -14,7 +14,6 @@ import {
 export class CommercialLlmEnforcementProcessor {
   constructor(
     private readonly mailbox: CommercialLlmEnforcementMailbox,
-    private readonly lease: CommercialLlmShadowLease,
     private readonly classifier: CommercialLlmClassifier,
     private readonly intents: Pick<ModerationDeleteIntentService, 'ensureIntent'>,
     private readonly mayRun: () => Promise<boolean>,
@@ -27,12 +26,9 @@ export class CommercialLlmEnforcementProcessor {
     const item = await this.mailbox.take(worker);
     if (!item) return { outcome: 'idle' };
     await this.mailbox.withdraw(worker);
-    let token: string | null = null;
     let registrationStarted = false;
     try {
       if (signal.aborted || !(await this.mayRun())) return { outcome: 'pressure_skipped' };
-      token = await this.lease.acquire();
-      if (!token) return { outcome: 'admission_skipped' };
       const source = item.request.source;
       const workSignal = AbortSignal.any([
         signal,
@@ -42,16 +38,25 @@ export class CommercialLlmEnforcementProcessor {
         !workSignal.aborted &&
         commercialLlmSourceCurrent(source) &&
         (await this.mailbox.ownsWorker(worker)) &&
-        (await this.mailbox.owns(item.raw)) &&
-        (await this.lease.owns(token!));
+        (await this.mailbox.owns(item.raw));
       if (!(await valid())) return { outcome: 'source_expired' };
       const result = await this.classifier.classify(item.request.excerpt, workSignal, valid);
       if (!(await valid())) return { outcome: 'source_expired' };
+      const observation = {
+        classification: result.classification,
+        durationMs: result.durationMs,
+        ...(result.cascade ? { route: result.cascade.route } : {}),
+        ...(result.cascade?.primaryDurationMs !== undefined
+          ? { primaryDurationMs: result.cascade.primaryDurationMs }
+          : {}),
+        ...(result.cascade?.secondaryDurationMs !== undefined
+          ? { secondaryDurationMs: result.cascade.secondaryDurationMs }
+          : {}),
+      };
       if (!commercialLlmMayDelete(result))
         return {
           outcome: 'kept',
-          classification: result.classification,
-          durationMs: result.durationMs,
+          ...observation,
         };
       if (!(await this.mailbox.prove(item.raw, source)) || !(await valid()))
         return { outcome: 'source_expired' };
@@ -91,13 +96,19 @@ export class CommercialLlmEnforcementProcessor {
       );
       return {
         outcome: receipt.rollout === 'execute' ? 'delete_registered' : 'delete_not_admitted',
-        durationMs: result.durationMs,
+        ...observation,
       };
-    } catch {
-      return { outcome: registrationStarted ? 'registration_unknown' : 'unavailable_skipped' };
+    } catch (error) {
+      if (registrationStarted) return { outcome: 'registration_unknown' };
+      return {
+        outcome:
+          error instanceof CommercialLlmError && error.kind === 'BUSY'
+            ? 'secondary_capacity_skipped'
+            : 'unavailable_skipped',
+        failureKind: error instanceof CommercialLlmError ? error.kind : 'UNAVAILABLE',
+      };
     } finally {
       await this.mailbox.finish(item.raw).catch(() => undefined);
-      if (token) await this.lease.release(token).catch(() => undefined);
     }
   }
 }

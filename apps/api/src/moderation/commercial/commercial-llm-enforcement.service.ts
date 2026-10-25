@@ -9,6 +9,8 @@ import { createCommercialLlmRedis } from './commercial-llm-shadow.lease';
 import { CommercialLlmEnforcementMailbox } from './commercial-llm-enforcement.mailbox';
 import {
   buildCommercialLlmOffer,
+  prepareCommercialLlmOffer,
+  type CommercialLlmOfferRejection,
   type CommercialLlmSource,
 } from './commercial-llm-enforcement.protocol';
 
@@ -19,7 +21,16 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy {
   private connecting: Promise<CommercialLlmEnforcementMailbox> | null = null;
   private offering = false;
   private lastLog = 0;
-  private readonly counts = { offered: 0, accepted: 0, skipped: 0, unavailable: 0 };
+  private readonly counts = {
+    offered: 0,
+    eligible: 0,
+    ineligible: 0,
+    accepted: 0,
+    skipped: 0,
+    unavailable: 0,
+  };
+  private readonly ineligibleReasons: Partial<Record<CommercialLlmOfferRejection, number>> = {};
+  private readonly skipReasons = { producer_busy: 0, not_ready: 0 };
   constructor(private readonly config: ConfigService) {}
 
   enabled(): boolean {
@@ -72,8 +83,8 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy {
     if (!this.enabled()) return;
     this.counts.offered += 1;
     const origin = readExactDeleteOrigin(input.chatId, input.messageId);
-    const offer = origin
-      ? buildCommercialLlmOffer({
+    const prepared: ReturnType<typeof prepareCommercialLlmOffer> = origin
+      ? prepareCommercialLlmOffer({
           ...input,
           originBotId: origin.sourceExecutionBotId,
           eventAt: origin.sourceEventAt.toISOString(),
@@ -85,9 +96,22 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy {
             sourceEvidenceVersion: 1,
           },
         })
-      : null;
-    if (this.offering || !offer) {
+      : {
+          reason: input.settings.commercialAdsFilterEnabled
+            ? ('invalid_origin' as const)
+            : ('filter_disabled' as const),
+        };
+    if (!prepared.offer) {
+      this.counts.ineligible += 1;
+      this.ineligibleReasons[prepared.reason] = (this.ineligibleReasons[prepared.reason] ?? 0) + 1;
+      this.logCounts();
+      return;
+    }
+    const offer = prepared.offer;
+    this.counts.eligible += 1;
+    if (this.offering) {
       this.counts.skipped += 1;
+      this.skipReasons.producer_busy += 1;
       this.logCounts();
       return;
     }
@@ -96,6 +120,7 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy {
       .then((mailbox) => mailbox.offer(offer))
       .then((accepted) => {
         this.counts[accepted ? 'accepted' : 'skipped'] += 1;
+        if (!accepted) this.skipReasons.not_ready += 1;
       })
       .catch(() => {
         this.counts.unavailable += 1;
@@ -114,7 +139,18 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy {
     if (Date.now() - this.lastLog < 30_000) return;
     this.lastLog = Date.now();
     this.logger.log(
-      { stage: 'commercial-ai-admission', ...this.counts },
+      {
+        stage: 'commercial-ai-admission',
+        schemaVersion: 2,
+        ...this.counts,
+        inFlight:
+          this.counts.eligible -
+          this.counts.accepted -
+          this.counts.skipped -
+          this.counts.unavailable,
+        ineligibleReasons: { ...this.ineligibleReasons },
+        skipReasons: { ...this.skipReasons },
+      },
       'Commercial AI admission totals',
     );
   }

@@ -87,7 +87,16 @@ export function commercialLlmSourceCurrent(source: CommercialLlmSource, now = Da
   );
 }
 
-export function buildCommercialLlmOffer(
+export type CommercialLlmOfferRejection =
+  | 'filter_disabled'
+  | 'invalid_origin'
+  | 'empty_text'
+  | 'oversized_text'
+  | 'invalid_event_time'
+  | 'stale_event'
+  | 'unsanitized_contact';
+
+export function prepareCommercialLlmOffer(
   input: {
     chatId: string;
     messageId: string;
@@ -99,23 +108,21 @@ export function buildCommercialLlmOffer(
     origin?: z.infer<typeof originSchema>;
   },
   now = Date.now(),
-): { source: CommercialLlmSource; excerpt: string } | null {
-  if (
-    !input.origin ||
-    !input.settings.commercialAdsFilterEnabled ||
-    !input.originBotId ||
-    !input.text.trim() ||
-    input.text.length > 2500 ||
-    !input.eventAt
-  )
-    return null;
+):
+  | { offer: { source: CommercialLlmSource; excerpt: string }; reason?: never }
+  | { offer?: never; reason: CommercialLlmOfferRejection } {
+  if (!input.settings.commercialAdsFilterEnabled) return { reason: 'filter_disabled' };
+  if (!input.origin || !input.originBotId) return { reason: 'invalid_origin' };
+  if (!input.text.trim()) return { reason: 'empty_text' };
+  if (input.text.length > 2500) return { reason: 'oversized_text' };
+  if (!input.eventAt) return { reason: 'invalid_event_time' };
   const eventAtMs = Date.parse(input.eventAt);
   // FLAG: Admission never renews the event deadline or accepts historical/replayed sources.
-  if (!Number.isFinite(eventAtMs) || eventAtMs < now - 10_000 || eventAtMs > now + 5_000)
-    return null;
+  if (!Number.isFinite(eventAtMs)) return { reason: 'invalid_event_time' };
+  if (eventAtMs < now - 10_000 || eventAtMs > now + 5_000) return { reason: 'stale_event' };
   const excerpt = sanitizeCommercialCorpusText(input.text);
   if (!excerpt.trim() || excerpt.length > 2500 || hasResidualCommercialContactCandidate(excerpt))
-    return null;
+    return { reason: 'unsanitized_contact' };
   const source = commercialLlmSourceSchema.safeParse({
     version: COMMERCIAL_LLM_ENFORCEMENT_VERSION,
     classifierSha256: COMMERCIAL_LLM_ENFORCEMENT_IDENTITY_SHA256,
@@ -131,8 +138,15 @@ export function buildCommercialLlmOffer(
     settingsSha256: fingerprintCommercialDeleteSettings(input.settings),
   });
   return source.success && commercialLlmSourceCurrent(source.data, now)
-    ? { source: source.data, excerpt }
-    : null;
+    ? { offer: { source: source.data, excerpt } }
+    : { reason: 'invalid_origin' };
+}
+
+export function buildCommercialLlmOffer(
+  input: Parameters<typeof prepareCommercialLlmOffer>[0],
+  now = Date.now(),
+): { source: CommercialLlmSource; excerpt: string } | null {
+  return prepareCommercialLlmOffer(input, now).offer ?? null;
 }
 
 export function commercialLlmSourceKey(source: CommercialLlmSource): string {
