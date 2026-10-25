@@ -7721,7 +7721,12 @@ export class MaxClientService implements OnModuleDestroy {
               await this.requiredSubscriptionNoticeGuard.assertAllowed(action, selectedBotId, {
                 getMemberAccess,
                 getSource: ({ chatId, messageId, botId, timeoutMs }) =>
-                  this.getExactMessageRow(chatId, messageId, readOptions(botId, timeoutMs)),
+                  this.getExactMessageRow(chatId, messageId, {
+                    ...readOptions(botId, timeoutMs),
+                    // FLAG: Source denial/absence still rejects the notice before SEND;
+                    // it does not establish deletion or global MAX transport pressure.
+                    ignoreFailureMetricStatuses: [403, 404],
+                  }),
                 getMembership: async ({ targetId, userId, timeoutMs }) => {
                   const targetBotId = await this.maxBotLinkService?.resolveBotIdForRead({
                     chatId: targetId,
