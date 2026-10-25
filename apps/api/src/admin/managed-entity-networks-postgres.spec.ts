@@ -85,6 +85,91 @@ integration('managed network composition with PostgreSQL', () => {
     expect(second.nextCursor).toBeNull();
   });
 
+  it.each(['chat', 'channel'] as const)(
+    'keeps %s pages available with missing titles and uses existing catalog names',
+    async (entityType) => {
+      const prefix = `networks-${suffix}-metadata-${entityType}`;
+      const chatIds = [0, 1, 2, 3].map((index) => `${prefix}-${index}`);
+      const storedTitles = [
+        '',
+        `${entityType === 'chat' ? 'Chat' : 'Channel'} ${chatIds[1]}`,
+        'Текущее название',
+        chatIds[3],
+      ];
+      const storedType = entityType === 'chat' ? 'CHAT' : 'CHANNEL';
+      try {
+        await db.chat.createMany({
+          data: chatIds.map((id, index) => ({
+            id,
+            title: storedTitles[index],
+            entityType: storedType,
+          })),
+        });
+        await db.managedEntityAccessEdge.createMany({
+          data: chatIds.map((chatId) => ({
+            chatId,
+            userId: actor,
+            botId: bot,
+            entityType: storedType,
+            state: 'GRANTED',
+            userRole: 'ADMIN',
+            expiresAt: new Date(0),
+          })),
+        });
+        await db.managedBotChatCatalog.createMany({
+          data: [
+            {
+              botId: bot,
+              chatId: chatIds[1],
+              entityType: storedType,
+              title: 'Сохранённое название',
+              status: 'PRESENTATION',
+            },
+            {
+              botId: bot,
+              chatId: chatIds[2],
+              entityType: storedType,
+              title: 'Старое название',
+              status: 'ACTIVE',
+            },
+            {
+              botId: bot,
+              chatId: chatIds[3],
+              entityType: storedType,
+              title: '   ',
+              status: 'ACTIVE',
+            },
+          ],
+        });
+
+        const first = await service.entries(user, entityType, { search: prefix, limit: 2 });
+        const second = await service.entries(user, entityType, {
+          search: prefix,
+          limit: 2,
+          cursor: first.nextCursor,
+        });
+        const fallback = entityType === 'chat' ? 'Чат без названия' : 'Канал без названия';
+        expect([...first.items, ...second.items].map(({ id, title }) => ({ id, title }))).toEqual(
+          [fallback, 'Сохранённое название', 'Текущее название', fallback].map((title, index) => ({
+            id: chatIds[index],
+            title,
+          })),
+        );
+        expect(second.nextCursor).toBeNull();
+        expect(
+          await db.chat.findMany({
+            where: { id: { in: chatIds } },
+            select: { title: true },
+            orderBy: { id: 'asc' },
+          }),
+        ).toEqual(storedTitles.map((title) => ({ title })));
+      } finally {
+        await db.managedBotChatCatalog.deleteMany({ where: { chatId: { in: chatIds } } });
+        await db.chat.deleteMany({ where: { id: { in: chatIds } } });
+      }
+    },
+  );
+
   it('serializes empty-assignment races and rejects a competing category without partial writes', async () => {
     const outcomes = await Promise.allSettled([
       service.updateComposition(user, 'chat', {

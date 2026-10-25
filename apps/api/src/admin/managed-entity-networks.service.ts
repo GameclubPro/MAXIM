@@ -287,21 +287,27 @@ export class ManagedEntityNetworksService {
                   botId: { in: this.registry.getAllBots().map((bot) => bot.id) },
                   status: { in: ['ACTIVE', 'PRESENTATION'] },
                 },
-                select: { chatId: true, avatarUrl: true, avatarState: true },
+                select: { chatId: true, title: true, avatarUrl: true, avatarState: true },
                 orderBy: [
                   { metadataObservedAt: { sort: 'desc', nulls: 'last' } },
                   { botId: 'asc' },
                 ],
               });
+        const presentationByChat = new Map<string, (typeof catalog)[number]>();
+        for (const item of catalog) {
+          if (!presentationByChat.has(item.chatId)) presentationByChat.set(item.chatId, item);
+        }
         return managedEntityNetworkEntriesResponseSchema.parse({
           entityType,
           compositionVersion: snapshot.compositionVersion,
           items: page.map((row) => {
-            const presentation = catalog.find((item) => item.chatId === row.id);
+            const presentation = presentationByChat.get(row.id);
             return {
               id: row.id,
               entityType,
-              title: resolvePresentableManagedEntityTitle(row.id, row.title),
+              title:
+                resolvePresentableManagedEntityTitle(row.id, row.title, presentation?.title) ??
+                (entityType === 'chat' ? 'Чат без названия' : 'Канал без названия'),
               avatarUrl:
                 presentation?.avatarState === 'absent' ? null : (presentation?.avatarUrl ?? null),
               favoriteType: snapshot.assignments.get(row.id) ?? null,
