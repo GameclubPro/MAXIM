@@ -179,8 +179,8 @@ export function SharedCommercialSettingsFields({
             ) : null}
           </div>
           <p className="settings-native-toggle__hint">
-            Подтверждённая реклама удаляется. Ниже можно выбрать наказание за повторы. Повторные
-            нарушения считаются за 24 часа.
+            Фильтр проверяет текст сообщения. Подтверждённая реклама удаляется. Ниже можно выбрать
+            наказание за повторы. Повторные нарушения считаются за 24 часа.
           </p>
           <p className="settings-native-toggle__hint">{ladder}</p>
           <div

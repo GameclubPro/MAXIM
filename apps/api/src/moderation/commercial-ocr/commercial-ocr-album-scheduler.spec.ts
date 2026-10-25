@@ -47,6 +47,31 @@ function detector(overrides: Record<string, unknown> = {}): CommercialOcrDetecto
 }
 
 describe('commercial OCR album scheduler', () => {
+  it('never invokes advertising detection or its confirmation for a stop-list-only scan', async () => {
+    const adDetector = detector();
+    const calls: string[] = [];
+    const result = await runCommercialOcrAlbumSchedule<undefined, string>({
+      caption: PASS.text,
+      settings: SETTINGS,
+      imageSources: ['direct', 'direct'],
+      detector: adDetector,
+      commercialScanEnabled: false,
+      requireCompletePrimaryScan: true,
+      shouldResolveConfirmation: ({ imageIndex }) => imageIndex === 1,
+      createImageContext: () => undefined,
+      resolvePass: async ({ imageIndex, pass }) => {
+        calls.push(`${imageIndex}:${pass}`);
+        return { kind: 'ready', value: PASS };
+      },
+    });
+    expect(adDetector.detect).not.toHaveBeenCalled();
+    expect(calls).toEqual(['0:primary', '1:primary', '1:confirmation']);
+    expect(result).toMatchObject({
+      kind: 'complete',
+      decision: { action: 'NO_ACTION', images: [] },
+    });
+  });
+
   it('runs confirmation lazily only for a primary delete candidate', async () => {
     const calls: string[] = [];
     const result = await runCommercialOcrAlbumSchedule<undefined, string>({

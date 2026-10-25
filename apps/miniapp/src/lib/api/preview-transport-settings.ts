@@ -179,9 +179,7 @@ export function buildChatSettingsScreen(
     messageRetention: getPreviewMessageRetention(state, chatId),
     closure: createPreviewOpenChatClosure(state.chatSettings, readPreviewClock(state.clock)),
     settings: state.chatSettings,
-    commercialPhotoModerationMode: state.chatSettings.commercialAdsFilterEnabled
-      ? 'OBSERVE'
-      : 'OFF',
+    commercialPhotoModerationMode: 'OFF',
     reportsAvailable: state.reportsAvailable,
     duplicatePhotoModerationMode: 'FULL',
     duplicateMessageModerationMode: 'FULL',

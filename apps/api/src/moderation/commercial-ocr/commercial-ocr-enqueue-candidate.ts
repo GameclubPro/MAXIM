@@ -20,7 +20,6 @@ export function resolveCommercialOcrEnqueueCandidate(params: {
   update: MaxUpdate;
   webhookEventId?: string;
   updateType: string | null;
-  commercialAdsFilterEnabled: boolean;
   imageTextScanEnabled?: boolean;
   hasImageTextStopList?: boolean;
   hasPhotoAttachment: boolean;
@@ -32,8 +31,7 @@ export function resolveCommercialOcrEnqueueCandidate(params: {
     !params.webhookEventId ||
     !params.messageId ||
     params.updateType !== 'message_created' ||
-    (!params.commercialAdsFilterEnabled &&
-      !(params.imageTextScanEnabled === true && params.hasImageTextStopList === true)) ||
+    !(params.imageTextScanEnabled === true && params.hasImageTextStopList === true) ||
     !params.hasPhotoAttachment
   ) {
     return null;
@@ -66,7 +64,9 @@ export function resolveCommercialOcrEnqueueCandidate(params: {
     sourceCreatedAt,
     eventTimestamp: new Date(eventTimestampMs).toISOString(),
     imageCount: result.album.images.length,
-    commercialScanRequested: params.commercialAdsFilterEnabled,
+    // FLAG: Commercial moderation is text-only. Keep the shared job format for retained
+    // work, but newly admitted image jobs belong exclusively to the explicit stop-list.
+    commercialScanRequested: false,
     imageTextScanRequested:
       params.imageTextScanEnabled === true && params.hasImageTextStopList === true,
   };

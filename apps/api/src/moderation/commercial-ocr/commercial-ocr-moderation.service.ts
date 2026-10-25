@@ -326,26 +326,32 @@ export class CommercialOcrModerationService {
 
     const context = await this.loadJobContext(job.chatId);
     const purposes = resolveCommercialOcrJobPurposes(job);
+    // FLAG: A retained combined job cannot revive a disabled commercial scan through the
+    // independently enabled image stop-list path. Recheck each purpose before analysis.
+    const commercialScanEnabled =
+      purposes.commercial &&
+      context?.settings.commercialAdsFilterEnabled === true &&
+      resolveCommercialOcrRuntimePolicy({ chatId: job.chatId, configService: this.configService })
+        .process;
     const imageTextStopListEnabled =
-      purposes.imageTextStopList && isImageTextStopListEnabled(context?.settings);
+      purposes.imageTextStopList &&
+      isImageTextStopListEnabled(context?.settings) &&
+      resolveImageTextStopListOcrRuntimePolicy({
+        configService: this.configService,
+        sandboxBoundaryVerified: false,
+      }).process;
     if (
       !context ||
       context.entityType !== ChatEntityType.CHAT ||
-      (!(purposes.commercial && context.settings.commercialAdsFilterEnabled) &&
-        !imageTextStopListEnabled) ||
+      (!commercialScanEnabled && !imageTextStopListEnabled) ||
       context.localAdminUserIds.includes(source.album.senderId)
     ) {
       return commercialOcrCompleted('LEGITIMATE_SKIP', 'policy_ineligible');
     }
-    const initialSettingsFingerprint =
-      purposes.commercial && context.settings.commercialAdsFilterEnabled
-        ? fingerprintSettingsFailOpen(context.settings)
-        : null;
-    if (
-      purposes.commercial &&
-      context.settings.commercialAdsFilterEnabled &&
-      !initialSettingsFingerprint
-    ) {
+    const initialSettingsFingerprint = commercialScanEnabled
+      ? fingerprintSettingsFailOpen(context.settings)
+      : null;
+    if (commercialScanEnabled && !initialSettingsFingerprint) {
       return commercialOcrCompleted('LEGITIMATE_SKIP', 'policy_ineligible');
     }
     if (
@@ -366,13 +372,8 @@ export class CommercialOcrModerationService {
       ocrVersion: job.ocrVersion,
       deadlineAtMs,
       authorizeStage: (stage) => this.authorizeHeavyStage(stage),
-      commercialScanEnabled: purposes.commercial && context.settings.commercialAdsFilterEnabled,
-      imageTextStopListScanEnabled:
-        imageTextStopListEnabled &&
-        resolveImageTextStopListOcrRuntimePolicy({
-          configService: this.configService,
-          sandboxBoundaryVerified: false,
-        }).process,
+      commercialScanEnabled,
+      imageTextStopListScanEnabled: imageTextStopListEnabled,
       ...(context.domainAllowlist.length > 0
         ? { isLinkAllowlisted: createAllowlistLinkMatcher(context.domainAllowlist) }
         : {}),
@@ -673,7 +674,13 @@ export class CommercialOcrModerationService {
     jobId: string,
     reason: CommercialOcrTerminalResult['reason'],
   ): Promise<void> {
-    if (!this.commercialReview || !resolveCommercialOcrJobPurposes(job).commercial) return;
+    if (
+      !this.commercialReview ||
+      !resolveCommercialOcrJobPurposes(job).commercial ||
+      !resolveCommercialOcrRuntimePolicy({ chatId: job.chatId, configService: this.configService })
+        .process
+    )
+      return;
     try {
       // FLAG: Terminal technical samples use only the original webhook caption/photo identity.
       // This local observation performs no MAX reads, grants no authority and stores no OCR text.
@@ -735,7 +742,14 @@ export class CommercialOcrModerationService {
     settings: ChatSettings,
     incompleteReason?: string,
   ): Promise<void> {
-    if (!this.commercialReview || !resolveCommercialOcrJobPurposes(job).commercial) return;
+    if (
+      !this.commercialReview ||
+      !resolveCommercialOcrJobPurposes(job).commercial ||
+      !settings.commercialAdsFilterEnabled ||
+      !resolveCommercialOcrRuntimePolicy({ chatId: job.chatId, configService: this.configService })
+        .process
+    )
+      return;
     const detections = (decision?.images ?? []).flatMap((image) => [
       image.primary.detection,
       image.verification?.detection ?? null,

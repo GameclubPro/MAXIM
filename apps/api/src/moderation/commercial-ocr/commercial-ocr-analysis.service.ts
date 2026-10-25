@@ -196,6 +196,7 @@ export class CommercialOcrAnalysisService {
       settings: params.settings,
       imageSources: params.album.images.map((image) => image.source),
       detector: this.detector,
+      commercialScanEnabled,
       requireCompletePrimaryScan: imageTextStopListEnabled,
       ...(imageTextStopListEnabled
         ? {
