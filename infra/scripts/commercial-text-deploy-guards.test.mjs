@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
-function probe(mode) {
+function probe(mode, ai = false) {
   return spawnSync(
     'bash',
     [
@@ -21,11 +21,17 @@ function probe(mode) {
         sed s/assertAuthority/removedAuthority/g "$MAXIM_TEST_ROOT/$source_path"
       elif [[ "$MAXIM_TEST_MODE" == old-binding && "$source_path" == *commercial-delete-binding.ts ]]; then
         sed 's/BINDING_VERSION = 2/BINDING_VERSION = 1/g' "$MAXIM_TEST_ROOT/$source_path"
+      elif [[ "$MAXIM_TEST_MODE" == ai-unwired && "$source_path" == *moderation-delete-intent.service.ts ]]; then
+        sed s/commercialLlmGuard/removedGuard/g "$MAXIM_TEST_ROOT/$source_path"
+      elif [[ "$MAXIM_TEST_MODE" == ai-no-proof && "$source_path" == *commercial-llm-delete-guard.service.ts ]]; then
+        sed s/hasProof/removedProof/g "$MAXIM_TEST_ROOT/$source_path"
+      elif [[ "$MAXIM_TEST_MODE" == ai-no-origin && "$source_path" == *commercial-llm-effect-origin.ts ]]; then
+        return 1
       else
         cat "$MAXIM_TEST_ROOT/$source_path"
       fi
     }
-    maxim_topology_require_commercial_text_delete_guard target
+    ${ai ? 'maxim_topology_require_commercial_ai_delete_guard' : 'maxim_topology_require_commercial_text_delete_guard'} target
   `,
     ],
     {
@@ -45,4 +51,16 @@ test('both API rollback paths require commercial binding and final dispatch guar
   assert.equal(current.status, 0, current.stderr);
   for (const mode of ['missing', 'unwired', 'old-authority', 'old-binding'])
     assert.notEqual(probe(mode).status, 0);
+});
+
+test('AI rollback floor retains fresh proof, original source and final dispatch wiring', () => {
+  for (const file of ['vps-release-rollback.sh', 'vps-runtime-rollback.sh', 'vps-connect.sh'])
+    assert.match(
+      readFileSync(resolve(root, 'infra/scripts', file), 'utf8'),
+      /maxim_topology_require_commercial_ai_delete_guard/u,
+    );
+  const current = probe('current', true);
+  assert.equal(current.status, 0, current.stderr);
+  for (const mode of ['missing', 'ai-unwired', 'ai-no-proof', 'ai-no-origin'])
+    assert.notEqual(probe(mode, true).status, 0);
 });

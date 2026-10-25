@@ -158,6 +158,7 @@ export const networkSettingsReadResponseSchema = z
     fields: z.record(z.string(), networkSettingsFieldSchema),
     recipientCount: z.number().int().nonnegative(),
     complete: z.boolean(),
+    commercialAiModerationMode: z.enum(['OFF', 'OBSERVE', 'DELETE_ONLY']).optional(),
     nextCursor: z.string().nullable(),
   })
   .strict();

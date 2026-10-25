@@ -119,6 +119,7 @@ integration('network settings durable writes with PostgreSQL', () => {
       },
     });
     const settings = {
+      commercialAiModerationMode: () => 'DELETE_ONLY' as const,
       getChannelSettings: async (id: string) =>
         channelSettingsSchema.parse(
           await db.channelSettings.findUniqueOrThrow({ where: { chatId: id } }),
@@ -127,7 +128,10 @@ integration('network settings durable writes with PostgreSQL', () => {
       finishNetworkSettingsFollowup: followup,
     } satisfies Pick<
       AdminSettingsService,
-      'getChannelSettings' | 'updateNetworkChannelSettings' | 'finishNetworkSettingsFollowup'
+      | 'commercialAiModerationMode'
+      | 'getChannelSettings'
+      | 'updateNetworkChannelSettings'
+      | 'finishNetworkSettingsFollowup'
     >;
     const managed = { assertManagedEntityAdminAccess: access } satisfies Pick<
       ManagedEntitiesService,

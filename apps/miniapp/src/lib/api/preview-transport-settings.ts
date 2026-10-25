@@ -180,6 +180,7 @@ export function buildChatSettingsScreen(
     closure: createPreviewOpenChatClosure(state.chatSettings, readPreviewClock(state.clock)),
     settings: state.chatSettings,
     commercialPhotoModerationMode: 'OFF',
+    commercialAiModerationMode: 'DELETE_ONLY',
     reportsAvailable: state.reportsAvailable,
     duplicatePhotoModerationMode: 'FULL',
     duplicateMessageModerationMode: 'FULL',

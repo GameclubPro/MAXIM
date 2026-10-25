@@ -39,6 +39,7 @@ export class CommercialLlmShadowRunnerService implements OnModuleInit, OnModuleD
     // FLAG: No timer/connection outside the single background role; disabled by default.
     if (
       this.config.get<string>('APP_SERVICE_NAME') !== 'api-moderation-background' ||
+      this.config.get<boolean>('COMMERCIAL_LLM_ENFORCEMENT_ENABLED', false) === true ||
       this.config.get<boolean>('COMMERCIAL_LLM_SHADOW_ENABLED', false) !== true
     )
       return;

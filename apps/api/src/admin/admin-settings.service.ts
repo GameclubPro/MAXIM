@@ -62,6 +62,7 @@ import {
 import { buildRulesTextFromSettings } from './admin-chat-rules-text-format';
 import { buildSettingsSectionPatch } from './admin-settings-section-patch';
 import { CommercialOcrRuntimePolicyService } from '../moderation/commercial-ocr/commercial-ocr-runtime-policy.service';
+import { ConfigService } from '@nestjs/config';
 import {
   applySettingsSectionToAllChats as applySettingsSectionToAllChatsValue,
   applySettingsToAllChats as applySettingsToAllChatsValue,
@@ -121,6 +122,7 @@ export class AdminSettingsService {
     @Optional() private readonly retention?: MessageRetentionStore,
     @Optional() _commercialOcrRuntimePolicy?: CommercialOcrRuntimePolicyService,
     @Optional() private readonly botRegistry?: MaxBotRegistryService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   async getDuplicateDiagnostics(chatId: string, user: AuthUser, recheck = false, query?: unknown) {
@@ -219,6 +221,7 @@ export class AdminSettingsService {
       settings,
       // FLAG: Retain the response field for older clients; the commercial filter is text-only.
       commercialPhotoModerationMode: 'OFF',
+      commercialAiModerationMode: this.commercialAiModerationMode(),
       reportsAvailable: this.reports?.available(chatId) ?? false,
       duplicatePhotoModerationMode: duplicatePhotoPolicy.moderationMode,
       duplicateMessageModerationMode,
@@ -236,6 +239,14 @@ export class AdminSettingsService {
 
   resolveRequiredSubscriptionChannelReference(value: string) {
     return this.legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue(value);
+  }
+
+  commercialAiModerationMode(): 'OFF' | 'OBSERVE' | 'DELETE_ONLY' {
+    return this.config?.get<boolean>('COMMERCIAL_LLM_ENFORCEMENT_ENABLED') === true
+      ? 'DELETE_ONLY'
+      : this.config?.get<boolean>('COMMERCIAL_LLM_SHADOW_ENABLED') === true
+        ? 'OBSERVE'
+        : 'OFF';
   }
 
   resolveLocalChatUserProfiles(chatId: string, userIds: readonly string[]) {

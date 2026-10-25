@@ -27,6 +27,7 @@ export type SharedChatSettingsContext = {
   runtimeNotes?: Partial<Record<ApplySectionKey, ReactNode>>;
   invitationActivationAvailable?: boolean;
   reportsActivationAvailable?: boolean;
+  commercialAiModerationMode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY';
   limitsRuntime?: {
     deleteSpammersStatus: string;
     enforcementMode?: string;

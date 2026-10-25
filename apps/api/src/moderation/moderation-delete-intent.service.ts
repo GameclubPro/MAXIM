@@ -1,5 +1,11 @@
 import { DURABLE_USER_DELETE_RULES } from './durable-user-delete-rules';
+import { COMMERCIAL_LLM_DELETE_RULE_CODE } from './commercial/commercial-llm-enforcement.protocol';
+import {
+  CommercialLlmDeleteGuardService,
+  CommercialLlmGuardRejectedError,
+} from './commercial/commercial-llm-delete-guard.service';
 import { readExactDeleteOrigin } from './webhook-effect-origin-context';
+import { readCommercialLlmEffectOrigin } from './commercial/commercial-llm-effect-origin';
 import {
   persistRuleFollowupBeforeDelete,
   activateOwnedRuleFollowups,
@@ -779,6 +785,7 @@ export class ModerationDeleteIntentService {
     @Optional()
     private readonly requiredSubscriptionExecutionGuard?: RequiredSubscriptionExecutionGuardService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
+    @Optional() private readonly commercialLlmGuard?: CommercialLlmDeleteGuardService,
   ) {
     this.expectedImageOcrNativeBehavior =
       resolveExpectedCommercialOcrProductionBehaviorIdentity(configService).identity;
@@ -4243,6 +4250,15 @@ export class ModerationDeleteIntentService {
           reasons.filter((r) => r.ruleCode === PROFANITY_DELETE_RULE_CODE).map((r) => r.reasonKey),
         )) === 'allowed';
     }
+    if (reasons.some((reason) => reason.ruleCode === COMMERCIAL_LLM_DELETE_RULE_CODE)) {
+      if (!this.commercialLlmGuard) throw new Error('Commercial AI guard unavailable');
+      const permit = await check(() => this.commercialLlmGuard!.authorize({ ...params, reasons }));
+      if (typeof permit === 'object' && permit !== null && 'deadlineAtMs' in permit)
+        independentBoundedDeadlineAtMs = Math.max(
+          independentBoundedDeadlineAtMs,
+          Number(permit.deadlineAtMs),
+        );
+    }
     if (reasons.some((reason) => reason.ruleCode === COMMERCIAL_TEXT_DELETE_RULE_CODE)) {
       if (!this.commercialDeleteGuard) throw new Error('Commercial delete guard unavailable');
       const proof = await check(() =>
@@ -4474,6 +4490,7 @@ export class ModerationDeleteIntentService {
     if (
       error instanceof ProfanityDeleteGuardRejectedError ||
       error instanceof CommercialDeleteGuardRejectedError ||
+      error instanceof CommercialLlmGuardRejectedError ||
       error instanceof StopWordsDeleteGuardRejectedError ||
       error instanceof TrafficProtectionGuardRejectedError ||
       error instanceof ReportRejectedError ||
@@ -5193,7 +5210,16 @@ export class ModerationDeleteIntentService {
           : 'PENDING';
     const intentId = randomUUID();
     const reasonId = randomUUID();
-    const sourceOrigin = readExactDeleteOrigin(normalized.chatId, normalized.messageId);
+    const sourceOrigin =
+      normalized.ruleCode === COMMERCIAL_LLM_DELETE_RULE_CODE
+        ? readCommercialLlmEffectOrigin(
+            normalized.chatId,
+            normalized.messageId,
+            normalized.ruleCode,
+          )
+        : readExactDeleteOrigin(normalized.chatId, normalized.messageId);
+    if (normalized.ruleCode === COMMERCIAL_LLM_DELETE_RULE_CODE && !sourceOrigin)
+      throw new CommercialLlmGuardRejectedError();
     // FLAG: Receipt attribution is written only after this executor's guarded MAX success.
     // Supplied reason metadata cannot manufacture a confirmed commercial execution.
     const initialMetadata = this.asRecord(normalized.event.metadata);

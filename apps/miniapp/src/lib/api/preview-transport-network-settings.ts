@@ -327,6 +327,9 @@ export async function handleNetworkSettingsPreviewRequest(context: PreviewReques
       target: request.target,
       section: request.section,
       compositionVersion: selected.version,
+      ...(request.section === 'commercialFilter'
+        ? { commercialAiModerationMode: 'DELETE_ONLY' }
+        : {}),
       recipients: rows.map((row) => ({
         entityId: row.id,
         title: row.title,

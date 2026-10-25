@@ -4857,6 +4857,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           mode: 'single',
           hasPublishedRules,
           api,
+          commercialAiModerationMode: settingsScreenQuery.data?.commercialAiModerationMode,
           stopWordsTools:
             section === 'stopWords'
               ? {

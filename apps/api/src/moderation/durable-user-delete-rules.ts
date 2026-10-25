@@ -4,6 +4,7 @@ import { MESSAGE_LIMITS_GUARDED_RULES } from './message-limits-delete-guard.serv
 import { STOP_WORDS_DELETE_RULE_CODES } from './stop-words/stop-words-delete-guard.service';
 import { PROFANITY_DELETE_RULE_CODE } from './profanity/profanity-delete-guard.service';
 import { COMMERCIAL_TEXT_DELETE_RULE_CODE } from './commercial/commercial-delete-binding';
+import { COMMERCIAL_LLM_DELETE_RULE_CODE } from './commercial/commercial-llm-enforcement.protocol';
 import { LINK_BLOCKED_DELETE_RULE_CODE } from './link-history-recovery.util';
 import { TRAFFIC_PROTECTION_DELETE_RULE_CODES } from './traffic-protection';
 
@@ -18,5 +19,6 @@ export const DURABLE_USER_DELETE_RULES: ReadonlySet<string> = new Set([
   ...TRAFFIC_PROTECTION_DELETE_RULE_CODES,
   PROFANITY_DELETE_RULE_CODE,
   COMMERCIAL_TEXT_DELETE_RULE_CODE,
+  COMMERCIAL_LLM_DELETE_RULE_CODE,
   LINK_BLOCKED_DELETE_RULE_CODE,
 ]);

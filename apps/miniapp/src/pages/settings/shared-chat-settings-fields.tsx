@@ -39,7 +39,11 @@ import {
 import type { SharedChatSettingsSectionProps } from './shared-chat-settings-section';
 import { SharedSpeechField as Speech } from './shared-bot-speech-field';
 import { SharedProfanitySettingsFields as LazySharedProfanitySettingsFields } from './shared-profanity-settings-fields';
-import { SharedCommercialSettingsFields as LazySharedCommercialSettingsFields } from './shared-commercial-settings-fields';
+const LazySharedCommercialSettingsFields = recoverableLazyNamedComponent<{
+  fields: ChatSettingsFieldAdapter;
+  actions: ReactNode;
+  mode?: 'OFF' | 'OBSERVE' | 'DELETE_ONLY';
+}>(() => import('./shared-commercial-settings-fields'), 'SharedCommercialSettingsFields');
 import './shared-chat-settings.css';
 
 type BodyProps = Pick<SharedChatSettingsSectionProps, 'fields' | 'context'>;
@@ -385,6 +389,7 @@ function Commercial(props: BodyProps) {
     <Suspense fallback={<Spinner label="Загружаем настройки" />}>
       <LazySharedCommercialSettingsFields
         fields={props.fields}
+        mode={props.context.commercialAiModerationMode}
         actions={<Sanctions {...props} prefix="textFilters" warningText buttons header={false} />}
       />
     </Suspense>

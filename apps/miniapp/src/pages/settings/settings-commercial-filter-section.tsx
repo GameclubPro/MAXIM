@@ -75,7 +75,7 @@ export function SettingsCommercialFilterSection(props: SettingsCommercialFilterS
         id="settings-commercial-filter-content"
         icon={<SettingsSectionIcon name={SECTION_PRESENTATION.icon} />}
         open={expanded}
-        title={SECTION_PRESENTATION.title}
+        title="Реклама"
         summary={commercialFilterHeaderSummary}
         tone={SECTION_PRESENTATION.tone}
         className={SECTION_PRESENTATION.panelClassName}

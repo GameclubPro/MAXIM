@@ -72,9 +72,10 @@ identity can authorize future `canary` or `on` experiments; their lifetime is bo
 Missing/expired experimental control restores baseline. Unreadable control fails
 closed. Never synthesize a revision or approval artifact to enable rules.
 
-Commercial OCR has a separate active strict `baseline`, explicit v5 authority,
-two strong recognition passes and no participant sanctions. It follows each chat's
-commercial-filter opt-in. See [OCR delivery and recovery](commercial-ocr-baseline.md).
+Commercial advertisement filtering no longer schedules OCR. Independent image
+stop-lists retain their OCR path; historical guards remain for compatibility.
+The separately guarded [AI deletion mode](commercial-ai-deletion.md) replaces text
+rule verdicts only when explicitly enabled and never uses their sanction authority.
 
 ## Verification
 

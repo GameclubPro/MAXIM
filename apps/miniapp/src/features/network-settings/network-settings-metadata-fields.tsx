@@ -88,6 +88,7 @@ export function NetworkSettingsMetadataFields(props: Props) {
   );
   const context: SharedChatSettingsContext = {
     mode: 'network',
+    commercialAiModerationMode: props.read.commercialAiModerationMode,
     api: props.api,
     navigationAllowlist:
       props.read.section === 'links' ? <Allowlist key={key} {...props} scope={scope} /> : undefined,

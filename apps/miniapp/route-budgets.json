@@ -147,7 +147,8 @@
         "src/components/ui/time-field-exact-input.tsx",
         "src/pages/settings/shared-duplicate-settings-fields.tsx",
         "src/pages/settings/shared-stop-words-settings-fields.tsx",
-        "src/features/network-settings/network-subscription-sources.tsx"
+        "src/features/network-settings/network-subscription-sources.tsx",
+        "src/pages/settings/shared-commercial-settings-fields.tsx"
       ],
       "baseline": "startup",
       "limits": {
@@ -295,6 +296,16 @@
       "coversRouteEntry": false,
       "limits": {
         "jsGzipBytes": 88576
+      }
+    },
+    {
+      "id": "commercial-filter-editor",
+      "label": "Commercial advertisement editor",
+      "entries": ["src/pages/settings/shared-commercial-settings-fields.tsx"],
+      "baseline": "network-settings",
+      "limits": {
+        "jsGzipBytes": 6144,
+        "cssGzipBytes": 3072
       }
     }
   ]
