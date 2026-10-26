@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import { Prisma, createPrismaClient } from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { backlogSource } from '../webhook/webhook-backlog-cancellation';
+import { confirmEraserSourceHolds } from '../message-retention/eraser-source-hold-barrier';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
 import {
   readLegacyActionSourceScopes,
@@ -182,6 +183,17 @@ export async function captureBacklogReceipts(
       }> = await readBacklogPage(db, scan.query(cursor));
       if (!page.length) break;
       scanned += page.length;
+      await confirmEraserSourceHolds(
+        db,
+        page
+          .filter((row) => row.eligible && row.at < cutoff)
+          .map((row) => backlogSource(row.update))
+          .flatMap((source) =>
+            source.chatId && source.messageId
+              ? [{ chatId: source.chatId, messageId: source.messageId }]
+              : [],
+          ),
+      );
       await db.$transaction(
         async (tx) => {
           await tx.$executeRaw`SET LOCAL lock_timeout = '1s'`;

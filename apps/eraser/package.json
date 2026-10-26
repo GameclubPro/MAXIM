@@ -1,0 +1,29 @@
+{
+  "name": "@maxim/eraser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "TZ=UTC tsx --test test/*.test.ts",
+    "test:stores": "TZ=UTC tsx --test test/*.stores.ts",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "migrate": "node dist/migrate.js",
+    "migrate:dev": "tsx src/migrate.ts",
+    "start": "node dist/main.js",
+    "webhook:register": "node dist/register-webhook.js"
+  },
+  "dependencies": {
+    "bullmq": "5.77.6",
+    "ioredis": "5.11.0",
+    "pg": "8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.4",
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.22.3",
+    "typescript": "^5.9.3"
+  }
+}

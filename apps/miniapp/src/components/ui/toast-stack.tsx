@@ -31,7 +31,9 @@ function ToastMessage({ toast, onDismiss }: { toast: ToastItem; onDismiss: (id: 
     <article
       className={cn('toast', `toast--${toast.tone}`)}
       role={toast.tone === 'danger' ? 'alert' : 'status'}
-      onPointerEnter={() => setHovered(true)}
+      onPointerEnter={(event) => {
+        if (event.pointerType === 'mouse') setHovered(true);
+      }}
       onPointerLeave={() => setHovered(false)}
       onFocusCapture={() => setFocused(true)}
       onBlurCapture={(event) => {

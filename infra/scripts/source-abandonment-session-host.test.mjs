@@ -52,8 +52,7 @@ function fixture(t) {
     networkId: 'c'.repeat(64),
     publisherBotId: 'publisher',
     majorBotIds: ['major'],
-    environment:
-      'DATABASE_URL=postgresql://private:password@postgres/maxim\nREDIS_URL=redis://:secret@redis:6379/2\n',
+    environment: `DATABASE_URL=postgresql://private:password@postgres/maxim\nREDIS_URL=redis://:secret@redis:6379/2\nERASER_CONTROL_URL=http://eraser:3000\nERASER_CONTROL_TOKEN=${'a'.repeat(64)}\n`,
   };
   const manifest = {
     version: 1,

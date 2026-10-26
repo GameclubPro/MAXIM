@@ -2,15 +2,19 @@ import { useEffect, useRef } from 'react';
 import { AppIcon } from '../../components/ui/app-icon';
 import { SegmentedControl } from '../../components/ui/segmented-control';
 import type { SettingsFieldState } from '../../features/network-settings/field-model';
-import './settings-message-retention.css';
+import type { MessageRetentionState } from '@maxim/contracts/settings';
+import { LASTIK_BOT_URL, openLastikBot } from '../../lib/lastik-bot';
+import './shared-message-retention-fields.css';
 
 export type SharedMessageRetentionFieldsProps = {
   enabled: SettingsFieldState<boolean>;
-  hours: SettingsFieldState<24 | 48>;
+  hours: SettingsFieldState<24 | 48 | 168>;
   disabled: boolean;
   enableDisabled?: boolean;
+  scope?: 'chat' | 'network';
+  connectionStatus?: MessageRetentionState['connectionStatus'];
   onEnabledChange: (enabled: boolean) => void;
-  onHoursChange: (hours: 24 | 48) => void;
+  onHoursChange: (hours: 24 | 48 | 168) => void;
 };
 
 export function SharedMessageRetentionFields({
@@ -18,6 +22,8 @@ export function SharedMessageRetentionFields({
   hours,
   disabled,
   enableDisabled,
+  scope = 'chat',
+  connectionStatus,
   onEnabledChange,
   onHoursChange,
 }: SharedMessageRetentionFieldsProps) {
@@ -27,6 +33,39 @@ export function SharedMessageRetentionFields({
   }, [enabled.kind]);
   return (
     <>
+      <div className="message-retention-bot">
+        <span className="message-retention-bot__icon" aria-hidden>
+          <AppIcon icon="Trash" />
+        </span>
+        <div className="message-retention-bot__copy">
+          <strong>
+            {scope === 'chat' && connectionStatus === 'connected'
+              ? '«Ластик» подключён'
+              : 'Бот «Ластик»'}
+          </strong>
+          {scope === 'network' ? (
+            <p>
+              Добавьте «Ластика» администратором в чаты сетки с правами чтения и удаления сообщений.
+            </p>
+          ) : connectionStatus !== 'connected' ? (
+            <p>
+              {connectionStatus === 'no_access'
+                ? 'Назначьте бота администратором с правами чтения и удаления сообщений.'
+                : 'Добавьте бота в чат администратором с правами чтения и удаления сообщений.'}
+            </p>
+          ) : null}
+        </div>
+        <a
+          className="button button--accent message-retention-bot__link"
+          href={LASTIK_BOT_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={openLastikBot}
+        >
+          Открыть бота «Ластик»
+          <AppIcon icon="NavArrowRight" aria-hidden />
+        </a>
+      </div>
       <div className="message-retention-settings__row">
         <label htmlFor="message-retention-enabled">Удаление по сроку</label>
         {enabled.kind === 'mixed' ? <span role="status">Разные значения</span> : null}
@@ -35,7 +74,7 @@ export function SharedMessageRetentionFields({
             ref={toggle}
             id="message-retention-enabled"
             type="checkbox"
-            role="switch"
+            role={enabled.kind === 'mixed' ? 'checkbox' : 'switch'}
             checked={enabled.kind === 'common' && enabled.value}
             aria-checked={
               enabled.kind === 'mixed' ? 'mixed' : enabled.kind === 'common' && enabled.value
@@ -49,24 +88,28 @@ export function SharedMessageRetentionFields({
         </label>
       </div>
       <p className="message-retention-policy">
-        Только сообщения, полученные после включения. Удаление без возможности восстановления.
+        Сообщения старше выбранного срока удаляются без возможности восстановления.
       </p>
       <details className="message-retention-help">
         <summary>Как работает очистка</summary>
-        <p>Старую историю не очищаем. После повторного включения учёт начинается заново.</p>
-        <p>24 или 48 часов — минимальный возраст. При высокой нагрузке удаление откладывается.</p>
+        <p>
+          Удаляются сообщения любых авторов из всей доступной истории, включая сообщения до
+          включения. Большая история очищается постепенно.
+        </p>
+        <p>Срок отсчитывается от создания сообщения. Редактирование не продлевает срок хранения.</p>
       </details>
       <fieldset disabled={disabled || hours.kind === 'loading'}>
-        <legend>Минимальный возраст сообщений</legend>
+        <legend>Удалять сообщения старше</legend>
         {hours.kind === 'mixed' ? <p role="status">Разные значения</p> : null}
         <SegmentedControl
-          ariaLabel="Минимальный возраст сообщений"
-          value={hours.kind === 'common' ? String(hours.value) : ''}
+          ariaLabel="Удалять сообщения старше"
+          value={hours.kind === 'common' ? String(hours.value) : null}
           options={[
             { value: '24', label: '24 часа', disabled: disabled || hours.kind === 'loading' },
             { value: '48', label: '48 часов', disabled: disabled || hours.kind === 'loading' },
+            { value: '168', label: '1 неделя', disabled: disabled || hours.kind === 'loading' },
           ]}
-          onChange={(value) => onHoursChange(value === '24' ? 24 : 48)}
+          onChange={(value) => onHoursChange(value === '24' ? 24 : value === '168' ? 168 : 48)}
         />
       </fieldset>
     </>
@@ -85,7 +128,7 @@ export function SharedMessageRetentionExclusions() {
       />
       <div>
         <span>Исключения</span>
-        <p>Администраторы, закрепы, боты</p>
+        <p>Закрепы, правила, объявления розыгрышей и их итоги из наших модулей</p>
       </div>
     </div>
   );

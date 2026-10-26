@@ -230,6 +230,8 @@ test('same-SHA activation selects all API roles via the existing shared-image ro
     `
 ${block(deploy, 'derive_auto_services')}
 ${block(deploy, 'print_deploy_plan')}
+${block(deploy, 'contains_service')}
+RELEASE_COMPONENTS=(api-shared miniapp-major-static admin-static)
 impact_plan_selects_component() { return 1; }
 release_field() { printf '%040d' 1; }
 git() { printf '%040d' 1; }

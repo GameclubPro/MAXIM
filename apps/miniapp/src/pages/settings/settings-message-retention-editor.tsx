@@ -20,12 +20,14 @@ import {
   type BotPermissionBlocker,
 } from '../../lib/bot-permission-error';
 import {
+  isRetentionOperationConfirmed,
   isRetentionRevisionConflict,
   isRetentionWriteUncertain,
   retentionCount,
   retentionDate,
   retentionDraftReducer,
   retentionEditorState,
+  retentionErrorMessage,
 } from './settings-message-retention-editor-state';
 import './settings-message-retention.css';
 
@@ -37,14 +39,14 @@ const PermissionDialog = lazy(() =>
 
 const labels: Record<MessageRetentionState['status'], string> = {
   off: 'Выключено',
-  unavailable: 'Отключено оператором',
-  shadow: 'Проверка без удаления',
+  unavailable: 'Временно недоступно',
+  shadow: 'Готовится к запуску',
   running: 'Работает',
   delayed: 'Удаление отложено',
   paused: 'Пауза',
-  capacity_paused: 'Учёт приостановлен',
-  no_access: 'Нет прав',
-  error: 'Ошибка',
+  capacity_paused: 'Очистка приостановлена',
+  no_access: 'Нужны права администратора',
+  error: 'Не удалось продолжить очистку',
 };
 
 export type SettingsMessageRetentionEditorProps = {
@@ -73,15 +75,12 @@ export function SettingsMessageRetentionEditor({
         return await updateMessageRetention(api, chatId, input);
       } catch (error) {
         if (isRetentionWriteUncertain(error)) {
-          // FLAG: A lost PUT reply can conceal a committed destructive policy. Read authority
-          // before offering another write or a discard; an unconfirmed read keeps closing blocked.
+          // FLAG: An old GET cannot rule out a PUT still committing. Keep navigation and edits
+          // blocked until this operation is confirmed; recovery reuses its exact request and ID.
           setUncertainWrite(true);
           const latest = await query.refetch();
-          if (!latest.isError && latest.data) {
-            setUncertainWrite(false);
-            if (latest.data.enabled === input.enabled && latest.data.hours === input.hours)
-              return latest.data;
-          }
+          if (!latest.isError && latest.data && isRetentionOperationConfirmed(latest.data, input))
+            return latest.data;
         }
         throw error;
       }
@@ -99,10 +98,20 @@ export function SettingsMessageRetentionEditor({
       setPermissionBlocker(null);
       setUncertainWrite(false);
     },
-    onError: (error) => {
+    onError: async (error, input) => {
       setPermissionBlocker(parseBotPermissionBlocker(error));
-      if (isRetentionRevisionConflict(error))
-        void client.invalidateQueries({ queryKey, exact: true });
+      if (isRetentionRevisionConflict(error)) {
+        const latest = await query.refetch();
+        // FLAG: A typed CAS rejection plus a newer authoritative revision fences the original
+        // request. Other conflicts or an unreadable/older policy cannot settle its outcome.
+        if (
+          input.operationId &&
+          !latest.isError &&
+          latest.data &&
+          latest.data.revision > input.expectedRevision
+        )
+          setUncertainWrite(false);
+      }
     },
   });
   const query = useQuery({
@@ -121,7 +130,7 @@ export function SettingsMessageRetentionEditor({
   }, [chatId, state]);
   const { current, dirty, conflict } = retentionEditorState(state, draft);
   const saveConflict = isRetentionRevisionConflict(save.error);
-  const writeError = saveConflict || recoveredSave ? null : save.error;
+  const writeError = (saveConflict && !uncertainWrite) || recoveredSave ? null : save.error;
   const closeBlocked = save.isPending || uncertainWrite;
   const showConflict = conflict || saveConflict;
   const change = (patch: Partial<Pick<UpdateMessageRetention, 'enabled' | 'hours'>>) => {
@@ -129,7 +138,11 @@ export function SettingsMessageRetentionEditor({
     save.reset();
     setRecoveredSave(false);
     setPermissionBlocker(null);
-    dispatch({ type: 'edit', chatId, draft: { ...current, ...patch } });
+    dispatch({
+      type: 'edit',
+      chatId,
+      draft: { ...current, ...patch, operationId: crypto.randomUUID() },
+    });
   };
   const discard = () => {
     if (closeBlocked) return;
@@ -141,17 +154,28 @@ export function SettingsMessageRetentionEditor({
   const refresh = async () => {
     if (save.isPending) return;
     const latest = await query.refetch();
-    if (!latest.isError && latest.data) {
-      if (
-        uncertainWrite &&
-        save.variables &&
-        latest.data.enabled === save.variables.enabled &&
-        latest.data.hours === save.variables.hours
-      ) {
-        setRecoveredSave(true);
-        save.reset();
-      }
+    if (
+      !latest.isError &&
+      latest.data &&
+      uncertainWrite &&
+      save.variables &&
+      isRetentionOperationConfirmed(latest.data, save.variables)
+    ) {
+      setRecoveredSave(true);
+      save.reset();
       setUncertainWrite(false);
+      return true;
+    }
+    return false;
+  };
+  const recover = async () => {
+    if (save.isPending || !uncertainWrite || !save.variables?.operationId) return;
+    const input = save.variables;
+    if (await refresh()) return;
+    try {
+      await save.mutateAsync(input);
+    } catch {
+      // Keep the original operation available until an authoritative response confirms it.
     }
   };
   const commit = async () => {
@@ -196,22 +220,6 @@ export function SettingsMessageRetentionEditor({
       closeDisabled={closeBlocked}
       confirmCloseWhen={dirty}
       onDiscardChanges={discard}
-      headerAction={
-        <button
-          type="button"
-          className="settings-drilldown__close"
-          aria-label="Обновить состояние"
-          title="Обновить состояние"
-          disabled={save.isPending || query.isFetching}
-          onClick={() => void refresh()}
-        >
-          <IconoirSprite
-            variant="iconoir"
-            icon="RefreshDouble"
-            className={query.isFetching ? 'retention-refreshing' : undefined}
-          />
-        </button>
-      }
       footer={
         <div className="message-retention-footer">
           <span aria-live="polite">
@@ -243,24 +251,27 @@ export function SettingsMessageRetentionEditor({
         >
           <span className="message-retention-status__dot" aria-hidden />
           <span>{status}</span>
-          {state && !query.isError ? (
-            <time
-              dateTime={new Date(query.dataUpdatedAt).toISOString()}
-              title="Последнее обновление"
-            >
-              {new Date(query.dataUpdatedAt).toLocaleTimeString('ru-RU', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </time>
-          ) : null}
+          <button
+            type="button"
+            className="settings-drilldown__close"
+            aria-label="Обновить состояние"
+            title="Обновить состояние"
+            disabled={save.isPending || query.isFetching}
+            onClick={() => void refresh()}
+          >
+            <IconoirSprite
+              variant="iconoir"
+              icon="RefreshDouble"
+              className={query.isFetching ? 'retention-refreshing' : undefined}
+            />
+          </button>
         </div>
         {query.error ? (
           <div className="message-retention-feedback" role="alert">
             <strong>
               {state ? 'Не удалось обновить данные' : 'Не удалось загрузить настройки'}
             </strong>
-            <p>{query.error instanceof Error ? query.error.message : 'Ошибка соединения'}</p>
+            <p>{retentionErrorMessage(query.error)}</p>
             <button
               type="button"
               className="button button--ghost"
@@ -278,10 +289,8 @@ export function SettingsMessageRetentionEditor({
                 ? 'Сохранение пока не подтверждено'
                 : 'Не удалось сохранить изменения'}
             </strong>
-            <p>{writeError instanceof Error ? writeError.message : 'Ошибка соединения'}</p>
-            {uncertainWrite ? (
-              <p>Проверим настройки на сервере перед повтором или закрытием.</p>
-            ) : null}
+            <p>{retentionErrorMessage(writeError)}</p>
+            {uncertainWrite ? <p>Проверьте, сохранились ли настройки, перед закрытием.</p> : null}
             <button
               type="button"
               className="button button--ghost"
@@ -290,7 +299,7 @@ export function SettingsMessageRetentionEditor({
                 query.isFetching ||
                 (!uncertainWrite && (showConflict || query.isError))
               }
-              onClick={() => void (uncertainWrite ? refresh() : commit())}
+              onClick={() => void (uncertainWrite ? recover() : commit())}
             >
               <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden />{' '}
               {uncertainWrite ? 'Проверить сохранение' : 'Повторить сохранение'}
@@ -300,7 +309,13 @@ export function SettingsMessageRetentionEditor({
         {showConflict && state ? (
           <div className="message-retention-feedback" role="alert">
             <strong>Настройки изменены в другом сеансе</strong>
-            <p>На сервере: {state.enabled ? `старше ${state.hours} ч` : 'выключено'}.</p>
+            <p>
+              Сейчас:{' '}
+              {state.enabled
+                ? `удаление старше ${state.hours === 168 ? '1 недели' : `${state.hours} часов`}`
+                : 'очистка выключена'}
+              .
+            </p>
             <div className="message-retention-feedback__actions">
               <button
                 type="button"
@@ -316,7 +331,12 @@ export function SettingsMessageRetentionEditor({
                 className="button button--ghost"
                 disabled={closeBlocked || query.isError || !current}
                 onClick={() => {
-                  if (current) save.mutate({ ...current, expectedRevision: state.revision });
+                  if (current)
+                    save.mutate({
+                      ...current,
+                      expectedRevision: state.revision,
+                      operationId: crypto.randomUUID(),
+                    });
                 }}
               >
                 <IconoirSprite variant="iconoir" icon="Check" aria-hidden /> Сохранить мой вариант
@@ -342,41 +362,66 @@ export function SettingsMessageRetentionEditor({
               hours={{ kind: 'common', value: current.hours }}
               disabled={closeBlocked}
               enableDisabled={state.status === 'unavailable' && !current.enabled}
+              connectionStatus={state.connectionStatus}
               onEnabledChange={(enabled) => change({ enabled })}
               onHoursChange={(hours) => change({ hours })}
             />
             {state.enabled && current.enabled && state.hours !== current.hours ? (
               <p className="message-retention-policy" role="status">
-                Новый срок применяется и к уже учтённым сообщениям.
-                {current.hours < state.hours
-                  ? ' Сообщения старше 24 часов будут ожидать периода низкой нагрузки.'
-                  : ' Сообщения будут удаляться не раньше возраста 48 часов, в период низкой нагрузки.'}
+                Новый срок применяется ко всей доступной истории. Сообщения младше
+                {current.hours === 168 ? ' 1 недели' : ` ${current.hours} часов`} удаляться не
+                будут.
               </p>
             ) : null}
             <SharedMessageRetentionExclusions />
-            <dl className="message-retention-stats">
-              {[
-                { label: 'Ожидают', value: state.pendingCount },
-                { label: 'Удалены / нет в чате', value: state.deletedCount },
-                { label: 'Пропущены', value: state.skippedCount },
-              ].map((item) => (
-                <div key={item.label}>
-                  <dt>{item.label}</dt>
-                  <dd
-                    title={item.value.toLocaleString('ru-RU')}
-                    aria-label={item.value.toLocaleString('ru-RU')}
-                  >
-                    {retentionCount(item.value)}
+            {state.enabled || state.pendingCount + state.deletedCount + state.skippedCount > 0 ? (
+              <dl className="message-retention-stats">
+                {[
+                  { label: 'Ожидают', value: state.pendingCount },
+                  { label: 'Больше нет в чате', value: state.deletedCount },
+                  { label: 'Пропущены', value: state.skippedCount },
+                ].map((item) => (
+                  <div key={item.label}>
+                    <dt>{item.label}</dt>
+                    <dd
+                      title={item.value.toLocaleString('ru-RU')}
+                      aria-label={item.value.toLocaleString('ru-RU')}
+                    >
+                      {retentionCount(item.value)}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+            <dl className="message-retention-settings__facts">
+              {state.historyStatus && state.historyStatus !== 'off' ? (
+                <div>
+                  <dt>Старая история</dt>
+                  <dd>
+                    {
+                      {
+                        pending: 'Ожидает очистки',
+                        running: 'Очищается',
+                        complete: 'Проверена',
+                        blocked: 'Часть истории отложена',
+                        off: 'Очистка выключена',
+                      }[state.historyStatus]
+                    }
                   </dd>
                 </div>
-              ))}
-            </dl>
-            <dl className="message-retention-settings__facts">
-              {state.captureAfter ? (
+              ) : null}
+              {state.historyScannedCount !== undefined &&
+              (state.enabled || state.historyScannedCount > 0) ? (
                 <div>
-                  <dt>Учёт с</dt>
+                  <dt>Проверено сообщений</dt>
+                  <dd>{retentionCount(state.historyScannedCount)}</dd>
+                </div>
+              ) : null}
+              {state.enabledAt ? (
+                <div>
+                  <dt>Включено</dt>
                   <dd>
-                    <time dateTime={state.captureAfter}>{retentionDate(state.captureAfter)}</time>
+                    <time dateTime={state.enabledAt}>{retentionDate(state.enabledAt)}</time>
                   </dd>
                 </div>
               ) : null}
@@ -392,7 +437,7 @@ export function SettingsMessageRetentionEditor({
               ) : null}
               {state.pausedAt ? (
                 <div>
-                  <dt>Пауза учёта с</dt>
+                  <dt>Очистка на паузе с</dt>
                   <dd>
                     <time dateTime={state.pausedAt}>{retentionDate(state.pausedAt)}</time>
                   </dd>

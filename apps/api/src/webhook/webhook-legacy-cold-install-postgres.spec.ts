@@ -17,6 +17,7 @@ import {
   legacyUpdateHeldSql,
 } from './webhook-legacy-hold.service';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
+import { EraserSourceHoldBarrierError } from '../message-retention/eraser-source-hold-barrier';
 import {
   buildLegacyRecoveryPreviewDigest,
   createLegacyColdCertificate,
@@ -237,6 +238,46 @@ native('native cold legacy installation and ordering', () => {
     await expect(
       prisma.webhookLegacyQuiescenceCertificate.findUniqueOrThrow({ where: { id: cert.id } }),
     ).resolves.toMatchObject({ id: cert.id });
+  });
+
+  it('refuses a cold source write until the independent service confirms its permanent holds', async () => {
+    const { candidate, chatId } = await fixture();
+    const { cert } = await certificate(candidate, []);
+    await prisma.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id, legacy_hours) VALUES(${chatId}, 48)`;
+    const oldUrl = process.env.ERASER_CONTROL_URL;
+    const oldToken = process.env.ERASER_CONTROL_TOKEN;
+    process.env.ERASER_CONTROL_URL = 'http://eraser:3000';
+    process.env.ERASER_CONTROL_TOKEN = 'control-only';
+    const fetch = jest.spyOn(global, 'fetch');
+    try {
+      fetch.mockResolvedValueOnce(new Response('{}', { status: 409 }));
+      await expect(
+        installAndSealLegacyRecoveryBatch(prisma, cert.id, [candidate], []),
+      ).rejects.toBeInstanceOf(EraserSourceHoldBarrierError);
+      expect(await prisma.webhookLegacyRecovery.count({ where: { certificateId: cert.id } })).toBe(
+        0,
+      );
+      expect(
+        await prisma.webhookLegacyQuiescenceCertificate.findUniqueOrThrow({
+          where: { id: cert.id },
+        }),
+      ).toMatchObject({ sealedAt: null });
+      fetch.mockResolvedValueOnce(new Response('{"success":true}'));
+      await expect(
+        installAndSealLegacyRecoveryBatch(prisma, cert.id, [candidate], []),
+      ).resolves.toEqual({ recoveries: 1, children: 0 });
+      expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toEqual({
+        holdMessages: [{ chatId, messageId: candidate.source.messageId }],
+        holdAuthorIds: [candidate.source.userId],
+      });
+    } finally {
+      fetch.mockRestore();
+      await prisma.$executeRaw`DELETE FROM eraser_chat_bindings WHERE chat_id = ${chatId}`;
+      if (oldUrl === undefined) delete process.env.ERASER_CONTROL_URL;
+      else process.env.ERASER_CONTROL_URL = oldUrl;
+      if (oldToken === undefined) delete process.env.ERASER_CONTROL_TOKEN;
+      else process.env.ERASER_CONTROL_TOKEN = oldToken;
+    }
   });
 
   it('preserves unknown evidence, denies partial installation, and releases only the sealed order position', async () => {

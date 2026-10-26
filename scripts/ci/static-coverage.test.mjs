@@ -181,7 +181,7 @@ test('CI installation jobs leave dependency auditing to the required Static gate
   const installs = [...workflow.matchAll(/^ {6}- run: (npm ci(?: .*)?)$/gmu)].map(
     (entry) => entry[1],
   );
-  assert.deepEqual(installs, Array(7).fill('npm ci --no-audit'));
+  assert.deepEqual(installs, Array(8).fill('npm ci --no-audit'));
   const audits = [...workflow.matchAll(/^ {6}(?:- | {2})run: (npm audit(?: .*)?)$/gmu)].map(
     (entry) => entry[1],
   );

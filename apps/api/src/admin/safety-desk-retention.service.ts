@@ -10,6 +10,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,6 +22,7 @@ import {
   MESSAGE_RETENTION_RULE,
 } from '../message-retention/message-retention.policy';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
+import { EraserControlService } from '../message-retention/eraser-control.service';
 
 @Injectable()
 export class SafetyDeskRetentionService {
@@ -28,6 +30,7 @@ export class SafetyDeskRetentionService {
     private readonly prisma: PrismaService,
     private readonly store: MessageRetentionStore,
     private readonly capabilities: AdminSettingsBotCapabilityService,
+    @Optional() private readonly eraser?: EraserControlService,
   ) {}
 
   async runtime(input?: unknown): Promise<SafetyDeskRetentionRuntimeResponse> {
@@ -38,6 +41,24 @@ export class SafetyDeskRetentionService {
       .safeParse(input);
     if (!parsed.success) throw new BadRequestException('Некорректный курсор чатов.');
     const after = parsed.data;
+    if (this.eraser?.enabled) {
+      const value = safetyDeskRetentionRuntimeResponseSchema.parse(
+        await this.eraser.request(`/runtime${after ? `?after=${encodeURIComponent(after)}` : ''}`),
+      );
+      const titles = await this.prisma.chat.findMany({
+        where: { id: { in: value.items.map((row) => row.chatId) } },
+        select: { id: true, title: true },
+        take: 50,
+      });
+      const byId = new Map(titles.map((row) => [row.id, row.title]));
+      return {
+        ...value,
+        items: value.items.map((row) => ({
+          ...row,
+          chatTitle: byId.get(row.chatId) ?? row.chatTitle,
+        })),
+      };
+    }
     // FLAG: Fleet diagnostics keyset-page policies, never aggregate the deletion ledger.
     const [policies, quotas] = await Promise.all([
       this.prisma.messageRetentionPolicy.findMany({
@@ -100,6 +121,10 @@ export class SafetyDeskRetentionService {
 
   async preview(chatId: string): Promise<SafetyDeskRetentionPreviewResponse> {
     this.assertChatId(chatId);
+    if (this.eraser && (this.eraser.enabled || (await this.eraser.owns(chatId))))
+      return safetyDeskRetentionPreviewResponseSchema.parse(
+        await this.eraser.request(`/chats/${encodeURIComponent(chatId)}/review`),
+      );
     const policy = await this.prisma.messageRetentionPolicy.findUnique({ where: { chatId } });
     if (!policy) throw new NotFoundException('Настройки очистки не найдены.');
     const [terminal, recovery, quota] = await Promise.all([
@@ -180,6 +205,13 @@ export class SafetyDeskRetentionService {
     const parsed = safetyDeskRetryRetentionRequestSchema.safeParse(body);
     if (!parsed.success)
       throw new BadRequestException('Обновите сведения о сообщении перед повтором.');
+    if (this.eraser && (this.eraser.enabled || (await this.eraser.owns(chatId))))
+      return safetyDeskRetentionPreviewResponseSchema.parse(
+        await this.eraser.request(`/chats/${encodeURIComponent(chatId)}/retry`, 'POST', {
+          ...parsed.data,
+          actorUserId: actorUserId?.trim() || 'safety-desk-owner',
+        }),
+      );
     if (!this.store.allows(chatId, true))
       throw new BadRequestException('Обработка выключена для этого чата.');
     await this.capabilities.assertChatSettingsBotCapabilities(

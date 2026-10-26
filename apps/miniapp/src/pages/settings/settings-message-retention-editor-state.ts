@@ -37,6 +37,31 @@ export function isRetentionWriteUncertain(error: unknown): boolean {
   return !(error instanceof ApiRequestError) || error.status >= 500;
 }
 
+export function isRetentionOperationConfirmed(
+  state: MessageRetentionState,
+  input: UpdateMessageRetention,
+): boolean {
+  return Boolean(
+    input.operationId &&
+    state.lastOperationId === input.operationId &&
+    state.enabled === input.enabled &&
+    state.hours === input.hours,
+  );
+}
+
+export function retentionErrorMessage(error: unknown): string {
+  if (error instanceof ApiRequestError) {
+    if (error.status === 401) return 'Откройте мини-приложение заново через бота.';
+    if (error.status === 403) return 'Настройки доступны администраторам чата.';
+    if (error.code === 'ERASER_CONNECTION_REQUIRED')
+      return 'Добавьте «Ластика» администратором с правами чтения и удаления сообщений.';
+    if (error.code === 'ERASER_PROTECTION_PENDING')
+      return '«Ластик» ещё готовится к очистке. Повторите сохранение чуть позже.';
+    if (error.code === 'BOT_CAPABILITY_REQUIRED') return 'Проверьте права бота в настройках чата.';
+  }
+  return 'Не удалось связаться с ботом. Попробуйте ещё раз чуть позже.';
+}
+
 export function retentionEditorState(
   state: MessageRetentionState | undefined,
   draft: UpdateMessageRetention | null,

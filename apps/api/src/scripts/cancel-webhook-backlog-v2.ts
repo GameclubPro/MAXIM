@@ -9,6 +9,7 @@ import { readMaxModerationRuleNoticeProof } from '../max/max-moderation-rule-not
 import { readRequiredSubscriptionNoticeAuthority } from '../moderation/required-subscription-notice-authority';
 import { readMessageDuplicateNoticeProof } from '../moderation/message-duplicate/message-duplicate-notice-proof';
 import { backlogSource } from '../webhook/webhook-backlog-cancellation';
+import { confirmEraserSourceHolds } from '../message-retention/eraser-source-hold-barrier';
 import { readLegacyActionSourceScopes } from '../webhook/webhook-legacy-hold.service';
 import { LEGACY_RECOVERY_LIVE_QUEUE_NAMES } from './legacy-recovery-live-registry';
 import { backlogJobSnapshot, projectBacklogReceipts } from './cancel-webhook-backlog';
@@ -1421,6 +1422,16 @@ export async function applyTargetedBacklogCancellation(
       1;
     budget(cost, deadline);
     progress({ phase: 'STOPPED_REVALIDATED', count: selectedScope.receipts.size });
+    await confirmEraserSourceHolds(
+      db,
+      [...selectedScope.receipts.values()]
+        .map((row) => backlogSource(row.normalized_payload))
+        .flatMap((source) =>
+          source.chatId && source.messageId
+            ? [{ chatId: source.chatId, messageId: source.messageId }]
+            : [],
+        ),
+    );
     await measureDb(cost, deadline, () =>
       db.$executeRaw(Prisma.sql`INSERT INTO webhook_backlog_cancellations (id,cutoff,source_sha,image_id)
       VALUES (${request.id},${new Date(request.cutoff)},${request.sourceSha},${request.imageId}) ON CONFLICT(id) DO NOTHING`),

@@ -153,6 +153,8 @@ export class MessageRetentionDeleteGuard {
     const [binding] = await this.prisma.$queryRaw<RetentionBindingRow[]>(
       retentionBindingQuery(intentId),
     );
+    // FLAG: Persisted handover survives config rollback; no legacy token may execute it again.
+    if (binding?.eraserOwned) this.skip('Message cleanup belongs to Lastik', 'activation_ended');
     if (
       !binding ||
       binding.intentId !== intentId ||

@@ -16,6 +16,7 @@ test('loads a config whose routine components exclude paused delivery targets', 
     'api-shared',
     'miniapp-major-static',
     'admin-static',
+    'eraser',
   ]);
   for (const component of config.deployComponentIds) {
     assert.doesNotMatch(component, /app2|cdn|object[-_]storage|s3/iu);
@@ -45,6 +46,18 @@ test('maps API runtime changes to the shared API component', () => {
   assert.deepEqual(plan.unknownPaths, []);
   assert.ok(plan.checks.includes('api'));
   assert.equal(plan.migration.required, false);
+});
+
+test('maps Lastik runtime and tests to its independent validation boundary', () => {
+  const runtime = planFor([{ status: 'M', path: 'apps/eraser/src/runtime.ts' }]);
+  assert.deepEqual(runtime.deploy.components, ['eraser']);
+  assert.deepEqual(runtime.checks, ['repo-static', 'eraser']);
+  assert.deepEqual(runtime.unknownPaths, []);
+
+  const tests = planFor([{ status: 'M', path: 'apps/eraser/test/runtime.stores.ts' }]);
+  assert.deepEqual(tests.deploy.components, []);
+  assert.deepEqual(tests.checks, ['repo-static', 'eraser']);
+  assert.deepEqual(tests.unknownPaths, []);
 });
 
 test('deploys and validates the exact migration preparer copied into the API image', () => {
@@ -102,7 +115,12 @@ test('keeps workspace tests out of production deploy scope', () => {
 test('maps shared contracts to every active production component', () => {
   const plan = planFor([{ status: 'M', path: 'packages/contracts/src/publication.ts' }]);
 
-  assert.deepEqual(plan.deploy.components, ['api-shared', 'miniapp-major-static', 'admin-static']);
+  assert.deepEqual(plan.deploy.components, [
+    'api-shared',
+    'miniapp-major-static',
+    'admin-static',
+    'eraser',
+  ]);
   assert.ok(plan.checks.includes('contracts'));
   assert.ok(plan.checks.includes('api'));
   assert.ok(plan.checks.includes('miniapp-production-build'));
@@ -226,7 +244,12 @@ test('maps nginx files to explicit manual operations without container deploy ta
 test('maps the root lockfile fail-closed to all checks and active components', () => {
   const plan = planFor([{ status: 'M', path: 'package-lock.json' }]);
 
-  assert.deepEqual(plan.deploy.components, ['api-shared', 'miniapp-major-static', 'admin-static']);
+  assert.deepEqual(plan.deploy.components, [
+    'api-shared',
+    'miniapp-major-static',
+    'admin-static',
+    'eraser',
+  ]);
   assert.ok(plan.checks.includes('full'));
   assert.ok(plan.checks.includes('prisma'));
 });
@@ -291,7 +314,12 @@ test('unknown paths fail closed with full validation, all components, and a warn
 
   assert.deepEqual(plan.unknownPaths, ['new-runtime/entrypoint.ts']);
   assert.deepEqual(plan.checks, ['full']);
-  assert.deepEqual(plan.deploy.components, ['api-shared', 'miniapp-major-static', 'admin-static']);
+  assert.deepEqual(plan.deploy.components, [
+    'api-shared',
+    'miniapp-major-static',
+    'admin-static',
+    'eraser',
+  ]);
   assert.equal(plan.deploy.reviewRequired, true);
   assert.match(plan.warnings[0], /Unclassified paths/u);
 });

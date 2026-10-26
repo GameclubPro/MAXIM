@@ -2,8 +2,6 @@
   /* Compact autopost workspace. */
 
   body.settings-drilldown-open .toast-stack {
-    top: calc(var(--app-safe-top, 0px) + 10px);
-    bottom: auto;
     width: min(360px, calc(100vw - 24px));
     gap: 6px;
   }
@@ -43,8 +41,6 @@
   }
 
   body.settings-drilldown-open .toast__close {
-    width: 28px;
-    height: 28px;
     border-radius: 9px;
   }
 

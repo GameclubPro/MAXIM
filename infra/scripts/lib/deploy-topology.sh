@@ -2444,3 +2444,16 @@ maxim_topology_require_commercial_ai_delete_guard() {
     fi
   done
 }
+
+# FLAG: Installed Lastik ownership survives a disabled flag; rollback must retain its final fence.
+maxim_topology_require_eraser_bridge() {
+  local source_sha="$1"
+  local marker=/var/lib/maxim-deploy/eraser-reader-version
+  [[ -e "$marker" || -L "$marker" || -s /var/lib/maxim-secrets/eraser.env ]] || return 0
+  if [[ -e "$marker" || -L "$marker" ]]; then
+    if [[ ! -f "$marker" || -L "$marker" || "$(stat -c '%s' "$marker")" != 2 || "$(cat "$marker")" != 1 ]]; then
+      echo 'Installed Lastik ownership reader floor is unknown.' >&2; return 1
+    fi
+  fi
+  node infra/scripts/assert-eraser-source.mjs "$source_sha"
+}

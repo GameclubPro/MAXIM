@@ -5,10 +5,20 @@ import {
 } from '../src/message-retention';
 
 describe('message retention contracts', () => {
-  it.each([24, 48])('accepts the %i-hour mode with explicit revision', (hours) => {
+  it.each([24, 48, 168])('accepts the %i-hour mode with explicit revision', (hours) => {
     expect(
       updateMessageRetentionSchema.parse({ enabled: true, hours, expectedRevision: 0 }).hours,
     ).toBe(hours);
+  });
+  it('accepts an operation identity and rejects malformed identities', () => {
+    const request = { enabled: true, hours: 168, expectedRevision: 0 };
+    const operationId = '1eb28182-cbfd-49df-9489-181f514241e3';
+    expect(updateMessageRetentionSchema.parse({ ...request, operationId }).operationId).toBe(
+      operationId,
+    );
+    expect(
+      updateMessageRetentionSchema.safeParse({ ...request, operationId: 'retry' }).success,
+    ).toBe(false);
   });
   it.each([
     { enabled: true, hours: 12, expectedRevision: 0 },

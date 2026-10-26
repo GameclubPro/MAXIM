@@ -56,6 +56,7 @@ export class MessageRetentionStore {
     return this.config.get<string>('MESSAGE_RETENTION_MODE', 'off');
   }
   allows(chatId: string, mutation = false): boolean {
+    if (this.config.get<boolean>('ERASER_ENABLED', false)) return false;
     return retentionModeAllows(
       this.mode,
       this.config.get('MESSAGE_RETENTION_CANARY_CHAT_IDS'),
@@ -65,6 +66,7 @@ export class MessageRetentionStore {
   }
 
   schedulingFilter(): Prisma.MessageRetentionPolicyWhereInput {
+    if (this.config.get<boolean>('ERASER_ENABLED', false)) return { chatId: { in: [] } };
     if (this.mode === 'canary') {
       const ids = this.config
         .get<string>('MESSAGE_RETENTION_CANARY_CHAT_IDS', '')

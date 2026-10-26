@@ -1,5 +1,9 @@
 # Message Retention Rollout
 
+This runbook describes the retained legacy worker. The independent «Ластик» service, historical
+cleanup, 168-hour mode and permanent executor handoff follow [the Eraser rollout](eraser-rollout.md).
+A transferred chat must never resume this legacy executor, including after disabling Eraser.
+
 ## Boundaries
 
 Message retention belongs to Major group chats only. The independent policy API is
