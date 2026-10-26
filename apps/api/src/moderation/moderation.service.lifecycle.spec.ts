@@ -45,6 +45,10 @@ import { WebhookParser } from '../webhook/webhook.parser';
 import { hasPersistedTerminalDuplicateSanction } from './moderation-message-action-claim';
 import { duplicateExplanationIdempotencyKey } from './duplicate-moderation.actions';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import { ConfigService } from '@nestjs/config';
+import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import type { MaxBotLinkService } from '../max/max-bot-link.service';
+import { MAX_ERASER_BOT_CONTACT_ID, MAX_ERASER_BOT_ID } from '../max/max-service-bot-identities';
 
 function installStateDeleteExecutorFixture(service: ModerationService) {
   const dependencies = service as unknown as {
@@ -4071,6 +4075,83 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { userId: MAX_ERASER_BOT_CONTACT_ID, protected: true },
+    { userId: MAX_ERASER_BOT_ID, protected: true },
+    { userId: '281772329', protected: false },
+  ])(
+    'applies real Lastik identity immunity to bot joins: $userId protected=$protected',
+    async ({ userId, protected: isProtected }) => {
+      const settings = createSettings({ removeBotsFromGroupEnabled: true });
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings,
+            domains: [],
+            admins: [],
+          }),
+        },
+        violation: { create: jest.fn() },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: { findUnique: jest.fn(), update: jest.fn() },
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
+      const registry = new MaxBotRegistryService(
+        new ConfigService({
+          APP_BASE_URL: 'https://major-maksimov.ru',
+          MAX_BOT_ID: '777000_bot',
+          MAX_BOT_TOKEN: 'test-token',
+          MAX_WEBHOOK_SECRET_PATH: 'secret-path',
+          MAX_WEBHOOK_HEADER_SECRET: 'header-secret',
+        }),
+      );
+      const botIdentity = {
+        isKnownBotUserId: registry.isKnownBotUserId.bind(registry),
+        resolveBotIdFromUserId: registry.resolveBotIdFromUserId.bind(registry),
+      } satisfies Pick<MaxBotLinkService, 'isKnownBotUserId' | 'resolveBotIdFromUserId'>;
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+      Object.assign(service, { maxBotLinkService: botIdentity });
+      const update = createServiceBotJoinedUpdate();
+      update.raw = {
+        message: {
+          sender: { id: 'service-1', type: 'service', is_service: true },
+          body: { new_members: [{ user_id: userId, name: 'Ластик', is_bot: true }] },
+        },
+      };
+
+      await service.handleUpdate(update);
+
+      if (isProtected) {
+        expect(maxClient.kickMember).not.toHaveBeenCalled();
+        expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      } else {
+        expectImmediateKickMember(maxClient.kickMember, 'chat-1', userId);
+        expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({ userId, ruleCode: 'BOT_ACCOUNT_KICK' }),
+        });
+      }
+      expect(maxClient.banMember).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    },
+  );
 
   it('kicks bots immediately from service join events when toggle is enabled', async () => {
     const prisma = {

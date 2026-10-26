@@ -68,6 +68,8 @@ import type { PublisherStartJob } from '../publisher/publisher-start.queue';
 import type { Job } from 'bullmq';
 import { MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES } from '../moderation/moderation.service.support';
 import { ConfigService } from '@nestjs/config';
+import { MaxBotRegistryService } from './max-bot-registry.service';
+import { MAX_ERASER_BOT_CONTACT_ID, MAX_ERASER_BOT_ID } from './max-service-bot-identities';
 import type { HttpService } from '@nestjs/axios';
 import { AxiosHeaders } from 'axios';
 import type { Logger } from '@nestjs/common';
@@ -2869,6 +2871,57 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     expect(httpService.request).not.toHaveBeenCalled();
   });
+
+  it.each([MAX_ERASER_BOT_CONTACT_ID, MAX_ERASER_BOT_ID])(
+    'protects Lastik %s from direct and previously queued kick/ban using the real registry',
+    async (userId) => {
+      const httpService = {
+        request: jest.fn(() => of({ status: 200, data: { success: true } })),
+      };
+      const service = createService(httpService);
+      const registry = new MaxBotRegistryService(
+        new ConfigService({
+          APP_BASE_URL: 'https://major-maksimov.ru',
+          MAX_BOT_ID: '777000_bot',
+          MAX_BOT_TOKEN: 'test-token',
+          MAX_WEBHOOK_SECRET_PATH: 'secret-path',
+          MAX_WEBHOOK_HEADER_SECRET: 'header-secret',
+        }),
+      );
+      Object.assign(service, { botRegistry: registry });
+      try {
+        await expect(service.kickMember('chat-1', userId, { immediate: true })).rejects.toThrow(
+          'Refusing to kick configured MAX bot user',
+        );
+        await expect(service.banMember('chat-1', userId, { immediate: true })).rejects.toThrow(
+          'Refusing to ban configured MAX bot user',
+        );
+        for (const actionType of ['KICK_MEMBER', 'BAN_MEMBER'] as const) {
+          await service.executeActionJob({
+            actionType,
+            chatId: 'chat-1',
+            userId,
+            attempt: 1,
+            idempotencyKey: `preexisting-${actionType}-${userId}`,
+            createdAt: new Date().toISOString(),
+          });
+        }
+        expect(httpService.request).not.toHaveBeenCalled();
+
+        await service.kickMember('chat-1', '281772329', { immediate: true });
+        expect(httpService.request).toHaveBeenCalledTimes(1);
+        expect(httpService.request).toHaveBeenCalledWith(
+          expect.objectContaining({
+            method: 'delete',
+            url: 'https://platform-api2.max.ru/chats/chat-1/members',
+            params: { user_id: '281772329' },
+          }),
+        );
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
 
   it('refuses stale queued actions with an explicit non-executable bot id', async () => {
     const httpService = { request: jest.fn() };

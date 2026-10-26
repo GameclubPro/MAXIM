@@ -289,7 +289,10 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
         expect(response).toHaveBeenCalledTimes(1);
       } finally {
         releaseResponse();
-        await Promise.allSettled([detection, ...(response.mock.calls.length ? [responseDone] : [])]);
+        await Promise.allSettled([
+          detection,
+          ...(response.mock.calls.length ? [responseDone] : []),
+        ]);
         response.mockRestore();
       }
     },
@@ -374,10 +377,35 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     try {
       await expect(observe('late-command', now)).resolves.toEqual([]);
       expect(command).toHaveBeenCalledTimes(1);
+      const params = command.mock.calls[0]![0];
+      let clockTimeout: ReturnType<typeof setTimeout> | undefined;
+      const clockDeadline = new Promise<never>((_, reject) => {
+        clockTimeout = setTimeout(
+          () =>
+            reject(new Error('Redis TIME did not reach the captured cooldown deadline within 2s')),
+          2_000,
+        );
+      });
+      try {
+        // FLAG: Local timer completion does not prove Redis's absolute clock passed the deadline.
+        // Release the unchanged command only after observing expiry on the clock that guards SET.
+        for (;;) {
+          const [seconds, microseconds] = await Promise.race([inspector.time(), clockDeadline]);
+          const redisNowMs = Number(seconds) * 1_000 + Math.floor(Number(microseconds) / 1_000);
+          if (redisNowMs >= params.deadlineAtMs) break;
+          await Promise.race([
+            new Promise<void>((resolve) =>
+              setTimeout(resolve, Math.min(10, Math.max(1, params.deadlineAtMs - redisNowMs))),
+            ),
+            clockDeadline,
+          ]);
+        }
+      } finally {
+        clearTimeout(clockTimeout);
+      }
       releaseCommand();
       await commandDone;
       expect(nativeResult).toBe('deadline_exceeded');
-      const params = command.mock.calls[0]![0];
       expect(await inspector.exists(params.key, params.memberKey)).toBe(0);
     } finally {
       releaseCommand();
