@@ -159,6 +159,40 @@ export async function supportVerifyBundle(bundle, manifestSha256) {
   }
 }
 
+function installationRecord(installed, state, requireCurrentModel = true) {
+  if (
+    installed?.version !== 1 ||
+    typeof installed.bundle !== 'string' ||
+    dirname(installed.bundle) !== join(state, 'bundles') ||
+    !/^[a-f0-9]{64}$/u.test(installed.bundle.slice(installed.bundle.lastIndexOf('/') + 1)) ||
+    !/^[a-f0-9]{64}$/u.test(installed.manifestSha256 ?? '') ||
+    !/^[a-f0-9]{64}$/u.test(installed.modelSha256 ?? '') ||
+    installed.node !== process.execPath ||
+    (requireCurrentModel && installed.modelSha256 !== SUPPORT_MODEL.sha256)
+  )
+    throw new Error('support_installation_identity');
+  return installed;
+}
+
+export async function supportPreviousModelArgs(installed, root, keyFile) {
+  installationRecord(installed, join(root, 'service'), false);
+  // FLAG: Only a verified prior bundle may describe its model during upgrade or rollback.
+  // Ordinary runtime operations still require the current profile's exact model identity.
+  await supportVerifyBundle(installed.bundle, installed.manifestSha256);
+  const profile = await import(
+    pathToFileURL(join(installed.bundle, 'support-llm-profile.mjs')).href
+  );
+  if (
+    profile.SUPPORT_MODEL?.sha256 !== installed.modelSha256 ||
+    typeof profile.supportModelArgs !== 'function'
+  )
+    throw new Error('support_previous_model_profile');
+  const args = profile.supportModelArgs(root, keyFile);
+  if (!Array.isArray(args) || !args.length || args.some((arg) => typeof arg !== 'string'))
+    throw new Error('support_previous_model_profile');
+  return [join(installed.bundle, 'runtime/llama-b11804/llama-server'), ...args];
+}
+
 async function modelJson(path, key, signal, fetchImpl) {
   const response = await fetchImpl(new URL(path, SUPPORT_MODEL.endpoint), {
     headers: { Authorization: `Bearer ${key}` },
@@ -260,21 +294,11 @@ export function createSupportController({
   const enabledPath = (chat) => join(state, chat ? 'chat-enabled' : 'enabled');
   const binaryPath = (bundle) => join(bundle, 'runtime/llama-b11804/llama-server');
   const modelArgs = (bundle) => [binaryPath(bundle), ...supportModelArgs(root, keyPath)];
-  function installation() {
+  function installation(requireCurrentModel = true) {
     const path = join(state, 'installation.json');
     supportPrivateFile(path);
     const installed = JSON.parse(readFileSync(path, 'utf8'));
-    if (
-      installed.version !== 1 ||
-      typeof installed.bundle !== 'string' ||
-      dirname(installed.bundle) !== join(state, 'bundles') ||
-      !/^[a-f0-9]{64}$/u.test(installed.bundle.slice(installed.bundle.lastIndexOf('/') + 1)) ||
-      !/^[a-f0-9]{64}$/u.test(installed.manifestSha256 ?? '') ||
-      installed.node !== process.execPath ||
-      installed.modelSha256 !== SUPPORT_MODEL.sha256
-    )
-      throw new Error('support_installation_identity');
-    return installed;
+    return installationRecord(installed, state, requireCurrentModel);
   }
   function readStatus(chat = false) {
     try {
@@ -296,6 +320,18 @@ export function createSupportController({
       { pid: record?.modelPid, startTicks: record?.modelStartTicks },
       modelArgs(installed.bundle),
     );
+  function assertPreviousStopped(installed, previousModelArgs) {
+    const previousStatus = readStatus();
+    if (
+      running(installed) ||
+      running(installed, true) ||
+      supportMatchesProcess(
+        { pid: previousStatus?.modelPid, startTicks: previousStatus?.modelStartTicks },
+        previousModelArgs,
+      )
+    )
+      throw new Error('support_stop_before_install');
+  }
   function key() {
     supportPrivateFile(keyPath);
     const value = readFileSync(keyPath, 'utf8').trim();
@@ -315,10 +351,12 @@ export function createSupportController({
   async function install() {
     privateDirectory(root);
     privateDirectory(state);
+    let previous = null,
+      previousModelArgs;
     if (existsSync(join(state, 'installation.json'))) {
-      const previous = installation();
-      if (running(previous) || running(previous, true))
-        throw new Error('support_stop_before_install');
+      previous = installation(false);
+      previousModelArgs = await supportPreviousModelArgs(previous, root, keyPath);
+      assertPreviousStopped(previous, previousModelArgs);
     }
     await artifactChecks();
     const names = [
@@ -375,11 +413,7 @@ export function createSupportController({
         if (existsSync(staging)) rmSync(staging, { recursive: true });
       }
     }
-    let previousManifest;
-    if (existsSync(join(state, 'installation.json'))) {
-      const previous = installation();
-      if (previous.bundle === bundle) previousManifest = previous.manifestSha256;
-    }
+    const previousManifest = previous?.bundle === bundle ? previous.manifestSha256 : undefined;
     await supportVerifyBundle(bundle, previousManifest);
     if (!existsSync(keyPath))
       writeFileSync(keyPath, randomBytes(32).toString('hex') + '\n', { mode: 0o600, flag: 'wx' });
@@ -392,6 +426,12 @@ export function createSupportController({
         !readFileSync(launcher, 'utf8').includes('# MAXIM CPU support launcher'))
     )
       throw new Error('support_foreign_launcher');
+    if (previous) {
+      if (JSON.stringify(installation(false)) !== JSON.stringify(previous))
+        throw new Error('support_installation_changed');
+      assertPreviousStopped(previous, previousModelArgs);
+    } else if (existsSync(join(state, 'installation.json')))
+      throw new Error('support_installation_changed');
     atomic(join(state, 'installation.json'), {
       version: 1,
       bundle,

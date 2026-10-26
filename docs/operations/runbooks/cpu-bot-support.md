@@ -1,6 +1,6 @@
 # CPU bot support pilot
 
-The local PC runs Qwen3.5-35B-A3B Q4_K_M through an independent llama.cpp b11804
+The local PC runs Qwen3.8-27B UD-Q5_K_M through an independent llama.cpp b11804
 installation. This is retrieval from reviewed customer instructions, not fine-tuning.
 The existing GPU commercial classifier and server moderation remain separate.
 
@@ -15,6 +15,10 @@ The existing GPU commercial classifier and server moderation remain separate.
   slot, 4096 context tokens and at most 384 output tokens. Prompt-cache RAM is capped at
   512 MiB, with checkpoint spacing of 512 tokens for the hybrid model. Thinking and context
   shifting are disabled. Only `127.0.0.1:18085` is exposed, with a private random API key.
+- The dense 27B model has a different latency profile from the previous 35B-A3B MoE.
+  Check actual tokenization, completed structured answers and the existing 120-second request
+  deadline before enabling the pilot. Keep thinking explicitly disabled at both server
+  and request boundaries; the embedded Qwen3.8 template otherwise enables thinking by default.
 - The sole recipient is the designated test **CHAT `-78271094414679`**. The bridge
   selects only its existing fixed, primary or legacy assigned moderator, verifies the
   actual remote entity type and fresh exact bot access, and refuses assignment drift.
@@ -157,3 +161,11 @@ start the model again. Confirm the new bundle/model identity, run the read-only 
 start the chat worker. The existing weights are reused; this refreshes retrieval knowledge
 and answer policy. Never change a running immutable bundle in place. Reconnects start a
 fresh message baseline and participant history, while durable source fences remain intact.
+
+For a model migration, retain the previous verified weights and bundle. Stop the old chat worker
+and model using their installed launcher before installing the new profile. The installer verifies
+the previous immutable bundle and its own model identity, and refuses a live previous supervisor,
+worker or exactly owned model child. Ordinary runtime commands still require the current model
+identity. Keep the PC profile and the injected host bridge's pinned model SHA synchronized through
+the usual exact-source CI and guarded tooling sync. Knowledge, routing, formatting and canonical
+bot links are separate from model weights and travel in the new bundle; this is not weight training.

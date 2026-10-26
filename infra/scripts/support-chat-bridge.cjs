@@ -5,7 +5,7 @@ const CHAT_ID = '-78271094414679';
 const PREFIX = `support-cpu-pilot:v1:${CHAT_ID}`;
 const SOURCE_AGE_MS = 180_000;
 const RETENTION_MS = 7 * 86400_000;
-const MODEL_SHA = '3b46d1066bc91cc2d613e3bc22ce691dd77e6f0d33c9060690d24ce6de494375';
+const MODEL_SHA = '2de73110cb254cbf09b54b717578dadff12ef1194e7271527e68202f39ba4bfd';
 const DIGEST = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ANSWER_FOOTER = '✦ Ответ подготовлен ИИ-помощником «Майор Максимов»';
 
@@ -544,6 +544,7 @@ async function runBridge(runtime, { preview = false } = {}) {
 
 module.exports = {
   CHAT_ID,
+  MODEL_SHA,
   SOURCE_AGE_MS,
   sourceMessage,
   PilotFence,

@@ -10,6 +10,7 @@ import Redis from 'ioredis';
 import bridge from './support-chat-bridge.cjs';
 import { verifySupportContainer } from './support-chat-remote.mjs';
 import { answerSupport, knowledge, SUPPORT_ANSWER_FOOTER } from './support-llm-client.mjs';
+import { SUPPORT_MODEL } from './support-llm-profile.mjs';
 const {
   CHAT_ID,
   sourceMessage,
@@ -24,6 +25,10 @@ const row = (text = 'Как подключить бота?') => ({
   sender: { user_id: 42, is_bot: false },
   timestamp: Date.now(),
   body: { mid: 'question-1', text },
+});
+
+test('PC profile and injected host bridge require the same pinned support model', () => {
+  assert.equal(bridge.MODEL_SHA, SUPPORT_MODEL.sha256);
 });
 
 test('all eight public bot names become exact catalog links without linking the AI footer', () => {
