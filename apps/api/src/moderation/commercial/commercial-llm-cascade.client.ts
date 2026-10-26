@@ -20,6 +20,8 @@ export class CommercialLlmCascadeClient implements CommercialLlmClassifier {
     private readonly secondary: CommercialLlmClassifier,
     private readonly canStartSecondary: () => Promise<boolean>,
     private readonly auditNegative: () => boolean = () => randomInt(10) === 0,
+    private readonly primaryFinished: () => Promise<void> = async () => undefined,
+    private readonly auditSecondary: CommercialLlmClassifier = secondary,
   ) {}
 
   async classify(
@@ -34,6 +36,9 @@ export class CommercialLlmCascadeClient implements CommercialLlmClassifier {
       first = await this.primary.classify(excerpt, signal);
     } catch {
       first = { outcome: 'FAILED' };
+    } finally {
+      // FLAG: Release only the primary resource; the source lease remains held through 9B.
+      await this.primaryFinished();
     }
     if (signal?.aborted) throw new CommercialLlmError('ABORTED');
     const primary = first.outcome === 'COMPLETE' ? first.result : null;
@@ -64,7 +69,11 @@ export class CommercialLlmCascadeClient implements CommercialLlmClassifier {
       signal?.aborted
     )
       throw new CommercialLlmError('ABORTED');
-    const result = await this.secondary.classify(excerpt, signal, mayContinue);
+    const result = await (audit ? this.auditSecondary : this.secondary).classify(
+      excerpt,
+      signal,
+      mayContinue,
+    );
     return {
       ...result,
       durationMs: Math.round(performance.now() - startedAt),
