@@ -59,6 +59,20 @@ metadata и raw errors отсутствуют; MD5 intent ID позволяет 
 а не стабильную пагинацию. Наличие retry clock не доказывает execution eligibility:
 каталог намеренно не повторяет runtime policy и не разрешает replay.
 
+Schema v4 `delete_retry_heads` сохраняет поля v3 и добавляет фиксированные категории
+`last_failure_family` для точных сохранённых кодов транспорта, локальной квоты MAX,
+circuit breaker, удалённого отказа и PostgreSQL/Prisma. Текст ошибки и префикс кода
+не используются для этих новых категорий; неизвестный код остаётся `other`.
+`database_statement_canceled` по коду `57014` не отличает timeout от другой отмены.
+`database_raw_query_error` по внешнему коду Prisma `P2010` не устанавливает
+вложенный SQLSTATE или причину: raw text и `meta.code` не разбираются.
+Сохранённый timeout не устанавливает, какой HTTP-запрос выполнялся и произошёл ли
+DELETE; для этого нужны независимые invocation-owned transport diagnostics и
+dispatch/receipt markers. Старые поля, пределы выборки, индексы и права не меняются.
+При отсутствующем обязательном индексе admission завершается ненулевым кодом
+до отчёта. Пустой вывод не считается успешной выборкой: в PostgreSQL 16 команда
+`\quit 3` игнорирует аргумент exit status, поэтому отказ использует `ON_ERROR_STOP`.
+
 Schema v3 отдельно показывает `remote_success_pair_complete`: сохранены непустой
 бот и не будущий timestamp acknowledgement. Один `remote_success_marker` означает
 только наличие timestamp. Даже полная пара не заменяет точную проверку отсутствия

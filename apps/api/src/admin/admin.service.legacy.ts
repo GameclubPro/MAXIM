@@ -37,6 +37,7 @@ import { attemptManualMemberUnban } from './manual-member-unban-attempt';
 import {
   assertChannelMemberBanScope,
   describeManualBanResult,
+  prepareManualBanFanoutTarget,
   resolveManualMemberBanMode,
 } from './manual-member-ban-policy';
 import {
@@ -12379,9 +12380,23 @@ export class AdminService implements OnModuleDestroy {
         const transition = await this.moderationSanctionStateLock.runExclusive(
           { chatId: chat.id, userId: targetUserId },
           async (leaseGuard) => {
-            const targetState = await this.resolveManualFanoutTargetState(chat.id, targetUserId, {
-              trafficClass: 'background',
-              ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+            const targetState = await prepareManualBanFanoutTarget({
+              chatId: chat.id,
+              targetUserId,
+              executionMode,
+              leaseGuard,
+              resolveTargetState: () =>
+                this.resolveConfirmedManualFanoutTargetState(chat.id, targetUserId, {
+                  trafficClass: 'background',
+                  bypassCache: true,
+                  ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+                }),
+              clearTerminalBanState: (completedBefore) =>
+                this.clearTerminalBanStateAfterConfirmedUnban(
+                  chat.id,
+                  targetUserId,
+                  completedBefore,
+                ),
             });
             if (targetState !== 'present') {
               await leaseGuard.assertOwned();
@@ -12990,11 +13005,16 @@ export class AdminService implements OnModuleDestroy {
   private async clearTerminalBanStateAfterConfirmedUnban(
     chatId: string,
     targetUserId: string,
+    completedBefore?: Date,
   ): Promise<void> {
     const clearTerminalBanState = (this.maxClient as Partial<MaxClientService>)
       .clearTerminalBanStateAfterConfirmedUnban;
     if (typeof clearTerminalBanState === 'function') {
-      await clearTerminalBanState.call(this.maxClient, chatId, targetUserId);
+      if (completedBefore) {
+        await clearTerminalBanState.call(this.maxClient, chatId, targetUserId, completedBefore);
+      } else {
+        await clearTerminalBanState.call(this.maxClient, chatId, targetUserId);
+      }
     }
   }
 

@@ -603,18 +603,20 @@ describe('MaxActionLedgerService', () => {
     ).resolves.toBe(false);
   });
 
-  it('clears only terminal ban state after a confirmed unban', async () => {
+  it('scopes proved nonambiguous terminal ban cleanup after a confirmed unban', async () => {
     const { service, prisma } = createService();
 
     await service.clearTerminalBanStateAfterUnban(' chat-1 ', ' user-1 ');
 
     expect(prisma.maxActionLedgerEntry.deleteMany).toHaveBeenCalledWith({
-      where: {
+      where: expect.objectContaining({
         chatId: 'chat-1',
         userId: 'user-1',
         actionType: 'BAN_MEMBER',
         terminal: true,
-      },
+        ambiguous: false,
+        OR: expect.any(Array),
+      }),
     });
   });
 

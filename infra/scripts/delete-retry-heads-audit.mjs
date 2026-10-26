@@ -26,7 +26,9 @@ export function buildDeleteRetryHeadsIndexSql() {
 \\if :delete_retry_indexes_ready
 \\else
 \\echo MAXIM_DELETE_RETRY_INDEX_UNAVAILABLE
-\\quit 3
+-- FLAG: PostgreSQL 16 psql ignores a supplied exit code on \\quit. Refuse with
+-- a SQL error under ON_ERROR_STOP so an empty report cannot look successful.
+SELECT 1 / 0;
 \\endif
 `;
 }
@@ -76,6 +78,29 @@ export function buildDeleteRetryHeadsAuditSql(explain = false) {
         WHEN row.last_error_code = 'delete_pre_dispatch_guard_rejected'
           AND row.last_error = 'MAX direct message lookup returned a response without the requested id'
           THEN 'predispatch_exact_source_missing_id'
+        -- FLAG: Classify only exact saved codes, never arbitrary error text or prefixes.
+        -- These describe the saved failure, not its HTTP stage, current rights or replay safety.
+        WHEN row.last_error_code IN ('ECONNABORTED', 'ETIMEDOUT') THEN 'transport_timeout'
+        WHEN row.last_error_code = 'ECONNRESET' THEN 'transport_connection_reset'
+        WHEN row.last_error_code = 'ECONNREFUSED' THEN 'transport_connection_refused'
+        WHEN row.last_error_code = 'EPIPE' THEN 'transport_broken_pipe'
+        WHEN row.last_error_code IN ('ENOTFOUND', 'EAI_AGAIN') THEN 'transport_dns_failure'
+        WHEN row.last_error_code = 'MAX_API_INTERNAL_RATE_LIMIT' THEN 'max_internal_rate_limit'
+        WHEN row.last_error_code IN ('MAX_API_CIRCUIT_OPEN', 'max_circuit_open') THEN 'max_circuit_open'
+        WHEN row.last_error_code IN ('access.denied', 'chat.denied', 'permission.denied') THEN 'max_access_rejected'
+        WHEN row.last_error_code = 'chat.not.found' THEN 'max_chat_not_found'
+        WHEN row.last_error_code IN ('message.not.found', 'message_not_found', 'message.not_found') THEN 'max_message_not_found'
+        WHEN row.last_error_code IN ('P1001', 'P1017', '08006') THEN 'database_connection_unavailable'
+        WHEN row.last_error_code = 'P1002' THEN 'database_connection_timeout'
+        WHEN row.last_error_code = 'P1008' THEN 'database_operation_timeout'
+        WHEN row.last_error_code = 'P2010' THEN 'database_raw_query_error'
+        WHEN row.last_error_code = 'P2024' THEN 'database_pool_timeout'
+        WHEN row.last_error_code = 'P2028' THEN 'database_transaction_error'
+        WHEN row.last_error_code = 'P2034' THEN 'database_write_conflict'
+        WHEN row.last_error_code = '40001' THEN 'database_serialization_failure'
+        WHEN row.last_error_code = '40P01' THEN 'database_deadlock'
+        WHEN row.last_error_code = '55P03' THEN 'database_lock_unavailable'
+        WHEN row.last_error_code = '57014' THEN 'database_statement_canceled'
         WHEN row.last_error_code IN (
           'delete_pre_dispatch_guard_rejected', 'max_action_executor_proof_rejected',
           'route_lookup_failed', 'unverified_message_not_found', 'delete_candidates_exhausted',
@@ -103,7 +128,7 @@ export function buildDeleteRetryHeadsAuditSql(explain = false) {
       delete_dispatch_started_at, remote_delete_succeeded_at, remote_delete_succeeded_bot_id,
       lease_expires_at, last_status_code, last_error_code, last_error
       FROM moderation_delete_intents WHERE id = samples.id OFFSET 0) row
-  ) SELECT json_build_object('schema_version',3,'audit','delete_retry_heads',
+  ) SELECT json_build_object('schema_version',4,'audit','delete_retry_heads',
     'observed_at',statement_timestamp(),'policy_checked',false,'remote_effect_proven',false,
     'failure_classification_authority','saved_metadata_only',
     'per_group_cap',32,'sample_truncated',EXISTS (SELECT 1 FROM heads GROUP BY sample_kind, status HAVING count(*) > 32),
