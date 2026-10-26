@@ -281,7 +281,10 @@ Detailed constraints selected by the routing table in [infrastructure agent note
   interval within that minute without changing row or session budgets. Review the plain
   `--explain` first, then collect all twelve slices sequentially before claiming minute coverage.
   Source text/author hashes are correlation evidence only; rejected or missing source admission
-  remains unknown. Exact removal-source proof and the LINK delete reason are separate from
+  remains unknown. Schema v5 preserves the 64 KiB uncompressed source cap and admits only
+  valid PostgreSQL 16 pglz/LZ4 storage within the existing source-envelope ratio bounds
+  (2880/1028 physical bytes, at most 256 KiB decoded); other compressed sources stay unknown.
+  Exact removal-source proof and the LINK delete reason are separate from
   receipt processing and the current intent status. No output authorizes replay or manual deletion.
 - `postgres-audit webhook-quarantine <UTC-minute> [--explain]` follows at most 64 currently quarantined receipts in one closed minute to at most four exact journal blockers each, with sentinels for both caps. Provision the eight exact journal metadata columns first. It reports saved blocker categories and times without identifiers or raw errors; no result authorizes replay or proves an external effect. See `docs/operations/runbooks/webhook-dependency-quarantine.md`.
 - `postgres-audit webhook-quarantine-proof <UTC-minute> [--explain]` adds a separate 16-blocker

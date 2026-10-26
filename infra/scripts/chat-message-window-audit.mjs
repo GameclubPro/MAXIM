@@ -1,5 +1,12 @@
 import { pathToFileURL } from 'node:url';
 import { buildWebhookCohortIndexSql } from './webhook-cohort-audit.mjs';
+import {
+  SOURCE_ENVELOPE_MAX_BYTES,
+  SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES,
+  SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES,
+  SOURCE_ENVELOPE_COMPRESSION_POLICY,
+  SOURCE_ENVELOPE_COMPRESSION_ASSUMPTION,
+} from './webhook-source-envelope-audit.mjs';
 
 export function validateChatMessageWindow(chatId, from, slice = null) {
   if (
@@ -38,13 +45,30 @@ export function parseChatMessageWindowAuditArgs(args) {
   return { chatId, from, explain, slice };
 }
 
-// FLAG: Hashing must not detoast a new unbounded source. Inspect only original,
-// uncompressed JSON datums up to 64 KiB; rejected storage remains explicit unknown.
+const HASH_SOURCE_UNCOMPRESSED_MAX_BYTES = 65536;
+// FLAG: Admission inspects the original table datum before new JSON/hash operations.
+// Preserve the 64 KiB uncompressed boundary. Compressed PG16 storage uses the reviewed
+// source-envelope sufficient bounds: U<=4+91*S (pglz), U<=4+255*S (LZ4), at most
+// 262144 decoded bytes under valid PostgreSQL storage. Unknown versions/codecs refuse.
+const hashSourceBounded = (column) => `CASE
+  WHEN ${column} IS NULL THEN false
+  WHEN pg_column_compression(${column}) IS NULL
+    THEN pg_column_size(${column}) <= ${HASH_SOURCE_UNCOMPRESSED_MAX_BYTES}
+  WHEN current_setting('server_version_num')::integer / 10000 <> 16 THEN false
+  WHEN pg_column_compression(${column}) = 'pglz'
+    THEN pg_column_size(${column}) <= ${SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES}
+  WHEN pg_column_compression(${column}) = 'lz4'
+    THEN pg_column_size(${column}) <= ${SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES}
+  ELSE false END`;
 const hashSourceAdmission = (column) => `CASE WHEN ${column} IS NULL THEN 'absent'
+  WHEN ${hashSourceBounded(column)} THEN
+    CASE WHEN jsonb_typeof(${column}) = 'object' THEN 'bounded_object' ELSE 'non_object' END
   WHEN pg_column_compression(${column}) IS NOT NULL THEN 'compressed_not_inspected'
-  WHEN pg_column_size(${column}) > 65536 THEN 'oversized_not_inspected'
-  WHEN jsonb_typeof(${column}) <> 'object' THEN 'non_object'
-  ELSE 'bounded_object' END`;
+  ELSE 'oversized_not_inspected' END`;
+const hashSourceStorage = (column) => `CASE WHEN ${column} IS NULL THEN 'absent'
+  WHEN pg_column_compression(${column}) IS NULL THEN 'uncompressed'
+  WHEN pg_column_compression(${column}) IN ('pglz','lz4')
+    THEN pg_column_compression(${column}) ELSE 'other' END`;
 
 export function buildChatMessageWindowIndexSql() {
   return (
@@ -127,6 +151,8 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false, sl
       THEN 'normalized_raw' ELSE 'sampled_raw' END AS source_basis,
     CASE WHEN jsonb_typeof(metadata.normalized_payload->'raw') = 'object'
       THEN metadata.normalized_hash_admission ELSE metadata.raw_hash_admission END AS source_hash_admission,
+    CASE WHEN jsonb_typeof(metadata.normalized_payload->'raw') = 'object'
+      THEN metadata.normalized_hash_storage ELSE metadata.raw_hash_storage END AS source_hash_storage,
     CASE WHEN metadata.normalized_hash_admission = 'bounded_object'
       THEN metadata.normalized_payload END AS bounded_normalized_payload,
     CASE WHEN jsonb_typeof(metadata.normalized_payload->'raw') = 'object'
@@ -137,7 +163,9 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false, sl
   FROM samples CROSS JOIN LATERAL (
     SELECT processed_at, queued_at, normalized_payload, raw_payload, error_message,
       ${hashSourceAdmission('normalized_payload')} AS normalized_hash_admission,
-      ${hashSourceAdmission('raw_payload')} AS raw_hash_admission
+      ${hashSourceAdmission('raw_payload')} AS raw_hash_admission,
+      ${hashSourceStorage('normalized_payload')} AS normalized_hash_storage,
+      ${hashSourceStorage('raw_payload')} AS raw_hash_storage
     FROM webhook_events WHERE id = samples.id OFFSET 0
   ) metadata
   WHERE metadata.normalized_payload->'message'->>'chatId' = '${chatId}'
@@ -162,7 +190,7 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false, sl
     md5(normalized_payload->'message'->>'senderId') AS sender_hash,
     CASE WHEN normalized_payload->>'type' IN ('message_created', 'message_edited', 'message_removed')
       THEN normalized_payload->>'type' ELSE 'other' END AS update_type,
-    source_hash_admission,
+    source_hash_admission, source_hash_storage,
     CASE WHEN source_hash_admission <> 'bounded_object' THEN 'source_not_admitted'
       WHEN source_body_text IS NULL THEN 'absent_or_non_string'
       WHEN octet_length(source_body_text) > 8192 THEN 'oversized_not_inspected'
@@ -248,7 +276,13 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false, sl
   FROM source_fields
 )
 SELECT json_build_object(
-  'schema_version', 4, 'audit', 'chat_message_window', 'observed_at', statement_timestamp(),
+  'schema_version', 5, 'audit', 'chat_message_window', 'observed_at', statement_timestamp(),
+  'source_hash_bound_policy', '${SOURCE_ENVELOPE_COMPRESSION_POLICY}',
+  'source_hash_bound_assumption', '${SOURCE_ENVELOPE_COMPRESSION_ASSUMPTION}',
+  'source_hash_uncompressed_max_bytes', ${HASH_SOURCE_UNCOMPRESSED_MAX_BYTES},
+  'source_hash_compressed_max_decoded_bytes', ${SOURCE_ENVELOPE_MAX_BYTES},
+  'source_hash_compressed_physical_caps', json_build_object(
+    'pglz', ${SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES}, 'lz4', ${SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES}),
   'from_at', (SELECT from_at FROM bounds), 'until_at', (SELECT until_at FROM bounds),
   'window_seconds', ${slice === null ? 60 : 5}, 'slice', ${slice === null ? 'NULL' : slice},
   'window_closed', (SELECT until_at <= statement_timestamp() AT TIME ZONE 'UTC' FROM bounds),

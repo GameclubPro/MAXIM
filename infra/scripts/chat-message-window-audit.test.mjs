@@ -10,6 +10,13 @@ import {
   parseChatMessageWindowAuditArgs,
   validateChatMessageWindow,
 } from './chat-message-window-audit.mjs';
+import {
+  SOURCE_ENVELOPE_MAX_BYTES,
+  SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES,
+  SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES,
+  SOURCE_ENVELOPE_COMPRESSION_POLICY,
+  SOURCE_ENVELOPE_COMPRESSION_ASSUMPTION,
+} from './webhook-source-envelope-audit.mjs';
 
 const minute = '2026-10-13T19:33:00Z';
 const fixture = `CREATE TYPE "WebhookStatus" AS ENUM
@@ -38,6 +45,22 @@ test('index admission fails through SQL errors instead of ignored psql quit argu
       sql,
       new RegExp(`MAXIM_MESSAGE_WINDOW_${marker}_INDEX_UNAVAILABLE\\nSELECT 1 / 0;`, 'u'),
     );
+  }
+});
+
+test('hash admission preserves the uncompressed cap and pins compressed budgets to PG16', () => {
+  const sql = buildChatMessageWindowAuditSql('-123', minute);
+  for (const column of ['normalized_payload', 'raw_payload']) {
+    const boundedCase = `WHEN pg_column_compression(${column}) IS NULL
+    THEN pg_column_size(${column}) <= 65536
+  WHEN current_setting('server_version_num')::integer / 10000 <> 16 THEN false
+  WHEN pg_column_compression(${column}) = 'pglz'
+    THEN pg_column_size(${column}) <= ${SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES}
+  WHEN pg_column_compression(${column}) = 'lz4'
+    THEN pg_column_size(${column}) <= ${SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES}
+  ELSE false END THEN
+    CASE WHEN jsonb_typeof(${column}) = 'object'`;
+    assert.ok(sql.includes(boundedCase), column);
   }
 });
 
@@ -327,7 +350,15 @@ test('reports independent restriction reasons without exposing metadata', async 
       ('intent','private-manual','MANUAL_GROUP_CLOSE_DELETE');`);
   const report = (await db.query(buildChatMessageWindowAuditSql('-123', minute))).rows[0]
     .json_build_object;
-  assert.equal(report.schema_version, 4);
+  assert.equal(report.schema_version, 5);
+  assert.equal(report.source_hash_bound_policy, SOURCE_ENVELOPE_COMPRESSION_POLICY);
+  assert.equal(report.source_hash_bound_assumption, SOURCE_ENVELOPE_COMPRESSION_ASSUMPTION);
+  assert.equal(report.source_hash_uncompressed_max_bytes, 65536);
+  assert.equal(report.source_hash_compressed_max_decoded_bytes, SOURCE_ENVELOPE_MAX_BYTES);
+  assert.deepEqual(report.source_hash_compressed_physical_caps, {
+    pglz: SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES,
+    lz4: SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES,
+  });
   assert.deepEqual(report.rows[0].delete_intent.reason_sample, {
     voice_blocked: false,
     link_blocked: false,
@@ -367,6 +398,7 @@ test('hashes bounded source text and sender labels without exposing them or embe
   const row = report.rows[0];
   assert.equal(row.source_basis, 'normalized_raw');
   assert.equal(row.source_hash_admission, 'bounded_object');
+  assert.equal(row.source_hash_storage, 'uncompressed');
   assert.equal(row.source_body_text_hash_admission, 'bounded_string');
   assert.equal(row.source_body_text_md5, hash(text));
   assert.equal(row.source_sender_label_hash_admission, 'bounded_string');
@@ -694,43 +726,106 @@ test(
     );
     assert.equal((await client.query(sql)).rows[0].json_build_object.matched_receipts, 1);
 
-    // FLAG: Physical compressed size is not a decoded JSON bound. Both original
-    // storage paths must refuse hashes even when the desired individual fields are small.
-    const compressedSource = {
-      message: { body: { text: 'private-small' }, sender: { name: 'private-author' } },
-      padding: 'x'.repeat(131072),
-    };
-    await client.query(
-      `INSERT INTO webhook_events
-      (id,status,created_at,normalized_payload,raw_payload) VALUES
-      ('compressed-normalized','PROCESSED','2026-10-13 19:33:55',$1::jsonb,'{}'),
-      ('compressed-sampled','PROCESSED','2026-10-13 19:33:56',$2::jsonb,$3::jsonb)`,
-      [
-        JSON.stringify({ message: { chatId: '-123' }, raw: compressedSource }),
-        JSON.stringify({ message: { chatId: '-123' } }),
-        JSON.stringify(compressedSource),
-      ],
-    );
-    const storage = await client.query(`SELECT
-      CASE WHEN id='compressed-normalized' THEN pg_column_compression(normalized_payload)
-        ELSE pg_column_compression(raw_payload) END AS compression,
-      CASE WHEN id='compressed-normalized' THEN pg_column_size(normalized_payload)
-        ELSE pg_column_size(raw_payload) END AS physical_size
-      FROM webhook_events WHERE id IN ('compressed-normalized','compressed-sampled')`);
-    assert.equal(storage.rows.length, 2);
-    assert.ok(storage.rows.every((row) => row.compression !== null && row.physical_size < 65536));
-    const compressedReport = (
-      await client.query(buildChatMessageWindowAuditSql('-123', minute, false, 11))
-    ).rows[0].json_build_object;
-    assert.equal(compressedReport.matched_receipts, 2);
-    for (const row of compressedReport.rows) {
-      assert.equal(row.source_hash_admission, 'compressed_not_inspected');
-      assert.equal(row.source_body_text_hash_admission, 'source_not_admitted');
-      assert.equal(row.source_body_text_md5, null);
-      assert.equal(row.source_sender_label_md5, null);
-      assert.equal(row.plain_max_join_url, null);
-      assert.equal(row.raw_message_removed_exact, null);
+    // FLAG: Exercise real compressed original columns. Decoded-size measurement
+    // below is fixture-only; the collector admits solely through reviewed codec caps.
+    for (const [method, physicalCap] of [
+      ['pglz', SOURCE_ENVELOPE_PGLZ_MAX_PHYSICAL_BYTES],
+      ['lz4', SOURCE_ENVELOPE_LZ4_MAX_PHYSICAL_BYTES],
+    ]) {
+      await t.test(
+        `${method} bounded source hashes and oversized/older-major refusal`,
+        async (subtest) => {
+          await client.query('SAVEPOINT compression_method');
+          try {
+            await client.query(`ALTER TABLE webhook_events ALTER COLUMN normalized_payload SET COMPRESSION ${method};
+            ALTER TABLE webhook_events ALTER COLUMN raw_payload SET COMPRESSION ${method};`);
+          } catch (error) {
+            await client.query('ROLLBACK TO SAVEPOINT compression_method');
+            if (method === 'lz4' && error.code === '0A000') {
+              subtest.skip('Native PostgreSQL built without LZ4 support');
+              return;
+            }
+            throw error;
+          }
+          await client.query(`DELETE FROM webhook_events WHERE id LIKE 'compressed-%'`);
+          const text = 'private-link https://max.ru/join/private-invite';
+          const label = 'private-author';
+          for (const [index, length] of [131072, 400000].entries()) {
+            const source = {
+              message: { body: { text }, sender: { name: label } },
+              padding: 'x'.repeat(length),
+            };
+            await client.query(
+              `INSERT INTO webhook_events
+            (id,status,created_at,normalized_payload,raw_payload) VALUES
+            ($1,'PROCESSED',$2,$3::jsonb,'{}'),
+            ($4,'PROCESSED',$5,$6::jsonb,$7::jsonb)`,
+              [
+                `compressed-normalized-${index}`,
+                `2026-10-13 19:33:${55 + index * 2}`,
+                JSON.stringify({
+                  type: 'message_created',
+                  message: { chatId: '-123' },
+                  raw: source,
+                }),
+                `compressed-sampled-${index}`,
+                `2026-10-13 19:33:${56 + index * 2}`,
+                JSON.stringify({ type: 'message_created', message: { chatId: '-123' } }),
+                JSON.stringify(source),
+              ],
+            );
+          }
+          const storage = (
+            await client.query(`SELECT id,
+          CASE WHEN id LIKE 'compressed-normalized-%' THEN pg_column_compression(normalized_payload)
+            ELSE pg_column_compression(raw_payload) END AS compression,
+          CASE WHEN id LIKE 'compressed-normalized-%' THEN pg_column_size(normalized_payload)
+            ELSE pg_column_size(raw_payload) END AS physical_size,
+          CASE WHEN id LIKE 'compressed-normalized-%' THEN pg_column_size(normalized_payload || '{}'::jsonb)
+            ELSE pg_column_size(raw_payload || '{}'::jsonb) END AS decoded_size
+          FROM webhook_events WHERE id LIKE 'compressed-%' ORDER BY created_at`)
+          ).rows;
+          assert.equal(storage.length, 4);
+          for (const [index, row] of storage.entries()) {
+            assert.equal(row.compression, method);
+            assert.equal(row.physical_size <= physicalCap, index < 2);
+            assert.equal(row.decoded_size <= SOURCE_ENVELOPE_MAX_BYTES, index < 2);
+          }
+          const compressedSql = buildChatMessageWindowAuditSql('-123', minute, false, 11);
+          const compressedReport = (await client.query(compressedSql)).rows[0].json_build_object;
+          assert.equal(compressedReport.matched_receipts, 4);
+          for (const [index, row] of compressedReport.rows.entries()) {
+            assert.equal(row.source_hash_storage, method);
+            if (index < 2) {
+              assert.equal(row.source_hash_admission, 'bounded_object');
+              assert.equal(row.source_body_text_md5, hash(text));
+              assert.equal(row.source_sender_label_md5, hash(label));
+              assert.equal(row.plain_max_join_url, true);
+            } else {
+              assert.equal(row.source_hash_admission, 'compressed_not_inspected');
+              assert.equal(row.source_body_text_hash_admission, 'source_not_admitted');
+              assert.equal(row.source_body_text_md5, null);
+              assert.equal(row.source_sender_label_md5, null);
+              assert.equal(row.plain_max_join_url, null);
+              assert.equal(row.raw_message_removed_exact, null);
+            }
+          }
+          for (const major of [15, 17]) {
+            const foreignMajorSql = compressedSql.replaceAll(
+              "current_setting('server_version_num')",
+              `'${major * 10000}'`,
+            );
+            const refused = (await client.query(foreignMajorSql)).rows[0].json_build_object;
+            for (const row of refused.rows) {
+              assert.equal(row.source_hash_admission, 'compressed_not_inspected');
+              assert.equal(row.source_body_text_md5, null);
+              assert.equal(row.source_sender_label_md5, null);
+            }
+          }
+          assert.doesNotMatch(JSON.stringify(compressedReport), /private-|padding/u);
+          await client.query('RELEASE SAVEPOINT compression_method');
+        },
+      );
     }
-    assert.doesNotMatch(JSON.stringify(compressedReport), /private-|padding/u);
   },
 );
