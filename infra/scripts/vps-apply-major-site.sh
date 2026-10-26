@@ -14,9 +14,7 @@ HOST="${1:-maxim-vps}"
 LOCAL_CONF="infra/nginx/major-maksimov.ru.conf"
 LOCAL_SITE_DIR="infra/www/major-maksimov"
 LOCAL_SNIPPET_DIR="infra/nginx/snippets"
-REMOTE_CONF_TMP="/tmp/major-maksimov.ru.conf"
-REMOTE_SITE_TMP="/tmp/major-maksimov-site"
-REMOTE_SNIPPET_TMP_DIR="/tmp/karavan-sse-nginx-snippets"
+REMOTE_STAGE_DIR=""
 REMOTE_CONF="/etc/nginx/sites-available/major-maksimov.ru.conf"
 REMOTE_ENABLED_CONF="/etc/nginx/sites-enabled/major-maksimov.ru.conf"
 REMOTE_SITE_DIR="/var/www/major-maksimov-site"
@@ -50,7 +48,21 @@ if grep -Eq 'listen[[:space:]]+4443([[:space:];]|$)' "$LOCAL_CONF"; then
 fi
 
 CURRENT_CONF="$(mktemp)"
-trap 'rm -f "$CURRENT_CONF"' EXIT
+cleanup_local() {
+  local exit_status=$?
+  trap - EXIT
+  rm -f "$CURRENT_CONF"
+  if [[ -n "$REMOTE_STAGE_DIR" ]]; then
+    # FLAG: Cleanup accepts only this invocation's validated mktemp directory.
+    # shellcheck disable=SC2029
+    if ! timeout --foreground --kill-after=2s 15s ssh "$HOST" "rm -rf -- '${REMOTE_STAGE_DIR}'"; then
+      echo 'Could not remove the private nginx staging directory.' >&2
+      if [[ "$exit_status" -eq 0 ]]; then exit_status=1; fi
+    fi
+  fi
+  exit "$exit_status"
+}
+trap cleanup_local EXIT
 
 # Remote paths are fixed locally and intentionally interpolated before SSH execution.
 # shellcheck disable=SC2029
@@ -92,12 +104,19 @@ case "${MAXIM_APPLY_MAJOR_SITE_CONFIRM:-0}" in
     ;;
 esac
 
+# FLAG: Concurrent invocations cannot overwrite another locked transaction's inputs.
+remote_stage_candidate="$(ssh "$HOST" 'umask 077; mktemp -d /tmp/maxim-major-site.XXXXXXXX')"
+[[ "$remote_stage_candidate" =~ ^/tmp/maxim-major-site\.[a-zA-Z0-9]{8}$ ]] || { echo 'Unsafe nginx staging directory.' >&2; exit 1; }
+REMOTE_STAGE_DIR="$remote_stage_candidate"
+REMOTE_CONF_TMP="${REMOTE_STAGE_DIR}/major-maksimov.ru.conf"
+REMOTE_SITE_TMP="${REMOTE_STAGE_DIR}/site"
+REMOTE_SNIPPET_TMP_DIR="${REMOTE_STAGE_DIR}/snippets"
 scp "$LOCAL_CONF" "${HOST}:${REMOTE_CONF_TMP}"
-# The fixed temporary path is intentionally interpolated into the remote command.
+# The validated staging path is intentionally interpolated into the remote command.
 # shellcheck disable=SC2029
 ssh "$HOST" "rm -rf '${REMOTE_SITE_TMP}' && mkdir -p '${REMOTE_SITE_TMP}'"
 scp "$LOCAL_SITE_DIR/index.html" "${HOST}:${REMOTE_SITE_TMP}/index.html"
-# The fixed temporary path is intentionally interpolated into the remote command.
+# The validated staging path is intentionally interpolated into the remote command.
 # shellcheck disable=SC2029
 ssh "$HOST" "rm -rf '${REMOTE_SNIPPET_TMP_DIR}' && mkdir -p '${REMOTE_SNIPPET_TMP_DIR}'"
 for snippet in "${KARAVAN_SSE_SNIPPETS[@]}"; do
@@ -109,6 +128,7 @@ ssh "$HOST" "curl -fsS --max-time 10 http://127.0.0.1:3003/app/ >/dev/null"
 # Fixed deployment paths are intentionally interpolated into the remote environment.
 # shellcheck disable=SC2029
 ssh "$HOST" "\
+  REMOTE_STAGE_DIR='${REMOTE_STAGE_DIR}' \
   REMOTE_CONF_TMP='${REMOTE_CONF_TMP}' \
   REMOTE_SITE_TMP='${REMOTE_SITE_TMP}' \
   REMOTE_SNIPPET_TMP_DIR='${REMOTE_SNIPPET_TMP_DIR}' \
@@ -119,6 +139,15 @@ ssh "$HOST" "\
   REMOTE_SNIPPET_DIR='${REMOTE_SNIPPET_DIR}' \
   bash -s" <<'REMOTE'
 set -euo pipefail
+
+# FLAG: Hold the shared protected inode through backup, mutation, smoke and rollback.
+cd /var/www/Chat_bot
+# shellcheck source=infra/scripts/lib/deploy-lock.sh
+source infra/scripts/lib/deploy-lock.sh
+acquire_deploy_lock
+# shellcheck source=infra/scripts/lib/legacy-cold-maintenance.sh
+source infra/scripts/lib/legacy-cold-maintenance.sh
+maxim_require_ordinary_effect_authority "$PWD"
 
 snippets=(
   "karavan-sse-locations.conf"
@@ -214,7 +243,7 @@ restore_backup() {
 }
 
 cleanup_tmp() {
-  rm -rf "${REMOTE_SITE_TMP}" "${REMOTE_CONF_TMP}" "${REMOTE_SNIPPET_TMP_DIR}"
+  rm -rf "${REMOTE_STAGE_DIR}"
 }
 
 LOCAL_SMOKE_MAX_ATTEMPTS=10
@@ -334,6 +363,10 @@ finalize_remote_deploy() {
     if [[ "${exit_status}" -eq 0 ]]; then
       exit_status=1
     fi
+  fi
+  if ! release_deploy_lock; then
+    echo 'Could not release the nginx deploy lock descriptor.' >&2
+    exit_status=1
   fi
 
   exit "${exit_status}"

@@ -8,6 +8,7 @@
     { "id": "contracts", "label": "Shared contracts validation", "script": "check:contracts" },
     { "id": "api", "label": "API validation", "script": "check:api" },
     { "id": "prisma", "label": "Prisma validation", "script": "check:prisma" },
+    { "id": "eraser", "label": "Independent Lastik validation", "script": "check:eraser" },
     {
       "id": "miniapp-css",
       "label": "Mini app CSS architecture check",
@@ -30,7 +31,8 @@
   "deployComponents": [
     { "id": "api-shared", "label": "Shared API image and every production API role" },
     { "id": "miniapp-major-static", "label": "Major production mini app static service" },
-    { "id": "admin-static", "label": "Safety Desk static service" }
+    { "id": "admin-static", "label": "Safety Desk static service" },
+    { "id": "eraser", "label": "Independent Lastik image and service" }
   ],
   "manualOperations": [
     { "id": "apply-major-nginx", "label": "Review and apply the Major nginx site" },
@@ -113,9 +115,10 @@
         "miniapp-css",
         "miniapp",
         "admin",
+        "eraser",
         "full"
       ],
-      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
+      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static", "eraser"]
     },
     {
       "id": "root-runtime-build-config",
@@ -128,9 +131,10 @@
         "miniapp-css",
         "miniapp",
         "admin",
+        "eraser",
         "full"
       ],
-      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
+      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static", "eraser"]
     },
     {
       "id": "root-development-config",
@@ -174,9 +178,10 @@
         "miniapp-css",
         "miniapp",
         "miniapp-production-build",
-        "admin"
+        "admin",
+        "eraser"
       ],
-      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"]
+      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static", "eraser"]
     },
     {
       "id": "api-tests",
@@ -225,6 +230,26 @@
       ],
       "checks": ["repo-static", "api"],
       "deployComponents": ["api-shared"]
+    },
+    {
+      "id": "eraser-tests",
+      "include": ["apps/eraser/**/*.spec.ts", "apps/eraser/**/*.test.ts", "apps/eraser/test/**"],
+      "exclude": ["**/*.md"],
+      "checks": ["repo-static", "eraser"],
+      "deployComponents": []
+    },
+    {
+      "id": "eraser-runtime",
+      "include": ["apps/eraser/**"],
+      "exclude": [
+        "**/AGENTS.md",
+        "**/*.md",
+        "apps/eraser/**/*.spec.ts",
+        "apps/eraser/**/*.test.ts",
+        "apps/eraser/test/**"
+      ],
+      "checks": ["repo-static", "eraser"],
+      "deployComponents": ["eraser"]
     },
     {
       "id": "miniapp-tests",
@@ -297,13 +322,13 @@
       "include": ["infra/certs/**"],
       "exclude": ["**/*.md"],
       "checks": ["repo-static", "infra", "api"],
-      "deployComponents": ["api-shared"]
+      "deployComponents": ["api-shared", "eraser"]
     },
     {
       "id": "production-compose",
       "include": ["infra/docker-compose.yml"],
-      "checks": ["repo-static", "infra", "api", "miniapp", "admin", "full"],
-      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"],
+      "checks": ["repo-static", "infra", "api", "miniapp", "admin", "eraser", "full"],
+      "deployComponents": ["api-shared", "miniapp-major-static", "admin-static", "eraser"],
       "manualOperations": ["review-production-compose"],
       "warnings": [
         "Production Compose changes require an explicit topology and stateful-service review."
@@ -416,7 +441,7 @@
   ],
   "fallback": {
     "checks": ["full"],
-    "deployComponents": ["api-shared", "miniapp-major-static", "admin-static"],
+    "deployComponents": ["api-shared", "miniapp-major-static", "admin-static", "eraser"],
     "manualOperations": [],
     "warning": "Unclassified paths require full validation and explicit production deploy review."
   }

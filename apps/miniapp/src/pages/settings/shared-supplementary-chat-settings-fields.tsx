@@ -56,6 +56,7 @@ export function SharedSupplementaryChatSettingsFields({
     return (
       <div className="message-retention-settings">
         <SharedMessageRetentionFields
+          scope="network"
           enabled={fields.read('messageRetention.enabled')}
           hours={fields.read('messageRetention.hours')}
           disabled={fields.readOnly}

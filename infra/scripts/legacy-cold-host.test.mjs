@@ -4,7 +4,53 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseLegacyColdHostRequest, readLegacyColdPublisherCatalog } from './legacy-cold-host.mjs';
+import {
+  parseLegacyColdHostRequest,
+  readLegacyColdPublisherCatalog,
+  legacyColdStoreEnvironment,
+  isLegacyColdStoreEnvironment,
+} from './legacy-cold-host.mjs';
+
+test('cold clients receive only exact stores and the captured independent control pair', () => {
+  const stores = [
+    'DATABASE_URL=postgresql://private@postgres/maxim',
+    'REDIS_URL=redis://private@redis/0',
+  ];
+  const control = [
+    'ERASER_CONTROL_URL=http://eraser:3000',
+    `ERASER_CONTROL_TOKEN=${'a'.repeat(64)}`,
+  ];
+  assert.equal(
+    legacyColdStoreEnvironment([...stores, ...control, 'MAX_BOT_TOKEN=never-forward']),
+    `${[...stores, ...control].join('\n')}\n`,
+  );
+  assert.equal(
+    legacyColdStoreEnvironment([
+      ...stores,
+      'ERASER_CONTROL_URL=http://eraser:3000',
+      'ERASER_CONTROL_TOKEN=',
+    ]),
+    `${stores.join('\n')}\n`,
+  );
+  for (const extra of [
+    ['ERASER_CONTROL_TOKEN=short', control[0]],
+    [control[1]],
+    ['ERASER_CONTROL_URL=https://external.invalid', control[1]],
+    ['ERASER_CONTROL_URL=http://user:pass@eraser:3000', control[1]],
+    ['ERASER_CONTROL_URL=http://eraser:3000/path', control[1]],
+    [...control, control[1]],
+  ])
+    assert.throws(
+      () => legacyColdStoreEnvironment([...stores, ...extra]),
+      /store_environment_unproved/,
+    );
+  for (const text of [
+    `${[...stores, ...control, 'MAX_BOT_TOKEN=never-forward'].join('\n')}\n`,
+    `${[...stores, control[0]].join('\n')}\n`,
+    `${[...stores, control[1], control[0]].join('\n')}\n`,
+  ])
+    assert.equal(isLegacyColdStoreEnvironment(text), false);
+});
 
 test('pending pre-drain blocks every stock cold entry before lock, source or client work', () => {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-predrain-cold-host-'));

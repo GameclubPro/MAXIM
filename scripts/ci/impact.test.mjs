@@ -124,7 +124,7 @@ test('shared contracts, tooling, dependency inputs and unknown paths retain full
     await repository(async ({ cwd, base, commit }) => {
       const plan = await pushPlan(cwd, base, commit([path]));
       assert.deepEqual(selected(plan), CI_LANES, path);
-      assert.deepEqual(plan.dockerComponents, ['api', 'miniapp', 'admin']);
+      assert.deepEqual(plan.dockerComponents, ['eraser', 'api', 'miniapp', 'admin']);
     });
   }
 });
@@ -295,4 +295,13 @@ test('workflow consumes the verified plan without weakening individual lane step
   const gate = jobs.required.steps.find((step) => step.run);
   assert.equal(gate.run, 'node scripts/ci/impact.mjs verify');
   assert.equal(gate.env.CI_NEEDS, '${{ toJSON(needs) }}');
+});
+
+test('Lastik runtime selects its independent validation, stores and image', async () => {
+  await repository(async ({ cwd, base, commit }) => {
+    const plan = await pushPlan(cwd, base, commit(['apps/eraser/src/worker.ts']));
+    assert.deepEqual(selected(plan), ['static', 'eraser', 'docker']);
+    assert.deepEqual(plan.dockerComponents, ['eraser']);
+    assert.doesNotThrow(() => verifyCiResults(plan, results(plan)));
+  });
 });

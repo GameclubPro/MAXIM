@@ -21,7 +21,8 @@ export const ACTIVE_RELEASE_COMPONENTS = Object.freeze([
   'miniapp-major-static',
   'admin-static',
 ]);
-const activeComponentSet = new Set(ACTIVE_RELEASE_COMPONENTS);
+export const OPTIONAL_RELEASE_COMPONENTS = Object.freeze(['eraser']);
+const activeComponentSet = new Set([...ACTIVE_RELEASE_COMPONENTS, ...OPTIONAL_RELEASE_COMPONENTS]);
 const releaseIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const fullShaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64}|unknown)$/u;
 const recoveryBaseNamePattern =
@@ -69,7 +70,10 @@ export function validateCompleteReleaseManifest(manifest, { allowUnknown = false
   if (!allowUnknown && !knownFullShaPattern.test(manifest.targetSha)) {
     throw new Error('Complete release targetSha must be known.');
   }
-  for (const id of ACTIVE_RELEASE_COMPONENTS) {
+  for (const id of [
+    ...ACTIVE_RELEASE_COMPONENTS,
+    ...OPTIONAL_RELEASE_COMPONENTS.filter((id) => manifest.components?.[id]),
+  ]) {
     const component = manifest.components?.[id];
     if (!component) {
       throw new Error(`Release manifest is missing active component: ${id}`);
@@ -284,7 +288,12 @@ export function listRetentionProtectionManifestPaths(stateDir) {
 
 export function getReleaseComponentHistory(manifests) {
   return Object.freeze(
-    ACTIVE_RELEASE_COMPONENTS.map((component) => {
+    [
+      ...ACTIVE_RELEASE_COMPONENTS,
+      ...OPTIONAL_RELEASE_COMPONENTS.filter((id) =>
+        manifests.some((manifest) => manifest.components?.[id]),
+      ),
+    ].map((component) => {
       const imageIds = new Set(
         manifests
           .map((manifest) => manifest.components?.[component]?.imageId)

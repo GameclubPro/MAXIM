@@ -346,6 +346,17 @@ test('connection failures are redacted and an accidental MAX credential never en
   assert.equal(h.events.includes('stop'), false);
 });
 
+test('the generation-captured independent control pair passes the cold helper boundary', async (t) => {
+  const h = harness(t);
+  h.options.readConnection = () => ({
+    networkId: 'f'.repeat(64),
+    environment: `DATABASE_URL=private\nREDIS_URL=private\nERASER_CONTROL_URL=http://eraser:3000\nERASER_CONTROL_TOKEN=${'a'.repeat(64)}\n`,
+  });
+  const result = await runPreviewHostV2(nomination, h.options);
+  assert.equal(result.exitCode, 0);
+  assert.equal(JSON.stringify(result).includes('a'.repeat(64)), false);
+});
+
 test('exact preview/generation/root preflight gates all run before the first stop', async (t) => {
   const h = harness(t);
   const request = await h.preview();

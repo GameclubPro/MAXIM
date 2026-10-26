@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const messageRetentionHoursSchema = z.union([z.literal(24), z.literal(48)]);
+export const messageRetentionHoursSchema = z.union([z.literal(24), z.literal(48), z.literal(168)]);
 export const messageRetentionSummarySchema = z.object({
   enabled: z.boolean(),
   hours: messageRetentionHoursSchema,

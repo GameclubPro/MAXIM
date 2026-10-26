@@ -24,7 +24,10 @@ import {
 } from './legacy-cold-journal.mjs';
 import { createLegacyColdRuntime } from './legacy-cold-runtime.mjs';
 import { createLegacyColdClient } from './legacy-cold-client.mjs';
-import { readLegacyColdStoreConnection } from './legacy-cold-host.mjs';
+import {
+  readLegacyColdStoreConnection,
+  isLegacyColdStoreEnvironment,
+} from './legacy-cold-host.mjs';
 import {
   SOURCE_ABANDONMENT_SESSION_DEFAULT_DURATION_MS,
   SOURCE_ABANDONMENT_SESSION_DIRECTORY,
@@ -502,10 +505,7 @@ async function preview(request, dependencies) {
   const baseline = await runtime.inspectRuntime();
   const connection = (dependencies.readConnection ?? readLegacyColdStoreConnection)(baseline);
   requireFact(
-    typeof connection.environment === 'string' &&
-      Buffer.byteLength(connection.environment) <= 16 * 1024 &&
-      /^DATABASE_URL=\S+\nREDIS_URL=\S+\n$/u.test(connection.environment) &&
-      !/[\r\0]/u.test(connection.environment),
+    isLegacyColdStoreEnvironment(connection.environment),
     'session_controller_environment_refused',
   );
   const topology = sourceAbandonmentSessionHostTopology({

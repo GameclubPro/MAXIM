@@ -7,15 +7,17 @@ import {
 } from '../src/lib/api/message-retention-client';
 import { PREVIEW_CHAT_ID } from '../src/lib/design-preview';
 import {
+  isRetentionOperationConfirmed,
   isRetentionRevisionConflict,
   isRetentionWriteUncertain,
   retentionDraftReducer,
   retentionEditorState,
+  retentionErrorMessage,
 } from '../src/pages/settings/settings-message-retention-editor-state';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { combineManagedEntityLeaveGuards } from '../src/lib/managed-entity-leave-guards';
 
-test('message retention starts off and persists both modes independently', async () => {
+test('message retention starts off and persists all three modes independently', async () => {
   const api = createPreviewApiTransport();
   const initial = await getMessageRetention(api, PREVIEW_CHAT_ID);
   assert.equal(initial.enabled, false);
@@ -33,6 +35,14 @@ test('message retention starts off and persists both modes independently', async
   });
   assert.equal(changed.hours, 48);
   assert.equal(changed.enabledAt, enabled.enabledAt);
+  const weekly = await updateMessageRetention(api, PREVIEW_CHAT_ID, {
+    enabled: true,
+    hours: 168,
+    expectedRevision: changed.revision,
+  });
+  assert.equal(weekly.hours, 168);
+  assert.equal(weekly.captureAfter, null);
+  assert.equal(weekly.historyStatus, 'running');
   await assert.rejects(
     updateMessageRetention(api, PREVIEW_CHAT_ID, {
       enabled: false,
@@ -41,6 +51,21 @@ test('message retention starts off and persists both modes independently', async
     }),
   );
   assert.equal((await getMessageRetention(api, PREVIEW_CHAT_ID)).enabled, true);
+});
+
+test('a repeated retention operation returns its receipt without a second revision', async () => {
+  const api = createPreviewApiTransport();
+  const request = {
+    enabled: true,
+    hours: 168 as const,
+    expectedRevision: 0,
+    operationId: '39d74930-2ef0-483b-952e-89821e20b2b4',
+  };
+  const saved = await updateMessageRetention(api, PREVIEW_CHAT_ID, request);
+  assert.equal(saved.lastOperationId, request.operationId);
+  assert.deepEqual(await updateMessageRetention(api, PREVIEW_CHAT_ID, request), saved);
+  assert.equal((await getMessageRetention(api, PREVIEW_CHAT_ID)).revision, 1);
+  await assert.rejects(updateMessageRetention(api, PREVIEW_CHAT_ID, { ...request, hours: 24 }));
 });
 
 test('retention preview is scoped to one transport and chat', async () => {
@@ -55,6 +80,27 @@ test('retention preview is scoped to one transport and chat', async () => {
     false,
   );
   await assert.rejects(getMessageRetention(first, 'missing-chat'));
+});
+
+test('an old read cannot confirm a lost write; its exact operation can be recovered once', async () => {
+  const api = createPreviewApiTransport({ search: '?retentionScenario=write-error' });
+  const input = {
+    enabled: true,
+    hours: 24 as const,
+    expectedRevision: 0,
+    operationId: '58d9c023-e016-46d1-9acc-ab2dd109282d',
+  };
+  await assert.rejects(updateMessageRetention(api, PREVIEW_CHAT_ID, input));
+  const old = await getMessageRetention(api, PREVIEW_CHAT_ID);
+  assert.equal(old.revision, 0);
+  assert.equal(isRetentionOperationConfirmed(old, input), false);
+  assert.equal(isRetentionOperationConfirmed({ ...old, enabled: true, hours: 24 }, input), false);
+  const saved = await updateMessageRetention(api, PREVIEW_CHAT_ID, input);
+  assert.equal(isRetentionOperationConfirmed(saved, input), true);
+  assert.equal(isRetentionOperationConfirmed(saved, { ...input, operationId: undefined }), false);
+  assert.equal(isRetentionOperationConfirmed(saved, { ...input, hours: 48 }), false);
+  assert.deepEqual(await updateMessageRetention(api, PREVIEW_CHAT_ID, input), saved);
+  assert.equal((await getMessageRetention(api, PREVIEW_CHAT_ID)).revision, 1);
 });
 
 test('refresh preserves a dirty retention draft and makes revision conflicts explicit', async () => {
@@ -148,6 +194,29 @@ test('capability conflicts and uncertain writes have different recovery from rev
   assert.equal(isRetentionWriteUncertain(revision), false);
   assert.equal(isRetentionWriteUncertain(new Error('Reply lost')), true);
   assert.equal(isRetentionWriteUncertain(new ApiRequestError(503, '{}', 'Unavailable')), true);
+});
+
+test('retention feedback explains recovery without exposing raw technical errors', () => {
+  const internal = new ApiRequestError(
+    503,
+    '{"code":"ERASER_UNAVAILABLE"}',
+    'SQL failed eraser_postgres:5432',
+  );
+  assert.equal(
+    retentionErrorMessage(internal),
+    'Не удалось связаться с ботом. Попробуйте ещё раз чуть позже.',
+  );
+  assert.equal(
+    retentionErrorMessage(new Error('fetch stack trace')),
+    retentionErrorMessage(internal),
+  );
+  assert.match(retentionErrorMessage(new ApiRequestError(401, '{}', 'unauthorized')), /заново/);
+  assert.match(
+    retentionErrorMessage(
+      new ApiRequestError(409, '{"code":"ERASER_CONNECTION_REQUIRED"}', 'internal'),
+    ),
+    /Добавьте «Ластика»/,
+  );
 });
 
 test('nested leave guards preserve the parent guard and stop navigation on a failed save', async () => {

@@ -16,7 +16,7 @@ const LABELS: Record<string, string> = {
   'rules.adminContactButtonEnabled': 'Правила · Связь с админом',
   'rules.adminContactButtonUrl': 'Правила · Адрес администратора',
   'messageRetention.enabled': 'Удалять старые сообщения',
-  'messageRetention.hours': 'Возраст сообщений для удаления, ч',
+  'messageRetention.hours': 'Удалять сообщения старше',
   'advertising.enabled': 'Рекламная площадка',
   postSuggestionsEnabled: 'Принимать предложения',
   postSuggestionsRequireSubscription: 'Предложения · Требовать подписку',
@@ -240,6 +240,11 @@ export function networkSettingsValueLabel(value: unknown, path?: string): string
   if (value === null || value === undefined || value === '') return 'Не задано';
   if (typeof value === 'string') return (path ? ENUM_VALUES[path]?.[value] : undefined) ?? value;
   if (typeof value === 'number') {
+    if (path === 'messageRetention.hours') {
+      if (value === 24) return '24 часа';
+      if (value === 48) return '48 часов';
+      if (value === 168) return '1 неделя';
+    }
     if (path?.endsWith('TimeMinutes'))
       return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
     return String(value);

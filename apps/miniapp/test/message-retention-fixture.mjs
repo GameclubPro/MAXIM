@@ -1,12 +1,17 @@
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  messageRetentionStateSchema,
+  updateMessageRetentionSchema,
+} from '@maxim/contracts/settings';
 import { ApiRequestError } from '../src/lib/api-request-error.ts';
 import { SettingsMessageRetentionSection } from '../src/pages/settings/settings-message-retention-section.tsx';
+import { SharedMessageRetentionFields } from '../src/pages/settings/shared-message-retention-fields.tsx';
 
 // The real section/editor use a controllable API so races are tested without MAX or production data.
 export function mountRetentionFixture() {
-  const initial = {
+  const initial = messageRetentionStateSchema.parse({
     enabled: false,
     hours: 48,
     revision: 0,
@@ -18,15 +23,19 @@ export function mountRetentionFixture() {
     deletedCount: 0,
     skippedCount: 0,
     oldestDueAt: null,
-  };
+  });
   let server = structuredClone(initial);
   let readFailure = false;
   let writeFailure = null;
   let loseReply = false;
+  let loseBeforeCommit = false;
   let writeGate = null;
   let releaseWrite = null;
   let updateProps;
   const requests = [];
+  const writes = [];
+  const operations = new Map();
+  /** @type {import('../src/lib/api/transport.ts').ApiTransport} */
   const api = {
     requestKeepalive() {},
     async request(path, init = {}) {
@@ -36,33 +45,53 @@ export function mountRetentionFixture() {
         if (readFailure) throw new Error('Чтение настроек недоступно.');
         return structuredClone(server);
       }
-      if (writeGate) await writeGate;
       if (writeFailure)
         throw new ApiRequestError(
           writeFailure.status,
           JSON.stringify(writeFailure),
           writeFailure.message,
         );
-      const input = JSON.parse(init.body);
-      if (input.expectedRevision !== server.revision)
-        throw new ApiRequestError(
-          409,
-          '{"code":"MESSAGE_RETENTION_REVISION_CONFLICT"}',
-          'Ревизия изменилась.',
-        );
-      server = {
-        ...server,
-        enabled: input.enabled,
-        hours: input.hours,
-        revision: server.revision + 1,
-        status: input.enabled ? 'running' : 'off',
-        captureAfter: input.enabled ? new Date().toISOString() : null,
-      };
+      const input = updateMessageRetentionSchema.parse(JSON.parse(String(init.body)));
+      writes.push(structuredClone(input));
+      const key = `${path}:${input.operationId}`;
+      const body = JSON.stringify(input);
+      let operation = operations.get(key);
+      if (operation && operation.body !== body)
+        throw new ApiRequestError(409, '{"code":"ERASER_OPERATION_CONFLICT"}', 'Запрос изменён.');
+      if (!operation) {
+        const gate = writeGate;
+        const result = (async () => {
+          if (gate) await gate;
+          if (input.expectedRevision !== server.revision)
+            throw new ApiRequestError(
+              409,
+              '{"code":"MESSAGE_RETENTION_REVISION_CONFLICT"}',
+              'Ревизия изменилась.',
+            );
+          server = messageRetentionStateSchema.parse({
+            ...server,
+            enabled: input.enabled,
+            hours: input.hours,
+            revision: server.revision + 1,
+            status: input.enabled ? 'running' : 'off',
+            ...(input.operationId ? { lastOperationId: input.operationId } : {}),
+          });
+          return structuredClone(server);
+        })();
+        operation = { body, result };
+        operations.set(key, operation);
+        void result.catch(() => operations.delete(key));
+      }
+      if (loseBeforeCommit) {
+        loseBeforeCommit = false;
+        throw new Error('Ответ потерян до завершения записи.');
+      }
+      const result = await operation.result;
       if (loseReply) {
         loseReply = false;
         throw new Error('Ответ на сохранение потерян.');
       }
-      return structuredClone(server);
+      return structuredClone(result);
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -82,6 +111,7 @@ export function mountRetentionFixture() {
   createRoot(container).render(React.createElement(Fixture));
   window.__RETENTION_TEST__ = {
     requests,
+    writes,
     serverState: () => structuredClone(server),
     replaceServer: (patch) => {
       server = { ...server, ...patch };
@@ -90,6 +120,7 @@ export function mountRetentionFixture() {
       updateProps((old) => ({ ...old, initialSummary: { ...server, ...patch } })),
     changeChat: (chatId) => {
       server = structuredClone(initial);
+      operations.clear();
       updateProps({ chatId, initialSummary: server });
     },
     failReads: (value) => {
@@ -101,6 +132,9 @@ export function mountRetentionFixture() {
     loseNextReply: () => {
       loseReply = true;
     },
+    loseNextReplyBeforeCommit: () => {
+      loseBeforeCommit = true;
+    },
     holdWrite: () => {
       writeGate = new Promise((resolve) => {
         releaseWrite = resolve;
@@ -111,4 +145,24 @@ export function mountRetentionFixture() {
       writeGate = null;
     },
   };
+}
+
+export function mountMixedRetentionFixture() {
+  document.getElementById('root')?.remove();
+  const container = document.createElement('div');
+  container.className = 'message-retention-settings';
+  document.body.append(container);
+  function Fixture() {
+    const [enabled, setEnabled] = useState({ kind: 'mixed' });
+    const [hours, setHours] = useState({ kind: 'mixed' });
+    return React.createElement(SharedMessageRetentionFields, {
+      scope: 'network',
+      enabled,
+      hours,
+      disabled: false,
+      onEnabledChange: (value) => setEnabled({ kind: 'common', value }),
+      onHoursChange: (value) => setHours({ kind: 'common', value }),
+    });
+  }
+  createRoot(container).render(React.createElement(Fixture));
 }

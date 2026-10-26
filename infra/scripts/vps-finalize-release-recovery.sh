@@ -200,6 +200,7 @@ expected_component_ref() {
     api-shared) printf 'maxim-api:%s' "$component_source" ;;
     miniapp-major-static) printf 'maxim-miniapp-major:%s' "$component_source" ;;
     admin-static) printf 'maxim-admin:%s' "$component_source" ;;
+    eraser) printf 'maxim-eraser:%s' "$component_source" ;;
     *) fail "Unknown recovery finalizer component: $1" ;;
   esac
 }
@@ -212,7 +213,7 @@ require_unchanged_static_inputs() {
   local impact_bytes
 
   case "$component" in
-    miniapp-major-static | admin-static) ;;
+    miniapp-major-static | admin-static | eraser) ;;
     *) fail "Only static components may inherit deployment inputs."; return 1 ;;
   esac
 
@@ -238,6 +239,7 @@ require_unchanged_static_inputs() {
     case "$component" in
       miniapp-major-static) selected="$MAXIM_IMPACT_PATH_MINIAPP_MAJOR_STATIC" ;;
       admin-static) selected="$MAXIM_IMPACT_PATH_ADMIN_STATIC" ;;
+      eraser) selected="$MAXIM_IMPACT_PATH_ERASER" ;;
       *) fail "Only static components may inherit deployment inputs."; return 1 ;;
     esac
     if [[ "$selected" -ne 0 ]]; then
@@ -295,7 +297,7 @@ inspect_target_image() {
   IFS='|' read -r image_id revision protected extra <<<"$inspection"
   [[ -z "$extra" && "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { fail "Recovery image returned an invalid identity: $image_ref"; return 1; }
   [[ "$protected" == "true" ]] || { fail "Recovery image is missing its release-protected label: $image_ref"; return 1; }
-  if [[ "$component" == "api-shared" || "$API_ONLY_RECOVERY" -eq 1 ]]; then
+  if [[ "$component" == "api-shared" || "$component" == eraser || "$API_ONLY_RECOVERY" -eq 1 ]]; then
     [[ "$revision" == "$expected_source" ]] || { fail "Recovery image lacks its exact reviewed component revision label."; return 1; }
   elif [[ -n "$revision" && "$revision" != "<no value>" ]]; then
     [[ "$revision" == "$EXPECTED_RUNTIME_SHA" ]] || { fail "Static recovery image has a mismatched revision label: $image_ref"; return 1; }
@@ -307,7 +309,11 @@ resolve_target_images() {
   local component
   local image_ref
 
-  for component in api-shared miniapp-major-static admin-static; do
+  FINALIZER_COMPONENTS=(api-shared miniapp-major-static admin-static)
+  if [[ -s /var/lib/maxim-secrets/eraser.env ]] || release_manifest field current eraser imageId --current-manifest-file "$RECOVERY_BASE_MANIFEST" >/dev/null 2>&1; then
+    FINALIZER_COMPONENTS+=(eraser)
+  fi
+  for component in "${FINALIZER_COMPONENTS[@]}"; do
     COMPONENT_SOURCE_SHA["$component"]="$EXPECTED_RUNTIME_SHA"
     if [[ "$API_ONLY_RECOVERY" -eq 1 && "$component" != "api-shared" ]]; then
       resolve_inherited_static_component "$component" || return 1
@@ -322,6 +328,10 @@ resolve_target_images() {
   export MAXIM_API_IMAGE="${COMPONENT_IMAGE_REF[api-shared]}"
   export MAXIM_MINIAPP_MAJOR_IMAGE="${COMPONENT_IMAGE_REF[miniapp-major-static]}"
   export MAXIM_ADMIN_IMAGE="${COMPONENT_IMAGE_REF[admin-static]}"
+  if [[ -n "${COMPONENT_IMAGE_REF[eraser]:-}" ]]; then
+    export MAXIM_ERASER_IMAGE="${COMPONENT_IMAGE_REF[eraser]}"
+    export MAXIM_ERASER_SOURCE_SHA="${COMPONENT_SOURCE_SHA[eraser]}"
+  fi
 }
 
 verify_target_images_unchanged() {
@@ -329,7 +339,7 @@ verify_target_images_unchanged() {
   local image_ref
   local image_id
 
-  for component in api-shared miniapp-major-static admin-static; do
+  for component in "${FINALIZER_COMPONENTS[@]}"; do
     image_ref="${COMPONENT_IMAGE_REF[$component]}"
     image_id="$(inspect_target_image "$component" "$image_ref")" || return 1
     [[ "$image_id" == "${COMPONENT_IMAGE_ID[$component]}" ]] || { fail "Recovery image id changed during finalization: $component"; return 1; }
@@ -458,6 +468,9 @@ verify_runtime_snapshot() {
     admin-static \
     "${COMPONENT_IMAGE_REF[admin-static]}" \
     "${COMPONENT_IMAGE_ID[admin-static]}" || return 1
+  if [[ -n "${COMPONENT_IMAGE_ID[eraser]:-}" ]]; then
+    inspect_service_runtime eraser "${COMPONENT_IMAGE_REF[eraser]}" "${COMPONENT_IMAGE_ID[eraser]}" || return 1
+  fi
   verify_no_unreviewed_running_api_containers || return 1
 }
 
@@ -660,12 +673,16 @@ commit_recovered_release() {
     --current-manifest-file "$RECOVERY_BASE_MANIFEST"
     --migrations-file "$MIGRATIONS_FILE"
   )
-  for component in api-shared miniapp-major-static admin-static; do
+  for component in "${FINALIZER_COMPONENTS[@]}"; do
     args+=(
       --component
       "${component}|${COMPONENT_SOURCE_SHA[$component]:-$EXPECTED_RUNTIME_SHA}|${COMPONENT_IMAGE_REF[$component]}|${COMPONENT_IMAGE_ID[$component]}"
     )
   done
+  if [[ -n "${COMPONENT_IMAGE_ID[eraser]:-}" ]]; then
+    node infra/scripts/eraser-smoke.mjs "${COMPONENT_SOURCE_SHA[eraser]}" || return 1
+    SMOKE_RESULTS+=(eraser-exact-source-ready)
+  fi
   for smoke in "${SMOKE_RESULTS[@]}"; do
     args+=(--smoke "$smoke")
   done

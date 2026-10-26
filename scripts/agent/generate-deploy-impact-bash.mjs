@@ -14,6 +14,7 @@ const componentVariables = Object.freeze({
   'api-shared': 'MAXIM_IMPACT_PATH_API_SHARED',
   'miniapp-major-static': 'MAXIM_IMPACT_PATH_MINIAPP_MAJOR_STATIC',
   'admin-static': 'MAXIM_IMPACT_PATH_ADMIN_STATIC',
+  eraser: 'MAXIM_IMPACT_PATH_ERASER',
 });
 
 export function globToBashEre(pattern) {
@@ -82,6 +83,7 @@ export function renderDeployImpactBash(rawConfig) {
     '  MAXIM_IMPACT_PATH_API_SHARED=0',
     '  MAXIM_IMPACT_PATH_MINIAPP_MAJOR_STATIC=0',
     '  MAXIM_IMPACT_PATH_ADMIN_STATIC=0',
+    '  MAXIM_IMPACT_PATH_ERASER=0',
     '',
   );
 
@@ -109,6 +111,7 @@ export function renderDeployImpactBash(rawConfig) {
     '    MAXIM_IMPACT_PATH_API_SHARED=1',
     '    MAXIM_IMPACT_PATH_MINIAPP_MAJOR_STATIC=1',
     '    MAXIM_IMPACT_PATH_ADMIN_STATIC=1',
+    '    MAXIM_IMPACT_PATH_ERASER=1',
     '  fi',
     '}',
   );

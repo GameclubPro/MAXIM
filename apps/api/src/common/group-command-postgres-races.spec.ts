@@ -93,6 +93,11 @@ describePostgresRace('PostgreSQL durable GROUP command races', () => {
     const service = Object.create(AdminService.prototype) as AdminService;
     Object.assign(service, {
       prisma: client,
+      configService: new ConfigService({
+        ERASER_ENABLED: false,
+        ERASER_CONTROL_URL: '',
+        ERASER_CONTROL_TOKEN: '',
+      }),
       assertChatAdmin: jest.fn().mockResolvedValue(undefined),
       ensureEntityType: jest.fn().mockResolvedValue(undefined),
       chatContextCache: { invalidate: jest.fn().mockResolvedValue(undefined) },

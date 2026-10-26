@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261024030000_align_central_statistics_foreign_keys",
-  "baselineNamesSha256": "c88b2611f5be6b7cf743c41c9c9d9c4df133b36ea19100290a9477dda1c0f1d9",
-  "baselineContentsSha256": "6ed0b0c4f9f9771225a9f5b6f63e60e720913de415f55433b14c9245b088ed2e",
+  "baselineThrough": "20261026010300_index_eraser_rules_audit",
+  "baselineNamesSha256": "abf41b121463b2da80f01e81a678ab6ec2fe0329d9153ba353b94bec45087085",
+  "baselineContentsSha256": "baf3175e81ecd322af783e19d5c99cce44007650f390ab66f7fd559400e4bb62",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -141,6 +141,11 @@
       "reason": "Reviewed additive nullable denial marker, three static functions, two row triggers and receipt-proven backfill. EXECUTE FUNCTION is classified as destructive; no dynamic SQL, DROP, DELETE, publication change or invented consent is present.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "The nullable column is ignored by old strict v1 readers. One DDL transaction serializes both receipt writers while installing receipt/backfill and binding fences; old v2 writers cannot enable a marked binding. Proven revokes invalidate consent, leases and button proof/epochs. Current independent legacy true is excluded from backfill, and only explicit legacy true clears the marker with its existing local revision CAS. No stateful services or message data are changed."
+    },
+    "20261026010000_add_eraser_bridge": {
+      "reason": "Reviewed additive independent-retention ownership, operation journal, protection outbox and static source/publication triggers. Function EXECUTE is static. The sole DELETE removes an obsolete transient publication fence after the producer settles; immutable protected IDs, source holds and legacy action evidence are never removed. No historical business table is rewritten or backfilled.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "New tables start empty and old policy readers remain compatible before ownership. Transfer first revokes legacy execution and preserves all uncertain journals. Persisted ownership forbids moderator fallback even when the feature flag is off; both rollback paths require ownership-aware readers. New protection is bootstrapped and acknowledged before independent cleanup enables. Cold source writers must confirm additive Lastik holds before committing source dispositions."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -248,6 +253,9 @@
     },
     "20261024010000_add_central_statistics_store": {
       "reason": "All indexes belong to five new empty independent statistics tables. Native history, bot assignments and product tables are neither indexed, rewritten nor backfilled."
+    },
+    "20261026010000_add_eraser_bridge": {
+      "reason": "Every ordinary index belongs to a new empty bridge table. Existing giveaway and retention-intent history indexes are isolated in separate concurrent migrations; this migration scans no retained source history."
     }
   }
 }

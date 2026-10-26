@@ -36,8 +36,8 @@ export function RetentionDesk(props: RetentionDeskProps) {
       <section className="retention-runtime queue-panel">
         <header className="retention-toolbar">
           <div>
-            <h2>Очистка по сроку</h2>
-            <p>Новые сообщения после включения. История чата не загружается.</p>
+            <h2>«Ластик»: очистка по сроку</h2>
+            <p>Новые сообщения и доступная история. Закрепы, правила и розыгрыши защищены.</p>
           </div>
           <span className="risk-badge is-neutral">
             {runtime ? `Режим: ${runtime.mode}` : 'Загрузка'}
@@ -94,7 +94,8 @@ export function RetentionDesk(props: RetentionDeskProps) {
                             <td>
                               <strong>{item.chatTitle || item.chatId}</strong>
                               <small>
-                                {item.chatId} · {item.hours} ч ·{' '}
+                                {item.chatId} ·{' '}
+                                {item.hours === 168 ? '1 неделя' : `${item.hours} ч`} ·{' '}
                                 {item.enabled ? 'Включено' : 'Выключено'}
                               </small>
                             </td>
@@ -107,6 +108,29 @@ export function RetentionDesk(props: RetentionDeskProps) {
                               {item.hasTerminalReview && <small>Нужна проверка</small>}
                               {item.hasUnresolvedReceipt && (
                                 <small>Проверяется результат MAX</small>
+                              )}
+                              {item.connectionStatus && item.connectionStatus !== 'connected' && (
+                                <small>
+                                  {item.connectionStatus === 'missing'
+                                    ? '«Ластик» не подключён'
+                                    : item.connectionStatus === 'no_access'
+                                      ? '«Ластику» нужны права'
+                                      : 'Подключение проверяется'}
+                                </small>
+                              )}
+                              {item.historyStatus && (
+                                <small>
+                                  История:{' '}
+                                  {
+                                    {
+                                      pending: 'ожидает',
+                                      running: 'обход',
+                                      complete: 'обход завершён',
+                                      blocked: 'часть истории отложена',
+                                      off: 'выключена',
+                                    }[item.historyStatus]
+                                  }
+                                </small>
                               )}
                             </td>
                             <td>

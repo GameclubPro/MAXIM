@@ -13,6 +13,17 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
+
+export function retentionOperationId(operationId: string, entityId: string): string {
+  const bytes = createHash('sha256')
+    .update(`eraser-policy:v1:${operationId}:${entityId}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 import {
   networkSettingsApplyRequestSchema,
   networkNavigationAllowlistReadRequestSchema,
@@ -490,6 +501,23 @@ export class NetworkSettingsService {
     recipient: NetworkSettingsRecipient,
     options: NetworkSettingsWriteOptions,
   ) {
+    const eraserOperationId = retentionOperationId(request.operationId, recipient.entityId);
+    if (
+      request.entityType === 'chat' &&
+      request.section === 'messageRetention' &&
+      !options.validateOnly &&
+      this.retention
+    ) {
+      // FLAG: Resume the exact durable remote request before comparing a changed remote revision.
+      // The previous response may have been lost after Lastik committed it.
+      const resumed = await this.retention.resumeEraserOperation(
+        recipient.entityId,
+        user,
+        eraserOperationId,
+        options,
+      );
+      if (resumed) return;
+    }
     const snapshot = await this.snapshot(user, request, recipient.entityId);
     const currentRecipient: NetworkSettingsRecipient = snapshot.recipient;
     if (
@@ -535,6 +563,7 @@ export class NetworkSettingsService {
             user,
             {
               ...(next as unknown as { messageRetention: object }).messageRetention,
+              operationId: eraserOperationId,
               expectedRevision: recipient.messageRetentionRevision,
             },
             options,
@@ -768,6 +797,23 @@ export class NetworkSettingsService {
                 ? { validateOnly: true }
                 : {
                     deferFollowup: true,
+                    beforeWrite: async (tx) => {
+                      const owned = await tx.networkSettingsOperation.updateMany({
+                        where: {
+                          id: operationId,
+                          leaseToken,
+                          status: 'RUNNING',
+                          leaseUntil: { gt: new Date() },
+                        },
+                        data: { leaseUntil: new Date(Date.now() + LEASE_MS) },
+                      });
+                      if (!owned.count) throw changed();
+                      const writable = await tx.networkSettingsOperationTarget.findUnique({
+                        where: { operationId_entityId: { operationId, entityId: target.entityId } },
+                        select: { status: true },
+                      });
+                      if (writable?.status !== 'AUTHORIZED') throw changed();
+                    },
                     onCommitted: async (tx, revision) => {
                       // FLAG: Settings and their durable receipt commit together. A stale lease owner
                       // cannot commit either; recovery resumes COMMITTED followups without another write.
@@ -825,6 +871,21 @@ export class NetworkSettingsService {
             progressed = true;
           } catch (error) {
             const status = error instanceof HttpException ? error.getStatus() : 503;
+            if (!preflight && request.section === 'messageRetention' && status >= 500) {
+              // FLAG: A lost remote response is still pending, never FAILED or completed.
+              // Durable request identity lets the next lease reconcile the same operation.
+              await this.withLease(operationId, leaseToken, operation.status, async (tx) => {
+                await tx.networkSettingsOperationTarget.updateMany({
+                  where: { operationId, entityId: target.entityId, status: 'AUTHORIZED' },
+                  data: {
+                    failureCode: 'TRANSIENT',
+                    failureMessage:
+                      'Ответ Ластика ожидается. Состояние будет проверено автоматически.',
+                  },
+                });
+              });
+              continue;
+            }
             const failureCode = [401, 403].includes(status)
               ? 'DENIED'
               : [409, 412, 428].includes(status)

@@ -47,6 +47,114 @@ services:
     volumes:
       - redis_data:/data
 
+  # FLAG: Lastik owns its stores and MAX credentials; it is not a shared API role.
+  eraser-postgres:
+    image: postgres:16-alpine
+    profiles: [eraser]
+    restart: unless-stopped
+    logging: *default-logging
+    shm_size: 256m
+    cpus: 1
+    mem_limit: 1g
+    pids_limit: 128
+    environment:
+      POSTGRES_USER: eraser
+      POSTGRES_DB: eraser
+      POSTGRES_PASSWORD_FILE: /run/secrets/eraser_postgres_password
+      TZ: UTC
+      PGTZ: UTC
+    secrets: [eraser_postgres_password]
+    networks: [eraser_stores]
+    volumes:
+      - eraser_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U eraser -d eraser']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  eraser-redis:
+    image: redis:7-alpine
+    profiles: [eraser]
+    restart: unless-stopped
+    logging: *default-logging
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    command:
+      [
+        'redis-server',
+        '--appendonly',
+        'yes',
+        '--appendfsync',
+        'everysec',
+        '--maxmemory',
+        '192mb',
+        '--maxmemory-policy',
+        'noeviction',
+      ]
+    stop_grace_period: 1m
+    networks: [eraser_stores]
+    volumes:
+      - eraser_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  eraser:
+    image: ${MAXIM_ERASER_IMAGE:-maxim-eraser:local}
+    profiles: [eraser]
+    build:
+      context: ..
+      dockerfile: apps/eraser/Dockerfile
+      args:
+        COMMIT_SHA: ${MAXIM_EXPECTED_DEPLOY_SHA:-local}
+      labels:
+        com.maxim.release-protected: 'true'
+        org.opencontainers.image.revision: ${MAXIM_EXPECTED_DEPLOY_SHA:-local}
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    env_file:
+      - path: ${MAXIM_ERASER_ENV_FILE:-/var/lib/maxim-secrets/eraser.env}
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      TZ: UTC
+      COMMIT_SHA: ${MAXIM_ERASER_SOURCE_SHA:-${MAXIM_EXPECTED_DEPLOY_SHA:-local}}
+      ERASER_MAX_RPS: 20
+      ERASER_REDIS_URL: redis://eraser-redis:6379/0
+      NODE_EXTRA_CA_CERTS: /usr/local/share/ca-certificates/russian-trusted-ca-bundle.crt
+    cpus: 1
+    mem_limit: 512m
+    pids_limit: 128
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    tmpfs: ['/tmp:rw,nosuid,size=32m']
+    networks: [default, eraser_stores]
+    depends_on:
+      eraser-postgres:
+        condition: service_healthy
+      eraser-redis:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:3005:3000'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          'fetch("http://127.0.0.1:3000/health").then(async r=>{const b=await r.json();process.exit(r.ok&&b.status==="ok"&&b.service==="eraser"?0:1)}).catch(()=>process.exit(1))',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   api-ingress:
     image: ${MAXIM_API_IMAGE:-maxim-api:local}
     build:
@@ -110,6 +218,9 @@ services:
       MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
       MAX_PUBLISHER_BOT_ID: ${MAX_PUBLISHER_BOT_ID:-se14088825_bot}
       PUBLISHER_POST_IMPORT_ENABLED: ${PUBLISHER_POST_IMPORT_ENABLED:-true}
+      ERASER_ENABLED: ${ERASER_ENABLED:-false}
+      ERASER_CONTROL_URL: ${ERASER_CONTROL_URL:-http://eraser:3000}
+      ERASER_CONTROL_TOKEN: ${ERASER_CONTROL_TOKEN:-}
       MAX_PUBLISHER_INIT_DATA_KEYS_FILE: /run/secrets/max_publisher_init_data_keys
       MAX_PUBLISHER_DIALOG_SIGNING_KEY_FILE: /run/secrets/max_publisher_dialog_signing_keys
     secrets:
@@ -911,6 +1022,8 @@ services:
       - '127.0.0.1:3004:3000'
 
 secrets:
+  eraser_postgres_password:
+    file: ${MAXIM_ERASER_POSTGRES_PASSWORD_FILE:-/var/lib/maxim-secrets/eraser-postgres-password}
   max_publisher_bot_token:
     file: /var/lib/maxim-secrets/publik-bot-token
   max_publisher_webhook_credentials:
@@ -921,11 +1034,25 @@ secrets:
     file: /var/lib/maxim-secrets/publik-dialog-signing-keys.json
 
 networks:
+  eraser_stores:
+    internal: true
   default:
   commercial_llm_internal:
     internal: true
 
 volumes:
+  eraser_postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/maxim-cold/runtime/eraser/postgres
+  eraser_redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/maxim-cold/runtime/eraser/redis
   photo_native_ipc:
   ocr_native_ipc:
   postgres_data:

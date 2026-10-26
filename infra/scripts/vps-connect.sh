@@ -72,6 +72,8 @@ Commands:
                               Inspect exact old sources without stopping or changing work
   source-abandonment-corrective <private-envelope.json>
                               Continue reviewed recovery with an exact green controller
+  eraser-bootstrap <private-request.json>|--stores-only
+  eraser-webhook
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
   commercial-llm install|replace|enable|disable|stop [--apply]
@@ -932,6 +934,10 @@ if [[ "$(git rev-parse --verify refs/heads/main 2>/dev/null || true)" != "$expec
   exit 1
 fi
 require_market_statistics_lock_dispatch "$expected_tooling_sha" || exit 1
+if [[ -e /var/lib/maxim-deploy/eraser-reader-version ]]; then
+  source infra/scripts/lib/deploy-topology.sh
+  maxim_topology_require_eraser_bridge "$expected_tooling_sha" || exit 1
+fi
 git checkout main
 if [[ "$(git rev-parse HEAD)" != "$expected_tooling_sha" ]]; then
   echo "Synchronized rollback tooling does not match the reviewed SHA." >&2
@@ -1390,6 +1396,29 @@ finalize_release_recovery() {
   remote_exec "$remote_command"
 }
 
+eraser_bootstrap() {
+  local request_file="${1:-}" source_sha
+  [[ "$#" -eq 1 ]] || { echo 'Usage: eraser-bootstrap <private-0600-request.json>|--stores-only' >&2; return 2; }
+  source_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)" || return
+  if [[ "$request_file" != --stores-only ]]; then
+    node "$ROOT_DIR/infra/scripts/eraser-bootstrap.mjs" validate "$request_file" || return
+  fi
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$source_sha" || return
+  if [[ "$request_file" == --stores-only ]]; then
+    remote_exec "$(shell_quote_args bash ./infra/scripts/vps-eraser-bootstrap.sh "$source_sha" --stores-only)"
+  else
+    remote_exec "$(shell_quote_args bash ./infra/scripts/vps-eraser-bootstrap.sh "$source_sha")" <"$request_file"
+  fi
+}
+
+eraser_webhook() {
+  [[ "$#" -eq 0 ]] || { echo 'Usage: eraser-webhook' >&2; return 2; }
+  local source_sha
+  source_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)" || return
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$source_sha" || return
+  remote_exec "$(shell_quote_args bash ./infra/scripts/vps-eraser-webhook.sh "$source_sha")"
+}
+
 preload_ci_image() (
   local component="${1:-}"
   local ref="${2:-HEAD}"
@@ -1423,8 +1452,12 @@ preload_ci_image() (
       artifact_component="admin"
       image_repository="maxim-admin"
       ;;
+    eraser)
+      artifact_component="eraser"
+      image_repository="maxim-eraser"
+      ;;
     *)
-      echo "Component must be one of: api, miniapp, admin." >&2
+      echo "Component must be one of: api, miniapp, admin, eraser." >&2
       exit 2
       ;;
   esac
@@ -1519,7 +1552,8 @@ fi
 case "$MAXIM_PRELOAD_IMAGE_REF" in
   "maxim-api:${MAXIM_PRELOAD_EXPECTED_SHA}"|\
   "maxim-miniapp-major:${MAXIM_PRELOAD_EXPECTED_SHA}"|\
-  "maxim-admin:${MAXIM_PRELOAD_EXPECTED_SHA}")
+  "maxim-admin:${MAXIM_PRELOAD_EXPECTED_SHA}"|\
+  "maxim-eraser:${MAXIM_PRELOAD_EXPECTED_SHA}")
     ;;
   *)
     echo "Refusing unsafe CI image preload target: $MAXIM_PRELOAD_IMAGE_REF" >&2
@@ -1648,7 +1682,7 @@ rollback_runtime() {
 
 rollback_release() {
   if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 rollback-release <release-id> [api-shared] [miniapp-major-static] [admin-static]"
+    echo "Usage: $0 rollback-release <release-id> [api-shared] [miniapp-major-static] [admin-static] [eraser]"
     exit 1
   fi
 
@@ -1850,6 +1884,12 @@ case "$command" in
     ;;
   deploy)
     deploy_main "$@"
+    ;;
+  eraser-bootstrap)
+    eraser_bootstrap "$@"
+    ;;
+  eraser-webhook)
+    eraser_webhook "$@"
     ;;
   preload-ci-image)
     preload_ci_image "$@"

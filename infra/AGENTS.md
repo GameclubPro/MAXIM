@@ -23,6 +23,8 @@ an operation; its detailed guards, recovery protocols and rollback floors remain
 - `infra/docker-compose.yml` is production; scale topology is for separate load tests. Never
   start both. Svyazka (`/var/www/svyazka`, `/market/`) and Karavan
   (`/var/www/max-delivery-platform`) are independent: preserve their routes, stores and services.
+- «Ластик» has its own image, webhook, PostgreSQL and Redis. Keep its token out of API roles;
+  preserve takeover fences and follow [its rollout](../docs/operations/runbooks/eraser-rollout.md).
 - The shared API image has exactly 14 roles: `api-ingress`, `api-admin`, `api-enqueue`,
   `api-moderation`, `api-moderation-critical`, `api-moderation-join`, `api-moderation-realtime-b`,
   `api-moderation-realtime-c`, `api-moderation-realtime-d`, `api-moderation-background`,

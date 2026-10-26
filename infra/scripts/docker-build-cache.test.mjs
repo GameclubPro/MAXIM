@@ -272,12 +272,13 @@ test('bakes the production API URL into only the Major mini app image', () => {
   const matrix = JSON.parse(
     ciOutputs({
       lanes: Object.fromEntries(CI_LANES.map((lane) => [lane, true])),
-      dockerComponents: ['api', 'miniapp', 'admin'],
+      dockerComponents: ['eraser', 'api', 'miniapp', 'admin'],
     }).docker_matrix,
   ).include;
   assert.deepEqual(
     matrix.map(({ component, vite_api_base }) => [component, vite_api_base]),
     [
+      ['eraser', ''],
       ['api', ''],
       ['miniapp', 'https://major-maksimov.ru/api/v1'],
       ['admin', ''],
@@ -285,10 +286,35 @@ test('bakes the production API URL into only the Major mini app image', () => {
   );
   assert.match(dockerJob, /matrix: \$\{\{ fromJSON\(needs\.impact\.outputs\.docker_matrix\) \}\}/u);
   assert.match(dockerJob, /VITE_API_BASE: \$\{\{ matrix\.vite_api_base \}\}/u);
-  assert.match(dockerJob, /build_args=\(\)/u);
+  assert.match(dockerJob, /build_args=\(--build-arg "COMMIT_SHA=\$\{\{ github\.sha \}\}"\)/u);
   assert.match(dockerJob, /if \[\[ -n "\$VITE_API_BASE" \]\]; then/u);
   assert.match(dockerJob, /build_args\+=\(--build-arg "VITE_API_BASE=\$VITE_API_BASE"\)/u);
   assert.match(dockerJob, /"\$\{build_args\[@\]\}"/u);
+  const buildArgsStart = dockerJob.indexOf('          build_args=');
+  const buildArgsEnd = dockerJob.indexOf('          cache_args=()', buildArgsStart);
+  assert.notEqual(buildArgsStart, -1);
+  assert.notEqual(buildArgsEnd, -1);
+  const revision = 'a'.repeat(40);
+  const buildArgs = dockerJob
+    .slice(buildArgsStart, buildArgsEnd)
+    .replace(/\$\{\{ github\.sha \}\}/gu, revision);
+  for (const { component, vite_api_base } of matrix) {
+    const result = spawnSync(
+      'bash',
+      ['-euo', 'pipefail', '-c', `${buildArgs}\nprintf '%s\\n' "\${build_args[@]}"`],
+      { encoding: 'utf8', env: { ...process.env, VITE_API_BASE: vite_api_base } },
+    );
+    assert.equal(result.status, 0, `${component}: ${result.stderr}`);
+    assert.deepEqual(
+      result.stdout.trim().split('\n'),
+      [
+        '--build-arg',
+        `COMMIT_SHA=${revision}`,
+        ...(vite_api_base ? ['--build-arg', `VITE_API_BASE=${vite_api_base}`] : []),
+      ],
+      component,
+    );
+  }
 });
 
 test('runs the compiled native OCR raster smoke through an isolated UDS sidecar', () => {

@@ -19,7 +19,8 @@ const entrypoint = 'infra/scripts/vps-pull-build-up.sh';
 const outcomeHelper = 'infra/scripts/lib/outcome-cohort-online-prepare.sh';
 const photoHelper = 'infra/scripts/lib/photo-native-lifecycle.sh';
 const topologyHelper = 'infra/scripts/lib/deploy-topology.sh';
-const topologySources = readFileSync(new URL('./lib/deploy-topology.sh', import.meta.url), 'utf8')
+const topologySource = readFileSync(new URL('./lib/deploy-topology.sh', import.meta.url), 'utf8');
+const topologySources = topologySource
   .split('\n')
   .filter((line) => line.startsWith('source '))
   .join('\n');
@@ -147,7 +148,12 @@ function fixture(
   );
   chmodSync(resolve(repo, entrypoint), 0o755);
   writeFileSync(resolve(repo, outcomeHelper), helper('old'));
-  writeFileSync(resolve(repo, topologyHelper), topologySources);
+  writeFileSync(
+    resolve(repo, topologyHelper),
+    `${topologySources}\n${topologySource.slice(topologySource.indexOf('maxim_topology_require_eraser_bridge() {'))}`
+      .replaceAll('/var/lib/maxim-deploy', resolve(directory, 'deploy-state'))
+      .replaceAll('/var/lib/maxim-secrets', resolve(directory, 'secrets')),
+  );
   writeFileSync(resolve(repo, photoHelper), photoNativeHelper('old'));
   const A = commit('A: original installed controller');
   if (!helperOnly && !photoHelperOnly) writeFileSync(resolve(repo, entrypoint), controller('new'));

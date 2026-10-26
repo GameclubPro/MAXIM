@@ -88,6 +88,7 @@ maxim_topology_require_stop_words_policy_guard "$TARGET_FULL_SHA"
 maxim_topology_require_traffic_protection_guard "$TARGET_FULL_SHA"
 maxim_topology_require_participant_report_guard "$TARGET_FULL_SHA"
 maxim_topology_require_message_retention_guard "$TARGET_FULL_SHA"
+maxim_topology_require_eraser_bridge "$TARGET_FULL_SHA"
 maxim_topology_require_suggestion_subscription_guard "$TARGET_FULL_SHA"
 maxim_topology_require_message_duplicate_delete_guard "$TARGET_FULL_SHA"
 maxim_topology_require_multibot_authority "$TARGET_FULL_SHA"
@@ -374,6 +375,10 @@ verify_inherited_static_components() {
   verify_service_image_id miniapp-major-static "$expected_image_id"
   expected_image_id="$(runtime_recovery_base_field admin-static imageId)"
   verify_service_image_id admin-static "$expected_image_id"
+  if expected_image_id="$(runtime_recovery_base_field eraser imageId 2>/dev/null)"; then
+    verify_service_image_id eraser "$expected_image_id"
+    node infra/scripts/eraser-smoke.mjs "$(runtime_recovery_base_field eraser sourceSha)"
+  fi
 }
 
 strict_smoke_json_ok() {

@@ -15,10 +15,17 @@ export const CI_LANES = Object.freeze([
   'commercial-benchmark',
   'miniapp',
   'admin',
+  'eraser',
   'docker',
 ]);
 
 export const DOCKER_COMPONENTS = Object.freeze([
+  {
+    component: 'eraser',
+    dockerfile: 'apps/eraser/Dockerfile',
+    image_repository: 'maxim-eraser',
+    vite_api_base: '',
+  },
   {
     component: 'api',
     dockerfile: 'apps/api/Dockerfile',
@@ -53,12 +60,14 @@ const KNOWN_CHECKS = new Set([
   'miniapp-production-build',
   'miniapp-visual-local',
   'admin',
+  'eraser',
   'full',
 ]);
 const COMPONENT_LANES = {
   'api-shared': 'api',
   'miniapp-major-static': 'miniapp',
   'admin-static': 'admin',
+  eraser: 'eraser',
 };
 
 function git(cwd, args) {
@@ -133,6 +142,7 @@ export function selectCiLanes(impact, { base, head }) {
         [...checks].some((check) => check.startsWith('miniapp')) ||
         dockerComponents.includes('miniapp'),
       admin: checks.has('admin') || dockerComponents.includes('admin'),
+      eraser: checks.has('eraser') || dockerComponents.includes('eraser'),
       docker: dockerComponents.length > 0,
     },
     dockerComponents,
