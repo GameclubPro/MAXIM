@@ -153,12 +153,14 @@ export function mountMixedRetentionFixture() {
   container.className = 'message-retention-settings';
   document.body.append(container);
   function Fixture() {
+    const [enabled, setEnabled] = useState({ kind: 'mixed' });
     const [hours, setHours] = useState({ kind: 'mixed' });
     return React.createElement(SharedMessageRetentionFields, {
-      enabled: { kind: 'common', value: false },
+      scope: 'network',
+      enabled,
       hours,
       disabled: false,
-      onEnabledChange() {},
+      onEnabledChange: (value) => setEnabled({ kind: 'common', value }),
       onHoursChange: (value) => setHours({ kind: 'common', value }),
     });
   }

@@ -98,10 +98,20 @@ export function SettingsMessageRetentionEditor({
       setPermissionBlocker(null);
       setUncertainWrite(false);
     },
-    onError: (error) => {
+    onError: async (error, input) => {
       setPermissionBlocker(parseBotPermissionBlocker(error));
-      if (isRetentionRevisionConflict(error))
-        void client.invalidateQueries({ queryKey, exact: true });
+      if (isRetentionRevisionConflict(error)) {
+        const latest = await query.refetch();
+        // FLAG: A typed CAS rejection plus a newer authoritative revision fences the original
+        // request. Other conflicts or an unreadable/older policy cannot settle its outcome.
+        if (
+          input.operationId &&
+          !latest.isError &&
+          latest.data &&
+          latest.data.revision > input.expectedRevision
+        )
+          setUncertainWrite(false);
+      }
     },
   });
   const query = useQuery({
@@ -120,7 +130,7 @@ export function SettingsMessageRetentionEditor({
   }, [chatId, state]);
   const { current, dirty, conflict } = retentionEditorState(state, draft);
   const saveConflict = isRetentionRevisionConflict(save.error);
-  const writeError = saveConflict || recoveredSave ? null : save.error;
+  const writeError = (saveConflict && !uncertainWrite) || recoveredSave ? null : save.error;
   const closeBlocked = save.isPending || uncertainWrite;
   const showConflict = conflict || saveConflict;
   const change = (patch: Partial<Pick<UpdateMessageRetention, 'enabled' | 'hours'>>) => {

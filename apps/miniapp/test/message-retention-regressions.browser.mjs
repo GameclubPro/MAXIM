@@ -8,11 +8,14 @@ export async function runRetentionRegressions(browser, base) {
     'lost-reply',
     'unconfirmed-read',
     'late-commit',
+    'uncertain-conflict',
+    'uncertain-conflict-read-error',
     'write-retry',
     'remote-draft',
     'summary',
     'chat-change',
     'connect-bot',
+    'connection-rights',
     'mixed-hours',
   ]) {
     const context = await browser.newContext({
@@ -46,13 +49,31 @@ export async function runRetentionRegressions(browser, base) {
         const first = group.getByRole('radio', { name: '24 часа', exact: true });
         await first.waitFor();
         assert.equal(await first.getAttribute('tabindex'), '0');
-        await page.getByRole('switch', { name: 'Удаление по сроку' }).focus();
+        const mixedToggle = page.getByRole('checkbox', { name: 'Удаление по сроку' });
+        assert.equal(await mixedToggle.getAttribute('aria-checked'), 'mixed');
+        assert.equal(await mixedToggle.evaluate((node) => node.indeterminate), true);
+        assert.equal(
+          await page
+            .getByText(
+              'Добавьте «Ластика» администратором в чаты сетки с правами чтения и удаления сообщений.',
+              { exact: true },
+            )
+            .isVisible(),
+          true,
+        );
+        assert.equal(await page.getByText('«Ластик» подключён', { exact: true }).count(), 0);
+        await mixedToggle.focus();
         await page.keyboard.press('Tab');
         assert.equal(await first.evaluate((node) => node === document.activeElement), true);
         await page.keyboard.press('ArrowRight');
         assert.equal(await group.getByRole('radio', { name: '48 часов' }).isChecked(), true);
         await page.keyboard.press('End');
         assert.equal(await group.getByRole('radio', { name: '1 неделя' }).isChecked(), true);
+        await mixedToggle.click();
+        assert.equal(
+          await page.getByRole('switch', { name: 'Удаление по сроку' }).isChecked(),
+          true,
+        );
         assert.deepEqual(errors, [], scenario);
         continue;
       }
@@ -83,6 +104,24 @@ export async function runRetentionRegressions(browser, base) {
           await link.evaluate((node) => node.getBoundingClientRect().height >= 44),
           true,
         );
+      }
+      if (scenario === 'connection-rights') {
+        await page.evaluate(() =>
+          window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'no_access' }),
+        );
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+        await panel
+          .getByText('Назначьте бота администратором с правами чтения и удаления сообщений.', {
+            exact: true,
+          })
+          .waitFor();
+        assert.equal(
+          await panel
+            .getByRole('link', { name: 'Открыть бота «Ластик»', exact: true })
+            .getAttribute('href'),
+          'https://max.ru/id613000037577_5_bot',
+        );
+        assert.equal(await panel.getByText('«Ластик» подключён', { exact: true }).count(), 0);
       }
       if (scenario === 'permissions') {
         await page.evaluate(() =>
@@ -241,6 +280,77 @@ export async function runRetentionRegressions(browser, base) {
           await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
           false,
         );
+      }
+      if (scenario === 'uncertain-conflict' || scenario === 'uncertain-conflict-read-error') {
+        await page.evaluate(() => {
+          window.__RETENTION_TEST__.holdWrite();
+          window.__RETENTION_TEST__.loseNextReplyBeforeCommit();
+        });
+        await toggle.check();
+        await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+        await panel.getByText('Сохранение пока не подтверждено', { exact: true }).waitFor();
+        await page.evaluate(() => {
+          // A different administrator wins while the original request is still in flight.
+          window.__RETENTION_TEST__.replaceServer({
+            revision: 1,
+            enabled: false,
+            hours: 168,
+            status: 'off',
+            lastOperationId: '84823d3a-8866-4b58-9d43-179da0e6595a',
+          });
+          window.__RETENTION_TEST__.releaseWrite();
+        });
+        if (scenario === 'uncertain-conflict-read-error')
+          await page.evaluate(() => window.__RETENTION_TEST__.failReads(true));
+        await panel.getByRole('button', { name: 'Проверить сохранение', exact: true }).click();
+        await panel.getByText('Настройки изменены в другом сеансе', { exact: true }).waitFor();
+        if (scenario === 'uncertain-conflict-read-error') {
+          await panel.getByText('Сохранение пока не подтверждено', { exact: true }).waitFor();
+          assert.equal(
+            await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
+            true,
+          );
+          assert.equal(
+            await panel
+              .getByRole('button', { name: 'Принять настройки', exact: true })
+              .isDisabled(),
+            true,
+          );
+          const retry = panel.getByRole('button', { name: 'Проверить сохранение', exact: true });
+          assert.equal(await retry.isVisible(), true);
+          assert.equal(await retry.isDisabled(), false);
+          await page.evaluate(() => window.__RETENTION_TEST__.failReads(false));
+          await retry.click();
+        }
+        await page.waitForFunction(
+          () =>
+            !document.querySelector('.settings-drilldown__close[aria-label="Закрыть панель"]')
+              ?.disabled,
+        );
+        assert.equal(await toggle.isDisabled(), false);
+        assert.equal(await panel.getByText('Сохранено', { exact: true }).count(), 0);
+        assert.equal(
+          await page.evaluate(() => window.__RETENTION_TEST__.serverState().revision),
+          1,
+        );
+        assert.equal(
+          await page.evaluate(
+            (expectedCount) => {
+              const writes = window.__RETENTION_TEST__.writes;
+              return (
+                writes.length === expectedCount &&
+                writes.every((input) => JSON.stringify(input) === JSON.stringify(writes[0]))
+              );
+            },
+            scenario === 'uncertain-conflict-read-error' ? 3 : 2,
+          ),
+          true,
+        );
+        await panel.getByRole('button', { name: 'Принять настройки', exact: true }).click();
+        assert.equal(await toggle.isChecked(), false);
+        assert.equal(await panel.getByRole('radio', { name: '1 неделя' }).isChecked(), true);
+        await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+        await panel.waitFor({ state: 'hidden' });
       }
       if (scenario === 'write-retry') {
         await page.evaluate(() =>

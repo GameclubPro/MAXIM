@@ -11,6 +11,7 @@ export type SharedMessageRetentionFieldsProps = {
   hours: SettingsFieldState<24 | 48 | 168>;
   disabled: boolean;
   enableDisabled?: boolean;
+  scope?: 'chat' | 'network';
   connectionStatus?: MessageRetentionState['connectionStatus'];
   onEnabledChange: (enabled: boolean) => void;
   onHoursChange: (hours: 24 | 48 | 168) => void;
@@ -21,6 +22,7 @@ export function SharedMessageRetentionFields({
   hours,
   disabled,
   enableDisabled,
+  scope = 'chat',
   connectionStatus,
   onEnabledChange,
   onHoursChange,
@@ -37,9 +39,15 @@ export function SharedMessageRetentionFields({
         </span>
         <div className="message-retention-bot__copy">
           <strong>
-            {connectionStatus === 'connected' ? '«Ластик» подключён' : 'Бот «Ластик»'}
+            {scope === 'chat' && connectionStatus === 'connected'
+              ? '«Ластик» подключён'
+              : 'Бот «Ластик»'}
           </strong>
-          {connectionStatus !== 'connected' ? (
+          {scope === 'network' ? (
+            <p>
+              Добавьте «Ластика» администратором в чаты сетки с правами чтения и удаления сообщений.
+            </p>
+          ) : connectionStatus !== 'connected' ? (
             <p>
               {connectionStatus === 'no_access'
                 ? 'Назначьте бота администратором с правами чтения и удаления сообщений.'
@@ -66,7 +74,7 @@ export function SharedMessageRetentionFields({
             ref={toggle}
             id="message-retention-enabled"
             type="checkbox"
-            role="switch"
+            role={enabled.kind === 'mixed' ? 'checkbox' : 'switch'}
             checked={enabled.kind === 'common' && enabled.value}
             aria-checked={
               enabled.kind === 'mixed' ? 'mixed' : enabled.kind === 'common' && enabled.value
