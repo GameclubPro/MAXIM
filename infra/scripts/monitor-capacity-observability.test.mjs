@@ -1114,6 +1114,69 @@ test('API fleet rejects every security-relevant OCR sandbox drift without exposi
   });
 });
 
+test('API fleet reads a release with independent Lastik while retaining manifest guards', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-capacity-lastik-'));
+  const manifestPath = join(directory, 'current.json');
+  const eraser = {
+    sourceSha: '1'.repeat(40),
+    imageRef: `maxim-eraser:${'1'.repeat(40)}`,
+    imageId: `sha256:${'2'.repeat(64)}`,
+  };
+  const manifest = currentReleaseManifest();
+  manifest.components.eraser = eraser;
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  const inspection = [
+    ...DEFAULT_EXPECTED_API_SERVICES.map((_, index) => inspectedContainer(index)),
+    inspectedSandbox(80),
+    inspectedPhotoSandbox(),
+    inspectedContainer(81, {
+      service: 'eraser',
+      appRole: null,
+      appServiceName: null,
+      imageRef: eraser.imageRef,
+      imageId: eraser.imageId,
+    }),
+  ];
+  const fleet = await probeApiFleet(DEFAULT_EXPECTED_API_SERVICES, {
+    manifestPath,
+    runBounded: async (command, args) => {
+      if (command === 'git') {
+        assert.deepEqual(args, ['show', `${apiImageSha}:infra/docker-compose.yml`]);
+        return { ok: true, output: productionComposeSource };
+      }
+      return {
+        ok: true,
+        output:
+          args[0] === 'ps'
+            ? inspection.map((container) => container.Id).join('\n')
+            : JSON.stringify(inspection),
+      };
+    },
+  });
+  assert.equal(fleet.available, true);
+  assert.equal(fleet.expectedRoleCount, 14);
+  assert.equal(fleet.exactImageRoleCount, 14);
+  assert.equal(fleet.identityRoleCount, 14);
+  assert.equal(fleet.unexpectedApiContainerCount, 0);
+  assert.deepEqual(readExpectedApiImage(manifestPath), expectedApiImage);
+
+  const invalid = [
+    { ...manifest.components, eraser: null },
+    { ...manifest.components, eraser: { ...eraser, sourceSha: 'invalid' } },
+    { ...manifest.components, eraser: { ...eraser, imageId: '' } },
+    { ...manifest.components, eraser: { ...eraser, imageRef: '' } },
+    { ...currentReleaseManifest().components, unknown: eraser },
+    { ...manifest.components, unknown: eraser },
+  ];
+  const missingRequired = { ...manifest.components };
+  delete missingRequired['admin-static'];
+  invalid.push(missingRequired);
+  for (const components of invalid) {
+    writeFileSync(manifestPath, JSON.stringify({ ...manifest, components }));
+    assert.throws(() => readExpectedApiImage(manifestPath), /incomplete or invalid/u);
+  }
+});
+
 test('API fleet fallback topology and release manifest identity stay exact', () => {
   const topologySource = readFileSync(
     resolve(root, 'infra/scripts/lib/deploy-topology.sh'),
@@ -1228,6 +1291,31 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
   assert.throws(() => readExpectedApiImage(manifestPath), /incomplete or invalid/u);
   writeFileSync(manifestPath, JSON.stringify({ ...currentReleaseManifest(), schemaVersion: 2 }));
   assert.throws(() => readExpectedApiImage(manifestPath), /incomplete or invalid/u);
+});
+
+test('API fleet manifest reader rejects coerced component identities', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-capacity-typed-manifest-'));
+  const manifestPath = join(directory, 'current.json');
+  const manifest = currentReleaseManifest();
+  manifest.components.eraser = {
+    sourceSha: '1'.repeat(40),
+    imageRef: `maxim-eraser:${'1'.repeat(40)}`,
+    imageId: `sha256:${'2'.repeat(64)}`,
+  };
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  assert.deepEqual(readExpectedApiImage(manifestPath), expectedApiImage);
+  for (const id of Object.keys(manifest.components)) {
+    for (const field of ['sourceSha', 'imageRef', 'imageId']) {
+      const invalid = structuredClone(manifest);
+      invalid.components[id][field] = [invalid.components[id][field]];
+      writeFileSync(manifestPath, JSON.stringify(invalid));
+      assert.throws(
+        () => readExpectedApiImage(manifestPath),
+        /incomplete or invalid/u,
+        `${id}: ${field} must be a string`,
+      );
+    }
+  }
 });
 
 test('capacity probe resolves its sibling helper when executed through node stdin', () => {
