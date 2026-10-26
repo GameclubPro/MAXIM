@@ -76,6 +76,7 @@ Detailed constraints selected by the routing table in [API agent notes](../../ap
 - MAX permissions are entity-sensitive: group-chat `write` permits message deletion and channel posting, but channel edit/delete requires `edit`/`edit_message` and `delete`/`delete_message` respectively.
 - In hot paths prefer targeted `getCurrentChatMemberAccess` or `getChatMembersAccess`; fetch a full admin roster only when the feature needs it.
 - For `GET /chats/{chatId}/members`, send multiple IDs as one comma-separated `user_ids` value; repeated parameters can collapse to the first user.
+- Manual BAN fanout requires fresh exact-bot membership (`bypassCache`) under the sanction lease before reconciling a native unban. Its cutoff clears only nonambiguous terminal `SUCCEEDED` BANs completed strictly before that lookup began. Legacy confirmed-unban treats terminal `FAILED_TERMINAL`/`FAILED_RETRYABLE` alike: require definitive access/documented member rejection, the exact watchdog non-retryable classifier marker, certified pre-dispatch rejection or untouched attempt/dispatch evidence. Other watchdog markers and generic attempted failures stay fenced. Absent/protected/unknown membership, lease loss, equal/newer completion and uncertain effects preserve their evidence; settled fanout replay never repeats the mutation. Cover both modes and the actual watchdog writer through `shared-member-action-postgres.spec.ts`.
 
 ## Live MAX Test Entities
 

@@ -2992,8 +2992,20 @@ export class MaxClientService implements OnModuleDestroy {
     await this.dispatchAction({ actionType: 'TRY_UNBAN_MEMBER', chatId, userId }, options);
   }
 
-  async clearTerminalBanStateAfterConfirmedUnban(chatId: string, userId: string): Promise<void> {
-    await this.actionLedgerService?.clearTerminalBanStateAfterUnban(chatId, userId);
+  async clearTerminalBanStateAfterConfirmedUnban(
+    chatId: string,
+    userId: string,
+    completedBefore?: Date,
+  ): Promise<void> {
+    if (completedBefore) {
+      await this.actionLedgerService?.clearTerminalBanStateAfterUnban(
+        chatId,
+        userId,
+        completedBefore,
+      );
+    } else {
+      await this.actionLedgerService?.clearTerminalBanStateAfterUnban(chatId, userId);
+    }
   }
 
   async leaveCurrentChat(chatId: string, options: MaxApiRequestOptions = {}): Promise<void> {

@@ -4965,6 +4965,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-2', 'user-3');
     expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-3', {
       trafficClass: 'background',
+      bypassCache: true,
     });
     expect(maxClient.banMember).toHaveBeenCalledWith(
       'chat-1',
@@ -5085,6 +5086,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-3', {
       trafficClass: 'background',
       botId: 'bot-2',
+      bypassCache: true,
     });
     expect(maxClient.banMember).toHaveBeenCalledWith(
       'chat-1',

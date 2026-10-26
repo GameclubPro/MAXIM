@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
+import { chatSummarySchema } from '@maxim/contracts';
 import { Job, Queue, QueueEvents, Worker } from 'bullmq';
 import { MaxActionLedgerService } from './max-action-ledger.service';
+import { buildMaxActionIdempotencyKey } from './max-action-idempotency';
 import { MaxApiInternalRateLimitError, type MaxActionJob } from './max-client.service';
 import { normalizeMaxApiRateLimitServiceScope } from './max-api-metrics-key.util';
 import {
@@ -13,6 +15,8 @@ import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import { MaxActionLedgerWatchdogService } from '../system/max-action-ledger-watchdog.service';
+import { AdminService } from '../admin/admin.service';
+import type { AdminManualModerationRuntimeContext } from '../admin/admin-manual-moderation-runtime-context';
 import {
   createMultibotHarness,
   type MultibotHarness,
@@ -30,6 +34,48 @@ function fixtureAdmissionFailureKeys(botId: string): string[] {
     `maxapi:circuit:v1:${botId}:open-until`,
     `maxapi:circuit:v1:${botId}:half-open-probe`,
   ];
+}
+
+type ManualBanFanout = Pick<AdminManualModerationRuntimeContext, 'applyManualSystemBanFanout'>;
+type ManualBanFanoutInput = Parameters<ManualBanFanout['applyManualSystemBanFanout']>[0];
+
+async function withManualBanFanout(
+  s: MultibotHarness,
+  chatId: string,
+  operation: (fanout: ManualBanFanout, params: ManualBanFanoutInput) => Promise<void>,
+): Promise<void> {
+  s.config.set('MAX_BOT_TOKEN', s.bots[0]!.token);
+  const counters = new RedisCounterService(s.config);
+  let admin: AdminService | undefined;
+  try {
+    admin = new AdminService(
+      s.prisma as never,
+      s.max,
+      s.cache,
+      s.config,
+      undefined,
+      counters,
+      undefined,
+      undefined,
+      s.links,
+    );
+    await operation(admin as unknown as ManualBanFanout, {
+      jobId: `native-reban-${randomUUID()}`,
+      sourceChatId: chatId,
+      targetUserId: 'fixture-user',
+      actor: { userId: 'fixture-admin', username: null, displayName: null, chatTitle: null },
+      targetChats: [
+        chatSummarySchema.parse({
+          id: chatId,
+          title: 'Fixture',
+          createdAt: new Date().toISOString(),
+        }),
+      ],
+    });
+  } finally {
+    await admin?.onModuleDestroy();
+    await counters.onModuleDestroy();
+  }
 }
 
 stores('shared production member identity on PostgreSQL/Redis/BullMQ', () => {
@@ -156,6 +202,289 @@ stores('shared production member identity on PostgreSQL/Redis/BullMQ', () => {
     await s.max.clearTerminalBanStateAfterConfirmedUnban(chatId, 'fixture-user');
     await s.max.banMember(chatId, 'fixture-user', { botId: s.bots[3]!.id, immediate: true });
     expect(s.effects.filter((item) => item.params?.block === true)).toHaveLength(2);
+  });
+
+  it('reapplies manual ban fanout after a fresh native-unban membership confirmation', async () => {
+    const { s, chatId } = await fixture();
+    await s.max.banMember(chatId, 'fixture-user', { botId: s.bots[0]!.id, immediate: true });
+    // FLAG: The synthetic MAX member endpoint now confirms the participant is present;
+    // PostgreSQL retains the successful earlier BAN as after an external native unban.
+    const memberProbe = jest.spyOn(s.max, 'getChatMemberAccess');
+    try {
+      await withManualBanFanout(s, chatId, async (fanout, params) => {
+        await expect(fanout.applyManualSystemBanFanout(params)).resolves.toMatchObject({
+          removedChatIds: [chatId],
+          failedChatIds: [],
+        });
+        await expect(fanout.applyManualSystemBanFanout(params)).resolves.toMatchObject({
+          removedChatIds: [chatId],
+          failedChatIds: [],
+        });
+        expect(memberProbe).toHaveBeenCalledTimes(1);
+        expect(memberProbe).toHaveBeenCalledWith(
+          chatId,
+          'fixture-user',
+          expect.objectContaining({ bypassCache: true, botId: s.bots[0]!.id }),
+        );
+        expect(s.effects.filter((item) => item.params?.block === true)).toHaveLength(2);
+      });
+    } finally {
+      memberProbe.mockRestore();
+    }
+  });
+
+  it.each(['absent', 'protected', 'unavailable'] as const)(
+    'preserves the successful BAN when fresh fanout membership is %s',
+    async (state) => {
+      const { s, chatId } = await fixture();
+      await s.max.banMember(chatId, 'fixture-user', { botId: s.bots[0]!.id, immediate: true });
+      const before = await s.prisma.maxActionLedgerEntry.findMany({ where: { chatId } });
+      const memberProbe = jest.spyOn(s.max, 'getChatMemberAccess');
+      if (state === 'absent') memberProbe.mockResolvedValue(null);
+      else if (state === 'unavailable')
+        memberProbe.mockRejectedValue(new Error('Member read unavailable'));
+      else s.allowAdminUser('fixture-user');
+      try {
+        await withManualBanFanout(s, chatId, async (fanout, params) => {
+          const result = await fanout.applyManualSystemBanFanout(params);
+          expect(result.removedChatIds).toEqual([]);
+          expect(result.skippedChatIds).toEqual(state === 'unavailable' ? [] : [chatId]);
+          expect(result.retryableFailedChatIds).toEqual(state === 'unavailable' ? [chatId] : []);
+          expect(await s.prisma.maxActionLedgerEntry.findMany({ where: { chatId } })).toEqual(
+            before,
+          );
+          expect(s.effects.filter((item) => item.params?.block === true)).toHaveLength(1);
+        });
+      } finally {
+        memberProbe.mockRestore();
+      }
+    },
+  );
+
+  it.each(['IN_PROGRESS', 'AMBIGUOUS'] as const)(
+    'retains attempted %s BAN evidence after a fresh member confirmation',
+    async (status) => {
+      const { s, chatId } = await fixture();
+      const prior = job(chatId, s.bots[0]!.id);
+      await s.prisma.maxActionLedgerEntry.create({
+        data: {
+          jobId: prior.idempotencyKey,
+          actionType: 'BAN_MEMBER',
+          chatId,
+          userId: prior.userId,
+          botId: prior.botId,
+          status,
+          ambiguous: status === 'AMBIGUOUS',
+          terminal: status !== 'IN_PROGRESS',
+          attemptCount: 1,
+          firstAttemptAt: new Date(),
+          lastAttemptAt: new Date(),
+        },
+      });
+      const before = await s.prisma.maxActionLedgerEntry.findMany({ where: { chatId } });
+      await withManualBanFanout(s, chatId, async (fanout, params) => {
+        await expect(fanout.applyManualSystemBanFanout(params)).resolves.toMatchObject({
+          removedChatIds: [],
+          failedChatIds: [chatId],
+        });
+        expect(await s.prisma.maxActionLedgerEntry.findMany({ where: { chatId } })).toEqual(before);
+        expect(s.effects).toHaveLength(0);
+      });
+    },
+  );
+
+  it.each([0, 1])('retains a BAN completed %s ms after the confirmation cutoff', async (offset) => {
+    const { s, chatId } = await fixture();
+    await s.max.banMember(chatId, 'fixture-user', { botId: s.bots[0]!.id, immediate: true });
+    const before = await s.prisma.maxActionLedgerEntry.findMany({ where: { chatId } });
+    const completedAt = before[0]!.completedAt!;
+    await s.max.clearTerminalBanStateAfterConfirmedUnban(
+      chatId,
+      'fixture-user',
+      new Date(completedAt.getTime() - offset),
+    );
+    expect(await s.prisma.maxActionLedgerEntry.findMany({ where: { chatId } })).toEqual(before);
+    await expect(
+      s.max.banMember(chatId, 'fixture-user', { botId: s.bots[3]!.id, immediate: true }),
+    ).rejects.toThrow('no longer executable');
+    expect(s.effects.filter((item) => item.params?.block === true)).toHaveLength(1);
+  });
+
+  it.each(
+    [
+      { name: 'confirmed success', status: 'SUCCEEDED', cleared: true },
+      { name: 'confirmed skip', status: 'SKIPPED', cleared: true },
+      {
+        name: 'definitive terminal access rejection',
+        status: 'FAILED_TERMINAL',
+        lastStatusCode: 403,
+        lastErrorCode: 'access.denied',
+        cleared: true,
+      },
+      {
+        name: 'definitive HTTP404 rejection',
+        status: 'FAILED_TERMINAL',
+        lastStatusCode: 404,
+        lastErrorCode: 'max_http_404',
+        cleared: true,
+      },
+      {
+        name: 'definitive null-status chat-not-found rejection',
+        status: 'FAILED_TERMINAL',
+        lastErrorCode: 'chat.not.found',
+        cleared: true,
+      },
+      {
+        name: 'documented HTTP200 already-deleted rejection',
+        status: 'FAILED_TERMINAL',
+        lastStatusCode: 200,
+        lastErrorCode: 'max_member_already_deleted',
+        cleared: true,
+      },
+      {
+        name: 'documented HTTP200 insufficient-rights rejection',
+        status: 'FAILED_TERMINAL',
+        lastStatusCode: 200,
+        lastErrorCode: 'max_member_insufficient_rights',
+        cleared: true,
+      },
+      {
+        name: 'documented HTTP200 combined member rejection',
+        status: 'FAILED_TERMINAL',
+        lastStatusCode: 200,
+        lastErrorCode: 'max_member_already_deleted_or_insufficient_rights',
+        cleared: true,
+      },
+      {
+        name: 'generic HTTP200 attempted failure',
+        status: 'FAILED_TERMINAL',
+        lastStatusCode: 200,
+        lastErrorCode: 'max_ban_member_failed',
+        cleared: false,
+      },
+      {
+        name: 'exhausted certified pre-dispatch rejection',
+        status: 'FAILED_RETRYABLE',
+        lastErrorCode: MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
+        cleared: true,
+      },
+      {
+        name: 'exhausted unattempted failure',
+        status: 'FAILED_RETRYABLE',
+        unattempted: true,
+        cleared: true,
+      },
+      {
+        name: 'generic attempted retryable failure',
+        status: 'FAILED_RETRYABLE',
+        lastErrorCode: 'server.failure',
+        cleared: false,
+      },
+      {
+        name: 'watchdog definitive null-status rejection',
+        status: 'FAILED_TERMINAL',
+        lastErrorCode: 'ledger.watchdog.retry_orphan_non_retryable',
+        cleared: true,
+      },
+      {
+        name: 'watchdog definitive HTTP200 rejection',
+        status: 'FAILED_TERMINAL',
+        lastStatusCode: 200,
+        lastErrorCode: 'ledger.watchdog.retry_orphan_non_retryable',
+        cleared: true,
+      },
+      {
+        name: 'watchdog expired attempted failure',
+        status: 'FAILED_TERMINAL',
+        lastErrorCode: 'ledger.watchdog.retry_orphan_expired',
+        cleared: false,
+      },
+      {
+        name: 'watchdog unattempted orphan',
+        status: 'FAILED_TERMINAL',
+        lastErrorCode: 'ledger.watchdog.pre_dispatch_orphan',
+        unattempted: true,
+        cleared: true,
+      },
+      {
+        name: 'watchdog orphan with retained attempt evidence',
+        status: 'FAILED_TERMINAL',
+        lastErrorCode: 'ledger.watchdog.pre_dispatch_orphan',
+        cleared: false,
+      },
+      {
+        name: 'zero-attempt failure with retained dispatch evidence',
+        status: 'FAILED_TERMINAL',
+        unattempted: true,
+        dispatched: true,
+        cleared: false,
+      },
+      { name: 'ambiguous success flag', status: 'SUCCEEDED', ambiguous: true, cleared: false },
+      {
+        name: 'unproved attempted terminal failure',
+        status: 'FAILED_TERMINAL',
+        lastErrorCode: 'server.failure',
+        cleared: false,
+      },
+      { name: 'ambiguous effect', status: 'AMBIGUOUS', ambiguous: true, cleared: false },
+      { name: 'ambiguous status without its flag', status: 'AMBIGUOUS', cleared: false },
+      { name: 'unfinished attempt', status: 'IN_PROGRESS', terminal: false, cleared: false },
+    ].flatMap((item) => {
+      const statuses = item.status.startsWith('FAILED_')
+        ? ['FAILED_TERMINAL', 'FAILED_RETRYABLE']
+        : [item.status];
+      return statuses.flatMap((status) =>
+        (['legacy', 'cutoff'] as const).map((mode) => ({
+          ...item,
+          mode,
+          status: status as Prisma.MaxActionLedgerEntryUncheckedCreateInput['status'],
+          cleared:
+            mode === 'cutoff' ? status === 'SUCCEEDED' && item.ambiguous !== true : item.cleared,
+        })),
+      );
+    }),
+  )('reconciles $name ($status) through the $mode confirmed-unban contract', async (item) => {
+    const { s, chatId } = await fixture();
+    const jobId = buildMaxActionIdempotencyKey('logical', ['BAN_MEMBER', chatId, 'fixture-user']);
+    const attemptedAt = new Date(Date.now() - 5_000);
+    const before = await s.prisma.maxActionLedgerEntry.create({
+      data: {
+        jobId,
+        actionType: 'BAN_MEMBER',
+        chatId,
+        userId: 'fixture-user',
+        botId: s.bots[0]!.id,
+        status: item.status,
+        ambiguous: item.ambiguous ?? false,
+        terminal: item.terminal ?? true,
+        attemptCount: item.unattempted ? 0 : 1,
+        firstAttemptAt: item.unattempted ? null : attemptedAt,
+        lastAttemptAt: item.unattempted ? null : attemptedAt,
+        completedAt: item.terminal === false ? null : attemptedAt,
+        dispatchStartedAt: item.dispatched ? attemptedAt : null,
+        lastErrorCode: item.lastErrorCode ?? null,
+        lastStatusCode: item.lastStatusCode ?? null,
+      },
+    });
+    await expect(
+      s.max.banMember(chatId, 'fixture-user', { immediate: true, botId: s.bots[0]!.id }),
+    ).rejects.toThrow('no longer executable');
+    if (item.mode === 'cutoff') {
+      await s.max.clearTerminalBanStateAfterConfirmedUnban(chatId, 'fixture-user', new Date());
+    } else {
+      await s.max.clearTerminalBanStateAfterConfirmedUnban(chatId, 'fixture-user');
+    }
+    if (item.cleared) {
+      expect(await s.prisma.maxActionLedgerEntry.findUnique({ where: { jobId } })).toBeNull();
+      await s.max.banMember(chatId, 'fixture-user', { immediate: true, botId: s.bots[3]!.id });
+      expect(s.effects.filter((effect) => effect.params?.block === true)).toHaveLength(1);
+    } else {
+      expect(await s.prisma.maxActionLedgerEntry.findUnique({ where: { jobId } })).toEqual(before);
+      await expect(
+        s.max.banMember(chatId, 'fixture-user', { immediate: true, botId: s.bots[3]!.id }),
+      ).rejects.toThrow('no longer executable');
+      expect(s.effects).toHaveLength(0);
+    }
   });
 
   it('allows one guarded attempt after a confirmed BAN and keeps its evidence', async () => {
@@ -407,6 +736,89 @@ stores('native final member guard ledger watchdog', () => {
     }
     return { queue: actionQueue, watchdog };
   }
+
+  it.each(
+    [
+      {
+        name: 'documented HTTP200 rejection',
+        lastStatusCode: 200,
+        lastErrorCode: 'max_member_insufficient_rights',
+        lastError: 'User already deleted or bot has insufficient rights',
+        definitive: true,
+      },
+      {
+        name: 'null-status chat-not-found rejection',
+        lastStatusCode: null,
+        lastErrorCode: 'chat.not.found',
+        lastError: 'Chat not found',
+        definitive: true,
+      },
+      {
+        name: 'generic attempted HTTP200 failure',
+        lastStatusCode: 200,
+        lastErrorCode: 'max_ban_member_failed',
+        lastError: 'Generic member failure',
+        definitive: false,
+      },
+    ].flatMap((item) => (['legacy', 'cutoff'] as const).map((mode) => ({ ...item, mode }))),
+  )('preserves actual watchdog proof for $name in $mode confirmed-unban mode', async (item) => {
+    const s = await createMultibotHarness({ databaseUrl, redisUrl, bots: 1, mode: 'on' });
+    h = s;
+    expect(await s.redis.exists(...watchdogKeys)).toBe(0);
+    ownsWatchdogKeys = true;
+    const [chatId] = await s.seedCatalog(1);
+    const userId = 'fixture-user';
+    const jobId = buildMaxActionIdempotencyKey('logical', ['BAN_MEMBER', chatId!, userId]);
+    const agedAt = new Date(Date.now() - 6 * 60_000);
+    await s.prisma.maxActionLedgerEntry.create({
+      data: {
+        jobId,
+        actionType: 'BAN_MEMBER',
+        chatId: chatId!,
+        userId,
+        botId: s.bots[0]!.id,
+        status: 'FAILED_RETRYABLE',
+        ambiguous: false,
+        terminal: false,
+        attemptCount: 1,
+        firstAttemptAt: agedAt,
+        lastAttemptAt: agedAt,
+        updatedAt: agedAt,
+        lastStatusCode: item.lastStatusCode,
+        lastErrorCode: item.lastErrorCode,
+        lastError: item.lastError,
+      },
+    });
+    const native = await createNativeWatchdog();
+    await native.watchdog.runNow();
+    const settled = await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId } });
+    expect(settled).toMatchObject({
+      status: item.definitive ? 'FAILED_TERMINAL' : 'AMBIGUOUS',
+      ambiguous: !item.definitive,
+      terminal: true,
+      lastStatusCode: item.lastStatusCode,
+      lastErrorCode: item.definitive
+        ? 'ledger.watchdog.retry_orphan_non_retryable'
+        : 'ledger.watchdog.ambiguous',
+    });
+    if (item.mode === 'cutoff') {
+      await s.max.clearTerminalBanStateAfterConfirmedUnban(chatId!, userId, new Date());
+    } else {
+      await s.max.clearTerminalBanStateAfterConfirmedUnban(chatId!, userId);
+    }
+    if (item.definitive && item.mode === 'legacy') {
+      expect(await s.prisma.maxActionLedgerEntry.findUnique({ where: { jobId } })).toBeNull();
+      await s.max.banMember(chatId!, userId, { immediate: true, botId: s.bots[0]!.id });
+      expect(s.effects.filter((effect) => effect.params?.block === true)).toHaveLength(1);
+    } else {
+      expect(await s.prisma.maxActionLedgerEntry.findUnique({ where: { jobId } })).toEqual(settled);
+      await expect(
+        s.max.banMember(chatId!, userId, { immediate: true, botId: s.bots[0]!.id }),
+      ).rejects.toThrow('no longer executable');
+      expect(s.effects).toHaveLength(0);
+    }
+    expect((await native.watchdog.getSnapshot()).lastRequeuedCount).toBe(0);
+  });
 
   it.each(
     (['BAN_MEMBER', 'KICK_MEMBER'] as const).flatMap((actionType) =>
