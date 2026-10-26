@@ -2,6 +2,10 @@ import type { ManualModerationActionRequest } from '@maxim/contracts';
 import { BadRequestException, type Logger } from '@nestjs/common';
 import type { MaxClientService } from '../max/max-client.service';
 import { ChatEntityType } from '../prisma/prisma-client';
+import {
+  ModerationSanctionStateLockUnavailableError,
+  type ModerationSanctionStateLeaseGuard,
+} from '../moderation/moderation-sanction-state-lock.service';
 import { ADMIN_ACTION_HEALTH_LANE, type ManualBanExecutionMode } from './admin.service.support';
 
 export function assertChannelMemberBanScope(
@@ -45,4 +49,30 @@ export async function resolveManualMemberBanMode(
     );
   }
   return 'MAX_BLOCK';
+}
+
+export async function prepareManualBanFanoutTarget(params: {
+  chatId: string;
+  targetUserId: string;
+  executionMode: ManualBanExecutionMode;
+  leaseGuard: ModerationSanctionStateLeaseGuard;
+  resolveTargetState(): Promise<'present' | 'absent' | 'protected' | null>;
+  clearTerminalBanState(completedBefore: Date): Promise<void>;
+}): Promise<'present' | 'absent' | 'protected'> {
+  await params.leaseGuard.assertOwned();
+  const probeStartedAt = new Date();
+  const targetState = await params.resolveTargetState();
+  if (!targetState) {
+    throw new ModerationSanctionStateLockUnavailableError({
+      chatId: params.chatId,
+      userId: params.targetUserId,
+    });
+  }
+  await params.leaseGuard.assertOwned();
+  if (targetState === 'present' && params.executionMode === 'MAX_BLOCK') {
+    // FLAG: Fresh presence permits retiring only confirmed BANs completed before the
+    // probe. An uncertain effect or a concurrent newer BAN must retain its fence.
+    await params.clearTerminalBanState(probeStartedAt);
+  }
+  return targetState;
 }

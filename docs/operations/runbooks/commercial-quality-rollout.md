@@ -15,6 +15,15 @@ domain-separated keyed digest. Edits retain one logical key and distinct immutab
 source snapshots; mirrored deliveries enrich the same revision. Source creation
 comes from the actual Message, never the webhook event clock.
 
+Failed exact-source reads, including HTTP 401/403/404/410, remain technically
+incomplete when their existing retry policy is terminal. They preserve fail-open
+enforcement, the original deadline and uncertainty about the source. A successful
+empty source read retains its separate legitimate-absence outcome. Terminal
+technical samples use only the original retained webhook identity and are captured
+only after the terminal accounting claim wins; settled mirror/restart claims do
+not create another sample. This classification never enables retired commercial
+photo analysis or changes the independently enabled image stop-list.
+
 Concurrent first captures may collide on the evidence hash. The losing insert
 reloads that exact sample once and merges its observations through the existing
 revision and expiry guards, preserving labels and ratings. Missing winners and

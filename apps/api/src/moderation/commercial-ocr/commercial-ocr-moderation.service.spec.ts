@@ -1,12 +1,14 @@
 import { performance } from 'node:perf_hooks';
 import type { MaxUpdate } from '@maxim/contracts';
 import { ConfigService } from '@nestjs/config';
+import type { Job } from 'bullmq';
 import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
 
 import { ChatEntityType, WebhookStatus, type ChatSettings } from '../../prisma/prisma-client';
 import { buildCommercialQualitySample } from '../commercial/commercial-quality-sampling';
 import { buildWebhookSemanticEventKey } from '../../webhook/webhook-semantic-event-key';
 import type {
+  CommercialOcrAdmissionStore,
   CommercialOcrAdmissionActivationResult,
   CommercialOcrAdmissionSuppressionResult,
 } from './commercial-ocr-admission.store';
@@ -21,8 +23,12 @@ import {
   parseCommercialOcrDeleteBinding,
 } from './commercial-ocr-delete-guard.service';
 import { CommercialOcrModerationService } from './commercial-ocr-moderation.service';
+import type { CommercialOcrMetricsService } from './commercial-ocr-metrics.service';
+import { CommercialOcrProcessor } from './commercial-ocr.processor';
 import {
+  buildCommercialOcrJobId,
   COMMERCIAL_OCR_DEFAULT_VERSION,
+  COMMERCIAL_OCR_JOB_NAME,
   COMMERCIAL_OCR_JOB_SCHEMA_VERSION,
   type CommercialOcrJob,
 } from './commercial-ocr.queue';
@@ -248,19 +254,105 @@ describe('CommercialOcrModerationService', () => {
     },
   );
 
-  it.each([403, 404])('keeps exact-source access/missing HTTP %s terminal', async (status) => {
-    const harness = buildHarness({
-      exactError: Object.assign(new Error('denied'), { response: { status } }),
-      admissionStates: ['pending'],
-    });
-    await expect(
-      harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
-    ).resolves.toMatchObject({
-      kind: 'completed',
-      terminal: { outcome: 'LEGITIMATE_SKIP', reason: 'source_unavailable' },
-    });
-    expect(harness.admissionStore.suppress).toHaveBeenCalledTimes(1);
-    expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+  it.each([401, 403, 404, 410])(
+    'keeps failed exact-source HTTP %s technically incomplete and terminal',
+    async (status) => {
+      const harness = buildHarness({
+        exactError: Object.assign(new Error('denied'), { response: { status } }),
+        admissionStates: ['pending'],
+      });
+      await expect(
+        harness.service.processCommercialOcrJob(job(), jobId, activeDeadlineAtMs),
+      ).resolves.toMatchObject({
+        kind: 'completed',
+        terminal: { outcome: 'TECHNICAL_INCOMPLETE', reason: 'source_unavailable' },
+      });
+      expect(harness.admissionStore.suppress).toHaveBeenCalledTimes(1);
+      expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([401, 403, 404, 410])(
+    'records HTTP %s through processor completion as a technical quality sample without retry or enforcement',
+    async (status) => {
+      const now = jest.spyOn(Date, 'now').mockReturnValue(Date.parse(sourceCreatedAt) + 60_000);
+      try {
+        const harness = buildProcessorHarness({
+          exactError: Object.assign(new Error('unavailable'), { response: { status } }),
+          admissionStates: ['pending'],
+        });
+        await expect(harness.processor.process(harness.queueJob)).resolves.toBeUndefined();
+        expect(harness.processorAdmission.finalize).toHaveBeenCalledWith(
+          expect.objectContaining({
+            terminal: { outcome: 'TECHNICAL_INCOMPLETE', reason: 'source_unavailable' },
+          }),
+        );
+        expect(harness.commercialReview.recordCandidate).toHaveBeenCalledTimes(1);
+        expect(harness.commercialReview.recordCandidate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'OCR',
+            samplingStratum: 'TECHNICAL',
+            samplingProbability: 1,
+            analysisOutcome: 'TECHNICAL_INCOMPLETE',
+            reasons: ['source_unavailable'],
+            decisionOutcome: null,
+            deleteEligible: null,
+            executionOutcome: 'NOT_REQUESTED',
+            messageDisposition: 'KEEP',
+          }),
+        );
+        expect(harness.maxClient.getExactMessageRow).toHaveBeenCalledTimes(1);
+        expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+        expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+        expect(
+          harness.moderationDeleteIntents.ensureIntentWithMessageActionClaim,
+        ).not.toHaveBeenCalled();
+        expect(harness.queueJob.moveToDelayed).not.toHaveBeenCalled();
+        expect(harness.queueJob.updateData).not.toHaveBeenCalled();
+        expect(harness.queueJob.data).toEqual(harness.originalJobData);
+        expect(harness.processorAdmission.release).toHaveBeenCalledWith({
+          jobId: harness.queueJob.id,
+          chatId: harness.queueJob.data.chatId,
+        });
+      } finally {
+        now.mockRestore();
+      }
+    },
+  );
+
+  it('keeps successful source absence separate from incomplete reads through processor completion', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(Date.parse(sourceCreatedAt) + 60_000);
+    try {
+      const harness = buildProcessorHarness({ exactRows: [null], admissionStates: ['pending'] });
+      await expect(harness.processor.process(harness.queueJob)).resolves.toBeUndefined();
+      expect(harness.processorAdmission.finalize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          terminal: { outcome: 'LEGITIMATE_SKIP', reason: 'source_absent' },
+        }),
+      );
+      expect(harness.commercialReview.recordCandidate).not.toHaveBeenCalled();
+      expect(harness.analysisService.analyzeAlbum).not.toHaveBeenCalled();
+      expect(harness.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(harness.queueJob.updateData).not.toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not record another technical sample when the terminal claim was already settled', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(Date.parse(sourceCreatedAt) + 60_000);
+    try {
+      const harness = buildProcessorHarness({
+        exactError: Object.assign(new Error('unavailable'), { response: { status: 403 } }),
+        admissionStates: ['pending'],
+      });
+      harness.processorAdmission.finalize.mockResolvedValue('duplicate');
+      await expect(harness.processor.process(harness.queueJob)).resolves.toBeUndefined();
+      expect(harness.commercialReview.recordCandidate).not.toHaveBeenCalled();
+      expect(harness.processorAdmission.release).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('rechecks changed settings and fresh administrator access on a recovered source read', async () => {
@@ -1809,6 +1901,80 @@ describe('CommercialOcrModerationService', () => {
   });
 });
 
+function buildProcessorHarness(options: HarnessOptions) {
+  const harness = buildHarness(options);
+  const jobData = job({ ocrVersion: COMMERCIAL_OCR_DEFAULT_VERSION });
+  const originalJobData = {
+    ...jobData,
+    idempotencyKey: buildCommercialOcrJobId(jobData),
+  } satisfies CommercialOcrJob;
+  const queueJob = {
+    id: originalJobData.idempotencyKey,
+    name: COMMERCIAL_OCR_JOB_NAME,
+    data: { ...originalJobData },
+    timestamp: Date.parse(sourceCreatedAt),
+    attemptsMade: 0,
+    opts: { attempts: 3 },
+    moveToDelayed: jest.fn(),
+    updateData: jest.fn(),
+  } as unknown as Job<CommercialOcrJob>;
+  const processorAdmission = {
+    recordStarted: jest
+      .fn<
+        ReturnType<CommercialOcrAdmissionStore['recordStarted']>,
+        Parameters<CommercialOcrAdmissionStore['recordStarted']>
+      >()
+      .mockResolvedValue('recorded'),
+    finalize: jest
+      .fn<
+        ReturnType<CommercialOcrAdmissionStore['finalize']>,
+        Parameters<CommercialOcrAdmissionStore['finalize']>
+      >()
+      .mockResolvedValue('recorded'),
+    release: jest
+      .fn<
+        ReturnType<CommercialOcrAdmissionStore['release']>,
+        Parameters<CommercialOcrAdmissionStore['release']>
+      >()
+      .mockResolvedValue(true),
+  } satisfies Pick<CommercialOcrAdmissionStore, 'recordStarted' | 'finalize' | 'release'>;
+  const processorMetrics = {
+    ...harness.metrics,
+    recordQueueWait: jest.fn(),
+    getLogicalRecordingContext: jest
+      .fn<
+        ReturnType<CommercialOcrMetricsService['getLogicalRecordingContext']>,
+        Parameters<CommercialOcrMetricsService['getLogicalRecordingContext']>
+      >()
+      .mockReturnValue({
+        identitySha256: 'a'.repeat(64),
+        releaseKey: 'fixture-release',
+        bucketKey: 'fixture-bucket',
+        startedAtMs: Date.now(),
+      }),
+    observeLogicalRecording: jest.fn(),
+  } satisfies Pick<
+    CommercialOcrMetricsService,
+    | 'recordCounter'
+    | 'recordStageDuration'
+    | 'recordQueueWait'
+    | 'getLogicalRecordingContext'
+    | 'observeLogicalRecording'
+  >;
+  return {
+    ...harness,
+    processor: new CommercialOcrProcessor(
+      harness.service,
+      processorAdmission as never,
+      harness.configService,
+      processorMetrics as never,
+    ),
+    processorAdmission,
+    queueJob,
+    originalJobData,
+  };
+}
+
 function buildHarness(options: HarnessOptions = {}) {
   const initialSettings = options.initialSettings ?? settings();
   const finalSettings = options.finalSettings ?? initialSettings;
@@ -2004,6 +2170,7 @@ function buildHarness(options: HarnessOptions = {}) {
 
   return {
     service,
+    configService,
     prisma,
     analysisService,
     admissionStore,

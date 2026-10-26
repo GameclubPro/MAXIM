@@ -423,19 +423,80 @@ export class MaxActionLedgerService {
     );
   }
 
-  async clearTerminalBanStateAfterUnban(chatId: string, userId: string): Promise<void> {
+  async clearTerminalBanStateAfterUnban(
+    chatId: string,
+    userId: string,
+    completedBefore?: Date,
+  ): Promise<void> {
     const normalizedChatId = this.nullableString(chatId);
     const normalizedUserId = this.nullableString(userId);
     if (!normalizedChatId || !normalizedUserId) {
       return;
     }
 
+    // FLAG: Fanout membership reconciles only older confirmed success. The explicit
+    // confirmed-unban path also retires proved rejection, never generic attempted failure.
+    const completedState: Prisma.MaxActionLedgerEntryWhereInput = completedBefore
+      ? {
+          status: MaxActionLedgerStatus.SUCCEEDED,
+          completedAt: { lt: completedBefore },
+        }
+      : {
+          OR: [
+            {
+              status: { in: [MaxActionLedgerStatus.SUCCEEDED, MaxActionLedgerStatus.SKIPPED] },
+            },
+            {
+              status: {
+                in: [MaxActionLedgerStatus.FAILED_TERMINAL, MaxActionLedgerStatus.FAILED_RETRYABLE],
+              },
+              OR: [
+                { lastStatusCode: { in: [403, 404] } },
+                {
+                  lastStatusCode: null,
+                  lastErrorCode: { in: ['access.denied', 'chat.denied', 'chat.not.found'] },
+                },
+                {
+                  lastStatusCode: 200,
+                  lastErrorCode: {
+                    in: [
+                      MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.ALREADY_DELETED,
+                      MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.INSUFFICIENT_RIGHTS,
+                      MAX_MEMBER_ACTION_FAILURE_ERROR_CODES.ALREADY_DELETED_OR_INSUFFICIENT_RIGHTS,
+                    ],
+                  },
+                },
+                {
+                  lastErrorCode: {
+                    in: [
+                      ...MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES,
+                      // FLAG: For BAN, this watchdog marker certifies only a definitive
+                      // 404/chat.not.found or documented HTTP200 member rejection.
+                      'ledger.watchdog.retry_orphan_non_retryable',
+                    ],
+                  },
+                },
+                {
+                  attemptCount: 0,
+                  firstAttemptAt: null,
+                  lastAttemptAt: null,
+                  dispatchToken: null,
+                  dispatchStartedAt: null,
+                  dispatchBotId: null,
+                  remoteMessageId: null,
+                },
+              ],
+            },
+          ],
+        };
     await this.prisma.maxActionLedgerEntry.deleteMany({
       where: {
         chatId: normalizedChatId,
         userId: normalizedUserId,
         actionType: 'BAN_MEMBER',
         terminal: true,
+        ambiguous: false,
+        ...completedState,
       },
     });
   }

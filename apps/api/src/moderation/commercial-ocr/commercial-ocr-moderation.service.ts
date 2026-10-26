@@ -1391,14 +1391,12 @@ export class CommercialOcrModerationService {
         throw new CommercialOcrSourceUnavailableError(retry);
       }
       this.logger.warn('Commercial OCR exact source lookup failed; enforcement remains fail-open');
-      const status = (error as { response?: { status?: number } })?.response?.status;
+      // FLAG: A failed source read leaves analysis incomplete; an access/missing HTTP status
+      // cannot establish source absence. Preserve terminal fail-open and the original retry policy.
       return {
         kind: 'terminal',
         terminal: {
-          outcome:
-            status === 401 || status === 403 || status === 404
-              ? 'LEGITIMATE_SKIP'
-              : 'TECHNICAL_INCOMPLETE',
+          outcome: 'TECHNICAL_INCOMPLETE',
           reason: 'source_unavailable',
         },
       };
