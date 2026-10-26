@@ -177,6 +177,85 @@ test('transport budgets reads and every delete and never leaks a token into URL'
   assert.equal(calls.length, 4);
 });
 
+test('pin accepts documented empty envelopes and verified same-chat message IDs', async () => {
+  const cases = [
+    { response: {}, expected: null },
+    { response: { message: null }, expected: null },
+    { response: { message: raw(Date.now()) }, expected: 'message' },
+  ];
+  for (const { response, expected } of cases) {
+    const max = new MaxClient(
+      settings,
+      { acquire: async () => {}, cooldown: async () => {} },
+      async () => Response.json(response),
+    );
+    assert.equal(await max.pin('-1'), expected);
+  }
+});
+
+test('pin rejects nonempty unknown envelopes and malformed or foreign message IDs', async () => {
+  for (const response of [
+    { success: true },
+    { message: {} },
+    { message: [] },
+    { message: '' },
+    { message: { recipient: { chat_id: -1 } } },
+    { message: { body: {}, recipient: { chat_id: -1 } } },
+    { message: { body: { mid: '' }, recipient: { chat_id: -1 } } },
+    { message: { body: { mid: 123 }, recipient: { chat_id: -1 } } },
+    { message: { body: { mid: 'message' } } },
+    { message: { body: { mid: 'message' }, recipient: { chat_id: -2 } } },
+  ]) {
+    const max = new MaxClient(
+      settings,
+      { acquire: async () => {}, cooldown: async () => {} },
+      async () => Response.json(response),
+    );
+    await assert.rejects(
+      max.pin('-1'),
+      (error) => error instanceof MaxError && error.code === 'pin_unknown' && !error.attempted,
+      JSON.stringify(response),
+    );
+  }
+  for (const response of [null, []]) {
+    const max = new MaxClient(
+      settings,
+      { acquire: async () => {}, cooldown: async () => {} },
+      async () => Response.json(response),
+    );
+    await assert.rejects(
+      max.pin('-1'),
+      (error) =>
+        error instanceof MaxError && error.code === 'malformed_response' && !error.attempted,
+    );
+  }
+});
+
+test('pin retains HTTP errors and shared Retry-After cooldown instead of certifying no pin', async () => {
+  const cooldowns: number[] = [];
+  for (const status of [403, 404, 429]) {
+    const max = new MaxClient(
+      settings,
+      {
+        acquire: async () => {},
+        cooldown: async (ms) => {
+          cooldowns.push(ms);
+        },
+      },
+      async () => Response.json({}, { status, headers: { 'Retry-After': '3' } }),
+    );
+    await assert.rejects(
+      max.pin('-1'),
+      (error) =>
+        error instanceof MaxError &&
+        error.status === status &&
+        !error.attempted &&
+        (status !== 429 || error.retryAfterMs === 3000),
+    );
+  }
+  assert.deepEqual(cooldowns, [3000]);
+});
+
 test('bare 404 does not establish absence and success false does not certify deletion', async () => {
   let response = Response.json({ message: 'missing' }, { status: 404 });
   const max = new MaxClient(

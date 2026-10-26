@@ -1,4 +1,24 @@
 @layer workspace {
+  body[data-miniapp-profile='moderation'] .message-retention-progress {
+    min-width: 0;
+    border-top: 1px solid var(--major-border, var(--color-border));
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-progress > summary {
+    min-height: 44px;
+    align-content: center;
+    padding: 10px 0;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-progress > summary:focus-visible {
+    outline: 2px solid var(--major-accent);
+    outline-offset: 3px;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-progress[open] {
+    display: grid;
+    gap: 16px;
+  }
   .message-retention-status {
     display: flex;
     align-items: center;

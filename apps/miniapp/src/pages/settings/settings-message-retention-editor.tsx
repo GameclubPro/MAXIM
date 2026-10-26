@@ -181,7 +181,10 @@ export function SettingsMessageRetentionEditor({
   const commit = async () => {
     if (!current || showConflict || query.isError || closeBlocked) return false;
     try {
-      await save.mutateAsync(current);
+      await save.mutateAsync({
+        ...current,
+        operationId: current.operationId ?? crypto.randomUUID(),
+      });
       return true;
     } catch {
       return false;
@@ -308,7 +311,7 @@ export function SettingsMessageRetentionEditor({
         ) : null}
         {showConflict && state ? (
           <div className="message-retention-feedback" role="alert">
-            <strong>Настройки изменены в другом сеансе</strong>
+            <strong>Настройки уже изменились</strong>
             <p>
               Сейчас:{' '}
               {state.enabled
@@ -323,8 +326,8 @@ export function SettingsMessageRetentionEditor({
                 disabled={closeBlocked}
                 onClick={discard}
               >
-                <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden /> Принять
-                настройки
+                <IconoirSprite variant="iconoir" icon="RefreshDouble" aria-hidden /> Загрузить
+                сохранённые
               </button>
               <button
                 type="button"
@@ -363,6 +366,19 @@ export function SettingsMessageRetentionEditor({
               disabled={closeBlocked}
               enableDisabled={state.status === 'unavailable' && !current.enabled}
               connectionStatus={state.connectionStatus}
+              onReconnect={
+                state.enabled &&
+                current.enabled &&
+                !dirty &&
+                !showConflict &&
+                !query.isError &&
+                ['missing', 'no_access'].includes(state.connectionStatus ?? '')
+                  ? () => {
+                      if (!closeBlocked)
+                        save.mutate({ ...current, operationId: crypto.randomUUID() });
+                    }
+                  : undefined
+              }
               onEnabledChange={(enabled) => change({ enabled })}
               onHoursChange={(hours) => change({ hours })}
             />
@@ -374,29 +390,10 @@ export function SettingsMessageRetentionEditor({
               </p>
             ) : null}
             <SharedMessageRetentionExclusions />
-            {state.enabled || state.pendingCount + state.deletedCount + state.skippedCount > 0 ? (
-              <dl className="message-retention-stats">
-                {[
-                  { label: 'Ожидают', value: state.pendingCount },
-                  { label: 'Больше нет в чате', value: state.deletedCount },
-                  { label: 'Пропущены', value: state.skippedCount },
-                ].map((item) => (
-                  <div key={item.label}>
-                    <dt>{item.label}</dt>
-                    <dd
-                      title={item.value.toLocaleString('ru-RU')}
-                      aria-label={item.value.toLocaleString('ru-RU')}
-                    >
-                      {retentionCount(item.value)}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            ) : null}
-            <dl className="message-retention-settings__facts">
-              {state.historyStatus && state.historyStatus !== 'off' ? (
+            {state.historyStatus && state.historyStatus !== 'off' ? (
+              <dl className="message-retention-settings__facts">
                 <div>
-                  <dt>Старая история</dt>
+                  <dt>История чата</dt>
                   <dd>
                     {
                       {
@@ -404,46 +401,73 @@ export function SettingsMessageRetentionEditor({
                         running: 'Очищается',
                         complete: 'Проверена',
                         blocked: 'Часть истории отложена',
-                        off: 'Очистка выключена',
                       }[state.historyStatus]
                     }
                   </dd>
                 </div>
-              ) : null}
-              {state.historyScannedCount !== undefined &&
-              (state.enabled || state.historyScannedCount > 0) ? (
-                <div>
-                  <dt>Проверено сообщений</dt>
-                  <dd>{retentionCount(state.historyScannedCount)}</dd>
-                </div>
-              ) : null}
-              {state.enabledAt ? (
-                <div>
-                  <dt>Включено</dt>
-                  <dd>
-                    <time dateTime={state.enabledAt}>{retentionDate(state.enabledAt)}</time>
-                  </dd>
-                </div>
-              ) : null}
-              {state.oldestDueAt &&
-              state.pendingCount > 0 &&
-              new Date(state.oldestDueAt).getTime() < Date.now() ? (
-                <div>
-                  <dt>Ожидают удаления с</dt>
-                  <dd>
-                    <time dateTime={state.oldestDueAt}>{retentionDate(state.oldestDueAt)}</time>
-                  </dd>
-                </div>
-              ) : null}
-              {state.pausedAt ? (
-                <div>
-                  <dt>Очистка на паузе с</dt>
-                  <dd>
-                    <time dateTime={state.pausedAt}>{retentionDate(state.pausedAt)}</time>
-                  </dd>
-                </div>
-              ) : null}
-            </dl>
+              </dl>
+            ) : null}
+            {state.enabled ||
+            state.pendingCount + state.deletedCount + state.skippedCount > 0 ||
+            state.enabledAt ||
+            state.pausedAt ||
+            (state.historyScannedCount ?? 0) > 0 ? (
+              <details className="message-retention-progress">
+                <summary>Подробности очистки</summary>
+                <dl className="message-retention-stats">
+                  {[
+                    { label: 'Ожидают', value: state.pendingCount },
+                    { label: 'Больше нет в чате', value: state.deletedCount },
+                    { label: 'Пропущены', value: state.skippedCount },
+                  ].map((item) => (
+                    <div key={item.label}>
+                      <dt>{item.label}</dt>
+                      <dd
+                        title={item.value.toLocaleString('ru-RU')}
+                        aria-label={item.value.toLocaleString('ru-RU')}
+                      >
+                        {retentionCount(item.value)}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                <dl className="message-retention-settings__facts">
+                  {state.historyScannedCount !== undefined &&
+                  (state.enabled || state.historyScannedCount > 0) ? (
+                    <div>
+                      <dt>Проверено сообщений</dt>
+                      <dd>{retentionCount(state.historyScannedCount)}</dd>
+                    </div>
+                  ) : null}
+                  {state.enabledAt ? (
+                    <div>
+                      <dt>Включено</dt>
+                      <dd>
+                        <time dateTime={state.enabledAt}>{retentionDate(state.enabledAt)}</time>
+                      </dd>
+                    </div>
+                  ) : null}
+                  {state.oldestDueAt &&
+                  state.pendingCount > 0 &&
+                  new Date(state.oldestDueAt).getTime() < Date.now() ? (
+                    <div>
+                      <dt>Ожидают удаления с</dt>
+                      <dd>
+                        <time dateTime={state.oldestDueAt}>{retentionDate(state.oldestDueAt)}</time>
+                      </dd>
+                    </div>
+                  ) : null}
+                  {state.pausedAt ? (
+                    <div>
+                      <dt>Очистка на паузе с</dt>
+                      <dd>
+                        <time dateTime={state.pausedAt}>{retentionDate(state.pausedAt)}</time>
+                      </dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </details>
+            ) : null}
           </>
         ) : null}
       </div>
