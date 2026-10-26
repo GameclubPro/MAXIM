@@ -132,6 +132,7 @@ export class CommercialLlmEnforcementMailbox {
     });
     // FLAG: One pending source is admitted atomically while another source awaits 9B. Actual 4B
     // starts retain their own lease/cooldown; neither buffer admission nor waiting renews a deadline.
+    // FLAG: Readiness retains its short eligibility TTL across offers; it is not a model lease.
     return (await this.redis.eval(
       `${pruneActiveLua}
       local time = redis.call('TIME'); local now = time[1] * 1000 + math.floor(time[2] / 1000)
@@ -154,7 +155,7 @@ export class CommercialLlmEnforcementMailbox {
       if not ready then return 'not_ready' end
       if ready ~= ARGV[1] or worker ~= ARGV[1] then return 'worker_changed' end
       redis.call('SET', KEYS[2], ARGV[2], 'PX', tonumber(ARGV[3]) - now)
-      redis.call('DEL', KEYS[1]); return 'accepted'`,
+      return 'accepted'`,
       4,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,

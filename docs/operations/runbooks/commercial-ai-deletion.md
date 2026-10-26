@@ -11,6 +11,10 @@ retain their own authority.
 ## Admission and failures
 
 The background role advertises readiness through a short Redis worker lease.
+Readiness is a worker-generation marker with a 2.5-second TTL, retained when an
+offer fills the pending slot. Offers never renew it. Pressure withdrawal, expiry
+or a different worker generation prevents further admission; readiness does not
+replace the separate pending, active-source or primary-model capacity checks.
 The version-2 Redis mailbox keeps one pending primary slot and at most three
 active sources. Atomic checks reject another offer from a chat already pending
 or active. The process separately retains at most one waiting server confirmation;
