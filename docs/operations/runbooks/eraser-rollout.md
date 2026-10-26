@@ -51,22 +51,29 @@ both own stores. The ordinary release manifest records the image ID/source SHA. 
 bootstrap, legacy three-component manifests remain valid. Once installed, inherited
 Lastik image identity is checked on later partial deployments.
 
-Apply the reviewed canonical nginx site through the existing manual site procedure;
-`nginx -t` must pass before reload. Only `POST /eraser/webhook` is forwarded to Lastik
-on loopback port 3005; internal control routes are never public. Then register and read
-back the exact bot's authenticated HTTPS subscription:
+Add Lastik through its patch-only nginx command after synchronizing the exact green
+tooling SHA. It inserts only the owned upstream and `/eraser` routes into the current
+canonical site; existing host-managed includes, headers, request limits, buffering and
+sibling routes retain their exact bytes. Only `POST /eraser/webhook` reaches Lastik on
+loopback port 3005. Then register and read back the bot's HTTPS subscription:
 
 ```sh
-./infra/scripts/vps-apply-major-site.sh --dry-run maxim-vps
-MAXIM_APPLY_MAJOR_SITE_CONFIRM=1 ./infra/scripts/vps-apply-major-site.sh maxim-vps
+./infra/scripts/vps-connect.sh eraser-nginx
+./infra/scripts/vps-connect.sh eraser-nginx --apply
 ./infra/scripts/vps-connect.sh eraser-webhook
 ```
 
-Review the dry-run diff before application, preserving the current sibling routes and
-snippets. The canonical file is `/etc/nginx/sites-available/major-maksimov.ru.conf`,
-enabled by `/etc/nginx/sites-enabled/major-maksimov.ru.conf`; backups stay under
-`/etc/nginx/backups`. The apply operation holds the shared deploy lock through local
-route verification and any rollback, using a private staging directory per invocation.
+Review the preview diff before application. Unknown anchors, conflicting or partially
+modified Lastik blocks fail closed; exact installed blocks are idempotent. The fixed
+canonical file is `/etc/nginx/sites-available/major-maksimov.ru.conf`, selected by the
+unchanged `/etc/nginx/sites-enabled/major-maksimov.ru.conf` symlink. Backups stay under
+`/etc/nginx/backups`. The shared protected deploy lock covers live identity checks,
+atomic replacement, `nginx -t`, reload and localhost/SNI checks: a wrong-secret POST
+must return Lastik's 403, and internal paths must return 404. These probes send no MAX
+messages. Rollback restores only the invocation's own installed bytes; observed external
+changes refuse rollback and preserve its backup and private evidence directory. The
+full-site setter remains available for separately reviewed whole-site changes and is
+not the Lastik installation path.
 
 This operation sends no chat messages. Add Lastik to a designated group with read-all
 and delete/write administrator privileges. The moderator settings retain the switch
