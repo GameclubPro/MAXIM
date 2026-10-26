@@ -24,6 +24,8 @@ import { buildBotIdVariants } from '../max/max-bot-config.util';
 
 // FLAG: A reader with this version must keep the persisted ownership fence, even with the flag off.
 export const ERASER_OWNERSHIP_VERSION = 1;
+// FLAG: Pending activation remains visible and cancellable across compatible API releases.
+export const ERASER_CONNECTION_REQUEST_VERSION = 1;
 const PAGE_SIZE = 500;
 const BOT_PAGE_SIZE = 250;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -569,5 +571,6 @@ function canonicalRequest(value: UpdateMessageRetention & { operationId: string 
     hours: value.hours,
     expectedRevision: value.expectedRevision,
     operationId: value.operationId,
+    connectWhenReady: value.connectWhenReady === true,
   };
 }

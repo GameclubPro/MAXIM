@@ -23,6 +23,7 @@ export function mountRetentionFixture() {
     deletedCount: 0,
     skippedCount: 0,
     oldestDueAt: null,
+    connectionStatus: 'connected',
   });
   let server = structuredClone(initial);
   let readFailure = false;
@@ -34,6 +35,7 @@ export function mountRetentionFixture() {
   let updateProps;
   const requests = [];
   const writes = [];
+  const writeAttempts = [];
   const operations = new Map();
   /** @type {import('../src/lib/api/transport.ts').ApiTransport} */
   const api = {
@@ -45,13 +47,14 @@ export function mountRetentionFixture() {
         if (readFailure) throw new Error('Чтение настроек недоступно.');
         return structuredClone(server);
       }
+      const input = updateMessageRetentionSchema.parse(JSON.parse(String(init.body)));
+      writeAttempts.push(structuredClone(input));
       if (writeFailure)
         throw new ApiRequestError(
           writeFailure.status,
           JSON.stringify(writeFailure),
           writeFailure.message,
         );
-      const input = updateMessageRetentionSchema.parse(JSON.parse(String(init.body)));
       writes.push(structuredClone(input));
       const key = `${path}:${input.operationId}`;
       const body = JSON.stringify(input);
@@ -70,11 +73,18 @@ export function mountRetentionFixture() {
             );
           server = messageRetentionStateSchema.parse({
             ...server,
-            enabled: input.enabled,
+            enabled: input.connectWhenReady ? false : input.enabled,
             hours: input.hours,
             revision: server.revision + 1,
-            status: input.enabled ? 'running' : 'off',
-            connectionStatus: input.enabled ? 'connected' : server.connectionStatus,
+            status: input.enabled && !input.connectWhenReady ? 'running' : 'off',
+            connectionStatus:
+              input.enabled && !input.connectWhenReady ? 'connected' : server.connectionStatus,
+            connectionRequest: input.connectWhenReady
+              ? {
+                  status: 'pending',
+                  expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                }
+              : null,
             ...(input.operationId ? { lastOperationId: input.operationId } : {}),
           });
           return structuredClone(server);
@@ -113,6 +123,7 @@ export function mountRetentionFixture() {
   window.__RETENTION_TEST__ = {
     requests,
     writes,
+    writeAttempts,
     serverState: () => structuredClone(server),
     replaceServer: (patch) => {
       server = { ...server, ...patch };

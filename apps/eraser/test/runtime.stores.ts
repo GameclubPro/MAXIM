@@ -80,6 +80,7 @@ async function candidate(
 function transport(overrides: Partial<MaxTransport> = {}): MaxTransport {
   return {
     rights: async () => {},
+    actorRights: async () => {},
     pin: async () => null,
     page: async () => [],
     presence: async () => 'unknown',

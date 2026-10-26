@@ -5,6 +5,13 @@ maxim_eraser_configured() {
   [[ -s "${MAXIM_ERASER_ENV_FILE:-/var/lib/maxim-secrets/eraser.env}" ]]
 }
 
+# FLAG: Install before migrations or either application's new writers can start; never remove it.
+maxim_eraser_install_connection_request_floor() {
+  local source_sha="$1"
+  maxim_eraser_configured || return 0
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" --install-connection-request-floor
+}
+
 maxim_eraser_require_secrets() {
   local path mode
   for path in "${MAXIM_ERASER_ENV_FILE:-/var/lib/maxim-secrets/eraser.env}" \

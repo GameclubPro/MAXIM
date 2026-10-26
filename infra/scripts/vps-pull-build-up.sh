@@ -1559,6 +1559,9 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
 fi
 
 TARGET_SHA="$(git rev-parse HEAD)"
+if [[ "$BUILD_API_IMAGE" -eq 1 ]] || contains_service eraser "${SERVICES[@]}"; then
+  maxim_eraser_install_connection_request_floor "$TARGET_SHA"
+fi
 RELEASE_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_SHA:0:12}"
 TARGET_HAS_MEDIA_ANALYSIS=0
 TARGET_HAS_OCR_NATIVE_SANDBOX=0

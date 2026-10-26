@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
 
-export async function runRetentionRegressions(browser, base, output) {
-  for (const scenario of [
+export async function runRetentionRegressions(browser, base, output, scenarios) {
+  for (const scenario of scenarios ?? [
     'permissions',
     'pending-close',
     'lost-reply',
@@ -20,6 +20,10 @@ export async function runRetentionRegressions(browser, base, output) {
     'connection-unknown',
     'restore-connection',
     'restore-connection-lost-reply',
+    'restore-connection-write-error',
+    'connection-pending',
+    'connection-expired',
+    'connection-cancel',
     'mixed-hours',
   ]) {
     const context = await browser.newContext({
@@ -30,8 +34,9 @@ export async function runRetentionRegressions(browser, base, output) {
     await context.addInitScript(() => {
       window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ = true;
     });
+    let page;
     try {
-      const page = await context.newPage();
+      page = await context.newPage();
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
       const url = new URL('chat/preview-chat/settings?preview=1&device=android', base);
@@ -58,7 +63,7 @@ export async function runRetentionRegressions(browser, base, output) {
         assert.equal(await mixedToggle.evaluate((node) => node.indeterminate), true);
         assert.equal(
           await page
-            .getByText(/Для очистки бот должен быть администратором каждого чата/u)
+            .getByText(/Добавьте «Ластика» в каждый нужный чат администратором/u)
             .isVisible(),
           true,
         );
@@ -91,37 +96,60 @@ export async function runRetentionRegressions(browser, base, output) {
       const toggle = panel.getByRole('switch', { name: 'Удаление по сроку' });
       await toggle.waitFor();
       if (scenario === 'connect-bot') {
-        await page.evaluate(() =>
-          window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'missing' }),
-        );
+        await page.evaluate(() => {
+          window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'missing' });
+          window.__LASTIK_LINK_TEST__ = [];
+          const bridge = window.MAX?.WebApp ?? window.WebApp;
+          bridge.openMaxLink = (url) => window.__LASTIK_LINK_TEST__.push(url);
+        });
         await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
         await panel.getByText('Подключите «Ластика»', { exact: true }).waitFor();
-        const link = panel.getByRole('link', { name: 'Открыть профиль «Ластика»', exact: true });
-        assert.equal(await link.getAttribute('href'), 'https://max.ru/id613000037577_5_bot');
+        assert.equal(await toggle.isDisabled(), true);
+        const connect = panel.getByRole('button', { name: 'Подключить и включить', exact: true });
         await page.evaluate(() => (document.documentElement.style.fontSize = '200%'));
         assert.equal(
           await panel.evaluate((node) => node.scrollWidth > node.clientWidth + 2),
           false,
         );
-        await link.scrollIntoViewIfNeeded();
         assert.equal(
-          await link.evaluate((node) => node.getBoundingClientRect().height >= 44),
+          await connect.evaluate((node) => node.getBoundingClientRect().height >= 44),
           true,
         );
         await page.evaluate(() => (document.documentElement.style.fontSize = ''));
-        await toggle.check();
         await panel.getByRole('radio', { name: '24 часа', exact: true }).check();
-        await page.evaluate(() =>
-          window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'connected' }),
-        );
-        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
-        await panel.getByText('«Ластик» подключён', { exact: true }).waitFor();
-        assert.equal(await toggle.isChecked(), true);
+        await page.evaluate(() => window.__RETENTION_TEST__.holdWrite());
+        await connect.click();
+        assert.deepEqual(await page.evaluate(() => window.__LASTIK_LINK_TEST__), []);
+        await page.evaluate(() => window.__RETENTION_TEST__.releaseWrite());
+        await panel.getByText('Ожидаем подключения «Ластика»', { exact: true }).waitFor();
+        assert.deepEqual(await page.evaluate(() => window.__LASTIK_LINK_TEST__), [
+          'https://max.ru/id613000037577_5_bot',
+        ]);
+        const link = panel.getByRole('link', { name: 'Открыть Ластика', exact: true });
+        assert.equal(await link.getAttribute('href'), 'https://max.ru/id613000037577_5_bot');
+        assert.equal(await toggle.isChecked(), false);
+        assert.equal(await toggle.isDisabled(), true);
         assert.equal(
           await panel.getByRole('radio', { name: '24 часа', exact: true }).isChecked(),
           true,
         );
-        assert.equal(await page.evaluate(() => window.__RETENTION_TEST__.writes.length), 0);
+        const writes = await page.evaluate(() => window.__RETENTION_TEST__.writes);
+        assert.equal(writes.length, 1);
+        assert.equal(writes[0].connectWhenReady, true);
+        assert.equal(writes[0].hours, 24);
+        await page.evaluate(() =>
+          window.__RETENTION_TEST__.replaceServer({
+            enabled: true,
+            status: 'running',
+            revision: 2,
+            connectionStatus: 'connected',
+            connectionRequest: null,
+          }),
+        );
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+        await panel.getByText('«Ластик» подключён', { exact: true }).waitFor();
+        assert.equal(await toggle.isChecked(), true);
+        assert.equal(await page.evaluate(() => window.__RETENTION_TEST__.writes.length), 1);
       }
       if (scenario === 'connection-rights') {
         await page.evaluate(() =>
@@ -129,96 +157,140 @@ export async function runRetentionRegressions(browser, base, output) {
         );
         await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
         await panel.getByText('«Ластику» нужны права', { exact: true }).waitFor();
-        assert.equal(
-          await panel
-            .getByRole('link', { name: 'Открыть профиль «Ластика»', exact: true })
-            .getAttribute('href'),
-          'https://max.ru/id613000037577_5_bot',
-        );
+        assert.equal(await toggle.isDisabled(), true);
+        await panel.getByRole('button', { name: 'Подключить и включить', exact: true }).waitFor();
         assert.equal(await panel.getByText('«Ластик» подключён', { exact: true }).count(), 0);
       }
-      if (output && ['connect-bot', 'connection-rights', 'connection-unknown'].includes(scenario))
-        await page.screenshot({ path: join(output, `${scenario}.png`) });
       if (scenario === 'connection-unknown') {
+        await page.evaluate(() =>
+          window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'unknown' }),
+        );
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
         await panel.locator('.message-retention-bot[data-connection-state="unknown"]').waitFor();
+        assert.equal(await toggle.isDisabled(), true);
         assert.equal(await panel.getByText('Подключите «Ластика»', { exact: true }).count(), 0);
         assert.equal(await panel.getByText('«Ластик» подключён', { exact: true }).count(), 0);
       }
-      if (scenario === 'restore-connection') {
-        for (const connectionStatus of ['no_access', 'missing']) {
-          await page.evaluate(
-            (connectionStatus) =>
-              window.__RETENTION_TEST__.replaceServer({
-                enabled: true,
-                connectionStatus,
-                status: 'no_access',
-              }),
-            connectionStatus,
-          );
-          await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
-          const reconnect = panel.getByRole('button', { name: 'Проверить права', exact: true });
-          await reconnect.waitFor();
-          if (output && connectionStatus === 'no_access')
-            await page.screenshot({ path: join(output, 'restore-connection.png') });
-          assert.equal(await toggle.isChecked(), true);
-          assert.equal(
-            await panel.getByRole('button', { name: 'Сохранить', exact: true }).isDisabled(),
-            true,
-          );
-          await reconnect.click();
-          await panel.getByText('«Ластик» подключён', { exact: true }).waitFor();
-          assert.equal(await toggle.isChecked(), true);
-          assert.equal(
-            await panel.getByRole('radio', { name: '48 часов', exact: true }).isChecked(),
-            true,
-          );
-        }
-        const writes = await page.evaluate(() => window.__RETENTION_TEST__.writes);
-        assert.equal(writes.length, 2);
-        assert.ok(writes.every((input) => input.enabled === true && input.hours === 48));
-        assert.notEqual(writes[0].operationId, writes[1].operationId);
-        assert.equal(writes[1].expectedRevision, writes[0].expectedRevision + 1);
-      }
-      if (scenario === 'restore-connection-lost-reply') {
-        await page.evaluate(() => {
+      if (scenario.startsWith('restore-connection')) {
+        await page.evaluate((loseReply) => {
           window.__RETENTION_TEST__.replaceServer({
             enabled: true,
             connectionStatus: 'no_access',
             status: 'no_access',
           });
-          window.__RETENTION_TEST__.failWrites({
-            status: 409,
-            code: 'ERASER_CONNECTION_REQUIRED',
-            message: 'Добавьте Ластика администратором.',
-          });
-        });
+          const bridge = window.MAX?.WebApp ?? window.WebApp;
+          bridge.openMaxLink = () => {};
+          if (loseReply) window.__RETENTION_TEST__.loseNextReply();
+        }, scenario === 'restore-connection-lost-reply');
         await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
-        await panel.getByRole('button', { name: 'Проверить права', exact: true }).click();
-        await panel.getByText('Не удалось сохранить изменения', { exact: true }).waitFor();
-        await page.evaluate(() => {
-          window.__RETENTION_TEST__.failWrites(null);
-          window.__RETENTION_TEST__.holdWrite();
-          window.__RETENTION_TEST__.loseNextReplyBeforeCommit();
-        });
-        await panel.getByRole('button', { name: 'Повторить сохранение', exact: true }).click();
-        await panel.getByText('Сохранение пока не подтверждено', { exact: true }).waitFor();
-        assert.equal(
-          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
-          true,
-        );
-        await page.evaluate(() => window.__RETENTION_TEST__.releaseWrite());
-        await panel.getByRole('button', { name: 'Проверить сохранение', exact: true }).click();
+        assert.equal(await toggle.isDisabled(), false);
+        if (scenario === 'restore-connection-write-error')
+          await page.evaluate(() =>
+            window.__RETENTION_TEST__.failWrites({
+              status: 403,
+              code: 'FORBIDDEN',
+              message: 'Нет доступа',
+            }),
+          );
+        await panel.getByRole('button', { name: 'Подключить и включить', exact: true }).click();
+        if (scenario === 'restore-connection-write-error') {
+          await panel.getByText('Не удалось сохранить изменения', { exact: true }).waitFor();
+          await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+          await page.evaluate(() => window.__RETENTION_TEST__.failWrites(null));
+          await panel.getByRole('button', { name: 'Повторить сохранение', exact: true }).click();
+        }
+        await panel.getByText('Ожидаем подключения «Ластика»', { exact: true }).waitFor();
         await panel.getByText('Сохранено', { exact: true }).waitFor();
-        await panel.getByText('«Ластик» подключён', { exact: true }).waitFor();
-        const writes = await page.evaluate(() => window.__RETENTION_TEST__.writes);
-        assert.ok(writes.length >= 1);
-        assert.match(writes[0].operationId, /^[a-f0-9-]{36}$/u);
-        assert.ok(writes.every((input) => input.operationId === writes[0].operationId));
+        assert.equal(await toggle.isChecked(), false);
         assert.equal(
           await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
           false,
         );
+        const writes = await page.evaluate(() => window.__RETENTION_TEST__.writes);
+        assert.equal(writes.length, 1);
+        assert.equal(writes[0].connectWhenReady, true);
+        assert.match(writes[0].operationId, /^[a-f0-9-]{36}$/u);
+        if (scenario === 'restore-connection-write-error') {
+          const attempts = await page.evaluate(() => window.__RETENTION_TEST__.writeAttempts);
+          assert.equal(attempts.length, 2);
+          assert.deepEqual(attempts[1], attempts[0]);
+        }
+        await page.evaluate(() => {
+          window.dispatchEvent(new Event('focus'));
+          document.dispatchEvent(new Event('visibilitychange'));
+        });
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+        assert.equal(
+          await page.evaluate(() => window.__RETENTION_TEST__.writes.length),
+          writes.length,
+        );
       }
+      if (['connection-pending', 'connection-expired', 'connection-cancel'].includes(scenario)) {
+        await page.evaluate(() =>
+          window.__RETENTION_TEST__.replaceServer({
+            connectionStatus: 'missing',
+            revision: 1,
+            connectionRequest: {
+              status: 'pending',
+              expiresAt: new Date(Date.now() + 3600000).toISOString(),
+            },
+          }),
+        );
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+        await panel.getByText('Ожидаем подключения «Ластика»', { exact: true }).waitFor();
+        assert.equal(await toggle.isChecked(), false);
+        assert.equal(await toggle.isDisabled(), true);
+        await panel.getByRole('link', { name: 'Открыть Ластика', exact: true }).waitFor();
+        if (scenario === 'connection-pending') {
+          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+          await entry.click();
+          await panel.getByText('Ожидаем подключения «Ластика»', { exact: true }).waitFor();
+          assert.equal(await page.evaluate(() => window.__RETENTION_TEST__.writes.length), 0);
+        }
+        if (scenario === 'connection-cancel') {
+          await panel.getByRole('button', { name: 'Отменить подключение', exact: true }).click();
+          await panel.getByText('Подключите «Ластика»', { exact: true }).waitFor();
+          const writes = await page.evaluate(() => window.__RETENTION_TEST__.writes);
+          assert.equal(writes.length, 1);
+          assert.equal(writes[0].enabled, false);
+          assert.equal(writes[0].connectWhenReady, undefined);
+          assert.equal(
+            await page.evaluate(() => window.__RETENTION_TEST__.serverState().connectionRequest),
+            null,
+          );
+        }
+        if (scenario === 'connection-expired') {
+          await page.evaluate(() =>
+            window.__RETENTION_TEST__.replaceServer({
+              connectionRequest: {
+                status: 'expired',
+                expiresAt: new Date(Date.now() - 1000).toISOString(),
+              },
+            }),
+          );
+          await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+          await panel.getByText('Время ожидания истекло', { exact: true }).waitFor();
+          assert.equal(await page.evaluate(() => window.__RETENTION_TEST__.writes.length), 0);
+          await page.evaluate(() => {
+            const bridge = window.MAX?.WebApp ?? window.WebApp;
+            bridge.openMaxLink = () => {};
+          });
+          await panel.getByRole('button', { name: 'Проверить и включить', exact: true }).click();
+          await panel.getByText('Ожидаем подключения «Ластика»', { exact: true }).waitFor();
+          assert.equal(await page.evaluate(() => window.__RETENTION_TEST__.writes.length), 1);
+        }
+      }
+      if (
+        output &&
+        [
+          'connect-bot',
+          'connection-rights',
+          'connection-unknown',
+          'connection-pending',
+          'connection-expired',
+        ].includes(scenario)
+      )
+        await page.screenshot({ path: join(output, `${scenario}.png`) });
       if (scenario === 'permissions') {
         await page.evaluate(() =>
           window.__RETENTION_TEST__.failWrites({
@@ -542,6 +614,9 @@ export async function runRetentionRegressions(browser, base, output) {
         );
       }
       assert.deepEqual(errors, [], scenario);
+    } catch (error) {
+      if (output && page) await page.screenshot({ path: join(output, `failed-${scenario}.png`) });
+      throw new Error(`[${scenario}] ${error.message}`, { cause: error });
     } finally {
       await context.close();
     }

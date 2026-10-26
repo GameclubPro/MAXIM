@@ -68,6 +68,117 @@ test('a repeated retention operation returns its receipt without a second revisi
   await assert.rejects(updateMessageRetention(api, PREVIEW_CHAT_ID, { ...request, hours: 24 }));
 });
 
+test('a connection request is confirmed while cleanup stays off and retries keep its deadline', async () => {
+  const api = createPreviewApiTransport();
+  const request = {
+    enabled: true,
+    connectWhenReady: true,
+    hours: 168 as const,
+    expectedRevision: 0,
+    operationId: '981843e9-b0fc-4314-b8dc-8d858915dbf4',
+  };
+  const pending = await updateMessageRetention(api, PREVIEW_CHAT_ID, request);
+  assert.equal(pending.enabled, false);
+  assert.equal(pending.connectionRequest?.status, 'pending');
+  assert.equal(isRetentionOperationConfirmed(pending, request), true);
+  assert.equal(
+    isRetentionOperationConfirmed(pending, { ...request, operationId: undefined }),
+    false,
+  );
+  assert.equal(isRetentionOperationConfirmed(pending, { ...request, hours: 24 }), false);
+  assert.equal(
+    isRetentionOperationConfirmed({ ...pending, connectionRequest: null }, request),
+    false,
+  );
+  assert.deepEqual(await updateMessageRetention(api, PREVIEW_CHAT_ID, request), pending);
+  const editor = retentionDraftReducer(
+    { chatId: PREVIEW_CHAT_ID, draft: request },
+    { type: 'snapshot', chatId: PREVIEW_CHAT_ID, state: pending },
+  );
+  assert.equal(editor.draft, null);
+  assert.equal(retentionEditorState(pending, editor.draft).current?.enabled, false);
+});
+
+test('a normal off write cancels pending connection and cannot be mistaken for its acceptance', async () => {
+  const api = createPreviewApiTransport();
+  const request = {
+    enabled: true,
+    connectWhenReady: true,
+    hours: 24 as const,
+    expectedRevision: 0,
+    operationId: '5e98b21f-3fc2-4879-b596-910c22e220d2',
+  };
+  const pending = await updateMessageRetention(api, PREVIEW_CHAT_ID, request);
+  const cancelled = await updateMessageRetention(api, PREVIEW_CHAT_ID, {
+    enabled: false,
+    hours: pending.hours,
+    expectedRevision: pending.revision,
+    operationId: '611b419c-805b-47da-a46b-ed5ab9d6cbd5',
+  });
+  assert.equal(cancelled.enabled, false);
+  assert.equal(cancelled.connectionRequest, null);
+  assert.equal(isRetentionOperationConfirmed(cancelled, request), false);
+});
+
+test('an expired accepted connection settles a lost response without claiming enabled cleanup', async () => {
+  const pending = await getMessageRetention(createPreviewApiTransport(), PREVIEW_CHAT_ID);
+  const request = {
+    enabled: true,
+    connectWhenReady: true,
+    hours: 48 as const,
+    expectedRevision: 0,
+    operationId: 'c08cb809-6ec0-49ab-b0db-9187a44c4786',
+  };
+  const expired = {
+    ...pending,
+    revision: 1,
+    lastOperationId: request.operationId,
+    connectionRequest: { status: 'expired' as const, expiresAt: new Date(0).toISOString() },
+  };
+  assert.equal(isRetentionOperationConfirmed(expired, request), true);
+  assert.equal(expired.enabled, false);
+});
+
+test('reconnecting an enabled policy preserves the explicit intent through an old read', async () => {
+  const initial = await getMessageRetention(createPreviewApiTransport(), PREVIEW_CHAT_ID);
+  const inaccessible = { ...initial, enabled: true, connectionStatus: 'no_access' as const };
+  const request = {
+    enabled: true,
+    connectWhenReady: true,
+    hours: inaccessible.hours,
+    expectedRevision: inaccessible.revision,
+    operationId: 'dcbf68ad-f894-4a84-bf7c-6020d6d128a6',
+  };
+  const refreshed = retentionDraftReducer(
+    { chatId: PREVIEW_CHAT_ID, draft: request },
+    { type: 'snapshot', chatId: PREVIEW_CHAT_ID, state: inaccessible },
+  );
+  assert.deepEqual(refreshed.draft, request);
+  assert.deepEqual(retentionEditorState(inaccessible, refreshed.draft), {
+    current: request,
+    dirty: true,
+    conflict: false,
+  });
+  const accepted = {
+    ...inaccessible,
+    enabled: false,
+    revision: inaccessible.revision + 1,
+    lastOperationId: request.operationId,
+    connectionRequest: {
+      status: 'pending' as const,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    },
+  };
+  assert.equal(
+    retentionDraftReducer(refreshed, {
+      type: 'snapshot',
+      chatId: PREVIEW_CHAT_ID,
+      state: accepted,
+    }).draft,
+    null,
+  );
+});
+
 test('retention preview is scoped to one transport and chat', async () => {
   const first = createPreviewApiTransport();
   await updateMessageRetention(first, PREVIEW_CHAT_ID, {

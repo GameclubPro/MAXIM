@@ -89,6 +89,7 @@ maxim_topology_require_traffic_protection_guard "$TARGET_FULL_SHA"
 maxim_topology_require_participant_report_guard "$TARGET_FULL_SHA"
 maxim_topology_require_message_retention_guard "$TARGET_FULL_SHA"
 maxim_topology_require_eraser_bridge "$TARGET_FULL_SHA"
+maxim_topology_require_eraser_connection_requests "$TARGET_FULL_SHA" all
 maxim_topology_require_suggestion_subscription_guard "$TARGET_FULL_SHA"
 maxim_topology_require_message_duplicate_delete_guard "$TARGET_FULL_SHA"
 maxim_topology_require_multibot_authority "$TARGET_FULL_SHA"

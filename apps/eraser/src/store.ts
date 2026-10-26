@@ -9,6 +9,7 @@ import {
   type Protection,
   type UpdatePolicy,
   type Hours,
+  type ConnectionRequest,
 } from './types.js';
 
 const HOUR = 3_600_000;
@@ -218,7 +219,16 @@ export class Store {
         connectionStatus: 'unknown',
         historyStatus: 'off',
         historyScannedCount: 0,
+        connectionRequest: null,
       };
+    const connection = (
+      await client.query<ConnectionRequest & { effective_status: ConnectionRequest['status'] }>(
+        `SELECT *,CASE WHEN status='pending' AND expires_at<=clock_timestamp() THEN 'expired'
+          WHEN status='pending' AND policy_revision<>$2 THEN 'cancelled' ELSE status END AS effective_status
+         FROM eraser_connection_requests WHERE chat_id=$1`,
+        [chatId, policy.revision],
+      )
+    ).rows[0];
     const counts = (
       await client.query<{
         pending: number;
@@ -278,6 +288,10 @@ export class Store {
       connectionStatus: policy.connection_status,
       historyStatus,
       historyScannedCount: Number(policy.scanned_count),
+      connectionRequest:
+        connection && connection.effective_status !== 'activated'
+          ? { status: connection.effective_status, expiresAt: connection.expires_at.toISOString() }
+          : null,
       ...(policy.last_operation_id ? { lastOperationId: policy.last_operation_id } : {}),
     };
   }
@@ -289,6 +303,7 @@ export class Store {
           hours: input.hours,
           expectedRevision: input.expectedRevision,
           actorUserId: input.actorUserId,
+          ...(input.connectWhenReady === true ? { connectWhenReady: true } : {}),
         }),
       )
       .digest('hex');
@@ -308,6 +323,8 @@ export class Store {
     return row.response;
   }
   async update(chatId: string, input: UpdatePolicy): Promise<Record<string, unknown>> {
+    if (input.connectWhenReady && !input.enabled)
+      throw new ServiceError(400, 'INVALID_POLICY', 'Подключение требует включения очистки.');
     const hash = createHash('sha256')
       .update(
         JSON.stringify({
@@ -315,6 +332,7 @@ export class Store {
           hours: input.hours,
           expectedRevision: input.expectedRevision,
           actorUserId: input.actorUserId,
+          ...(input.connectWhenReady === true ? { connectWhenReady: true } : {}),
         }),
       )
       .digest('hex');
@@ -364,7 +382,8 @@ export class Store {
       }
       const now = Date.now(),
         cutoff = now - input.hours * HOUR;
-      const restart = input.enabled && (!policy.enabled || input.hours !== policy.hours);
+      const enabled = input.enabled && !input.connectWhenReady;
+      const restart = enabled && (!policy.enabled || input.hours !== policy.hours);
       await client.query(
         `UPDATE eraser_policies SET enabled=$2,hours=$3,revision=revision+1,last_operation_id=$4,updated_at=CURRENT_TIMESTAMP,last_error=NULL,
         activation_id=CASE WHEN enabled <> $2 THEN $5::uuid ELSE activation_id END,
@@ -377,7 +396,7 @@ export class Store {
         WHERE chat_id=$1`,
         [
           chatId,
-          input.enabled,
+          enabled,
           input.hours,
           input.operationId,
           randomUUID(),
@@ -386,12 +405,151 @@ export class Store {
           cutoff,
         ],
       );
+      if (input.connectWhenReady) {
+        await client.query(
+          `INSERT INTO eraser_connection_requests(chat_id,operation_id,actor_user_id,policy_revision,status,expires_at)
+           VALUES($1,$2,$3,$4,'pending',clock_timestamp()+INTERVAL '1 hour')
+           ON CONFLICT(chat_id) DO UPDATE SET operation_id=EXCLUDED.operation_id,actor_user_id=EXCLUDED.actor_user_id,
+           policy_revision=EXCLUDED.policy_revision,status='pending',expires_at=EXCLUDED.expires_at,
+           next_attempt_at=clock_timestamp(),lease_token=NULL,lease_until=NULL,last_error=NULL,updated_at=clock_timestamp()`,
+          [chatId, input.operationId, input.actorUserId, policy.revision + 1],
+        );
+      } else {
+        // FLAG: Every ordinary revision-checked settings write revokes the outstanding opt-in.
+        await client.query(
+          `UPDATE eraser_connection_requests SET status='cancelled',lease_token=NULL,lease_until=NULL,
+           updated_at=clock_timestamp() WHERE chat_id=$1 AND status IN ('pending','expired')`,
+          [chatId],
+        );
+      }
       const response = await this.snapshot(chatId, client);
       await client.query(
         'INSERT INTO eraser_operations(chat_id,operation_id,request_hash,actor_user_id,response) VALUES($1,$2,$3,$4,$5)',
         [chatId, input.operationId, hash, input.actorUserId, response],
       );
       return response;
+    });
+  }
+  async reserveConnections(limit: number): Promise<Array<{ chatId: string; leaseToken: string }>> {
+    if (!this.executionEnabled) return [];
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16)
+      throw new Error('Invalid connection reservation limit');
+    return this.transaction(async (client) => {
+      await client.query(
+        `WITH expired AS (SELECT chat_id FROM eraser_connection_requests WHERE status='pending'
+         AND expires_at<=CURRENT_TIMESTAMP ORDER BY expires_at,chat_id LIMIT 64 FOR UPDATE SKIP LOCKED)
+         UPDATE eraser_connection_requests r SET status='expired',lease_token=NULL,lease_until=NULL,
+         updated_at=clock_timestamp() FROM expired e WHERE r.chat_id=e.chat_id`,
+      );
+      const rows = (
+        await client.query<{ chat_id: string }>(
+          `SELECT chat_id FROM eraser_connection_requests WHERE status='pending'
+           AND next_attempt_at<=CURRENT_TIMESTAMP
+           AND (lease_until IS NULL OR lease_until<=CURRENT_TIMESTAMP)
+           ORDER BY next_attempt_at,chat_id LIMIT $1 FOR UPDATE SKIP LOCKED`,
+          [limit],
+        )
+      ).rows;
+      const reserved = [];
+      for (const row of rows) {
+        const leaseToken = randomUUID();
+        const leased = await client.query(
+          `UPDATE eraser_connection_requests SET lease_token=$2,
+           lease_until=LEAST(expires_at,clock_timestamp()+INTERVAL '60 seconds')
+           WHERE chat_id=$1 AND status='pending' AND expires_at>clock_timestamp() RETURNING chat_id`,
+          [row.chat_id, leaseToken],
+        );
+        if (leased.rowCount) reserved.push({ chatId: row.chat_id, leaseToken });
+        else
+          await client.query(
+            `UPDATE eraser_connection_requests SET status='expired',lease_token=NULL,lease_until=NULL,
+           updated_at=clock_timestamp() WHERE chat_id=$1 AND status='pending' AND expires_at<=clock_timestamp()`,
+            [row.chat_id],
+          );
+      }
+      return reserved;
+    });
+  }
+  async connectionRequest(chatId: string, leaseToken: string): Promise<ConnectionRequest | null> {
+    if (!this.executionEnabled) return null;
+    return (
+      (
+        await this.pool.query<ConnectionRequest>(
+          `SELECT r.* FROM eraser_connection_requests r JOIN eraser_policies p USING(chat_id)
+         WHERE r.chat_id=$1 AND r.lease_token=$2 AND r.status='pending' AND NOT p.enabled
+         AND p.revision=r.policy_revision AND r.expires_at>clock_timestamp() AND r.lease_until>clock_timestamp()`,
+          [chatId, leaseToken],
+        )
+      ).rows[0] ?? null
+    );
+  }
+  async finishConnection(
+    chatId: string,
+    leaseToken: string,
+    status: 'pending' | 'cancelled',
+    code: string | null,
+    waitMs: number,
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE eraser_connection_requests SET status=CASE WHEN expires_at<=clock_timestamp() THEN 'expired' ELSE $3 END,
+       next_attempt_at=LEAST(expires_at,clock_timestamp()+($5 * INTERVAL '1 millisecond')),
+       lease_token=NULL,lease_until=NULL,last_error=$4,updated_at=clock_timestamp()
+       WHERE chat_id=$1 AND lease_token=$2 AND status='pending'`,
+      [chatId, leaseToken, status, code, Math.max(1000, waitMs)],
+    );
+  }
+  async activateConnection(
+    chatId: string,
+    leaseToken: string,
+    proofExpiresAt: Date,
+  ): Promise<boolean> {
+    if (!this.executionEnabled || !Number.isFinite(proofExpiresAt.getTime())) return false;
+    return this.transaction(async (client) => {
+      const policy = (
+        await client.query<PolicyRow>('SELECT * FROM eraser_policies WHERE chat_id=$1 FOR UPDATE', [
+          chatId,
+        ])
+      ).rows[0];
+      if (!policy || policy.enabled) return false;
+      const request = (
+        await client.query<ConnectionRequest>(
+          `SELECT * FROM eraser_connection_requests WHERE chat_id=$1 AND lease_token=$2
+           AND status='pending' AND policy_revision=$3 AND expires_at>clock_timestamp()
+           AND lease_until>clock_timestamp() AND $4::timestamptz>clock_timestamp() FOR UPDATE`,
+          [chatId, leaseToken, policy.revision, proofExpiresAt],
+        )
+      ).rows[0];
+      if (!request) return false;
+      const protection = (
+        await client.query<{ ready: boolean }>(
+          'SELECT ready FROM eraser_protection_state WHERE chat_id=$1',
+          [chatId],
+        )
+      ).rows[0];
+      if (!protection?.ready) return false;
+      // FLAG: The final DB-clock predicate fences expiry during row-lock waits. The operation
+      // identity and all protection/effect holds survive activation; only this request may enable.
+      const result = await client.query(
+        `UPDATE eraser_policies p SET enabled=true,revision=revision+1,connection_status='connected',
+         activation_id=$3,enabled_at=clock_timestamp(),first_enabled_at=COALESCE(first_enabled_at,clock_timestamp()),
+         live_floor=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint-hours*3600000::bigint+1,
+         live_upper=NULL,live_cursor=NULL,history_cursor=GREATEST(COALESCE(history_cursor,0),
+           (EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint-hours*3600000::bigint),
+         history_complete=false,history_gap=false,history_signature=NULL,live_signature=NULL,
+         lease_token=NULL,lease_until=NULL,last_error=NULL,next_run_at=clock_timestamp(),updated_at=clock_timestamp()
+         WHERE chat_id=$1 AND NOT enabled AND revision=$4 AND $5::timestamptz>clock_timestamp() AND EXISTS(
+           SELECT 1 FROM eraser_connection_requests r WHERE r.chat_id=p.chat_id AND r.lease_token=$2
+           AND r.status='pending' AND r.policy_revision=p.revision AND r.expires_at>clock_timestamp()
+           AND r.lease_until>clock_timestamp()) RETURNING chat_id`,
+        [chatId, leaseToken, randomUUID(), policy.revision, proofExpiresAt],
+      );
+      if (!result.rowCount) return false;
+      await client.query(
+        `UPDATE eraser_connection_requests SET status='activated',lease_token=NULL,lease_until=NULL,
+         last_error=NULL,updated_at=clock_timestamp() WHERE chat_id=$1 AND lease_token=$2`,
+        [chatId, leaseToken],
+      );
+      return true;
     });
   }
   async reserve(limit: number): Promise<Array<{ chatId: string; leaseToken: string }>> {
