@@ -3856,7 +3856,9 @@ async function exercisePublisherComposerKeyboardFlow(page) {
   const search = sheet.locator('input[type="search"]');
   const done = sheet.getByRole('button', { name: 'Завершить выбор получателей' });
 
+  if (!(await sheet.isVisible())) await summary.click();
   await sheet.waitFor({ state: 'visible' });
+  await settleVisualFrame(page);
   await search.focus();
   await assertFocusedLocator(search, 'Publisher recipient search');
   await assertLocatorWithinViewport(search, 'Publisher recipient search');
@@ -3869,6 +3871,7 @@ async function exercisePublisherComposerKeyboardFlow(page) {
 
   await summary.click();
   await sheet.waitFor({ state: 'visible' });
+  await settleVisualFrame(page);
   await search.focus();
   await assertFocusedLocator(search, 'Publisher recipient search after reopening');
   await assertLocatorWithinViewport(search, 'Publisher recipient search after reopening');

@@ -197,6 +197,16 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
       );
     });
   }
+  async function useNestedRescanPlanner(tx: Pick<PrismaService, '$executeRaw'>) {
+    // FLAG: Claim cardinality must survive rescans of the locking candidate subplan.
+    await tx.$executeRaw`SET LOCAL enable_hashjoin=off`;
+    await tx.$executeRaw`SET LOCAL enable_mergejoin=off`;
+    await tx.$executeRaw`SET LOCAL enable_material=off`;
+    await tx.$executeRaw`SET LOCAL enable_nestloop=on`;
+    await tx.$executeRaw`SET LOCAL enable_hashagg=off`;
+    await tx.$executeRaw`SET LOCAL enable_sort=off`;
+    await tx.$executeRaw`SET LOCAL enable_memoize=off`;
+  }
   it('mirrors monotonic consent idempotently and fences revocation without resurrecting a prior revision', async () => {
     expect((await grants.put(grantId, input())).entities[0]?.status).toBe('ACTIVE');
     const revision = (await state.read(bindingId))!.revision;
@@ -831,15 +841,20 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     }
   });
 
-  it.each(['deadline', 'shutdown', 'failure'] as const)(
-    'does not postpone unstarted access checks after %s',
-    async (interruption) => {
+  it.each(
+    (['deadline', 'shutdown', 'failure'] as const).flatMap((interruption) =>
+      (['default', 'nested-rescan'] as const).map((planner) => ({ interruption, planner })),
+    ),
+  )(
+    'does not postpone unstarted access checks after $interruption with $planner planner',
+    async ({ interruption, planner }) => {
       const seed = randomUUID(),
         prefix = actor + 'admission';
       const previousRole = process.env.APP_ROLE;
       process.env.APP_ROLE = 'action';
       const now = Date.now();
       const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+      let runtime!: StatisticsExchangeRuntimeService;
       const refresh = jest.fn<
         ReturnType<MarketplaceAccessService['refresh']>,
         Parameters<MarketplaceAccessService['refresh']>
@@ -848,13 +863,6 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
         else if (interruption === 'shutdown') await runtime.onModuleDestroy();
         else throw new Error('Synthetic access failure');
       });
-      const runtime = new StatisticsExchangeRuntimeService(
-        db as PrismaService,
-        config,
-        statistics,
-        grants,
-        { refresh } as unknown as MarketplaceAccessService,
-      );
       try {
         await db.$executeRaw`INSERT INTO marketplace_bindings(id,actor_user_id,entity_id,kind,profile,bot_id,state,checked_at,valid_until,metadata,statistics_consent,next_access_at)
           SELECT md5(${seed}||'binding'||n)::uuid,${prefix}||n,'-'||n,'CHANNEL','moderation','synthetic-v2-bot','ACTIVE',now(),now()+interval '5 minutes','{}'::jsonb,true,now()-interval '1 minute' + n*interval '1 millisecond' FROM generate_series(1,4)n`;
@@ -864,19 +872,32 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
           SELECT md5(${seed}||'grant'||n)::uuid,'-'||n,'CHANNEL','moderation',md5(${seed}||'binding'||n)::uuid FROM generate_series(1,4)n`;
         const before = await db.$queryRaw<Array<{ id: string; next_access_at: Date }>>`
           SELECT id,next_access_at FROM marketplace_bindings WHERE actor_user_id LIKE ${prefix + '%'} ORDER BY next_access_at,id`;
-        if (interruption === 'failure')
-          await expect(runtime.refreshAccessBatch()).rejects.toThrow('Synthetic access failure');
-        else await runtime.refreshAccessBatch();
-        expect(refresh).toHaveBeenCalledTimes(1);
-        const attempted = refresh.mock.calls[0]![0].id;
-        expect(attempted).toBe(before[0]!.id);
-        const untouched = await db.$queryRaw<Array<{ id: string; next_access_at: Date }>>`
-          SELECT id,next_access_at FROM marketplace_bindings WHERE actor_user_id LIKE ${prefix + '%'} AND id<>${attempted}::uuid ORDER BY next_access_at,id`;
-        expect(untouched).toEqual(before.slice(1));
-        expect(untouched.every((row) => row.next_access_at.getTime() < now)).toBe(true);
+        await db.$transaction(async (tx) => {
+          if (planner === 'nested-rescan') await useNestedRescanPlanner(tx);
+          const transactionPrisma = {
+            $queryRaw: tx.$queryRaw.bind(tx),
+          } satisfies Pick<PrismaService, '$queryRaw'>;
+          runtime = new StatisticsExchangeRuntimeService(
+            transactionPrisma as PrismaService,
+            config,
+            statistics,
+            grants,
+            { refresh } as unknown as MarketplaceAccessService,
+          );
+          if (interruption === 'failure')
+            await expect(runtime.refreshAccessBatch()).rejects.toThrow('Synthetic access failure');
+          else await runtime.refreshAccessBatch();
+          expect(refresh).toHaveBeenCalledTimes(1);
+          const attempted = refresh.mock.calls[0]![0].id;
+          expect(attempted).toBe(before[0]!.id);
+          const untouched = await tx.$queryRaw<Array<{ id: string; next_access_at: Date }>>`
+            SELECT id,next_access_at FROM marketplace_bindings WHERE actor_user_id LIKE ${prefix + '%'} AND id<>${attempted}::uuid ORDER BY next_access_at,id`;
+          expect(untouched).toEqual(before.slice(1));
+          expect(untouched.every((row) => row.next_access_at.getTime() < now)).toBe(true);
+        });
       } finally {
         clock.mockRestore();
-        await runtime.onModuleDestroy();
+        await runtime?.onModuleDestroy();
         if (previousRole === undefined) delete process.env.APP_ROLE;
         else process.env.APP_ROLE = previousRole;
         await db.$executeRaw`DELETE FROM statistics_exchange_entities WHERE grant_id IN(SELECT id FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'})`;
@@ -885,6 +906,129 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
       }
     },
   );
+
+  it.each(
+    (['tick', 'refreshRemoteAccessBatch'] as const).flatMap((method) =>
+      (['default', 'nested-rescan'] as const).map((planner) => ({ method, planner })),
+    ),
+  )('admits only four grants in $method with $planner planner', async ({ method, planner }) => {
+    const seed = randomUUID(),
+      prefix = actor + 'batch';
+    const previousRole = process.env.APP_ROLE;
+    process.env.APP_ROLE = 'action';
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    let release!: () => void, admitted!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      admitted = resolve;
+    });
+    const pull = jest.fn<
+      ReturnType<StatisticsExchangeStatisticsService['pull']>,
+      Parameters<StatisticsExchangeStatisticsService['pull']>
+    >(async () => {
+      admitted();
+      await pending;
+      return {
+        failures: 0,
+        nextCursor: null,
+        pending: false,
+        completedEntities: 0,
+        nextDelayMs: 300000,
+        lastError: null,
+      };
+    });
+    const refreshRemoteAccess = jest.fn<
+      ReturnType<StatisticsExchangeStatisticsService['refreshRemoteAccess']>,
+      Parameters<StatisticsExchangeStatisticsService['refreshRemoteAccess']>
+    >(async () => {
+      admitted();
+      await pending;
+    });
+    const statisticsMock = { pull, refreshRemoteAccess } satisfies Pick<
+      StatisticsExchangeStatisticsService,
+      'pull' | 'refreshRemoteAccess'
+    >;
+    const grantsMock = {
+      recoverUnavailable: jest
+        .fn<
+          ReturnType<StatisticsExchangeGrantsService['recoverUnavailable']>,
+          Parameters<StatisticsExchangeGrantsService['recoverUnavailable']>
+        >()
+        .mockResolvedValue(false),
+    } satisfies Pick<StatisticsExchangeGrantsService, 'recoverUnavailable'>;
+    type Schedule = {
+      id: string;
+      next_pull_at: Date;
+      next_remote_access_at: Date;
+      lease_id: string | null;
+      lease_until: Date | null;
+      last_attempt_at: Date | null;
+    };
+    let runtime: StatisticsExchangeRuntimeService | undefined;
+    try {
+      await db.$executeRaw`INSERT INTO statistics_exchange_grants(id,actor_user_id,revision,state,input_hash,next_pull_at,next_remote_access_at)
+          SELECT (${seed.slice(0, 24)}||lpad(n::text,12,'0'))::uuid,${prefix}||n,1,'ACTIVE','synthetic',
+            now()-interval '1 minute'+n*interval '1 millisecond',now()-interval '1 minute'+n*interval '1 millisecond' FROM generate_series(1,8)n`;
+      const before = await db.$queryRaw<Schedule[]>`
+          SELECT id,next_pull_at,next_remote_access_at,lease_id,lease_until,last_attempt_at
+          FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'} ORDER BY next_pull_at,id`;
+      await db.$transaction(async (tx) => {
+        if (planner === 'nested-rescan') await useNestedRescanPlanner(tx);
+        const transactionPrisma = {
+          $queryRaw: tx.$queryRaw.bind(tx),
+          $executeRaw: tx.$executeRaw.bind(tx),
+        } satisfies Pick<PrismaService, '$queryRaw' | '$executeRaw'>;
+        runtime = new StatisticsExchangeRuntimeService(
+          transactionPrisma as PrismaService,
+          config,
+          statisticsMock as unknown as StatisticsExchangeStatisticsService,
+          grantsMock as unknown as StatisticsExchangeGrantsService,
+        );
+        jest.spyOn(runtime, 'prune').mockResolvedValue(undefined);
+        const work = runtime[method]();
+        try {
+          await Promise.race([started, work]);
+          const calls = method === 'tick' ? pull.mock.calls : refreshRemoteAccess.mock.calls;
+          expect(calls).toHaveLength(4);
+          expect(new Set(calls.map(([id]) => id))).toEqual(
+            new Set(before.slice(0, 4).map(({ id }) => id)),
+          );
+          const after = await tx.$queryRaw<Schedule[]>`
+              SELECT id,next_pull_at,next_remote_access_at,lease_id,lease_until,last_attempt_at
+              FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'} ORDER BY next_pull_at,id`;
+          expect(after.slice(4)).toEqual(before.slice(4));
+          for (const [index, row] of after.slice(0, 4).entries()) {
+            const prior = before[index]!;
+            expect(row.next_pull_at).toEqual(prior.next_pull_at);
+            if (method === 'tick') {
+              expect(row.next_remote_access_at).toEqual(prior.next_remote_access_at);
+              expect(row.lease_id).toBe(pull.mock.calls[0]![2]!.leaseId);
+              expect(row.lease_until!.getTime()).toBeGreaterThan(now);
+              expect(row.last_attempt_at).toBeInstanceOf(Date);
+            } else {
+              expect(row.next_remote_access_at.getTime()).toBeGreaterThan(now);
+              expect(row.lease_id).toEqual(prior.lease_id);
+              expect(row.lease_until).toEqual(prior.lease_until);
+              expect(row.last_attempt_at).toEqual(prior.last_attempt_at);
+            }
+          }
+        } finally {
+          release();
+          await work;
+        }
+      });
+    } finally {
+      release();
+      await runtime?.onModuleDestroy();
+      clock.mockRestore();
+      if (previousRole === undefined) delete process.env.APP_ROLE;
+      else process.env.APP_ROLE = previousRole;
+      await db.$executeRaw`DELETE FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'}`;
+    }
+  });
 
   it('keeps100actor rights and reverse work bounded and independent under archive latency', async () => {
     const seed = randomUUID(),

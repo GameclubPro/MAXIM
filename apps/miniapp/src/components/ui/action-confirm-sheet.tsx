@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 import { isTopmostModalDialog, useDialogFocusTrap } from '../../lib/dialog-focus';
 import { NATIVE_BACK_MODAL_CONFIRM_PRIORITY, useNativeBackHandler } from '../../lib/native-back';
+import { useVisualViewportOverlayStyle } from '../../lib/use-visual-viewport-overlay-style';
 import './action-confirm-sheet.css';
 
 type ActionConfirmSheetProps = {
@@ -60,6 +61,7 @@ export function ActionConfirmSheet({
 }: ActionConfirmSheetProps) {
   const panelRef = useRef<HTMLElement | null>(null);
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const overlayStyle = useVisualViewportOverlayStyle(open);
   useDialogFocusTrap(open, panelRef, cancelButtonRef);
   useEffect(() => {
     if (!open) {
@@ -171,7 +173,7 @@ export function ActionConfirmSheet({
   );
 
   return createPortal(
-    <div className={cn('action-confirm-sheet', className)} aria-hidden={!open}>
+    <div className={cn('action-confirm-sheet', className)} aria-hidden={!open} style={overlayStyle}>
       <button
         type="button"
         className="action-confirm-sheet__backdrop"

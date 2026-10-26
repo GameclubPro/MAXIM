@@ -93,10 +93,13 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
     }
     if (central) return;
     const lease = randomUUID();
+    // FLAG: Materialize the four admitted grants before changing lease eligibility.
     const rows = await this.prisma.$queryRaw<StatisticsExchangeGrantRow[]>`
-      UPDATE statistics_exchange_grants SET lease_id=${lease}::uuid,lease_until=now()+interval '2 minutes',last_attempt_at=now()
-      WHERE id IN(SELECT id FROM statistics_exchange_grants WHERE state='ACTIVE' AND next_pull_at<=now()
-        AND (lease_until IS NULL OR lease_until<now()) ORDER BY next_pull_at,id FOR UPDATE SKIP LOCKED LIMIT 4) RETURNING *`;
+      WITH candidates AS MATERIALIZED(SELECT g.id FROM statistics_exchange_grants g
+        WHERE g.state='ACTIVE' AND g.next_pull_at<=now() AND (g.lease_until IS NULL OR g.lease_until<now())
+        ORDER BY g.next_pull_at,g.id FOR UPDATE OF g SKIP LOCKED LIMIT 4)
+      UPDATE statistics_exchange_grants g SET lease_id=${lease}::uuid,lease_until=now()+interval '2 minutes',last_attempt_at=now()
+      FROM candidates WHERE g.id=candidates.id RETURNING g.*`;
     const deadline = Date.now() + 10_000;
     await Promise.allSettled(rows.map((grant) => this.pullGrant(grant, lease, deadline)));
   }
@@ -116,25 +119,29 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
     }
     if (!this.access) return;
     for (let attempt = 0; attempt < 20 && !this.stopping && Date.now() < deadline; attempt++) {
-      // FLAG: Claim only the next admitted check. A slow/failed check or shutdown
+      // FLAG: Materialize only the next admitted check. A slow/failed check or shutdown
       // must not postpone unstarted bindings; MAX admission remains sequential.
       const [row] = await this.prisma.$queryRaw<MarketplaceBindingRow[]>`
-        UPDATE marketplace_bindings SET next_access_at=now()+interval '1 minute'
-        WHERE id IN(SELECT b.id FROM marketplace_bindings b
+        WITH candidate AS MATERIALIZED(SELECT b.id FROM marketplace_bindings b
           WHERE b.statistics_consent=true AND b.state<>'REVOKED' AND b.next_access_at<=now()
             AND EXISTS(SELECT 1 FROM statistics_exchange_entities e JOIN statistics_exchange_grants g ON g.id=e.grant_id
               WHERE e.binding_id=b.id AND g.state='ACTIVE')
-          ORDER BY b.next_access_at,b.id FOR UPDATE OF b SKIP LOCKED LIMIT 1) RETURNING *`;
+          ORDER BY b.next_access_at,b.id FOR UPDATE OF b SKIP LOCKED LIMIT 1)
+        UPDATE marketplace_bindings b SET next_access_at=now()+interval '1 minute'
+        FROM candidate WHERE b.id=candidate.id RETURNING b.*`;
       if (!row) return;
       await this.access.refresh(row, true);
     }
   }
   async refreshRemoteAccessBatch(): Promise<void> {
     if (!this.enabled() || centralEnabled(this.config)) return;
+    // FLAG: Freeze the four admitted checks before moving their due time.
     const rows = await this.prisma.$queryRaw<Array<{ id: string; revision: bigint }>>`
-      UPDATE statistics_exchange_grants SET next_remote_access_at=now()+interval '1 minute'
-      WHERE id IN(SELECT id FROM statistics_exchange_grants WHERE state='ACTIVE' AND next_remote_access_at<=now()
-        ORDER BY next_remote_access_at,id FOR UPDATE SKIP LOCKED LIMIT 4) RETURNING id,revision`;
+      WITH candidates AS MATERIALIZED(SELECT g.id FROM statistics_exchange_grants g
+        WHERE g.state='ACTIVE' AND g.next_remote_access_at<=now()
+        ORDER BY g.next_remote_access_at,g.id FOR UPDATE OF g SKIP LOCKED LIMIT 4)
+      UPDATE statistics_exchange_grants g SET next_remote_access_at=now()+interval '1 minute'
+      FROM candidates WHERE g.id=candidates.id RETURNING g.id,g.revision`;
     // The service CAS records errors only for the current check version; no stale lane error wins.
     await Promise.allSettled(
       rows.map((grant) => this.statistics.refreshRemoteAccess(grant.id, Number(grant.revision))),
