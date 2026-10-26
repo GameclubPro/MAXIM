@@ -258,6 +258,16 @@
     outline-offset: 3px;
   }
 
+  @media (max-width: 600px) {
+    body[data-miniapp-profile='moderation']
+      .managed-entity-workspace-header--settings
+      .compact-page-header__title {
+      display: block;
+      overflow: visible;
+      -webkit-line-clamp: unset;
+    }
+  }
+
   @media (max-width: 359px) {
     body[data-miniapp-profile='moderation']
       .managed-entity-workspace-header--settings.managed-entity-workspace-header--with-status

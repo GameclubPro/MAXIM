@@ -128,7 +128,13 @@ export function TimeField({
   const displayValue = isEmpty ? placeholder : resolveTimeLabel(value);
   const portalTarget = open ? resolveTimeFieldPortalTarget() : null;
 
-  const minuteOptions = useMemo(() => buildMinuteOptions(minuteStep), [minuteStep]);
+  const minuteOptions = useMemo(() => {
+    const options = buildMinuteOptions(minuteStep);
+    const savedMinute = parseTime(value).minute;
+    return options.includes(savedMinute)
+      ? options
+      : [...options, savedMinute].sort((left, right) => left - right);
+  }, [minuteStep, value]);
   const selectedValue = useMemo(() => formatTime(draft), [draft]);
   const sheetValueLabel = isEmpty && !draftTouched ? placeholder : selectedValue;
 
@@ -187,9 +193,11 @@ export function TimeField({
   };
 
   const shiftDraftPart = (part: TimePartKey, delta: number) => {
-    const limit = part === 'hour' ? 24 : 60;
-    const nextValue = (draft[part] + delta + limit) % limit;
-    setDraftPart(part, nextValue, true);
+    const options = part === 'hour' ? HOURS : minuteOptions;
+    const currentIndex = options.indexOf(draft[part]);
+    const nextIndex = (currentIndex + delta + options.length) % options.length;
+    const nextValue = options[nextIndex];
+    if (nextValue !== undefined) setDraftPart(part, nextValue, true);
   };
 
   const handleOptionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, part: TimePartKey) => {
@@ -207,13 +215,13 @@ export function TimeField({
 
     if (event.key === 'PageDown') {
       event.preventDefault();
-      shiftDraftPart(part, part === 'hour' ? 6 : 10);
+      shiftDraftPart(part, part === 'hour' ? 6 : Math.min(10, minuteOptions.length - 1));
       return;
     }
 
     if (event.key === 'PageUp') {
       event.preventDefault();
-      shiftDraftPart(part, part === 'hour' ? -6 : -10);
+      shiftDraftPart(part, part === 'hour' ? -6 : -Math.min(10, minuteOptions.length - 1));
       return;
     }
 
@@ -225,7 +233,7 @@ export function TimeField({
 
     if (event.key === 'End') {
       event.preventDefault();
-      setDraftPart(part, part === 'hour' ? 23 : 59, true);
+      setDraftPart(part, part === 'hour' ? 23 : minuteOptions[minuteOptions.length - 1]!, true);
     }
   };
 

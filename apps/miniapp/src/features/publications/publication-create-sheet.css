@@ -36,9 +36,14 @@
   .publication-create-sheet__panel {
     position: relative;
     width: min(100%, 680px);
+    min-height: 0;
+    max-height: 100%;
     display: grid;
     justify-self: center;
-    overflow: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
     border: 1px solid var(--color-border);
     border-bottom: 0;
     border-radius: 8px 8px 0 0;
