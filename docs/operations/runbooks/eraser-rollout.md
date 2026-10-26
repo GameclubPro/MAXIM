@@ -106,6 +106,15 @@ pre-existing messages for a live test. A 100-million-message backlog is a gradua
 the initial 20 total HTTP requests/second also pays for reads/checks/retries, and each
 chat has at most one Lastik deletion/second.
 
+MAX documents an exact-message `404` as either missing or inaccessible. Neither
+`not.found` nor `message.not.found` certifies absence. Only a positive DELETE
+acknowledgement or an authenticated `message_removed` receipt settles deletion.
+Keep uncertain journals across restarts without replaying the DELETE. Failed message
+reads defer that journal while other eligible messages continue through fresh rights,
+pin and policy checks; authentication failures and rate limits stop the current visit.
+Live acceptance records deletion acknowledgements separately from any unavailable
+absence readback and preserves its exact operation journal.
+
 An immutable `rollback-release <release-id> eraser` selects only Lastik's recorded
 application image. It never restores or recreates either store. API rollback must retain
 the installed Lastik ownership reader even when its availability flag is disabled.

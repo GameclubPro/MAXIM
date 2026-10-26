@@ -99,10 +99,26 @@ export class CleanupRuntime {
       if (!policy || this.stopping || !this.config.enabled) return;
       const reconcile = await this.store.reconciliation(chatId);
       if (reconcile) {
-        const presence = await this.max.presence(chatId, reconcile.message_id);
-        if (presence === 'absent')
-          await this.store.settle(reconcile, 'deleted', 'confirmed_absence');
-        else await this.store.settle(reconcile, 'uncertain', 'reconciliation', 300_000);
+        let reconciliationCode = 'reconciliation';
+        try {
+          await this.max.presence(chatId, reconcile.message_id);
+        } catch (failure) {
+          if (
+            !(failure instanceof MaxError) ||
+            !(
+              failure.status === 0 ||
+              failure.status === 403 ||
+              failure.status === 404 ||
+              (failure.status >= 500 && failure.status < 600)
+            )
+          )
+            throw failure;
+          error = failure.code;
+          reconciliationCode = 'reconciliation_unavailable';
+        }
+        // FLAG: A read cannot certify a DELETE effect. Preserve its journal and let independent
+        // candidates proceed; authentication failures and rate limits still stop the visit.
+        await this.store.settle(reconcile, 'uncertain', reconciliationCode, 300_000);
       }
       let candidates = await this.store.nextCandidates(chatId);
       if (
@@ -163,12 +179,6 @@ export class CleanupRuntime {
             else await this.store.defer(candidate, 'policy_changed', 1000);
           } else if (failure instanceof MaxError && failure.status === 429 && !failure.attempted) {
             await this.store.settle(candidate, 'pending', 'rate_limited', failure.retryAfterMs);
-          } else if (
-            failure instanceof MaxError &&
-            failure.status === 404 &&
-            failure.code === 'message.not.found'
-          ) {
-            await this.store.settle(candidate, 'deleted', 'exact_delete_absence');
           } else if (dispatched) {
             // FLAG: Timeout, malformed acknowledgement and generic errors retain mutation uncertainty.
             await this.store.settle(candidate, 'uncertain', 'reconciliation', 10_000);

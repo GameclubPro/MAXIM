@@ -256,24 +256,87 @@ test('pin retains HTTP errors and shared Retry-After cooldown instead of certify
   assert.deepEqual(cooldowns, [3000]);
 });
 
-test('bare 404 does not establish absence and success false does not certify deletion', async () => {
-  let response = Response.json({ message: 'missing' }, { status: 404 });
+test('message presence treats every 404 as inaccessible or missing, never certified absence', async () => {
+  let response = Response.json({});
+  const max = new MaxClient(
+    settings,
+    { acquire: async () => {}, cooldown: async () => {} },
+    async () => response.clone(),
+  );
+  for (const body of [
+    { message: 'missing' },
+    { code: 'not.found', message: 'Message message was not found' },
+    { code: 'message.not.found' },
+    { code: 'chat.not.found' },
+  ]) {
+    response = Response.json(body, { status: 404 });
+    assert.equal(await max.presence('-1', 'message'), 'unknown');
+  }
+  response = new Response('not JSON', { status: 404 });
+  assert.equal(await max.presence('-1', 'message'), 'unknown');
+  response = Response.json(raw(Date.now()));
+  assert.equal(await max.presence('-1', 'message'), 'present');
+  assert.equal(await max.presence('-2', 'message'), 'unknown');
+  assert.equal(await max.presence('-1', 'another-message'), 'unknown');
+});
+
+test('presence preserves non-404 failures and the MAX rate-limit cooldown', async () => {
+  let status = 401;
+  const cooldowns: number[] = [];
+  const max = new MaxClient(
+    settings,
+    {
+      acquire: async () => {},
+      cooldown: async (ms) => {
+        cooldowns.push(ms);
+      },
+    },
+    async () =>
+      Response.json(
+        { code: 'lookup.failed' },
+        {
+          status,
+          headers: { 'Retry-After': '3' },
+        },
+      ),
+  );
+  for (status of [401, 403, 429, 503])
+    await assert.rejects(
+      max.presence('-1', 'message'),
+      (e) => e instanceof MaxError && e.status === status && !e.attempted,
+    );
+  assert.deepEqual(cooldowns, [3000]);
+  const unavailable = new MaxClient(
+    settings,
+    { acquire: async () => {}, cooldown: async () => {} },
+    async () => {
+      throw new Error('transport');
+    },
+  );
+  await assert.rejects(
+    unavailable.presence('-1', 'message'),
+    (e) => e instanceof MaxError && e.status === 0 && !e.attempted,
+  );
+});
+
+test('only a positive acknowledgement certifies a delete request', async () => {
+  let response = Response.json({ success: false });
   const max = new MaxClient(
     settings,
     { acquire: async () => {}, cooldown: async () => {} },
     async () => response,
   );
   await assert.rejects(
-    max.presence('-1', 'message'),
-    (e) => e instanceof MaxError && e.code === 'unclassified',
-  );
-  response = Response.json({ code: 'message.not.found' }, { status: 404 });
-  assert.equal(await max.presence('-1', 'message'), 'absent');
-  response = Response.json({ success: false });
-  await assert.rejects(
     max.remove('-1', 'message', async () => {}),
     (e) => e instanceof MaxError && e.attempted && e.code === 'delete_unconfirmed',
   );
+  for (const body of [{}, { code: 'not.found' }, { code: 'message.not.found' }]) {
+    response = Response.json(body, { status: 404 });
+    await assert.rejects(
+      max.remove('-1', 'message', async () => {}),
+      (e) => e instanceof MaxError && e.status === 404 && e.attempted,
+    );
+  }
 });
 
 test('429 honors Retry-After and leaves the delete safe for a later guarded attempt', async () => {

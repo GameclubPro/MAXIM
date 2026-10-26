@@ -304,7 +304,7 @@ describe('real PostgreSQL ownership, journals and restart', () => {
     await store.connection('-1', 'connected');
     assert.equal((await store.policy('-1'))?.connection_status, 'no_access');
   });
-  test('unknown send receipt survives restart and settles only exact absence', async () => {
+  test('unknown delete receipt survives restart and settles only authenticated removal', async () => {
     await enable();
     await candidate();
     let deletes = 0;
@@ -322,32 +322,188 @@ describe('real PostgreSQL ownership, journals and restart', () => {
         .state,
       'uncertain',
     );
-    await pool.query(
-      "UPDATE eraser_candidates SET next_attempt_at=CURRENT_TIMESTAMP WHERE message_id='message'",
+    for (const presence of ['present', 'unknown'] as const) {
+      await pool.query(
+        "UPDATE eraser_candidates SET next_attempt_at=CURRENT_TIMESTAMP WHERE message_id='message'",
+      );
+      const restarted = new CleanupRuntime(
+        new Store(pool, true),
+        transport({
+          presence: async () => presence,
+          remove: async () => {
+            deletes++;
+          },
+        }),
+        { enabled: true, redisUrl },
+      );
+      await restarted.visit(await reserve());
+      assert.equal(deletes, 1);
+      assert.equal((await store.snapshot('-1')).deletedCount, 0);
+    }
+    await store.ingest(
+      { update_type: 'message_removed', chat_id: -1, message_id: 'message' },
+      'reconciled-removal',
     );
-    const restarted = new CleanupRuntime(
-      new Store(pool, true),
-      transport({
-        presence: async () => 'present',
-        remove: async () => {
-          deletes++;
-        },
-      }),
-      { enabled: true, redisUrl },
-    );
-    await restarted.visit(await reserve());
-    assert.equal(deletes, 1);
-    await pool.query(
-      "UPDATE eraser_candidates SET next_attempt_at=CURRENT_TIMESTAMP WHERE message_id='message'",
-    );
-    const reconciler = new CleanupRuntime(store, transport({ presence: async () => 'absent' }), {
-      enabled: true,
-      redisUrl,
-    });
-    await reconciler.visit(await reserve());
     assert.equal((await store.snapshot('-1')).deletedCount, 1);
     assert.equal(deletes, 1);
   });
+  for (const [status, state] of [
+    [0, 'uncertain'],
+    [403, 'dispatching'],
+    [404, 'uncertain'],
+    [500, 'dispatching'],
+    [503, 'uncertain'],
+  ] as const) {
+    test(`reconciliation read ${status} preserves its ${state} journal while an independent delete proceeds`, async () => {
+      await enable();
+      await candidate('uncertain');
+      await candidate('ordinary');
+      const dispatchId = randomUUID();
+      await pool.query(
+        "UPDATE eraser_candidates SET state=$1,dispatch_id=$2,attempt_count=1 WHERE message_id='uncertain'",
+        [state, dispatchId],
+      );
+      const removed: string[] = [];
+      const runtime = new CleanupRuntime(
+        store,
+        transport({
+          presence: async () => {
+            throw new MaxError(status, 'lookup.failed', false);
+          },
+          remove: async (_chat, id, before) => {
+            await before();
+            removed.push(id);
+          },
+        }),
+        { enabled: true, redisUrl },
+      );
+      const started = Date.now();
+      await runtime.visit(await reserve());
+      const journal = (
+        await pool.query<Candidate>("SELECT * FROM eraser_candidates WHERE message_id='uncertain'")
+      ).rows[0]!;
+      assert.equal(journal.state, 'uncertain');
+      assert.equal(journal.dispatch_id, dispatchId);
+      assert.equal(journal.attempt_count, 1);
+      assert.equal(journal.outcome_code, 'reconciliation_unavailable');
+      assert.ok(journal.next_attempt_at.getTime() >= started + 290_000);
+      assert.ok(journal.next_attempt_at.getTime() <= Date.now() + 310_000);
+      assert.deepEqual(removed, ['ordinary']);
+      assert.equal((await store.snapshot('-1')).deletedCount, 1);
+      assert.equal((await store.snapshot('-1')).status, 'delayed');
+    });
+  }
+  for (const status of [401, 429] as const) {
+    test(`reconciliation read ${status} stops the visit before independent deletes`, async () => {
+      await enable();
+      await candidate('uncertain');
+      await candidate('ordinary');
+      const dispatchId = randomUUID();
+      await pool.query(
+        "UPDATE eraser_candidates SET state='uncertain',dispatch_id=$1,attempt_count=1 WHERE message_id='uncertain'",
+        [dispatchId],
+      );
+      let rightsChecks = 0;
+      const removed: string[] = [];
+      const runtime = new CleanupRuntime(
+        store,
+        transport({
+          presence: async () => {
+            throw new MaxError(status, 'lookup.failed', false, 10_000);
+          },
+          rights: async () => {
+            rightsChecks++;
+          },
+          remove: async (_chat, id) => {
+            removed.push(id);
+          },
+        }),
+        { enabled: true, redisUrl },
+      );
+      const started = Date.now();
+      await runtime.visit(await reserve());
+      assert.deepEqual(removed, []);
+      assert.equal(rightsChecks, 0);
+      const journal = (
+        await pool.query<Candidate>("SELECT * FROM eraser_candidates WHERE message_id='uncertain'")
+      ).rows[0]!;
+      assert.equal(journal.state, 'uncertain');
+      assert.equal(journal.dispatch_id, dispatchId);
+      assert.equal(journal.attempt_count, 1);
+      assert.equal((await store.snapshot('-1')).deletedCount, 0);
+      const policy = (await store.policy('-1'))!;
+      assert.equal(policy.last_error, 'lookup.failed');
+      assert.ok(policy.next_run_at.getTime() >= started + (status === 429 ? 9500 : 4500));
+    });
+  }
+  for (const code of [null, 'not.found', 'message.not.found']) {
+    test(`issued DELETE 404 ${code ?? 'without code'} stays uncertain through ambiguous readback`, async () => {
+      await enable();
+      await candidate();
+      const deleted: string[] = [];
+      const max = new MaxClient(
+        {
+          databaseUrl: databaseUrl!,
+          redisUrl: redisUrl!,
+          controlToken: 'a'.repeat(32),
+          webhookSecret: 'b'.repeat(32),
+          botToken: 'private',
+          botId: '123',
+          apiBaseUrl: 'https://platform-api2.max.ru',
+          port: 3000,
+          enabled: true,
+          maxRps: 20,
+          commitSha: 'native',
+          webhookUrl: null,
+        },
+        new HttpLimiter(redis, 20, `${prefix}:delete-404-${code ?? 'bare'}`),
+        async (input, init) => {
+          const url = new URL(String(input));
+          if (init?.method === 'GET' && url.pathname === '/chats/-1/members/me')
+            return Response.json({
+              user_id: 123,
+              is_admin: true,
+              permissions: ['read_all_messages', 'write'],
+            });
+          if (init?.method === 'GET' && url.pathname === '/chats/-1/pin') return Response.json({});
+          if (init?.method === 'GET' && url.pathname === '/messages')
+            return Response.json({ messages: [] });
+          if (init?.method === 'GET' && url.pathname === '/messages/message')
+            return Response.json({ code: 'not.found' }, { status: 404 });
+          assert.equal(init?.method, 'DELETE');
+          assert.equal(url.pathname, '/messages');
+          const messageId = url.searchParams.get('message_id');
+          assert.ok(messageId === 'message' || messageId === 'ordinary');
+          deleted.push(messageId);
+          if (messageId === 'ordinary') return Response.json({ success: true });
+          return Response.json(code === null ? {} : { code }, { status: 404 });
+        },
+      );
+      const runtime = new CleanupRuntime(store, max, { enabled: true, redisUrl });
+      await runtime.visit(await reserve());
+      const readJournal = async () =>
+        (await pool.query<Candidate>("SELECT * FROM eraser_candidates WHERE message_id='message'"))
+          .rows[0]!;
+      const issued = await readJournal();
+      assert.equal(issued.state, 'uncertain');
+      assert.ok(issued.dispatch_id);
+      assert.equal(issued.attempt_count, 1);
+      assert.equal((await store.snapshot('-1')).deletedCount, 0);
+      await candidate('ordinary');
+      await pool.query(
+        "UPDATE eraser_candidates SET next_attempt_at=CURRENT_TIMESTAMP WHERE message_id='message'",
+      );
+      const started = Date.now();
+      await runtime.visit(await reserve());
+      const reconciled = await readJournal();
+      assert.equal(reconciled.state, 'uncertain');
+      assert.equal(reconciled.dispatch_id, issued.dispatch_id);
+      assert.equal(reconciled.attempt_count, 1);
+      assert.ok(reconciled.next_attempt_at.getTime() >= started + 290_000);
+      assert.deepEqual(deleted, ['message', 'ordinary']);
+      assert.equal((await store.snapshot('-1')).deletedCount, 1);
+    });
+  }
   test('authenticated removal duplicate releases counts once', async () => {
     await enable();
     await candidate();
