@@ -204,6 +204,35 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       };
     }, [syncActiveTools]);
 
+    useEffect(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+
+      const preserveLinkOnReplacement = (event: InputEvent) => {
+        if (
+          !interactiveRef.current ||
+          !['insertText', 'insertCompositionText', 'insertReplacementText'].includes(
+            event.inputType,
+          )
+        ) {
+          return;
+        }
+        let range = readCurrentEditorRange(editor);
+        if (event.inputType === 'insertReplacementText') {
+          const target = event.getTargetRanges()[0];
+          if (target) {
+            const replacementRange = document.createRange();
+            replacementRange.setStart(target.startContainer, target.startOffset);
+            replacementRange.setEnd(target.endContainer, target.endOffset);
+            if (editorContainsRange(editor, replacementRange)) range = replacementRange;
+          }
+        }
+        if (range) preserveSelectedLink(editor, range, event);
+      };
+      editor.addEventListener('beforeinput', preserveLinkOnReplacement);
+      return () => editor.removeEventListener('beforeinput', preserveLinkOnReplacement);
+    }, []);
+
     const focusEditor = useCallback(() => {
       if (interactiveRef.current) editorRef.current?.focus();
     }, []);
@@ -408,6 +437,11 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           onMouseUp={syncActiveTools}
           onPointerUp={syncActiveTools}
           onFocus={syncActiveTools}
+          onBlur={() => {
+            editorRef.current
+              ?.querySelectorAll('[data-max-link-boundary]')
+              .forEach((boundary) => boundary.remove());
+          }}
           onPaste={(event) => {
             if (!interactiveRef.current) {
               return;
@@ -652,9 +686,128 @@ function wrapRangeWithLink(range: Range, href: string): void {
   }
 
   const fragment = range.extractContents();
+  // FLAG: A new destination replaces links inside the selection; nested anchors corrupt Markdown.
+  for (const existingLink of fragment.querySelectorAll('a')) {
+    existingLink.replaceWith(...existingLink.childNodes);
+  }
   link.appendChild(fragment);
   range.insertNode(link);
   selectElementContents(link);
+}
+
+function preserveSelectedLink(editor: HTMLElement, range: Range, event: InputEvent): void {
+  if (range.collapsed) return;
+  const selectedText = range.toString();
+  const link =
+    findClosestElement(range.commonAncestorContainer, editor, 'a') ??
+    Array.from(editor.querySelectorAll('a')).find(
+      (candidate) =>
+        candidate.textContent === selectedText && rangeContainsLinkLabel(range, candidate),
+    );
+  if (!link || selectedText !== link.textContent) {
+    return;
+  }
+
+  // FLAG: Native full-label replacement drops the anchor unless an unselected content boundary
+  // remains. This empty atomic span preserves native typing/undo without adding hidden text.
+  if (
+    event.inputType !== 'insertCompositionText' &&
+    event.data &&
+    (event.data.length > 1 || event.inputType === 'insertReplacementText') &&
+    event.cancelable
+  ) {
+    let replacementRoot = link;
+    while (
+      replacementRoot.parentElement &&
+      /^(STRONG|B|EM|I|U|S|STRIKE|DEL|MARK|CODE)$/u.test(replacementRoot.parentElement.tagName) &&
+      replacementRoot.parentElement.textContent === link.textContent
+    ) {
+      replacementRoot = replacementRoot.parentElement;
+    }
+    let replacement = replacementRoot.cloneNode(true) as HTMLElement;
+    const replacementLink =
+      replacement.tagName === 'A' ? replacement : replacement.querySelector('a')!;
+    replacement
+      .querySelectorAll('[data-max-link-boundary]')
+      .forEach((boundary) => boundary.remove());
+    const walker = document.createTreeWalker(replacementLink, NodeFilter.SHOW_TEXT);
+    let textNode = walker.nextNode();
+    if (textNode) {
+      textNode.textContent = event.data;
+      while ((textNode = walker.nextNode())) textNode.textContent = '';
+    } else {
+      replacementLink.textContent = event.data;
+    }
+    replacementLink.setAttribute('data-max-link-replacement', '');
+    replacementLink.appendChild(createLinkTypingBoundary());
+    for (
+      let ancestor = replacementRoot.parentElement;
+      ancestor && /^(STRONG|B|EM|I|U|S|STRIKE|DEL|MARK|CODE)$/u.test(ancestor.tagName);
+      ancestor = ancestor.parentElement
+    ) {
+      const wrapper = ancestor.cloneNode(false) as HTMLElement;
+      wrapper.appendChild(replacement);
+      replacement = wrapper;
+    }
+    const replacementRange = document.createRange();
+    replacementRange.selectNode(replacementRoot);
+    applyDocumentRange(replacementRange);
+    // FLAG: insertHTML keeps the replacement in native undo history. DOM textContent escapes data.
+    let replaced = false;
+    try {
+      replaced = document.execCommand('insertHTML', false, replacement.outerHTML);
+    } catch {
+      // FLAG: An unavailable native command must leave the original text input enabled.
+    }
+    const inserted = editor.querySelector('a[data-max-link-replacement]');
+    if (replaced || inserted) {
+      event.preventDefault();
+      inserted?.removeAttribute('data-max-link-replacement');
+      const insertedText = inserted
+        ? document.createTreeWalker(inserted, NodeFilter.SHOW_TEXT).nextNode()
+        : null;
+      if (insertedText) {
+        const caret = document.createRange();
+        caret.setStart(insertedText, insertedText.textContent?.length ?? 0);
+        caret.collapse(true);
+        applyDocumentRange(caret);
+      }
+      return;
+    }
+    applyDocumentRange(range);
+  }
+
+  if (link.querySelector('[data-max-link-boundary]')) return;
+  const selection = range.cloneRange();
+  link.appendChild(createLinkTypingBoundary());
+  applyDocumentRange(selection);
+}
+
+function rangeContainsLinkLabel(range: Range, link: HTMLElement): boolean {
+  const walker = document.createTreeWalker(link, NodeFilter.SHOW_TEXT);
+  let first: Node | null = null;
+  let last: Node | null = null;
+  let node;
+  while ((node = walker.nextNode())) {
+    if (!node.textContent) continue;
+    first ??= node;
+    last = node;
+  }
+  return Boolean(
+    first &&
+    last &&
+    range.comparePoint(first, 0) === 0 &&
+    range.comparePoint(last, last.textContent?.length ?? 0) === 0,
+  );
+}
+
+function createLinkTypingBoundary(): HTMLSpanElement {
+  const boundary = document.createElement('span');
+  boundary.dataset.maxLinkBoundary = '';
+  boundary.contentEditable = 'false';
+  boundary.setAttribute('aria-hidden', 'true');
+  boundary.style.cssText = 'display:inline-block;width:0;height:0;overflow:hidden';
+  return boundary;
 }
 
 function wrapRangeWithHeading(range: Range): void {
@@ -811,6 +964,8 @@ function serializeNode(node: Node, options: RichTextSerializationOptions = {}): 
 
   const element = node as HTMLElement;
   const tagName = element.tagName.toLowerCase();
+
+  if (element.hasAttribute('data-max-link-boundary')) return '';
 
   if (options.preserveCurlyBracePlaceholders && element.dataset.maxPlaceholder) {
     const placeholderKey = element.dataset.maxPlaceholder;

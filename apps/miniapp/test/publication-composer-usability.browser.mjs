@@ -196,6 +196,14 @@ try {
         await page.getByRole('button', { name: 'Жирный', exact: true }).click();
         await editor.locator('strong, b').first().waitFor();
         assert.equal(await editor.locator('strong, b').first().textContent(), 'Абзац 1');
+        const href = 'https://example.com/article?source=publik&read=1';
+        await page.getByRole('button', { name: 'Ссылка', exact: true }).click();
+        await page.getByRole('textbox', { name: 'Адрес ссылки', exact: true }).fill(href);
+        await page.getByRole('button', { name: 'Применить', exact: true }).click();
+        await page.keyboard.insertText('Первый абзац');
+        assert.equal(await editor.locator('a').textContent(), 'Первый абзац');
+        assert.equal(await editor.locator('a').getAttribute('href'), href);
+        assert.equal(await editor.locator('strong, b').first().textContent(), 'Первый абзац');
         await page.getByRole('button', { name: 'Форматирование', exact: true }).click();
         const authoredText = await editor.innerText();
         await scroll.evaluate((element) => element.scrollTo({ top: element.scrollHeight / 2 }));
@@ -279,6 +287,9 @@ try {
         assert.deepEqual(access.attempts[0], access.attempts[1]);
         assert.equal(access.refreshes.length, 1);
         const submitted = JSON.parse(access.attempts[0].body);
+        assert.equal(submitted.content.textFormat, 'markdown');
+        assert.ok(submitted.content.text.includes(`[Первый абзац](${href})`));
+        assert.equal(submitted.content.text.includes('data-max-link-'), false);
         assert.deepEqual(
           access.refreshes[0].targets,
           submitted.audience.targets.map(({ chatId, entityType }) => ({ id: chatId, entityType })),
