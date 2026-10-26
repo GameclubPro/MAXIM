@@ -10,28 +10,67 @@ retain their own authority.
 
 ## Admission and failures
 
-The background role advertises readiness through a short Redis worker lease. A
-CAS admits one source into a single expiring slot; there is no inference waiting
-list, Bull queue, retry or historical replay. Admission is fire-and-forget on a
+The background role advertises readiness through a short Redis worker lease.
+The version-2 Redis mailbox keeps one pending primary slot and at most three
+active sources. Atomic checks reject another offer from a chat already pending
+or active. The process separately retains at most one waiting server confirmation;
+the shared server lease permits one actual server request. Waiting for confirmation
+must not block unrelated primary negatives. Admission is fire-and-forget on a
 separate fail-fast Redis connection, with one in-flight admission per producer.
-Busy, absent, pressured, stale, oversized, uncertain and failed work is skipped.
-The workstation has an atomic two-second admission interval (at most thirty starts
-per minute). Only a requested server confirmation consumes the existing shared
-ten-second server lease/cooldown (at most six starts per minute). A local negative
-can complete while the server is busy; a positive or uncertain result with no
-server capacity is skipped immediately. Neither tier has a waiting list. The
-governor and 12 GiB headroom guard remain. Actual rates can be lower; this is **partial
-traffic coverage**, not a promise to classify every message. Failure leaves that
-message to independent moderation rules. Previously queued SHADOW observations
-never authorize deletion and the SHADOW runner stops in enforcement mode.
+These buffers are temporary admission state, never historical replay or a second
+execution authority. Rejected admission has a finite reason.
+
+The workstation's atomic two-second admission interval and the server's shared
+ten-second lease/cooldown remain separate. A primary positive or uncertain answer
+requires the pinned server confirmation; a busy server may retain only its bounded
+unexpired confirmation work. The primary verdict must not be recomputed to retry
+confirmation. Confirmation waiting spends the original inference budget and
+reserves six seconds for server work; it never increases model concurrency or
+the server rate. Random negative audits use the immediate shared server lease and
+never occupy the waiting confirmation slot. The governor and 12 GiB headroom guard remain. Busy, absent,
+pressured, stale, oversized, uncertain and failed work cannot authorize deletion.
+Actual rates can be lower than the admission limits: this is **partial traffic
+coverage**, not a promise to classify every message. Failure leaves that message
+to independent moderation rules. Previously queued SHADOW observations never
+authorize deletion and the SHADOW runner stops in enforcement mode.
 
 Inputs must be complete text of at most 2,500 characters from an exact active
 canonical message source no older than ten seconds. Contacts are sanitized before
-inference. The worker starts within three seconds of admission, inference has a
-20-second budget, and effects expire 60 seconds after the original event clock.
-No timeout renews that clock. A pending slot from a different worker generation is
-discarded without inference. One successful, exact model/prompt/runtime/cascade
-result creates a source-bound Redis proof with the same absolute expiry.
+inference. Pending work retains its three-second admission/start limit, inference
+retains its original 20-second budget, and effects expire 60 seconds after the
+original event clock. Moving between buffers never renews those clocks. Pending
+work from a different worker generation is discarded without inference. One
+successful, exact model/prompt/runtime/cascade result creates a source-bound Redis
+proof with the same absolute expiry.
+
+## Triage and quality evidence
+
+`commercial-ai-triage-shadow-v1` always returns `NEEDS_AI` and
+`verification=unvalidated`. Existing exact `COMMERCIAL_AD` evidence, a boolean
+`reviewRecommended` marker or bounded broad commercial-language matches may mark
+the source `suspected_ad`; other sources retain a `normal` hint. Both are shadow
+telemetry only and do not change buffer admission or scheduling. The output has
+finite fields, without text, contacts or arbitrary reason strings. Buyer requests,
+quoted advertisements and ordinary discussion may match too. A missing signal
+never proves a safe message and must not bypass AI.
+
+There is no active `VERIFIED_KEEP` shortcut or new model-confidence threshold.
+The existing primary-negative audit behavior and its KEEP result on disagreement
+remain unchanged. `UNSURE` is an uncertain classification, never a measured
+negative or permission to delete. Report uncertainty separately from actual
+negative results, capacity skips and technical failures.
+
+The existing review/corpus pipeline supports independently reviewed, complete
+sources and a stable random evaluation frame. Its current deterministic snapshots
+and SHADOW observations do not establish AI triage accuracy or link every AI effect
+to a reviewed sample. Before proposing a KEEP shortcut, collect separate frozen
+AI/triage identities, complete source and sampling provenance, independent labels,
+and author/campaign/time-separated evaluation. Report missed advertisements,
+protected negatives, uncertainty and technical gaps separately. Applicable
+acceptance criteria must be reviewed before evaluation; the existing deterministic
+promotion thresholds are not an AI approval. See the
+[quality collection runbook](commercial-quality-rollout.md). No accuracy gate is
+claimed from synthetic examples or unlabelled production results.
 
 ## Durable effects
 
@@ -67,25 +106,52 @@ image meets the floor. Never clear intents, proof history or other queues.
 
 ## Evidence
 
-Real-store tests cover concurrent one-slot admission, source lineage, exact guarded
+Real-store tests cover concurrent bounded admission, source lineage, exact guarded
 DELETE, changed text/settings/immunity, dependency failure with another reason,
 late/foreign-worker results and unknown DELETE fencing. These are functional fault
 checks, not model accuracy measurements. The current readiness report has **zero
 independently labelled real samples**; synthetic cases and SHADOW outcomes do not
 establish precision or recall. Keep that limitation explicit during rollout.
 
-`commercial-ai-admission` schema v2 separates ineligible sources from eligible
-admissions: `offered = ineligible + eligible`, and `eligible = accepted + skipped +
-unavailable + inFlight`. Disabled chat settings, missing authority, empty/oversized
-text, invalid/stale clocks and unsanitized contacts have separate finite reasons.
-Producer saturation and absent advertised readiness are counted separately. The
-old offered counter included disabled chats and cannot establish eligible coverage.
+`commercial-ai-admission` schema v3 separates ineligible sources from eligible
+admissions: `offered = ineligible + eligible` and
+`eligible = accepted + skipped + unavailable + inFlight`.
+Disabled chat settings, missing authority, empty/oversized text, invalid/stale
+clocks and unsanitized contacts have separate finite reasons.
+Producer saturation remains `producer_busy`. Mailbox admission separately reports
+`no_worker`, `not_ready`, `buffer_full`, `chat_busy`, `active_limit`, `source_stale`,
+`source_expired` and `worker_changed`; success is `accepted`. Pending-discard
+counters separately report `pending_expired`, `foreign_worker` and
+`invalid_pending`. They persist in the Redis v2 namespace across worker generations;
+status marks them `pendingDiscardBasis=redis_namespace_cumulative`, separately
+from process outcome totals. `chat_busy` includes repeated offers for a pending/active chat;
+it is not a successful duplicate classification. Admission is not completed
+inference or a confirmed MAX effect. Read producer counters as deltas from
+the same process and schema; differing first/last sample windows do not form one
+complete fleet denominator. The original offered counter included disabled chats
+and cannot establish eligible coverage.
+
+`commercial-ai-admission-window` closes only nonempty intake minutes whose offered
+admissions have settled. Its `settled=true` applies to the offers observed by that
+process. `observationStartedAt`, `observedFromAt` and `intakeBoundaryObserved`
+make a partial first minute explicit; `fleetCoverage=not_established` prevents a
+settled process cohort from claiming complete traffic observation. Missing or zero
+traffic minutes are not fabricated. Reconcile all expected process observations
+and preserve shutdown, restart or log gaps before reporting fleet coverage.
 
 `commercial-ai` records result, cascade route, primary/secondary duration, heartbeat
-and last successful classification without raw message text. Server capacity skips
-are distinct from technical failures. Redis status expires after 30 seconds;
-missing status is a coverage gap, not proof of healthy idleness. Record registered
-intents separately from confirmed MAX DELETE outcomes.
+and last successful classification without raw message text. The
+`commercial-ai-cumulative` record and Redis status expose process totals with
+`outcomeBasis=process_cumulative`; they are not closed result windows.
+`commercial-ai-secondary` reports `waiting`, `started`, `buffer_full` and
+`budget_exhausted` with wait duration. Record work expiry and model stage separately.
+A fresh heartbeat
+with an old last classification is not proof of current throughput; an offline
+primary must be visible even when server fallback succeeds. Capacity skips,
+uncertain answers, stale-source rejection and technical failures remain separate.
+Redis status expires after 30 seconds; missing status is a coverage gap, not proof
+of healthy idleness. Record registered intents separately from confirmed MAX
+DELETE outcomes.
 
 The sequential `postgres-audit moderation-outcomes [--bot <configured-bot-id>]`
 catalog reports exact `COMMERCIAL_LLM_DELETE` events as `COMMERCIAL_AI`, separately
