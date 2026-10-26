@@ -318,6 +318,28 @@ try {
       assert.equal(await compare.isVisible(), true);
       assert.equal(writes.length, 0);
       const scope = panel.getByRole('radiogroup', { name: 'Чьи картинки сравнивать' });
+      const comparisonStatus = panel
+        .locator('.duplicate-photo-settings dl > div')
+        .filter({
+          has: page.locator('dt', { hasText: /^Поиск повторов$/u }),
+        })
+        .locator('dd');
+      await comparisonStatus.getByText('У одного участника', { exact: true }).waitFor();
+      await scope.getByRole('radio', { name: 'Всех участников', exact: true }).click();
+      await comparisonStatus.getByText('Среди всех участников', { exact: true }).waitFor();
+      await panel.getByText(/даже если её прислал другой участник/u).waitFor();
+      const individualActions = panel.locator('.duplicate-photo-settings dl > div').filter({
+        has: page.locator('dt', { hasText: /^Предупреждения и ограничения$/u }),
+      });
+      await individualActions
+        .getByText('Отдельно для каждого участника', { exact: true })
+        .waitFor();
+      await comparisonStatus.scrollIntoViewIfNeeded();
+      await assertReachable(comparisonStatus);
+      await page.screenshot({ path: path.join(screenshots, `${name}-all-participants.png`) });
+      await scope.getByRole('radio', { name: 'Одного участника', exact: true }).click();
+      await comparisonStatus.getByText('У одного участника', { exact: true }).waitFor();
+      assert.equal(await panel.getByText(/даже если её прислал другой участник/u).count(), 0);
       await scope.getByRole('radio', { name: 'Всех участников', exact: true }).click();
       await compare.selectOption('TEXT');
       assert.equal(await scope.count(), 0);
@@ -419,6 +441,15 @@ try {
       };
       await submit();
       assert.equal(await compare.inputValue(), 'TEXT');
+      await compare.selectOption('MESSAGE');
+      await comparisonStatus.getByText('Среди всех участников', { exact: true }).waitFor();
+      assert.equal(
+        await scope
+          .getByRole('radio', { name: 'Всех участников', exact: true })
+          .getAttribute('aria-checked'),
+        'true',
+      );
+      await compare.selectOption('TEXT');
       assert.equal(
         await panel.getByRole('button', { name: 'С: 23:00', exact: true }).isVisible(),
         true,
@@ -464,9 +495,7 @@ try {
       await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
       await panel.waitFor({ state: 'hidden' });
 
-      // Full-page bulk application must save the edited source before copying it.
       await page.getByRole('button', { name: 'Антидубль', exact: true }).click();
-      await compare.selectOption('MESSAGE');
       const savedToast = page.locator('.toast--success').last();
       await savedToast.waitFor({ state: 'visible' });
       const toastBox = await savedToast.boundingBox();
@@ -484,6 +513,27 @@ try {
         panel.getByRole('button', { name: 'Применить к другим чатам', exact: true }),
       );
       await page.screenshot({ path: path.join(screenshots, `${name}-saved-toast.png`) });
+
+      // Reload from the saved API response, rather than retaining the local draft.
+      const readback = page.waitForResponse('**/api/chats/chat-a/settings-screen');
+      await page.reload();
+      assert.equal((await (await readback).json()).settings.duplicatePhotoScope, 'CHAT');
+      await page.evaluate((theme) => {
+        document.documentElement.dataset.maxTheme = theme;
+      }, colorScheme);
+      await applyNativeVisualMode(page, safeAreas);
+
+      // Full-page bulk application must save the edited source before copying it.
+      await page.getByRole('button', { name: 'Антидубль', exact: true }).click();
+      assert.equal(await compare.inputValue(), 'TEXT');
+      await compare.selectOption('MESSAGE');
+      await comparisonStatus.getByText('Среди всех участников', { exact: true }).waitFor();
+      assert.equal(
+        await scope
+          .getByRole('radio', { name: 'Всех участников', exact: true })
+          .getAttribute('aria-checked'),
+        'true',
+      );
       await panel.getByRole('button', { name: 'Применить к другим чатам', exact: true }).click();
       const targetSheet = page
         .getByRole('dialog', { name: 'Антидубль', exact: true })
@@ -624,7 +674,7 @@ try {
       );
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${name}: real anti-duplicate controls, emulated keyboard input visibility, native Back draft protection, 500/409 drafts, current default, explicit all-chat PATCH→POST, overnight generated rules PUT→publish, late-chat draft isolation and truthful coverage`,
+        `PASS ${name}: reactive author scope and saved API readback, individual actions, emulated keyboard input visibility, native Back draft protection, 500/409 drafts, current default, explicit all-chat PATCH→POST, overnight generated rules PUT→publish, late-chat draft isolation and truthful coverage`,
       );
     } finally {
       await context.close();

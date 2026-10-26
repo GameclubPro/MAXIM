@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { DUPLICATE_PHOTO_SCOPE_OPTIONS } from '../src/pages/settings/settings-duplicate-photo-options';
+import {
+  DUPLICATE_PHOTO_SCOPE_OPTIONS,
+  formatDuplicatePhotoScopeSummary,
+} from '../src/pages/settings/settings-duplicate-photo-options';
 import {
   formatDuplicateActionSummary,
+  formatDuplicatePhotoModerationHint,
   resolveDuplicatePhotoPresentationPolicy,
   resolveDuplicatePhotoPolicyForDraft,
 } from '../src/pages/settings/settings-duplicate-photo-status';
@@ -74,6 +78,7 @@ test('the action summary retains warnings, mute and ban for shared image moderat
   const summary = formatDuplicateActionSummary(
     {
       duplicateCompareMode: 'MESSAGE',
+      duplicatePhotoScope: 'CHAT',
       duplicateBotMessageEnabled: true,
       duplicateWarnEnabled: true,
       duplicateMuteEnabled: true,
@@ -85,7 +90,23 @@ test('the action summary retains warnings, mute and ban for shared image moderat
   );
   assert.match(summary, /№3/u);
   assert.match(summary, /12/u);
+  assert.match(summary, /Поиск повторов: среди всех участников/u);
   assert.doesNotMatch(summary, /дополнительн.*санкц|Без предупреждений и блокировок/u);
+});
+
+test('image status distinguishes shared comparison from individual allowances and actions', () => {
+  assert.match(formatDuplicatePhotoModerationHint(full, 'CHAT'), /среди всех участников/u);
+  assert.match(formatDuplicatePhotoModerationHint(full, 'SAME_AUTHOR'), /у одного участника/u);
+  for (const scope of ['CHAT', 'SAME_AUTHOR'] as const) {
+    assert.match(
+      formatDuplicatePhotoModerationHint(full, scope),
+      /Допуск повторов, предупреждения и ограничения учитываются отдельно для каждого участника/u,
+    );
+  }
+});
+
+test('mixed image scope never implies one comparison scope for the network', () => {
+  assert.equal(formatDuplicatePhotoScopeSummary(null), 'Разные значения');
 });
 
 test('the preview uses the same exact full policy for both author scopes', () => {
