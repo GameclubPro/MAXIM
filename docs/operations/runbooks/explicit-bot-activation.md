@@ -4,6 +4,18 @@ The six moderation bots (two Majors, two Majorshas and two Rexes) share moderati
 
 A known loss of rights, confirmed ordinary membership, removal, or a new pending activation prevents that exact bot from serving the chat or passively probing itself back into service. Expired cache entries, lifecycle observations, cabinet refresh and scheduled discovery cannot clear this state. Unknown transient MAX responses do not manufacture a permanent denial for an existing active bot.
 
+The [self-membership endpoint](https://dev.max.ru/docs-api/methods/GET/chats/-chatId-/members/me)
+requires explicit role evidence. A partial negative flag or null HTTP 200 body cannot
+confirm ordinary membership. An admin/owner response with omitted or null permissions
+cannot replace a previously known permission list. Preserve the complete stored grant,
+but defer the action that requires fresh evidence; a later complete probe can continue
+without another Start. Incomplete legacy self-cache entries are reread. The membership
+writer checks permission completeness again under the Chat lock, including equal-time
+and later partial probes that race with a complete grant. A complete member response,
+documented access denial or explicitly empty permission array retains its existing effect.
+Run `webhook-multibot-stale-access-fullpath.spec.ts` with native PostgreSQL/Redis for grant,
+fixed assignment, deadline and action-only continuation coverage.
+
 An administrator can activate the receiving bot by sending `Старт` in the group or forwarding a message from the destination into that bot's private dialog. Activation requires a fresh authenticated webhook receipt, matching destination and bot, independent explicit human admin/owner evidence, and the exact bot's required capabilities. Group Start can silently activate each receiving bot while shared command authority allows at most one successful public confirmation. Forward activation cannot select another bot. Callback navigation does not activate a bot.
 
 After the exact bot and actor grant commits, group Start durably schedules the full

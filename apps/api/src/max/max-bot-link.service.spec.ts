@@ -4903,9 +4903,11 @@ describe('MaxBotLinkService', () => {
           activationCapabilityCeiling: expect.not.arrayContaining([action]),
         }),
       );
+      const beforeUnknownProbe = structuredClone(membership);
       jest.setSystemTime(Date.now() + 1_000);
-      await expect(probe([], false)).resolves.toBe(true);
-      const unknownSnapshot = membership.permissionsSnapshot;
+      await expect(probe([], false)).resolves.toBe(false);
+      expect(membership).toEqual(beforeUnknownProbe);
+      const retainedSnapshot = membership.permissionsSnapshot;
       jest.setSystemTime(Date.now() + 1_000);
       await fixture.service.bindChatToBot({
         chatId,
@@ -4916,7 +4918,7 @@ describe('MaxBotLinkService', () => {
         lifecycleEventType: 'bot_added',
         lifecycleSource: 'webhook',
       });
-      expect(membership.permissionsSnapshot).toEqual(unknownSnapshot);
+      expect(membership.permissionsSnapshot).toEqual(retainedSnapshot);
       jest.setSystemTime(Date.now() + 1_000);
       await expect(probe(regained, true, true)).resolves.toBe(true);
       expect(membership.permissionsSnapshot).toEqual(

@@ -14,6 +14,8 @@ import {
   updateMessageRetention,
 } from '../../lib/api/message-retention-client';
 import { ApiRequestError } from '../../lib/api-request-error';
+import { LASTIK_BOT_URL } from '../../lib/lastik-bot';
+import { openMaxBotLink } from '../../lib/max-bridge';
 import { useManagedEntityLeaveGuard } from '../../lib/managed-entity-navigation';
 import {
   parseBotPermissionBlocker,
@@ -119,7 +121,12 @@ export function SettingsMessageRetentionEditor({
     queryFn: ({ signal }) => getMessageRetention(api, chatId, signal),
     staleTime: 15_000,
     retry: false,
-    refetchInterval: save.isPending ? false : 30_000,
+    refetchInterval: (observed) =>
+      save.isPending
+        ? false
+        : observed.state.data?.connectionRequest?.status === 'pending'
+          ? 5_000
+          : 30_000,
   });
   const state = query.data;
   useEffect(() => {
@@ -141,7 +148,12 @@ export function SettingsMessageRetentionEditor({
     dispatch({
       type: 'edit',
       chatId,
-      draft: { ...current, ...patch, operationId: crypto.randomUUID() },
+      draft: {
+        ...current,
+        ...patch,
+        connectWhenReady: undefined,
+        operationId: crypto.randomUUID(),
+      },
     });
   };
   const discard = () => {
@@ -190,6 +202,39 @@ export function SettingsMessageRetentionEditor({
       return false;
     }
   };
+  const connect = async () => {
+    if (!current || showConflict || query.isError || closeBlocked) return;
+    const input: UpdateMessageRetention = {
+      ...current,
+      enabled: true,
+      connectWhenReady: true,
+      operationId:
+        current.connectWhenReady && current.operationId ? current.operationId : crypto.randomUUID(),
+    };
+    dispatch({ type: 'edit', chatId, draft: input });
+    try {
+      const confirmed = await save.mutateAsync(input);
+      const latest = client.getQueryData<MessageRetentionState>(queryKey) ?? confirmed;
+      if (latest.connectionRequest?.status === 'pending') {
+        try {
+          openMaxBotLink(LASTIK_BOT_URL);
+        } catch {
+          // The confirmed request remains available with an ordinary profile link.
+        }
+      }
+    } catch {
+      // Retain this exact operation for the existing save recovery action.
+    }
+  };
+  const cancelConnection = () => {
+    if (!state || closeBlocked || query.isError || showConflict) return;
+    save.mutate({
+      enabled: false,
+      hours: state.hours,
+      expectedRevision: state.revision,
+      operationId: crypto.randomUUID(),
+    });
+  };
   // FLAG: Navigation must stay blocked until a write settles, even if a cache update
   // already matches the draft while its response is still being reconciled.
   useManagedEntityLeaveGuard({
@@ -206,7 +251,9 @@ export function SettingsMessageRetentionEditor({
         ? 'Нет доступа'
         : 'Нет соединения'
     : state
-      ? labels[state.status]
+      ? state.connectionRequest?.status === 'pending'
+        ? 'Ожидаем подключения'
+        : labels[state.status]
       : 'Загрузка';
   const statusTone = query.isError ? 'error' : (state?.status ?? 'loading');
 
@@ -363,22 +410,18 @@ export function SettingsMessageRetentionEditor({
             <SharedMessageRetentionFields
               enabled={{ kind: 'common', value: current.enabled }}
               hours={{ kind: 'common', value: current.hours }}
-              disabled={closeBlocked}
-              enableDisabled={state.status === 'unavailable' && !current.enabled}
-              connectionStatus={state.connectionStatus}
-              onReconnect={
-                state.enabled &&
-                current.enabled &&
-                !dirty &&
-                !showConflict &&
-                !query.isError &&
-                ['missing', 'no_access'].includes(state.connectionStatus ?? '')
-                  ? () => {
-                      if (!closeBlocked)
-                        save.mutate({ ...current, operationId: crypto.randomUUID() });
-                    }
-                  : undefined
+              disabled={closeBlocked || state.connectionRequest?.status === 'pending'}
+              enableDisabled={
+                (state.status === 'unavailable' && !current.enabled) ||
+                (!state.enabled && state.connectionStatus !== 'connected')
               }
+              connectionStatus={state.connectionStatus}
+              connectionRequest={state.connectionRequest}
+              connectionActionsDisabled={
+                closeBlocked || query.isError || showConflict || state.status === 'unavailable'
+              }
+              onConnect={() => void connect()}
+              onCancelConnection={cancelConnection}
               onEnabledChange={(enabled) => change({ enabled })}
               onHoursChange={(hours) => change({ hours })}
             />

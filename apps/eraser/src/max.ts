@@ -13,7 +13,8 @@ export class MaxError extends Error {
   }
 }
 export type MaxTransport = {
-  rights(chatId: string): Promise<void>;
+  rights(chatId: string, before?: () => Promise<void>): Promise<void>;
+  actorRights(chatId: string, actorUserId: string, before?: () => Promise<void>): Promise<void>;
   pin(chatId: string): Promise<string | null>;
   page(chatId: string, upperMs: number, lowerMs?: number): Promise<Message[]>;
   remove(chatId: string, messageId: string, before: () => Promise<void>): Promise<void>;
@@ -74,8 +75,10 @@ export class MaxClient implements MaxTransport {
     if (!body) throw new MaxError(0, 'malformed_response', method === 'DELETE');
     return body;
   }
-  async rights(chatId: string): Promise<void> {
-    const member = await this.request('GET', `/chats/${encodeURIComponent(chatId)}/members/me`);
+  async rights(chatId: string, before?: () => Promise<void>): Promise<void> {
+    const member = await this.request('GET', `/chats/${encodeURIComponent(chatId)}/members/me`, {
+      before,
+    });
     const role = String(member.role ?? member.status ?? '').toLowerCase();
     const owner =
       member.is_owner === true || member.isOwner === true || ['owner', 'creator'].includes(role);
@@ -101,6 +104,47 @@ export class MaxClient implements MaxTransport {
       throw new MaxError(0, 'membership_unknown', false);
     if (!member.permissions.includes('read_all_messages') || !member.permissions.includes('write'))
       throw new MaxError(403, 'eraser_rights_missing', false);
+  }
+
+  async actorRights(
+    chatId: string,
+    actorUserId: string,
+    before?: () => Promise<void>,
+  ): Promise<void> {
+    const query = new URLSearchParams({ user_ids: actorUserId });
+    const result = await this.request(
+      'GET',
+      `/chats/${encodeURIComponent(chatId)}/members?${query}`,
+      { before },
+    );
+    if (!Array.isArray(result.members) || result.members.length !== 1)
+      throw new MaxError(0, 'actor_membership_unknown', false);
+    const member = record(result.members[0]);
+    if (
+      !member ||
+      String(member.user_id) !== actorUserId ||
+      member.is_bot !== false ||
+      ['is_admin', 'is_owner', 'isAdmin', 'isOwner'].some(
+        (key) => member[key] !== undefined && typeof member[key] !== 'boolean',
+      )
+    )
+      throw new MaxError(0, 'actor_membership_unknown', false);
+    const role = String(member.role ?? member.status ?? '').toLowerCase();
+    if (
+      member.is_owner === true ||
+      member.isOwner === true ||
+      member.is_admin === true ||
+      member.isAdmin === true ||
+      ['owner', 'creator', 'admin'].includes(role)
+    )
+      return;
+    if (
+      member.is_admin === false ||
+      member.isAdmin === false ||
+      ['member', 'user', 'removed'].includes(role)
+    )
+      throw new MaxError(403, 'actor_rights_missing', false);
+    throw new MaxError(0, 'actor_membership_unknown', false);
   }
 
   async pin(chatId: string): Promise<string | null> {

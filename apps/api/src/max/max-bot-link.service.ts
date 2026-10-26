@@ -23,7 +23,10 @@ import {
   isPublisherManagedEntityActivationRequired,
   isPublisherActivationSourceAfterEpoch,
 } from '../publisher/publisher-entity-connection.util';
-import { restrictPassiveManagedEntityAccess } from './managed-entity-passive-access.util';
+import {
+  hasIncompleteManagedEntityPermissionEvidence,
+  restrictPassiveManagedEntityAccess,
+} from './managed-entity-passive-access.util';
 import {
   hasPersistedManagedEntityActivationSource,
   newerManagedEntityActorConflictWhere,
@@ -1071,6 +1074,20 @@ export class MaxBotLinkService implements OnModuleDestroy {
                 lifecycleEventAt: true,
               },
             });
+            // FLAG: Recheck the locked snapshot: another probe may have committed a
+            // complete grant while this partial probe was in flight. Preserve it whole.
+            if (
+              hasIncompleteManagedEntityPermissionEvidence(
+                params.access,
+                previous?.permissionsSnapshot,
+              )
+            )
+              return {
+                persisted: false,
+                wake: null,
+                nightModeAccessActivated: false,
+                accessChanged: false,
+              };
             // FLAG: A terminal denial survives positive background probes and bot_added.
             // Recovery needs a newer authenticated explicit action and both fresh privileges.
             if (

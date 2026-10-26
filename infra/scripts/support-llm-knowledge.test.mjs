@@ -10,6 +10,13 @@ const fact = (id) => {
 };
 const source = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
 
+test('customer knowledge uses the public project name without renaming the MAX platform', () => {
+  for (const entry of entries.values()) assert.doesNotMatch(entry.answer, /\bMAXIM\b/iu, entry.id);
+  assert.match(fact('support-room'), /«Майор Максимов»/u);
+  assert.match(fact('bots'), /«Майор Максимов»/u);
+  assert.match(fact('max-platform-default-commands'), /ботов MAX/u);
+});
+
 test('reviewed answers and link examples pass the public response boundary', () => {
   for (const entry of entries.values()) {
     assert.doesNotMatch(entry.answer, /https?:\/\/\S*[<>]|<botName>/iu, entry.id);
@@ -131,15 +138,20 @@ test('Lastik connection is separate from a moderator and limited to group chats'
     source('apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx');
   const access = source('apps/api/src/admin/admin-message-retention.service.ts');
   assert.match(answer, /отдельный бот.*групповых чатах/u);
-  assert.match(answer, /администратором с правами чтения и удаления/u);
-  assert.match(answer, /Подключение проверяется при сохранении включённой очистки/u);
-  assert.match(answer, /в каждом чате/u);
+  assert.match(answer, /администратором с правами чтения всех сообщений и удаления/u);
+  assert.match(answer, /После подтверждения запроса откроется профиль бота/u);
+  assert.match(answer, /До 1 часа он сам проверяет права и включает очистку/u);
+  assert.match(answer, /возвращаться в мини-приложение не нужно/u);
+  assert.match(answer, /В сетке сначала добавьте бота с правами в каждый чат/u);
   assert.match(answer, /не видит, подключён ли Ластик/u);
   assert.ok(answer.includes(knowledge.botCatalog.find((bot) => bot.id === 'lastik').url));
-  for (const label of ['Удаление старых сообщений', 'Открыть профиль', 'Удаление по сроку'])
+  for (const label of ['Удаление старых сообщений', 'Подключить и включить', 'Открыть Ластика'])
     assert.ok(answer.includes(label) && ui.includes(label), label);
   assert.match(access, /Модуль доступен только в групповых чатах/u);
-  assert.doesNotMatch(answer, /перешлите|автоматически заменит модератора/u);
+  assert.doesNotMatch(
+    answer,
+    /перешлите|автоматически заменит модератора|Вернитесь|проверяется при сохранении|Открыть профиль/u,
+  );
 });
 
 test('Lastik periods and history coverage remain separate from connection and recovery', () => {
@@ -153,6 +165,8 @@ test('Lastik periods and history coverage remain separate from connection and re
   assert.match(answer, /сообщения любых авторов/u);
   assert.match(answer, /редактирование его не продлевает/u);
   assert.match(answer, /При изменении срока он применяется ко всей доступной истории/u);
+  assert.match(answer, /Для первого запуска нажмите «Подключить и включить»/u);
+  assert.match(answer, /У подключённого бота.*кнопкой «Сохранить»/u);
   assert.match(answer, /постепенно/u);
   assert.match(ui, /сообщения любых авторов из всей доступной истории/u);
   assert.doesNotMatch(answer, /историю не очищает|учёт начинается заново|ждёт низкой нагрузки/u);
@@ -198,12 +212,36 @@ test('Lastik progress uses the actual details labels without claiming live visib
   assert.match(answer, /выбора дат для просмотра истории здесь нет/u);
 });
 
-test('Lastik reconnection and uncertain-save recovery use distinct user actions', () => {
+test('Lastik connection expiry needs an explicit miniapp retry and stays silent in chats', () => {
   const permissions = fact('lastik-permissions');
   assert.match(permissions, /уже включённой очистки/u);
-  assert.match(permissions, /«Проверить права», если эта кнопка показана/u);
-  assert.match(permissions, /нет несохранённых изменений/u);
+  assert.match(permissions, /В течение 1 часа бот проверяет свои права и права администратора/u);
+  assert.match(permissions, /очистка включится автоматически/u);
   assert.match(permissions, /выбранный срок сохраняется/iu);
+  const ui = source('apps/miniapp/src/pages/settings/shared-message-retention-fields.tsx');
+  for (const label of [
+    'Подключить и включить',
+    'Время ожидания истекло',
+    'Проверить и включить',
+    'Обновить состояние',
+  ]) {
+    assert.ok(permissions.includes(label), label);
+    assert.ok(
+      (
+        ui + source('apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx')
+      ).includes(label),
+      label,
+    );
+  }
+  assert.match(permissions, /открытие профиля и «Обновить состояние» не запускают новый час/u);
+  assert.doesNotMatch(permissions, /«Проверить права»|первом подключении.*«Сохранить»/u);
+  assert.match(source('apps/eraser/src/store.ts'), /INTERVAL '1 hour'/u);
+  for (const answer of [fact('lastik-connect'), source('docs/bot-support-policy.md')])
+    assert.match(answer, /Ластик не отправляет сообщения в чаты/u);
+  assert.match(permissions, /не требует сообщений или команд в чат/u);
+});
+
+test('Lastik uncertain-save recovery preserves the exact operation', () => {
   const recovery = fact('lastik-save-recovery');
   const ui = source('apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx');
   for (const label of [
@@ -225,12 +263,18 @@ test('Lastik reconnection and uncertain-save recovery use distinct user actions'
 test('Lastik disabling and longer retention cannot restore deleted messages', () => {
   const answer = fact('lastik-stop-restore');
   assert.match(answer, /выключите «Удаление по сроку» и нажмите «Сохранить»/u);
-  assert.match(answer, /остальные правила модерации.*независимо/u);
+  assert.match(answer, /остальные правила модерации.*независимо/iu);
   assert.match(answer, /Уже удалённые сообщения восстановить нельзя/u);
   assert.match(answer, /увеличение срока хранения не возвращает/u);
   assert.match(
     source('apps/miniapp/src/pages/settings/shared-message-retention-fields.tsx'),
     /без возможности восстановления/u,
+  );
+  assert.ok(answer.includes('Отменить подключение'));
+  assert.ok(
+    source('apps/miniapp/src/pages/settings/shared-message-retention-fields.tsx').includes(
+      'Отменить подключение',
+    ),
   );
   for (const id of [
     'lastik-connect',

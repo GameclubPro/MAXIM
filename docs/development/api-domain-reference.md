@@ -75,6 +75,7 @@ Detailed constraints selected by the routing table in [API agent notes](../../ap
 - The runtime image carries the Russian Trusted Root/Sub CA bundle under `infra/certs/` via `NODE_EXTRA_CA_CERTS`; preserve it in API Docker changes.
 - MAX permissions are entity-sensitive: group-chat `write` permits message deletion and channel posting, but channel edit/delete requires `edit`/`edit_message` and `delete`/`delete_message` respectively.
 - In hot paths prefer targeted `getCurrentChatMemberAccess` or `getChatMembersAccess`; fetch a full admin roster only when the feature needs it.
+- A self-membership HTTP 200 without explicit ordinary-member evidence cannot persist a non-privileged role. An admin/owner response omitting a previously known permission list is incomplete; preserve the whole prior grant and defer the operation needing fresh authority. Reject incomplete legacy self-cache entries and recheck known-permission preservation under the writer's Chat lock. Complete member evidence, explicit denial and an explicitly empty list remain authoritative; see [explicit activation](../operations/runbooks/explicit-bot-activation.md).
 - For `GET /chats/{chatId}/members`, send multiple IDs as one comma-separated `user_ids` value; repeated parameters can collapse to the first user.
 - Manual BAN fanout requires fresh exact-bot membership (`bypassCache`) under the sanction lease before reconciling a native unban. Its cutoff clears only nonambiguous terminal `SUCCEEDED` BANs completed strictly before that lookup began. Legacy confirmed-unban treats terminal `FAILED_TERMINAL`/`FAILED_RETRYABLE` alike: require definitive access/documented member rejection, the exact watchdog non-retryable classifier marker, certified pre-dispatch rejection or untouched attempt/dispatch evidence. Other watchdog markers and generic attempted failures stay fenced. Absent/protected/unknown membership, lease loss, equal/newer completion and uncertain effects preserve their evidence; settled fanout replay never repeats the mutation. Cover both modes and the actual watchdog writer through `shared-member-action-postgres.spec.ts`.
 
@@ -207,6 +208,13 @@ communities require an explicit designation before agent-initiated test mutation
   authorize settings and durably deliver protection/ownership state; they never receive its bot
   token or execute its jobs. Preserve `eraser_chat_bindings` across flag changes and rollback;
   see [Eraser rollout](../operations/runbooks/eraser-rollout.md).
+- Deferred connection requires an explicit revision-checked `connectWhenReady` operation from
+  the chat miniapp. Its accepted receipt keeps cleanup disabled while Lastik checks exact bot
+  capabilities and the requesting human's admin rights for one fixed hour. Retries never renew
+  that deadline; ordinary settings writes cancel the request. Expiry requires a fresh explicit
+  operation, and passive lifecycle events never create activation authority. Status stays in
+  the miniapp; connection checks never send chat messages. Keep compatible pending-request
+  readers in API, Lastik and both rollback paths.
 
 - Chat context v4 separates large configured media into SHA256-bound, expiring cache blobs. A missing/corrupt blob reloads the complete SQL context, never omits an image. Keep the compact body bound to the shared context revision on reads and all mutations, invalidate v3 on v4 mutations, and preserve access-epoch/generation fences across rollback/re-upgrade. Run native chat-context media/cache tests plus managed-access and membership full-path regressions; local media strings have their own bounded budget, while decoded settings retain the full existing context budget.
 

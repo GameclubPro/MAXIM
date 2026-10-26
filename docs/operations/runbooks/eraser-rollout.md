@@ -34,6 +34,22 @@ any takeover can be enabled; neither disabling availability nor removing a crede
 permits an older API reader. The canonical `.env` receives only `ERASER_ENABLED=true`, the internal control URL and
 its separate authentication key. Existing chat periods remain available for import;
 Lastik policies default off until the human administrator explicitly enables them.
+A connection request is a separate explicit administrator action. It retains the selected
+period (24 hours, 48 hours or 1 week) while deletion remains disabled, and expires
+after its one-hour connection window. Lastik checks its own rights and activates the exact
+pending request independently of moderator availability. Ordinary settings writes cancel
+the previous pending request; expiry, cancellation and lost responses never imply activation.
+
+The additional permanent `/var/lib/maxim-deploy/eraser-connection-request-version` floor is
+`1`. Bootstrap and the normal locked application deploy install and synchronize it before
+new API/Lastik writers or `0003-connection-requests.sql` can run. The original ownership
+floor stays `1`; neither marker may be removed or lowered when availability is disabled,
+the queue is empty, or all connection requests have expired. Unknown, partial or unsafe
+marker files fail closed. Both API rollback paths retain the connection-aware contracts,
+operation canonicalization and controller tooling. An Eraser-only immutable rollback also
+requires the exact target's pending-request, expiry and cancellation reader before startup.
+Static-only immutable rollback retains its component scope. Ref synchronization and
+rollback tooling bootstrap must preserve this floor before replacing the checkout.
 A partial installation preserves files and fails closed. `eraser-bootstrap --stores-only`
 may finish an interrupted store startup with those same secrets; it does not rotate them.
 Credential rotation needs a separately reviewed procedure.

@@ -6,6 +6,7 @@ import type {
 } from './moderation-delete-intent.types';
 import type { DuplicateDecision, DuplicateHit } from './rule-engine.contract';
 import { messageDuplicateNoticeSettingsDigest } from './message-duplicate/message-duplicate-notice-proof';
+import type { WebhookHotPathProfile } from './moderation.service.support';
 
 export type DuplicateModerationActionRequest = {
   update: MaxUpdate;
@@ -32,6 +33,56 @@ export type DuplicateModerationActionRequest = {
 export type ExecuteDuplicateModerationAction = (
   request: DuplicateModerationActionRequest,
 ) => Promise<void>;
+
+type DuplicateModerationParameters = ReturnType<typeof buildDuplicateModerationParameters> & {
+  hotPathProfile?: WebhookHotPathProfile;
+};
+
+type DuplicateModerationActionContext = {
+  hotPathProfile?: WebhookHotPathProfile;
+  formatUserLabel: (
+    senderName: NonNullable<MaxUpdate['message']>['senderName'],
+    userId: string,
+  ) => string;
+  handleHit: (params: DuplicateModerationParameters & { hit: DuplicateHit }) => Promise<void>;
+  handleDecision: (
+    params: DuplicateModerationParameters & {
+      decision: DuplicateDecision;
+      muteDurationHours: number;
+      trackAsGlobalSpammer: false;
+      authorizeSanction?: () => Promise<boolean>;
+      beforeSanctionMutation?: DuplicateModerationActionRequest['beforeSanctionMutation'];
+    },
+  ) => Promise<void>;
+};
+
+export async function executeDuplicateModerationAction(
+  params: DuplicateModerationActionRequest,
+  context: DuplicateModerationActionContext,
+): Promise<void> {
+  const message = params.update.message;
+  if (!message) return;
+  // FLAG: Timing belongs to this caller's in-memory context, never to a durable request/job.
+  const commonParams = {
+    ...buildDuplicateModerationParameters(
+      params,
+      context.formatUserLabel(message.senderName, params.userId),
+    ),
+    hotPathProfile: context.hotPathProfile,
+  };
+  if (params.outcome.kind === 'decision') {
+    await context.handleDecision({
+      ...commonParams,
+      decision: params.outcome.decision,
+      muteDurationHours: params.settings.duplicateMuteDurationHours,
+      trackAsGlobalSpammer: false,
+      authorizeSanction: 'authorizeSanction' in params ? params.authorizeSanction : undefined,
+      beforeSanctionMutation: params.beforeSanctionMutation,
+    });
+    return;
+  }
+  await context.handleHit({ ...commonParams, hit: params.outcome.hit });
+}
 
 export function duplicateExplanationIdempotencyKey(
   metadata: Record<string, unknown> | undefined,
