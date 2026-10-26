@@ -2,6 +2,7 @@
   body[data-miniapp-profile='moderation'] .message-retention-settings {
     --retention-warning: #b77918;
     --retention-danger: #d34655;
+    --retention-bot-icon-background: color-mix(in srgb, var(--major-accent) 12%, transparent);
     --retention-bot-border: color-mix(in srgb, var(--major-accent) 25%, var(--major-border));
     --retention-bot-background: linear-gradient(
       135deg,
@@ -9,7 +10,7 @@
       var(--major-surface, var(--color-surface))
     );
     display: grid;
-    gap: 20px;
+    gap: 16px;
     min-width: 0;
     color: var(--major-text, var(--color-text));
   }
@@ -51,8 +52,13 @@
     font-size: 13px;
     line-height: 1.5;
   }
-  body[data-miniapp-profile='moderation'] .message-retention-bot__link {
+  body[data-miniapp-profile='moderation'] .message-retention-bot__actions {
     grid-column: 1 / -1;
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-bot__link {
     justify-content: center;
     gap: 8px;
     min-width: 0;
@@ -64,19 +70,79 @@
     font-size: 13px;
     line-height: 1.5;
   }
+  body[data-miniapp-profile='moderation']
+    .message-retention-bot[data-connection-state='connected'] {
+    grid-template-columns: 32px minmax(0, 1fr);
+    align-items: center;
+    gap: 0 10px;
+    padding: 10px 12px;
+    background: var(--major-surface, var(--color-surface));
+  }
+  body[data-miniapp-profile='moderation']
+    .message-retention-bot[data-connection-state='connected']
+    .message-retention-bot__icon {
+    grid-row: 1 / 3;
+    align-self: start;
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    background: var(--retention-bot-icon-background);
+    color: var(--major-accent);
+  }
+  body[data-miniapp-profile='moderation']
+    .message-retention-bot[data-connection-state='connected']
+    .message-retention-bot__copy
+    strong {
+    font-size: 14px;
+  }
+
+  body[data-miniapp-profile='moderation']
+    .message-retention-bot[data-connection-state='connected']
+    .message-retention-bot__actions {
+    grid-column: 2;
+  }
+  body[data-miniapp-profile='moderation']
+    .message-retention-bot[data-connection-state='connected']
+    .message-retention-bot__link {
+    justify-content: flex-start;
+    padding: 8px 0;
+    border-color: transparent;
+    background: transparent;
+    color: var(--major-accent);
+  }
   body[data-miniapp-profile='moderation'] .message-retention-bot__link svg {
     flex: 0 0 18px;
     width: 18px;
     height: 18px;
   }
-  .message-retention-settings__row {
+  body[data-miniapp-profile='moderation'] .message-retention-controls {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-settings__row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
     min-height: 44px;
   }
-  .message-retention-settings fieldset {
+  body[data-miniapp-profile='moderation'] .message-retention-settings__row-copy {
+    display: grid;
+    flex: 1 1 auto;
+    gap: 4px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-settings__row-copy > span {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--major-muted, var(--color-text-muted));
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-settings__row .settings-native-switch {
+    flex: 0 0 auto;
+  }
+  body[data-miniapp-profile='moderation'] .message-retention-settings fieldset {
     border: 0;
     padding: 0;
     margin: 0;
@@ -111,26 +177,35 @@
     margin: 10px 0 0;
     color: var(--major-muted, var(--color-text-muted));
   }
-  .message-retention-settings legend {
+  body[data-miniapp-profile='moderation'] .message-retention-settings legend {
     margin-bottom: 10px;
     font-size: 14px;
     font-weight: 600;
   }
-  .message-retention-settings .segmented-control {
+  body[data-miniapp-profile='moderation'] .message-retention-settings .segmented-control {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     width: 100%;
   }
-  .message-retention-settings .segmented-control__item {
+  body[data-miniapp-profile='moderation'] .message-retention-settings .segmented-control__item {
     width: 100%;
     min-width: 0;
     min-height: 44px;
+    justify-content: center;
+    padding: 10px 6px;
+    font-size: 13px;
+    line-height: 1.4;
+    white-space: normal;
+    text-align: center;
+    overflow-wrap: anywhere;
   }
-  .message-retention-settings .segmented-control__item[aria-checked='true'] {
+  body[data-miniapp-profile='moderation']
+    .message-retention-settings
+    .segmented-control__item[aria-checked='true'] {
     background: var(--major-accent);
     color: var(--major-on-accent);
   }
-  .message-retention-exclusions {
+  body[data-miniapp-profile='moderation'] .message-retention-exclusions {
     display: flex;
     align-items: flex-start;
     gap: 10px;
@@ -138,17 +213,17 @@
     border-top: 1px solid var(--major-border, var(--color-border));
     border-bottom: 1px solid var(--major-border, var(--color-border));
   }
-  .message-retention-exclusions > svg {
+  body[data-miniapp-profile='moderation'] .message-retention-exclusions > svg {
     flex: 0 0 20px;
     width: 20px;
     height: 20px;
     color: var(--major-muted, var(--color-text-muted));
   }
-  .message-retention-exclusions span {
+  body[data-miniapp-profile='moderation'] .message-retention-exclusions span {
     font-size: 12px;
     color: var(--major-muted, var(--color-text-muted));
   }
-  .message-retention-exclusions p {
+  body[data-miniapp-profile='moderation'] .message-retention-exclusions p {
     margin: 4px 0 0;
     font-size: 13px;
     line-height: 1.5;

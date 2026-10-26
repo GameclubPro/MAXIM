@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
 
-export async function runRetentionRegressions(browser, base) {
+export async function runRetentionRegressions(browser, base, output) {
   for (const scenario of [
     'permissions',
     'pending-close',
@@ -16,10 +17,13 @@ export async function runRetentionRegressions(browser, base) {
     'chat-change',
     'connect-bot',
     'connection-rights',
+    'connection-unknown',
+    'restore-connection',
+    'restore-connection-lost-reply',
     'mixed-hours',
   ]) {
     const context = await browser.newContext({
-      viewport: { width: 360, height: 800 },
+      viewport: { width: scenario === 'mixed-hours' ? 320 : 360, height: 800 },
       colorScheme: 'dark',
     });
     await installMaxBridgeShimInitScript(context, { platform: 'android' }, { colorScheme: 'dark' });
@@ -54,22 +58,12 @@ export async function runRetentionRegressions(browser, base) {
         assert.equal(await mixedToggle.evaluate((node) => node.indeterminate), true);
         assert.equal(
           await page
-            .getByText(
-              'Добавьте «Ластика» администратором в чаты сетки с правами чтения и удаления сообщений.',
-              { exact: true },
-            )
+            .getByText(/Для очистки бот должен быть администратором каждого чата/u)
             .isVisible(),
           true,
         );
         assert.equal(await page.getByText('«Ластик» подключён', { exact: true }).count(), 0);
         await mixedToggle.focus();
-        await page.keyboard.press('Tab');
-        assert.equal(
-          await page
-            .locator('.message-retention-help > summary')
-            .evaluate((node) => node === document.activeElement),
-          true,
-        );
         await page.keyboard.press('Tab');
         assert.equal(await first.evaluate((node) => node === document.activeElement), true);
         await page.keyboard.press('ArrowRight');
@@ -80,6 +74,13 @@ export async function runRetentionRegressions(browser, base) {
         assert.equal(
           await page.getByRole('switch', { name: 'Удаление по сроку' }).isChecked(),
           true,
+        );
+        await page.evaluate(() => (document.documentElement.style.fontSize = '200%'));
+        assert.equal(
+          await page
+            .locator('.message-retention-settings')
+            .evaluate((node) => node.scrollWidth > node.clientWidth + 2),
+          false,
         );
         assert.deepEqual(errors, [], scenario);
         continue;
@@ -94,12 +95,8 @@ export async function runRetentionRegressions(browser, base) {
           window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'missing' }),
         );
         await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
-        await panel
-          .getByText('Добавьте бота в чат администратором с правами чтения и удаления сообщений.', {
-            exact: true,
-          })
-          .waitFor();
-        const link = panel.getByRole('link', { name: 'Открыть бота «Ластик»', exact: true });
+        await panel.getByText('Подключите «Ластика»', { exact: true }).waitFor();
+        const link = panel.getByRole('link', { name: 'Открыть профиль «Ластика»', exact: true });
         assert.equal(await link.getAttribute('href'), 'https://max.ru/id613000037577_5_bot');
         await page.evaluate(() => (document.documentElement.style.fontSize = '200%'));
         assert.equal(
@@ -111,24 +108,116 @@ export async function runRetentionRegressions(browser, base) {
           await link.evaluate((node) => node.getBoundingClientRect().height >= 44),
           true,
         );
+        await page.evaluate(() => (document.documentElement.style.fontSize = ''));
+        await toggle.check();
+        await panel.getByRole('radio', { name: '24 часа', exact: true }).check();
+        await page.evaluate(() =>
+          window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'connected' }),
+        );
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+        await panel.getByText('«Ластик» подключён', { exact: true }).waitFor();
+        assert.equal(await toggle.isChecked(), true);
+        assert.equal(
+          await panel.getByRole('radio', { name: '24 часа', exact: true }).isChecked(),
+          true,
+        );
+        assert.equal(await page.evaluate(() => window.__RETENTION_TEST__.writes.length), 0);
       }
       if (scenario === 'connection-rights') {
         await page.evaluate(() =>
           window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'no_access' }),
         );
         await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
-        await panel
-          .getByText('Назначьте бота администратором с правами чтения и удаления сообщений.', {
-            exact: true,
-          })
-          .waitFor();
+        await panel.getByText('«Ластику» нужны права', { exact: true }).waitFor();
         assert.equal(
           await panel
-            .getByRole('link', { name: 'Открыть бота «Ластик»', exact: true })
+            .getByRole('link', { name: 'Открыть профиль «Ластика»', exact: true })
             .getAttribute('href'),
           'https://max.ru/id613000037577_5_bot',
         );
         assert.equal(await panel.getByText('«Ластик» подключён', { exact: true }).count(), 0);
+      }
+      if (output && ['connect-bot', 'connection-rights', 'connection-unknown'].includes(scenario))
+        await page.screenshot({ path: join(output, `${scenario}.png`) });
+      if (scenario === 'connection-unknown') {
+        await panel.locator('.message-retention-bot[data-connection-state="unknown"]').waitFor();
+        assert.equal(await panel.getByText('Подключите «Ластика»', { exact: true }).count(), 0);
+        assert.equal(await panel.getByText('«Ластик» подключён', { exact: true }).count(), 0);
+      }
+      if (scenario === 'restore-connection') {
+        for (const connectionStatus of ['no_access', 'missing']) {
+          await page.evaluate(
+            (connectionStatus) =>
+              window.__RETENTION_TEST__.replaceServer({
+                enabled: true,
+                connectionStatus,
+                status: 'no_access',
+              }),
+            connectionStatus,
+          );
+          await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+          const reconnect = panel.getByRole('button', { name: 'Проверить права', exact: true });
+          await reconnect.waitFor();
+          if (output && connectionStatus === 'no_access')
+            await page.screenshot({ path: join(output, 'restore-connection.png') });
+          assert.equal(await toggle.isChecked(), true);
+          assert.equal(
+            await panel.getByRole('button', { name: 'Сохранить', exact: true }).isDisabled(),
+            true,
+          );
+          await reconnect.click();
+          await panel.getByText('«Ластик» подключён', { exact: true }).waitFor();
+          assert.equal(await toggle.isChecked(), true);
+          assert.equal(
+            await panel.getByRole('radio', { name: '48 часов', exact: true }).isChecked(),
+            true,
+          );
+        }
+        const writes = await page.evaluate(() => window.__RETENTION_TEST__.writes);
+        assert.equal(writes.length, 2);
+        assert.ok(writes.every((input) => input.enabled === true && input.hours === 48));
+        assert.notEqual(writes[0].operationId, writes[1].operationId);
+        assert.equal(writes[1].expectedRevision, writes[0].expectedRevision + 1);
+      }
+      if (scenario === 'restore-connection-lost-reply') {
+        await page.evaluate(() => {
+          window.__RETENTION_TEST__.replaceServer({
+            enabled: true,
+            connectionStatus: 'no_access',
+            status: 'no_access',
+          });
+          window.__RETENTION_TEST__.failWrites({
+            status: 409,
+            code: 'ERASER_CONNECTION_REQUIRED',
+            message: 'Добавьте Ластика администратором.',
+          });
+        });
+        await panel.getByRole('button', { name: 'Обновить состояние', exact: true }).click();
+        await panel.getByRole('button', { name: 'Проверить права', exact: true }).click();
+        await panel.getByText('Не удалось сохранить изменения', { exact: true }).waitFor();
+        await page.evaluate(() => {
+          window.__RETENTION_TEST__.failWrites(null);
+          window.__RETENTION_TEST__.holdWrite();
+          window.__RETENTION_TEST__.loseNextReplyBeforeCommit();
+        });
+        await panel.getByRole('button', { name: 'Повторить сохранение', exact: true }).click();
+        await panel.getByText('Сохранение пока не подтверждено', { exact: true }).waitFor();
+        assert.equal(
+          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
+          true,
+        );
+        await page.evaluate(() => window.__RETENTION_TEST__.releaseWrite());
+        await panel.getByRole('button', { name: 'Проверить сохранение', exact: true }).click();
+        await panel.getByText('Сохранено', { exact: true }).waitFor();
+        await panel.getByText('«Ластик» подключён', { exact: true }).waitFor();
+        const writes = await page.evaluate(() => window.__RETENTION_TEST__.writes);
+        assert.ok(writes.length >= 1);
+        assert.match(writes[0].operationId, /^[a-f0-9-]{36}$/u);
+        assert.ok(writes.every((input) => input.operationId === writes[0].operationId));
+        assert.equal(
+          await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).isDisabled(),
+          false,
+        );
       }
       if (scenario === 'permissions') {
         await page.evaluate(() =>
@@ -144,10 +233,7 @@ export async function runRetentionRegressions(browser, base) {
         await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
         const blocker = page.getByRole('alertdialog', { name: 'Боту не хватает прав' });
         await blocker.waitFor();
-        assert.equal(
-          await panel.getByText('Настройки изменены в другом сеансе', { exact: true }).count(),
-          0,
-        );
+        assert.equal(await panel.getByText('Настройки уже изменились', { exact: true }).count(), 0);
         assert.equal(
           await page.evaluate(() => window.__RETENTION_TEST__.serverState().enabled),
           false,
@@ -310,7 +396,7 @@ export async function runRetentionRegressions(browser, base) {
         if (scenario === 'uncertain-conflict-read-error')
           await page.evaluate(() => window.__RETENTION_TEST__.failReads(true));
         await panel.getByRole('button', { name: 'Проверить сохранение', exact: true }).click();
-        await panel.getByText('Настройки изменены в другом сеансе', { exact: true }).waitFor();
+        await panel.getByText('Настройки уже изменились', { exact: true }).waitFor();
         if (scenario === 'uncertain-conflict-read-error') {
           await panel.getByText('Сохранение пока не подтверждено', { exact: true }).waitFor();
           assert.equal(
@@ -319,7 +405,7 @@ export async function runRetentionRegressions(browser, base) {
           );
           assert.equal(
             await panel
-              .getByRole('button', { name: 'Принять настройки', exact: true })
+              .getByRole('button', { name: 'Загрузить сохранённые', exact: true })
               .isDisabled(),
             true,
           );
@@ -353,7 +439,7 @@ export async function runRetentionRegressions(browser, base) {
           ),
           true,
         );
-        await panel.getByRole('button', { name: 'Принять настройки', exact: true }).click();
+        await panel.getByRole('button', { name: 'Загрузить сохранённые', exact: true }).click();
         assert.equal(await toggle.isChecked(), false);
         assert.equal(await panel.getByRole('radio', { name: '1 неделя' }).isChecked(), true);
         await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
@@ -410,10 +496,7 @@ export async function runRetentionRegressions(browser, base) {
             document.querySelector('[data-segmented-value="48"]')?.getAttribute('aria-checked') ===
             'true',
         );
-        assert.equal(
-          await panel.getByText('Настройки изменены в другом сеансе', { exact: true }).count(),
-          0,
-        );
+        assert.equal(await panel.getByText('Настройки уже изменились', { exact: true }).count(), 0);
         assert.equal(
           await panel.getByRole('button', { name: 'Сохранить', exact: true }).isDisabled(),
           true,

@@ -164,7 +164,7 @@ function values(state: PreviewState, type: 'chat' | 'channel', section: string, 
         ? {
             ...state.chatSettings,
             rules: state.chatRules,
-            messageRetention: { enabled: false, hours: 24 },
+            messageRetention: { enabled: false, hours: 48 },
             advertising: { enabled: false },
           }
         : section === 'postSignature'

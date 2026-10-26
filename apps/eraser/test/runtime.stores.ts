@@ -11,7 +11,7 @@ import { migrate } from '../src/migrate.js';
 import { Store } from '../src/store.js';
 import { CleanupRuntime, MAX_WAKEUPS } from '../src/runtime.js';
 import { HttpLimiter } from '../src/limiter.js';
-import { MaxError, type MaxTransport } from '../src/max.js';
+import { MaxClient, MaxError, type MaxTransport } from '../src/max.js';
 import type { Candidate, Message, Protection } from '../src/types.js';
 
 const databaseUrl = process.env.MAXIM_TEST_POSTGRES_URL;
@@ -532,6 +532,74 @@ describe('bounded history and same-chat progress', () => {
     await runtime.visit(await reserve());
     await runtime.visit(await reserve());
     assert.deepEqual(removed, ['ordinary']);
+  });
+  test('an empty MAX pin envelope permits a guarded ordinary deletion with a durable receipt', async () => {
+    await enable();
+    await candidate('ordinary');
+    let pinRead = false;
+    const removed: string[] = [];
+    const max = new MaxClient(
+      {
+        databaseUrl: databaseUrl!,
+        redisUrl: redisUrl!,
+        controlToken: 'a'.repeat(32),
+        webhookSecret: 'b'.repeat(32),
+        botToken: 'private',
+        botId: '123',
+        apiBaseUrl: 'https://platform-api2.max.ru',
+        port: 3000,
+        enabled: true,
+        maxRps: 20,
+        commitSha: 'native',
+        webhookUrl: null,
+      },
+      new HttpLimiter(redis, 20, `${prefix}:empty-pin`),
+      async (input, init) => {
+        const url = new URL(String(input));
+        if (init?.method === 'GET' && url.pathname === '/chats/-1/members/me')
+          return Response.json({
+            user_id: 123,
+            is_admin: true,
+            permissions: ['read_all_messages', 'write'],
+          });
+        if (init?.method === 'GET' && url.pathname === '/chats/-1/pin') {
+          pinRead = true;
+          return Response.json({});
+        }
+        if (init?.method === 'GET' && url.pathname === '/messages')
+          return Response.json({ messages: [] });
+        assert.equal(init?.method, 'DELETE');
+        assert.equal(url.pathname, '/messages');
+        assert.equal(url.searchParams.get('message_id'), 'ordinary');
+        assert.equal(pinRead, true);
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT state FROM eraser_candidates WHERE chat_id='-1' AND message_id='ordinary'",
+            )
+          ).rows[0].state,
+          'dispatching',
+        );
+        removed.push('ordinary');
+        return Response.json({ success: true });
+      },
+    );
+    const runtime = new CleanupRuntime(store, max, { enabled: true, redisUrl });
+    try {
+      await runtime.visit(await reserve());
+      assert.deepEqual(removed, ['ordinary']);
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT state FROM eraser_candidates WHERE chat_id='-1' AND message_id='ordinary'",
+          )
+        ).rows[0].state,
+        'deleted',
+      );
+      assert.equal((await store.snapshot('-1')).deletedCount, 1);
+    } finally {
+      await runtime.close();
+    }
   });
   test('newly due live messages take priority over already buffered historical candidates', async () => {
     await enable();

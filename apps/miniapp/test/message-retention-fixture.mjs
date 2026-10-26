@@ -74,6 +74,7 @@ export function mountRetentionFixture() {
             hours: input.hours,
             revision: server.revision + 1,
             status: input.enabled ? 'running' : 'off',
+            connectionStatus: input.enabled ? 'connected' : server.connectionStatus,
             ...(input.operationId ? { lastOperationId: input.operationId } : {}),
           });
           return structuredClone(server);

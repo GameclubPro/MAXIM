@@ -105,11 +105,12 @@ export class MaxClient implements MaxTransport {
 
   async pin(chatId: string): Promise<string | null> {
     const result = await this.request('GET', `/chats/${encodeURIComponent(chatId)}/pin`);
-    if (result.message === null) return null;
+    // FLAG: MAX permits an omitted message; only the exact empty envelope confirms no pin.
+    if (result.message === null || Object.keys(result).length === 0) return null;
     const row = record(result.message),
       body = record(row?.body),
       recipient = record(row?.recipient);
-    if (!body || typeof body.mid !== 'string' || String(recipient?.chat_id) !== chatId)
+    if (!body || typeof body.mid !== 'string' || !body.mid || String(recipient?.chat_id) !== chatId)
       throw new MaxError(0, 'pin_unknown', false);
     return body.mid;
   }

@@ -36,7 +36,7 @@ try {
       const entry = page.getByRole('button', { name: 'Удаление старых сообщений', exact: true });
       await entry.click();
       const panel = page.getByRole('dialog', { name: 'Удаление старых сообщений' });
-      const botLink = panel.getByRole('link', { name: 'Открыть бота «Ластик»', exact: true });
+      const botLink = panel.getByRole('link', { name: 'Профиль бота', exact: true });
       await botLink.waitFor();
       assert.equal(await botLink.getAttribute('href'), 'https://max.ru/id613000037577_5_bot');
       await page.evaluate(() => {
@@ -87,11 +87,18 @@ try {
       assert.equal(await panel.getByRole('radio', { name: '1 неделя' }).isChecked(), true);
       assert.ok(
         (await panel
-          .getByText('Закрепы, правила, объявления розыгрышей и их итоги из наших модулей', {
-            exact: true,
-          })
+          .getByText(
+            'Все закреплённые сообщения. Также сохраняются правила, объявления розыгрышей и их итоги из наших модулей.',
+            {
+              exact: true,
+            },
+          )
           .count()) > 0,
       );
+      const progress = panel.locator('.message-retention-progress');
+      assert.equal(await progress.getAttribute('open'), null);
+      await progress.locator('summary').click();
+      await panel.getByText('Проверено сообщений', { exact: true }).waitFor();
       await page.waitForTimeout(250);
       const layout = await panel.evaluate((element) => {
         const bounds = element.getBoundingClientRect();
@@ -180,7 +187,7 @@ try {
       assert.equal(await toggle.isChecked(), true);
       await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
       if (scenario === 'conflict') {
-        await panel.getByText('Настройки изменены в другом сеансе', { exact: true }).waitFor();
+        await panel.getByText('Настройки уже изменились', { exact: true }).waitFor();
         await page.waitForTimeout(250);
         await page.screenshot({ path: join(output, 'conflict-before-resolution.png') });
         assert.equal(await toggle.isChecked(), true);
@@ -197,6 +204,8 @@ try {
       }
       await panel.getByText('Сохранено', { exact: true }).waitFor();
     }
+    const progress = panel.locator('.message-retention-progress');
+    if (await progress.count()) await progress.locator('summary').click();
     assert.equal(await panel.evaluate((node) => node.scrollWidth > node.clientWidth + 2), false);
     assert.equal(
       await panel
@@ -208,7 +217,7 @@ try {
     await page.screenshot({ path: join(output, `scenario-${scenario}.png`) });
     await context.close();
   }
-  await runRetentionRegressions(browser, base);
+  await runRetentionRegressions(browser, base, output);
   console.log(
     `Retention UI: responsive, theme, recovery, permissions, write reconciliation and race checks passed${process.env.MINIAPP_TEST_KEEP_ARTIFACTS === '1' ? `; screenshots: ${output}` : ''}`,
   );
