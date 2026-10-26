@@ -97,7 +97,7 @@ Commands:
   postgres-audit legacy-order-candidates
   postgres-audit moderation-outcomes [--bot <bot-id>] [--explain]
   postgres-audit delete-retry-heads [--explain]
-  postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]
+  postgres-audit chat-message-window <chat-id> <UTC-minute> [--slice <0..11>] [--explain]
   postgres-audit webhook-cohort [--short] [--explain]
   postgres-audit webhook-recovery-key-cohort <UTC-second> <private-chat-ID-CSV> [--explain]
   postgres-audit webhook-workload [--explain]
@@ -645,12 +645,7 @@ postgres_audit() {
   fi
 
   if [[ "$mode" == 'chat-message-window' ]]; then
-    if [[ $# -lt 3 || $# -gt 4 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
-          ! "$3" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$ ||
-          ( $# -eq 4 && "$4" != '--explain' ) ]]; then
-      echo 'Usage: postgres-audit chat-message-window <chat-id> <UTC-minute> [--explain]' >&2
-      exit 2
-    fi
+    node "$ROOT_DIR/infra/scripts/chat-message-window-audit.mjs" "${@:2}" >/dev/null || return 2
     remote_exec "$(shell_quote_args ./infra/scripts/vps-postgres-audit.sh "$@")"
     return
   fi
