@@ -38,8 +38,167 @@ async function assertReachable(locator) {
   assert.deepEqual(result, { fits: true, touch: true, unobscured: true });
 }
 
+async function pasteClipboardImage(editor, color, href = null) {
+  return editor.evaluate(
+    (element, { color, href }) => {
+      element.focus();
+      const canvas = document.createElement('canvas');
+      canvas.width = 2;
+      canvas.height = 2;
+      const context = canvas.getContext('2d');
+      context.fillStyle = color;
+      context.fillRect(0, 0, 2, 2);
+      const imageUrl = canvas.toDataURL('image/png');
+      const png = Uint8Array.from(atob(imageUrl.split(',')[1]), (character) =>
+        character.charCodeAt(0),
+      );
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(new File([png], 'clipboard.png', { type: 'image/png' }));
+      const imageHtml = `<img src="${imageUrl}">`;
+      clipboardData.setData(
+        'text/html',
+        href
+          ? element.innerHTML.replace('Абзац 18', `<a href="${href}">Абзац 18</a>`) + imageHtml
+          : imageHtml,
+      );
+      if (href) clipboardData.setData('text/plain', element.innerText);
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const selection = document.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+      );
+      return selection.toString();
+    },
+    { color, href },
+  );
+}
+
+async function assertManualLinkDraftRoundTrip(browser) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  try {
+    // FLAG: Capture actual local draft/publish responses without changing their content.
+    await context.route('**/*', (route) =>
+      new URL(route.request().url()).origin === new URL(base).origin
+        ? route.continue()
+        : route.abort(),
+    );
+    await context.route('**/src/lib/api/preview-transport-runtime.ts', async (route) => {
+      const response = await route.fetch();
+      const source = await response.text();
+      const marker = 'if (result !== PREVIEW_NOT_HANDLED) {';
+      assert.ok(source.includes(marker));
+      await route.fulfill({
+        response,
+        body: source.replace(
+          marker,
+          `${marker}
+          if (context.url.pathname.startsWith('/publications')) {
+            (window.__manualLinkApi ??= []).push({ path: context.url.pathname, method: context.method,
+              request: typeof context.init.body === 'string' ? JSON.parse(context.init.body) : null,
+              response: structuredClone(result) });
+          }
+        `,
+        ),
+      });
+    });
+    await context.addInitScript(() => {
+      window.__manualLinkPasteCount = 0;
+      document.addEventListener('paste', () => {
+        window.__manualLinkPasteCount += 1;
+      });
+    });
+    await installMaxBridgeShimInitScript(context, {});
+    await page.goto(`${base}publications?preview=1&profile=publisher`);
+    await page.getByRole('button', { name: 'Создать публикацию', exact: true }).click();
+    await page.getByRole('button', { name: 'Написать', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Текст публикации', exact: true });
+    const label = 'Ручная ссылка';
+    const text = `${label} без HTML-вставки`;
+    const href = 'https://example.com/manual-only?source=publik&read=1';
+    const markdown = `[${label}](${href}) без HTML-вставки`;
+    await editor.fill(text);
+    await editor.evaluate((element, length) => {
+      const range = document.createRange();
+      range.setStart(element.firstChild, 0);
+      range.setEnd(element.firstChild, length);
+      const selection = document.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }, label.length);
+    await page.getByRole('button', { name: 'Форматирование', exact: true }).click();
+    await page.getByRole('button', { name: 'Ссылка', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Адрес ссылки', exact: true }).fill(href);
+    await page.getByRole('button', { name: 'Применить', exact: true }).click();
+    await page.locator('.publication-target-picker__summary').click();
+    const picker = page.getByRole('dialog', { name: 'Получатели', exact: true });
+    await picker
+      .getByRole('button', { name: 'Выбрать Новости Южного, канал', exact: true })
+      .click();
+    await picker.getByRole('button', { name: 'Завершить выбор получателей' }).click();
+    await page
+      .locator('.publications-editor-header')
+      .getByRole('button', { name: 'Назад', exact: true })
+      .click();
+    await page.locator('.publications-page:not(.is-editor)').waitFor();
+    const saved = await page.evaluate(() =>
+      window.__manualLinkApi.findLast(
+        ({ request, response }) => request?.content && response?.publication?.lifecycle === 'DRAFT',
+      ),
+    );
+    assert.equal(saved.response.publication.content.text, markdown);
+    assert.equal(saved.response.publication.content.textFormat, 'markdown');
+    const draftId = saved.response.publication.id;
+    await page.getByRole('button', { name: 'Черновики', exact: true }).click();
+    await page
+      .getByRole('dialog', { name: 'Черновики', exact: true })
+      .getByRole('button', { name: new RegExp(text, 'u') })
+      .click();
+    await editor.waitFor();
+    assert.equal(await editor.innerText(), text);
+    assert.equal(await editor.locator('a').getAttribute('href'), href);
+    const reopened = await page.evaluate(
+      (draftId) =>
+        window.__manualLinkApi.findLast(
+          ({ path, method }) => path === `/publications/drafts/${draftId}` && method === 'GET',
+        ),
+      draftId,
+    );
+    assert.equal(reopened.response.publication.content.text, markdown);
+    assert.equal(reopened.response.publication.content.textFormat, 'markdown');
+    await page.getByRole('button', { name: 'Проверить пост', exact: true }).click();
+    await page
+      .getByRole('dialog', { name: 'Проверка публикации', exact: true })
+      .getByRole('button', { name: 'Опубликовать', exact: true })
+      .click();
+    await page.locator('.publications-page:not(.is-editor)').waitFor();
+    const published = await page.evaluate(() =>
+      window.__manualLinkApi.findLast(({ request }) => request?.intent === 'publish'),
+    );
+    assert.equal(published.path, `/publications/${draftId}`);
+    assert.equal(published.request.content.text, markdown);
+    assert.equal(published.request.content.textFormat, 'markdown');
+    assert.equal(await page.evaluate(() => window.__manualLinkPasteCount), 0);
+    assert.deepEqual(errors, []);
+    console.log(
+      'PASS manual-only: Link button, saved draft response, reopen GET and publish payload; no paste',
+    );
+  } catch (error) {
+    await page.screenshot({ path: `${output}/manual-only-failure.png` });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 try {
   browser = await chromium.launch({ headless: true });
+  await assertManualLinkDraftRoundTrip(browser);
   for (const [name, device] of [
     ['iphone-se', devices['iPhone SE']],
     ['iphone', devices['iPhone 15']],
@@ -50,6 +209,7 @@ try {
       const context = await browser.newContext({ ...device, colorScheme });
       const page = await context.newPage();
       const errors = [];
+      const heldClipboardRequests = [];
       page.on('pageerror', (error) => errors.push(error.message));
       try {
         // FLAG: Preview-only flow; no external traffic or real publication is allowed.
@@ -256,6 +416,30 @@ try {
           await postActions.textContent(),
           /Закрепить с уведомлением.*Удаление через 1 дн./u,
         );
+        const pastedHref = 'https://example.com/pasted?source=publik&read=1';
+        // FLAG: After the editor is ready, hold any late clipboard-code download. Publishing
+        // immediately after the first rich paste must use its links, not the previous plain text.
+        await context.route(/\/src\/lib\/max-rich-text-clipboard\.ts(?:\?|$)/u, (route) => {
+          heldClipboardRequests.push(route);
+        });
+        await editor.evaluate((element, href) => {
+          element.focus();
+          const pastedHtml = element.innerHTML.replace(
+            'Дополнение',
+            `<a href="${href}">Дополнение</a>`,
+          );
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          const selection = document.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          const clipboardData = new DataTransfer();
+          clipboardData.setData('text/plain', element.innerText);
+          clipboardData.setData('text/html', pastedHtml);
+          element.dispatchEvent(
+            new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+          );
+        }, pastedHref);
         await primary.click();
         const review = page.getByRole('dialog', { name: 'Проверка публикации', exact: true });
         await review.waitFor();
@@ -267,6 +451,26 @@ try {
         await assertReachable(review.getByRole('button', { name: 'Опубликовать', exact: true }));
         await review.getByRole('button', { name: 'Назад', exact: true }).click();
         assert.equal(await editor.innerText(), authoredText);
+        const captionHref = 'https://example.com/image-caption?source=publik';
+        await pasteClipboardImage(editor, '#204080', captionHref);
+        await page.waitForFunction(
+          () =>
+            document.querySelectorAll('.publication-content-composer .broadcast-message-card img')
+              .length === 1,
+        );
+        await page.waitForFunction(
+          () => !document.querySelector('.publication-content-composer[aria-busy="true"]'),
+        );
+        assert.equal(
+          await pasteClipboardImage(editor, '#c06020'),
+          authoredText,
+          'Pasting an image without a caption preserves the selected text',
+        );
+        await page.waitForFunction(
+          () =>
+            document.querySelectorAll('.publication-content-composer .broadcast-message-card img')
+              .length === 2,
+        );
         await primary.click();
         await review.getByRole('button', { name: 'Опубликовать', exact: true }).click();
         const checking = page.getByRole('button', { name: 'Проверяем доступ...', exact: true });
@@ -288,8 +492,17 @@ try {
         assert.equal(access.refreshes.length, 1);
         const submitted = JSON.parse(access.attempts[0].body);
         assert.equal(submitted.content.textFormat, 'markdown');
+        assert.ok(
+          submitted.content.text.includes(`[Абзац 18](${captionHref})`),
+          `${name}: a pasted image retains the links in its accompanying HTML caption`,
+        );
         assert.ok(submitted.content.text.includes(`[Первый абзац](${href})`));
+        assert.ok(
+          submitted.content.text.includes(`[Дополнение](${pastedHref})`),
+          `${name}: immediate publication retains the pasted link while late clipboard downloads are held (${heldClipboardRequests.length})`,
+        );
         assert.equal(submitted.content.text.includes('data-max-link-'), false);
+        assert.equal(submitted.content.media.length, 2, 'Each clipboard image is processed once');
         assert.deepEqual(
           access.refreshes[0].targets,
           submitted.audience.targets.map(({ chatId, entityType }) => ({ id: chatId, entityType })),
@@ -302,6 +515,7 @@ try {
         await page.screenshot({ path: `${output}/${name}-${colorScheme}-failure.png` });
         throw error;
       } finally {
+        for (const request of heldClipboardRequests) await request.abort();
         await context.close();
       }
     }

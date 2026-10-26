@@ -2,11 +2,11 @@
 
 ## Start Here
 
-- The repository is the source of truth. If notes disagree with code, `package.json`, Compose or
-  scripts, verify the implementation and fix the nearest relevant notes.
-- Read the scoped `AGENTS.md` for edited paths: `apps/api`, `apps/miniapp`, `apps/admin`,
-  `packages/contracts`, or `infra`. Follow its task-specific reference links before changing that
-  boundary. Do not read every domain runbook for an unrelated task.
+- Verify implementation against code, `package.json`, Compose and scripts; fix stale notes.
+  Existing code/tests establish current behavior, not necessarily intended behavior.
+- Before editing, run `node scripts/agent/context.mjs --path <file>`; include callers.
+  Read its scoped notes and relevant references. For behavior changes, follow the
+  [evidence procedure](docs/development/behavior-evidence.md).
 - Keep one primary implementation/release stage active. Finish its checks and result before
   opening another runtime workstream, except for a prerequisite or urgent production incident.
   Independent read-only monitoring can continue.
