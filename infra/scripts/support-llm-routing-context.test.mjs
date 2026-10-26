@@ -569,3 +569,38 @@ test('knowledge keeps mandatory facts exactly once and selects only real entries
   assert.equal(router.eligibleQuestion('Рекламная площадка Скоро'), true);
   assert.equal(router.eligibleQuestion('Дублирует сообщения'), true);
 });
+
+test('Lastik questions and follow-ups retrieve the independent cleanup instructions', () => {
+  for (const text of [
+    'Как подключить Ластика?',
+    'Ластик удаляет старую историю?',
+    'Ластик может убрать сообщения администраторов?',
+    'Как поставить в Ластике одну неделю?',
+    'Как подключить Ластика и отложить пост через Публика?',
+  ]) {
+    needsReply(text);
+    assert.ok(ids(text).includes('message-retention'), text);
+  }
+  const followup = 'А за неделю можно?';
+  const history = [user('Я администратор. Хочу настроить Ластика.')];
+  assert.equal(router.eligibleQuestion(followup, history), true);
+  assert.ok(ids(followup, history).includes('message-retention'));
+  for (const text of [
+    'Как подключить Ластика?',
+    'Как подключить Ластика вместо Майора?',
+    'Как подключить Ластика через Публика?',
+    'Как подключить Ластика и отложить пост через Публика?',
+  ]) {
+    assert.ok(!ids(text).includes('connect'), text);
+  }
+  for (const mixed of [
+    'Как подключить Ластика и Публика?',
+    'Как подключить Ластика, а Публика подключить к каналу?',
+  ]) {
+    assert.ok(ids(mixed).includes('connect'), mixed);
+    assert.ok(ids(mixed).includes('message-retention'), mixed);
+  }
+  const unrelated = 'Как переработать пластиковый пакет?';
+  assert.equal(router.eligibleQuestion(unrelated), false);
+  assert.ok(!ids(unrelated).includes('message-retention'));
+});

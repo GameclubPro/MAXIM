@@ -84,6 +84,23 @@ test('network operation outcomes and audience coverage have separate facts', () 
   assert.doesNotMatch(audience, /нажмите.*Применить|ошибк.{0,20}из.за/iu);
 });
 
+test('Lastik instructions match current history coverage, periods and protected exceptions', () => {
+  const answer = fact('message-retention');
+  const ui = source('apps/miniapp/src/pages/settings/shared-message-retention-fields.tsx');
+  for (const label of ['Ластик', 'Удаление по сроку', '24 часа', '48 часов', '1 неделя']) {
+    assert.ok(ui.includes(label), label);
+    assert.ok(answer.includes(label), label);
+  }
+  assert.match(answer, /администратором с правами чтения и удаления/u);
+  assert.match(answer, /всю доступную историю, включая сообщения до включения/u);
+  assert.match(answer, /сообщения любых авторов/u);
+  assert.match(answer, /редактирование его не продлевает/u);
+  assert.match(answer, /Исключения: закрепы, правила, объявления розыгрышей и их итоги/u);
+  assert.match(ui, /сообщения любых авторов из всей доступной истории/u);
+  assert.doesNotMatch(answer, /историю не очищает|учёт начинается заново|ждёт низкой нагрузки/u);
+  assert.match(answer, /не видит, подключён ли Ластик/u);
+});
+
 test('AI intents preserve their own limits instead of an entire mixed FAQ', () => {
   assert.match(fact('commercial-ai-enable'), /Удалять рекламу.*сохраните/u);
   assert.doesNotMatch(fact('commercial-ai-enable'), /Мягко|Двойная проверка|мут/u);
