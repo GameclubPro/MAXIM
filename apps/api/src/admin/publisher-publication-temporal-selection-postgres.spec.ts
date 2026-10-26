@@ -484,7 +484,9 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
               'PUBLIK_V1', ${botId}, ${new Date(now.getTime() + 86_400_000)}, ${now}
             FROM generate_series(1, ${parents + retained}::integer) AS n
           `);
-          await db.$executeRaw(Prisma.sql`
+          // FLAG: Bound row-triggered inserts without reducing the retained parent history.
+          for (let first = 1; first <= parents + retained; first += 2_000) {
+            await db.$executeRaw(Prisma.sql`
             INSERT INTO "managed_broadcasts" (
               "id", "source_chat_id", "actor_user_id", "target_chat_ids", "buttons", "status",
               "publication_occurrence_id", "publication_content_revision_id", "dispatch_profile", "required_bot_id", "next_send_at", "updated_at"
@@ -494,8 +496,9 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
               CASE WHEN n <= ${parents} THEN 'ACTIVE'::"ManagedBroadcastStatus" ELSE 'COMPLETED'::"ManagedBroadcastStatus" END,
               ${prefix} || '-occurrence-' || n::text, ${previousContent.id}, 'PUBLIK_V1', ${botId},
               ${now}::timestamp - interval '1 day' + n * interval '1 millisecond', ${now}
-            FROM generate_series(1, ${parents + retained}::integer) AS n
+            FROM generate_series(${first}::integer, ${Math.min(first + 1_999, parents + retained)}::integer) AS n
           `);
+          }
           // FLAG: Keep the same full fixture, but bound each synthetic recipient insert.
           // CI shares CPU with other jobs; seed timeouts must not replace query-plan checks.
           for (let first = 1; first <= parents + retained; first += 2_000) {
@@ -1724,7 +1727,12 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
           where: { sourceChatId, id: { startsWith: retiredPrefix } },
         });
       }
-      await db.$executeRaw(Prisma.sql`
+      // FLAG: Retain every audience row while bounding each trigger and foreign-key batch.
+      const deliverySeedStarted = performance.now();
+      let deliverySeedCompleted = false;
+      try {
+        for (let first = 0; first < audience; first += 2_000) {
+          await db.$executeRaw(Prisma.sql`
       INSERT INTO "managed_broadcast_deliveries" (
         "id", "broadcast_id", "occurrence_index", "target_chat_id",
         "publication_occurrence_id", "content_revision_id", "dispatch_profile", "required_bot_id",
@@ -1736,8 +1744,22 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
         'PUBLIK_V1', ${botId}, ${deliveryRoute.dialogBotId},
         ${JSON.stringify(deliveryRoute.publisherDialogContext)}::jsonb, 0,
         ${new Date(now.getTime() + 60_000)}, ${now}
-      FROM generate_series(0, ${audience - 1}::integer) AS n
+      FROM generate_series(${first}::integer, ${Math.min(first + 1_999, audience - 1)}::integer) AS n
     `);
+        }
+        deliverySeedCompleted = true;
+      } finally {
+        console.info(
+          'Publisher current-audience phase timing',
+          JSON.stringify({
+            audience,
+            statistics,
+            phase: 'seed-deliveries',
+            completed: deliverySeedCompleted,
+            wallMs: performance.now() - deliverySeedStarted,
+          }),
+        );
+      }
       const saturatedPlan = await explain(query('100'));
       console.info('Publisher temporal saturated key-page plan', JSON.stringify(saturatedPlan));
       expectTemporalBounds(saturatedPlan, 65, true);
