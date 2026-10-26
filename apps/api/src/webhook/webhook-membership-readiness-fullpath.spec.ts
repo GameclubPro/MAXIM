@@ -887,6 +887,7 @@ describeStores('native dormant receipt and explicit activation isolation', () =>
       null,
     ]) {
       await new Promise((resolve) => setTimeout(resolve, 2));
+      const beforeProbe = await membership();
       expect(
         await s.links.recordBotAccessProbe({
           chatId,
@@ -895,7 +896,8 @@ describeStores('native dormant receipt and explicit activation isolation', () =>
           checkedAt: new Date(),
           source: 'native-passive-refresh',
         }),
-      ).toBe(true);
+      ).toBe(access?.permissionsKnown !== false);
+      if (access?.permissionsKnown === false) expect(await membership()).toEqual(beforeProbe);
       await assertSource();
     }
   });

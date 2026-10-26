@@ -59,6 +59,7 @@ import {
   hasExplicitManagedEntityNonPrivilege,
   type ManagedEntityExplicitActivation,
 } from './managed-entity-activation.util';
+import { hasIncompleteManagedEntityPermissionEvidence } from './managed-entity-passive-access.util';
 import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
 import {
   appendMarketplacePublicationButton,
@@ -3755,10 +3756,19 @@ export class MaxClientService implements OnModuleDestroy {
           options.explicitActivation,
         )
       : null;
-    const effectiveAccess = (access: MaxChatMemberAccess) =>
-      options.explicitActivation || !this.maxBotLinkService?.restrictPassiveBotAccess
+    const isCompleteSelfAccess = (access: MaxChatMemberAccess) =>
+      (access.isAdmin || access.isOwner
+        ? access.explicitPrivilegeEvidence === true
+        : access.explicitNonPrivilegeEvidence === true) &&
+      !hasIncompleteManagedEntityPermissionEvidence(access, activationState?.permissionsSnapshot);
+    const effectiveAccess = (access: MaxChatMemberAccess) => {
+      // FLAG: Partial role/capability evidence cannot revoke a retained grant or become
+      // a successful fresh authorization. A later complete probe may proceed normally.
+      if (!isCompleteSelfAccess(access)) throw new Error('MAX bot access evidence is incomplete');
+      return options.explicitActivation || !this.maxBotLinkService?.restrictPassiveBotAccess
         ? access
         : this.maxBotLinkService.restrictPassiveBotAccess(botId, access, activationState);
+    };
     // FLAG: A cached/live positive probe cannot wake a bot with confirmed lost rights.
     // Only the exact persisted administrator activation receipt permits this fresh read.
     const cacheKey = this.buildCurrentChatMemberAccessCacheKey(botId, normalizedChatId);
@@ -3767,7 +3777,7 @@ export class MaxClientService implements OnModuleDestroy {
         cacheKey,
         (value): value is MaxChatMemberAccess => this.isMaxChatMemberAccess(value),
       );
-      if (cachedAccess) {
+      if (cachedAccess && isCompleteSelfAccess(cachedAccess)) {
         return effectiveAccess({ ...cachedAccess, permissions: [...cachedAccess.permissions] });
       }
 

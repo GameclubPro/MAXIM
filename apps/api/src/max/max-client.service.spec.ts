@@ -7,7 +7,12 @@ import {
 } from './retention-priority-admission';
 import { ManagedEntityActivationRequiredError } from './managed-entity-activation.util';
 import { restrictPassiveManagedEntityAccess } from './managed-entity-passive-access.util';
-import { ChatEntityType } from '../prisma/prisma-client';
+import {
+  ChatBotAccessState,
+  ChatBotMembershipStatus,
+  ChatEntityType,
+} from '../prisma/prisma-client';
+import type { MaxBotLinkService } from './max-bot-link.service';
 import { maxApiMinuteCounterAddress } from './max-api-counter-storage';
 import { WebhookLegacyHoldRejectedError } from '../webhook/webhook-legacy-hold.service';
 import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
@@ -13946,6 +13951,193 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     await service.onModuleDestroy();
+  });
+
+  describe('incomplete current bot self-access evidence', () => {
+    const priorPermissions = ['read_all_messages', 'write', 'add_remove_members'];
+    const complete = {
+      user_id: '777000_bot',
+      is_bot: true,
+      is_admin: true,
+      is_owner: false,
+      permissions: priorPermissions,
+    };
+    function retainKnownPermissions(service: MaxClientService) {
+      const current: NonNullable<
+        Awaited<ReturnType<MaxBotLinkService['assertChatBotAccessProbeAllowed']>>
+      > = {
+        status: ChatBotMembershipStatus.ACTIVE,
+        botAccessState: ChatBotAccessState.CONFIRMED_ADMIN,
+        botAccessCheckedAt: new Date('2026-10-26T00:00:00Z'),
+        botAccessSource: 'explicit_admin_start',
+        lifecycleEventAt: null,
+        permissionsSnapshot: {
+          isAdmin: true,
+          isOwner: false,
+          permissionsKnown: true,
+          permissions: priorPermissions,
+        },
+        chat: { entityType: ChatEntityType.CHAT },
+      };
+      const gate: jest.MockedFunction<MaxBotLinkService['assertChatBotAccessProbeAllowed']> = jest
+        .fn()
+        .mockResolvedValue(current);
+      const links: Pick<MaxBotLinkService, 'assertChatBotAccessProbeAllowed'> = {
+        assertChatBotAccessProbeAllowed: gate,
+      };
+      Object.assign(service, { maxBotLinkService: links });
+    }
+
+    it.each([null, { is_admin: false }, { is_owner: false }, {}, { permissions: [] }])(
+      'rejects incomplete self role %p without caching it',
+      async (data) => {
+        const httpService = {
+          request: jest
+            .fn()
+            .mockReturnValueOnce(of({ status: 200, data }))
+            .mockReturnValue(of({ status: 200, data: complete })),
+        };
+        const service = createService(httpService);
+        try {
+          await expect(service.getCurrentChatMemberAccess('self-role')).rejects.toThrow(
+            /evidence is incomplete/iu,
+          );
+          await expect(service.getCurrentChatMemberAccess('self-role')).resolves.toMatchObject({
+            isAdmin: true,
+            permissionsKnown: true,
+          });
+          expect(httpService.request).toHaveBeenCalledTimes(2);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each([undefined, null])(
+      'rejects omitted known permissions (%p) and allows a later complete self proof',
+      async (permissions) => {
+        const role = {
+          user_id: complete.user_id,
+          is_bot: true,
+          is_admin: true,
+          is_owner: false,
+        };
+        const httpService = {
+          request: jest
+            .fn()
+            .mockReturnValueOnce(
+              of({
+                status: 200,
+                data: { ...role, ...(permissions === null ? { permissions } : {}) },
+              }),
+            )
+            .mockReturnValue(of({ status: 200, data: complete })),
+        };
+        const service = createService(httpService);
+        retainKnownPermissions(service);
+        try {
+          await expect(service.getCurrentChatMemberAccess('self-permissions')).rejects.toThrow(
+            /evidence is incomplete/iu,
+          );
+          await expect(
+            service.getCurrentChatMemberAccess('self-permissions'),
+          ).resolves.toMatchObject({ permissionsKnown: true, permissions: priorPermissions });
+          await service.getCurrentChatMemberAccess('self-permissions');
+          expect(httpService.request).toHaveBeenCalledTimes(2);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it('accepts an explicit empty self permission list after a known grant', async () => {
+      const httpService = {
+        request: jest
+          .fn()
+          .mockReturnValue(of({ status: 200, data: { ...complete, permissions: [] } })),
+      };
+      const service = createService(httpService);
+      retainKnownPermissions(service);
+      try {
+        await expect(service.getCurrentChatMemberAccess('self-empty')).resolves.toMatchObject({
+          isAdmin: true,
+          permissionsKnown: true,
+          permissions: [],
+        });
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(['admin', 'owner'] as const)(
+      'accepts explicit legacy %s role evidence on a complete self response',
+      async (role) => {
+        const httpService = {
+          request: jest
+            .fn()
+            .mockReturnValue(
+              of({
+                status: 200,
+                data: { user_id: complete.user_id, role, permissions: priorPermissions },
+              }),
+            ),
+        };
+        const service = createService(httpService);
+        try {
+          await expect(
+            service.getCurrentChatMemberAccess('self-role-alias'),
+          ).resolves.toMatchObject({
+            isAdmin: true,
+            isOwner: role === 'owner',
+            explicitPrivilegeEvidence: true,
+            permissionsKnown: true,
+          });
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each([
+      { isAdmin: false },
+      { isAdmin: false, explicitNonPrivilegeEvidence: false },
+      { isAdmin: true },
+      { isAdmin: true, explicitPrivilegeEvidence: false },
+      { isAdmin: true, explicitPrivilegeEvidence: true, permissionsKnown: false },
+    ])(
+      'rereads a legacy self cache without complete role/permission evidence (%p)',
+      async (cachedRole) => {
+        const store = (
+          Redis as unknown as {
+            __store: Map<string, { value: string; expiresAtMs: number | null }>;
+          }
+        ).__store;
+        store.set('maxapi:cache:v1:chat-member-access:777000_bot:self-legacy:__self', {
+          expiresAtMs: Date.now() + 60_000,
+          value: JSON.stringify({
+            userId: '777000_bot',
+            isBot: true,
+            isOwner: false,
+            permissionsKnown: true,
+            permissions: [],
+            ...cachedRole,
+          }),
+        });
+        const httpService = {
+          request: jest.fn().mockReturnValue(of({ status: 200, data: complete })),
+        };
+        const service = createService(httpService);
+        retainKnownPermissions(service);
+        try {
+          await expect(service.getCurrentChatMemberAccess('self-legacy')).resolves.toMatchObject({
+            isAdmin: true,
+          });
+          expect(httpService.request).toHaveBeenCalledTimes(1);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
   });
 
   it('checks dormant authority before a cached self access response or forced probe', async () => {
