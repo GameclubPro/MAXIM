@@ -74,6 +74,7 @@ Commands:
                               Continue reviewed recovery with an exact green controller
   eraser-bootstrap <private-request.json>|--stores-only
   eraser-webhook
+  eraser-nginx [--apply]       Preview or apply only Lastik routes in the existing nginx site
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
   commercial-llm install|replace|enable|disable|stop [--apply]
@@ -1419,6 +1420,14 @@ eraser_webhook() {
   remote_exec "$(shell_quote_args bash ./infra/scripts/vps-eraser-webhook.sh "$source_sha")"
 }
 
+eraser_nginx() {
+  [[ "$#" -eq 0 || ( "$#" -eq 1 && "$1" == --apply ) ]] || { echo 'Usage: eraser-nginx [--apply]' >&2; return 2; }
+  local source_sha
+  source_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)" || return
+  node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$source_sha" || return
+  remote_exec "$(shell_quote_args bash ./infra/scripts/vps-eraser-nginx.sh "$source_sha" "$@")"
+}
+
 preload_ci_image() (
   local component="${1:-}"
   local ref="${2:-HEAD}"
@@ -1890,6 +1899,9 @@ case "$command" in
     ;;
   eraser-webhook)
     eraser_webhook "$@"
+    ;;
+  eraser-nginx)
+    eraser_nginx "$@"
     ;;
   preload-ci-image)
     preload_ci_image "$@"
