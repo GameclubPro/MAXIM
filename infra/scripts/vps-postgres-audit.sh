@@ -36,7 +36,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh legacy-semantic-mirrors [--explain]
   ./infra/scripts/vps-postgres-audit.sh delete-retry-heads [--explain]
   ./infra/scripts/vps-postgres-audit.sh moderation-outcomes [--bot <bot-id>] [--explain]
-  ./infra/scripts/vps-postgres-audit.sh chat-message-window <chat-id> <UTC-minute> [--explain]
+  ./infra/scripts/vps-postgres-audit.sh chat-message-window <chat-id> <UTC-minute> [--slice <0..11>] [--explain]
   ./infra/scripts/vps-postgres-audit.sh duplicate [--status <STATUS>] [--explain]
   ./infra/scripts/vps-postgres-audit.sh poll-publication <poll-id> [--explain]
   ./infra/scripts/vps-postgres-audit.sh webhook-quarantine <UTC-minute> [--explain]
@@ -101,7 +101,7 @@ RULES_CLEANUP_CHAT_ID=''
 RULES_CLEANUP_EXPLAIN=''
 DUPLICATE_EXPLAIN=''
 DUPLICATE_STATUS=''
-MESSAGE_WINDOW_FROM=''
+MESSAGE_WINDOW_ARGS=()
 WEBHOOK_COHORT_ARGS=()
 RECOVERY_KEY_COHORT_ARGS=()
 SOURCE_ENVELOPE_OWNER=''
@@ -124,15 +124,8 @@ case "$AUDIT_MODE" in
     node "$ROOT_DIR/infra/scripts/network-statistics-audit.mjs" "${NETWORK_STATISTICS_ARGS[@]}" >/dev/null || exit 2
     ;;
   chat-message-window)
-    if [[ $# -lt 3 || $# -gt 4 || ! "$2" =~ ^-[1-9][0-9]{0,19}$ ||
-          ! "$3" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00Z$ ||
-          ( $# -eq 4 && "$4" != '--explain' ) ]]; then
-      usage
-      exit 2
-    fi
-    RULES_CLEANUP_CHAT_ID="$2"
-    MESSAGE_WINDOW_FROM="$3"
-    RULES_CLEANUP_EXPLAIN="${4:-}"
+    MESSAGE_WINDOW_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/chat-message-window-audit.mjs" "${MESSAGE_WINDOW_ARGS[@]}" >/dev/null || exit 2
     ;;
   duplicate)
     shift
@@ -2479,11 +2472,7 @@ emit_sql() {
       node "$ROOT_DIR/infra/scripts/webhook-recovery-key-cohort-audit.mjs" "${RECOVERY_KEY_COHORT_ARGS[@]}"
       ;;
     chat-message-window)
-      local message_window_args=("$RULES_CLEANUP_CHAT_ID" "$MESSAGE_WINDOW_FROM")
-      if [[ -n "$RULES_CLEANUP_EXPLAIN" ]]; then
-        message_window_args+=("$RULES_CLEANUP_EXPLAIN")
-      fi
-      node "$ROOT_DIR/infra/scripts/chat-message-window-audit.mjs" "${message_window_args[@]}"
+      node "$ROOT_DIR/infra/scripts/chat-message-window-audit.mjs" "${MESSAGE_WINDOW_ARGS[@]}"
       ;;
     delete-retry-heads)
       local retry_head_args=()

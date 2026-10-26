@@ -24,7 +24,11 @@ Native capture also reapplies its frame-only geometry after scenario navigation/
 that the preview scaffold is absent before saving. A scenario reload must not produce a framed
 emulator image labeled as a native-layout success.
 
-1. Read the scoped notes and inspect the worktree. Keep unrelated changes separate.
+1. Read the scoped notes and inspect the worktree. Keep unrelated changes separate. Use
+   `node scripts/agent/context.mjs --path <file>` before editing to locate the relevant guidance.
+   For behavior changes, follow the [evidence procedure](development/behavior-evidence.md):
+   distinguish confirmed requirements, confirmed defects and unresolved intent before choosing
+   test expectations. Existing code or a passing test alone does not prove intended behavior.
    Use `node scripts/agent/doctor.mjs --browser` only when setting up the environment. The
    [local environment guide](development/agent-local-environment.md) includes disposable native
    PostgreSQL/Redis validation when a Docker daemon is unavailable.
