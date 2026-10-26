@@ -1293,6 +1293,31 @@ test('API fleet fallback topology and release manifest identity stay exact', () 
   assert.throws(() => readExpectedApiImage(manifestPath), /incomplete or invalid/u);
 });
 
+test('API fleet manifest reader rejects coerced component identities', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-capacity-typed-manifest-'));
+  const manifestPath = join(directory, 'current.json');
+  const manifest = currentReleaseManifest();
+  manifest.components.eraser = {
+    sourceSha: '1'.repeat(40),
+    imageRef: `maxim-eraser:${'1'.repeat(40)}`,
+    imageId: `sha256:${'2'.repeat(64)}`,
+  };
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  assert.deepEqual(readExpectedApiImage(manifestPath), expectedApiImage);
+  for (const id of Object.keys(manifest.components)) {
+    for (const field of ['sourceSha', 'imageRef', 'imageId']) {
+      const invalid = structuredClone(manifest);
+      invalid.components[id][field] = [invalid.components[id][field]];
+      writeFileSync(manifestPath, JSON.stringify(invalid));
+      assert.throws(
+        () => readExpectedApiImage(manifestPath),
+        /incomplete or invalid/u,
+        `${id}: ${field} must be a string`,
+      );
+    }
+  }
+});
+
 test('capacity probe resolves its sibling helper when executed through node stdin', () => {
   const result = spawnSync(process.execPath, ['-', 'invalid/device'], {
     cwd: root,

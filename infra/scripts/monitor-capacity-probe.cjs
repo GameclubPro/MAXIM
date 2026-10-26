@@ -479,8 +479,11 @@ function readExpectedApiImage(path = RELEASE_MANIFEST_PATH) {
       ([id, component]) =>
         !SUPPORTED_RELEASE_COMPONENTS.has(id) ||
         !isRecord(component) ||
+        typeof component.sourceSha !== 'string' ||
         !FULL_SHA_PATTERN.test(component.sourceSha ?? '') ||
+        typeof component.imageRef !== 'string' ||
         !SAFE_IMAGE_REF_PATTERN.test(component.imageRef ?? '') ||
+        typeof component.imageId !== 'string' ||
         !IMAGE_ID_PATTERN.test(component.imageId ?? ''),
     ) ||
     REQUIRED_RELEASE_COMPONENTS.some((id) => !Object.hasOwn(manifest.components, id))
