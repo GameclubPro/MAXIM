@@ -269,7 +269,7 @@ import {
 import { PhotoDuplicateEnqueueService } from './photo-duplicate/photo-duplicate-enqueue.service';
 import { MessageDuplicateService } from './message-duplicate/message-duplicate.service';
 import {
-  buildDuplicateModerationParameters,
+  executeDuplicateModerationAction,
   duplicateExplanationIdempotencyKey,
   duplicateSanctionNoticeIdempotencyKey,
   type DuplicateModerationActionRequest,
@@ -1518,28 +1518,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async executeDuplicateAction(params: DuplicateModerationActionRequest): Promise<void> {
-    const message = params.update.message;
-    if (!message) {
-      return;
-    }
-    const commonParams = buildDuplicateModerationParameters(
-      params,
-      this.formatUserLabel(message.senderName, params.userId),
-    );
-
-    if (params.outcome.kind === 'decision') {
-      await this.handleDuplicateDecision({
-        ...commonParams,
-        decision: params.outcome.decision,
-        muteDurationHours: params.settings.duplicateMuteDurationHours,
-        trackAsGlobalSpammer: false,
-        authorizeSanction: 'authorizeSanction' in params ? params.authorizeSanction : undefined,
-        beforeSanctionMutation: params.beforeSanctionMutation,
-      });
-      return;
-    }
-    await this.handleDuplicateHit({ ...commonParams, hit: params.outcome.hit });
+  async executeDuplicateAction(
+    params: DuplicateModerationActionRequest,
+    hotPathProfile?: WebhookHotPathProfile,
+  ): Promise<void> {
+    return executeDuplicateModerationAction(params, {
+      hotPathProfile,
+      formatUserLabel: (senderName, userId) => this.formatUserLabel(senderName, userId),
+      handleDecision: (action) => this.handleDuplicateDecision(action),
+      handleHit: (action) => this.handleDuplicateHit(action),
+    });
   }
 
   async handleUpdate(
@@ -2547,7 +2535,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           actionEligible:
             !hasCompetingViolation && !detection.duplicateDecision && !detection.duplicateHit,
           executeFullAction: (request) =>
-            this.executeDuplicateAction({ ...request, rulesPublishedUrl, rulesPublishedMessageId }),
+            this.executeDuplicateAction(
+              { ...request, rulesPublishedUrl, rulesPublishedMessageId },
+              hotPathProfile,
+            ),
         });
         this.markWebhookHotPathStage(hotPathProfile, 'message-duplicate.complete');
       }
