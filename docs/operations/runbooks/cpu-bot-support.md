@@ -179,3 +179,8 @@ The bounded one-token local warmup initializes this checkpoint before model read
 after a restart, within the existing 180-second startup deadline. Warmup output is discarded and
 never sent to MAX. Check actual cache reuse and completed answers; a configured cache alone does
 not establish a performance improvement.
+
+Use greedy decoding for grounded support. Concision must preserve relevant procedure conditions,
+waiting periods, time origins and independent-filter limits. Incident replies propose a conditional
+check rather than guessing live state or inventing a causal link between separate features.
+Language errors in history are context to rephrase, not wording to copy into the next answer.
