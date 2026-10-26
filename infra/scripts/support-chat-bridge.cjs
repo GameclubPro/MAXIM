@@ -5,7 +5,7 @@ const CHAT_ID = '-78271094414679';
 const PREFIX = `support-cpu-pilot:v1:${CHAT_ID}`;
 const SOURCE_AGE_MS = 180_000;
 const RETENTION_MS = 7 * 86400_000;
-const MODEL_SHA = '2de73110cb254cbf09b54b717578dadff12ef1194e7271527e68202f39ba4bfd';
+const MODEL_SHA = '769d386a69d43782321c1bad04d41d29a2e84b2c06e6a277cd99fd6265ec0e80';
 const DIGEST = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ANSWER_FOOTER = '✦ Ответ подготовлен ИИ-помощником «Майор Максимов»';
 

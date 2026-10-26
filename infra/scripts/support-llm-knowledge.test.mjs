@@ -419,9 +419,15 @@ test('reviewed delivery is restricted to bounded answers with preserved evidence
   assert.doesNotMatch(fact('subscription-membership'), /откройте ссылки|подпишитесь|Добавить/u);
 });
 
-test('disabling link deletion selects the actual allow-all mode and saves it', () => {
+test('link modes preserve their actual effects and the required save action', () => {
   const links = fact('links-policy');
-  assert.match(links, /отключить.*«Ссылки» → «Режим».*«Разрешать все».*«Сохранить»/u);
+  assert.match(links, /«Ссылки» → «Режим»/u);
+  assert.match(links, /отключить запрет ссылок, выбирают «Разрешать все»/u);
+  assert.match(links, /«Разрешать все» — этот фильтр не удаляет ссылки/u);
+  assert.match(links, /«Удалять все» — ссылки удаляются/u);
+  assert.match(links, /После изменения нажмите «Сохранить»/u);
+  assert.match(links, /Пустой разрешённый список.*не разрешает все ссылки/u);
+  assert.match(links, /Другие включённые правила.*продолжают работать независимо/u);
   const ui = source('apps/miniapp/src/pages/settings/shared-chat-settings-fields.tsx');
   for (const label of ['Разрешать все', 'Удалять все', 'Разрешать по списку']) {
     assert.ok(ui.includes(`label: '${label}'`), label);
@@ -429,7 +435,6 @@ test('disabling link deletion selects the actual allow-all mode and saves it', (
   }
   assert.match(ui, /value: 'ALERT_ONLY' as const, label: 'Разрешать все'/u);
   assert.match(ui, /value: 'BLOCKLIST_ONLY' as const, label: 'Удалять все'/u);
-  assert.match(links, /«Удалять все» включает запрет ссылок и не подходит для отключения/u);
   const detector = source('apps/api/src/moderation/rule-engine-link-detector.ts');
   assert.match(detector, /policy === LinkPolicy\.ALERT_ONLY\) \{\s*return null;/u);
   assert.match(

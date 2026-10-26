@@ -297,6 +297,7 @@ test('warmup posts the shared producer payload once and discards generated conte
   }
   assert.deepEqual(JSON.parse(payload.messages[1].content), {
     verifiedKnowledge: [],
+    answerRequirements: [],
     history: [],
     question: '',
     role: 'unknown',

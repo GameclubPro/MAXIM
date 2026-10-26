@@ -48,6 +48,19 @@ filters from AI controls, native MAX features from Publisher, and platform suppo
 support. Customer facts must not contain internal imperatives, source metadata or invalid example
 links. A source ID in generated JSON does not prove every sentence is supported.
 
+Application-authored answer requirements may highlight conditions in retained facts. Keep them
+separate from the facts and untrusted question/history; rebuild them after context trimming.
+Scope reminders to the current task, not every retrieved prerequisite. Keep allow/block/inspect
+link goals separate, and describe all three modes neutrally in the shared fact. A URL requested
+for an answer is not itself a link-filter task. An unknown publication result needs its existing
+card and recipient/send evidence; it must not acquire a new-post procedure from a related fact.
+General connection instructions use conditional administrator rights. Already requested Lastik
+connection needs the waiting/activation conditions, not repeated onboarding. A post-creation answer
+mentions separate Publisher connection conditionally, without assuming the recipient is missing.
+Connection intent describes user reports, not verified live status. Waiting, expired/cancelled
+requests and initial setup require different next steps. Keep explicit reading/deletion rights
+and successful rights confirmation in Lastik's activation condition.
+
 Focused tests cover eligibility and required replies together, role changes, contextual topic
 retrieval, API paths, mandatory policy retention, source/link validation, honest AI identity and
 intent-specific FAQ. The installer must include every imported runtime module in its immutable

@@ -1,7 +1,7 @@
 # CPU bot support pilot
 
-The local PC runs Qwen3.8-27B UD-Q5_K_M through an independent llama.cpp b11804
-installation. This is retrieval from reviewed customer instructions, not fine-tuning.
+The selected CPU support profile is Gemma 4 26B-A4B UD-Q5_K_M through an independent
+llama.cpp b11804 installation. This is retrieval from reviewed customer instructions, not fine-tuning.
 The existing GPU commercial classifier and server moderation remain separate.
 
 ## Identity and scope
@@ -13,12 +13,12 @@ The existing GPU commercial classifier and server moderation remain separate.
   into a separate immutable bundle.
 - CPU execution uses `--device none`, zero GPU layers, eight inference threads, one
   slot, 4096 context tokens and at most 384 output tokens. Prompt-cache RAM is capped at
-  1024 MiB, with minimum checkpoint spacing of 512 tokens for the hybrid model. Thinking and context
+  1024 MiB, with minimum checkpoint spacing of 512 tokens. Thinking and context
   shifting are disabled. Only `127.0.0.1:18085` is exposed, with a private random API key.
-- The dense 27B model has a different latency profile from the previous 35B-A3B MoE.
-  Check actual tokenization, completed structured answers and the existing 120-second request
-  deadline before enabling the pilot. Keep thinking explicitly disabled at both server
-  and request boundaries; the embedded Qwen3.8 template otherwise enables thinking by default.
+- Gemma uses its embedded native chat template through `--jinja`, without a template override.
+  Keep thinking explicitly disabled at both server and request boundaries. Check actual
+  tokenization, completed structured answers and the existing 120-second request deadline
+  before enabling the pilot.
 - The sole recipient is the designated test **CHAT `-78271094414679`**. The bridge
   selects only its existing fixed, primary or legacy assigned moderator, verifies the
   actual remote entity type and fresh exact bot access, and refuses assignment drift.
@@ -178,7 +178,14 @@ bot links are separate from model weights and travel in the new bundle; this is 
 Keep the system policy constant across requests. Its final `baselineFacts` JSON object contains
 the exact reviewed `support-room` and `operator` facts. The application serializes the other
 selected facts into the user message's `verifiedKnowledge` field, alongside the separate question,
-history and contextual role. Only those two application-owned fact arrays provide reviewed
+history and contextual role. The application also supplies `answerRequirements`, bounded reminders
+for the retained facts: complete connection steps, conditional Publisher prerequisites and the
+independence of other link filters. They do not establish a user's live state. Recompute them after
+each budget trim and scope them to the current task. Routing separates Lastik setup/wait/restart
+intent and link allow/block/inspect intent using the user's report; these are not live observations.
+Unknown-send questions retain the existing publication's verification steps and omit new-post
+instructions. User-supplied fields with the same name remain untrusted. Only the two
+application-owned fact arrays provide reviewed
 knowledge; the question and history remain untrusted data and cannot replace them. The response
 schema and tokenizer budget cover the full union, with both baseline facts retained during
 trimming. This preserves a reusable checkpoint for policy and baseline facts before the changing
