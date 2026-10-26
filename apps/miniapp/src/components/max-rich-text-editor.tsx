@@ -12,6 +12,7 @@ import {
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from '../lib/max-markdown-tools';
 import { cn } from '../lib/cn';
 import { renderPlainTextAsEditorHtml, renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
+import { clipboardHtmlToSupportedMarkdown } from '../lib/max-rich-text-clipboard';
 import { parseEditorLinkHref, serializeEditorLinkMarkdown } from '../lib/max-rich-text-link';
 import { serializeEditorInlineMarkdown } from '../lib/max-rich-text-serialization';
 import { useNormalizedMarkdownSource } from '../lib/use-normalized-markdown-source';
@@ -453,52 +454,41 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
             );
             const pastedHtml = event.clipboardData.getData('text/html');
             const pastedText = event.clipboardData.getData('text/plain');
-            if (pastedFiles.length > 0 && onPasteFiles) {
-              onPasteFiles(pastedFiles);
-              if (pastedText) {
-                insertPlainTextAtCurrentRange(pastedText);
-                emitCurrentMarkdown();
-                syncActiveTools();
-              }
-              return;
-            }
+            const handlingImageFiles = pastedFiles.length > 0 && onPasteFiles !== undefined;
+            if (handlingImageFiles) onPasteFiles?.(pastedFiles);
 
             if (!pastedHtml) {
+              if (handlingImageFiles && !pastedText) return;
               insertPlainTextAtCurrentRange(pastedText);
               emitCurrentMarkdown();
               syncActiveTools();
               return;
             }
 
-            const pasteRange = restoreOrCreateEditorRange()?.cloneRange() ?? null;
-            void import('../lib/max-rich-text-clipboard')
-              .then(({ clipboardHtmlToSupportedMarkdown }) => {
-                if (!interactiveRef.current) return;
-                restorePasteRange(editorRef.current, pasteRange);
-                const pastedMarkdown = clipboardHtmlToSupportedMarkdown(pastedHtml);
-                if (
-                  pastedMarkdown &&
-                  insertSupportedMarkdownAtCurrentRange(pastedMarkdown, {
-                    preserveCurlyBracePlaceholders,
-                    curlyBracePlaceholderLabels,
-                  })
-                ) {
-                  emitCurrentMarkdown();
-                  syncActiveTools();
-                  return;
-                }
+            // FLAG: Finish rich paste in this event so review/save cannot observe the old text.
+            restoreOrCreateEditorRange();
+            try {
+              const pastedMarkdown = clipboardHtmlToSupportedMarkdown(pastedHtml);
+              if (
+                pastedMarkdown &&
+                insertSupportedMarkdownAtCurrentRange(pastedMarkdown, {
+                  preserveCurlyBracePlaceholders,
+                  curlyBracePlaceholderLabels,
+                })
+              ) {
+                emitCurrentMarkdown();
+                syncActiveTools();
+                return;
+              }
+            } catch {
+              // FLAG: Unsupported clipboard markup retains the supplied plain-text fallback.
+            }
 
-                insertPlainTextAtCurrentRange(pastedText);
-                emitCurrentMarkdown();
-                syncActiveTools();
-              })
-              .catch(() => {
-                if (!interactiveRef.current) return;
-                restorePasteRange(editorRef.current, pasteRange);
-                insertPlainTextAtCurrentRange(pastedText);
-                emitCurrentMarkdown();
-                syncActiveTools();
-              });
+            // FLAG: An image without a text caption must leave the current text selection intact.
+            if (handlingImageFiles && !pastedText) return;
+            insertPlainTextAtCurrentRange(pastedText);
+            emitCurrentMarkdown();
+            syncActiveTools();
           }}
         />
 
@@ -891,14 +881,6 @@ function insertSupportedMarkdownAtCurrentRange(
   range.collapse(true);
   applyDocumentRange(range);
   return true;
-}
-
-function restorePasteRange(editor: HTMLElement | null, range: Range | null): void {
-  if (!editor || !range || !editorContainsRange(editor, range)) {
-    return;
-  }
-
-  applyDocumentRange(range);
 }
 
 function resolveActiveTools(editor: HTMLElement, range: Range): ReadonlySet<MaxMarkdownTool> {
