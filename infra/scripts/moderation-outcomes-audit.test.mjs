@@ -301,6 +301,7 @@ test(
       ['LINK_HISTORY_RECOVERY', 'LINK'],
       ['PROFANITY_DELETE', 'PROFANITY'],
       ['COMMERCIAL_AD_DELETE', 'COMMERCIAL_TEXT'],
+      ['COMMERCIAL_LLM_DELETE', 'COMMERCIAL_AI'],
       ['COMMERCIAL_OCR_DELETE', 'COMMERCIAL_OCR'],
       ['MESSAGE_BLOCKED_WORD_DELETE', 'STOP_WORD'],
       ['MESSAGE_BLOCKED_DOMAIN_DELETE', 'STOP_DOMAIN'],
@@ -333,6 +334,7 @@ test(
     for (const value of falseLikeProofs) {
       events.push(
         ['DELETE_MESSAGE', 'BOT', 'LINK_BLOCKED_DELETE', { moderationDeleteVerified: value }],
+        ['DELETE_MESSAGE', 'BOT', 'COMMERCIAL_LLM_DELETE', { moderationDeleteVerified: value }],
         ['BAN', 'BOT', 'COMMERCIAL_AD', { sanctionApplied: value }],
         ['MUTE', 'BOT', 'COMMERCIAL_AD', { sanctionApplied: value }],
       );
@@ -342,6 +344,14 @@ test(
     }
     events.push(
       ['DELETE_MESSAGE', 'ADMIN', 'LINK_BLOCKED_DELETE', { moderationDeleteVerified: true }],
+      ['DELETE_MESSAGE', 'ADMIN', 'COMMERCIAL_LLM_DELETE', { moderationDeleteVerified: true }],
+      ['NONE', 'BOT', 'COMMERCIAL_LLM_DELETE', { moderationDeleteVerified: true }],
+      [
+        'DELETE_MESSAGE',
+        'BOT',
+        'COMMERCIAL_LLM_DELETE_private-rule',
+        { moderationDeleteVerified: true },
+      ],
       [
         'DELETE_MESSAGE',
         'private-origin',
@@ -398,12 +408,15 @@ test(
       assert.equal(counts[`${family}:DELETE_MESSAGE:BOT:${evidence}`], 1);
     }
     assert.equal(counts['LINK:DELETE_MESSAGE:BOT:DELETE_EVENT_UNVERIFIED'], 8);
+    assert.equal(counts['COMMERCIAL_AI:DELETE_MESSAGE:BOT:DELETE_EVENT_UNVERIFIED'], 8);
+    assert.equal(counts['COMMERCIAL_AI:DELETE_MESSAGE:ADMIN:DELETE_EVENT_UNVERIFIED'], 1);
+    assert.equal(counts['COMMERCIAL_AI:NONE:BOT:DECISION_EVENT_ONLY'], 1);
     assert.equal(counts['COMMERCIAL_TEXT:BAN:BOT:BAN_EVENT_UNVERIFIED'], 8);
     assert.equal(counts['COMMERCIAL_TEXT:MUTE:BOT:MUTE_EVENT_UNVERIFIED'], 8);
     assert.equal(counts['PHONE:DELETE_MESSAGE:BOT:DELETE_EVENT_UNVERIFIED'], 7);
     assert.equal(counts['LINK:DELETE_MESSAGE:ADMIN:DELETE_EVENT_UNVERIFIED'], 1);
     assert.equal(counts['LINK:DELETE_MESSAGE:UNKNOWN:DELETE_EVENT_UNVERIFIED'], 1);
-    assert.equal(counts['OTHER_RULE:DELETE_MESSAGE:BOT:DELETE_REMOTE_CONFIRMED'], 1);
+    assert.equal(counts['OTHER_RULE:DELETE_MESSAGE:BOT:DELETE_REMOTE_CONFIRMED'], 2);
     assert.equal(counts['OTHER_RULE:UNKNOWN:UNKNOWN:UNKNOWN_ACTION_EVENT'], 1);
     assert.equal(counts['REQUIRED_SUBSCRIPTION:NONE:BOT:DECISION_EVENT_ONLY'], 1);
     assert.equal(counts['REQUIRED_SUBSCRIPTION:WARN:BOT:WARN_EVENT_WITHOUT_DELIVERY_PROOF'], 1);
