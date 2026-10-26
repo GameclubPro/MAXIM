@@ -90,7 +90,21 @@ test('AI intents preserve their own limits instead of an entire mixed FAQ', () =
   assert.match(fact('commercial-ai-sensitivity'), /чувствительность ИИ не настраивается/u);
   assert.match(fact('commercial-ai-switch-mode'), /нет пользовательского переключателя/u);
   assert.match(fact('commercial-ai-observation'), /другие фильтры.*могут.*удалять/iu);
-  assert.match(fact('commercial-ai-double-check'), /серверное подтверждение/u);
+  const aiPolicy = fact('commercial-ai-double-check');
+  const commercialUi = source(
+    'apps/miniapp/src/pages/settings/shared-commercial-settings-fields.tsx',
+  );
+  for (const label of [
+    'Реклама подтверждена',
+    'Удаление',
+    'Результат неоднозначен',
+    'Сохранение',
+  ]) {
+    assert.ok(commercialUi.includes(label), label);
+    assert.ok(aiPolicy.includes(label), label);
+  }
+  assert.match(aiPolicy, /неоднозначном результате.*сообщение остаётся/u);
+  assert.doesNotMatch(fact('commercial-ai-model'), /Подпись «Сомнения проверяет/u);
   assert.match(fact('commercial-ai-model'), /нет выбора модели/u);
   assert.match(fact('commercial-ai-evidence'), /не подтверждает проверку или удаление/u);
   assert.match(fact('commercial-sanctions'), /без.*предупреждений.*мутов.*банов/u);
