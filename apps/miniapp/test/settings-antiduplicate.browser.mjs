@@ -467,6 +467,23 @@ try {
       // Full-page bulk application must save the edited source before copying it.
       await page.getByRole('button', { name: 'Антидубль', exact: true }).click();
       await compare.selectOption('MESSAGE');
+      const savedToast = page.locator('.toast--success').last();
+      await savedToast.waitFor({ state: 'visible' });
+      const toastBox = await savedToast.boundingBox();
+      const headerBox = await panel.locator('.settings-drilldown__header').boundingBox();
+      assert.ok(toastBox && headerBox);
+      assert.ok(
+        toastBox.y >= headerBox.y + headerBox.height,
+        'Saved toast must leave the header clear',
+      );
+      const dismissBox = await savedToast
+        .getByRole('button', { name: 'Закрыть уведомление' })
+        .boundingBox();
+      assert.ok(dismissBox && dismissBox.width >= 44 && dismissBox.height >= 44);
+      await assertReachable(
+        panel.getByRole('button', { name: 'Применить к другим чатам', exact: true }),
+      );
+      await page.screenshot({ path: path.join(screenshots, `${name}-saved-toast.png`) });
       await panel.getByRole('button', { name: 'Применить к другим чатам', exact: true }).click();
       const targetSheet = page
         .getByRole('dialog', { name: 'Антидубль', exact: true })
