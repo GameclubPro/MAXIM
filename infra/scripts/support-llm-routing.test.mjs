@@ -2,10 +2,148 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   eligibleQuestion,
+  classifySupportRequest,
   knowledge,
   selectKnowledge,
   validateSupportAnswer,
 } from './support-llm-client.mjs';
+
+test('Lastik questions select the current task and retain context after a product change', () => {
+  checkCases(
+    [
+      ['Как подключить Ластика?', 'lastik-connect'],
+      ['Ластику вернули права, что нажать?', 'lastik-permissions'],
+      ['Как посмотреть прогресс Ластика?', 'lastik-progress'],
+      ['Ластик затронет закрепы?', 'lastik-exclusions'],
+      ['Ластик: результат сохранения неизвестен, нажать ещё раз?', 'lastik-save-recovery'],
+      ['Как остановить Ластика и вернуть удалённое?', 'lastik-stop-restore'],
+      ['Ластик удаляет сообщения до включения?', 'message-retention'],
+    ],
+    ([text, expected]) => {
+      assert.equal(eligibleQuestion(text), true, text);
+      assert.equal(selectKnowledge(text)[0].id, expected, text);
+    },
+  );
+  const history = [
+    { role: 'user', text: 'Как сделать отложенный пост в Публике?' },
+    { role: 'assistant', text: 'В блоке «Когда» выберите «Отложить».' },
+    { role: 'user', text: 'Теперь хочу подключить Ластика для очистки истории.' },
+    { role: 'assistant', text: 'Добавьте Ластика с правами чтения и удаления.' },
+  ];
+  const ids = selectKnowledge('Уже добавил, где посмотреть прогресс?', history).map(
+    (entry) => entry.id,
+  );
+  assert.equal(ids[0], 'lastik-progress');
+  assert.ok(!ids.some((id) => id.startsWith('publisher-')));
+});
+
+test('support entry and directory requests stay eligible without replacing moderator incidents', () => {
+  assert.equal(eligibleQuestion('Есть вопрос по вашему боту, не пойму куда писать.'), true);
+  assert.equal(selectKnowledge('Перечисли всех 8 ботов')[0].id, 'bots');
+  assert.equal(
+    classifySupportRequest('Резервный бот удалил моё сообщение, почему?').botDirectory,
+    false,
+  );
+  for (const text of [
+    'Сколько сообщений бот Ластик может удалить?',
+    'Сколько прав нужно боту Ластик для удаления старых сообщений?',
+    'Где список чатов бота Публик?',
+    'Сколько ботов можно добавить в чат?',
+  ])
+    assert.equal(classifySupportRequest(text).botDirectory, false, text);
+});
+
+test('bot profile requests and reserve selection retain catalog facts instead of link filters', () => {
+  for (const text of [
+    'Дайте нормальное имя и ссылку на Рекс2.',
+    'Максимова и Максимов 2 — разные боты? Пришлите две ссылки.',
+    'Публик и Ластик — разные помощники?',
+  ]) {
+    const ids = selectKnowledge(text).map((entry) => entry.id);
+    assert.equal(ids[0], 'bots', text);
+    assert.ok(!ids.includes('links-policy'), text);
+  }
+  const reserve = selectKnowledge(
+    'Максимов 2 в запасе. Почему резерв сам не перехватил и кто сейчас выбран?',
+  ).map((entry) => entry.id);
+  assert.ok(reserve.includes('bots'));
+  assert.ok(reserve.includes('choose-moderator'));
+  assert.equal(
+    selectKnowledge('Я админ группы с Рэксом. Хочу, чтобы ссылки больше не удалялись.')[0].id,
+    'links-policy',
+  );
+});
+
+test('Lastik task details outrank generic role words and stale product history', () => {
+  for (const [text, expected] of [
+    ['Я админ, впервые добавляю Ластика: какие права нужны?', 'lastik-connect'],
+    ['Я админ. У Ластика «Проверена», где числа и подробности очистки?', 'lastik-progress'],
+  ])
+    assert.equal(selectKnowledge(text)[0].id, expected, text);
+  const history = [
+    { role: 'user', text: 'Настраиваю Ластика на неделю.' },
+    { role: 'assistant', text: 'Откройте «Удаление старых сообщений».' },
+  ];
+  const ids = selectKnowledge(
+    'Теперь в Публике хочу удалить мой пост через шесть часов после его выхода.',
+    history,
+  ).map((entry) => entry.id);
+  assert.equal(ids[0], 'publisher-after-publish');
+  assert.ok(!ids.includes('message-retention'));
+});
+
+test('an explicit publisher task releases Lastik context without naming Publik again', () => {
+  const history = [
+    { role: 'user', text: 'Как подключить Ластика для очистки истории?' },
+    { role: 'assistant', text: 'Добавьте Ластика администратором.' },
+  ];
+  for (const [text, expected] of [
+    ['Теперь как сделать отложенный пост?', 'publisher-schedule-once'],
+    ['Теперь как подключить группу VK?', 'publisher-vk-connect'],
+    ['Теперь как включить предложку?', 'publisher-suggestions'],
+  ]) {
+    const state = classifySupportRequest(text, history);
+    assert.equal(state.publisherRequest, true, text);
+    assert.equal(state.eraserRequest, false, text);
+    assert.ok(
+      selectKnowledge(text, history).some((entry) => entry.id === expected),
+      text,
+    );
+  }
+  const switched = [
+    ...history,
+    { role: 'user', text: 'Теперь как сделать отложенный пост?' },
+    { role: 'assistant', text: 'В блоке «Когда» выберите «Отложить».' },
+  ];
+  assert.equal(classifySupportRequest('А как изменить время?', switched).publisherRequest, true);
+  assert.equal(
+    classifySupportRequest('А где проверить сохранение?', switched).eraserRequest,
+    false,
+  );
+  for (const text of ['А как изменить время?', 'Уже сделал, как остановить?'])
+    assert.ok(
+      !selectKnowledge(text, switched).some(
+        (entry) => entry.id.startsWith('lastik-') || entry.id === 'message-retention',
+      ),
+      text,
+    );
+  const sameSentence = selectKnowledge(
+    'Ластик уже подключен, теперь как сделать отложенный пост?',
+    history,
+  ).map((entry) => entry.id);
+  assert.ok(sameSentence.includes('publisher-schedule-once'));
+  assert.ok(!sameSentence.some((id) => id.startsWith('lastik-') || id === 'message-retention'));
+  for (const text of [
+    'Теперь как очистить историю чата?',
+    'Теперь как включить удаление по сроку?',
+  ]) {
+    assert.equal(classifySupportRequest(text, switched).publisherRequest, false, text);
+    assert.ok(
+      selectKnowledge(text, switched).some((entry) => entry.id === 'message-retention'),
+      text,
+    );
+  }
+});
 
 const roleClarification = [
   { role: 'user', text: 'Как выложить объявление?' },

@@ -84,21 +84,164 @@ test('network operation outcomes and audience coverage have separate facts', () 
   assert.doesNotMatch(audience, /нажмите.*Применить|ошибк.{0,20}из.за/iu);
 });
 
-test('Lastik instructions match current history coverage, periods and protected exceptions', () => {
+test('the eight public bot identities match their verified product sources', () => {
+  const catalog = knowledge.botCatalog;
+  assert.equal(catalog.length, 8);
+  for (const field of ['id', 'name', 'url'])
+    assert.equal(new Set(catalog.map((bot) => bot[field])).size, 8, field);
+  assert.deepEqual(
+    Object.fromEntries(
+      ['primary-moderator', 'reserve-moderator', 'publisher', 'eraser'].map((kind) => [
+        kind,
+        catalog.filter((bot) => bot.kind === kind).length,
+      ]),
+    ),
+    { 'primary-moderator': 3, 'reserve-moderator': 3, publisher: 1, eraser: 1 },
+  );
+  const moderators = source('apps/api/src/max/max-public-moderator.ts');
+  const aliases = new Map();
+  for (const bot of catalog) {
+    const url = new URL(bot.url);
+    assert.equal(url.origin, 'https://max.ru', bot.name);
+    assert.equal(url.search + url.hash + url.username + url.password, '', bot.name);
+    if (bot.kind.endsWith('-moderator')) {
+      assert.ok(moderators.includes(`${url.pathname.slice(1)}: { name: '${bot.name}'`), bot.name);
+      assert.equal(bot.kind === 'reserve-moderator', bot.name.endsWith(' 2'), bot.name);
+    } else {
+      const path = bot.kind === 'publisher' ? 'publik-bot.ts' : 'lastik-bot.ts';
+      assert.ok(source(`apps/miniapp/src/lib/${path}`).includes(`'${bot.url}'`), bot.name);
+    }
+    assert.ok(Array.isArray(bot.aliases) && bot.aliases.length > 0, bot.name);
+    for (const alias of [bot.name, ...bot.aliases]) {
+      assert.ok(typeof alias === 'string' && alias.trim(), bot.name);
+      assert.notEqual(alias.toLocaleLowerCase('ru'), 'майор');
+      const normalized = alias.toLocaleLowerCase('ru');
+      assert.ok(!aliases.has(normalized) || aliases.get(normalized) === bot.id, alias);
+      aliases.set(normalized, bot.id);
+    }
+  }
+  assert.match(fact('bots'), /восемь ботов/u);
+  assert.match(fact('bots'), /не означает автоматического переключения/u);
+});
+
+test('Lastik connection is separate from a moderator and limited to group chats', () => {
+  const answer = fact('lastik-connect');
+  const ui =
+    source('apps/miniapp/src/pages/settings/shared-message-retention-fields.tsx') +
+    source('apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx');
+  const access = source('apps/api/src/admin/admin-message-retention.service.ts');
+  assert.match(answer, /отдельный бот.*групповых чатах/u);
+  assert.match(answer, /администратором с правами чтения и удаления/u);
+  assert.match(answer, /Подключение проверяется при сохранении включённой очистки/u);
+  assert.match(answer, /в каждом чате/u);
+  assert.match(answer, /не видит, подключён ли Ластик/u);
+  assert.ok(answer.includes(knowledge.botCatalog.find((bot) => bot.id === 'lastik').url));
+  for (const label of ['Удаление старых сообщений', 'Открыть профиль', 'Удаление по сроку'])
+    assert.ok(answer.includes(label) && ui.includes(label), label);
+  assert.match(access, /Модуль доступен только в групповых чатах/u);
+  assert.doesNotMatch(answer, /перешлите|автоматически заменит модератора/u);
+});
+
+test('Lastik periods and history coverage remain separate from connection and recovery', () => {
   const answer = fact('message-retention');
   const ui = source('apps/miniapp/src/pages/settings/shared-message-retention-fields.tsx');
-  for (const label of ['Ластик', 'Удаление по сроку', '24 часа', '48 часов', '1 неделя']) {
+  for (const label of ['Удаление по сроку', '24 часа', '48 часов', '1 неделя']) {
     assert.ok(ui.includes(label), label);
     assert.ok(answer.includes(label), label);
   }
-  assert.match(answer, /администратором с правами чтения и удаления/u);
-  assert.match(answer, /всю доступную историю, включая сообщения до включения/u);
+  assert.match(answer, /всей доступной истории, включая сообщения до включения/u);
   assert.match(answer, /сообщения любых авторов/u);
   assert.match(answer, /редактирование его не продлевает/u);
-  assert.match(answer, /Исключения: закрепы, правила, объявления розыгрышей и их итоги/u);
+  assert.match(answer, /При изменении срока он применяется ко всей доступной истории/u);
+  assert.match(answer, /постепенно/u);
   assert.match(ui, /сообщения любых авторов из всей доступной истории/u);
   assert.doesNotMatch(answer, /историю не очищает|учёт начинается заново|ждёт низкой нагрузки/u);
-  assert.match(answer, /не видит, подключён ли Ластик/u);
+  assert.doesNotMatch(answer, /Проверить права|Проверить сохранение/u);
+});
+
+test('Lastik preserves protected messages and works in a chat without a pin', () => {
+  const answer = fact('lastik-exclusions');
+  assert.match(answer, /все закреплённые сообщения/u);
+  assert.match(answer, /правила, объявления розыгрышей и их итоги из наших модулей/u);
+  assert.match(answer, /включая администраторов/u);
+  assert.match(answer, /Отсутствие закрепа не мешает очистке/u);
+  assert.match(
+    source('apps/eraser/src/max.ts'),
+    /result\.message === null \|\| Object\.keys\(result\)\.length === 0/u,
+  );
+  assert.match(source('apps/eraser/src/runtime.ts'), /pin === candidate\.message_id/u);
+});
+
+test('Lastik progress uses the actual details labels without claiming live visibility', () => {
+  const answer = fact('lastik-progress');
+  const ui = source('apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx');
+  for (const label of [
+    'История чата',
+    'Ожидает очистки',
+    'Очищается',
+    'Проверена',
+    'Часть истории отложена',
+    'Подробности очистки',
+    'Ожидают',
+    'Больше нет в чате',
+    'Пропущены',
+    'Обновить состояние',
+    'Проверено сообщений',
+    'Включено',
+    'Ожидают удаления с',
+    'Очистка на паузе с',
+  ])
+    assert.ok(answer.includes(label) && ui.includes(label), label);
+  assert.match(answer, /не означает, что чат должен быть пустым/u);
+  assert.match(answer, /не видит ваши счётчики/u);
+  assert.match(answer, /не может подтвердить завершение/u);
+  assert.match(answer, /выбора дат для просмотра истории здесь нет/u);
+});
+
+test('Lastik reconnection and uncertain-save recovery use distinct user actions', () => {
+  const permissions = fact('lastik-permissions');
+  assert.match(permissions, /уже включённой очистки/u);
+  assert.match(permissions, /«Проверить права», если эта кнопка показана/u);
+  assert.match(permissions, /нет несохранённых изменений/u);
+  assert.match(permissions, /выбранный срок сохраняется/iu);
+  const recovery = fact('lastik-save-recovery');
+  const ui = source('apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx');
+  for (const label of [
+    'Сохранение пока не подтверждено',
+    'Проверить сохранение',
+    'Сохранено',
+    'Не удалось сохранить изменения',
+    'Повторить сохранение',
+    'Настройки уже изменились',
+    'Сохранить мой вариант',
+  ])
+    assert.ok(recovery.includes(label) && ui.includes(label), label);
+  assert.match(recovery, /Отсутствие ответа ещё не означает, что настройки не применились/u);
+  assert.match(recovery, /«Загрузить сохранённые» принимает текущие настройки/u);
+  assert.doesNotMatch(recovery, /выключите.*включите|переустановите|удалите бота/u);
+  assert.match(ui, /save\.mutateAsync\(input\)/u);
+});
+
+test('Lastik disabling and longer retention cannot restore deleted messages', () => {
+  const answer = fact('lastik-stop-restore');
+  assert.match(answer, /выключите «Удаление по сроку» и нажмите «Сохранить»/u);
+  assert.match(answer, /остальные правила модерации.*независимо/u);
+  assert.match(answer, /Уже удалённые сообщения восстановить нельзя/u);
+  assert.match(answer, /увеличение срока хранения не возвращает/u);
+  assert.match(
+    source('apps/miniapp/src/pages/settings/shared-message-retention-fields.tsx'),
+    /без возможности восстановления/u,
+  );
+  for (const id of [
+    'lastik-connect',
+    'message-retention',
+    'lastik-exclusions',
+    'lastik-progress',
+    'lastik-permissions',
+    'lastik-save-recovery',
+    'lastik-stop-restore',
+  ])
+    assert.ok(fact(id).length <= 900, `${id}: ${fact(id).length}`);
 });
 
 test('AI intents preserve their own limits instead of an entire mixed FAQ', () => {
@@ -208,7 +351,7 @@ test('member subscription help and night permissions stay separate from setup pr
   assert.match(manual, /ночное расписание продолжает действовать/u);
 });
 
-test('reviewed delivery is restricted to three bounded answers with preserved evidence', () => {
+test('reviewed delivery is restricted to bounded answers with preserved evidence', () => {
   const reviewedIds = [...entries.values()]
     .filter((entry) => entry.delivery === 'reviewed')
     .map((entry) => entry.id)

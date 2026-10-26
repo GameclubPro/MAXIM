@@ -7,6 +7,86 @@ const SOURCE_AGE_MS = 180_000;
 const RETENTION_MS = 7 * 86400_000;
 const MODEL_SHA = '3b46d1066bc91cc2d613e3bc22ce691dd77e6f0d33c9060690d24ce6de494375';
 const DIGEST = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const ANSWER_FOOTER = '✦ Ответ подготовлен ИИ-помощником «Майор Максимов»';
+
+function validateSupportBotCatalog(catalog) {
+  if (
+    !Array.isArray(catalog) ||
+    catalog.length !== 8 ||
+    new Set(catalog.map((bot) => bot?.id)).size !== 8 ||
+    new Set(catalog.map((bot) => bot?.url)).size !== 8 ||
+    catalog.some(
+      (bot) =>
+        typeof bot?.id !== 'string' ||
+        typeof bot.name !== 'string' ||
+        !bot.name.trim() ||
+        bot.name.length > 60 ||
+        typeof bot.url !== 'string' ||
+        !/^https:\/\/max\.ru\/[A-Za-z0-9_]+$/u.test(bot.url ?? '') ||
+        !Array.isArray(bot.aliases) ||
+        bot.aliases.length > 16 ||
+        bot.aliases.some(
+          (alias) => typeof alias !== 'string' || !alias.trim() || alias.length > 60,
+        ),
+    )
+  )
+    throw new Error('support_bot_catalog_refused');
+  const names = new Map();
+  for (const bot of catalog)
+    for (const name of [bot.name, ...bot.aliases]) {
+      const key = name.toLocaleLowerCase('ru');
+      if (names.has(key) && names.get(key) !== bot.url)
+        throw new Error('support_bot_catalog_ambiguous');
+      names.set(key, bot.url);
+    }
+  return catalog;
+}
+
+function renderSupportMessage(text, catalog = []) {
+  const escape = (value) =>
+    value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+  const footer = text.endsWith(`\n\n${ANSWER_FOOTER}`) ? `\n\n${ANSWER_FOOTER}` : '';
+  const body = footer ? text.slice(0, -footer.length) : text;
+  const aliases = new Map();
+  for (const bot of catalog.length ? validateSupportBotCatalog(catalog) : [])
+    for (const alias of [bot.name, ...bot.aliases]) {
+      const key = alias.toLocaleLowerCase('ru');
+      aliases.set(key, bot.url);
+    }
+  let html = '',
+    last = 0;
+  if (aliases.size) {
+    const pattern = [...aliases.keys()]
+      .sort((a, b) => b.length - a.length)
+      .map((alias) => alias.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+      .join('|');
+    const names = new RegExp(
+      `(?<![\\p{L}\\p{N}_])(?:${pattern})(?![\\p{L}\\p{N}_])(?!(?:\\s*[№#-]\\s*|\\s+)\\d)`,
+      'giu',
+    );
+    const linked = new Set();
+    // FLAG: Model/user markup is escaped. Only verified catalog names create anchors;
+    // the AI identity footer is kept separate from bot links.
+    for (const match of body.matchAll(names)) {
+      const url = aliases.get(match[0].toLocaleLowerCase('ru'));
+      html += escape(body.slice(last, match.index));
+      html +=
+        !url || linked.has(url)
+          ? escape(match[0])
+          : `<a href="${escape(url)}">${escape(match[0])}</a>`;
+      linked.add(url);
+      last = match.index + match[0].length;
+    }
+  }
+  html += escape(body.slice(last)) + escape(footer);
+  if (!text.trim() || text.length > 1800 || html.length > 4000)
+    throw new Error('support_presentation_budget');
+  return { text: html, textFormat: 'html' };
+}
 const LEASE_RENEW =
   "if redis.call('GET',KEYS[1])~=ARGV[1] then return 0 end redis.call('PEXPIRE',KEYS[1],15000) return 1";
 const LEASE_RELEASE =
@@ -124,10 +204,12 @@ class PilotHistory {
 async function deliverAnswer(runtime, fence, source, answer, { signal, sessionEnd, heartbeatAt }) {
   let attempted = false;
   try {
+    const presented = renderSupportMessage(answer, runtime.supportBotCatalog);
     const result = await runtime.client.sendMessageImmediateWithId(
       CHAT_ID,
-      answer,
+      presented.text,
       {
+        textFormat: presented.textFormat,
         messageLink: { type: 'reply', mid: source.id },
         beforeSend: async () => {
           if (
@@ -184,6 +266,9 @@ async function createRuntime() {
     cleanups.length = 0;
   };
   try {
+    const supportBotCatalog = validateSupportBotCatalog(
+      JSON.parse(process.env.SUPPORT_BOT_CATALOG ?? 'null'),
+    );
     require('reflect-metadata');
     const base = './apps/api/dist/apps/api/src/';
     const { Logger } = require('@nestjs/common');
@@ -322,6 +407,7 @@ async function createRuntime() {
           attempt: 0,
           options: { messageLink: { type: 'reply', mid: source.id } },
         }),
+      supportBotCatalog,
       close,
     };
   } catch (error) {
@@ -463,6 +549,8 @@ module.exports = {
   PilotFence,
   PilotHistory,
   deliverAnswer,
+  validateSupportBotCatalog,
+  renderSupportMessage,
   runBridge,
 };
 if (require.main === module || process.argv[1] === undefined || process.argv[1] === '-') {
