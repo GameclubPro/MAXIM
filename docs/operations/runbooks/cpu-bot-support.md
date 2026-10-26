@@ -36,6 +36,14 @@ customer histories. Update entries against current UI/code. The local installer 
 the knowledge and scripts in its immutable bundle; an update requires reinstalling that
 bundle. Knowledge digests must match across the PC and host.
 
+The reviewed public catalog contains eight bots: three main moderators (Максимов,
+Максимова, Рэкс), three reserve moderators (Максимов 2, Максимова 2, Рэкс 2), Публик
+and the separate Ластик. Main/reserve is the owner's product classification, not proof of
+a chat's current assignment or automatic failover. Canonical profile URLs come from the
+project's public bot constants. Ластик has separate facts for connection, retention periods
+and old history, exclusions, progress, permission recovery, uncertain saves, stopping and
+irreversible deletion; verify these against the current mini app before updating them.
+
 The [customer support policy](../../bot-support-policy.md) comes from the project owner,
 not MAX platform rules. This chat helps administrators with bots. A participant asking
 how to place an advertisement or why it disappeared in another group is directed to that
@@ -52,16 +60,25 @@ Exact commercial AI interface questions use short reviewed facts selected by int
 facts also cover personal subscription complaints, evidence for support incidents and ordinary
 public-channel eligibility. Mixed questions and other individual incidents use grounded inference.
 Explicit AI retrieval excludes
-instructions for unrelated settings. Administrator tasks and Publisher instructions use inference;
+instructions for unrelated settings. Most administrator tasks and Publisher instructions use inference; bounded rules-replacement and
+manual VK-import procedures use reviewed answers. Profile and reserve-selection answers use
+canonical catalog identities and the reviewed selection steps;
 profiled complaints, action requests and contextual answers require `reply`, including one known
 source. Ordinary conversation and completed acknowledgements can still be skipped.
 
 Successful answers use short paragraphs, numbered instructions and visible bullet points in
 plain text. The client also separates dense prose at sentence boundaries and adds the fixed
 footer `✦ Ответ подготовлен ИИ-помощником «Майор Максимов»` once, in its own paragraph.
-This applies to model answers and both reviewed direct-answer routes. The final text, including
+This applies to model answers and reviewed direct-answer routes. The final text, including
 the footer, must fit the bridge's 1800-character limit; oversized answers fail silently rather
 than losing steps to truncation. Skipped questions and errors receive no footer or public reply.
+The model returns plain text. At the final bridge boundary, all text is HTML-escaped and
+verified bot names become links from the eight-entry catalog. Longer aliases win, each bot
+is linked once, and the fixed footer stays unlinked. Catalog validation rejects ambiguous
+aliases and noncanonical targets at startup. Rendering must also fit 4000 HTML characters
+before source revalidation or the send fence can advance. The host receives the catalog from
+the same knowledge bytes used for the PC/host digest handshake. These eight profile URLs
+are allowed separately from retrieved official documentation URLs.
 
 Questions and context are untrusted user data. Responses are constrained JSON with
 `reply` or `skip`, bounded text and IDs from the selected knowledge. Internal paths,
