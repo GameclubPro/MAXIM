@@ -17,7 +17,7 @@ export type MaxTransport = {
   pin(chatId: string): Promise<string | null>;
   page(chatId: string, upperMs: number, lowerMs?: number): Promise<Message[]>;
   remove(chatId: string, messageId: string, before: () => Promise<void>): Promise<void>;
-  presence(chatId: string, messageId: string): Promise<'present' | 'absent' | 'unknown'>;
+  presence(chatId: string, messageId: string): Promise<'present' | 'unknown'>;
 };
 export class MaxClient implements MaxTransport {
   constructor(
@@ -145,14 +145,14 @@ export class MaxClient implements MaxTransport {
     );
     if (result.success !== true) throw new MaxError(200, 'delete_unconfirmed', true);
   }
-  async presence(chatId: string, messageId: string): Promise<'present' | 'absent' | 'unknown'> {
+  async presence(chatId: string, messageId: string): Promise<'present' | 'unknown'> {
     try {
       const result = await this.request('GET', `/messages/${encodeURIComponent(messageId)}`);
       const message = parseMessage(result, chatId) ?? parseMessage(result.message, chatId);
       return message?.id === messageId ? 'present' : 'unknown';
     } catch (error) {
-      if (error instanceof MaxError && error.status === 404 && error.code === 'message.not.found')
-        return 'absent';
+      // FLAG: MAX documents 404 as missing OR inaccessible; no error code proves absence.
+      if (error instanceof MaxError && error.status === 404) return 'unknown';
       throw error;
     }
   }
