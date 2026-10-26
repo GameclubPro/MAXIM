@@ -77,6 +77,11 @@ try {
       );
     };
     const markdown = () => page.getByTestId('markdown').textContent();
+    const applyLink = async (href) => {
+      await click('Ссылка');
+      await page.getByRole('textbox', { name: 'Адрес ссылки' }).fill(href);
+      await click('Применить');
+    };
     const pressed = async (title, active) => {
       await page
         .waitForFunction(
@@ -102,6 +107,124 @@ try {
           throw error;
         });
     };
+    await open();
+    await editor.focus();
+    await applyLink('https://example.com/article?source=publik&read=1');
+    await page.keyboard.type('Read more');
+    assert.equal(
+      await markdown(),
+      '[Read more](https://example.com/article?source=publik&read=1)',
+      `${name}: replacing the selected link placeholder retains its destination`,
+    );
+    await select(0, 9);
+    await page.keyboard.insertText('Подробнее 🔗');
+    assert.equal(
+      await markdown(),
+      '[Подробнее 🔗](https://example.com/article?source=publik&read=1)',
+    );
+    await page.keyboard.press('Control+z');
+    assert.equal(await markdown(), '[Read more](https://example.com/article?source=publik&read=1)');
+    await page.keyboard.press('Control+Shift+z');
+    assert.equal(
+      await markdown(),
+      '[Подробнее 🔗](https://example.com/article?source=publik&read=1)',
+    );
+    await page.keyboard.type('!');
+    assert.equal(
+      await markdown(),
+      '[Подробнее 🔗!](https://example.com/article?source=publik&read=1)',
+    );
+    await editor.blur();
+    assert.equal(await editor.locator('[data-max-link-boundary]').count(), 0);
+    assert.equal(await editor.innerText(), 'Подробнее 🔗!');
+    await open(await markdown());
+    assert.equal(await editor.locator('a').textContent(), 'Подробнее 🔗!');
+    await select(0, 13);
+    await applyLink('https://example.com/changed');
+    assert.equal(await markdown(), '[Подробнее 🔗!](https://example.com/changed)');
+    await open('before [old](https://old.example/) after');
+    await select(0, 16);
+    await applyLink('https://new.example/');
+    assert.equal(await markdown(), '[before old after](https://new.example/)');
+    await open(await markdown());
+    assert.equal(await editor.innerText(), 'before old after');
+    assert.equal(await editor.locator('a').count(), 1);
+    assert.equal(await editor.locator('a').getAttribute('href'), 'https://new.example/');
+    await open('[**old**](https://example.com/)');
+    await select(0, 3);
+    await page.keyboard.insertText('<Read & learn>');
+    assert.equal(await markdown(), '[**<Read & learn\\>**](https://example.com/)');
+    assert.equal(await editor.locator('a').textContent(), '<Read & learn>');
+    assert.equal(await editor.locator('a strong, a b').textContent(), '<Read & learn>');
+    await open('**before [old](https://example.com/) after**');
+    await select(7, 10);
+    await page.keyboard.insertText('new label');
+    assert.ok((await markdown()).includes('[new label](https://example.com/)'));
+    await open(await markdown());
+    assert.equal(await editor.innerText(), 'before new label after');
+    await select(7, 16);
+    await pressed('Жирный', true);
+    await open('aa[aa](https://example.com/)');
+    await select(1, 3);
+    await page.keyboard.insertText('REPLACED');
+    assert.equal(await editor.innerText(), 'aREPLACEDa');
+    await open('[old](https://example.com/)');
+    await select(0, 3);
+    await editor.evaluate((element) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/plain', 'Новое название');
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+      );
+    });
+    assert.equal(await markdown(), '[Новое название](https://example.com/)');
+    await open('[старое](https://example.com/)');
+    await select(0, 6);
+    const session = await context.newCDPSession(page);
+    await session.send('Input.imeSetComposition', {
+      text: 'новое',
+      selectionStart: 5,
+      selectionEnd: 5,
+    });
+    await session.send('Input.insertText', { text: 'новое' });
+    assert.equal(await markdown(), '[новое](https://example.com/)');
+    await session.detach();
+    await open('[old](https://example.com/)');
+    await select(3);
+    assert.equal(
+      await editor.evaluate((element) => {
+        const text = element.querySelector('a').firstChild;
+        const event = new InputEvent('beforeinput', {
+          inputType: 'insertReplacementText',
+          data: 'corrected',
+          bubbles: true,
+          cancelable: true,
+        });
+        Object.defineProperty(event, 'getTargetRanges', {
+          value: () => [
+            new StaticRange({
+              startContainer: text,
+              startOffset: 0,
+              endContainer: text,
+              endOffset: text.length,
+            }),
+          ],
+        });
+        element.dispatchEvent(event);
+        return event.defaultPrevented;
+      }),
+      true,
+    );
+    assert.equal(await markdown(), '[corrected](https://example.com/)');
+    await open('[old](https://example.com/)');
+    await select(0, 3);
+    await page.evaluate(() => {
+      const original = document.execCommand.bind(document);
+      document.execCommand = (command, ...args) =>
+        command === 'insertHTML' ? false : original(command, ...args);
+    });
+    await page.keyboard.insertText('Text survives an unavailable command');
+    assert.equal(await editor.innerText(), 'Text survives an unavailable command');
     for (const [title, marker] of [
       ['Жирный', '**'],
       ['Курсив', '_'],
