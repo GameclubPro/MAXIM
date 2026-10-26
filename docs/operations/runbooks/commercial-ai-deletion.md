@@ -86,3 +86,12 @@ and last successful classification without raw message text. Server capacity ski
 are distinct from technical failures. Redis status expires after 30 seconds;
 missing status is a coverage gap, not proof of healthy idleness. Record registered
 intents separately from confirmed MAX DELETE outcomes.
+
+The sequential `postgres-audit moderation-outcomes [--bot <configured-bot-id>]`
+catalog reports exact `COMMERCIAL_LLM_DELETE` events as `COMMERCIAL_AI`, separately
+from text rules and retained OCR history. Review its bounded plain `--explain`
+first. `DELETE_REMOTE_CONFIRMED` requires a bot DELETE event with the admitted
+boolean `moderationDeleteVerified: true` proof. Registration, model verdicts and
+similarly named codes never become confirmed AI deletes. The existing 512-event
+cap, per-bot index, metadata limits and sample-coverage caveats still apply; this
+report establishes neither classifier precision nor full eligible-input coverage.
