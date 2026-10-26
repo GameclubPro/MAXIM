@@ -26,6 +26,7 @@ import {
   supportProcessIdentity,
   supportVerifyArtifact,
   supportVerifyBundle,
+  warmSupportModel,
 } from './support-llm-workstation.mjs';
 import { SUPPORT_MODEL, supportModelArgs } from './support-llm-profile.mjs';
 
@@ -246,6 +247,147 @@ test('readiness needs loaded health, exact model alias and bounded single-slot c
     );
 });
 
+function warmupResponse(patch = {}) {
+  return {
+    model: SUPPORT_MODEL.alias,
+    choices: [{ finish_reason: 'length', message: { content: 'discard this warmup text' } }],
+    usage: { prompt_tokens: 1500, completion_tokens: 1 },
+    ...patch,
+  };
+}
+
+test('warmup posts the shared producer payload once and discards generated content', async () => {
+  const { supportWarmupPayload, SUPPORT_SYSTEM_PROMPT } = await import('./support-llm-client.mjs');
+  const signal = AbortSignal.timeout(1000),
+    calls = [];
+  const result = await warmSupportModel('private-test-key', signal, async (url, options) => {
+    calls.push({ url, options });
+    return Response.json(warmupResponse());
+  });
+  assert.equal(result, undefined);
+  assert.equal(calls.length, 1);
+  const { url, options } = calls[0];
+  assert.equal(url.href, `${SUPPORT_MODEL.endpoint}/v1/chat/completions`);
+  assert.equal(options.method, 'POST');
+  assert.equal(options.headers.Authorization, 'Bearer private-test-key');
+  assert.equal(options.headers['Content-Type'], 'application/json');
+  assert.equal(options.redirect, 'error');
+  assert.equal(options.signal, signal);
+  const payload = JSON.parse(options.body);
+  assert.deepEqual(payload, supportWarmupPayload());
+  assert.equal(payload.model, SUPPORT_MODEL.alias);
+  assert.equal(payload.messages[0].content, SUPPORT_SYSTEM_PROMPT);
+  assert.deepEqual(JSON.parse(payload.messages[1].content), {
+    verifiedKnowledge: [],
+    history: [],
+    question: '',
+    role: 'unknown',
+  });
+  assert.equal(payload.temperature, 0);
+  assert.equal(payload.max_tokens, 1);
+  assert.equal(payload.stream, false);
+  assert.equal(payload.cache_prompt, true);
+  assert.equal(payload.chat_template_kwargs.enable_thinking, false);
+  assert.equal('response_format' in payload, false);
+  await warmSupportModel('key', signal, async () =>
+    Response.json(
+      warmupResponse({
+        choices: [{ finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1500, completion_tokens: 0 },
+      }),
+    ),
+  );
+});
+
+test('warmup rejects a foreign model, incomplete finish and invalid token counts without retries', async () => {
+  for (const patch of [
+    { model: 'foreign-model' },
+    { choices: [] },
+    { choices: [{ finish_reason: 'length' }, { finish_reason: 'length' }] },
+    { choices: [{ finish_reason: null }] },
+    { choices: [{ finish_reason: 'tool_calls' }] },
+    { usage: undefined },
+    { usage: { prompt_tokens: 0, completion_tokens: 1 } },
+    { usage: { prompt_tokens: 1.5, completion_tokens: 1 } },
+    { usage: { prompt_tokens: 1500, completion_tokens: -1 } },
+    { usage: { prompt_tokens: 1500, completion_tokens: 2 } },
+    { usage: { prompt_tokens: 1500, completion_tokens: 0.5 } },
+  ]) {
+    let calls = 0;
+    await assert.rejects(
+      warmSupportModel('key', AbortSignal.timeout(1000), async () => {
+        calls++;
+        return Response.json(warmupResponse(patch));
+      }),
+      /support_model_warmup/u,
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test('warmup keeps HTTP, JSON media type and bounded response guards', async () => {
+  for (const response of [
+    Response.json({}, { status: 503 }),
+    new Response('', { status: 302, headers: { Location: 'https://example.org/' } }),
+    new Response('{}', { headers: { 'Content-Type': 'text/plain' } }),
+    new Response(null, { headers: { 'Content-Type': 'application/json' } }),
+  ])
+    await assert.rejects(
+      warmSupportModel('key', AbortSignal.timeout(1000), async () => response),
+      /support_model_http/u,
+    );
+  await assert.rejects(
+    warmSupportModel('key', AbortSignal.timeout(1000), async () =>
+      Response.json(warmupResponse({ extra: 'x'.repeat(132000) })),
+    ),
+    /support_model_output_limit/u,
+  );
+});
+
+test('startup cancellation aborts a pending warmup body and never resolves as ready', async () => {
+  const controller = new AbortController(),
+    reason = new Error('startup budget expired');
+  let entered,
+    cancelled = false,
+    calls = 0,
+    completed = false;
+  const requested = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const pending = warmSupportModel('key', controller.signal, async (_url, options) => {
+    calls++;
+    assert.equal(options.signal, controller.signal);
+    entered();
+    return new Response(
+      new ReadableStream({
+        start(stream) {
+          stream.enqueue(new TextEncoder().encode('{"model":'));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  }).then(() => {
+    completed = true;
+  });
+  await requested;
+  assert.equal(completed, false);
+  controller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason);
+  assert.equal(cancelled, true);
+  assert.equal(completed, false);
+  assert.equal(calls, 1);
+  await assert.rejects(
+    warmSupportModel('key', controller.signal, async () => {
+      calls++;
+    }),
+    (error) => error === reason,
+  );
+  assert.equal(calls, 1);
+});
+
 test('CPU-only profile isolates GPU and caps context, concurrency, threads and output', () => {
   const args = supportModelArgs('/model-root', '/private/key');
   for (const [flag, value] of [
@@ -255,7 +397,7 @@ test('CPU-only profile isolates GPU and caps context, concurrency, threads and o
     ['--port', '18085'],
     ['--threads', '8'],
     ['--threads-batch', '8'],
-    ['--cache-ram', '512'],
+    ['--cache-ram', '1024'],
     ['--checkpoint-min-step', '512'],
     ['--parallel', '1'],
     ['--ctx-size', '4096'],

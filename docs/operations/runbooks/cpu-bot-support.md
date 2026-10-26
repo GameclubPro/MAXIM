@@ -13,7 +13,7 @@ The existing GPU commercial classifier and server moderation remain separate.
   into a separate immutable bundle.
 - CPU execution uses `--device none`, zero GPU layers, eight inference threads, one
   slot, 4096 context tokens and at most 384 output tokens. Prompt-cache RAM is capped at
-  512 MiB, with checkpoint spacing of 512 tokens for the hybrid model. Thinking and context
+  1024 MiB, with minimum checkpoint spacing of 512 tokens for the hybrid model. Thinking and context
   shifting are disabled. Only `127.0.0.1:18085` is exposed, with a private random API key.
 - The dense 27B model has a different latency profile from the previous 35B-A3B MoE.
   Check actual tokenization, completed structured answers and the existing 120-second request
@@ -169,3 +169,13 @@ worker or exactly owned model child. Ordinary runtime commands still require the
 identity. Keep the PC profile and the injected host bridge's pinned model SHA synchronized through
 the usual exact-source CI and guarded tooling sync. Knowledge, routing, formatting and canonical
 bot links are separate from model weights and travel in the new bundle; this is not weight training.
+
+Keep the system policy constant across requests. Selected reviewed facts are serialized by the
+application into the user message's `verifiedKnowledge` field, alongside the separate question,
+history and contextual role. The system policy identifies that field as the application's facts;
+the question and history remain untrusted data and cannot replace it. This preserves a reusable
+policy checkpoint before the changing facts at the user-message boundary of the hybrid runtime.
+The bounded one-token local warmup initializes this checkpoint before model readiness, including
+after a restart, within the existing 180-second startup deadline. Warmup output is discarded and
+never sent to MAX. Check actual cache reuse and completed answers; a configured cache alone does
+not establish a performance improvement.

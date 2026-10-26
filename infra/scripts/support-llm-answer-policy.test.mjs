@@ -129,7 +129,7 @@ test('one context decision controls eligibility, role and the required-reply sch
       /support_response_required/u,
     );
     assert.ok(request, 'mixed requests must reach inference');
-    const facts = JSON.parse(request.messages[0].content.split('\n').at(-1));
+    const facts = JSON.parse(request.messages[1].content).verifiedKnowledge;
     for (const id of expectedSources)
       assert.ok(
         facts.some((fact) => fact.id === id),

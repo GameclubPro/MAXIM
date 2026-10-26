@@ -43,7 +43,7 @@ export function supportModelArgs(root, keyFile) {
     '--ubatch-size',
     '128',
     '--cache-ram',
-    '512',
+    '1024',
     '--checkpoint-min-step',
     '512',
     '--chat-template-kwargs',

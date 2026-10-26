@@ -193,9 +193,14 @@ export async function supportPreviousModelArgs(installed, root, keyFile) {
   return [join(installed.bundle, 'runtime/llama-b11804/llama-server'), ...args];
 }
 
-async function modelJson(path, key, signal, fetchImpl) {
+async function modelJson(path, key, signal, fetchImpl, payload) {
+  signal?.throwIfAborted();
   const response = await fetchImpl(new URL(path, SUPPORT_MODEL.endpoint), {
-    headers: { Authorization: `Bearer ${key}` },
+    headers: {
+      Authorization: `Bearer ${key}`,
+      ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    ...(payload === undefined ? {} : { method: 'POST', body: JSON.stringify(payload) }),
     signal,
     redirect: 'error',
   });
@@ -209,10 +214,16 @@ async function modelJson(path, key, signal, fetchImpl) {
   }
   const reader = response.body.getReader(),
     chunks = [];
+  const abortRead = () => {
+    void reader.cancel(signal.reason).catch(() => undefined);
+  };
+  signal?.addEventListener('abort', abortRead, { once: true });
   let length = 0;
   try {
+    signal?.throwIfAborted();
     for (;;) {
       const item = await reader.read();
+      signal?.throwIfAborted();
       if (item.done) break;
       length += item.value.byteLength;
       if (length > 128 * 1024) throw new Error('support_model_output_limit');
@@ -220,6 +231,7 @@ async function modelJson(path, key, signal, fetchImpl) {
     }
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
   } finally {
+    signal?.removeEventListener('abort', abortRead);
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
@@ -244,6 +256,31 @@ export async function attestSupportModel(key, signal, fetchImpl = fetch) {
       props.default_generation_settings.n_ctx !== SUPPORT_MODEL.context)
   )
     throw new Error('support_model_profile');
+}
+
+export async function warmSupportModel(key, signal, fetchImpl = fetch) {
+  // FLAG: The supervisor verifies its immutable bundle before importing this warmup producer.
+  // Warmup content is discarded; completion success alone never becomes a public answer.
+  const { supportWarmupPayload } = await import('./support-llm-client.mjs');
+  const result = await modelJson(
+    '/v1/chat/completions',
+    key,
+    signal,
+    fetchImpl,
+    supportWarmupPayload(),
+  );
+  if (
+    result?.model !== SUPPORT_MODEL.alias ||
+    !Array.isArray(result.choices) ||
+    result.choices.length !== 1 ||
+    !['length', 'stop'].includes(result.choices[0]?.finish_reason) ||
+    !Number.isSafeInteger(result.usage?.prompt_tokens) ||
+    result.usage.prompt_tokens <= 0 ||
+    !Number.isSafeInteger(result.usage?.completion_tokens) ||
+    result.usage.completion_tokens < 0 ||
+    result.usage.completion_tokens > 1
+  )
+    throw new Error('support_model_warmup');
 }
 
 // FLAG: The child retains parent-death containment after nice execs the CPU-only model binary.
@@ -641,14 +678,22 @@ export function createSupportController({
             apiKey,
             AbortSignal.any([abort.signal, AbortSignal.timeout(1500)]),
           );
-          phase = 'ready';
-          lastSuccessAt = new Date().toISOString();
-          publish();
           break;
         } catch {
           await pause(500, undefined, { signal: abort.signal });
         }
       }
+      abort.signal.throwIfAborted();
+      // FLAG: One warmup shares the original startup deadline and must succeed before ready.
+      phase = 'warming';
+      publish();
+      await warmSupportModel(apiKey, abort.signal);
+      abort.signal.throwIfAborted();
+      if (!modelOwned({ modelPid: model.pid, modelStartTicks }, installed))
+        throw new Error('support_model_exit');
+      phase = 'ready';
+      lastSuccessAt = new Date().toISOString();
+      publish();
       clearTimeout(startupTimer);
       let healthFailures = 0;
       while (!abort.signal.aborted) {
