@@ -45,6 +45,16 @@ export function getPreviewMessageRetention(
   if (!chats.has(chatId)) {
     const now = readPreviewClock(state.clock).getTime();
     if (state.retentionScenario === 'unavailable') current.status = 'unavailable';
+    if (state.retentionScenario.startsWith('connection-')) {
+      current.connectionStatus = 'missing';
+      if (['connection-pending', 'connection-expired'].includes(state.retentionScenario))
+        current.connectionRequest = {
+          status: state.retentionScenario === 'connection-pending' ? 'pending' : 'expired',
+          expiresAt: new Date(
+            now + (state.retentionScenario === 'connection-pending' ? 3_600_000 : -1000),
+          ).toISOString(),
+        };
+    }
     if (['large', 'paused'].includes(state.retentionScenario))
       Object.assign(current, {
         enabled: true,
@@ -120,13 +130,20 @@ export const handlePreviewMessageRetention: PreviewRequestHandler = async ({
   const now = readPreviewClock(state.clock).toISOString();
   const next: MessageRetentionState = {
     ...current,
-    enabled: input.enabled,
+    enabled: input.connectWhenReady ? false : input.enabled,
     hours: input.hours,
     revision: current.revision + 1,
-    status: input.enabled ? 'running' : 'off',
-    enabledAt: input.enabled && !current.enabled ? now : current.enabledAt,
+    status: input.enabled && !input.connectWhenReady ? 'running' : 'off',
+    enabledAt:
+      input.enabled && !input.connectWhenReady && !current.enabled ? now : current.enabledAt,
     captureAfter: null,
-    historyStatus: input.enabled ? 'running' : 'off',
+    historyStatus: input.enabled && !input.connectWhenReady ? 'running' : 'off',
+    connectionRequest: input.connectWhenReady
+      ? {
+          status: 'pending',
+          expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
+        }
+      : null,
     ...(input.operationId ? { lastOperationId: input.operationId } : {}),
   };
   chats.set(chatId, next);

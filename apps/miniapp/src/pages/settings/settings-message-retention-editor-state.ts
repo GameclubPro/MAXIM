@@ -18,8 +18,10 @@ export function retentionDraftReducer(
   if (
     draft &&
     action.state &&
-    draft.enabled === action.state.enabled &&
-    draft.hours === action.state.hours
+    ((!draft.connectWhenReady &&
+      draft.enabled === action.state.enabled &&
+      draft.hours === action.state.hours) ||
+      isRetentionOperationConfirmed(action.state, draft))
   )
     return { chatId: action.chatId, draft: null };
   return current;
@@ -44,7 +46,8 @@ export function isRetentionOperationConfirmed(
   return Boolean(
     input.operationId &&
     state.lastOperationId === input.operationId &&
-    state.enabled === input.enabled &&
+    (state.enabled === input.enabled ||
+      (input.connectWhenReady === true && Boolean(state.connectionRequest))) &&
     state.hours === input.hours,
   );
 }
@@ -67,7 +70,12 @@ export function retentionEditorState(
   draft: UpdateMessageRetention | null,
 ) {
   if (!state) return { current: null, dirty: false, conflict: false };
-  const dirty = Boolean(draft && (draft.enabled !== state.enabled || draft.hours !== state.hours));
+  const dirty = Boolean(
+    draft &&
+    (draft.connectWhenReady === true ||
+      draft.enabled !== state.enabled ||
+      draft.hours !== state.hours),
+  );
   const current = dirty
     ? draft!
     : { enabled: state.enabled, hours: state.hours, expectedRevision: state.revision };

@@ -52,6 +52,8 @@ export class AdminMessageRetentionService {
     const request = parsed.data;
     if (await this.useEraser(chatId))
       return this.requireEraser().update(chatId, user.userId, request, networkWrite);
+    if (request.connectWhenReady)
+      throw new ServiceUnavailableException('Подключение Ластика временно недоступно.');
     if (request.hours === 168)
       throw new ServiceUnavailableException('Подключите Ластика, чтобы выбрать срок 1 неделя.');
     if (request.enabled) {

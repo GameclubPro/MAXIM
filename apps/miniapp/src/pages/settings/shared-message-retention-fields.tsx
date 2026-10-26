@@ -13,7 +13,10 @@ export type SharedMessageRetentionFieldsProps = {
   enableDisabled?: boolean;
   scope?: 'chat' | 'network';
   connectionStatus?: MessageRetentionState['connectionStatus'];
-  onReconnect?: () => void;
+  connectionRequest?: MessageRetentionState['connectionRequest'];
+  connectionActionsDisabled?: boolean;
+  onConnect?: () => void;
+  onCancelConnection?: () => void;
   onEnabledChange: (enabled: boolean) => void;
   onHoursChange: (hours: 24 | 48 | 168) => void;
 };
@@ -23,22 +26,21 @@ const connectionCopy = {
   missing: {
     title: 'Подключите «Ластика»',
     description:
-      'Откройте профиль бота и добавьте его в нужный чат администратором с правами чтения и удаления. Затем вернитесь, включите удаление и сохраните настройки.',
+      'Добавьте «Ластика» в чат администратором с правами чтения всех сообщений и удаления.',
   },
   no_access: {
     title: '«Ластику» нужны права',
-    description:
-      'Назначьте бота администратором с правами чтения и удаления. Затем вернитесь, включите удаление и сохраните настройки.',
+    description: 'Назначьте «Ластика» администратором с правами чтения всех сообщений и удаления.',
   },
   unknown: {
     title: 'Бот «Ластик»',
     description:
-      'Добавьте бота в чат администратором с правами чтения и удаления. Подключение проверим при сохранении включённой очистки.',
+      'Добавьте «Ластика» в чат администратором с правами чтения всех сообщений и удаления.',
   },
   network: {
     title: '«Ластик» для чатов сетки',
     description:
-      'Для очистки бот должен быть администратором каждого чата с правами чтения и удаления сообщений. При первом подключении откройте профиль бота и добавьте его в нужные чаты.',
+      'Добавьте «Ластика» в каждый нужный чат администратором с правами чтения всех сообщений и удаления.',
   },
 };
 
@@ -49,7 +51,10 @@ export function SharedMessageRetentionFields({
   enableDisabled,
   scope = 'chat',
   connectionStatus,
-  onReconnect,
+  connectionRequest,
+  connectionActionsDisabled,
+  onConnect,
+  onCancelConnection,
   onEnabledChange,
   onHoursChange,
 }: SharedMessageRetentionFieldsProps) {
@@ -57,47 +62,22 @@ export function SharedMessageRetentionFields({
   useEffect(() => {
     if (toggle.current) toggle.current.indeterminate = enabled.kind === 'mixed';
   }, [enabled.kind]);
-  const connectionState = scope === 'network' ? 'network' : (connectionStatus ?? 'unknown');
+  const requestStatus = scope === 'chat' ? connectionRequest?.status : undefined;
+  const pending = requestStatus === 'pending';
+  const connectionState =
+    requestStatus ?? (scope === 'network' ? 'network' : (connectionStatus ?? 'unknown'));
   const connected = connectionState === 'connected';
-  const copy = connectionCopy[connectionState];
-  const description = onReconnect
-    ? connectionState === 'missing'
-      ? 'Добавьте бота в чат администратором с правами чтения и удаления. Затем нажмите «Проверить права».'
-      : 'Назначьте бота администратором с правами чтения и удаления. Затем нажмите «Проверить права».'
-    : copy.description;
+  const copy = connectionCopy[scope === 'network' ? 'network' : (connectionStatus ?? 'unknown')];
+  const title = pending
+    ? 'Ожидаем подключения «Ластика»'
+    : requestStatus === 'expired'
+      ? 'Время ожидания истекло'
+      : requestStatus === 'cancelled'
+        ? 'Подключение отменено'
+        : copy.title;
+  const description = copy.description;
   return (
     <>
-      <div className="message-retention-bot" data-connection-state={connectionState}>
-        <span className="message-retention-bot__icon" aria-hidden>
-          <AppIcon icon={connected ? 'Check' : 'Trash'} />
-        </span>
-        <div className="message-retention-bot__copy" aria-live="polite">
-          <strong>{copy.title}</strong>
-          {description ? <p>{description}</p> : null}
-        </div>
-        <div className="message-retention-bot__actions">
-          <a
-            className={`button ${connected || onReconnect ? 'button--ghost' : 'button--accent'} message-retention-bot__link`}
-            href={LASTIK_BOT_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={openLastikBot}
-          >
-            {connected ? 'Профиль бота' : 'Открыть профиль «Ластика»'}
-            {connected ? null : <AppIcon icon="NavArrowRight" aria-hidden />}
-          </a>
-          {onReconnect ? (
-            <button
-              type="button"
-              className="button button--accent message-retention-bot__link"
-              disabled={disabled}
-              onClick={onReconnect}
-            >
-              Проверить права
-            </button>
-          ) : null}
-        </div>
-      </div>
       <div className="message-retention-controls">
         <div className="message-retention-settings__row">
           <div className="message-retention-settings__row-copy">
@@ -136,6 +116,64 @@ export function SharedMessageRetentionFields({
             onChange={(value) => onHoursChange(value === '24' ? 24 : value === '168' ? 168 : 48)}
           />
         </fieldset>
+      </div>
+      <div className="message-retention-bot" data-connection-state={connectionState}>
+        <span className="message-retention-bot__icon" aria-hidden>
+          <AppIcon icon={connected ? 'Check' : 'Trash'} />
+        </span>
+        <div className="message-retention-bot__copy" aria-live="polite">
+          <strong>{title}</strong>
+          {description ? <p>{description}</p> : null}
+          {pending && connectionRequest ? (
+            <p>
+              Проверяем права до{' '}
+              <time dateTime={connectionRequest.expiresAt}>
+                {new Date(connectionRequest.expiresAt).toLocaleTimeString('ru-RU', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </time>
+              . Очистка включится автоматически — возвращаться сюда не нужно.
+            </p>
+          ) : requestStatus ? (
+            <p>Запустите подключение снова, когда бот будет готов.</p>
+          ) : null}
+        </div>
+        <div className="message-retention-bot__actions">
+          {onConnect && !connected && !pending ? (
+            <button
+              type="button"
+              className="button button--accent message-retention-bot__link"
+              disabled={connectionActionsDisabled}
+              onClick={onConnect}
+            >
+              {requestStatus ? 'Проверить и включить' : 'Подключить и включить'}
+              <AppIcon icon="NavArrowRight" aria-hidden />
+            </button>
+          ) : null}
+          {!onConnect || connected || pending ? (
+            <a
+              className={`button ${connected ? 'button--ghost' : 'button--accent'} message-retention-bot__link`}
+              href={LASTIK_BOT_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={openLastikBot}
+            >
+              {connected ? 'Профиль бота' : 'Открыть Ластика'}
+              {connected ? null : <AppIcon icon="NavArrowRight" aria-hidden />}
+            </a>
+          ) : null}
+          {pending && onCancelConnection ? (
+            <button
+              type="button"
+              className="button button--ghost message-retention-bot__link"
+              disabled={connectionActionsDisabled}
+              onClick={onCancelConnection}
+            >
+              Отменить подключение
+            </button>
+          ) : null}
+        </div>
       </div>
       <p className="message-retention-policy">
         Сообщения старше выбранного срока удаляются без возможности восстановления.

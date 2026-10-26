@@ -2449,11 +2449,22 @@ maxim_topology_require_commercial_ai_delete_guard() {
 maxim_topology_require_eraser_bridge() {
   local source_sha="$1"
   local marker=/var/lib/maxim-deploy/eraser-reader-version
-  [[ -e "$marker" || -L "$marker" || -s /var/lib/maxim-secrets/eraser.env ]] || return 0
+  [[ -e "$marker" || -L "$marker" || -s /var/lib/maxim-secrets/eraser.env || \
+     -e /var/lib/maxim-deploy/eraser-connection-request-version || -L /var/lib/maxim-deploy/eraser-connection-request-version ]] || return 0
   if [[ -e "$marker" || -L "$marker" ]]; then
     if [[ ! -f "$marker" || -L "$marker" || "$(stat -c '%s' "$marker")" != 2 || "$(cat "$marker")" != 1 ]]; then
       echo 'Installed Lastik ownership reader floor is unknown.' >&2; return 1
     fi
   fi
-  node infra/scripts/assert-eraser-source.mjs "$source_sha"
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" || return
+  maxim_topology_require_eraser_connection_requests "$source_sha" all
+}
+
+# FLAG: A disabled flag or empty pending queue never lowers the installed connection reader floor.
+maxim_topology_require_eraser_connection_requests() {
+  local source_sha="$1" component="${2:-all}"
+  local marker=/var/lib/maxim-deploy/eraser-connection-request-version
+  [[ -e "$marker" || -L "$marker" ]] || return 0
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" --validate-connection-request-floor || return
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" --connection-requests "$component"
 }

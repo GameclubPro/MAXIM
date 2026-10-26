@@ -81,6 +81,8 @@ export function updateInput(value: Record<string, unknown>): UpdatePolicy {
     typeof value.enabled !== 'boolean' ||
     !hours(value.hours) ||
     !integer(value.expectedRevision) ||
+    (value.connectWhenReady !== undefined && typeof value.connectWhenReady !== 'boolean') ||
+    (value.connectWhenReady === true && value.enabled !== true) ||
     typeof value.operationId !== 'string' ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       value.operationId,
@@ -95,6 +97,7 @@ export function updateInput(value: Record<string, unknown>): UpdatePolicy {
     expectedRevision: value.expectedRevision,
     operationId: value.operationId,
     actorUserId: value.actorUserId,
+    ...(value.connectWhenReady === true ? { connectWhenReady: true } : {}),
   };
 }
 export function createHttpServer(
@@ -238,7 +241,7 @@ export function createHttpServer(
           const input = updateInput(await body(request));
           const cached = await store.operation(chatId, input);
           if (cached) return send(response, 200, cached);
-          if (input.enabled) {
+          if (input.enabled && !input.connectWhenReady) {
             if (!config.enabled) fail(503, 'ERASER_UNAVAILABLE', 'Ластик пока недоступен.');
             try {
               await max.rights(chatId);

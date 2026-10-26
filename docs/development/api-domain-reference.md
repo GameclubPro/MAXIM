@@ -208,6 +208,13 @@ communities require an explicit designation before agent-initiated test mutation
   authorize settings and durably deliver protection/ownership state; they never receive its bot
   token or execute its jobs. Preserve `eraser_chat_bindings` across flag changes and rollback;
   see [Eraser rollout](../operations/runbooks/eraser-rollout.md).
+- Deferred connection requires an explicit revision-checked `connectWhenReady` operation from
+  the chat miniapp. Its accepted receipt keeps cleanup disabled while Lastik checks exact bot
+  capabilities and the requesting human's admin rights for one fixed hour. Retries never renew
+  that deadline; ordinary settings writes cancel the request. Expiry requires a fresh explicit
+  operation, and passive lifecycle events never create activation authority. Status stays in
+  the miniapp; connection checks never send chat messages. Keep compatible pending-request
+  readers in API, Lastik and both rollback paths.
 
 - Chat context v4 separates large configured media into SHA256-bound, expiring cache blobs. A missing/corrupt blob reloads the complete SQL context, never omits an image. Keep the compact body bound to the shared context revision on reads and all mutations, invalidate v3 on v4 mutations, and preserve access-epoch/generation fences across rollback/re-upgrade. Run native chat-context media/cache tests plus managed-access and membership full-path regressions; local media strings have their own bounded budget, while decoded settings retain the full existing context budget.
 

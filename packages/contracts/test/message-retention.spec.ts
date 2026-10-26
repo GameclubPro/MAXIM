@@ -20,6 +20,20 @@ describe('message retention contracts', () => {
       updateMessageRetentionSchema.safeParse({ ...request, operationId: 'retry' }).success,
     ).toBe(false);
   });
+  it('requires explicit enable consent for deferred connection and leaves old requests immediate', () => {
+    const input = { enabled: true, hours: 48, expectedRevision: 0 };
+    expect(updateMessageRetentionSchema.parse(input).connectWhenReady).toBeUndefined();
+    expect(
+      updateMessageRetentionSchema.parse({ ...input, connectWhenReady: true }).connectWhenReady,
+    ).toBe(true);
+    expect(
+      updateMessageRetentionSchema.safeParse({
+        ...input,
+        enabled: false,
+        connectWhenReady: true,
+      }).success,
+    ).toBe(false);
+  });
   it.each([
     { enabled: true, hours: 12, expectedRevision: 0 },
     { enabled: true, hours: '24', expectedRevision: 0 },
@@ -47,5 +61,21 @@ describe('message retention contracts', () => {
     expect(messageRetentionStateSchema.safeParse({ ...state, pendingCount: -1 }).success).toBe(
       false,
     );
+    for (const status of ['pending', 'expired', 'cancelled']) {
+      const connectionRequest = { status, expiresAt: '2026-10-26T16:00:00.000Z' };
+      expect(messageRetentionStateSchema.parse({ ...state, connectionRequest })).toMatchObject({
+        enabled: false,
+        connectionRequest,
+      });
+    }
+    expect(messageRetentionStateSchema.parse({ ...state, connectionRequest: null })).toMatchObject({
+      connectionRequest: null,
+    });
+    expect(
+      messageRetentionStateSchema.safeParse({
+        ...state,
+        connectionRequest: { status: 'pending', expiresAt: 'later' },
+      }).success,
+    ).toBe(false);
   });
 });

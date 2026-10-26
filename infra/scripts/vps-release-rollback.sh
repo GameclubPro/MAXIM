@@ -300,6 +300,11 @@ if [[ -n "$RECOVERY_BASE_MANIFEST" && "$RECOVERY_REQUIRES_API_FENCE" -eq 1 && \
   exit 1
 fi
 
+if [[ "$SELECT_ERASER" -eq 1 ]]; then
+  # FLAG: Older Lastik writers must not leave a cancelled request eligible after re-upgrade.
+  maxim_topology_require_eraser_connection_requests "${COMPONENT_SOURCE_SHA[eraser]}" eraser
+fi
+
 if [[ "$SELECT_API" -eq 1 ]]; then
   require_command git
   API_SOURCE_SHA="${COMPONENT_SOURCE_SHA[api-shared]}"

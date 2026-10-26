@@ -57,6 +57,19 @@ describe('chat retention settings boundary', () => {
     ).rejects.toMatchObject({ status: 503 });
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
+  it('never sends a background connection request to the legacy executor', async () => {
+    const { service, prisma, capabilities } = setup();
+    await expect(
+      service.update('-1', user, {
+        enabled: true,
+        hours: 48,
+        expectedRevision: 0,
+        connectWhenReady: true,
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(capabilities.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
+  });
   it('routes Lastik settings independently from moderator deletion capabilities and availability', async () => {
     const { prisma, access, capabilities, store } = setup();
     const remote = {

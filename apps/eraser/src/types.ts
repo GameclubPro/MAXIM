@@ -61,6 +61,19 @@ export type UpdatePolicy = {
   expectedRevision: number;
   operationId: string;
   actorUserId: string;
+  connectWhenReady?: boolean;
+};
+export type ConnectionRequest = {
+  chat_id: string;
+  operation_id: string;
+  actor_user_id: string;
+  policy_revision: number;
+  status: 'pending' | 'expired' | 'cancelled' | 'activated';
+  expires_at: Date;
+  next_attempt_at: Date;
+  lease_token: string | null;
+  lease_until: Date | null;
+  last_error: string | null;
 };
 export class ServiceError extends Error {
   constructor(

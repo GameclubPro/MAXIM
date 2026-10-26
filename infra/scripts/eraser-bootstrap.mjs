@@ -14,6 +14,10 @@ import {
 } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  assertEraserConnectionRequestSource,
+  installEraserConnectionRequestFloor,
+} from './assert-eraser-source.mjs';
 
 export function parseEraserBootstrap(raw) {
   if (Buffer.byteLength(raw) > 4096) throw new Error('Lastik bootstrap request is too large.');
@@ -81,7 +85,7 @@ function atomicPrivate(path, value) {
 
 export function installEraserSecrets(
   request,
-  { secretsDir, envPath, sourceSha, readerMarkerPath },
+  { secretsDir, envPath, sourceSha, readerMarkerPath, connectionReaderMarkerPath },
 ) {
   if (request.sourceSha !== sourceSha)
     throw new Error('Lastik bootstrap source does not match the synchronized checkout.');
@@ -129,6 +133,7 @@ export function installEraserSecrets(
         throw new Error('Lastik ownership reader marker is invalid.');
     } else writeFileSync(readerMarkerPath, '1\n', { flag: 'wx', mode: 0o600 });
   }
+  if (connectionReaderMarkerPath) installEraserConnectionRequestFloor(connectionReaderMarkerPath);
   // FLAG: Secrets are never emitted; a partial installation is preserved for reviewed recovery.
   writeFileSync(passwordPath, `${password}\n`, { flag: 'wx', mode: 0o600 });
   writeFileSync(serviceEnv, service, { flag: 'wx', mode: 0o600 });
@@ -141,11 +146,15 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
       parseEraserBootstrap(readPrivate(process.argv[3]));
     } else if (process.argv[2] === 'install') {
       const request = parseEraserBootstrap(readFileSync(0).toString('utf8'));
+      if (request.sourceSha !== process.argv[3])
+        throw new Error('Lastik bootstrap source does not match the synchronized checkout.');
+      assertEraserConnectionRequestSource(process.argv[3]);
       installEraserSecrets(request, {
         secretsDir: '/var/lib/maxim-secrets',
         envPath: resolve('.env'),
         sourceSha: process.argv[3],
         readerMarkerPath: '/var/lib/maxim-deploy/eraser-reader-version',
+        connectionReaderMarkerPath: '/var/lib/maxim-deploy/eraser-connection-request-version',
       });
       process.stdout.write(
         'Lastik secrets and bridge configuration installed; chat policies remain off.\n',

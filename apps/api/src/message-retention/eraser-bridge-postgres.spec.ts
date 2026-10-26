@@ -177,6 +177,59 @@ native('independent Lastik bridge with PostgreSQL', () => {
       expect(intent.deleteDispatchStartedAt).not.toBeNull();
     }));
 
+  it('durably forwards explicit connection intent only after protection sync and preserves its one-hour receipt on retry', async () =>
+    isolated(async (tx, service, chatId) => {
+      const operationId = randomUUID();
+      const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+      const pending = {
+        ...state(operationId, false),
+        connectionRequest: { status: 'pending' as const, expiresAt },
+      };
+      const policyWrites: unknown[] = [];
+      jest.spyOn(service, 'request').mockImplementation(async (path, method, body) => {
+        if (!path.endsWith('/policy')) return {};
+        if (method === 'PUT') {
+          policyWrites.push(body);
+          return pending;
+        }
+        return { ...state(operationId, false), revision: 0 };
+      });
+      const input = {
+        enabled: true,
+        hours: 168 as const,
+        expectedRevision: 0,
+        operationId,
+        connectWhenReady: true,
+      };
+      await expect(service.update(chatId, '123', input)).rejects.toMatchObject({ status: 503 });
+      expect(policyWrites).toHaveLength(0);
+      for (let page = 0; page < 8; page++) await service.syncChat(chatId);
+      let ready = false;
+      for (let page = 0; page < 200 && !ready; page++) {
+        await service.syncGlobalHolds();
+        const [row] = await tx.$queryRaw<{ ready: boolean }[]>`
+          SELECT bootstrap_complete AND NOT EXISTS(SELECT 1 FROM eraser_held_authors WHERE delivered = FALSE LIMIT 1) AS ready
+          FROM eraser_global_hold_state WHERE id = 1`;
+        ready = row?.ready === true;
+      }
+      expect(ready).toBe(true);
+      await expect(service.update(chatId, '123', input)).resolves.toMatchObject(pending);
+      expect(policyWrites).toEqual([{ ...input, actorUserId: '123' }]);
+      await expect(service.update(chatId, '123', input)).resolves.toMatchObject(pending);
+      expect(policyWrites).toHaveLength(1);
+      await expect(
+        service.update(chatId, '123', { ...input, connectWhenReady: false }),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(policyWrites).toHaveLength(1);
+      const [saved] = await tx.$queryRaw<
+        { request: unknown; result: unknown; confirmed: boolean }[]
+      >`SELECT request, result, confirmed_at IS NOT NULL AS confirmed FROM eraser_control_operations WHERE id = ${operationId}`;
+      expect(saved).toMatchObject({ request: input, result: pending, confirmed: true });
+      expect(
+        (await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } })).enabled,
+      ).toBe(false);
+    }));
+
   it('captures replaced/deleted protected IDs transactionally and keeps source uncertainty below the watermark', async () =>
     isolated(async (tx, service, chatId) => {
       const operationId = randomUUID();
