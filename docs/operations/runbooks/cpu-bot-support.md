@@ -70,6 +70,11 @@ canonical catalog identities and the reviewed selection steps;
 profiled complaints, action requests and contextual answers require `reply`, including one known
 source. Ordinary conversation and completed acknowledgements can still be skipped.
 
+An interrupted publication send retrieves result-verification instructions before creation steps;
+an explicit request to switch to a named moderator retrieves both the selection procedure and
+the bot catalog. These requests require an explanation, never an executed action or an assumed
+successful result. Ordinary recurring schedules and profile requests retain their own routes.
+
 Successful answers use short paragraphs, numbered instructions and visible bullet points in
 plain text. The client also separates dense prose at sentence boundaries and adds the fixed
 footer `✦ Ответ подготовлен ИИ-помощником «Майор Максимов»` once, in its own paragraph.

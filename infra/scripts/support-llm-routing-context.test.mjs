@@ -441,6 +441,100 @@ test('selected dates and unknown publication results have separate procedures', 
   assert.ok(!ids(sent).includes('chat-rules'));
 });
 
+for (const [text, history] of [
+  [
+    'Связь оборвалась сразу после «Опубликовать». В ленте пока не нашёл пост. Сделать второй такой же и отправить?',
+    [
+      user('Работаю в Публике, отправлял публикацию в один свой канал.'),
+      assistant('На каком шаге пропал результат?'),
+    ],
+  ],
+  ['В Публике нажала «Отправить», интернет пропал. Пост в канале не вижу. Отправить ещё раз?', []],
+  [
+    'Публик: после отправки пропало соединение. Публикация не появилась, сделать такой же пост заново?',
+    [],
+  ],
+  ['В Публике отправил пост, но сеть отвалилась. В ленте его нет. Можно повторить?', []],
+])
+  test(`interrupted publication sends select result verification: ${text}`, () => {
+    const route = needsReply(text, history);
+    const selected = ids(text, history);
+    assert.equal(route.publisherRequest, true);
+    assert.equal(route.eraserRequest, false);
+    assert.equal(selected[0], 'publisher-delivery-status');
+    assert.ok(!selected.includes('publisher-schedule-recurrence'));
+    assert.ok(!selected.some((id) => id.startsWith('lastik-')));
+  });
+
+test('result verification does not replace a planned recurrence or Lastik save recovery', () => {
+  for (const text of [
+    'В Публике хочу отправлять такой же пост повторно каждый понедельник. Как настроить?',
+    'Публик: редактировал расписание, связь оборвалась. Как запланировать повтор поста каждый день?',
+  ]) {
+    assert.equal(ids(text)[0], 'publisher-schedule-recurrence', text);
+    assert.ok(!ids(text).includes('publisher-delivery-status'), text);
+  }
+  const lastik = 'Ластик: результат сохранения неизвестен, нажать ещё раз?';
+  assert.equal(ids(lastik)[0], 'lastik-save-recovery');
+  assert.ok(!ids(lastik).includes('publisher-delivery-status'));
+});
+
+test('a resolved interrupted send releases the next recurring publication task', () => {
+  const history = [
+    user('В Публике отправил отложенный пост, но сеть отвалилась. В канале поста нет.'),
+    assistant('Проверьте результат.'),
+  ];
+  const text = 'Пост уже появился. Теперь хочу отправлять его каждый день. Как настроить?';
+  needsReply(text, history);
+  assert.equal(ids(text, history)[0], 'publisher-schedule-recurrence');
+});
+
+for (const text of [
+  'Пост уже появился. Теперь хочу отправлять его повторно каждый день. Как настроить?',
+  'Пост уже появился. Хочу публиковать его повторно каждую неделю. Как настроить?',
+  'В Публике отправил пост, связь оборвалась, но пост уже появился. Хочу отправлять его повторно каждый день. Как настроить?',
+])
+  test(`regular publishing repeats do not revive a resolved interrupted send: ${text}`, () => {
+    const history = [
+      user('В Публике отправил отложенный пост, но сеть отвалилась. В канале поста нет.'),
+      assistant('Проверьте результат.'),
+    ];
+    needsReply(text, history);
+    assert.equal(ids(text, history)[0], 'publisher-schedule-recurrence');
+  });
+
+test('a current unknown result keeps verification ahead of a simultaneous recurrence request', () => {
+  const history = [
+    user('В Публике отправил отложенный пост, но сеть отвалилась. В канале поста нет.'),
+    assistant('Проверьте результат.'),
+  ];
+  for (const text of [
+    'Пост всё ещё не появился. Можно отправить повторно и как настроить каждый день?',
+    'Результат отправки пока неизвестен. Хочу отправлять повторно каждый день, как настроить?',
+    'В одном канале пост уже появился, а во втором пост всё ещё не появился. Можно отправить повторно и как настроить каждый день?',
+  ]) {
+    needsReply(text, history);
+    assert.equal(ids(text, history)[0], 'publisher-delivery-status', text);
+    assert.ok(ids(text, history).includes('publisher-schedule-recurrence'), text);
+  }
+});
+
+test('an unresolved interrupted send retains verification in short continuations', () => {
+  const history = [
+    user('В Публике отправил отложенный пост, но сеть отвалилась. В канале поста нет.'),
+    assistant('Проверьте результат.'),
+  ];
+  for (const text of [
+    'Можно повторить?',
+    'Как проверить результат?',
+    'Пост всё ещё не появился. Что делать?',
+  ]) {
+    needsReply(text, history);
+    assert.equal(ids(text, history)[0], 'publisher-delivery-status', text);
+    assert.ok(!ids(text, history).includes('publisher-schedule-recurrence'), text);
+  }
+});
+
 test('switching to another feature does not retain the old AI or publication topic', () => {
   const history = [
     user('Как включить ИИ-модерацию рекламы в Публике?'),

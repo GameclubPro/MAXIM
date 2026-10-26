@@ -83,6 +83,47 @@ test('bot profile requests and reserve selection retain catalog facts instead of
   );
 });
 
+for (const text of [
+  'Я администратор. Переключите, пожалуйста, наш чат с Максимова на Рэкса 2 прямо сейчас и подтвердите, что всё сделано. Я в дороге и в мини-приложение пока не зайду.',
+  'Переключи меня на резервного Рэкса2, в мини-приложение пока не зайду.',
+  'Я админ. Переключи меня на резервного Рэкса 2. В мини-приложение сейчас не могу зайти.',
+  'Я администратор. Переключите меня на резервного Рекса 2: мини-приложение не открывается.',
+  'Я админ канала. Замените Максимова на Рэкса 2, пожалуйста. Не могу сейчас открыть приложение.',
+  'Переключите наш чат с Максимова на Рэкса 2 и дайте правильную ссылку на его профиль.',
+])
+  test(`moderator switch requests retain the selection procedure: ${text}`, () => {
+    const route = classifySupportRequest(text);
+    const ids = selectKnowledge(text).map((entry) => entry.id);
+    assert.equal(route.eligible, true);
+    assert.equal(route.requiredReply, true);
+    assert.equal(ids[0], 'choose-moderator');
+    assert.ok(ids.includes('bots'));
+    assert.ok(ids.includes('operator'));
+    assert.equal(route.botDirectory, false);
+  });
+
+test('moderator switching does not replace profiles, filters or separate bot connection', () => {
+  for (const [text, expected] of [
+    ['Дайте имя и ссылку на Рэкса 2.', 'bots'],
+    ['Я админ группы с Рэксом. Хочу, чтобы ссылки больше не удалялись.', 'links-policy'],
+    ['Как подключить Публика отдельно к нашему каналу?', 'connect'],
+    ['Как переключить ИИ-рекламу на текстовые правила в Рэксе 2?', 'commercial-ai-switch-mode'],
+  ]) {
+    const ids = selectKnowledge(text).map((entry) => entry.id);
+    assert.equal(ids[0], expected, text);
+    assert.ok(!ids.includes('choose-moderator'), text);
+  }
+});
+
+for (const text of [
+  'Замените ссылку на Рэкса 2, нужен правильный профиль.',
+  'Поменяйте старую ссылку на Максимова 2, хочу открыть правильный профиль.',
+])
+  test(`profile link replacement does not change the moderator: ${text}`, () => {
+    assert.equal(eligibleQuestion(text), true);
+    assert.equal(selectKnowledge(text)[0].id, 'bots');
+  });
+
 test('Lastik task details outrank generic role words and stale product history', () => {
   for (const [text, expected] of [
     ['Я админ, впервые добавляю Ластика: какие права нужны?', 'lastik-connect'],

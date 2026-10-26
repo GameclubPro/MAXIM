@@ -12,6 +12,12 @@ const domain =
 const publisherName = /публик(?:а|у|ом|е)?(?![\p{L}])|\bpublik\b/iu;
 const eraserName = /(?<![\p{L}\p{N}_])ластик(?:а|у|ом|е)?(?![\p{L}\p{N}_])/iu;
 const moderatorName = /максимов|майор|р[эе]кс/iu;
+const moderatorSwitchRequest = (text) =>
+  [
+    ...text.matchAll(
+      /(?<![\p{L}])(?:переключ(?:и(?:те)?|ить)|поменяй(?:те)?|замени(?:те)?|смен(?:и(?:те)?|ить))(?![\p{L}])([^.!?\n]{0,90}?)\sна\s+(?:резервн\p{L}*\s+)?(?:максимов\p{L}*|майор\p{L}*|р[эе]кс\p{L}*)(?![\p{L}])/giu,
+    ),
+  ].some(([, object]) => !/ссылк|профил|аватар|фото|логотип|назван|(?<![\p{L}])имя/iu.test(object));
 const botProfileRequest = (text) =>
   (moderatorName.test(text) || publisherName.test(text) || eraserName.test(text)) &&
   /профил|(?<![\p{L}])(?:имя|имена)(?![\p{L}])|какой.{0,20}бот|разные боты|перепут|разниц|разные помощник|(?:дай|пришл|покаж|нужн|перейт).{0,40}(?<![\p{L}])ссылк|(?<![\p{L}])ссылк.{0,15}(?:на бота|профил)/iu.test(
@@ -500,12 +506,15 @@ function semanticFacts(text, state) {
   if (missingCommunity) add('community-access', 95);
   // FLAG: A recipient picker cannot onboard a community; preserve the separate Publik connection procedure.
   if (publ && (connecting || missingCommunity)) add('connect', 120);
+  const switchingModerator = moderatorSwitchRequest(state.current);
   if (
+    switchingModerator ||
     test(
       /бот[ыа] (?:чата|канала)|(?:смен|выб).{0,25}(?:модератор|бот|майор|рэкс|максимов)|ответ о смене|список изменил|кто.{0,25}выбран|где выбрать его|вместо нынешн/iu,
     )
   )
-    add('choose-moderator', 105);
+    add('choose-moderator', switchingModerator ? 150 : 105);
+  if (switchingModerator) add('bots', 120);
   if (
     test(
       /(?<![\p{L}])прав(?:а|о|ами|ам|ах|у)?(?![\p{L}]).{0,35}(?:удал|спам|чтен)|(?:может|можно)\s+(?:(?:бот(?:у)?|майор(?:у)?)\s+)?удал|удал.{0,20}(?:чуж|личн)|читать.{0,15}удал|(?:удал|спам).{0,40}(?<![\p{L}])прав(?:а|о|ами|ам|ах|у)?(?![\p{L}])|админом не делал/iu,
@@ -697,17 +706,51 @@ function semanticFacts(text, state) {
       )
     )
       add('publisher-late-policy', 105);
-    const deliveryUncertain =
-      /нужно проверить|не уверен|результат.{0,20}(?:неизвест|не пришел|нет)|неизвестн.{0,10}результат/iu.test(
-        state.focus,
+    const missingSendResult = (value) =>
+      /не (?:нашел|нахожу|вижу|появил)|(?:в ленте|в канале|в чате)[^.!?\n]{0,25}нет|нет[^.!?\n]{0,15}(?:пост|публикац)/iu.test(
+        value,
       );
+    const repeatSendAttempt = (value) =>
+      /(?:отправ|публиков)[^.!?\n]{0,20}(?:еще раз|повтор)|(?:повтор|заново)[^.!?\n]{0,20}(?:отправ|публиков)/iu.test(
+        value,
+      );
+    const interruptedSendIn = (value) =>
+      /нажа\p{L}*[^.!?\n]{0,25}(?:опубликовать|отправить)|после[^.!?\n]{0,25}(?:опубликовать|отправк)|(?:отправил|отправлял|опубликовал|публиковал)/iu.test(
+        value,
+      ) &&
+      /(?:связь|соединен\p{L}*|интернет|сеть)[^.!?\n]{0,25}(?:оборвал|пропал|отвал|прерва)|(?:оборвал|пропал|отвал|прерва)\p{L}*[^.!?\n]{0,25}(?:связь|соединен|интернет|сеть)/iu.test(
+        value,
+      ) &&
+      (missingSendResult(value) || repeatSendAttempt(value));
+    const unknownDeliveryLabel =
+      /нужно проверить|не уверен|результат.{0,20}(?:неизвест|не пришел|нет)|неизвестн.{0,10}результат/iu;
+    const contextualDeliveryUncertain =
+      interruptedSendIn(state.focus) || unknownDeliveryLabel.test(state.focus);
+    const explicitCurrentSchedule =
+      /отложенн|завтра|(?<![\p{L}])дат(?:[аеуы]|ам|ами|ах)?(?![\p{L}])|расписан|ежеднев|еженедель|регулярн|кажд.{0,12}(?:день|недел)|(?:\d{1,2}\s*[,и]\s*){2}\d{1,2}/iu.test(
+        state.current,
+      );
+    const currentMissingResult = missingSendResult(state.current);
+    const currentResultConfirmed =
+      /(?:пост|публикация|сообщение)\s+(?:уже\s+)?появил(?:ся|ась|ось)(?![\p{L}])/iu.test(
+        state.current,
+      );
+    const currentUnknownSend =
+      contextualDeliveryUncertain &&
+      (currentMissingResult ||
+        (repeatSendAttempt(state.current) && !explicitCurrentSchedule && !currentResultConfirmed));
+    const deliveryUncertain =
+      (interruptedSendIn(text) &&
+        (text !== state.current || !currentResultConfirmed || currentMissingResult)) ||
+      unknownDeliveryLabel.test(text) ||
+      (text === state.current && currentUnknownSend);
     if (
       deliveryUncertain ||
       test(
         /подтвержден|результат.{0,20}пришел|отправил.{0,20}один|в одну секунду|достав|разослал/iu,
       )
     )
-      add('publisher-delivery-status', 110);
+      add('publisher-delivery-status', currentUnknownSend ? 135 : 110);
     const selectedDates = test(
       /конкретн.{0,10}дат|три выбранн|именно эти|нескольк.{0,10}дат|выбранн.{0,15}(?:дат|дн)|(?:\d{1,2}\s*[,и]\s*){2}\d{1,2}/iu,
     );
@@ -716,11 +759,7 @@ function semanticFacts(text, state) {
         test(
           /отложенн|завтра|(?<![\p{L}])дат(?:[аеуы]|ам|ами|ах)?(?![\p{L}])|расписан|заплан|регулярн.{0,15}пост|кажд.{0,12}(?:день|недел)|ежеднев|еженедель|по понедельник|повтор/iu,
         )) &&
-      (!deliveryUncertain ||
-        selectedDates ||
-        test(
-          /отложенн|завтра|(?<![\p{L}])дат(?:[аеуы]|ам|ами|ах)?(?![\p{L}])|расписан|ежеднев|еженедель|регулярн|кажд.{0,12}(?:день|недел)/iu,
-        )) &&
+      (!contextualDeliveryUncertain || explicitCurrentSchedule) &&
       !test(/автоответ/iu)
     ) {
       add(
@@ -841,10 +880,12 @@ export function createSupportRouter(knowledge) {
       /(?:перечисл\p{L}*|спис(?:ок|ком)|названия|каталог)\s+(?:(?:всех|ваших|наших|восьми|восьмерых|8|основных|резервных)\s+)*(?:ботов|модераторов)(?![\p{L}])|какие\s+у\s+вас\s+(?:есть\s+)?боты|сколько\s+(?:всего\s+)?(?:у\s+вас\s+|в\s+проекте\s+)?ботов(?:\s+(?:есть|всего|у\s+вас|в\s+проекте))?[?!.\s]*$|(?:какие|кто).{0,15}(?:основн|резервн).{0,15}(?:бот|модератор)|ссылк\p{L}*.{0,15}(?:всех|восьми|8).{0,10}бот/iu.test(
         ctx.current,
       );
+    const switchingModerator = moderatorSwitchRequest(ctx.current);
     const request =
       help.test(ctx.current) ||
       unresolvedHelp.test(ctx.current) ||
       actionRequest.test(ctx.current) ||
+      switchingModerator ||
       /дублиру|повторя|скоро|неизвестн.{0,15}(?:функц|возможност)/iu.test(ctx.current) ||
       botDirectory;
     const contextualReply = hasContext && (request || freshClarification);
@@ -858,7 +899,7 @@ export function createSupportRouter(knowledge) {
       text.length <= 1200 &&
       !ordinaryConversation(ctx.current) &&
       (!roleOnly || freshClarification) &&
-      ((request && (domain.test(ctx.current) || advert.test(ctx.current))) ||
+      ((request && (domain.test(ctx.current) || advert.test(ctx.current) || switchingModerator)) ||
         keywordHelp ||
         contextualReply ||
         /^(?:цена|тарифы?|платно|бесплатно|не работает|не открывается|помогите|подскажите)[.!?\s]*$/iu.test(
