@@ -36,6 +36,18 @@ try {
       const entry = page.getByRole('button', { name: 'Удаление старых сообщений', exact: true });
       await entry.click();
       const panel = page.getByRole('dialog', { name: 'Удаление старых сообщений' });
+      const help = panel.locator('.message-retention-help');
+      assert.equal(await help.getAttribute('open'), null);
+      await help.locator('summary').click();
+      assert.equal(
+        await help.getByText(/При высокой нагрузке удаление откладывается/u).isVisible(),
+        true,
+      );
+      await help.locator('summary').click();
+      assert.equal(
+        await panel.getByText(/Удаление без возможности восстановления/u).isVisible(),
+        true,
+      );
       const toggle = panel.getByRole('switch', { name: 'Удаление по сроку' });
       await toggle.check();
       await panel.getByRole('radio', { name: '24 часа' }).check();

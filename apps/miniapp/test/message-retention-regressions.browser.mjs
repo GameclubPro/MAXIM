@@ -195,11 +195,10 @@ export async function runRetentionRegressions(browser, base) {
           window.__RETENTION_TEST__.replaceServer({ status: 'unavailable' });
           window.__RETENTION_TEST__.publishSummary({ status: 'unavailable' });
         });
-        await page.waitForFunction(
-          () =>
-            document.getElementById('settings-message-retention-entry-status')?.textContent ===
-            'Недоступно',
-        );
+        await panel.waitFor({ state: 'hidden' });
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+        assert.equal(await entry.innerText(), 'Удаление старых сообщений');
+        assert.equal(await entry.locator('.settings-section__status-chip').count(), 0);
         assert.equal(
           await page.evaluate(
             () => window.__RETENTION_TEST__.requests.filter((method) => method === 'GET').length,
@@ -208,9 +207,10 @@ export async function runRetentionRegressions(browser, base) {
         );
         await entry.click();
         await panel.getByText('Отключено оператором', { exact: true }).waitFor();
+        assert.equal(await entry.innerText(), 'Удаление старых сообщений');
         assert.equal(
-          await page.locator('#settings-message-retention-entry-status').textContent(),
-          'Недоступно',
+          await panel.getByRole('switch', { name: 'Удаление по сроку' }).isDisabled(),
+          true,
         );
       }
       if (scenario === 'chat-change') {

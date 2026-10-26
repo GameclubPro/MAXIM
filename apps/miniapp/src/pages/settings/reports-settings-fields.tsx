@@ -22,9 +22,8 @@ type ReportsSettingsFieldsProps = {
   availabilityNote?: ReactNode;
 };
 
-function ReportMark({ kind }: { kind: 'signal' | 'message' | 'history' | 'commands' }) {
+function ReportMark({ kind }: { kind: 'message' | 'history' | 'commands' }) {
   const paths = {
-    signal: 'M12 3 20 6v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Zm-3 9 2 2 4-4',
     message: 'M5 4h14v13H9l-4 4V4Zm4 5h6m-6 4h4',
     history: 'M4 8a9 9 0 1 1-1 7M4 3v5h5m3 0v5l3 2',
     commands: 'm8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16',
@@ -171,21 +170,6 @@ export function ReportsSettingsFields({
     <div className="reports-settings">
       {availabilityNote}
       <div className="reports-intro">
-        <div className="reports-intro__top">
-          <span className="reports-intro__eyebrow">Участники помогают модерации</span>
-          <span className="reports-intro__mark">
-            <ReportMark kind="signal" />
-          </span>
-        </div>
-        <strong>
-          {reportsThreshold === undefined
-            ? 'Разные значения порога'
-            : `${reportsThreshold} ${reportsThreshold < 5 ? 'голоса' : 'голосов'} — одно решение`}
-        </strong>
-        <p>
-          Отправьте <b>/report</b> или <b>жалоба</b> ответом на сообщение. Бот применит выбранные
-          меры, когда наберётся порог голосов.
-        </p>
         <label className="reports-toggle reports-toggle--activation">
           <span>
             Жалобы участников
@@ -207,11 +191,14 @@ export function ReportsSettingsFields({
         </label>
         {fieldError('reportsEnabled')}
         {mixedNotice('reportsEnabled')}
+        <p>
+          <b>/report</b> или <b>жалоба</b> ответом на сообщение.
+        </p>
       </div>
       <section className="reports-group reports-group--threshold">
         <div className="reports-group__heading">
           <span className="reports-group__number">01</span>
-          <h3>Сколько голосов нужно</h3>
+          <h3>Порог жалоб</h3>
         </div>
         <div className="reports-field">
           <span id="reports-threshold-label" className="field__label">
