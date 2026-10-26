@@ -12,8 +12,9 @@ The existing GPU commercial classifier and server moderation remain separate.
   and startup. The existing pinned b11804 runtime archives are verified and extracted
   into a separate immutable bundle.
 - CPU execution uses `--device none`, zero GPU layers, eight inference threads, one
-  slot, 4096 context tokens and at most 384 output tokens. Thinking and context shifting
-  are disabled. Only `127.0.0.1:18085` is exposed, with a private random API key.
+  slot, 4096 context tokens and at most 384 output tokens. Prompt-cache RAM is capped at
+  512 MiB, with checkpoint spacing of 512 tokens for the hybrid model. Thinking and context
+  shifting are disabled. Only `127.0.0.1:18085` is exposed, with a private random API key.
 - The sole recipient is the designated test **CHAT `-78271094414679`**. The bridge
   selects only its existing fixed, primary or legacy assigned moderator, verifies the
   actual remote entity type and fresh exact bot access, and refuses assignment drift.
@@ -27,7 +28,7 @@ The existing GPU commercial classifier and server moderation remain separate.
 
 `infra/scripts/support-llm-knowledge.json` contains reviewed customer instructions and
 source paths, plus an official MAX source catalog with retrieval time and content digests.
-The 2026-10-25 review covers moderation, rights, networks, Publisher posts/schedules,
+The 2026-10-26 review covers moderation, rights, networks, Publisher posts/schedules,
 VK, comments, suggestions and platform questions. A retrieval date is not a publication
 or update date; retain unknown `Last-Modified` values and recheck changed official facts.
 Do not index operational runbooks, agent instructions, environment files or private
@@ -42,15 +43,18 @@ group's administrators, with a brief explanation of this support chat's purpose.
 administrators publish through Publik or check moderation settings; clarify an ambiguous
 role instead of refusing a relevant question. Placement/removal questions remain eligible
 without the word "bot", including common Russian spelling variants and complaints.
-For participant advertisement requests, the client returns the reviewed room-policy answer
-directly. A model's off-topic classification cannot suppress that required explanation.
-Exact questions about the commercial AI interface also use its reviewed FAQ directly:
-CPU evaluation repeatedly invented unavailable mode and sanction controls. Image questions
-retain the separate image-capability facts and inference. Explicit AI interface retrieval
-excludes instructions for unrelated settings.
-Administrator tasks and Publisher instructions use model inference; explicit help requests
-and answers to a recent role clarification require a `reply` result. Ordinary conversation
-and acknowledgements can still be skipped.
+The context router distinguishes an administrator, a participant and an unknown role. The latest
+explicit self-report wins; it is conversational context, never authorization to perform an action.
+Only an explicit participant advertisement request uses the reviewed room-policy answer directly.
+An unknown role is clarified when it changes the next step. Functional questions about bots must
+not be replaced by this policy. A model's off-topic classification cannot suppress required help.
+Exact commercial AI interface questions use short reviewed facts selected by intent. Bounded
+facts also cover personal subscription complaints, evidence for support incidents and ordinary
+public-channel eligibility. Mixed questions and other individual incidents use grounded inference.
+Explicit AI retrieval excludes
+instructions for unrelated settings. Administrator tasks and Publisher instructions use inference;
+profiled complaints, action requests and contextual answers require `reply`, including one known
+source. Ordinary conversation and completed acknowledgements can still be skipped.
 
 Successful answers use short paragraphs, numbered instructions and visible bullet points in
 plain text. The client also separates dense prose at sentence boundaries and adds the fixed
@@ -63,14 +67,24 @@ Questions and context are untrusted user data. Responses are constrained JSON wi
 `reply` or `skip`, bounded text and IDs from the selected knowledge. Internal paths,
 invented links, incomplete generations and technical errors cannot become public replies.
 Official documentation links are allowed only when they belong to the retrieved source
-catalog. Topic retrieval folds common Russian endings and discounts common words; the
-support policy and operator limitations are always included. Before inference the installed
+catalog. Template links are absent from public facts. Topic retrieval folds common Russian
+endings, recognizes product tasks and technical paths, and includes related prerequisite facts;
+the support policy and operator limitations are always included. Before inference the installed
 tokenizer checks the 4096-token context with space reserved for output and chat framing.
 If necessary, trim the oldest history and then lower-ranked facts, retaining both policies
 and the best topic. Unavailable tokenization or an irreducibly oversized prompt stays silent.
 The model has no tools. Account state, removal reasons, tariffs and other unavailable
-facts require operator verification. Generated source IDs are validation, not a guarantee
-that the wording is correct; evaluate real Russian support questions before wider use.
+facts require operator verification. Visible source metadata and false claims to be a human
+are rejected independently of the appended AI signature. For those identity/internal-content
+rejections on a single task alone, the client can separately validate and deliver the leading
+reviewed topic fact. Mixed requests retain the rejection rather than lose a second task.
+The rejected draft stays rejected; quality evaluation retains its reason and distinguishes the
+reviewed replacement from model-authored text. Link, source and incomplete-output failures do not
+use this route. Generated source IDs are validation,
+not a guarantee that the wording is correct. Requests enable prompt-prefix caching; measure
+actual cache reuse and latency before claiming a speed improvement.
+See the [answer quality protocol](../../development/support-answer-quality.md) for regression,
+new-case evaluation and the distinction between knowledge updates and fine-tuning.
 
 Every five seconds the bridge reads at most 30 messages through the ordinary shared MAX
 admission/cooldown. It does not use `getUpdates`. Only explicit human messages newer than

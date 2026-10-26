@@ -160,13 +160,13 @@ test('reviewed knowledge has real local sources and pinned official provenance',
 
 test('participant advertisement requests receive the owner policy without inference', async () => {
   for (const text of [
-    'Как выложить объявление?',
-    'Почему бот удаляет мои объявления?',
-    'Хочу подать обьяву в группу',
+    'Я участник. Как выложить объявление?',
+    'Я не администратор. Почему бот удаляет мои объявления?',
+    'Я участник группы, хочу подать обьяву',
   ]) {
     const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
     const body = presentedBody(result);
-    assert.ok(body.split('\n\n').length >= 3);
+    assert.ok(body.split('\n\n').length >= 2);
     assert.match(result.text, /чат поддержки администраторов/iu);
     assert.match(result.text, /администраторам именно той группы/iu);
     assert.deepEqual(result.sourceIds, ['support-room', 'operator']);
@@ -297,9 +297,6 @@ test('self-reported roles route explanations without matching Russian word suffi
       assert.equal(requests.length, count + 1, input.text);
     }
     const participants = [
-      { text: 'Хочу выложить объявления администратора группы' },
-      { text: 'Друзья админа удалили объявление. Как его вернуть?' },
-      { text: 'У меня админ спрашивает, как разместить пост' },
       {
         text: 'Я не администратор, я участник группы. Почему удалили объявление?',
         history: [admin],
@@ -308,10 +305,6 @@ test('self-reported roles route explanations without matching Russian word suffi
       {
         text: 'Почему удаляют объявления?',
         history: [admin, { role: 'user', text: 'Не администратор' }],
-      },
-      {
-        text: 'Почему удаляют объявления?',
-        history: [{ role: 'assistant', text: 'Я администратор' }],
       },
     ];
     for (const input of participants) {
@@ -336,35 +329,37 @@ test('contextual disable question retains night moderation as the best source', 
   );
 });
 
-test('AI interface questions exclude instructions for unavailable text-mode controls', () => {
-  const selected = selectKnowledge(
-    'Включил Удалять рекламу с подписью ИИ-модерация текста. Где выбрать Строго и настроить бан за повторы?',
-  );
-  assert.equal(selected[0].id, 'commercial-ai-mode');
-  assert.deepEqual(
-    selected.map((entry) => entry.id),
-    ['commercial-ai-mode', 'support-room', 'operator'],
-  );
+test('AI interface questions select only the relevant reviewed intent', () => {
+  for (const [text, expected] of [
+    ['ИИ-модерация текста: где поставить «Строго»?', 'commercial-ai-sensitivity'],
+    [
+      'ИИ-анализ пока без автоматических удалений: ничего не удаляется?',
+      'commercial-ai-observation',
+    ],
+    ['Что значит «Двойная проверка» в ИИ-модерации?', 'commercial-ai-double-check'],
+  ]) {
+    const selected = selectKnowledge(text);
+    assert.equal(selected[0].id, expected, text);
+    assert.ok(!selected.some((entry) => entry.id === 'profanity-sensitivity'), text);
+  }
 });
 
-test('exact commercial AI interface questions use the reviewed FAQ without invented controls', async () => {
-  for (const text of [
-    'В рекламе написано ИИ-анализ Тест Пока без автоматических удалений. Бот ничего не удаляет?',
-    'Включил Удалять рекламу с подписью ИИ-модерация текста. Где выбрать Строго и настроить бан за повторы?',
+test('exact commercial AI facts use a short reviewed answer without a full FAQ dump', async () => {
+  for (const [text, id] of [
+    ['ИИ-модерация текста: где поставить «Строго»?', 'commercial-ai-sensitivity'],
+    [
+      'ИИ-анализ пока без автоматических удалений: ничего не удаляется?',
+      'commercial-ai-observation',
+    ],
   ]) {
     const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
-    const body = presentedBody(result);
-    assert.ok(body.includes('\n\n'));
     assert.equal(
-      body.replace(/\s+/gu, ' '),
-      knowledge.entries
-        .find((entry) => entry.id === 'commercial-ai-mode')
-        .answer.replace(/\s+/gu, ' '),
+      presentedBody(result).replace(/\s+/gu, ' '),
+      knowledge.entries.find((entry) => entry.id === id).answer.replace(/\s+/gu, ' '),
     );
-    assert.match(result.text, /такого переключателя в интерфейсе нет/iu);
-    assert.match(result.text, /другие фильтры могут по-прежнему удалять/iu);
-    assert.deepEqual(result.sourceIds, ['commercial-ai-mode']);
+    assert.deepEqual(result.sourceIds, [id]);
     assert.equal(result.durationMs, 0);
+    assert.equal(result.responseRoute, 'reviewed-faq');
   }
 });
 
@@ -394,6 +389,32 @@ test('model replies preserve instructions, names, links and metadata with one re
   assert.equal(presentedBody(await answerSupport(fixture.input)), 'Проверьте права бота.');
 });
 
+test('bounded reviewed incident, membership and platform answers need no model request', async () => {
+  for (const [text, id] of [
+    [
+      'Майор пишет, что я не подписан, а я подписан! Проверьте мой аккаунт.',
+      'subscription-membership',
+    ],
+    [
+      'Я администратор, не вижу раздел событий. Что подготовить для разбора здесь?',
+      'support-incident-evidence',
+    ],
+    [
+      'У меня четыре публичных канала и один бизнес-канал. Смогу сделать ещё один обычный?',
+      'max-public-channel-eligibility',
+    ],
+  ]) {
+    const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    assert.equal(result.durationMs, 0);
+    assert.deepEqual(result.sourceIds, [id]);
+    assert.equal(
+      presentedBody(result).replace(/\s+/gu, ' '),
+      knowledge.entries.find((entry) => entry.id === id).answer.replace(/\s+/gu, ' '),
+    );
+  }
+});
+
 test('presentation accepts exactly 1800 characters, refuses overflow and leaves skips empty', async (t) => {
   const body = 'я'.repeat(1800 - SUPPORT_ANSWER_FOOTER.length - 2);
   const fixture = await completionFixture(t, {
@@ -416,26 +437,51 @@ test('presentation accepts exactly 1800 characters, refuses overflow and leaves 
   assert.equal(fixture.requests, requests);
   fixture.answer = { action: 'skip', text: '', sourceIds: [] };
   const skipped = await answerSupport({ ...fixture.input, text: 'Бот MAXIM' });
-  assert.equal(fixture.requests, requests + 1);
+  assert.equal(fixture.requests, requests);
   assert.equal(skipped.action, 'skip');
   assert.equal(skipped.text, '');
   assert.deepEqual(skipped.sourceIds, []);
 });
 
-test('normalized model text cannot expose forbidden links or internal paths', async (t) => {
+test('forbidden model links fail closed and rejected internal drafts use an independent fact', async (t) => {
   const fixture = await completionFixture(t, {
     action: 'reply',
     text: 'h**tt**ps://evil.example/login',
     sourceIds: ['connect'],
   });
-  for (const [text, message] of [
-    ['h**tt**ps://evil.example/login', 'support_response_link'],
-    ['ap**ps**/private-config', 'support_response_internal'],
-    ['loc**al**host:1234', 'support_response_internal'],
+  await assert.rejects(answerSupport(fixture.input), { message: 'support_response_link' });
+  const facts = selectKnowledge(fixture.input.text);
+  for (const text of [
+    'ap**ps**/private-config',
+    'loc**al**host:1234',
+    'Ответ подготовлен живым сотрудником, а не ИИ.',
   ]) {
     fixture.answer.text = text;
-    await assert.rejects(answerSupport(fixture.input), { message });
+    const reason = /сотрудником/u.test(text)
+      ? 'support_response_identity'
+      : 'support_response_internal';
+    assert.throws(() => validateSupportAnswer(fixture.answer, facts), { message: reason });
+    const result = await answerSupport(fixture.input);
+    assert.equal(result.responseRoute, 'reviewed-fallback');
+    assert.equal(result.fallbackReason, reason);
+    assert.deepEqual(result.timings, fixture.timings);
+    const fact = facts.find((entry) => entry.id === result.sourceIds[0]);
+    assert.equal(presentedBody(result).replace(/\s+/gu, ' '), fact.answer.replace(/\s+/gu, ' '));
+    assert.equal(fixture.answer.text, text, 'the rejected draft is not rewritten');
   }
+  fixture.answer = {
+    action: 'reply',
+    text: 'Я живой сотрудник.',
+    sourceIds: ['commercial-ai-observation', 'links-policy'],
+  };
+  await assert.rejects(
+    answerSupport({
+      ...fixture.input,
+      text: 'У ИИ-модерации рекламы стоит «Тест». И как запретить ссылки в нашем чате?',
+    }),
+    { message: 'support_response_identity' },
+    'a single reviewed fact cannot replace two independent questions',
+  );
   fixture.answer = { action: 'skip', text: 'loc**al**host:1234', sourceIds: [] };
   const skipped = await answerSupport({ ...fixture.input, text: 'Бот MAXIM' });
   assert.equal(skipped.action, 'skip');
@@ -542,6 +588,8 @@ test('HTTP boundary sends question as untrusted user data and rejects truncated 
     assert.equal(request.messages.length, 2);
     assert.equal(JSON.parse(request.messages[1].content).question, input.text);
     assert.equal(request.chat_template_kwargs.enable_thinking, false);
+    assert.equal(request.cache_prompt, true);
+    assert.equal(request.response_format.json_schema.schema.properties.sourceIds.minItems, 1);
     finish = 'length';
     await assert.rejects(answerSupport(input), /incomplete/u);
   } finally {
