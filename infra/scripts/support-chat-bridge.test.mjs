@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import Redis from 'ioredis';
 import bridge from './support-chat-bridge.cjs';
 import { verifySupportContainer } from './support-chat-remote.mjs';
-import { knowledge, SUPPORT_ANSWER_FOOTER } from './support-llm-client.mjs';
+import { answerSupport, knowledge, SUPPORT_ANSWER_FOOTER } from './support-llm-client.mjs';
 const {
   CHAT_ID,
   sourceMessage,
@@ -34,6 +34,26 @@ test('all eight public bot names become exact catalog links without linking the 
   for (const bot of knowledge.botCatalog)
     assert.ok(presented.text.includes(`<a href="${bot.url}">${bot.name}</a>`), bot.name);
   assert.ok(presented.text.endsWith(SUPPORT_ANSWER_FOOTER));
+});
+
+test('the screenshot catalog retains eight item lines and eight links in the final MAX payload', async () => {
+  const answer = await answerSupport({
+    text: 'Какие боты есть?',
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  const presented = renderSupportMessage(answer.text, knowledge.botCatalog);
+  assert.equal(presented.textFormat, 'html');
+  assert.equal((presented.text.match(/<a href=/gu) ?? []).length, 8);
+  assert.equal(
+    presented.text.split('\n').filter((line) => line.startsWith('• <a href=')).length,
+    8,
+  );
+  for (const bot of knowledge.botCatalog)
+    assert.ok(presented.text.includes(`<a href="${bot.url}">${bot.name}</a>`), bot.name);
+  assert.ok(presented.text.includes('\n\nРезервные модераторы:\n'));
+  assert.ok(presented.text.endsWith(`\n\n${SUPPORT_ANSWER_FOOTER}`));
+  assert.doesNotMatch(presented.text, /MAXIM/iu);
 });
 
 test('bot links escape untrusted markup, prefer full aliases and preserve unrelated words', () => {

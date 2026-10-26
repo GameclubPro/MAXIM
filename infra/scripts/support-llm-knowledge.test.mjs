@@ -10,6 +10,13 @@ const fact = (id) => {
 };
 const source = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
 
+test('customer knowledge uses the public project name without renaming the MAX platform', () => {
+  for (const entry of entries.values()) assert.doesNotMatch(entry.answer, /\bMAXIM\b/iu, entry.id);
+  assert.match(fact('support-room'), /«Майор Максимов»/u);
+  assert.match(fact('bots'), /«Майор Максимов»/u);
+  assert.match(fact('max-platform-default-commands'), /ботов MAX/u);
+});
+
 test('reviewed answers and link examples pass the public response boundary', () => {
   for (const entry of entries.values()) {
     assert.doesNotMatch(entry.answer, /https?:\/\/\S*[<>]|<botName>/iu, entry.id);

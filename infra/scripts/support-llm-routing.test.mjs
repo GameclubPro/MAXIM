@@ -40,6 +40,14 @@ test('Lastik questions select the current task and retain context after a produc
 test('support entry and directory requests stay eligible without replacing moderator incidents', () => {
   assert.equal(eligibleQuestion('Есть вопрос по вашему боту, не пойму куда писать.'), true);
   assert.equal(selectKnowledge('Перечисли всех 8 ботов')[0].id, 'bots');
+  for (const text of ['Какие боты есть?', 'Какие вообще боты есть?', 'Какие боты у вас есть?']) {
+    assert.equal(classifySupportRequest(text).botDirectory, true, text);
+    assert.deepEqual(
+      selectKnowledge(text).map((entry) => entry.id),
+      ['bots', 'support-room', 'operator'],
+      text,
+    );
+  }
   assert.equal(
     classifySupportRequest('Резервный бот удалил моё сообщение, почему?').botDirectory,
     false,
@@ -49,6 +57,7 @@ test('support entry and directory requests stay eligible without replacing moder
     'Сколько прав нужно боту Ластик для удаления старых сообщений?',
     'Где список чатов бота Публик?',
     'Сколько ботов можно добавить в чат?',
+    'Какие боты есть для автоматического удаления сообщений и как это включить?',
   ])
     assert.equal(classifySupportRequest(text).botDirectory, false, text);
 });
