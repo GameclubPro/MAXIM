@@ -22,7 +22,7 @@ test('the eight-bot directory uses reviewed names and preserves separate product
   assert.equal(result.responseRoute, 'reviewed-faq');
   assert.deepEqual(result.sourceIds, ['bots']);
   for (const bot of knowledge.botCatalog) assert.ok(result.text.includes(bot.name), bot.name);
-  assert.match(result.text, /Ластик.*отдельный бот.*старых сообщений/u);
+  assert.match(result.text, /Ластик.*старых сообщений/u);
   assert.match(result.text, /не означает автоматического переключения/u);
   const conversational = await answerSupport({
     text: 'Можно одним списком всех восьмерых ваших ботов? Мне нужны имена, чтобы по каждому имени можно было перейти.',
@@ -31,6 +31,23 @@ test('the eight-bot directory uses reviewed names and preserves separate product
   });
   assert.equal(conversational.responseRoute, 'reviewed-faq');
   assert.deepEqual(conversational.sourceIds, ['bots']);
+});
+
+test('the screenshot question returns eight separate catalog items with readable groups', async () => {
+  for (const text of ['Какие боты есть?', 'А какие вообще боты есть?', 'Какие боты у вас есть?']) {
+    const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+    const body = presentedBody(result);
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    assert.deepEqual(result.sourceIds, ['bots']);
+    assert.equal(body.split('\n').filter((line) => line.startsWith('• ')).length, 8);
+    assert.match(
+      body,
+      /Основные модераторы чатов и каналов:\n• Максимов\n• Максимова\n• Рэкс\n\nРезервные модераторы:/u,
+    );
+    assert.match(body, /\n• Публик —[^\n]+\n• Ластик —/u);
+    assert.doesNotMatch(body, /MAXIM/iu);
+    assert.ok(body.split('\n\n').length >= 4, text);
+  }
 });
 
 test('only the eight canonical bot URLs join the separate documentation allowlist', () => {
@@ -538,6 +555,70 @@ test('model replies preserve instructions, names, links and metadata with one re
 
   fixture.answer.text = `Проверьте права бота.\n\n${SUPPORT_ANSWER_FOOTER}\n\n✦ **Ответ** подготовлен ИИ-помощником «Майор Максимов»`;
   assert.equal(presentedBody(await answerSupport(fixture.input)), 'Проверьте права бота.');
+});
+
+test('model presentation corrects the public name and breaks dense prose before the signature', async (t) => {
+  const draft =
+    'В MAXIM восемь ботов. Основные модераторы — Максимов, Максимова и Рэкс; резервные модераторы — Максимов 2, Максимова 2 и Рэкс 2. Публик отвечает за посты и автопостинг, а Ластик удаляет старые сообщения в групповых чатах.';
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: draft,
+    sourceIds: ['connect'],
+  });
+  const result = await answerSupport(fixture.input);
+  const body = presentedBody(result);
+  assert.equal(result.responseRoute, 'model-inference');
+  assert.ok(body.startsWith('В проекте «Майор Максимов» восемь ботов.'));
+  assert.doesNotMatch(body, /MAXIM/iu);
+  assert.ok(body.includes('Рэкс;\n\nрезервные модераторы'));
+  assert.ok(body.split('\n\n').every((paragraph) => paragraph.length <= 180));
+  assert.equal(body.replace(/\s+/gu, ' '), draft.replace('В MAXIM', 'В проекте «Майор Максимов»'));
+  const normalizedAgain = validateSupportAnswer(result, selectKnowledge(fixture.input.text));
+  assert.equal(normalizedAgain.text, result.text);
+});
+
+test('presentation keeps procedure order, quoted controls, URLs, times and numeric limits intact', () => {
+  const sourceIds = ['connect'];
+  const selected = selectKnowledge('Как подключить бота?');
+  const draft =
+    '1. Откройте «Этапы 1. Подключение 2. Проверка» в MAX и https://major-maksimov.ru/app/ 2. Выберите «Сохранить» в 12:30, срок — 48 часов.';
+  const body = presentedBody(
+    validateSupportAnswer({ action: 'reply', text: draft, sourceIds }, selected),
+  );
+  assert.match(body, /^1\. Откройте «Этапы 1\. Подключение 2\. Проверка»/u);
+  assert.match(body, /https:\/\/major-maksimov\.ru\/app\/\n2\. Выберите/u);
+  assert.equal(body.replace(/\s+/gu, ' '), draft);
+  assert.match(body, /в MAX и/u);
+  for (const prefix of ['', '• ', '1. ']) {
+    const long = `${prefix}Откройте «Удаление старых сообщений» и проверьте права чтения и удаления, затем выберите срок 1 неделя и проверьте исключения для закрепов, сообщений администраторов и ботов, после чего нажмите «Сохранить» и дождитесь результата, не повторяя действие при неизвестном исходе`;
+    const value = presentedBody(
+      validateSupportAnswer({ action: 'reply', text: long, sourceIds }, selected),
+    );
+    assert.ok(value.includes('\n'), prefix);
+    assert.equal(value.replace(/\s+/gu, ' '), long);
+    assert.ok(
+      value.split('\n').every((line) => line.trim().length <= 180),
+      prefix,
+    );
+    assert.equal(
+      validateSupportAnswer({ action: 'reply', text: value, sourceIds }, selected).text,
+      `${value}\n\n${SUPPORT_ANSWER_FOOTER}`,
+    );
+    if (prefix === '1. ') assert.ok(value.startsWith('1. Откройте «Удаление старых сообщений»'));
+  }
+  const quoted = `${'Проверьте настройки своего сообщества и доступные действия. '.repeat(2)}Затем откройте «Раздел первый. Подраздел второй» и нажмите «Сохранить».`;
+  const quotedBody = presentedBody(
+    validateSupportAnswer({ action: 'reply', text: quoted, sourceIds }, selected),
+  );
+  assert.ok(quotedBody.includes('«Раздел первый. Подраздел второй»'));
+  assert.equal(quotedBody.replace(/\s+/gu, ' '), quoted);
+  const unmarkedSteps =
+    'Откройте мини-приложение в нужном чате и выберите «Удаление старых сообщений».\nДобавьте бота с правами чтения и удаления.\nВыберите срок и нажмите «Сохранить».';
+  const separated = presentedBody(
+    validateSupportAnswer({ action: 'reply', text: unmarkedSteps, sourceIds }, selected),
+  );
+  assert.equal(separated.split('\n\n').length, 3);
+  assert.equal(separated.replace(/\s+/gu, ' '), unmarkedSteps.replace(/\s+/gu, ' '));
 });
 
 test('bounded reviewed incident, membership and platform answers need no model request', async () => {
