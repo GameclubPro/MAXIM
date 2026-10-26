@@ -107,6 +107,10 @@ export type SimulatedMaxEffect = {
 type SimulatedOwnMemberProbe =
   | 'unavailable'
   | 'permissions_unknown'
+  | 'partial_admin_false'
+  | 'partial_owner_false'
+  | 'null_payload'
+  | 'role_unknown_permissions_empty'
   | 'not_found'
   | { status: 403 | 404; code?: string };
 
@@ -381,10 +385,25 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
               throw Object.assign(new Error('Simulated own-member lookup not found'), {
                 response: { status: 404, data: { code: 'fixture.lookup.not_found' } },
               });
-            data =
-              override === 'permissions_unknown'
-                ? { user_id: bot.id, is_bot: true, is_admin: true, is_owner: false }
-                : member(bot.id, true);
+            switch (override) {
+              case 'permissions_unknown':
+                data = { user_id: bot.id, is_bot: true, is_admin: true, is_owner: false };
+                break;
+              case 'partial_admin_false':
+                data = { user_id: bot.id, is_bot: true, is_admin: false };
+                break;
+              case 'partial_owner_false':
+                data = { user_id: bot.id, is_bot: true, is_owner: false };
+                break;
+              case 'null_payload':
+                data = null;
+                break;
+              case 'role_unknown_permissions_empty':
+                data = { user_id: bot.id, is_bot: true, permissions: [] };
+                break;
+              default:
+                data = member(bot.id, true);
+            }
           } else if (method === 'get' && path.endsWith('/members/admins'))
             data = {
               members: bots.filter((b) => !deniedBots.has(b.id)).map((b) => member(b.id, true)),

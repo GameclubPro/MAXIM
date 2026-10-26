@@ -10,6 +10,18 @@ import {
 } from './max-bot-access-policy.util';
 import { hasExecutionCapability, type MaxExecutionPurpose } from './max-execution-route-proof';
 
+export function hasIncompleteManagedEntityPermissionEvidence(
+  access: BotAccessSnapshotInput,
+  previousSnapshot: unknown,
+): boolean {
+  return Boolean(
+    access &&
+    (access.isAdmin || access.isOwner) &&
+    access.permissionsKnown !== true &&
+    normalizeMembershipAccessSnapshot(previousSnapshot)?.permissionsKnown === true,
+  );
+}
+
 export function restrictPassiveManagedEntityAccess<T extends NonNullable<BotAccessSnapshotInput>>(
   access: T,
   previousSnapshot: unknown,
