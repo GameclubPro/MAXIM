@@ -89,16 +89,12 @@ const DIGEST_IMAGE_REF_PATTERN = /@sha256:[0-9a-f]{64}$/u;
 const FULL_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const RELEASE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
-const ACTIVE_RELEASE_COMPONENTS = Object.freeze([
+const REQUIRED_RELEASE_COMPONENTS = Object.freeze([
   'api-shared',
   'miniapp-major-static',
   'admin-static',
 ]);
-const OPTIONAL_RELEASE_COMPONENTS = Object.freeze(['eraser']);
-const ALLOWED_RELEASE_COMPONENTS = new Set([
-  ...ACTIVE_RELEASE_COMPONENTS,
-  ...OPTIONAL_RELEASE_COMPONENTS,
-]);
+const SUPPORTED_RELEASE_COMPONENTS = new Set([...REQUIRED_RELEASE_COMPONENTS, 'eraser']);
 const EXPECTED_APP_ROLE_BY_SERVICE = Object.freeze({
   'api-ingress': 'ingress',
   'api-admin': 'admin',
@@ -477,11 +473,11 @@ function readExpectedApiImage(path = RELEASE_MANIFEST_PATH) {
     manifest?.schemaVersion !== 1 ||
     !RELEASE_ID_PATTERN.test(manifest?.releaseId ?? '') ||
     !FULL_SHA_PATTERN.test(manifest?.targetSha ?? '') ||
-    componentEntries.length < ACTIVE_RELEASE_COMPONENTS.length ||
-    componentEntries.length > ALLOWED_RELEASE_COMPONENTS.size ||
+    componentEntries.length < REQUIRED_RELEASE_COMPONENTS.length ||
+    componentEntries.length > SUPPORTED_RELEASE_COMPONENTS.size ||
     componentEntries.some(
       ([id, component]) =>
-        !ALLOWED_RELEASE_COMPONENTS.has(id) ||
+        !SUPPORTED_RELEASE_COMPONENTS.has(id) ||
         !isRecord(component) ||
         typeof component.sourceSha !== 'string' ||
         !FULL_SHA_PATTERN.test(component.sourceSha ?? '') ||
@@ -490,7 +486,7 @@ function readExpectedApiImage(path = RELEASE_MANIFEST_PATH) {
         typeof component.imageId !== 'string' ||
         !IMAGE_ID_PATTERN.test(component.imageId ?? ''),
     ) ||
-    ACTIVE_RELEASE_COMPONENTS.some((id) => !Object.hasOwn(manifest.components, id))
+    REQUIRED_RELEASE_COMPONENTS.some((id) => !Object.hasOwn(manifest.components, id))
   ) {
     throw new Error('Current release manifest is incomplete or invalid.');
   }
