@@ -395,6 +395,56 @@
   }
 
   @media (max-width: 600px) {
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-drilldown__header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      min-height: 72px;
+      padding: 12px;
+      gap: 10px;
+    }
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-drilldown__title-wrap {
+      grid-template-columns: 32px minmax(0, 1fr);
+      gap: 8px;
+    }
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-drilldown__symbol {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+    }
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-drilldown__title {
+      font-size: 18px;
+      line-height: 1.25;
+    }
+    body[data-miniapp-profile='moderation']:is(
+        .settings-home-page-open,
+        .channel-settings-page-open
+      )
+      .settings-drilldown__panel--module
+      .settings-drilldown__header-action {
+      padding-inline: 8px;
+      font-size: 12px;
+    }
     body[data-miniapp-profile='moderation'] .channel-quick-buttons-source {
       display: none;
     }
@@ -444,7 +494,9 @@
       )
       .settings-drilldown__panel--module
       .settings-drilldown__header-actions {
-      display: contents;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
 
     body[data-miniapp-profile='moderation']:is(
@@ -454,8 +506,7 @@
       .settings-drilldown__panel--module
       .settings-drilldown__header-actions
       > .settings-drilldown__close {
-      grid-area: 1 / 2;
-      align-self: start;
+      align-self: center;
     }
 
     body[data-miniapp-profile='moderation']:is(
@@ -465,12 +516,10 @@
       .settings-drilldown__panel--module
       .settings-drilldown__secondary-actions {
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
-      grid-column: 1 / -1;
-      justify-self: start;
       gap: 8px;
-      margin-left: 52px;
+      margin-left: 0;
     }
 
     body[data-miniapp-profile='moderation']:is(

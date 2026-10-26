@@ -60,9 +60,12 @@ try {
         assert.equal(await panel.locator('details').count(), 0);
         assert.equal(await panel.locator('.commercial-studio__profiles').count(), 0);
         assert.match(
-          await panel.locator('.commercial-studio__ai').innerText(),
-          /Сомнения проверяет сильная модель/u,
+          await panel.locator('.commercial-studio__policy').innerText(),
+          /При сбое или занятости ИИ сообщение остаётся/u,
         );
+        await panel.getByRole('button', { name: 'Как работает фильтр рекламы' }).click();
+        assert.match(await panel.locator('.commercial-studio__hero').innerText(), /вторая модель/u);
+        await panel.getByRole('button', { name: 'Как работает фильтр рекламы' }).click();
         await page.screenshot({ path: join(screenshots, `${device}-${theme}.png`) });
         assert.equal(
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
