@@ -49,7 +49,7 @@ test('ordinary channel eligibility counts the business and A+ routes together', 
   assert.ok(
     entries
       .get('max-create-public-channel')
-      .sources.includes('https://dev.max.ru/docs/channels/create'),
+      .sources.some((source) => source === 'https://dev.max.ru/docs/channels/create'),
   );
 });
 
