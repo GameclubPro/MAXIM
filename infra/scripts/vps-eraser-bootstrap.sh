@@ -18,8 +18,15 @@ mountpoint -q /mnt/maxim-cold || { echo 'Lastik cold storage mount is unavailabl
 # The bootstrap provisions only the two new empty Lastik directories, never sibling stores.
 for store in postgres redis; do
   directory="/mnt/maxim-cold/runtime/eraser/$store"
-  [[ ! -L "$directory" ]] || { echo 'Unsafe Lastik store path.' >&2; exit 1; }
-  if [[ ! -d "$directory" ]]; then sudo -n install -d -m 0700 "$directory"; fi
+  # FLAG: A protected ancestor is not absence. Never reinstall or change an existing store.
+  if sudo -n test -d "$directory" && sudo -n test ! -L "$directory"; then
+    continue
+  elif sudo -n test ! -e "$directory" && sudo -n test ! -L "$directory"; then
+    sudo -n install -d -m 0700 "$directory"
+  else
+    echo 'Lastik store path is unsafe or its metadata could not be checked.' >&2
+    exit 1
+  fi
 done
 if [[ "$mode" != --stores-only ]]; then
   [[ -z "$mode" ]] || { echo 'Unknown Lastik bootstrap mode.' >&2; exit 2; }

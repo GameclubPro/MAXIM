@@ -21,7 +21,12 @@ maxim_eraser_require_stores() {
   maxim_eraser_require_secrets || return
   mountpoint -q /mnt/maxim-cold || { echo 'Lastik cold storage mount is unavailable.' >&2; return 1; }
   for path in /mnt/maxim-cold/runtime/eraser/postgres /mnt/maxim-cold/runtime/eraser/redis; do
-    [[ -d "$path" && ! -L "$path" ]] || { echo 'Lastik store directory is not provisioned.' >&2; return 1; }
+    # FLAG: Read only these fixed store paths through protected ancestors; preserve their permissions.
+    if sudo -n test -d "$path" && sudo -n test ! -L "$path"; then
+      continue
+    fi
+    echo 'Lastik store directory is not provisioned.' >&2
+    return 1
   done
   for volume in infra_eraser_postgres_data infra_eraser_redis_data; do
     case "$volume" in
