@@ -133,6 +133,14 @@
       border-radius: 14px;
     }
 
+    body[data-miniapp-profile='publisher']
+      :is(
+        .publisher-auto-reply-editor__tester-row input,
+        .publisher-auto-reply-editor .max-rich-text-editor__surface
+      ) {
+      font-size: max(16px, 1rem);
+    }
+
     body[data-miniapp-profile='publisher'] .publication-buttons-sheet__card {
       padding: 14px;
       border-radius: 20px;

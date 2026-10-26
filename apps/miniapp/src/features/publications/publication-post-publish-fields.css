@@ -134,6 +134,12 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 8px;
   }
+  @media (max-width: 767px) {
+    .publication-post-publish__duration select,
+    .publication-post-publish__duration input {
+      font-size: max(16px, 1rem);
+    }
+  }
   @media (prefers-reduced-motion: reduce) {
     .publication-post-publish__track,
     .publication-post-publish__track::after {

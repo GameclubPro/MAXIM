@@ -39,6 +39,12 @@
     opacity: 1;
   }
 
+  .settings-overview-search input::-webkit-search-cancel-button,
+  .settings-overview-search input::-webkit-search-decoration {
+    display: none;
+    appearance: none;
+  }
+
   .settings-overview-search:focus-within {
     border-color: color-mix(in srgb, var(--accent) 54%, var(--border-subtle));
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
@@ -63,6 +69,7 @@
   .settings-overview-search__empty {
     min-height: 64px;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
@@ -75,6 +82,7 @@
   }
 
   .settings-overview-search__empty button {
+    max-width: 100%;
     min-height: 44px;
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
