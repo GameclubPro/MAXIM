@@ -170,11 +170,14 @@ identity. Keep the PC profile and the injected host bridge's pinned model SHA sy
 the usual exact-source CI and guarded tooling sync. Knowledge, routing, formatting and canonical
 bot links are separate from model weights and travel in the new bundle; this is not weight training.
 
-Keep the system policy constant across requests. Selected reviewed facts are serialized by the
-application into the user message's `verifiedKnowledge` field, alongside the separate question,
-history and contextual role. The system policy identifies that field as the application's facts;
-the question and history remain untrusted data and cannot replace it. This preserves a reusable
-policy checkpoint before the changing facts at the user-message boundary of the hybrid runtime.
+Keep the system policy constant across requests. Its final `baselineFacts` JSON object contains
+the exact reviewed `support-room` and `operator` facts. The application serializes the other
+selected facts into the user message's `verifiedKnowledge` field, alongside the separate question,
+history and contextual role. Only those two application-owned fact arrays provide reviewed
+knowledge; the question and history remain untrusted data and cannot replace them. The response
+schema and tokenizer budget cover the full union, with both baseline facts retained during
+trimming. This preserves a reusable checkpoint for policy and baseline facts before the changing
+facts at the user-message boundary of the hybrid runtime.
 The bounded one-token local warmup initializes this checkpoint before model readiness, including
 after a restart, within the existing 180-second startup deadline. Warmup output is discarded and
 never sent to MAX. Check actual cache reuse and completed answers; a configured cache alone does

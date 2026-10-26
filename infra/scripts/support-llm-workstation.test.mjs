@@ -257,7 +257,8 @@ function warmupResponse(patch = {}) {
 }
 
 test('warmup posts the shared producer payload once and discards generated content', async () => {
-  const { supportWarmupPayload, SUPPORT_SYSTEM_PROMPT } = await import('./support-llm-client.mjs');
+  const { knowledge, supportWarmupPayload, SUPPORT_BASELINE_FACTS, SUPPORT_SYSTEM_PROMPT } =
+    await import('./support-llm-client.mjs');
   const signal = AbortSignal.timeout(1000),
     calls = [];
   const result = await warmSupportModel('private-test-key', signal, async (url, options) => {
@@ -277,6 +278,23 @@ test('warmup posts the shared producer payload once and discards generated conte
   assert.deepEqual(payload, supportWarmupPayload());
   assert.equal(payload.model, SUPPORT_MODEL.alias);
   assert.equal(payload.messages[0].content, SUPPORT_SYSTEM_PROMPT);
+  const baseline = JSON.parse(payload.messages[0].content.split('\n').at(-1));
+  assert.deepEqual(Object.keys(baseline), ['baselineFacts']);
+  assert.deepEqual(baseline.baselineFacts, SUPPORT_BASELINE_FACTS);
+  assert.deepEqual(
+    baseline.baselineFacts.map((fact) => fact.id),
+    ['support-room', 'operator'],
+  );
+  for (const fact of baseline.baselineFacts) {
+    const entry = knowledge.entries.find((item) => item.id === fact.id);
+    assert.equal(fact.answer, entry.answer);
+    assert.deepEqual(
+      fact.links,
+      entry.sources.filter((source) =>
+        knowledge.officialSources.some((page) => page.url === source),
+      ),
+    );
+  }
   assert.deepEqual(JSON.parse(payload.messages[1].content), {
     verifiedKnowledge: [],
     history: [],
