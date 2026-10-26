@@ -13,6 +13,97 @@ import {
 } from './support-llm-client.mjs';
 import { supportModelArgs, SUPPORT_MODEL } from './support-llm-profile.mjs';
 
+test('the eight-bot directory uses reviewed names and preserves separate product roles', async () => {
+  const result = await answerSupport({
+    text: 'Перечисли всех 8 ботов проекта',
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.deepEqual(result.sourceIds, ['bots']);
+  for (const bot of knowledge.botCatalog) assert.ok(result.text.includes(bot.name), bot.name);
+  assert.match(result.text, /Ластик.*отдельный бот.*старых сообщений/u);
+  assert.match(result.text, /не означает автоматического переключения/u);
+  const conversational = await answerSupport({
+    text: 'Можно одним списком всех восьмерых ваших ботов? Мне нужны имена, чтобы по каждому имени можно было перейти.',
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  assert.equal(conversational.responseRoute, 'reviewed-faq');
+  assert.deepEqual(conversational.sourceIds, ['bots']);
+});
+
+test('only the eight canonical bot URLs join the separate documentation allowlist', () => {
+  const source = knowledge.entries.find((entry) => entry.id === 'bots');
+  for (const bot of knowledge.botCatalog)
+    assert.doesNotThrow(() =>
+      validateSupportAnswer(
+        { action: 'reply', text: `${bot.name}: ${bot.url}`, sourceIds: ['bots'] },
+        [source],
+      ),
+    );
+  for (const url of [
+    'https://max.ru/invented_bot',
+    `${knowledge.botCatalog[0].url}?start=unverified`,
+    'https://max.ru.evil/id613002203036_bot',
+  ])
+    assert.throws(
+      () => validateSupportAnswer({ action: 'reply', text: url, sourceIds: ['bots'] }, [source]),
+      /support_response_link/u,
+    );
+});
+
+test('profile and reserve answers use the requested catalog identities and actual selection steps', async () => {
+  const ask = (text) => answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+  const alias = await ask('Дайте точное имя и ссылку на Рекс2, а не ссылку на первого Рэкса.');
+  assert.equal(alias.responseRoute, 'reviewed-faq');
+  assert.match(alias.text, /Рэкс 2 — резервный модератор/u);
+  assert.doesNotMatch(alias.text, /копи|напишите.{0,30}имя/u);
+  assert.doesNotMatch(alias.text, /Рэкс —/u);
+  const reserve = await ask(
+    'Добавил Максимова 2 в запас, первый Максимов молчит. Почему резерв сам не перехватил и кто сейчас выбран?',
+  );
+  assert.equal(reserve.responseRoute, 'reviewed-faq');
+  assert.match(reserve.text, /само по себе не означает автоматического переключения/u);
+  assert.doesNotMatch(reserve.text, /Максимова 2|если основной/u);
+  const numbered = await ask('Дайте ссылку на Рэкс №2.');
+  assert.match(numbered.text, /Рэкс 2 — резервный/u);
+  const negated = await ask('Нужен не Публик, а Рэкс 2. Дайте профиль.');
+  assert.doesNotMatch(negated.text, /Публик/u);
+  const comparison = await ask('Максимова и Максимов 2 — разные боты? Пришлите две ссылки.');
+  assert.match(comparison.text, /Максимова — основной модератор/u);
+  assert.match(comparison.text, /Максимов 2 — резервный модератор/u);
+  assert.match(comparison.text, /не задают закреплённые пары/u);
+  const selected = await ask(
+    'С Публиком разобрался. Сейчас нужен резервный Рэкс 2, дайте его ссылку и скажите, где выбрать его вместо нынешнего.',
+  );
+  assert.equal(selected.responseRoute, 'reviewed-faq');
+  assert.deepEqual(selected.sourceIds, ['bots', 'choose-moderator']);
+  assert.match(selected.text, /«Боты чата».*выберите доступного бота/u);
+  assert.match(selected.text, /«Бот выбран»/u);
+  assert.doesNotMatch(selected.text, /Публик|«Бот выбран» в чате/u);
+});
+
+test('rules replacement and manual VK import keep their reviewed procedure without inference', async () => {
+  for (const [text, id, detail] of [
+    [
+      'Я админ. Сохранил правила, но старый пост не заменился. Как обновить его?',
+      'chat-rules',
+      /обновление прежнего поста/u,
+    ],
+    [
+      'Я админ. В Публике добавил группу VK, хочу вручную выбрать запись и отредактировать до публикации.',
+      'publisher-vk-connect',
+      /из «Групп» во вкладку «Посты»/u,
+    ],
+  ]) {
+    const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    assert.deepEqual(result.sourceIds, [id]);
+    assert.match(result.text, detail);
+  }
+});
+
 function presentedBody(result) {
   assert.equal(result.action, 'reply');
   assert.equal(result.text.split(SUPPORT_ANSWER_FOOTER).length, 2);
@@ -56,6 +147,66 @@ async function completionFixture(t, answer) {
   };
   return fixture;
 }
+
+test('catalog and procedure shortcuts preserve additional tasks, incidents and unknown identities', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Уточните вопрос.',
+    sourceIds: ['bots'],
+  });
+  const cases = [
+    'Дайте ссылку на Рэкса 2 и помогите настроить антиспам.',
+    'Дайте ссылку на Рэкса 2, отключите ночной режим.',
+    'Профиль Рэкса 2: не работает антиспам, что делать?',
+    'Дайте профиль Рэкса 2, у меня пропали настройки.',
+    'Дайте ссылку на Рэкса 2, сколько стоит подключение?',
+    'Дайте ссылку на Рэкса 2. Он удалил моё объявление.',
+    'Список ботов и помоги мне выключить ночной режим.',
+    'Как удалить группу VK из Публика?',
+    'Публик пишет, что группа VK недоступна, хотя она открытая. Что делать?',
+    'В правилах можно добавить несколько фотографий?',
+    'Как обновить старый пост правил, помогите включить ночной режим.',
+    'В Публике хочу вручную выбрать запись VK и отредактировать, помогите настроить автоответы.',
+    'Дайте ссылку на Рэкс 3.',
+    'Дайте профили Рэкс 3 и Максимов.',
+    'Правила не обновляются, старый пост остался, нет доступа.',
+    'Правила не обновляются, старый пост остался, ошибка доступа.',
+  ];
+  for (const text of cases) {
+    fixture.answer.sourceIds = selectKnowledge(text)
+      .slice(0, 2)
+      .map((entry) => entry.id);
+    assert.equal(
+      (await answerSupport({ ...fixture.input, text })).responseRoute,
+      'model-inference',
+      text,
+    );
+  }
+  assert.equal(fixture.requests, cases.length);
+});
+
+test('a directory combined with a functional task preserves inference for both questions', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Максимов — модератор. Ночной режим включается в настройках чата.',
+    sourceIds: ['bots', 'night'],
+  });
+  for (const text of [
+    'Перечисли всех ботов и как включить ночной режим?',
+    'Какие у вас боты и как включить автоответы?',
+    'Список ботов; как включить ИИ рекламу?',
+    'Дайте ссылку на Рэкса 2 и как включить ночной режим?',
+  ]) {
+    const selected = selectKnowledge(text);
+    fixture.answer = {
+      ...fixture.answer,
+      sourceIds: selected.slice(0, 2).map((entry) => entry.id),
+    };
+    const result = await answerSupport({ ...fixture.input, text });
+    assert.equal(result.responseRoute, 'model-inference', text);
+  }
+  assert.equal(fixture.requests, 4);
+});
 
 test('Russian followups keep bot context while ordinary conversation stays silent', () => {
   assert.equal(eligibleQuestion('Как подключить бота в канал'), true);

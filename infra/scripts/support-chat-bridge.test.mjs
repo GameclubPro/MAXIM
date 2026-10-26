@@ -9,12 +9,98 @@ import { test } from 'node:test';
 import Redis from 'ioredis';
 import bridge from './support-chat-bridge.cjs';
 import { verifySupportContainer } from './support-chat-remote.mjs';
-const { CHAT_ID, sourceMessage, PilotFence, PilotHistory, deliverAnswer } = bridge;
+import { knowledge, SUPPORT_ANSWER_FOOTER } from './support-llm-client.mjs';
+const {
+  CHAT_ID,
+  sourceMessage,
+  PilotFence,
+  PilotHistory,
+  deliverAnswer,
+  validateSupportBotCatalog,
+  renderSupportMessage,
+} = bridge;
 const row = (text = 'Как подключить бота?') => ({
   recipient: { chat_id: CHAT_ID },
   sender: { user_id: 42, is_bot: false },
   timestamp: Date.now(),
   body: { mid: 'question-1', text },
+});
+
+test('all eight public bot names become exact catalog links without linking the AI footer', () => {
+  const text = `${knowledge.botCatalog.map((bot) => bot.name).join('\n')}\n\n${SUPPORT_ANSWER_FOOTER}`;
+  const presented = renderSupportMessage(text, knowledge.botCatalog);
+  assert.equal(presented.textFormat, 'html');
+  assert.equal((presented.text.match(/<a href=/gu) ?? []).length, 8);
+  for (const bot of knowledge.botCatalog)
+    assert.ok(presented.text.includes(`<a href="${bot.url}">${bot.name}</a>`), bot.name);
+  assert.ok(presented.text.endsWith(SUPPORT_ANSWER_FOOTER));
+});
+
+test('bot links escape untrusted markup, prefer full aliases and preserve unrelated words', () => {
+  const text =
+    'Майор Максимов 2 и Максимов; Рэкс2. Ластика & <img src=x onerror="bad()">. Ластик повторно. _Ластик и Ластиковый.';
+  const value = renderSupportMessage(text, knowledge.botCatalog).text;
+  assert.ok(value.includes('<a href="https://max.ru/id613070470872_9_bot">Майор Максимов 2</a>'));
+  assert.ok(value.includes('<a href="https://max.ru/id613070470872_6_bot">Рэкс2</a>'));
+  assert.ok(value.includes('<a href="https://max.ru/id613000037577_5_bot">Ластика</a>'));
+  assert.ok(value.includes('&amp; &lt;img src=x onerror=&quot;bad()&quot;&gt;'));
+  assert.equal((value.match(/href="https:\/\/max.ru\/id613000037577_5_bot"/gu) ?? []).length, 1);
+  assert.ok(value.includes('_Ластик и Ластиковый.'));
+  assert.doesNotMatch(value, /<img|<script/iu);
+  const dashed = renderSupportMessage(
+    'Рэкс-2 и Максимов-2, Максимова-2; laſtik.',
+    knowledge.botCatalog,
+  ).text;
+  assert.ok(dashed.includes('<a href="https://max.ru/id613070470872_6_bot">Рэкс-2</a>'));
+  assert.ok(dashed.includes('<a href="https://max.ru/id613070470872_9_bot">Максимов-2</a>'));
+  assert.ok(dashed.includes('<a href="https://max.ru/id613070470872_5_bot">Максимова-2</a>'));
+  assert.doesNotMatch(dashed, /href="undefined"/u);
+  const numbered = renderSupportMessage('Рэкс №2 и Рэкс 3, Максимов 7.', knowledge.botCatalog).text;
+  assert.ok(numbered.includes('<a href="https://max.ru/id613070470872_6_bot">Рэкс №2</a>'));
+  assert.ok(numbered.includes('Рэкс 3, Максимов 7.'));
+  assert.equal((numbered.match(/<a href=/gu) ?? []).length, 1);
+});
+
+test('catalog readiness rejects foreign targets, duplicate identities and ambiguous aliases', () => {
+  assert.equal(validateSupportBotCatalog(knowledge.botCatalog), knowledge.botCatalog);
+  for (const url of [
+    'https://max.ru.evil/bot',
+    'https://max.ru/bot?next=bad',
+    'https://user@max.ru/bot',
+    'javascript:bad',
+    'https://max.ru:443/bot',
+  ]) {
+    const catalog = structuredClone(knowledge.botCatalog);
+    catalog[0].url = url;
+    assert.throws(() => validateSupportBotCatalog(catalog), /catalog_refused/u, url);
+  }
+  const ambiguous = structuredClone(knowledge.botCatalog);
+  ambiguous[1].aliases.push('максимов');
+  assert.throws(() => validateSupportBotCatalog(ambiguous), /catalog_ambiguous/u);
+  assert.throws(() => validateSupportBotCatalog(knowledge.botCatalog.slice(1)), /catalog_refused/u);
+});
+
+test('expanded HTML budget fails before any client call or SEND fence transition', async () => {
+  let calls = 0;
+  const runtime = {
+    supportBotCatalog: knowledge.botCatalog,
+    client: {
+      sendMessageImmediateWithId: async () => {
+        calls++;
+      },
+    },
+  };
+  const settled = [];
+  const fence = {
+    settle: async (...args) => settled.push(args),
+    begin: async () => {
+      calls++;
+    },
+  };
+  const result = await deliverAnswer(runtime, fence, { id: 'budget' }, '&'.repeat(1700), {});
+  assert.equal(result, 'refused');
+  assert.equal(calls, 0);
+  assert.deepEqual(settled, [['budget', 'REFUSED', 'PREPARED']]);
 });
 
 test('source boundary requires exact test chat, explicit human and fresh creation', () => {
@@ -112,6 +198,7 @@ test(
       assert.equal(await owner.prepare(source.id), true);
       let sends = 0;
       const runtime = {
+        supportBotCatalog: knowledge.botCatalog,
         options: () => ({ botId: 'assigned-fixture' }),
         assertSourceAllowed: async () => {},
         assertAccess: async () => {},
@@ -119,6 +206,11 @@ test(
           getExactMessageRow: async () => raw,
           async sendMessageImmediateWithId(chatId, text, options) {
             assert.equal(chatId, CHAT_ID);
+            assert.equal(options.textFormat, 'html');
+            assert.equal(
+              text,
+              '<a href="https://max.ru/id613000037577_5_bot">Ластик</a>: &lt;проверка&gt;',
+            );
             await options.beforeSend();
             sends++;
             throw new Error('simulated lost acknowledgement');
@@ -130,7 +222,10 @@ test(
         sessionEnd: Date.now() + 180000,
         heartbeatAt: () => Date.now(),
       };
-      assert.equal(await deliverAnswer(runtime, owner, source, 'Инструкция', bounds), 'unknown');
+      assert.equal(
+        await deliverAnswer(runtime, owner, source, 'Ластик: <проверка>', bounds),
+        'unknown',
+      );
       assert.equal(sends, 1);
       assert.equal(await redis.get(owner.key(source.id)), 'UNKNOWN');
       assert.equal(await owner.prepare(source.id), false);

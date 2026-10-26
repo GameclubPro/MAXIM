@@ -11,13 +11,41 @@ const domain =
   /(?<![\p{L}\p{N}_])бот(?:ы|а|у|ом|е|ов|ам|ами|ах)?(?![\p{L}\p{N}_])|максимов|майор|рэкс|публик|(?<![\p{L}\p{N}_])ластик(?:а|у|ом|е)?(?![\p{L}\p{N}_])|модерац|антидубл|антимат|антиспам|ночн.{0,8}режим|стоп слов|предложк|автопост|автоответ|\b(?:max|vk|api)\b|(?:^|\s)(?:вк|макс)(?:\s|[.!?,]|$)/iu;
 const publisherName = /публик(?:а|у|ом|е)?(?![\p{L}])|\bpublik\b/iu;
 const eraserName = /(?<![\p{L}\p{N}_])ластик(?:а|у|ом|е)?(?![\p{L}\p{N}_])/iu;
+const moderatorName = /максимов|майор|р[эе]кс/iu;
+const botProfileRequest = (text) =>
+  (moderatorName.test(text) || publisherName.test(text) || eraserName.test(text)) &&
+  /профил|(?<![\p{L}])(?:имя|имена)(?![\p{L}])|какой.{0,20}бот|разные боты|перепут|разниц|разные помощник|(?:дай|пришл|покаж|нужн|перейт).{0,40}(?<![\p{L}])ссылк|(?<![\p{L}])ссылк.{0,15}(?:на бота|профил)/iu.test(
+    text,
+  );
+const publisherTask =
+  /автоответ|автопост|предложк|согласован.{0,15}личк|\bvk\b|(?:^|\s)вк(?:\s|[.!?,]|$)|импорт.{0,20}пост|пост.{0,20}импорт|отложенн.{0,20}пост|пост.{0,20}отлож|регулярн.{0,20}пост|переехал.{0,20}публикац|майор.{0,35}пост|пост.{0,35}майор/iu;
+const eraserTask =
+  /стар.{0,15}(?:сообщен|переписк)|очист.{0,15}(?:истор|переписк)|удаление по срок/iu;
+function productOf(text) {
+  const transition = text.match(/(?:^|[,!.]\s*|\s+)(?:а\s+)?теперь\s+(.+)$/iu);
+  if (transition) {
+    const nextProduct = productOf(transition[1]);
+    if (nextProduct) return nextProduct;
+  }
+  text = text.replace(/^.*?(?:разобрал[аи]?сь|разобрал[аи]?ся|закончил[аи]?|готово)[.!]\s*/iu, '');
+  const publisher = publisherName.test(text.replace(/(?:не|без)\s+публик\p{L}*/giu, ''));
+  const eraser = eraserName.test(text);
+  if (publisher && eraser) return 'mixed';
+  if (eraser) return 'eraser';
+  if (publisher) return 'publisher';
+  if (publisherTask.test(text)) return 'publisher';
+  if (eraserTask.test(text)) return 'eraser';
+  if (moderatorName.test(text) && /резерв|выбран|модерац/iu.test(text)) return 'major';
+  if (/(?:в|через|у)\s+майор/iu.test(text)) return 'major';
+  return null;
+}
 const advert =
   /объяв|объяву|размещени|публикаци|запост|пост(?:ы|а|у|е|ов|ом|ами|ах)?(?![\p{L}])|реклам/iu;
 const placement =
   /опубликов|публиков|(?:о)?публику|вылож|размест|запост|напис.{0,15}пост|созда.{0,15}пост/iu;
 const removal = /удал|снес|снос|исчез|пропал|заблок|верн.{0,20}(?:пост|объяв)|восстанов/iu;
 const help =
-  /\?|(?:^|\s)(?:как|почему|где|зачем|какой|какие|что|можно|сколько|подскаж\p{L}*|помог\p{L}*|объясн\p{L}*|хочу|нужно|надо|нужен|нужна)(?:\s|$)|не\s+(?:работа|открыва|пуска|получа|приход|могу|вижу|размещ|включ|сохраня|добавля|отправля|публику|загружа)|удал|снес|снос|исчез|пропал|заблок|недоступ|ошибк|слетел|(?:нет|не видно).{0,30}(?:чат|канал|доступ|кноп|модул)/iu;
+  /\?|(?:^|\s)(?:как|почему|где|зачем|какой|какие|что|можно|сколько|вопрос|подскаж\p{L}*|помог\p{L}*|объясн\p{L}*|хочу|нужно|надо|нужен|нужна)(?:\s|$)|не\s+(?:работа|открыва|пуска|получа|приход|могу|вижу|размещ|включ|сохраня|добавля|отправля|публику|загружа)|удал|снес|снос|исчез|пропал|заблок|недоступ|ошибк|слетел|(?:нет|не видно).{0,30}(?:чат|канал|доступ|кноп|модул)/iu;
 const actionRequest =
   /(?:^|[\s,.!])(?:включи(?:те)?|выключи(?:те)?|отключи(?:те)?|подключи(?:те)?|настрой(?:те)?|выставь(?:те)?|поставь(?:те)?|проверь(?:те)?|исправь(?:те)?|подтверди(?:те)?|покажи(?:те)?|расскаж(?:и|ите)|объясни(?:те)?|подскаж\p{L}*|дай(?:те)?|сделай(?:те)?|верни(?:те)?|найди(?:те)?|пришли(?:те)?|напиши(?:те)?|прими(?:те)?|поменяй(?:те)?|(?:о)?публикуй(?:те)?)(?![\p{L}])/iu;
 const unresolvedHelp =
@@ -128,9 +156,19 @@ function conversation(text, history) {
   );
   const recent = prior.slice(boundary + 1);
   const specific = topics(current).filter((id) => !['price', 'links', 'limits'].includes(id));
-  const scoped = specific.length
+  let scoped = specific.length
     ? recent.filter((item) => topics(item.text).some((id) => specific.includes(id)))
     : recent;
+  const currentProduct =
+    productOf(current) ||
+    recent
+      .filter((item) => item.role === 'user')
+      .map((item) => productOf(item.text))
+      .findLast(Boolean);
+  if (currentProduct && currentProduct !== 'mixed')
+    scoped = scoped.filter(
+      (item) => !productOf(item.text) || productOf(item.text) === currentProduct,
+    );
   return {
     current,
     prior,
@@ -255,9 +293,10 @@ function mixedRequests(ctx, state) {
   if (placement.test(ctx.current)) currentTopics.add('publication');
   if (/подкл[юу]ч|подклюить/iu.test(ctx.current)) currentTopics.add('connection');
   const secondTask =
-    /(?:и|а)\s+(?:еще|также|заодно|как|где|почему|сколько|какие|можно|настрой|включ|выключ|подключ|добав|провер|расскаж|объясни)|кроме того|а также|;|[.!?]\s*(?:а\s+|и\s+)?(?:как|где|почему|что|сколько|какие|можно|нужно|настрой|включ|выключ|подключ|добав|провер)/iu.test(
+    /(?<![\p{L}])(?:и|а)\s+(?:еще|также|заодно|как|где|почему|сколько|какие|можно|настрой|включ|выключ|подключ|добав|провер|расскаж|объясни)|кроме того|а также|;|[.!?]\s*(?:а\s+|и\s+)?(?:как|где|почему|что|сколько|какие|можно|нужно|настрой|включ|выключ|подключ|добав|провер)/iu.test(
       ctx.current,
     );
+  if ((state.botDirectory || state.botCatalogRequest) && secondTask) return true;
   if (secondTask && currentTopics.size > 1) return true;
   return Boolean(state.commercialAi && topics(ctx.current).some((topic) => topic !== 'commercial'));
 }
@@ -463,7 +502,7 @@ function semanticFacts(text, state) {
   if (publ && (connecting || missingCommunity)) add('connect', 120);
   if (
     test(
-      /бот[ыа] (?:чата|канала)|(?:смен|выб).{0,25}(?:модератор|бот|майор|рэкс|максимов)|ответ о смене|список изменил/iu,
+      /бот[ыа] (?:чата|канала)|(?:смен|выб).{0,25}(?:модератор|бот|майор|рэкс|максимов)|ответ о смене|список изменил|кто.{0,25}выбран|где выбрать его|вместо нынешн/iu,
     )
   )
     add('choose-moderator', 105);
@@ -501,9 +540,13 @@ function semanticFacts(text, state) {
   const explicitLinkFilter = test(
     /фильтр.{0,12}ссылк|ссылк.{0,12}фильтр|(?:запрет|разреш).{0,15}ссылк|ссылк.{0,15}(?:запрет|разреш)|разрешенн.{0,12}домен|allowlist|whitelist/iu,
   );
+  const profileRequested = botProfileRequest(text);
+  if (profileRequested) add('bots', 145);
+  if (moderatorName.test(text) && test(/резерв|в запас/iu)) add('bots', 120);
   if (
     test(/(?<![\p{L}])ссылк|домен|allowlist|whitelist/iu) &&
-    ((!publ && !/подписк|источник|созда.{0,12}канал/iu.test(state.focus)) || explicitLinkFilter)
+    ((!publ && !profileRequested && !/подписк|источник|созда.{0,12}канал/iu.test(state.focus)) ||
+      explicitLinkFilter)
   )
     add('links-policy', 90);
   if (test(subscriptionPattern) && !test(/предложк|предложенн|прием.{0,12}предлож/iu)) {
@@ -530,10 +573,34 @@ function semanticFacts(text, state) {
   )
     add('community-reports', 100);
   if (
-    eraserName.test(text) ||
-    (!publ && test(/стар.{0,15}сообщен|очист.{0,15}истор|удаление по срок/iu))
-  )
+    (state.eraserRequest ||
+      ((!publ || mixedTopics) && (eraserName.test(text) || eraserTask.test(text)))) &&
+    (!state.botDirectory ||
+      eraserTask.test(text) ||
+      /(?<![\p{L}])(?:как|почему|когда)(?![\p{L}])|хран|срок|подкл|удаля|проверить/iu.test(text))
+  ) {
     add('message-retention', 110);
+    const connecting = test(/подкл[юу]ч|добав|назнач|начать|запуст|включи(?:ть|те)?(?![\p{L}])/iu);
+    if (connecting || test(/канал|какому.{0,15}бот/iu)) add('lastik-connect', 135);
+    if (
+      test(/переподключ|снят|вернул|потерял|не админ|нет доступа|нужны права|проверить права/iu) ||
+      (!connecting && test(/прав[ао]|правам|правами/iu))
+    )
+      add('lastik-permissions', 140);
+    if (
+      test(
+        /прогресс|сколько.{0,20}(?:удал|обработ|остал|очищ)|статус|проверена|подробности|счетчик|числа|постепенн|очеред|завис|не удаля|не чист|остал/iu,
+      )
+    )
+      add('lastik-progress', 145);
+    if (test(/исключ|закреп|правил|розыгрыш|защищ|сообщен.{0,20}(?:админ|бот)|мои.{0,15}сообщен/iu))
+      add('lastik-exclusions', 125);
+    if (test(/сохранен|не удалось сохранить|ошибк|неизвестн.{0,15}результат|повтор.{0,15}нажа/iu))
+      add('lastik-save-recovery', 135);
+    if (test(/останов|отключ|выключ|пауз|вернуть|восстанов|отменить/iu))
+      add('lastik-stop-restore', 140);
+  }
+  if (state.botDirectory) add('bots', 150);
   if (test(/приветств|стиль речи/iu)) add('greeting-and-speech', 100);
   if (
     test(
@@ -671,7 +738,7 @@ function semanticFacts(text, state) {
     if (test(/часов.{0,8}пояс|московск|время телефон/iu)) add('publisher-schedule-timezone', 110);
     if (
       test(
-        /закреп|автоудал|автоматическ.{0,15}удален|удали.{0,15}автомат|сами удаля|после публикац/iu,
+        /закреп|автоудал|автоматическ.{0,15}удален|удали.{0,15}автомат|сами удаля|после публикац|удал.{0,80}после.{0,20}(?:выход|отправ|публикац)/iu,
       )
     )
       add('publisher-after-publish', 100);
@@ -721,12 +788,17 @@ function semanticFacts(text, state) {
     add('settings', 65);
   if (
     !publ &&
+    (!state.eraserRequest || mixedTopics) &&
     test(
       /(?:удал|стира|исчез|пропал).{0,50}(?:сообщен|фраз|пост|объяв)|(?:сообщен|фраз|пост|объяв).{0,50}(?:удал|стира|исчез|пропал)|(?:бот|майор|рэкс).{0,50}(?:удал|стира|снес)/iu,
     )
   )
     add('announcement-removal', 45);
-  if ((advert.test(text) || placement.test(text)) && (!facts.length || !publ)) {
+  if (
+    (advert.test(text) || placement.test(text)) &&
+    (!facts.length || !publ) &&
+    (!state.eraserRequest || mixedTopics)
+  ) {
     if (removal.test(text)) add('announcement-removal', commercialAi ? 100 : 45);
     else if (!commercialAi) add('announcement-placement', 45);
   }
@@ -764,11 +836,16 @@ export function createSupportRouter(knowledge) {
       /^(?:(?:да|нет)[,.!\s]*)?(?:(?:я|мы|в|это|канал|чат)\s+)?(?:админ(?:истратор)?|владелец|участник|своем канале|моем чате|чужой группе|да|нет)[.!\s]*$/iu.test(
         ctx.current,
       );
+    const botDirectory =
+      /(?:перечисл\p{L}*|спис(?:ок|ком)|названия|каталог)\s+(?:(?:всех|ваших|наших|восьми|восьмерых|8|основных|резервных)\s+)*(?:ботов|модераторов)(?![\p{L}])|какие\s+у\s+вас\s+(?:есть\s+)?боты|сколько\s+(?:всего\s+)?(?:у\s+вас\s+|в\s+проекте\s+)?ботов(?:\s+(?:есть|всего|у\s+вас|в\s+проекте))?[?!.\s]*$|(?:какие|кто).{0,15}(?:основн|резервн).{0,15}(?:бот|модератор)|ссылк\p{L}*.{0,15}(?:всех|восьми|8).{0,10}бот/iu.test(
+        ctx.current,
+      );
     const request =
       help.test(ctx.current) ||
       unresolvedHelp.test(ctx.current) ||
       actionRequest.test(ctx.current) ||
-      /дублиру|повторя|скоро|неизвестн.{0,15}(?:функц|возможност)/iu.test(ctx.current);
+      /дублиру|повторя|скоро|неизвестн.{0,15}(?:функц|возможност)/iu.test(ctx.current) ||
+      botDirectory;
     const contextualReply = hasContext && (request || freshClarification);
     const keywords = new Set(words(ctx.current));
     const keywordHelp =
@@ -789,9 +866,10 @@ export function createSupportRouter(knowledge) {
     const latestProduct = [
       ...ctx.recent.filter((item) => item.role === 'user'),
       { text: ctx.current },
-    ].findLast(
-      (item) => publisherName.test(item.text) || /(?:в|через|у)\s+майор/iu.test(item.text),
-    );
+    ]
+      .map((item) => ({ ...item, product: productOf(item.text) }))
+      .findLast((item) => item.product);
+    const eraserOnly = latestProduct?.product === 'eraser';
     const publishingMigration =
       /переехал.{0,20}публикац|раньше.{0,20}пост|(?:где|куда).{0,20}(?:переехал|делись).{0,20}(?:пост|публикац)/iu.test(
         ctx.current,
@@ -803,17 +881,27 @@ export function createSupportRouter(knowledge) {
       !publishingMigration;
     const publisherRequest =
       !majorOnly &&
+      !eraserOnly &&
       Boolean(
-        /автоответ|автопост|предложк|согласован.{0,15}личк|\bvk\b|(?:^|\s)вк(?:\s|[.!?,]|$)|импорт.{0,20}пост|пост.{0,20}импорт|отложенн.{0,20}пост|пост.{0,20}отлож|регулярн.{0,20}пост|переехал.{0,20}публикац|майор.{0,35}пост|пост.{0,35}майор/iu.test(
-          ctx.focus,
-        ) ||
-        (latestProduct &&
-          publisherName.test(latestProduct.text.replace(/(?:не|без)\s+публик\p{L}*/giu, ''))) ||
+        publisherTask.test(ctx.focus) ||
+        latestProduct?.product === 'publisher' ||
         (((role === 'admin' && placement.test(ctx.focus)) ||
           /получател|редактор|черновик/iu.test(ctx.focus)) &&
           !topics(ctx.focus).includes('rules')),
       );
+    const eraserRequest = Boolean(
+      eraserOnly &&
+      (eraserName.test(ctx.current) ||
+        !topics(ctx.current).length ||
+        topics(ctx.current).includes('retention')),
+    );
     const developer = developerPattern.test(ctx.focus);
+    const profilesRequested = botProfileRequest(ctx.current);
+    const botCatalogRequest =
+      profilesRequested ||
+      (moderatorName.test(ctx.current) &&
+        /резерв|в запас/iu.test(ctx.current) &&
+        /переключ|перехват|выбран|выбрать/iu.test(ctx.current));
     const aiIntents = commercialIntents(ctx.current, ctx.focus);
     const commercialAi = commercialIntent(ctx.current, ctx.focus, aiIntents);
     const state = {
@@ -821,9 +909,12 @@ export function createSupportRouter(knowledge) {
       role,
       eligible,
       publisherRequest,
+      eraserRequest,
       developer,
       commercialAi,
       aiIntents,
+      botDirectory,
+      botCatalogRequest,
       subscriptionIntent: subscriptionIntent(ctx),
       nightSources: nightSources(ctx, role),
       reviewedIntents: reviewedIntents(ctx),
@@ -858,8 +949,12 @@ export function createSupportRouter(knowledge) {
       commercialAi,
       mixedTopics,
       publisherRequest,
+      eraserRequest,
       developer,
+      botDirectory,
+      botCatalogRequest,
       primaryIds,
+      botProfilesRequested: profilesRequested,
       reasons: [
         freshClarification && 'recent-support-clarification',
         hasContext && 'recent-support-topic',
