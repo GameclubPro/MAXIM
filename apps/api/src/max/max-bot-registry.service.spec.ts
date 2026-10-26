@@ -127,6 +127,36 @@ describe('MaxBotRegistryService webhook base URL', () => {
     expect(service.getDiscoveryBots().map((bot) => bot.id)).not.toContain('se14088825_bot');
   });
 
+  it.each(['false', 'true'])(
+    'protects Lastik without credentials or moderator routing when ERASER_ENABLED=%s',
+    (enabled) => {
+      const service = createService({ ERASER_ENABLED: enabled });
+      const identities = [
+        '281772328',
+        'id613000037577_5_bot',
+        'id613000037577_5',
+        '613000037577_5',
+      ];
+
+      for (const identity of identities) {
+        expect(service.isKnownBotUserId(identity)).toBe(true);
+        expect(service.resolveBotIdFromUserId(identity)).toBeNull();
+        expect(service.getBotById(identity)).toBeNull();
+        expect(service.getValidationTokensForBot(identity)).toEqual([]);
+        expect(service.getConfiguredWebhookSubscriptionTarget(identity)).toEqual({
+          url: null,
+          maskedUrl: null,
+        });
+      }
+      expect(service.isKnownBotUserId('281772329')).toBe(false);
+      expect(service.isKnownBotUserId('613000037577_6')).toBe(false);
+      expect(service.isKnownBotUserId('Ластик')).toBe(false);
+      expect(service.getAllBots().map((bot) => bot.id)).toEqual(['777000_bot']);
+      expect(service.getActionableBots().map((bot) => bot.id)).toEqual(['777000_bot']);
+      expect(service.getDiscoveryBots().map((bot) => bot.id)).toEqual(['777000_bot']);
+    },
+  );
+
   it('resolves id, numeric suffix, and contact ids to canonical bot ids', () => {
     const service = createService({
       MAX_BOT_ID: 'id613002203036_bot',
