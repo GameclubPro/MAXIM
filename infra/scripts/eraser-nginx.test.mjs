@@ -529,11 +529,16 @@ test('Lastik nginx rollback preserves a foreign edit instead of overwriting it a
 
 function smokeObservations(h) {
   const events = readFileSync(h.events, 'utf8');
-  const requests = events
-    .split('\n')
-    .filter(
-      (line) => line.startsWith('--noproxy') && line.includes('https://major-maksimov.ru/eraser'),
+  const requests = events.split('\n').filter((line) => {
+    if (!line.startsWith('--noproxy')) return false;
+    const target = line.split(' ').find((argument) => argument.startsWith('https://'));
+    if (!target) return false;
+    const url = new URL(target);
+    return (
+      url.origin === 'https://major-maksimov.ru' &&
+      (url.pathname === '/eraser' || url.pathname.startsWith('/eraser/'))
     );
+  });
   const posts = requests.filter((line) => line.includes('-X POST'));
   const methods = requests.filter(
     (line) => line.endsWith('/eraser/webhook') && !line.includes('-X POST'),
