@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import { buildWebhookCohortIndexSql } from './webhook-cohort-audit.mjs';
 
-export function validateChatMessageWindow(chatId, from) {
+export function validateChatMessageWindow(chatId, from, slice = null) {
   if (
     !/^-[1-9][0-9]{0,19}$/u.test(chatId ?? '') ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z$/u.test(from ?? '') ||
@@ -10,7 +10,41 @@ export function validateChatMessageWindow(chatId, from) {
   ) {
     throw new Error('Expected a negative chat ID and an exact UTC minute.');
   }
+  if (slice !== null && (!Number.isInteger(slice) || slice < 0 || slice > 11)) {
+    throw new Error('Expected a five-second slice from 0 through 11.');
+  }
 }
+
+export function parseChatMessageWindowAuditArgs(args) {
+  const [chatId, from, ...options] = args;
+  let explain = false;
+  let slice = null;
+  for (let index = 0; index < options.length; index += 1) {
+    if (options[index] === '--explain' && !explain) {
+      explain = true;
+    } else if (
+      options[index] === '--slice' &&
+      slice === null &&
+      /^(?:[0-9]|1[01])$/u.test(options[index + 1] ?? '')
+    ) {
+      slice = Number(options[++index]);
+    } else {
+      throw new Error(
+        'Usage: chat-message-window-audit.mjs <chat-id> <UTC-minute> [--slice <0..11>] [--explain]',
+      );
+    }
+  }
+  validateChatMessageWindow(chatId, from, slice);
+  return { chatId, from, explain, slice };
+}
+
+// FLAG: Hashing must not detoast a new unbounded source. Inspect only original,
+// uncompressed JSON datums up to 64 KiB; rejected storage remains explicit unknown.
+const hashSourceAdmission = (column) => `CASE WHEN ${column} IS NULL THEN 'absent'
+  WHEN pg_column_compression(${column}) IS NOT NULL THEN 'compressed_not_inspected'
+  WHEN pg_column_size(${column}) > 65536 THEN 'oversized_not_inspected'
+  WHEN jsonb_typeof(${column}) <> 'object' THEN 'non_object'
+  ELSE 'bounded_object' END`;
 
 export function buildChatMessageWindowIndexSql() {
   return (
@@ -27,7 +61,7 @@ export function buildChatMessageWindowIndexSql() {
 \\if :message_window_intent_index_ready
 \\else
 \\echo MAXIM_MESSAGE_WINDOW_INTENT_INDEX_UNAVAILABLE
-\\quit 3
+SELECT 1 / 0;
 \\endif
 SELECT EXISTS (
     SELECT 1 FROM pg_index i
@@ -41,14 +75,22 @@ SELECT EXISTS (
 \\if :message_window_reason_index_ready
 \\else
 \\echo MAXIM_MESSAGE_WINDOW_REASON_INDEX_UNAVAILABLE
-\\quit 3
+SELECT 1 / 0;
 \\endif
 `
   );
 }
 
-export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
-  validateChatMessageWindow(chatId, from);
+export function buildChatMessageWindowAuditSql(chatId, from, explain = false, slice = null) {
+  validateChatMessageWindow(chatId, from, slice);
+  const fromExpression =
+    slice === null
+      ? `'${from}'::timestamptz`
+      : `('${from}'::timestamptz + interval '${slice * 5} seconds')`;
+  const untilExpression =
+    slice === null
+      ? `('${from}'::timestamptz + interval '1 minute')`
+      : `('${from}'::timestamptz + interval '${(slice + 1) * 5} seconds')`;
   // FLAG: Select covered status/time heads before loading any JSON. The per-status
   // sentinel makes truncation explicit; no message body, user ID, URL or raw error
   // leaves this report. Hashes permit comparison with an independently read source.
@@ -57,8 +99,8 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
   // FLAG: Failure families describe the latest persisted failure, never its first
   // attempt or a current probe. Match fixed code/text pairs; never emit raw errors.
   const query = `WITH bounds AS MATERIALIZED (
-  SELECT '${from}'::timestamptz AT TIME ZONE 'UTC' AS from_at,
-    ('${from}'::timestamptz + interval '1 minute') AT TIME ZONE 'UTC' AS until_at
+  SELECT ${fromExpression} AT TIME ZONE 'UTC' AS from_at,
+    ${untilExpression} AT TIME ZONE 'UTC' AS until_at
 ), statuses(status) AS (VALUES
   ('RECEIVED'::"WebhookStatus"), ('QUEUED'::"WebhookStatus"),
   ('PROCESSED'::"WebhookStatus"), ('DUPLICATE'::"WebhookStatus"),
@@ -82,18 +124,73 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
     CASE WHEN jsonb_typeof(metadata.normalized_payload->'raw') = 'object'
       THEN metadata.normalized_payload->'raw' ELSE metadata.raw_payload END AS source_payload,
     CASE WHEN jsonb_typeof(metadata.normalized_payload->'raw') = 'object'
-      THEN 'normalized_raw' ELSE 'sampled_raw' END AS source_basis
+      THEN 'normalized_raw' ELSE 'sampled_raw' END AS source_basis,
+    CASE WHEN jsonb_typeof(metadata.normalized_payload->'raw') = 'object'
+      THEN metadata.normalized_hash_admission ELSE metadata.raw_hash_admission END AS source_hash_admission,
+    CASE WHEN metadata.normalized_hash_admission = 'bounded_object'
+      THEN metadata.normalized_payload END AS bounded_normalized_payload,
+    CASE WHEN jsonb_typeof(metadata.normalized_payload->'raw') = 'object'
+      THEN CASE WHEN metadata.normalized_hash_admission = 'bounded_object'
+        THEN metadata.normalized_payload->'raw' END
+      ELSE CASE WHEN metadata.raw_hash_admission = 'bounded_object'
+        THEN metadata.raw_payload END END AS bounded_source_payload
   FROM samples CROSS JOIN LATERAL (
-    SELECT processed_at, queued_at, normalized_payload, raw_payload, error_message
+    SELECT processed_at, queued_at, normalized_payload, raw_payload, error_message,
+      ${hashSourceAdmission('normalized_payload')} AS normalized_hash_admission,
+      ${hashSourceAdmission('raw_payload')} AS raw_hash_admission
     FROM webhook_events WHERE id = samples.id OFFSET 0
   ) metadata
   WHERE metadata.normalized_payload->'message'->>'chatId' = '${chatId}'
+), source_fields AS NOT MATERIALIZED (
+  SELECT details.*,
+    CASE WHEN jsonb_typeof(bounded_source_payload->'message'->'body'->'text') = 'string'
+      THEN bounded_source_payload->'message'->'body'->>'text' END AS source_body_text,
+    -- FLAG: Display-label precedence is raw sender.name, otherwise the trimmed
+    -- concatenation of first_name and last_name. Never search arbitrary payload fields.
+    CASE WHEN jsonb_typeof(bounded_source_payload->'message'->'sender'->'name') = 'string'
+      THEN bounded_source_payload->'message'->'sender'->>'name'
+      ELSE nullif(btrim(concat_ws(' ',
+        CASE WHEN jsonb_typeof(bounded_source_payload->'message'->'sender'->'first_name') = 'string'
+          THEN bounded_source_payload->'message'->'sender'->>'first_name' END,
+        CASE WHEN jsonb_typeof(bounded_source_payload->'message'->'sender'->'last_name') = 'string'
+          THEN bounded_source_payload->'message'->'sender'->>'last_name' END)), '')
+      END AS source_sender_label
+  FROM details
 ), projected AS (
   SELECT status, created_at, queued_at, processed_at, source_basis,
     md5(normalized_payload->'message'->>'messageId') AS message_hash,
     md5(normalized_payload->'message'->>'senderId') AS sender_hash,
     CASE WHEN normalized_payload->>'type' IN ('message_created', 'message_edited', 'message_removed')
       THEN normalized_payload->>'type' ELSE 'other' END AS update_type,
+    source_hash_admission,
+    CASE WHEN source_hash_admission <> 'bounded_object' THEN 'source_not_admitted'
+      WHEN source_body_text IS NULL THEN 'absent_or_non_string'
+      WHEN octet_length(source_body_text) > 8192 THEN 'oversized_not_inspected'
+      ELSE 'bounded_string' END AS source_body_text_hash_admission,
+    CASE WHEN octet_length(source_body_text) <= 8192
+      THEN md5(source_body_text) END AS source_body_text_md5,
+    CASE WHEN source_hash_admission <> 'bounded_object' THEN 'source_not_admitted'
+      WHEN source_sender_label IS NULL THEN 'absent_or_non_string'
+      WHEN octet_length(source_sender_label) > 256 THEN 'oversized_not_inspected'
+      ELSE 'bounded_string' END AS source_sender_label_hash_admission,
+    CASE WHEN octet_length(source_sender_label) <= 256
+      THEN md5(source_sender_label) END AS source_sender_label_md5,
+    CASE WHEN octet_length(source_body_text) <= 8192 THEN
+      source_body_text ~* '(^|[[:space:]])(https?://)?(www[.])?max[.]ru/join/[A-Za-z0-9_-]+([[:space:]]|$|[.,!?])'
+      END AS plain_max_join_url,
+    CASE WHEN bounded_normalized_payload IS NOT NULL AND bounded_source_payload IS NOT NULL THEN
+      coalesce(bounded_normalized_payload->>'type' = 'message_removed'
+        AND jsonb_typeof(bounded_normalized_payload->'botId') = 'string'
+        AND bounded_normalized_payload->>'botId' <> ''
+        AND coalesce(bounded_normalized_payload->'message'->>'postId', '') = ''
+        AND coalesce(bounded_normalized_payload->'message'->>'entityType', '') <> 'channel'
+        AND bounded_source_payload->>'update_type' = 'message_removed'
+        AND bounded_source_payload->>'chat_id' = '${chatId}'
+        AND jsonb_typeof(bounded_source_payload->'message_id') = 'string'
+        AND bounded_source_payload->>'message_id' = bounded_normalized_payload->'message'->>'messageId'
+        AND bounded_source_payload->>'message_id' <> ''
+        AND (bounded_source_payload->'post_id' IS NULL OR bounded_source_payload->'post_id' = 'null'::jsonb), false)
+      END AS raw_message_removed_exact,
     CASE WHEN error_message = 'DORMANT_BOT_OBSERVATION_V1' THEN 'dormant_observation'
       WHEN error_message LIKE 'NO_EXECUTABLE_OWNER; deadline=%' THEN 'no_executable_owner'
       WHEN error_message LIKE 'WEBHOOK_HOT_PATH_TIMEOUT%QUARANTINED:%' THEN 'timeout_quarantine'
@@ -138,6 +235,7 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
       'last_attempt_at', intent.last_attempt_at, 'next_attempt_at', intent.next_attempt_at,
       'reason_sample', (SELECT json_build_object(
         'voice_blocked', coalesce(bool_or(rule_code = 'VOICE_BLOCKED_DELETE'), false),
+        'link_blocked', coalesce(bool_or(rule_code = 'LINK_BLOCKED_DELETE'), false),
         'mute_active', coalesce(bool_or(rule_code = 'MUTE_ACTIVE_DELETE'), false),
         'night_mode', coalesce(bool_or(rule_code = 'NIGHT_MODE_DELETE'), false),
         'manual_close', coalesce(bool_or(rule_code = 'MANUAL_GROUP_CLOSE_DELETE'), false),
@@ -147,11 +245,12 @@ export function buildChatMessageWindowAuditSql(chatId, from, explain = false) {
      FROM moderation_delete_intents intent
      WHERE intent.chat_id = '${chatId}'
        AND intent.message_id = normalized_payload->'message'->>'messageId') AS delete_intent
-  FROM details
+  FROM source_fields
 )
 SELECT json_build_object(
-  'schema_version', 3, 'audit', 'chat_message_window', 'observed_at', statement_timestamp(),
+  'schema_version', 4, 'audit', 'chat_message_window', 'observed_at', statement_timestamp(),
   'from_at', (SELECT from_at FROM bounds), 'until_at', (SELECT until_at FROM bounds),
+  'window_seconds', ${slice === null ? 60 : 5}, 'slice', ${slice === null ? 'NULL' : slice},
   'window_closed', (SELECT until_at <= statement_timestamp() AT TIME ZONE 'UTC' FROM bounds),
   'per_status_cap', 512, 'sampled_receipts', (SELECT count(*) FROM samples),
   'sample_truncated', EXISTS (SELECT 1 FROM candidates GROUP BY status HAVING count(*) > 512),
@@ -163,12 +262,8 @@ SELECT json_build_object(
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const [chatId, from, option, ...rest] = process.argv.slice(2);
-  if (rest.length || (option !== undefined && option !== '--explain')) {
-    throw new Error('Usage: chat-message-window-audit.mjs <chat-id> <UTC-minute> [--explain]');
-  }
+  const { chatId, from, explain, slice } = parseChatMessageWindowAuditArgs(process.argv.slice(2));
   process.stdout.write(
-    buildChatMessageWindowIndexSql() +
-      buildChatMessageWindowAuditSql(chatId, from, option === '--explain'),
+    buildChatMessageWindowIndexSql() + buildChatMessageWindowAuditSql(chatId, from, explain, slice),
   );
 }

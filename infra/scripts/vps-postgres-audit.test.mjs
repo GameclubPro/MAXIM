@@ -1591,6 +1591,20 @@ test('chat message window uses the audit envelope and rejects arbitrary input be
   assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
   assert.equal(runConnect(data, ['postgres-audit', ...args, '--explain']).status, 0);
   assert.match(readFileSync(data.sshArgs, 'utf8'), /chat-message-window/u);
+  for (const slice of ['0', '11']) {
+    assert.equal(runAudit(data, [...args, '--slice', slice, '--explain']).status, 0);
+    assert.match(readFileSync(data.sql, 'utf8'), /EXPLAIN \(FORMAT JSON\)/u);
+    assert.equal(
+      runConnect(data, ['postgres-audit', ...args, '--slice', slice, '--explain']).status,
+      0,
+    );
+    assert.ok(readFileSync(data.sshArgs, 'utf8').includes(`--slice\\ ${slice}`));
+  }
+  assert.equal(runAudit(data, [...args, '--explain', '--slice', '11']).status, 0);
+  assert.equal(
+    runConnect(data, ['postgres-audit', ...args, '--explain', '--slice', '11']).status,
+    0,
+  );
   const failed = runAudit(data, args, { MOCK_AUDIT_FAIL: '1' });
   assert.equal(failed.status, 7);
   assert.match(failed.stderr, /Bounded chat message window audit failed closed/u);
@@ -1598,9 +1612,17 @@ test('chat message window uses the audit envelope and rejects arbitrary input be
   for (const invalid of [
     ['chat-message-window'],
     ['chat-message-window', '-123', 'SELECT 1'],
+    ['chat-message-window', '-123', '2026-02-30T19:33:00Z'],
     ['chat-message-window', "-1'; SELECT 1", args[2]],
     [...args, '--apply'],
     [...args, '--explain', 'extra'],
+    [...args, '--explain', '--explain'],
+    [...args, '--slice'],
+    [...args, '--slice', '12'],
+    [...args, '--slice', '-1'],
+    [...args, '--slice', '1; SELECT 1'],
+    [...args, '--slice', '01'],
+    [...args, '--slice', '0', '--slice', '1'],
   ]) {
     rmSync(data.dockerArgs, { force: true });
     rmSync(data.sshArgs, { force: true });
