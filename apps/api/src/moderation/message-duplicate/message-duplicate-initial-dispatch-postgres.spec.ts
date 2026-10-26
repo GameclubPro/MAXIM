@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { MaxApiInternalRateLimitError } from '../../max/max-client.service';
 import type {
+  ChatSettings,
   ModerationDeleteIntent,
   ModerationViolationMessageClaim,
 } from '../../prisma/prisma-client';
@@ -10,6 +11,10 @@ import {
 } from '../../webhook/webhook-multibot-fullpath.spec-support';
 import { MESSAGE_DUPLICATE_CONTROL_KEY } from './message-duplicate-policy.service';
 import type { ModerationDeletePreDispatchPhase } from '../moderation-delete-intent.types';
+import {
+  DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS,
+  type WebhookHotPathProfile,
+} from '../moderation.service.support';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -25,7 +30,13 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     h = undefined;
   });
 
-  async function fixture(bots: number, duplicateBotMessageEnabled = true) {
+  async function fixture(
+    bots: number,
+    duplicateBotMessageEnabled = true,
+    settingsOverrides: Partial<
+      Pick<ChatSettings, 'duplicateWarnEnabled' | 'duplicateMuteEnabled' | 'duplicateBanEnabled'>
+    > = {},
+  ) {
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' });
     const s = h;
     await s.redis.set(
@@ -49,6 +60,7 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
       duplicateMuteEnabled: true,
       duplicateBanEnabled: true,
       duplicateWarnMaxCount: 1,
+      ...settingsOverrides,
     });
     if (!chatId) throw new Error('Expected native duplicate chat');
     const originalId = `original-${randomUUID()}`;
@@ -194,6 +206,131 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     expect(s.effects).toEqual([]);
     return intent;
   }
+
+  it('completes mirrored duplicate receipts and following work while its optional explanation is pending after deletion', async () => {
+    const { s, chatId, duplicateId, text } = await fixture(4, true, {
+      duplicateWarnEnabled: false,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+    let profile: WebhookHotPathProfile | undefined;
+    const handle = s.moderation.handleUpdate.bind(s.moderation);
+    const handler = jest.spyOn(s.moderation, 'handleUpdate').mockImplementation((...args) => {
+      if (args[0].message?.messageId === duplicateId) profile = args[1];
+      return handle(...args);
+    });
+    const execute = s.moderation.executeDuplicateAction.bind(s.moderation);
+    jest.spyOn(s.moderation, 'executeDuplicateAction').mockImplementation((...args) => {
+      if (args[0].messageId === duplicateId && profile) {
+        // FLAG: Model consumed handler time only; database/Redis clocks and immutable
+        // source deadlines stay real, as do every qualification and dispatch guard.
+        profile.startedAtMs = Date.now() - (DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS - 500);
+      }
+      return execute(...args);
+    });
+    const scheduler = s.moderation as unknown as {
+      scheduleDetachedWebhookFollowUp(params: { stage: string; task: () => Promise<void> }): void;
+    };
+    const scheduleFollowUp = scheduler.scheduleDetachedWebhookFollowUp.bind(scheduler);
+    let finishFollowUp!: () => void;
+    const followUpFinished = new Promise<void>((resolve) => {
+      finishFollowUp = resolve;
+    });
+    const schedule = jest
+      .spyOn(scheduler, 'scheduleDetachedWebhookFollowUp')
+      .mockImplementation((params) =>
+        scheduleFollowUp({
+          ...params,
+          task: async () => {
+            try {
+              await params.task();
+            } finally {
+              finishFollowUp();
+            }
+          },
+        }),
+      );
+    let releaseExplanation!: () => void;
+    const explanationGate = new Promise<void>((resolve) => {
+      releaseExplanation = resolve;
+    });
+    let explanationTask: ReturnType<typeof s.max.sendMessage> | undefined;
+    const send = s.max.sendMessage.bind(s.max);
+    jest.spyOn(s.max, 'sendMessage').mockImplementation((...args) => {
+      if (args[3]?.idempotencyKey === `message_v1-duplicate:${chatId}:${duplicateId}:explanation`) {
+        explanationTask = (async () => {
+          await explanationGate;
+          return send(...args);
+        })();
+        return explanationTask;
+      }
+      return send(...args);
+    });
+    try {
+      const at = Date.now();
+      const ids = await Promise.all(
+        s.bots.map((bot) => s.ingest({ chatId, messageId: duplicateId, text, at, botId: bot.id })),
+      );
+      const receipts = await waitForReceipts(s, ids);
+      expect(receipts.map((row) => row.status).sort()).toEqual([
+        'DUPLICATE',
+        'DUPLICATE',
+        'DUPLICATE',
+        'PROCESSED',
+      ]);
+      expect(profile).toMatchObject({
+        successBoundaryReached: true,
+        successBoundaryStage: 'duplicate-delete',
+      });
+      expect(schedule).toHaveBeenCalledTimes(1);
+      expect(schedule).toHaveBeenCalledWith(
+        expect.objectContaining({ stage: 'duplicate-follow-up' }),
+      );
+      expect(explanationTask).toBeDefined();
+      const intent = await s.prisma.moderationDeleteIntent.findFirstOrThrow({
+        where: { chatId, messageId: duplicateId },
+      });
+      expect(intent).toMatchObject({
+        status: 'SUCCEEDED',
+        remoteDeleteSucceededAt: expect.any(Date),
+        remoteDeleteSucceededBotId: expect.any(String),
+      });
+      const execution = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { kind: 'EXECUTION', webhookEventId: { in: ids } },
+      });
+      expect(execution).toMatchObject({
+        status: 'COMPLETED',
+        commandResult: expect.objectContaining({ kind: 'EXECUTION_FINISHED' }),
+      });
+      expect(
+        s.effects.filter(
+          (effect) => effect.method === 'delete' && effect.messageId === duplicateId,
+        ),
+      ).toHaveLength(1);
+      expect(s.effects.filter((effect) => effect.method === 'post')).toHaveLength(0);
+      const next = await s.ingest({
+        chatId,
+        messageId: `following-${randomUUID()}`,
+        text: 'Independent new content progresses while an explanation is pending',
+        at: Date.now(),
+      });
+      expect((await waitForReceipts(s, [next]))[0]!.status).toBe('PROCESSED');
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(
+        handler.mock.calls.filter(([update]) => update.message?.messageId === duplicateId),
+      ).toHaveLength(1);
+      expect(s.failures).toEqual([]);
+    } finally {
+      releaseExplanation();
+      // FLAG: Await the scheduled task even if an assertion failed before its
+      // setImmediate reached the SEND spy; no late store access may outlive disposal.
+      if (schedule.mock.calls.length) await followUpFinished;
+    }
+    expect(s.effects.filter((effect) => effect.method === 'post')).toHaveLength(1);
+    expect(
+      s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === duplicateId),
+    ).toHaveLength(1);
+  });
 
   it('declines sanction before state changes while a competing DELETE owner is unfinished and the source is still visible', async () => {
     const f = await fixture(4, false);
