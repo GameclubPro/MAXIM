@@ -9,6 +9,10 @@ import {
   formatDuplicateWindowLabel,
   resolveDuplicateAllowedCount,
 } from './settings-duplicate-flow';
+import {
+  formatDuplicatePhotoScopeSummary,
+  type DuplicatePhotoScope,
+} from './settings-duplicate-photo-options';
 
 export type DuplicatePhotoPresentationPolicy = DuplicatePhotoEffectivePolicy;
 
@@ -67,9 +71,10 @@ export function formatDuplicatePhotoCoverageLabel(
 
 export function formatDuplicatePhotoModerationHint(
   policy: DuplicatePhotoPresentationPolicy,
+  scope: DuplicatePhotoScope,
 ): string {
   return policy.moderationMode === 'FULL'
-    ? 'Для одинаковых картинок действует общая цепочка антидубля. Подписи не учитываются; счётчик повторов отдельный для каждого участника.'
+    ? `Для одинаковых картинок действует общая цепочка антидубля. Поиск повторов: ${formatDuplicatePhotoScopeSummary(scope).toLowerCase()}. Подписи не учитываются. Допуск повторов, предупреждения и ограничения учитываются отдельно для каждого участника.`
     : 'Удаление одинаковых картинок сейчас недоступно.';
 }
 
@@ -77,6 +82,7 @@ export function formatDuplicateActionSummary(
   settings: Pick<
     ChatSettings,
     | 'duplicateCompareMode'
+    | 'duplicatePhotoScope'
     | 'duplicateBotMessageEnabled'
     | 'duplicateWarnEnabled'
     | 'duplicateMuteEnabled'
@@ -101,7 +107,9 @@ export function formatDuplicateActionSummary(
     actions.length
       ? `Дальнейшие действия: ${actions.join('; ')}.`
       : 'Предупреждения и ограничения для текста выключены.',
-    settings.duplicateCompareMode !== 'TEXT' ? formatDuplicatePhotoModerationHint(photoPolicy) : '',
+    settings.duplicateCompareMode !== 'TEXT'
+      ? formatDuplicatePhotoModerationHint(photoPolicy, settings.duplicatePhotoScope)
+      : '',
   ]
     .filter(Boolean)
     .join(' ');

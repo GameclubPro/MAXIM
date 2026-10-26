@@ -1,6 +1,7 @@
 import { SegmentedControl } from '../../components/ui/segmented-control';
 import {
   DUPLICATE_PHOTO_SCOPE_OPTIONS,
+  formatDuplicatePhotoScopeSummary,
   type DuplicatePhotoScope,
 } from './settings-duplicate-photo-options';
 import type { DuplicatePhotoPresentationPolicy } from './settings-duplicate-photo-status';
@@ -50,6 +51,10 @@ export default function SettingsDuplicatePhotoControls({
         </div>
         <dl className="duplicate-diagnostics__facts">
           <div>
+            <dt>Поиск повторов</dt>
+            <dd>{formatDuplicatePhotoScopeSummary(scope)}</dd>
+          </div>
+          <div>
             <dt>Подпись</dt>
             <dd>Не учитывается</dd>
           </div>
@@ -58,10 +63,16 @@ export default function SettingsDuplicatePhotoControls({
             <dd>Как для текста</dd>
           </div>
           <div>
-            <dt>Счётчик повторов</dt>
+            <dt>Предупреждения и ограничения</dt>
             <dd>Отдельно для каждого участника</dd>
           </div>
         </dl>
+        {scope === 'CHAT' ? (
+          <p className="field__hint">
+            Одинаковая картинка считается повтором, даже если её прислал другой участник. Допуск
+            повторов и дальнейшие действия учитываются отдельно для отправителя.
+          </p>
+        ) : null}
       </div>
     </>
   );
