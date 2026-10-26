@@ -121,6 +121,21 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     'dialogBotId' | 'publisherDialogContext' | 'publicationPolicyRevision'
   >;
 
+  async function seedIndexedRows(sql: Prisma.Sql, client: PrismaClient = db): Promise<number> {
+    // FLAG: Limit planner changes to fixture inserts; preserve initial table statistics
+    // and restore the connection before production selection and plan assertions.
+    const [settings, inserted] = await client.$transaction([
+      client.$queryRaw<Array<{ seq: string; jit: string; cache: string }>>(Prisma.sql`
+        SELECT set_config('enable_seqscan', 'off', true) AS seq,
+          set_config('jit', 'off', true) AS jit,
+          set_config('plan_cache_mode', 'force_custom_plan', true) AS cache
+      `),
+      client.$executeRaw(sql),
+    ]);
+    expect(settings).toEqual([{ seq: 'off', jit: 'off', cache: 'force_custom_plan' }]);
+    return inserted;
+  }
+
   beforeAll(async () => {
     const url = new URL(databaseUrl);
     if (
@@ -456,121 +471,206 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       expect(await selected(mode)).toEqual([{ id: bucket < Number(mode) ? ready.id : waiting.id }]);
   });
 
-  it.each([10_000, 50_000])(
+  describe.each([10_000, 50_000])(
     'bounds delivery probes behind %i stale execution parents and retained terminal history',
-    async (parents) => {
-      const prefix = `execution-parent-${randomUUID()}`;
+    (parents) => {
       const retained = Math.floor(parents / 10);
-      const previousContent = await db.publicationContentRevision.create({
-        data: { publicationId, revision: 2, text: 'Retained mismatched envelope' },
-      });
-      // FLAG: This fixture stresses parent selection, not a large audience under one parent.
-      // Each retained or stale envelope has one immutable recipient; all rows are test-owned.
-      await db.$executeRaw(Prisma.sql`
-        INSERT INTO "publication_occurrences" (
-          "id", "publication_id", "schedule_id", "content_revision_id", "schedule_revision",
-          "scheduled_at", "status", "dispatch_profile", "required_bot_id", "delivery_deadline_at", "updated_at"
-        )
-        SELECT ${prefix} || '-occurrence-' || n::text, ${publicationId}, ${scheduleId},
-          ${contentRevisionId}, 1, ${now}::timestamp - interval '1 day' + n * interval '1 millisecond',
-          CASE WHEN n <= ${parents} THEN 'SCHEDULED'::"PublicationOccurrenceStatus" ELSE 'SENT'::"PublicationOccurrenceStatus" END,
-          'PUBLIK_V1', ${botId}, ${new Date(now.getTime() + 86_400_000)}, ${now}
-        FROM generate_series(1, ${parents + retained}::integer) AS n
-      `);
-      await db.$executeRaw(Prisma.sql`
-        INSERT INTO "managed_broadcasts" (
-          "id", "source_chat_id", "actor_user_id", "target_chat_ids", "buttons", "status",
-          "publication_occurrence_id", "publication_content_revision_id", "dispatch_profile", "required_bot_id", "next_send_at", "updated_at"
-        )
-        SELECT ${prefix} || '-broadcast-' || n::text, ${sourceChatId}, ${sourceChatId},
-          ${JSON.stringify([sourceChatId])}::jsonb, '[]'::jsonb,
-          CASE WHEN n <= ${parents} THEN 'ACTIVE'::"ManagedBroadcastStatus" ELSE 'COMPLETED'::"ManagedBroadcastStatus" END,
-          ${prefix} || '-occurrence-' || n::text, ${previousContent.id}, 'PUBLIK_V1', ${botId},
-          ${now}::timestamp - interval '1 day' + n * interval '1 millisecond', ${now}
-        FROM generate_series(1, ${parents + retained}::integer) AS n
-      `);
-      // FLAG: Keep the same full fixture, but bound each synthetic recipient insert.
-      // CI shares CPU with other jobs; seed timeouts must not replace query-plan checks.
-      for (let first = 1; first <= parents + retained; first += 2_000) {
-        await db.$executeRaw(Prisma.sql`
-        INSERT INTO "managed_broadcast_deliveries" (
-          "id", "broadcast_id", "occurrence_index", "target_chat_id", "publication_occurrence_id",
-          "content_revision_id", "dispatch_profile", "required_bot_id", "dialog_bot_id",
-          "publisher_dialog_context", "publication_policy_revision", "status", "attempt_count",
-          "bot_id", "remote_message_id", "sent_at", "updated_at"
-        )
-        SELECT ${prefix} || '-delivery-' || n::text, ${prefix} || '-broadcast-' || n::text,
-          1, ${sourceChatId}, ${prefix} || '-occurrence-' || n::text, ${previousContent.id},
-          'PUBLIK_V1', ${botId}, ${deliveryRoute.dialogBotId},
-          ${JSON.stringify(deliveryRoute.publisherDialogContext)}::jsonb, ${deliveryRoute.publicationPolicyRevision},
-          CASE WHEN n <= ${parents} THEN 'PENDING'::"ManagedBroadcastDeliveryStatus" ELSE 'SENT'::"ManagedBroadcastDeliveryStatus" END,
-          CASE WHEN n <= ${parents} THEN 0 ELSE 1 END,
-          CASE WHEN n <= ${parents} THEN NULL::text ELSE ${botId} END,
-          CASE WHEN n <= ${parents} THEN NULL::text ELSE ${prefix} || '-receipt-' || n::text END,
-          CASE WHEN n <= ${parents} THEN NULL::timestamp ELSE statement_timestamp()::timestamp(3) END,
-          ${now}
-        FROM generate_series(${first}::integer, ${Math.min(first + 1_999, parents + retained)}::integer) AS n
-      `);
-      }
-      const ready = await envelope(-1_000);
-      const options = {
-        now,
-        staleLockBefore: new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS),
-        scheduleModes: ['NOW'] as const,
-      };
-      const execution = buildPublisherExecutionDueQuery({ ...options, limit: 25 });
-      const wake = buildPublisherPendingExecutionDeadlineQuery(options);
-      const executionStarted = performance.now();
-      const executionRows = await withPublisherPublicationSelectionPlan(db, (tx) =>
-        tx.$queryRaw(execution),
-      );
-      const executionWallMs = performance.now() - executionStarted;
-      expect(executionRows).toEqual([{ id: ready.id }]);
-      const wakeStarted = performance.now();
-      const wakeRows = await withPublisherPublicationSelectionPlan(db, (tx) => tx.$queryRaw(wake));
-      const wakeWallMs = performance.now() - wakeStarted;
-      expect(wakeRows).toEqual([{ id: ready.id, nextSendAt: new Date(now.getTime() - 1_000) }]);
-      const summarize = (plan: Explained) => ({
-        durationMs: plan[0]!['QUERY PLAN'][0]!['Execution Time'],
-        nodes: planNodes(plan)
-          .filter((node) => node['Relation Name'])
-          .map((node) => ({
-            relation: node['Relation Name'],
-            alias: node.Alias,
-            type: node['Node Type'],
-            index: node['Index Name'],
-            rows: node['Actual Rows'],
-            loops: node['Actual Loops'],
-            filtered: node['Rows Removed by Filter'] ?? 0,
-            buffers: (node['Shared Hit Blocks'] ?? 0) + (node['Shared Read Blocks'] ?? 0),
-          })),
-      });
-      for (const statistics of ['initial', 'analyzed'] as const) {
-        if (statistics === 'analyzed')
-          for (const table of [
-            'managed_broadcasts',
-            'publication_occurrences',
-            'managed_broadcast_deliveries',
-          ])
-            await db.$executeRawUnsafe(`ANALYZE ${table}`);
-        const executionPlan = await explain(execution);
-        const wakePlan = await explain(wake);
-        console.info(
-          'Publisher many-parent selection plans',
-          JSON.stringify({
-            parents,
-            retained,
-            statistics,
-            wrapperWallMs: { execution: executionWallMs, wake: wakeWallMs },
-            execution: summarize(executionPlan),
-            wake: summarize(wakePlan),
-          }),
-        );
-        for (const plan of [executionPlan, wakePlan]) {
-          expect(plan[0]!['QUERY PLAN'][0]!.Plan['Actual Rows']).toBe(1);
-          expectExecutionRecipientBounds(plan, 1);
+      let prefix: string;
+      let previousContent: { id: string };
+      let ready: Envelope;
+
+      // FLAG: Parent and recipient fixtures have independent 30-second hooks.
+      // Their combined setup allowance is 60 seconds; selection retains 30 seconds.
+      beforeEach(async () => {
+        const seedStarted = performance.now();
+        const stageTimingsMs: Record<string, number> = {};
+        let seedStage = 'prepare';
+        let stageStarted = seedStarted;
+        let completed = false;
+        try {
+          prefix = `execution-parent-${randomUUID()}`;
+          previousContent = await db.publicationContentRevision.create({
+            data: { publicationId, revision: 2, text: 'Retained mismatched envelope' },
+          });
+          stageTimingsMs.prepare = performance.now() - stageStarted;
+          seedStage = 'occurrences';
+          stageStarted = performance.now();
+          // FLAG: This fixture stresses parent selection, not a large audience under one parent.
+          // Each retained or stale envelope has one immutable recipient; all rows are test-owned.
+          await db.$executeRaw(Prisma.sql`
+            INSERT INTO "publication_occurrences" (
+              "id", "publication_id", "schedule_id", "content_revision_id", "schedule_revision",
+              "scheduled_at", "status", "dispatch_profile", "required_bot_id", "delivery_deadline_at", "updated_at"
+            )
+            SELECT ${prefix} || '-occurrence-' || n::text, ${publicationId}, ${scheduleId},
+              ${contentRevisionId}, 1, ${now}::timestamp - interval '1 day' + n * interval '1 millisecond',
+              CASE WHEN n <= ${parents} THEN 'SCHEDULED'::"PublicationOccurrenceStatus" ELSE 'SENT'::"PublicationOccurrenceStatus" END,
+              'PUBLIK_V1', ${botId}, ${new Date(now.getTime() + 86_400_000)}, ${now}
+            FROM generate_series(1, ${parents + retained}::integer) AS n
+          `);
+          stageTimingsMs.occurrences = performance.now() - stageStarted;
+          seedStage = 'broadcasts';
+          stageStarted = performance.now();
+          // FLAG: Bound row-triggered inserts without reducing the retained parent history.
+          for (let first = 1; first <= parents + retained; first += 2_000) {
+            await seedIndexedRows(Prisma.sql`
+            INSERT INTO "managed_broadcasts" (
+              "id", "source_chat_id", "actor_user_id", "target_chat_ids", "buttons", "status",
+              "publication_occurrence_id", "publication_content_revision_id", "dispatch_profile", "required_bot_id", "next_send_at", "updated_at"
+            )
+            SELECT ${prefix} || '-broadcast-' || n::text, ${sourceChatId}, ${sourceChatId},
+              ${JSON.stringify([sourceChatId])}::jsonb, '[]'::jsonb,
+              CASE WHEN n <= ${parents} THEN 'ACTIVE'::"ManagedBroadcastStatus" ELSE 'COMPLETED'::"ManagedBroadcastStatus" END,
+              ${prefix} || '-occurrence-' || n::text, ${previousContent.id}, 'PUBLIK_V1', ${botId},
+              ${now}::timestamp - interval '1 day' + n * interval '1 millisecond', ${now}
+            FROM generate_series(${first}::integer, ${Math.min(first + 1_999, parents + retained)}::integer) AS n
+          `);
+          }
+          completed = true;
+        } finally {
+          stageTimingsMs[seedStage] = performance.now() - stageStarted;
+          console.info(
+            'Publisher many-parent phase timing',
+            JSON.stringify({
+              parents,
+              retained,
+              phase: 'seed-parents',
+              completed,
+              seedStage,
+              stageTimingsMs,
+              wallMs: performance.now() - seedStarted,
+            }),
+          );
         }
-      }
+      });
+
+      beforeEach(async () => {
+        const seedStarted = performance.now();
+        const stageTimingsMs: Record<string, number> = {};
+        let seedStage = 'deliveries';
+        let stageStarted = seedStarted;
+        let completed = false;
+        try {
+          // FLAG: Keep the same full fixture, but bound each synthetic recipient insert.
+          // CI shares CPU with other jobs; seed timeouts must not replace query-plan checks.
+          for (let first = 1; first <= parents + retained; first += 2_000) {
+            await seedIndexedRows(Prisma.sql`
+            INSERT INTO "managed_broadcast_deliveries" (
+              "id", "broadcast_id", "occurrence_index", "target_chat_id", "publication_occurrence_id",
+              "content_revision_id", "dispatch_profile", "required_bot_id", "dialog_bot_id",
+              "publisher_dialog_context", "publication_policy_revision", "status", "attempt_count",
+              "bot_id", "remote_message_id", "sent_at", "updated_at"
+            )
+            SELECT ${prefix} || '-delivery-' || n::text, ${prefix} || '-broadcast-' || n::text,
+              1, ${sourceChatId}, ${prefix} || '-occurrence-' || n::text, ${previousContent.id},
+              'PUBLIK_V1', ${botId}, ${deliveryRoute.dialogBotId},
+              ${JSON.stringify(deliveryRoute.publisherDialogContext)}::jsonb, ${deliveryRoute.publicationPolicyRevision},
+              CASE WHEN n <= ${parents} THEN 'PENDING'::"ManagedBroadcastDeliveryStatus" ELSE 'SENT'::"ManagedBroadcastDeliveryStatus" END,
+              CASE WHEN n <= ${parents} THEN 0 ELSE 1 END,
+              CASE WHEN n <= ${parents} THEN NULL::text ELSE ${botId} END,
+              CASE WHEN n <= ${parents} THEN NULL::text ELSE ${prefix} || '-receipt-' || n::text END,
+              CASE WHEN n <= ${parents} THEN NULL::timestamp ELSE statement_timestamp()::timestamp(3) END,
+              ${now}
+            FROM generate_series(${first}::integer, ${Math.min(first + 1_999, parents + retained)}::integer) AS n
+          `);
+          }
+          stageTimingsMs.deliveries = performance.now() - stageStarted;
+          seedStage = 'ready';
+          stageStarted = performance.now();
+          ready = await envelope(-1_000);
+          completed = true;
+        } finally {
+          stageTimingsMs[seedStage] = performance.now() - stageStarted;
+          console.info(
+            'Publisher many-parent phase timing',
+            JSON.stringify({
+              parents,
+              retained,
+              phase: 'seed-recipients',
+              completed,
+              seedStage,
+              stageTimingsMs,
+              wallMs: performance.now() - seedStarted,
+            }),
+          );
+        }
+      });
+
+      it('selects ready work with bounded recipient probes before and after ANALYZE', async () => {
+        const selectionStarted = performance.now();
+        try {
+          const options = {
+            now,
+            staleLockBefore: new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS),
+            scheduleModes: ['NOW'] as const,
+          };
+          const execution = buildPublisherExecutionDueQuery({ ...options, limit: 25 });
+          const wake = buildPublisherPendingExecutionDeadlineQuery(options);
+          const executionStarted = performance.now();
+          const executionRows = await withPublisherPublicationSelectionPlan(db, (tx) =>
+            tx.$queryRaw(execution),
+          );
+          const executionWallMs = performance.now() - executionStarted;
+          expect(executionRows).toEqual([{ id: ready.id }]);
+          const wakeStarted = performance.now();
+          const wakeRows = await withPublisherPublicationSelectionPlan(db, (tx) =>
+            tx.$queryRaw(wake),
+          );
+          const wakeWallMs = performance.now() - wakeStarted;
+          expect(wakeRows).toEqual([{ id: ready.id, nextSendAt: new Date(now.getTime() - 1_000) }]);
+          const summarize = (plan: Explained) => ({
+            durationMs: plan[0]!['QUERY PLAN'][0]!['Execution Time'],
+            nodes: planNodes(plan)
+              .filter((node) => node['Relation Name'])
+              .map((node) => ({
+                relation: node['Relation Name'],
+                alias: node.Alias,
+                type: node['Node Type'],
+                index: node['Index Name'],
+                rows: node['Actual Rows'],
+                loops: node['Actual Loops'],
+                filtered: node['Rows Removed by Filter'] ?? 0,
+                buffers: (node['Shared Hit Blocks'] ?? 0) + (node['Shared Read Blocks'] ?? 0),
+              })),
+          });
+          for (const statistics of ['initial', 'analyzed'] as const) {
+            if (statistics === 'analyzed')
+              for (const table of [
+                'managed_broadcasts',
+                'publication_occurrences',
+                'managed_broadcast_deliveries',
+              ])
+                await db.$executeRawUnsafe(`ANALYZE ${table}`);
+            const executionPlan = await explain(execution);
+            const wakePlan = await explain(wake);
+            console.info(
+              'Publisher many-parent selection plans',
+              JSON.stringify({
+                parents,
+                retained,
+                statistics,
+                wrapperWallMs: { execution: executionWallMs, wake: wakeWallMs },
+                execution: summarize(executionPlan),
+                wake: summarize(wakePlan),
+              }),
+            );
+            for (const plan of [executionPlan, wakePlan]) {
+              expect(plan[0]!['QUERY PLAN'][0]!.Plan['Actual Rows']).toBe(1);
+              expectExecutionRecipientBounds(plan, 1);
+            }
+          }
+        } finally {
+          console.info(
+            'Publisher many-parent phase timing',
+            JSON.stringify({
+              parents,
+              retained,
+              phase: 'selection-and-assertions',
+              wallMs: performance.now() - selectionStarted,
+            }),
+          );
+        }
+      });
     },
   );
 
@@ -1606,23 +1706,37 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     const settings = Prisma.sql`
       SELECT pg_backend_pid() AS pid, current_setting('enable_seqscan') AS seq,
         current_setting('enable_bitmapscan') AS bitmap, current_setting('enable_sort') AS sort,
-        current_setting('jit') AS jit
+        current_setting('jit') AS jit, current_setting('plan_cache_mode') AS cache
     `;
-    type Settings = { pid: number; seq: string; bitmap: string; sort: string; jit: string };
+    type Settings = {
+      pid: number;
+      seq: string;
+      bitmap: string;
+      sort: string;
+      jit: string;
+      cache: string;
+    };
     try {
       // FLAG: Use one disposable connection so a leaked session setting cannot hide
       // behind a different pooled connection. No production session is configured.
       await connection.$queryRaw(Prisma.sql`
         SELECT set_config('enable_seqscan', 'on', false),
           set_config('enable_bitmapscan', 'on', false), set_config('enable_sort', 'on', false),
-          set_config('jit', 'on', false)
+          set_config('jit', 'on', false), set_config('plan_cache_mode', 'force_generic_plan', false)
       `);
       const before = await connection.$queryRaw<Settings[]>(settings);
       const during = await withPublisherTemporalSelectionPlan(connection, (tx) =>
         tx.$queryRaw<Settings[]>(settings),
       );
       expect(during).toEqual([
-        { pid: before[0]!.pid, seq: 'off', bitmap: 'off', sort: 'off', jit: 'off' },
+        {
+          pid: before[0]!.pid,
+          seq: 'off',
+          bitmap: 'off',
+          sort: 'off',
+          jit: 'off',
+          cache: 'force_generic_plan',
+        },
       ]);
       expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
       await expect(
@@ -1631,6 +1745,20 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
           throw new Error('synthetic temporal read failure');
         }),
       ).rejects.toThrow('synthetic temporal read failure');
+      expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
+      await seedIndexedRows(
+        Prisma.sql`CREATE TEMP TABLE fixture_seed_planner_probe AS ${settings}`,
+        connection,
+      );
+      expect(
+        await connection.$queryRaw<Settings[]>(
+          Prisma.sql`SELECT * FROM fixture_seed_planner_probe`,
+        ),
+      ).toEqual([{ ...before[0]!, seq: 'off', jit: 'off', cache: 'force_custom_plan' }]);
+      expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
+      await expect(seedIndexedRows(Prisma.sql`SELECT 1 / 0`, connection)).rejects.toThrow(
+        /division by zero/u,
+      );
       expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
     } finally {
       await connection.$disconnect();
@@ -1687,7 +1815,12 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
           where: { sourceChatId, id: { startsWith: retiredPrefix } },
         });
       }
-      await db.$executeRaw(Prisma.sql`
+      // FLAG: Retain every audience row while bounding each trigger and foreign-key batch.
+      const deliverySeedStarted = performance.now();
+      let deliverySeedCompleted = false;
+      try {
+        for (let first = 0; first < audience; first += 2_000) {
+          await seedIndexedRows(Prisma.sql`
       INSERT INTO "managed_broadcast_deliveries" (
         "id", "broadcast_id", "occurrence_index", "target_chat_id",
         "publication_occurrence_id", "content_revision_id", "dispatch_profile", "required_bot_id",
@@ -1699,8 +1832,22 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
         'PUBLIK_V1', ${botId}, ${deliveryRoute.dialogBotId},
         ${JSON.stringify(deliveryRoute.publisherDialogContext)}::jsonb, 0,
         ${new Date(now.getTime() + 60_000)}, ${now}
-      FROM generate_series(0, ${audience - 1}::integer) AS n
+      FROM generate_series(${first}::integer, ${Math.min(first + 1_999, audience - 1)}::integer) AS n
     `);
+        }
+        deliverySeedCompleted = true;
+      } finally {
+        console.info(
+          'Publisher current-audience phase timing',
+          JSON.stringify({
+            audience,
+            statistics,
+            phase: 'seed-deliveries',
+            completed: deliverySeedCompleted,
+            wallMs: performance.now() - deliverySeedStarted,
+          }),
+        );
+      }
       const saturatedPlan = await explain(query('100'));
       console.info('Publisher temporal saturated key-page plan', JSON.stringify(saturatedPlan));
       expectTemporalBounds(saturatedPlan, 65, true);

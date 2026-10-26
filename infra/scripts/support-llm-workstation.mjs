@@ -32,6 +32,7 @@ const REQUIRED_FILES = [
   SCRIPT,
   'support-llm-profile.mjs',
   'support-llm-client.mjs',
+  'support-llm-routing.mjs',
   'support-llm-knowledge.json',
   'commercial-llm-workstation-profile.mjs',
 ];
