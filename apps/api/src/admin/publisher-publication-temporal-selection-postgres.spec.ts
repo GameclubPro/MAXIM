@@ -475,10 +475,12 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     'bounds delivery probes behind %i stale execution parents and retained terminal history',
     (parents) => {
       const retained = Math.floor(parents / 10);
+      let prefix: string;
+      let previousContent: { id: string };
       let ready: Envelope;
 
-      // FLAG: The full row-triggered fixture has its own unchanged setup budget.
-      // Selection and plan assertions retain the independent 30-second test budget.
+      // FLAG: Parent and recipient fixtures have independent 30-second hooks.
+      // Their combined setup allowance is 60 seconds; selection retains 30 seconds.
       beforeEach(async () => {
         const seedStarted = performance.now();
         const stageTimingsMs: Record<string, number> = {};
@@ -486,8 +488,8 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
         let stageStarted = seedStarted;
         let completed = false;
         try {
-          const prefix = `execution-parent-${randomUUID()}`;
-          const previousContent = await db.publicationContentRevision.create({
+          prefix = `execution-parent-${randomUUID()}`;
+          previousContent = await db.publicationContentRevision.create({
             data: { publicationId, revision: 2, text: 'Retained mismatched envelope' },
           });
           stageTimingsMs.prepare = performance.now() - stageStarted;
@@ -524,9 +526,31 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
             FROM generate_series(${first}::integer, ${Math.min(first + 1_999, parents + retained)}::integer) AS n
           `);
           }
-          stageTimingsMs.broadcasts = performance.now() - stageStarted;
-          seedStage = 'deliveries';
-          stageStarted = performance.now();
+          completed = true;
+        } finally {
+          stageTimingsMs[seedStage] = performance.now() - stageStarted;
+          console.info(
+            'Publisher many-parent phase timing',
+            JSON.stringify({
+              parents,
+              retained,
+              phase: 'seed-parents',
+              completed,
+              seedStage,
+              stageTimingsMs,
+              wallMs: performance.now() - seedStarted,
+            }),
+          );
+        }
+      });
+
+      beforeEach(async () => {
+        const seedStarted = performance.now();
+        const stageTimingsMs: Record<string, number> = {};
+        let seedStage = 'deliveries';
+        let stageStarted = seedStarted;
+        let completed = false;
+        try {
           // FLAG: Keep the same full fixture, but bound each synthetic recipient insert.
           // CI shares CPU with other jobs; seed timeouts must not replace query-plan checks.
           for (let first = 1; first <= parents + retained; first += 2_000) {
@@ -562,7 +586,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
             JSON.stringify({
               parents,
               retained,
-              phase: 'seed',
+              phase: 'seed-recipients',
               completed,
               seedStage,
               stageTimingsMs,
