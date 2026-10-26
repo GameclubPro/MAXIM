@@ -64,6 +64,13 @@ export async function runRetentionRegressions(browser, base) {
         assert.equal(await page.getByText('«Ластик» подключён', { exact: true }).count(), 0);
         await mixedToggle.focus();
         await page.keyboard.press('Tab');
+        assert.equal(
+          await page
+            .locator('.message-retention-help > summary')
+            .evaluate((node) => node === document.activeElement),
+          true,
+        );
+        await page.keyboard.press('Tab');
         assert.equal(await first.evaluate((node) => node === document.activeElement), true);
         await page.keyboard.press('ArrowRight');
         assert.equal(await group.getByRole('radio', { name: '48 часов' }).isChecked(), true);
@@ -419,7 +426,10 @@ export async function runRetentionRegressions(browser, base) {
           window.__RETENTION_TEST__.publishSummary({ status: 'unavailable' });
         });
         // The overview contains only the module name; connection/status belongs inside the panel.
+        await panel.waitFor({ state: 'hidden' });
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
         assert.equal(await entry.innerText(), 'Удаление старых сообщений');
+        assert.equal(await entry.locator('.settings-section__status-chip').count(), 0);
         assert.equal(
           await page.evaluate(
             () => window.__RETENTION_TEST__.requests.filter((method) => method === 'GET').length,
@@ -429,6 +439,11 @@ export async function runRetentionRegressions(browser, base) {
         await entry.click();
         await panel.getByText('Временно недоступно', { exact: true }).waitFor();
         assert.equal(await page.locator('#settings-message-retention-entry-status').count(), 0);
+        assert.equal(await entry.innerText(), 'Удаление старых сообщений');
+        assert.equal(
+          await panel.getByRole('switch', { name: 'Удаление по сроку' }).isDisabled(),
+          true,
+        );
       }
       if (scenario === 'chat-change') {
         await toggle.check();

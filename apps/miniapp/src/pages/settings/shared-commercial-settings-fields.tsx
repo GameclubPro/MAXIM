@@ -123,56 +123,42 @@ export function SharedCommercialSettingsFields({
         {openHint === 'master' ? (
           <p id={`${id}-master`} className="commercial-studio__hint">
             {aiDeletes
-              ? 'ИИ удаляет коммерческую рекламу после серверной проверки. Личные продажи и обычное общение старается пропускать. Автоматические баны и муты не применяются.'
+              ? 'Рекламу и спорные сообщения перепроверяет вторая модель. Если результат неоднозначен, сообщение остаётся. Личные продажи и обычное общение стараемся пропускать. Баны и муты не применяются; другие фильтры работают независимо.'
               : 'Фильтр ищет коммерческие предложения и удаляет подтверждённую рекламу. Разовые личные продажи старается пропускать.'}
           </p>
         ) : null}
       </div>
 
-      <div className="commercial-studio__ai">
-        <span className="commercial-studio__ai-icon" aria-hidden>
-          <AppIcon icon="Sparks" />
-        </span>
-        <div>
-          <strong>
-            {aiDeletes ? 'Двойная проверка' : mode === 'OBSERVE' ? 'ИИ-анализ' : 'Текстовый фильтр'}
-          </strong>
-          <span>
-            {aiDeletes
-              ? 'Сомнения проверяет сильная модель'
-              : mode === 'OBSERVE'
-                ? 'Пока без автоматических удалений'
-                : 'По настройкам сообщества'}
+      {!aiDeletes ? (
+        <div className="commercial-studio__ai">
+          <span className="commercial-studio__ai-icon" aria-hidden>
+            <AppIcon icon="Sparks" />
+          </span>
+          <div>
+            <strong>{mode === 'OBSERVE' ? 'ИИ-анализ' : 'Текстовый фильтр'}</strong>
+            <span>
+              {mode === 'OBSERVE' ? 'Пока без автоматических удалений' : 'По настройкам сообщества'}
+            </span>
+          </div>
+          <span className="commercial-studio__badge">
+            {mode === 'OBSERVE' ? 'Тест' : 'Правила'}
           </span>
         </div>
-        <span className="commercial-studio__badge">
-          {aiDeletes ? 'ИИ' : mode === 'OBSERVE' ? 'Тест' : 'Правила'}
-        </span>
-      </div>
+      ) : null}
 
       {aiDeletes ? (
-        <section className="commercial-studio__sensitivity" aria-label="Проверка рекламы">
-          <ol className="commercial-studio__flow">
-            <li>
-              <b>01</b>
-              <span>
-                <strong>Быстрый анализ</strong>
-                <small>Первичная модель проверяет текст</small>
-              </span>
-              <AppIcon icon="Sparks" />
-            </li>
-            <li>
-              <b>02</b>
-              <span>
-                <strong>Подтверждение</strong>
-                <small>Сервер проверяет рекламу и сомнения</small>
-              </span>
-              <AppIcon icon="ShieldCheck" />
-            </li>
-          </ol>
-          <p className="commercial-studio__hint">
-            При сбое или занятости ИИ сообщение остаётся. Другие фильтры работают отдельно.
-          </p>
+        <section className="commercial-studio__policy" aria-label="Правила ИИ-модерации">
+          <dl>
+            <div>
+              <dt>Реклама подтверждена</dt>
+              <dd>Удаление</dd>
+            </div>
+            <div>
+              <dt>Результат неоднозначен</dt>
+              <dd>Сохранение</dd>
+            </div>
+          </dl>
+          <p className="commercial-studio__hint">При сбое или занятости ИИ сообщение остаётся.</p>
         </section>
       ) : enabled.kind !== 'common' || enabled.value ? (
         <>

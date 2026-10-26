@@ -51,6 +51,24 @@ try {
         closed: 0,
       });
       await page.screenshot({ path: join(output, `${viewport.width}-${colorScheme}-connect.png`) });
+      const help = panel.locator('.message-retention-help');
+      assert.equal(await help.getAttribute('open'), null);
+      await help.locator('summary').click();
+      assert.equal(await help.getByText(/всей доступной истории/u).isVisible(), true);
+      assert.equal(
+        await help.getByText(/Редактирование не продлевает срок хранения/u).isVisible(),
+        true,
+      );
+      await help.locator('summary').click();
+      assert.equal(
+        await panel
+          .getByText(
+            'Сообщения старше выбранного срока удаляются без возможности восстановления.',
+            { exact: true },
+          )
+          .isVisible(),
+        true,
+      );
       const toggle = panel.getByRole('switch', { name: 'Удаление по сроку' });
       await toggle.check();
       await panel.getByRole('radio', { name: '24 часа' }).check();

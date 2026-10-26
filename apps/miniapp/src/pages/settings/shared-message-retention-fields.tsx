@@ -88,9 +88,16 @@ export function SharedMessageRetentionFields({
         </label>
       </div>
       <p className="message-retention-policy">
-        Удаляются сообщения старше выбранного срока, включая историю до включения. Большая история
-        очищается постепенно.
+        Сообщения старше выбранного срока удаляются без возможности восстановления.
       </p>
+      <details className="message-retention-help">
+        <summary>Как работает очистка</summary>
+        <p>
+          Удаляются сообщения любых авторов из всей доступной истории, включая сообщения до
+          включения. Большая история очищается постепенно.
+        </p>
+        <p>Срок отсчитывается от создания сообщения. Редактирование не продлевает срок хранения.</p>
+      </details>
       <fieldset disabled={disabled || hours.kind === 'loading'}>
         <legend>Удалять сообщения старше</legend>
         {hours.kind === 'mixed' ? <p role="status">Разные значения</p> : null}
@@ -105,7 +112,6 @@ export function SharedMessageRetentionFields({
           onChange={(value) => onHoursChange(value === '24' ? 24 : value === '168' ? 168 : 48)}
         />
       </fieldset>
-      <p className="message-retention-policy">Удалённые сообщения восстановить нельзя.</p>
     </>
   );
 }
