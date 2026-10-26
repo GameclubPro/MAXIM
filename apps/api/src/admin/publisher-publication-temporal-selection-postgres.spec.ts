@@ -121,6 +121,21 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     'dialogBotId' | 'publisherDialogContext' | 'publicationPolicyRevision'
   >;
 
+  async function seedIndexedRows(sql: Prisma.Sql, client: PrismaClient = db): Promise<number> {
+    // FLAG: Limit planner changes to fixture inserts; preserve initial table statistics
+    // and restore the connection before production selection and plan assertions.
+    const [settings, inserted] = await client.$transaction([
+      client.$queryRaw<Array<{ seq: string; jit: string; cache: string }>>(Prisma.sql`
+        SELECT set_config('enable_seqscan', 'off', true) AS seq,
+          set_config('jit', 'off', true) AS jit,
+          set_config('plan_cache_mode', 'force_custom_plan', true) AS cache
+      `),
+      client.$executeRaw(sql),
+    ]);
+    expect(settings).toEqual([{ seq: 'off', jit: 'off', cache: 'force_custom_plan' }]);
+    return inserted;
+  }
+
   beforeAll(async () => {
     const url = new URL(databaseUrl);
     if (
@@ -466,11 +481,18 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       // Selection and plan assertions retain the independent 30-second test budget.
       beforeEach(async () => {
         const seedStarted = performance.now();
+        const stageTimingsMs: Record<string, number> = {};
+        let seedStage = 'prepare';
+        let stageStarted = seedStarted;
+        let completed = false;
         try {
           const prefix = `execution-parent-${randomUUID()}`;
           const previousContent = await db.publicationContentRevision.create({
             data: { publicationId, revision: 2, text: 'Retained mismatched envelope' },
           });
+          stageTimingsMs.prepare = performance.now() - stageStarted;
+          seedStage = 'occurrences';
+          stageStarted = performance.now();
           // FLAG: This fixture stresses parent selection, not a large audience under one parent.
           // Each retained or stale envelope has one immutable recipient; all rows are test-owned.
           await db.$executeRaw(Prisma.sql`
@@ -484,9 +506,12 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
               'PUBLIK_V1', ${botId}, ${new Date(now.getTime() + 86_400_000)}, ${now}
             FROM generate_series(1, ${parents + retained}::integer) AS n
           `);
+          stageTimingsMs.occurrences = performance.now() - stageStarted;
+          seedStage = 'broadcasts';
+          stageStarted = performance.now();
           // FLAG: Bound row-triggered inserts without reducing the retained parent history.
           for (let first = 1; first <= parents + retained; first += 2_000) {
-            await db.$executeRaw(Prisma.sql`
+            await seedIndexedRows(Prisma.sql`
             INSERT INTO "managed_broadcasts" (
               "id", "source_chat_id", "actor_user_id", "target_chat_ids", "buttons", "status",
               "publication_occurrence_id", "publication_content_revision_id", "dispatch_profile", "required_bot_id", "next_send_at", "updated_at"
@@ -499,10 +524,13 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
             FROM generate_series(${first}::integer, ${Math.min(first + 1_999, parents + retained)}::integer) AS n
           `);
           }
+          stageTimingsMs.broadcasts = performance.now() - stageStarted;
+          seedStage = 'deliveries';
+          stageStarted = performance.now();
           // FLAG: Keep the same full fixture, but bound each synthetic recipient insert.
           // CI shares CPU with other jobs; seed timeouts must not replace query-plan checks.
           for (let first = 1; first <= parents + retained; first += 2_000) {
-            await db.$executeRaw(Prisma.sql`
+            await seedIndexedRows(Prisma.sql`
             INSERT INTO "managed_broadcast_deliveries" (
               "id", "broadcast_id", "occurrence_index", "target_chat_id", "publication_occurrence_id",
               "content_revision_id", "dispatch_profile", "required_bot_id", "dialog_bot_id",
@@ -522,14 +550,22 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
             FROM generate_series(${first}::integer, ${Math.min(first + 1_999, parents + retained)}::integer) AS n
           `);
           }
+          stageTimingsMs.deliveries = performance.now() - stageStarted;
+          seedStage = 'ready';
+          stageStarted = performance.now();
           ready = await envelope(-1_000);
+          completed = true;
         } finally {
+          stageTimingsMs[seedStage] = performance.now() - stageStarted;
           console.info(
             'Publisher many-parent phase timing',
             JSON.stringify({
               parents,
               retained,
               phase: 'seed',
+              completed,
+              seedStage,
+              stageTimingsMs,
               wallMs: performance.now() - seedStarted,
             }),
           );
@@ -1646,23 +1682,37 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
     const settings = Prisma.sql`
       SELECT pg_backend_pid() AS pid, current_setting('enable_seqscan') AS seq,
         current_setting('enable_bitmapscan') AS bitmap, current_setting('enable_sort') AS sort,
-        current_setting('jit') AS jit
+        current_setting('jit') AS jit, current_setting('plan_cache_mode') AS cache
     `;
-    type Settings = { pid: number; seq: string; bitmap: string; sort: string; jit: string };
+    type Settings = {
+      pid: number;
+      seq: string;
+      bitmap: string;
+      sort: string;
+      jit: string;
+      cache: string;
+    };
     try {
       // FLAG: Use one disposable connection so a leaked session setting cannot hide
       // behind a different pooled connection. No production session is configured.
       await connection.$queryRaw(Prisma.sql`
         SELECT set_config('enable_seqscan', 'on', false),
           set_config('enable_bitmapscan', 'on', false), set_config('enable_sort', 'on', false),
-          set_config('jit', 'on', false)
+          set_config('jit', 'on', false), set_config('plan_cache_mode', 'force_generic_plan', false)
       `);
       const before = await connection.$queryRaw<Settings[]>(settings);
       const during = await withPublisherTemporalSelectionPlan(connection, (tx) =>
         tx.$queryRaw<Settings[]>(settings),
       );
       expect(during).toEqual([
-        { pid: before[0]!.pid, seq: 'off', bitmap: 'off', sort: 'off', jit: 'off' },
+        {
+          pid: before[0]!.pid,
+          seq: 'off',
+          bitmap: 'off',
+          sort: 'off',
+          jit: 'off',
+          cache: 'force_generic_plan',
+        },
       ]);
       expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
       await expect(
@@ -1671,6 +1721,20 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
           throw new Error('synthetic temporal read failure');
         }),
       ).rejects.toThrow('synthetic temporal read failure');
+      expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
+      await seedIndexedRows(
+        Prisma.sql`CREATE TEMP TABLE fixture_seed_planner_probe AS ${settings}`,
+        connection,
+      );
+      expect(
+        await connection.$queryRaw<Settings[]>(
+          Prisma.sql`SELECT * FROM fixture_seed_planner_probe`,
+        ),
+      ).toEqual([{ ...before[0]!, seq: 'off', jit: 'off', cache: 'force_custom_plan' }]);
+      expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
+      await expect(seedIndexedRows(Prisma.sql`SELECT 1 / 0`, connection)).rejects.toThrow(
+        /division by zero/u,
+      );
       expect(await connection.$queryRaw<Settings[]>(settings)).toEqual(before);
     } finally {
       await connection.$disconnect();
@@ -1732,7 +1796,7 @@ postgres('Publisher temporal selection boundaries on PostgreSQL', () => {
       let deliverySeedCompleted = false;
       try {
         for (let first = 0; first < audience; first += 2_000) {
-          await db.$executeRaw(Prisma.sql`
+          await seedIndexedRows(Prisma.sql`
       INSERT INTO "managed_broadcast_deliveries" (
         "id", "broadcast_id", "occurrence_index", "target_chat_id",
         "publication_occurrence_id", "content_revision_id", "dispatch_profile", "required_bot_id",
