@@ -94,6 +94,11 @@ const ACTIVE_RELEASE_COMPONENTS = Object.freeze([
   'miniapp-major-static',
   'admin-static',
 ]);
+const OPTIONAL_RELEASE_COMPONENTS = Object.freeze(['eraser']);
+const ALLOWED_RELEASE_COMPONENTS = new Set([
+  ...ACTIVE_RELEASE_COMPONENTS,
+  ...OPTIONAL_RELEASE_COMPONENTS,
+]);
 const EXPECTED_APP_ROLE_BY_SERVICE = Object.freeze({
   'api-ingress': 'ingress',
   'api-admin': 'admin',
@@ -472,13 +477,17 @@ function readExpectedApiImage(path = RELEASE_MANIFEST_PATH) {
     manifest?.schemaVersion !== 1 ||
     !RELEASE_ID_PATTERN.test(manifest?.releaseId ?? '') ||
     !FULL_SHA_PATTERN.test(manifest?.targetSha ?? '') ||
-    componentEntries.length !== ACTIVE_RELEASE_COMPONENTS.length ||
+    componentEntries.length < ACTIVE_RELEASE_COMPONENTS.length ||
+    componentEntries.length > ALLOWED_RELEASE_COMPONENTS.size ||
     componentEntries.some(
       ([id, component]) =>
-        !ACTIVE_RELEASE_COMPONENTS.includes(id) ||
+        !ALLOWED_RELEASE_COMPONENTS.has(id) ||
         !isRecord(component) ||
+        typeof component.sourceSha !== 'string' ||
         !FULL_SHA_PATTERN.test(component.sourceSha ?? '') ||
+        typeof component.imageRef !== 'string' ||
         !SAFE_IMAGE_REF_PATTERN.test(component.imageRef ?? '') ||
+        typeof component.imageId !== 'string' ||
         !IMAGE_ID_PATTERN.test(component.imageId ?? ''),
     ) ||
     ACTIVE_RELEASE_COMPONENTS.some((id) => !Object.hasOwn(manifest.components, id))

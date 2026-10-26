@@ -234,7 +234,8 @@ function fixture(t, mode = 'success') {
     .replace('DEPLOY_STATE=/var/lib/maxim-deploy', `DEPLOY_STATE="${lock.protectedDirectory}"`)
     .replaceAll('/etc/nginx/sites-available/major-maksimov.ru.conf', paths.config)
     .replaceAll('/etc/nginx/sites-enabled/major-maksimov.ru.conf', paths.enabled)
-    .replaceAll('/etc/nginx/backups', paths.backups);
+    .replaceAll('/etc/nginx/backups', paths.backups)
+    .replace('/tmp/maxim-eraser-nginx.XXXXXXXX', join(directory, 'stage.XXXXXXXX'));
   const transaction = join(directory, 'transaction.sh');
   writeFileSync(transaction, source);
   const events = join(directory, 'events.log');
@@ -291,6 +292,16 @@ function fixture(t, mode = 'success') {
     { mode: 0o755 },
   );
   writeFileSync(
+    join(bin, 'sleep'),
+    [
+      ...assertLocked,
+      '[[ "$*" == 1 ]] || exit 98',
+      'printf "sleep %s\\n" "$*" >> "$FIXTURE_EVENTS"',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  writeFileSync(
     join(bin, 'curl'),
     `#!${process.execPath}
 const fs = require('node:fs');
@@ -299,13 +310,26 @@ if (spawnSync('flock', ['-n', process.env.FIXTURE_LOCK_FILE, 'true']).status ===
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FIXTURE_EVENTS, args.join(' ') + '\\n');
 const url = args.find(arg => /^https?:/.test(arg));
-let status = 404, body = '{"code":"NOT_FOUND"}';
+let status = 404, body = '{"code":"NOT_FOUND"}', curlExit = 0;
+const mode = process.env.FIXTURE_MODE;
+const webhook = url?.endsWith('/eraser/webhook');
+const post = webhook && args.includes('POST');
+const counter = process.env.FIXTURE_DIRECTORY + '/post.count';
+let attempt = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
+if (post) fs.writeFileSync(counter, String(++attempt));
 if (url === 'http://127.0.0.1:3005/health') { status = 200; body = JSON.stringify({ status: 'ok', service: 'eraser', enabled: true, schedulerHealthy: true, commitSha: process.env.FIXTURE_HEALTH_SHA }); }
-if (url?.endsWith('/eraser/webhook')) {
-  status = ['smoke-fails','foreign-after-install'].includes(process.env.FIXTURE_MODE) ? 500 : 403;
+if (webhook) {
+  status = ['smoke-fails','foreign-after-install'].includes(mode) ? 500 : 403;
+  if (post && mode === 'old-workers' && attempt < 5) status = 404;
+  if (!post && mode === 'method-delayed' && attempt === 1) status = 404;
+  if (!post && mode === 'method-leak') status = 200;
   body = status === 403 ? '{"code":"FORBIDDEN"}' : '{"code":"FAILED"}';
-  if (process.env.FIXTURE_MODE === 'foreign-after-install') fs.writeFileSync(process.env.FIXTURE_CONFIG, 'third-party config\\n');
+  if (post && mode === 'malformed-body') body = '{';
+  if (post && mode === 'wrong-forbidden-code') body = '{"code":"OTHER"}';
+  if (post && mode === 'transport-fails') curlExit = 7;
+  if (mode === 'foreign-after-install' || (!post && mode === 'foreign-after-success')) fs.writeFileSync(process.env.FIXTURE_CONFIG, 'third-party config\\n');
 }
+if (url?.endsWith('/eraser/internal/v1/runtime') && mode === 'internal-leak') status = 200;
 function option(short, long) { const index = args.findIndex(arg => arg === short || arg === long); return index < 0 ? null : args[index + 1]; }
 const output = option('-o', '--output');
 if (output && output !== '/dev/null') fs.writeFileSync(output, body);
@@ -316,6 +340,7 @@ if (headers === '-') process.stdout.write(head);
 else if (headers) fs.writeFileSync(headers, head);
 const format = option('-w', '--write-out');
 if (format) process.stdout.write(format.replaceAll('%{http_code}', String(status)).replaceAll('\\\\n', '\\n'));
+if (curlExit) process.exit(curlExit);
 if (status >= 400 && args.some(arg => arg === '--fail' || arg === '-f' || /^-[^-]*f/.test(arg))) process.exit(22);
 `,
     { mode: 0o755 },
@@ -418,6 +443,7 @@ test('Lastik nginx applies only its own additions with lock held through exact n
   assert.match(events, /systemctl reload nginx/u);
   assert.match(events, /\/eraser\/webhook/u);
   assert.match(events, /\/eraser\/internal\/v1\//u);
+  assert.equal(smokeObservations(h).stages.length, 0, 'first-pass success removes private staging');
   assert.ok(readdirSync(h.paths.backups).length > 0, 'prior config has a retained external backup');
   h.assertUntouchedSiblings();
   h.assertReleased();
@@ -497,6 +523,127 @@ test('Lastik nginx rollback preserves a foreign edit instead of overwriting it a
   assert.equal(readFileSync(h.paths.config, 'utf8'), 'third-party config\n');
   assert.ok(readdirSync(h.paths.backups).length > 0);
   assert.equal(readFileSync(h.events, 'utf8').match(/systemctl reload nginx/gu)?.length, 1);
+  h.assertUntouchedSiblings();
+  h.assertReleased();
+});
+
+function smokeObservations(h) {
+  const events = readFileSync(h.events, 'utf8');
+  const requests = events
+    .split('\n')
+    .filter(
+      (line) => line.startsWith('--noproxy') && line.includes('https://major-maksimov.ru/eraser'),
+    );
+  const posts = requests.filter((line) => line.includes('-X POST'));
+  const methods = requests.filter(
+    (line) => line.endsWith('/eraser/webhook') && !line.includes('-X POST'),
+  );
+  const sleeps = events.split('\n').filter((line) => line === 'sleep 1');
+  const stages = readdirSync(h.directory).filter((name) => name.startsWith('stage.'));
+  return { events, requests, posts, methods, sleeps, stages };
+}
+
+test('Lastik nginx waits for old workers and accepts the fifth complete namespace smoke', (t) => {
+  const h = fixture(t, 'old-workers');
+  const result = h.run();
+  assert.equal(result.status, 0, result.stderr);
+  const observed = smokeObservations(h);
+  assert.equal(observed.posts.length, 5);
+  assert.equal(observed.sleeps.length, 4);
+  assert.equal(observed.methods.length, 1);
+  assert.equal(observed.requests.length, 10, 'four stale POSTs plus one complete six-route smoke');
+  assert.equal(observed.events.match(/systemctl reload nginx/gu)?.length, 1);
+  assert.match(
+    result.stderr,
+    /attempt 4\/5 failed: path=\/eraser\/webhook assertion=status:403 status=404 curl_exit=0/u,
+  );
+  assert.equal(
+    observed.stages.length,
+    1,
+    'transient failure evidence survives a successful commit',
+  );
+  const evidence = join(h.directory, observed.stages[0]);
+  assert.equal(readFileSync(join(evidence, 'smoke-1-forbidden.json'), 'utf8'), '{"code":"FAILED"}');
+  assert.equal(
+    readFileSync(join(evidence, 'smoke-5-forbidden.json'), 'utf8'),
+    '{"code":"FORBIDDEN"}',
+  );
+  assert.ok(observed.posts.every((line) => line.includes('--max-filesize 65536')));
+  assert.equal(readFileSync(h.paths.config, 'utf8'), renderEraserNginx(hostSite));
+  h.assertUntouchedSiblings();
+  h.assertReleased();
+});
+
+test('Lastik nginx repeats the entire namespace when its last method check is not ready', (t) => {
+  const h = fixture(t, 'method-delayed');
+  const result = h.run();
+  assert.equal(result.status, 0, result.stderr);
+  const observed = smokeObservations(h);
+  assert.equal(observed.posts.length, 2);
+  assert.equal(observed.methods.length, 2);
+  assert.equal(observed.requests.length, 12);
+  assert.equal(observed.sleeps.length, 1);
+  assert.match(result.stderr, /assertion=status:403 status=404 curl_exit=0/u);
+  h.assertUntouchedSiblings();
+  h.assertReleased();
+});
+
+for (const [mode, failure, requestCount, methodCount] of [
+  ['smoke-fails', /assertion=status:403 status=500 curl_exit=0/u, 5, 0],
+  ['transport-fails', /assertion=transport status=403 curl_exit=7/u, 5, 0],
+  ['malformed-body', /assertion=forbidden-body status=403 curl_exit=0/u, 5, 0],
+  ['wrong-forbidden-code', /assertion=forbidden-body status=403 curl_exit=0/u, 5, 0],
+  ['internal-leak', /path=\/eraser\/internal\/v1\/runtime assertion=status:404 status=200/u, 20, 0],
+  ['method-leak', /path=\/eraser\/webhook assertion=status:403 status=200/u, 30, 5],
+]) {
+  test(`Lastik nginx exhausts exactly five strict ${mode} observations before owned rollback`, (t) => {
+    const h = fixture(t, mode);
+    const result = h.run();
+    assert.notEqual(result.status, 0);
+    const observed = smokeObservations(h);
+    assert.equal(observed.posts.length, 5);
+    assert.equal(observed.sleeps.length, 4);
+    assert.equal(observed.requests.length, requestCount);
+    assert.equal(observed.methods.length, methodCount);
+    assert.equal(observed.events.match(/systemctl reload nginx/gu)?.length, 2);
+    assert.match(result.stderr, failure);
+    assert.match(result.stderr, /namespace readiness attempts exhausted/u);
+    assert.match(result.stderr, /Previous nginx site bytes restored/u);
+    assert.equal(observed.stages.length, 1, 'failed smoke evidence survives successful rollback');
+    assert.ok(existsSync(join(h.directory, observed.stages[0], 'smoke-5-forbidden.json')));
+    assert.equal(readFileSync(h.paths.config, 'utf8'), hostSite);
+    h.assertUntouchedSiblings();
+    h.assertReleased();
+  });
+}
+
+test('Lastik nginx stops retrying a failed observation when its installed configuration drifts', (t) => {
+  const h = fixture(t, 'foreign-after-install');
+  const result = h.run();
+  assert.notEqual(result.status, 0);
+  const observed = smokeObservations(h);
+  assert.equal(observed.posts.length, 1);
+  assert.equal(observed.sleeps.length, 0);
+  assert.equal(observed.events.match(/systemctl reload nginx/gu)?.length, 1);
+  assert.equal(readFileSync(h.paths.config, 'utf8'), 'third-party config\n');
+  assert.match(result.stderr, /rollback refused: live configuration or symlink changed/u);
+  h.assertUntouchedSiblings();
+  h.assertReleased();
+});
+
+test('Lastik nginx refuses a commit when the final successful request observes foreign configuration drift', (t) => {
+  const h = fixture(t, 'foreign-after-success');
+  const result = h.run();
+  assert.notEqual(result.status, 0);
+  const observed = smokeObservations(h);
+  assert.equal(observed.posts.length, 1);
+  assert.equal(observed.methods.length, 1);
+  assert.equal(observed.requests.length, 6);
+  assert.equal(observed.sleeps.length, 0);
+  assert.equal(observed.events.match(/systemctl reload nginx/gu)?.length, 1);
+  assert.equal(readFileSync(h.paths.config, 'utf8'), 'third-party config\n');
+  assert.match(result.stderr, /rollback refused: live configuration or symlink changed/u);
+  assert.doesNotMatch(result.stdout, /local authenticated-route isolation checks passed/u);
   h.assertUntouchedSiblings();
   h.assertReleased();
 });

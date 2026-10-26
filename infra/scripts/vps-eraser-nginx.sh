@@ -26,9 +26,10 @@ STAGE="$(mktemp -d /tmp/maxim-eraser-nginx.XXXXXXXX)"
 MUTATION_INTENT=0
 COMMITTED=0
 BACKUP=""
+SMOKE_FAILED=0
 
 finish() {
-  local status=$? preserve=0
+  local status=$? preserve="$SMOKE_FAILED"
   trap - EXIT INT TERM HUP
   if [[ "$MUTATION_INTENT" == 1 && "$COMMITTED" == 0 ]]; then
     if [[ -s "$STAGE/installed.json" ]] && "$NODE" "$HELPER" verify "$CONFIG" "$ENABLED" "$STAGE/installed.json"; then
@@ -104,23 +105,69 @@ else
   cp -- "$STAGE/original.json" "$STAGE/installed.json"
 fi
 
-# FLAG: A too-short wrong secret cannot authenticate; this probe cannot reach MAX or chat effects.
-status="$(curl --noproxy '*' -sS --connect-timeout 2 --max-time 5 \
-  --resolve major-maksimov.ru:443:127.0.0.1 -X POST -H 'Content-Type: application/json' \
-  -H 'X-Max-Bot-Api-Secret: invalid' --data '{}' -o "$STAGE/forbidden.json" -w '%{http_code}' \
-  https://major-maksimov.ru/eraser/webhook)"
-[[ "$status" == 403 ]] || { echo 'Lastik wrong-secret route smoke failed.' >&2; exit 1; }
-"$NODE" "$HELPER" forbidden "$STAGE/forbidden.json"
-for path in /eraser /eraser/ /eraser/internal/v1/runtime /eraser/health; do
-  status="$(curl --noproxy '*' -sS --connect-timeout 2 --max-time 5 \
-    --resolve major-maksimov.ru:443:127.0.0.1 -o /dev/null -w '%{http_code}' \
-    "https://major-maksimov.ru$path")"
-  [[ "$status" == 404 ]] || { echo "Lastik internal route is not denied: $path" >&2; exit 1; }
+SMOKE_MAX_ATTEMPTS=5
+SMOKE_ATTEMPT=0
+SMOKE_BODY=""
+
+record_smoke_failure() {
+  SMOKE_FAILED=1
+  echo "Lastik nginx smoke attempt $SMOKE_ATTEMPT/$SMOKE_MAX_ATTEMPTS failed: path=$1 assertion=$2 status=$3 curl_exit=$4." >&2
+}
+
+smoke_request() {
+  local expected_status="$1" path="$2" method="$3" status curl_exit
+  local -a request=(--noproxy '*' -sS --connect-timeout 2 --max-time 5 --max-filesize 65536
+    --resolve major-maksimov.ru:443:127.0.0.1 -w '%{http_code}')
+  if [[ "$method" == POST ]]; then
+    SMOKE_BODY="$STAGE/smoke-$SMOKE_ATTEMPT-forbidden.json"
+    # FLAG: A too-short wrong secret cannot authenticate or reach MAX/chat effects.
+    request+=(-X POST -H 'Content-Type: application/json' -H 'X-Max-Bot-Api-Secret: invalid'
+      --data '{}' -o "$SMOKE_BODY")
+  else
+    request+=(-o /dev/null)
+  fi
+  # FLAG: This function is reached through `if`; every failed command needs an explicit return.
+  if status="$(curl "${request[@]}" "https://major-maksimov.ru$path")"; then
+    curl_exit=0
+  else
+    curl_exit=$?
+    [[ "$status" =~ ^[0-9]{3}$ ]] || status=invalid
+    record_smoke_failure "$path" transport "$status" "$curl_exit"
+    return 1
+  fi
+  [[ "$status" =~ ^[0-9]{3}$ ]] || status=invalid
+  if [[ "$status" != "$expected_status" ]]; then
+    record_smoke_failure "$path" "status:$expected_status" "$status" "$curl_exit"
+    return 1
+  fi
+  return 0
+}
+
+verify_namespace_smoke() {
+  local path
+  smoke_request 403 /eraser/webhook POST || return 1
+  if ! "$NODE" "$HELPER" forbidden "$SMOKE_BODY" 2>"$STAGE/smoke-$SMOKE_ATTEMPT-forbidden.stderr"; then
+    record_smoke_failure /eraser/webhook forbidden-body 403 0
+    return 1
+  fi
+  for path in /eraser /eraser/ /eraser/internal/v1/runtime /eraser/health; do
+    smoke_request 404 "$path" GET || return 1
+  done
+  smoke_request 403 /eraser/webhook GET || return 1
+}
+
+smoke_ready=0
+for ((SMOKE_ATTEMPT = 1; SMOKE_ATTEMPT <= SMOKE_MAX_ATTEMPTS; SMOKE_ATTEMPT += 1)); do
+  # FLAG: Retry only readiness observations of this invocation's unchanged installed bytes.
+  "$NODE" "$HELPER" verify "$CONFIG" "$ENABLED" "$STAGE/installed.json" || exit 1
+  if verify_namespace_smoke; then
+    smoke_ready=1
+    break
+  fi
+  "$NODE" "$HELPER" verify "$CONFIG" "$ENABLED" "$STAGE/installed.json" || exit 1
+  if ((SMOKE_ATTEMPT < SMOKE_MAX_ATTEMPTS)); then sleep 1; fi
 done
-status="$(curl --noproxy '*' -sS --connect-timeout 2 --max-time 5 \
-  --resolve major-maksimov.ru:443:127.0.0.1 -o /dev/null -w '%{http_code}' \
-  https://major-maksimov.ru/eraser/webhook)"
-[[ "$status" == 403 ]] || { echo 'Lastik webhook method restriction failed.' >&2; exit 1; }
+[[ "$smoke_ready" == 1 ]] || { echo 'Lastik nginx namespace readiness attempts exhausted.' >&2; exit 1; }
 "$NODE" "$HELPER" verify "$CONFIG" "$ENABLED" "$STAGE/installed.json"
 COMMITTED=1
 echo 'Lastik nginx patch and local authenticated-route isolation checks passed.'

@@ -51,6 +51,10 @@ both own stores. The ordinary release manifest records the image ID/source SHA. 
 bootstrap, legacy three-component manifests remain valid. Once installed, inherited
 Lastik image identity is checked on later partial deployments.
 
+Nginx and subscription tooling may advance without rebuilding Lastik. Both operations
+check the installed Lastik source against its component in the complete active release
+manifest under the protected deploy lock.
+
 Add Lastik through its patch-only nginx command after synchronizing the exact green
 tooling SHA. It inserts only the owned upstream and `/eraser` routes into the current
 canonical site; existing host-managed includes, headers, request limits, buffering and
@@ -70,7 +74,10 @@ unchanged `/etc/nginx/sites-enabled/major-maksimov.ru.conf` symlink. Backups sta
 `/etc/nginx/backups`. The shared protected deploy lock covers live identity checks,
 atomic replacement, `nginx -t`, reload and localhost/SNI checks: a wrong-secret POST
 must return Lastik's 403, and internal paths must return 404. These probes send no MAX
-messages. Rollback restores only the invocation's own installed bytes; observed external
+messages. Reload readiness allows five complete namespace checks with one-second pauses;
+each retry rechecks installed bytes and the enabled link. Failed observations retain
+bounded private evidence and report the path, assertion, HTTP status and transport exit.
+Rollback restores only the invocation's own installed bytes; observed external
 changes refuse rollback and preserve its backup and private evidence directory. The
 full-site setter remains available for separately reviewed whole-site changes and is
 not the Lastik installation path.
