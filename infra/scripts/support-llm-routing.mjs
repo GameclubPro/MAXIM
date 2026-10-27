@@ -34,6 +34,9 @@ const reportedPublisherReady = (text, publisherRequest) =>
       text,
     ) &&
     !/не\s+(?:готов|подключен)/iu.test(text) &&
+    !/подключ\p{L}*.{0,40}(?:слетел|сброс|пропал|ошиб|утер|потер|разор|отвал)|(?:слетел|сброс|пропал|ошиб|утер|потер|разор|отвал).{0,40}подключ/iu.test(
+      text,
+    ) &&
     !/(?<![\p{L}])(?:еще|друг|втор|нов)\p{L}*(?:\s+\p{L}+){0,3}\s+(?:групп|чат|канал)|(?:групп|чат|канал).{0,30}(?:его|публик\p{L}*).{0,15}(?:нет|не подключ)/iu.test(
       text,
     ) &&
@@ -47,6 +50,8 @@ const eraserTask =
   /стар.{0,15}(?:сообщен|переписк)|очист.{0,15}(?:истор|переписк)|удаление по срок/iu;
 const lastikConnectionRecovery =
   /время ожидания истек|отмен(?:ил[аи]?|или|ено|ен[ао]?)\s+(?:(?:его|это)\s+)?подключ|подключ\p{L}*\s+(?:было\s+)?отмен/iu;
+const lastikSettingsConflict =
+  /настройки\s+(?:уже\s+)?изменились|конфликт.{0,20}(?:настро|сохран)/iu;
 const negatedAt = (text, index) =>
   /(?<![\p{L}])не\s+(?:(?:нужно|надо|следует|хочу|хотим|хотел[аи]?|хотели|собираюсь|собираемся|буду|будем|планирую|планируем)\s+)?(?:(?:вообще|полностью|больше)\s+)?$/iu.test(
     text.slice(0, index),
@@ -319,13 +324,15 @@ function reviewedIntents(ctx) {
   );
   const evidence =
     incident &&
-    /(?:какие|что|куда|как).{0,35}(?:данн|присл|переда|описать|сообщить|подгот|прилож)|(?:что|какие).{0,25}(?:дать|отправить).{0,35}(?:разбор|оператор|поддержк)|(?:нет|не вижу|недоступ).{0,35}(?:событ|журнал)|(?:событ|журнал).{0,25}(?:нет|не вижу|недоступ)|(?:можете|можешь|прошу).{0,15}(?:посмотреть|проверить).{0,15}(?:событ|журнал)|(?:токен|парол|код вход).{0,20}нуж/iu.test(
+    /(?:какие|что|куда|как).{0,35}(?:данн|присл|переда|описать|сообщить|подгот|прилож|написать)|(?:что|какие).{0,25}(?:дать|отправить).{0,35}(?:разбор|оператор|поддержк)|(?:нет|не вижу|недоступ|не открыва).{0,35}(?:событ|журнал)|(?:событ|журнал).{0,25}(?:нет|не вижу|недоступ|не открыва)|(?:можете|можешь|прошу).{0,15}(?:посмотреть|проверить).{0,15}(?:событ|журнал)|(?:токен|парол|код вход).{0,20}нуж/iu.test(
       ctx.current,
     );
   return { eligibility, evidence };
 }
 
 function mixedRequests(ctx, state) {
+  if (/(?<![\p{L}])(?:а|и)\s+(?:объясни|подскажи|расскажи|покажи|поясни)/iu.test(ctx.current))
+    return true;
   if (state.lastikWaitingOnly || state.lastikSetupOnly) return false;
   if (
     (state.publisherRequest || state.eraserRequest) &&
@@ -421,9 +428,13 @@ function lastikConnectionIntent(ctx, state, primaryIds) {
 }
 
 function atomicLastikWaiting(ctx, state) {
+  const waitingQuestion = ctx.current.replace(
+    /(?:чтобы|чтоб)\s+(?:очистка|удаление)\s+(?:пошл[ао]|начал[ао]сь|включил[ао]сь|запустил[ао]сь|заработал[ао])/giu,
+    '',
+  );
   const explicitNightTask =
     /ночн|закрыв.{0,20}чат|закры.{0,20}(?:чат|расписан)|чат.{0,20}закры|(?:включ|выключ|настро|команд|режим).{0,25}тишин|тишина\s+(?:вкл|выкл)/iu.test(
-      ctx.current,
+      waitingQuestion,
     );
   if (
     !state.eraserRequest ||
@@ -438,19 +449,131 @@ function atomicLastikWaiting(ctx, state) {
     return false;
   if (
     /прогресс|числ|подробност|счетчик|срок|хран|сут|недел|месяц|(?:24|48)\s*час|сто(?:ит|ят|имост)|плат|цен|тариф|сообщен|канал|закреп|исключ|сохран|настрой|истори|останов|отключ|выключ|пауз|вернуть(?!ся)|восстанов|отмен|истек|(?:как|какие|где|нужно).{0,35}(?:дать|выдать|назначить|права)|удал|очист|чист|уме|работ/iu.test(
-      ctx.current,
+      waitingQuestion,
     )
   )
     return false;
   // FLAG: A waiting report alone must not swallow a second unrecognised question.
-  return ctx.current
-    .split(/[.!?;\n]+/u)
+  return waitingQuestion
+    .split(
+      /[.!?;\n]+|(?<![\p{L}])(?:а|и)\s+(?=(?:еще\s+)?(?:как|где|почему|что|сколько|какие|можно))/u,
+    )
     .filter((part) => part.trim())
     .every((part) =>
       /подкл|ожидан|жд(?:у|ать|ем)|молч|ни слова|старт|в приложение|мини-прилож|вернуться|прав[ао]|админ|провер|что.{0,12}(?:делать|дальше)|минут|час/iu.test(
         part,
       ),
     );
+}
+
+function reviewedTaskCovered(text, topic, generic = /(?!)$/u) {
+  // FLAG: Recognized facts alone cannot prove that every requested task is covered.
+  // Split independent questions, including unknown topics, before allowing a reviewed reply.
+  return text
+    .split(
+      /(?<=[.!?;])\s*|\n|(?<![\p{L}])(?:а|и)\s+(?=(?:(?:еще|также|заодно)\s+)?(?:как|где|почему|что|сколько|какие|можно|помен|включ|выключ|отключ|подключ|настро|добав|убра|объясни|подскажи|расскажи|покажи|поясни))|(?<![\p{L}])(?:а|и)\s+(?:еще|также|заодно)\s+/u,
+    )
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .every(
+      (part) =>
+        !(
+          help.test(part) ||
+          actionRequest.test(part) ||
+          /^(?:еще|также|заодно|помен|включ|выключ|отключ|подключ|настро|добав|убра|замен|смен)/iu.test(
+            part,
+          )
+        ) ||
+        topic.test(part) ||
+        generic.test(part),
+    );
+}
+
+function reviewedAtomicIntents(ctx, state, primaryIds) {
+  const only = (allowed) => primaryIds.every((id) => allowed.includes(id));
+  const conflict = state.eraserRequest && lastikSettingsConflict.test(ctx.focus);
+  const savedChoice = [
+    ...ctx.current.matchAll(
+      /загрузить\s+сохраненн|(?:остав|прин|сохрани)\p{L}*[^.!?\n]{0,35}(?:настройк\p{L}*\s+коллег|его\s+настройк|(?:текущ|уже\s+сохраненн)\p{L}*\s+настройк)|(?:свои|мои)\s+(?:чернов\p{L}*|изменени\p{L}*|настройк\p{L}*)\s+не\s+примен/giu,
+    ),
+  ].some(
+    (match) =>
+      !negatedAt(ctx.current, match.index) &&
+      !(/^(?:остав|прин|сохрани)/iu.test(match[0]) && /(?<![\p{L}])не(?![\p{L}])/iu.test(match[0])),
+  );
+  const mineChoice = [
+    ...ctx.current.matchAll(
+      /(?:примен|сохран)\p{L}*[^.!?;:\n]{0,25}(?:мой|свой)\s+вариант|(?:нужен|нужны)\s+(?:мой\s+вариант|мои\s+настройки)/giu,
+    ),
+  ].some((match) => !negatedAt(ctx.current, match.index));
+  const conflictingMine =
+    mineChoice && /не\s+перезапис\p{L}*[^.!?\n]{0,25}(?:коллег|его|чуж)/iu.test(ctx.current);
+  const conflictCovered =
+    conflict &&
+    !state.mixedTopics &&
+    only(['lastik-save-recovery', 'message-retention', 'settings']) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /настройки\s+(?:уже\s+)?изменились|(?:остав|прин|примен|сохран|загруз|нужен).{0,40}(?:настройк|вариант|чернов)|(?:свои|мои).{0,25}не\s+примен/iu,
+      /^(?:а\s+)?(?:как(?:ую)?\s+(?:из\s+)?(?:этих\s+)?кноп(?:к|ок)\p{L}*\s+(?:выбрать|нажать)|что\s+(?:мне\s+)?нажать)[?!.\s]*$/iu,
+    );
+  const lastikConflictIntent =
+    conflictCovered && savedChoice !== mineChoice && !conflictingMine
+      ? savedChoice
+        ? 'saved'
+        : 'mine'
+      : null;
+  const nightManualOnly =
+    primaryIds[0] === 'night-manual' &&
+    !state.publisherRequest &&
+    !state.eraserRequest &&
+    ![
+      ...ctx.current.matchAll(
+        /(?:установ|измен|созда|настро|включ|выключ|добав|постав|задать|отмен)\p{L}*.{0,40}расписан/giu,
+      ),
+    ].some((match) => !negatedAt(ctx.current, match.index)) &&
+    only(['night-manual', 'night-permissions', 'night', 'settings', 'admin-commands', 'bots']) &&
+    !/закры(?:ть|вать)\s+(?:(?:чат|его)\s+)?не\s+(?:хочу|надо|нужно|буду)/iu.test(ctx.current) &&
+    [...ctx.current.matchAll(/закры(?:ть|вать)|ручн\p{L}*\s+(?:закры|откр)|тишин/giu)].some(
+      (match) => !negatedAt(ctx.current, match.index),
+    ) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /закры(?:ть|вать)|откр(?:ыть|ывать)|закрыть\s+вручную|тишин|(?:не\s+менять|остав|сохран).{0,30}расписан|расписан.{0,30}(?:остав|сохран)/iu,
+      /^(?:а\s+)?как\s+(?:это\s+)?(?:включить|выключить|убрать|отменить)(?:\s+и\s+(?:потом\s+)?(?:включить|выключить|убрать|отменить))?[?!.\s]*$/iu,
+    );
+  const publisherDeliveryOnly =
+    state.publisherRequest &&
+    primaryIds[0] === 'publisher-delivery-status' &&
+    !state.mixedTopics &&
+    only([
+      'publisher-delivery-status',
+      'publisher-post-targets',
+      'publisher-post-create',
+      'publik',
+    ]) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /нужно\s+проверить|результат|достав|повтор\p{L}*.{0,25}(?:отправ|публиков)|(?:отправ|публиков).{0,25}(?:еще\s+раз|повтор)|пост.{0,35}(?:вижу|не\s+появ)|провер\p{L}*.{0,20}(?:публикац|отправ|получател)/iu,
+      /^(?:а\s+)?(?:можно\s+)?(?:повторить|как\s+проверить)[?!.\s]*$/iu,
+    );
+  const aiObservationHandoffOnly = Boolean(
+    state.commercialAi &&
+    state.reviewedIntents.evidence &&
+    state.aiIntents.includes('observation') &&
+    only([
+      'support-incident-evidence',
+      'commercial-ai-observation',
+      'commercial-ai-evidence',
+      'commercial-ai-mode',
+      'announcement-removal',
+    ]) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /(?:что|какие|как|куда).{0,45}(?:оператор|разбор|данн|присл|переда|написать|описать)|(?:удал|исчез|пропал|наблюда|тест|без\s+автоматических\s+удалений)|событи.{0,30}(?:нет|не\s+вижу|не\s+открыва|недоступ)/iu,
+    ),
+  );
+  return { lastikConflictIntent, nightManualOnly, publisherDeliveryOnly, aiObservationHandoffOnly };
 }
 
 function atomicLastikSetup(ctx, state) {
@@ -538,7 +661,7 @@ function nightSources(ctx, role) {
     )
       result.push('night-permissions');
     if (
-      /ручн.{0,20}(?:закры|откр)|(?:закры|откр).{0,20}ручн|команд.{0,20}тишин|тишина\s+(?:вкл|выкл)|закры.{0,20}(?:сейчас|без срока)/iu.test(
+      /ручн.{0,20}(?:закры|откр)|(?:закры|откр).{0,20}ручн|команд.{0,20}тишин|тишина\s+(?:вкл|выкл)|закры.{0,30}(?:сейчас|без срока|до\s+(?:(?:моего|своего)\s+)?решения)|(?:прямо\s+)?сейчас.{0,30}закры/iu.test(
         text,
       ) ||
       (/тишин/iu.test(text) && !/расписан|кажд.{0,8}ноч/iu.test(text))
@@ -567,6 +690,10 @@ function commercialIntents(current, focus) {
   const probe =
     commercialPattern.test(current) || topics(current).length ? current : `${focus}\n${current}`;
   const intents = [];
+  const observationCorrected =
+    /не\s+(?:в\s+)?(?:режим\p{L}*\s+)?[«"„]?тест|(?:тест|наблюдени).{0,25}(?:заверш|законч|отключ|выключ)|(?:автоматическ\p{L}*\s+)?удалени\p{L}*\s+(?:уже\s+)?включ|теперь.{0,12}(?:есть|включен).{0,20}автоматическ.{0,15}удал/iu.test(
+      current,
+    );
   if (/изображ|картин|фото|\bocr\b/iu.test(current)) intents.push('images');
   if (/чувствительн|строго|мягко|баланс/iu.test(probe)) intents.push('sensitivity');
   if (/переключ|смен.{0,12}режим|обратно.{0,15}текстов|перейти.{0,70}текстов/iu.test(current))
@@ -574,8 +701,9 @@ function commercialIntents(current, focus) {
   if (/предупрежден|наказан|санкци|лестниц|мут|бан(?:ить|ил|а|ов)?(?![\p{L}])/iu.test(current))
     intents.push('sanctions');
   if (
+    !observationCorrected &&
     /наблюда|ии[\s-]*анализ|без автоматических удалений|(?:^|[^\p{L}])тест(?:$|[^\p{L}])/iu.test(
-      probe,
+      `${probe}\n${/удал|исчез|пропал|оператор|разбор|событи/iu.test(current) ? focus : ''}`,
     )
   )
     intents.push('observation');
@@ -696,7 +824,8 @@ function semanticFacts(text, state) {
     )
   )
     add('max-platform-default-commands', 105);
-  const reportedConnectionReady = reportedPublisherReady(state.current, publ);
+  const reportedConnectionReady =
+    reportedPublisherReady(state.current, publ) || reportedPublisherReady(state.focus, publ);
   const connectionRequested =
     !reportedConnectionReady &&
     (moderatorForwardingRequest(state.current) ||
@@ -735,7 +864,7 @@ function semanticFacts(text, state) {
     switchingModerator ||
     state.reserveHandoff ||
     test(
-      /бот[ыа] (?:чата|канала)|(?:смен|выб).{0,25}(?:модератор|бот|майор|рэкс|максимов)|ответ о смене|список изменил|кто.{0,25}выбран|где выбрать его|вместо нынешн/iu,
+      /бот[ыа] (?:чата|канала)|(?:смен|выб(?:рать|ери|ерите|ирать|ор)(?![\p{L}])).{0,25}(?:модератор|бот|майор|рэкс|максимов)|ответ о смене|список изменил|кто.{0,25}выбран|где выбрать его|вместо нынешн/iu,
     )
   )
     add('choose-moderator', switchingModerator ? 150 : 105);
@@ -754,7 +883,7 @@ function semanticFacts(text, state) {
     ) &&
     !test(/не.{0,8}про.{0,15}(?:ночн|закрыт)/iu)
   ) {
-    for (const id of state.nightSources) add(id, 105);
+    for (const id of state.nightSources) add(id, id === 'night-manual' ? 115 : 105);
     if (test(/ручн|команд|тишин/iu)) add('admin-commands', 75);
   }
   if (
@@ -855,8 +984,11 @@ function semanticFacts(text, state) {
       )
     )
       add('lastik-exclusions', 125);
-    if (test(/сохранен|не удалось сохранить|ошибк|неизвестн.{0,15}результат|повтор.{0,15}нажа/iu))
-      add('lastik-save-recovery', 135);
+    if (
+      test(/сохранен|не удалось сохранить|ошибк|неизвестн.{0,15}результат|повтор.{0,15}нажа/iu) ||
+      test(lastikSettingsConflict)
+    )
+      add('lastik-save-recovery', test(lastikSettingsConflict) ? 155 : 135);
     if (test(/останов|отключ|выключ|пауз|вернуть(?!ся)|восстанов|отменить/iu))
       add('lastik-stop-restore', 140);
   }
@@ -1144,6 +1276,8 @@ export function createSupportRouter(knowledge) {
       );
     const botDirectory =
       contextualBotDirectory ||
+      (/(?:бот|модератор|помощник)/iu.test(ctx.current) &&
+        /(?:всех|все)\s+(?:восьми|восемь|восьмерых|8)(?![\p{L}\d])/iu.test(ctx.current)) ||
       /какие\s+(?:вообще\s+)?боты(?:\s+у\s+вас)?(?:\s+есть)?[?!.\s]*$/iu.test(ctx.current) ||
       /(?:перечисл\p{L}*|спис(?:ок|ком)|названия|каталог)\s+(?:(?:всех|ваших|наших|восьми|восьмерых|8|основных|резервных)\s+)*(?:ботов|модераторов)(?![\p{L}])|какие\s+у\s+вас\s+(?:есть\s+)?боты|сколько\s+(?:всего\s+)?(?:у\s+вас\s+|в\s+проекте\s+)?ботов(?:\s+(?:есть|всего|у\s+вас|в\s+проекте))?[?!.\s]*$|(?:какие|кто).{0,15}(?:основн|резервн).{0,15}(?:бот|модератор)|ссылк\p{L}*.{0,15}(?:всех|восьми|8).{0,10}бот/iu.test(
         ctx.current,
@@ -1227,7 +1361,9 @@ export function createSupportRouter(knowledge) {
       role,
       eligible,
       publisherRequest,
-      publisherConnectionReady: reportedPublisherReady(ctx.current, publisherRequest),
+      publisherConnectionReady:
+        reportedPublisherReady(ctx.current, publisherRequest) ||
+        reportedPublisherReady(ctx.focus, publisherRequest),
       eraserRequest,
       developer,
       commercialAi,
@@ -1277,6 +1413,7 @@ export function createSupportRouter(knowledge) {
       botDirectory,
       botCatalogRequest,
       primaryIds,
+      ...reviewedAtomicIntents(ctx, state, primaryIds),
       lastikWaitingOnly: state.lastikWaitingOnly,
       lastikSetupOnly: state.lastikSetupOnly,
       lastikConnectionIntent: lastikConnectionIntent(ctx, state, primaryIds),

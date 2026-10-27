@@ -17,6 +17,68 @@ function needsReply(text, history = []) {
   return route;
 }
 
+for (const [text, flag, enabled] of [
+  ['Я администратор. Как закрыть чат сейчас', 'nightManualOnly', true],
+  [
+    'Я админ. У Ластика «Настройки уже изменились». Хочу оставить настройки коллеги',
+    'lastikConflictIntent',
+    'saved',
+  ],
+  [
+    'Я админ. У Публика у второго получателя «Нужно проверить», можно повторить отправку',
+    'publisherDeliveryOnly',
+    true,
+  ],
+  [
+    'Я админ. У Рэкса ИИ-анализ в режиме «Тест», пока без автоматических удалений. Объявление исчезло, что написать оператору',
+    'aiObservationHandoffOnly',
+    true,
+  ],
+]) {
+  test(`reviewed procedures retain a second request introduced by a speech verb: ${flag}`, () => {
+    for (const verb of ['объясните', 'подскажите', 'расскажите']) {
+      const mixed = `${text} и ${verb}, как сменить аватар?`;
+      assert.notEqual(needsReply(mixed)[flag], enabled, mixed);
+    }
+  });
+}
+
+test('Lastik conflict does not select the negated saved object', () => {
+  const text =
+    'Я админ. У Ластика «Настройки уже изменились». Хочу оставить не настройки коллеги, а свой вариант. Какую кнопку выбрать?';
+  assert.notEqual(needsReply(text).lastikConflictIntent, 'saved');
+});
+
+test('a current failed Publisher connection overrides reported historical readiness', () => {
+  const history = [user('Я администратор канала. Публик уже подключён.')];
+  for (const text of [
+    'Теперь подключение Публика слетело, как создать пост?',
+    'Подключение Публика теперь с ошибкой, как создать пост?',
+  ])
+    assert.equal(needsReply(text, history).publisherConnectionReady, false, text);
+});
+
+test('a corrected AI mode cannot take the historical observation handoff', () => {
+  const history = [
+    user('У Рэкса в рекламе «ИИ-анализ», «Тест», «Пока без автоматических удалений».'),
+  ];
+  for (const text of [
+    'Я админ. В рекламе ИИ-анализ уже не в режиме «Тест», теперь есть автоматические удаления. Объявление исчезло. Что написать оператору?',
+    'Я админ. Тест уже завершён, удаление включено. Объявление исчезло. Что написать оператору?',
+  ]) {
+    assert.equal(needsReply(text, history).aiObservationHandoffOnly, false, text);
+    assert.ok(!ids(text, history).includes('commercial-ai-observation'), text);
+  }
+});
+
+test('manual closing plus a new night schedule retains both tasks in inference', () => {
+  for (const separator of [', а потом ', ', затем ', ' и ещё ']) {
+    const text = `Я админ. Как закрыть чат сейчас${separator}установить ночное расписание с 23 до 7?`;
+    assert.equal(needsReply(text).nightManualOnly, false, text);
+    for (const fact of ['night-manual', 'night']) assert.ok(ids(text).includes(fact), fact);
+  }
+});
+
 test('latest explicit role wins, without reading role words inside other words', () => {
   for (const text of [
     'Я теперь администратор этой группы.',
@@ -146,6 +208,128 @@ const botDirectoryHistory = [
   user('Я в этих ваших помощниках путаюсь, их много вообще?'),
   assistant('В проекте „Майор Максимов“ восемь ботов: шесть модераторов, Публик и Ластик.'),
 ];
+
+test('an elliptical full directory keeps eight profiles rather than link-filter settings', () => {
+  for (const text of [
+    'Я путаю ваших ботов. Дайте полный список всех восьми: имена, ссылки на профили и назначение. Основных и запасных разделите.',
+    'Какие у вас помощники? Нужны все восемь со ссылками, основные и запасные.',
+    'Пришлите полный каталог ботов, основных и запасных, чтобы сохранить коллегам.',
+  ]) {
+    assert.equal(needsReply(text).botDirectory, true, text);
+    assert.equal(ids(text)[0], 'bots', text);
+    assert.ok(!ids(text).includes('links-policy'), text);
+  }
+  assert.equal(
+    needsReply('Все восемь ссылок удаляются. Как выключить фильтр ссылок?').botDirectory,
+    false,
+  );
+  assert.equal(needsReply('Где полный список каналов бота Публик?').botDirectory, false);
+});
+
+test('waiting for automatic cleanup does not become a second functional Lastik task', () => {
+  const text =
+    'Я админ, Ластика добавил. Минут двадцать назад нажал «Подключить и включить», в группе он молчит. Ему нужен Старт или снова открывать приложение, чтобы очистка началась?';
+  const route = needsReply(text);
+  assert.equal(route.lastikWaitingOnly, true);
+  assert.equal(route.lastikConnectionIntent, 'waiting');
+  for (const extra of [' И как посмотреть прогресс очистки?', ' А как аватар ему поменять?'])
+    assert.equal(needsReply(`${text}${extra}`).lastikWaitingOnly, false, extra);
+});
+
+test('Lastik saved-setting conflicts retain the exact choice and reject unrelated tasks', () => {
+  const conflict =
+    'Я админ. Менял срок удаления у Ластика, но коллега сохранил раньше: «Настройки уже изменились».';
+  for (const [goal, expected] of [
+    ['Хочу оставить настройки коллеги, свои черновые не применять. Какую кнопку выбрать?', 'saved'],
+    ['Хочу применить мой вариант поверх настроек коллеги. Какую кнопку выбрать?', 'mine'],
+    ['Чужие настройки не хочу сохранять: нужен мой вариант. Что нажать?', 'mine'],
+  ]) {
+    const text = `${conflict} ${goal}`;
+    assert.equal(ids(text)[0], 'lastik-save-recovery', text);
+    assert.equal(needsReply(text).lastikConflictIntent, expected, text);
+  }
+  for (const text of [
+    `${conflict} Какую кнопку выбрать?`,
+    `${conflict} Хочу оставить настройки коллеги. И как поменять аватар?`,
+    `${conflict} Хочу оставить настройки коллеги и как отключить фильтр ссылок?`,
+    `${conflict} Хочу сохранить свой вариант, но не перезаписывать настройки коллеги. Что нажать?`,
+    `${conflict} Хочу оставить настройки коллеги. И как исключить закрепы?`,
+    `${conflict} Хочу оставить настройки коллеги. И как выгрузить переписку?`,
+    `${conflict} Не хочу применять мой вариант. Какую кнопку выбрать?`,
+    `${conflict} Не хочу оставить настройки коллеги. Какую кнопку выбрать?`,
+    'Ластик не сохранил настройки. Как применить мой вариант?',
+  ])
+    assert.equal(needsReply(text).lastikConflictIntent, null, text);
+});
+
+test('an existing uncertain send keeps delivery evidence ahead of historical ready connection', () => {
+  const history = [
+    user('Я администратор двух каналов. Публик подключён, проверка подключения успешна.'),
+    assistant('Что видно у отправленной публикации по каждому получателю?'),
+  ];
+  const text =
+    'В первом канале пост вижу, второй получатель — «Нужно проверить». Можно повторно отправить обоим?';
+  const route = needsReply(text, history);
+  assert.equal(route.publisherDeliveryOnly, true);
+  assert.equal(ids(text, history)[0], 'publisher-delivery-status');
+  assert.ok(!ids(text, history).includes('connect'));
+  for (const extra of [
+    ' И как подключить ещё один канал?',
+    ' И как поменять аватар?',
+    ' И как пригласить участников?',
+  ])
+    assert.equal(needsReply(`${text}${extra}`, history).publisherDeliveryOnly, false, extra);
+});
+
+test('AI observation in history survives an incident handoff with inaccessible Events', () => {
+  const history = [
+    user(
+      'Я админ группы с Рэксом. В рекламе «ИИ-анализ», «Тест», «Пока без автоматических удалений».',
+    ),
+    assistant('Доступно ли событие удаления сообщения?'),
+  ];
+  const text =
+    'Но сообщение утром исчезло. Значит, это ИИ удалил? «События» не открываются. Что написать оператору здесь для разбора?';
+  const route = needsReply(text, history);
+  assert.equal(route.aiObservationHandoffOnly, true);
+  for (const fact of ['commercial-ai-observation', 'support-incident-evidence'])
+    assert.ok(ids(text, history).includes(fact), fact);
+  for (const extra of [
+    ' И как включить ночное расписание?',
+    ' А как поменять аватар?',
+    ' И как выгрузить переписку?',
+    ' И как включить автоматическое удаление?',
+  ])
+    assert.equal(needsReply(`${text}${extra}`, history).aiObservationHandoffOnly, false, extra);
+  const switched = 'Теперь вопрос про Публик: тест поста не удался. Что написать оператору?';
+  assert.equal(needsReply(switched, history).aiObservationHandoffOnly, false);
+});
+
+test('immediate indefinite manual closure preserves schedule and the latest administrator role', () => {
+  const history = [user('Я обычный участник, настроек не вижу.')];
+  const text =
+    'Теперь я администратор. У нас выбран Рэкс 2. Хочу прямо сейчас закрыть чат до своего решения, чтобы админы могли писать, а ночное расписание осталось. Как включить и потом убрать?';
+  const route = needsReply(text, history);
+  assert.equal(route.role, 'admin');
+  assert.equal(route.nightManualOnly, true);
+  assert.equal(ids(text, history)[0], 'night-manual');
+  assert.ok(!ids(text, history).includes('choose-moderator'));
+  for (const extra of [
+    ' И как поменять аватар?',
+    ' И как настроить новый часовой пояс?',
+    ' А почему вчера исчез мой пост?',
+    ' А ещё поменять Рэксу аватар.',
+    ' И сколько он стоит?',
+    ' И как пригласить участников?',
+  ])
+    assert.equal(needsReply(`${text}${extra}`, history).nightManualOnly, false, extra);
+  for (const other of [
+    'Я админ. Не хочу закрывать чат сейчас. Как включить ночное расписание?',
+    'Я админ. Как закрывать чат каждую ночь с 23 до 7?',
+    'Я админ. Чат закрывать не хочу прямо сейчас, нужно оставить ночное расписание.',
+  ])
+    assert.equal(needsReply(other).nightManualOnly, false, other);
+});
 
 test('a named reserve comparison retains roles and the selection procedure', () => {
   const text =

@@ -20,14 +20,45 @@ test('customer knowledge uses the public project name without renaming the MAX p
 test('reviewed answers and link examples pass the public response boundary', () => {
   for (const entry of entries.values()) {
     assert.doesNotMatch(entry.answer, /https?:\/\/\S*[<>]|<botName>/iu, entry.id);
-    assert.doesNotThrow(
-      () =>
-        validateSupportAnswer({ action: 'reply', text: entry.answer, sourceIds: [entry.id] }, [
-          entry,
-        ]),
-      entry.id,
-    );
+    for (const field of [
+      'answer',
+      'setupAnswer',
+      'waitingAnswer',
+      'manualAnswer',
+      'conflictSavedAnswer',
+      'conflictMineAnswer',
+      'incidentAnswer',
+    ]) {
+      if (entry[field] === undefined) continue;
+      assert.doesNotThrow(
+        () =>
+          validateSupportAnswer({ action: 'reply', text: entry[field], sourceIds: [entry.id] }, [
+            entry,
+          ]),
+        `${entry.id}.${field}`,
+      );
+    }
   }
+});
+
+test('reviewed conflict and manual controls preserve the UI action direction', () => {
+  const editor = source(
+    'apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx',
+  ).replace(/\s+/gu, ' ');
+  for (const label of ['Загрузить сохранённые', 'Сохранить мой вариант'])
+    assert.ok(editor.includes(label), label);
+  const recovery = entries.get('lastik-save-recovery');
+  assert.match(recovery.conflictSavedAnswer, /^При.*нажмите «Загрузить сохранённые»/u);
+  assert.match(recovery.conflictSavedAnswer, /черновые изменения будут сброшены/u);
+  assert.match(recovery.conflictMineAnswer, /«Сохранить мой вариант» применяет.*поверх/u);
+  assert.doesNotMatch(recovery.conflictSavedAnswer + recovery.conflictMineAnswer, /«Отмена»/u);
+  const night = source('apps/miniapp/src/pages/settings/settings-night-section.tsx');
+  for (const label of ['Закрыть вручную', 'Без срока']) assert.ok(night.includes(label), label);
+  const manual = entries.get('night-manual').manualAnswer;
+  assert.match(manual, /Включите «Закрыть вручную»/u);
+  assert.match(manual, /выключите «Закрыть вручную»/u);
+  assert.match(manual, /включённое расписание продолжает действовать/u);
+  assert.doesNotMatch(manual, /[Вв]ключите «Закрывать по расписанию»/u);
 });
 
 test('reviewed Lastik setup preserves rights, presets and the request-based waiting window', () => {
@@ -174,10 +205,12 @@ test('Lastik connection is separate from a moderator and limited to group chats'
   assert.match(answer, /отдельный бот.*групповых чатах/u);
   assert.match(answer, /администратором с правами чтения всех сообщений и удаления/u);
   assert.match(answer, /После подтверждения запроса откроется профиль бота/u);
-  assert.match(answer, /До 1 часа он сам проверяет права и включает очистку/u);
+  assert.match(answer, /До 1 часа после запроса на подключение/u);
+  assert.match(answer, /запросивший подключение пользователь — администратор чата/u);
+  assert.match(answer, /после подтверждения обоих условий/u);
   assert.match(answer, /возвращаться в мини-приложение не нужно/u);
   assert.match(answer, /В сетке сначала добавьте бота с правами в каждый чат/u);
-  assert.match(answer, /не видит, подключён ли Ластик/u);
+  assert.match(fact('operator'), /не видит текущие права, настройки/u);
   assert.ok(answer.includes(knowledge.botCatalog.find((bot) => bot.id === 'lastik').url));
   for (const label of ['Удаление старых сообщений', 'Подключить и включить', 'Открыть Ластика'])
     assert.ok(answer.includes(label) && ui.includes(label), label);

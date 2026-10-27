@@ -145,12 +145,12 @@ function answerRequirements(selected, request) {
   if (request.lastikConnectionIntent === 'waiting')
     add(
       'lastik-connect',
-      'Пользователь описывает уже запрошенное подключение. Проверка длится до 1 часа; очистка включится только после подтверждения прав чтения всех сообщений и удаления. Молчание нормально: Ластик не пишет в чат. Повторять подключение или писать «Старт» из-за молчания не нужно; возвращаться для завершения тоже не нужно. Статус можно посмотреть в мини-приложении. Не подтверждай, что права уже проверены.',
+      'Пользователь описывает уже запрошенное подключение. Проверка длится до 1 часа после запроса на подключение. Очистка включится только после подтверждения двух условий: у Ластика есть права администратора с чтением всех сообщений и удалением, а запросивший подключение пользователь — администратор чата. Молчание нормально: Ластик не пишет в чат. Повторять подключение или писать «Старт» из-за молчания не нужно; возвращаться для завершения тоже не нужно. Статус можно посмотреть в мини-приложении. Сообщённая роль пользователя не подтверждает успешную проверку; не объявляй права уже проверенными.',
     );
   else if (request.lastikConnectionIntent === 'setup')
     add(
       'lastik-connect',
-      'Дай порядок подключения Ластика: нужный групповой чат → «Удаление старых сообщений» → срок → «Подключить и включить»; Ластик — администратор с правами чтения всех сообщений и удаления. Проверка до 1 часа, включение только после подтверждения прав; возвращаться для завершения не нужно. При неизвестной роли дай инструкцию с условием прав администратора, не заменяй её вопросом. Сохрани и остальные части вопроса.',
+      'Дай порядок подключения Ластика: нужный групповой чат → «Удаление старых сообщений» → срок → «Подключить и включить»; Ластик — администратор с правами чтения всех сообщений и удаления. Проверка до 1 часа после запроса на подключение. Включение только после подтверждения прав Ластика и того, что запросивший подключение пользователь — администратор чата; возвращаться для завершения не нужно. При неизвестной роли дай инструкцию с условием прав администратора, не заменяй её вопросом. Сохрани и остальные части вопроса.',
     );
   else if (request.lastikConnectionIntent === 'restart')
     add(
@@ -392,6 +392,65 @@ export async function answerSupport({
       responseRoute: 'room-policy',
     };
   let selected = selectKnowledge(text, history);
+  // FLAG: These reviewed procedures require a router-confirmed atomic intent and an
+  // allowlisted fact set. Additional tasks must retain inference and their own facts.
+  const procedure = [
+    {
+      active: request.nightManualOnly,
+      id: 'night-manual',
+      field: 'manualAnswer',
+      allowed: ['night-manual', 'night-permissions', 'night', 'choose-moderator'],
+    },
+    {
+      active: ['saved', 'mine'].includes(request.lastikConflictIntent),
+      id: 'lastik-save-recovery',
+      field: request.lastikConflictIntent === 'mine' ? 'conflictMineAnswer' : 'conflictSavedAnswer',
+      allowed: ['lastik-save-recovery', 'message-retention', 'lastik-connect', 'settings'],
+    },
+    {
+      active: request.publisherDeliveryOnly,
+      id: 'publisher-delivery-status',
+      field: 'answer',
+      allowed: [
+        'publisher-delivery-status',
+        'publisher-post-targets',
+        'publisher-post-create',
+        'publik',
+      ],
+    },
+    {
+      active: request.aiObservationHandoffOnly,
+      id: 'commercial-ai-observation',
+      field: 'incidentAnswer',
+      allowed: [
+        'commercial-ai-observation',
+        'commercial-ai-evidence',
+        'commercial-ai-mode',
+        'support-incident-evidence',
+        'announcement-removal',
+      ],
+    },
+  ].find(
+    ({ active, id, field, allowed }) =>
+      active &&
+      selected.some((entry) => entry.id === id && typeof entry[field] === 'string') &&
+      selected.every((entry) => mandatoryIds.has(entry.id) || allowed.includes(entry.id)),
+  );
+  if (procedure) {
+    const fact = selected.find((entry) => entry.id === procedure.id);
+    const prefix =
+      request.role === 'admin' || request.aiObservationHandoffOnly
+        ? ''
+        : 'Если у вас есть права администратора сообщества:\n\n';
+    return {
+      ...validateSupportAnswer(
+        { action: 'reply', text: prefix + fact[procedure.field], sourceIds: [fact.id] },
+        selected,
+      ),
+      durationMs: 0,
+      responseRoute: 'reviewed-faq',
+    };
+  }
   // FLAG: Atomic setup uses the reviewed procedure so rights and activation conditions
   // survive intact. Recovery and additional functional or incident tasks stay in inference.
   if (

@@ -68,6 +68,13 @@ rights and one-hour window from the request. Recovery and additional questions r
 Atomic Publisher creation preserves recipient selection and conditional separate connection;
 an already reported ready connection is not repeated. An atomic delivery question uses the reviewed
 existing-publication evidence procedure and duplicate warning. Additional tasks retain inference.
+Reviewed manual closing preserves the independent night schedule and distinguishes the section
+heading from the actual toggle. A Lastik conflict distinguishes accepting saved settings from
+overwriting them with the local draft. An observation-mode incident handoff preserves the absence
+of automatic AI deletion, independent filters and the available operator evidence. These bounded
+procedures may cover several parts of one task; an additional unrelated or unknown task retains
+inference. Both activation checks and the request-based waiting window remain in the neural facts
+and reminders as well as the reviewed Lastik replies.
 Forwarding questions for a moderator retain the connection prerequisites. An offered community
 link is not a link-filter task; a reported ready connection is not an onboarding request.
 Named reserve comparisons retain catalog roles and the selection procedure. An incident handoff

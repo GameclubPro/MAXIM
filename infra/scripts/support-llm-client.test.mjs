@@ -16,6 +16,73 @@ import {
 } from './support-llm-client.mjs';
 import { supportModelArgs, SUPPORT_MODEL } from './support-llm-profile.mjs';
 
+for (const scenario of [
+  {
+    name: 'manual closing preserves the configured schedule and the selected moderator',
+    text: 'Поправка: вчера мне выдали права, теперь я администратор этого чата. У нас выбран Рэкс 2. Хочу прямо сейчас закрыть чат до своего решения, но чтобы админы могли писать и прежнее ночное расписание осталось. Как это включить и потом убрать?',
+    history: [
+      { role: 'user', text: 'Пока я обычный участник, настройки чата мне не показываются.' },
+    ],
+    required: [
+      /Закрыть вручную/u,
+      /Без срока/u,
+      /администраторы смогут писать/u,
+      /расписание.*продолж/u,
+      /выключите/u,
+    ],
+    forbidden: [/включите «Закрывать по расписанию»/iu, /«Закрывать с»|«Открывать в»/u],
+  },
+  {
+    name: 'keeping a colleague saved retention settings discards only the local draft',
+    text: 'Я админ чата. У Ластика менял срок удаления, но коллега успел раньше меня: теперь написано «Настройки уже изменились». Хочу оставить именно его настройки, а свои черновые не применять. Какую из кнопок выбрать?',
+    required: [/нажмите «Загрузить сохранённые»/iu, /чернов/iu],
+    forbidden: [/«Отмена»|выберите нужный срок/iu],
+  },
+  {
+    name: 'delivery verification follows the existing card even when Publik is in history',
+    text: 'В одном канале этот пост вижу, у второго получателя «Нужно проверить». Можно просто повторно отправить сразу в оба, чтобы наверняка дошло?',
+    history: [
+      {
+        role: 'user',
+        text: 'Я администратор обоих каналов. Публик уже подключён, проверка подключения проходит.',
+      },
+    ],
+    required: [/карточк/iu, /«Получатели»/u, /«Отправки»/u, /дубл/iu],
+    forbidden: [/создайте.*пост|выберите.*получател/iu],
+  },
+  {
+    name: 'an observation-mode incident explains independent filters before the operator handoff',
+    text: 'Но утром объявление исчезло. Это всё-таки ИИ его удалил? «События» у меня сейчас не открываются. Что тогда написать оператору здесь, чтобы начали разбираться?',
+    history: [
+      {
+        role: 'user',
+        text: 'Я администратор группы с Рэксом. В рекламе вижу «ИИ-анализ», значок «Тест» и надпись «Пока без автоматических удалений».',
+      },
+    ],
+    required: [
+      /наблюда/iu,
+      /без автоматическ/iu,
+      /другие фильтры.*независим/iu,
+      /сообщества/iu,
+      /время/iu,
+      /пример/iu,
+      /недоступ/iu,
+    ],
+    forbidden: [/это.*ИИ удалил|пришлите.*токен/iu],
+  },
+]) {
+  test(`reviewed recovery and safety procedures: ${scenario.name}`, async () => {
+    const result = await answerSupport({
+      ...scenario,
+      key: 'unused',
+      endpoint: 'http://127.0.0.1:1',
+    });
+    assert.equal(result.responseRoute, 'reviewed-faq');
+    for (const pattern of scenario.required) assert.match(result.text, pattern);
+    for (const pattern of scenario.forbidden) assert.doesNotMatch(result.text, pattern);
+  });
+}
+
 test('the eight-bot directory uses reviewed names and preserves separate product roles', async () => {
   const result = await answerSupport({
     text: 'Перечисли всех 8 ботов проекта',
@@ -1229,7 +1296,8 @@ test('request requirements preserve procedural conditions without inventing user
     {
       text: 'Ластик: нажал «Подключить и включить», дал права 40 минут назад. Он молчит; помогите включить ночной режим.',
       source: 'lastik-connect',
-      required: /только после подтверждения.*чтения всех сообщений.*удаления.*не нужно.*статус/iu,
+      required:
+        /только после подтверждения.*чтени.*всех сообщений.*удалени.*запросивший.*администратор.*не нужно.*статус/iu,
     },
     {
       text: 'Теперь я администратор своего канала. Как через Публика опубликовать пост прямо сейчас и включить ночной режим?',

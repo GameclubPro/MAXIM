@@ -188,8 +188,13 @@ validation/presentation boundary. They retain both rights checks and the one-hou
 request. Atomic initial setup uses the reviewed `lastik-connect.setupAnswer`, preserving period
 selection, both rights checks and the one-hour window from the request. Atomic Publisher creation
 preserves recipient selection and conditional connection prerequisites; atomic delivery questions
-use the existing publication's evidence procedure and duplicate warning. Mixed tasks, recovery
-and additional functional or incident facts stay in inference.
+use the existing publication's evidence procedure and duplicate warning. Tasks outside the reviewed
+procedure, including recovery questions it does not cover, retain inference.
+Bounded manual-closing and settings-conflict replies preserve the exact UI action and its
+direction. An observation-mode incident reply explains independent filters before the operator
+handoff. These routes cover all parts of the current task; unrelated additional questions retain
+inference. Lastik activation facts and reminders retain both rights checks and the waiting window
+from the connection request, including when inference is required.
 Unknown-send questions retain the existing publication's verification steps and omit new-post
 instructions. User-supplied fields with the same name remain untrusted. Only the two
 application-owned fact arrays provide reviewed
