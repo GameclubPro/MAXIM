@@ -147,6 +147,87 @@ const botDirectoryHistory = [
   assistant('В проекте „Майор Максимов“ восемь ботов: шесть модераторов, Публик и Ластик.'),
 ];
 
+test('a named reserve comparison retains roles and the selection procedure', () => {
+  const text =
+    'Я администратор. Пока хочу разобраться: Рэкс2 сильнее обычного Рэкса или это запасной? Если основной перестанет работать, второй сам его подхватит? И где посмотреть, кто сейчас выбран у нас?';
+  const history = [
+    user('В нашем чате стоит Рэкс, а в каталоге увидел ещё Рэкса2.'),
+    assistant('Хотите заменить модератора или разобраться, зачем второй бот?'),
+  ];
+  assert.equal(needsReply(text, history).botProfilesRequested, true);
+  assert.equal(ids(text, history)[0], 'bots');
+  assert.ok(ids(text, history).includes('choose-moderator'));
+  const incident = needsReply('Запасной Рэкс2 не удаляет мат. Почему?');
+  assert.equal(incident.botProfilesRequested, false);
+  assert.ok(ids('Запасной Рэкс2 не удаляет мат. Почему?').includes('profanity-sensitivity'));
+});
+
+test('contextual AI observation and operator evidence retain both tasks', () => {
+  const history = [
+    user('У нас пропало сообщение, а в рекламе стоит «ИИ-анализ». Значит, ИИ его удалил?'),
+    assistant('Вы администратор? Доступны ли «События»?'),
+  ];
+  const text =
+    'Да, я администратор. «События» у себя не вижу, уже всё просмотрел. В панели написано «Тест» и «Пока без автоматических удалений», но сообщение исчезло. Как тогда понять причину и что дать оператору без этого экрана?';
+  assert.equal(needsReply(text, history).mixedTopics, true);
+  for (const fact of ['support-incident-evidence', 'commercial-ai-observation'])
+    assert.ok(ids(text, history).includes(fact), fact);
+  assert.equal(
+    needsReply('Что дать оператору для разбора? События не вижу.', history).mixedTopics,
+    false,
+  );
+});
+
+test('a reported connected Publik does not become a new onboarding task', () => {
+  const text =
+    'Уточняю: теперь меня назначили администратором, речь о нашей группе. Публик уже подключён и готов. Как отправить через него обычный пост прямо сейчас?';
+  const history = [user('Я участник, как разместить объявление?')];
+  assert.equal(ids(text, history)[0], 'publisher-post-create');
+  assert.ok(!ids(text, history).includes('connect'));
+  for (const other of [
+    'Публик уже подключён и готов. Как подключить ещё одну группу?',
+    'Публик уже подключён и готов. Что нажимать для подключения ещё одной группы?',
+    'Публик уже подключён и готов. Как добавить ещё один канал?',
+    'Публик ещё не подключён и не готов. Как начать?',
+  ])
+    assert.ok(ids(other).includes('connect'), other);
+});
+
+test('an explicit publisher topic does not inherit an old AI observation test', () => {
+  const history = [
+    user('В рекламе группы включён «ИИ-анализ». Почему пропало сообщение?'),
+    assistant('Вы администратор и видите События?'),
+  ];
+  const text =
+    'Теперь вопрос про Публик. Я админ. Провёл тест публикации, но пост не пришёл. Что дать оператору?';
+  const route = needsReply(text, history);
+  assert.equal(route.commercialAi, null);
+  assert.equal(route.mixedTopics, false);
+  assert.ok(!ids(text, history).includes('commercial-ai-observation'));
+});
+
+test('Lastik initial setup recognizes a request for the connection procedure', () => {
+  const text =
+    'Я владелец группы, хочу впервые настроить удаление сообщений через 48 часов. Что нажимать для подключения Ластика?';
+  assert.equal(needsReply(text).lastikConnectionIntent, 'setup');
+  assert.equal(
+    needsReply('Ластик уже подключён. Где посмотреть прогресс?').lastikConnectionIntent,
+    null,
+  );
+  assert.equal(
+    needsReply('Ластик уже подключён. Как проверить подключение?').lastikConnectionIntent,
+    null,
+  );
+  const waiting = [
+    user('Ластик: нажал «Подключить и включить», жду уже 40 минут.'),
+    assistant('Проверьте статус подключения в мини-приложении.'),
+  ];
+  assert.equal(
+    needsReply('Где посмотреть статус подключения Ластика?', waiting).lastikConnectionIntent,
+    'waiting',
+  );
+});
+
 test('a contextual directory request retains bot profiles and the reserve handoff explanation', () => {
   const text =
     'Ну тогда киньте всех поимённо со ссылками и кто для чего. И эти „двойки“ сами подхватывают, если основной подвис?';

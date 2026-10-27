@@ -129,6 +129,34 @@ test('profile and reserve answers use the requested catalog identities and actua
   assert.match(action.text, /«Боты чата»/u);
 });
 
+test('a contextual reserve comparison preserves both identities and the actual selection path', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Уточните вопрос.',
+    sourceIds: ['operator'],
+  });
+  const result = await answerSupport({
+    ...fixture.input,
+    text: 'Я администратор. Пока хочу разобраться: Рэкс2 сильнее обычного Рэкса или это запасной? Если основной перестанет работать, второй сам его подхватит? И где посмотреть, кто сейчас выбран у нас?',
+    history: [
+      { role: 'user', text: 'В нашем чате стоит Рэкс, а в каталоге увидел ещё Рэкса2.' },
+      {
+        role: 'assistant',
+        text: 'Хотите заменить модератора или разобраться, зачем второй бот?',
+      },
+    ],
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.equal(fixture.requests, 0);
+  assert.deepEqual(result.sourceIds, ['bots', 'choose-moderator', 'operator']);
+  const body = presentedBody(result).replace(/\s+/gu, ' ');
+  assert.match(body, /Рэкс — основной модератор/u);
+  assert.match(body, /Рэкс 2 — резервный модератор/u);
+  assert.match(body, /не означает автоматического переключения/u);
+  assert.match(body, /не задают закреплённые пары/u);
+  assert.match(body, /«Боты чата».*выберите доступного бота.*«Бот выбран»/u);
+});
+
 test('rules replacement and manual VK import keep their reviewed procedure without inference', async () => {
   for (const [text, id, detail] of [
     [
@@ -182,7 +210,7 @@ function presentedBody(result) {
 }
 
 async function completionFixture(t, answer) {
-  const fixture = { answer, requests: 0, timings: { prompt_n: 180, predicted_n: 24 } };
+  const fixture = { answer, requests: 0, inputs: [], timings: { prompt_n: 180, predicted_n: 24 } };
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -195,6 +223,7 @@ async function completionFixture(t, answer) {
     }
     assert.equal(input.model, SUPPORT_MODEL.alias);
     fixture.requests++;
+    fixture.inputs.push(JSON.parse(input.messages[1].content));
     res.end(
       JSON.stringify({
         model: SUPPORT_MODEL.alias,
@@ -216,6 +245,96 @@ async function completionFixture(t, answer) {
   };
   return fixture;
 }
+
+test('a Test-mode removal incident without Events keeps AI facts and incident requirements in inference', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'По описанию причину удаления не определить.',
+    sourceIds: ['operator'],
+  });
+  const result = await answerSupport({
+    ...fixture.input,
+    text: 'Да, я администратор. «События» у себя не вижу, уже всё просмотрел. В панели написано «Тест» и «Пока без автоматических удалений», но сообщение исчезло. Как тогда понять причину и что дать оператору без этого экрана?',
+    history: [
+      {
+        role: 'user',
+        text: 'У нас пропало сообщение, а в рекламе стоит «ИИ-анализ». Значит, ИИ его удалил?',
+      },
+      {
+        role: 'assistant',
+        text: 'Вы администратор этой группы? Вам доступен раздел «События»?',
+      },
+    ],
+  });
+  assert.equal(result.responseRoute, 'model-inference');
+  assert.equal(fixture.requests, 1);
+  const input = fixture.inputs[0];
+  const ids = new Set(input.verifiedKnowledge.map((entry) => entry.id));
+  assert.ok(ids.has('support-incident-evidence'));
+  assert.ok(ids.has('commercial-ai-observation'));
+  const instruction = (id) =>
+    input.answerRequirements.find((entry) => entry.sourceId === id)?.instruction ?? '';
+  assert.match(
+    instruction('support-incident-evidence'),
+    /сообщество.*время.*пример.*уже сообщённые.*недоступные/iu,
+  );
+  const observation = instruction('commercial-ai-observation');
+  assert.match(observation, /Тест|наблюдени/iu);
+  assert.match(observation, /не удаляет автоматически|без автоматических удалений/iu);
+  assert.match(observation, /другие.*фильтр|фильтр.*независ/iu);
+  assert.match(observation, /причин|не.{0,20}(?:доказ|подтвержд|определ)/iu);
+});
+
+test('an administrator promotion with Publik already ready keeps publishing and omits onboarding', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Откройте Публик → Посты → Создать.',
+    sourceIds: ['operator'],
+  });
+  const result = await answerSupport({
+    ...fixture.input,
+    text: 'Уточняю: теперь меня назначили администратором, речь о нашей группе. Публик уже подключён и готов. Как отправить через него обычный пост прямо сейчас?',
+    history: [
+      { role: 'user', text: 'Я участник группы. Как выложить объявление?' },
+      {
+        role: 'assistant',
+        text: 'По размещению объявления обратитесь к администраторам именно той группы.',
+      },
+    ],
+  });
+  assert.equal(result.responseRoute, 'model-inference');
+  assert.equal(fixture.requests, 1);
+  const input = fixture.inputs[0];
+  assert.equal(input.role, 'admin');
+  assert.ok(input.verifiedKnowledge.some((entry) => entry.id === 'publisher-post-create'));
+  assert.ok(input.answerRequirements.every((entry) => entry.sourceId !== 'connect'));
+  assert.doesNotMatch(
+    input.answerRequirements.map((entry) => entry.instruction).join(' '),
+    /Дай проверенный порядок: «Подключить чат или канал»/u,
+  );
+});
+
+test('first Lastik connection expressed as a noun retains rights and activation conditions', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Выберите срок удаления и проверьте нужные права.',
+    sourceIds: ['operator'],
+  });
+  const result = await answerSupport({
+    ...fixture.input,
+    text: 'Я владелец группы, хочу впервые настроить удаление сообщений через 48 часов. Что нажимать для подключения Ластика?',
+  });
+  assert.equal(result.responseRoute, 'model-inference');
+  assert.equal(fixture.requests, 1);
+  const input = fixture.inputs[0];
+  assert.ok(input.verifiedKnowledge.some((entry) => entry.id === 'lastik-connect'));
+  const instruction =
+    input.answerRequirements.find((entry) => entry.sourceId === 'lastik-connect')?.instruction ??
+    '';
+  assert.match(instruction, /«Удаление старых сообщений».*срок.*«Подключить и включить»/u);
+  assert.match(instruction, /администратор.*чтения всех сообщений и удаления/iu);
+  assert.match(instruction, /до 1 часа.*только после подтверждения прав/iu);
+});
 
 test('Lastik waiting shortcut preserves setup, recovery, rights and additional tasks in inference', async (t) => {
   const fixture = await completionFixture(t, {

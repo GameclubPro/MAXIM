@@ -23,6 +23,10 @@ const botProfileRequest = (text) =>
   /профил|(?<![\p{L}])(?:имя|имена)(?![\p{L}])|какой.{0,20}бот|разные боты|перепут|разниц|разные помощник|(?:дай|пришл|покаж|нужн|перейт|поменя|замен|смен).{0,40}(?<![\p{L}])ссылк|(?<![\p{L}])ссылк.{0,15}(?:на бота|профил)/iu.test(
     text,
   );
+const reserveComparison = (text) =>
+  moderatorName.test(text) &&
+  /резерв|запасн|двойк/iu.test(text) &&
+  /(?:это|он|они).{0,20}(?:запасн|резерв)|сильнее|мощнее|лучше|отлич|разниц/iu.test(text);
 const publisherTask =
   /автоответ|автопост|предложк|согласован.{0,15}личк|\bvk\b|(?:^|\s)вк(?:\s|[.!?,]|$)|импорт.{0,20}пост|пост.{0,20}импорт|отложенн.{0,20}пост|пост.{0,20}отлож|регулярн.{0,20}пост|переехал.{0,20}публикац|майор.{0,35}пост|пост.{0,35}майор/iu;
 const eraserTask =
@@ -325,6 +329,14 @@ function mixedRequests(ctx, state) {
   const currentTopics = new Set(topics(ctx.current));
   if (state.reviewedIntents.eligibility) currentTopics.add('public-channel');
   if (state.reviewedIntents.evidence) currentTopics.add('incident-evidence');
+  if (
+    state.commercialAi &&
+    state.reviewedIntents.evidence &&
+    /наблюда|ии[\s-]*анализ|без автоматических удалений|(?<![\p{L}])тест(?![\p{L}])/iu.test(
+      ctx.current,
+    )
+  )
+    return true;
   if (placement.test(ctx.current)) currentTopics.add('publication');
   if (state.publisherRequest && /[«"„]нужно проверить[»"“]/iu.test(ctx.current))
     currentTopics.add('delivery');
@@ -358,7 +370,12 @@ function lastikConnectionIntent(ctx, state, primaryIds) {
       )
     )
       return 'waiting';
-    if (/подключ(?:ить|и(?:те)?)(?![\p{L}])|переподключ/iu.test(value)) return 'setup';
+    if (
+      /подключ(?:ить|и(?:те)?)(?![\p{L}])|переподключ|(?<![\p{L}])(?:для|порядок|шаги)\s+подключени/iu.test(
+        value,
+      )
+    )
+      return 'setup';
     return null;
   };
   // FLAG: These are user-described question topics, never observed live connection states.
@@ -525,6 +542,8 @@ function commercialIntents(current, focus) {
 }
 function commercialIntent(current, focus, intents) {
   if (!commercialPattern.test(focus)) return null;
+  if (['publisher', 'eraser'].includes(productOf(current)) && !commercialPattern.test(current))
+    return null;
   return intents.length === 1 &&
     !/в одном.{0,100}в другом|сравни|одноврем|и.{0,10}модель/iu.test(current)
     ? intents[0]
@@ -624,9 +643,11 @@ function semanticFacts(text, state) {
     add('max-platform-default-commands', 105);
   const reportedConnectionReady =
     publ &&
-    /карточк\p{L}*\s+подключ\p{L}*.{0,25}(?:готов|подключен)/iu.test(state.current) &&
+    /карточк\p{L}*\s+подключ\p{L}*.{0,25}(?:готов|подключен)|публик\p{L}*\s+(?:уже\s+)?подключен(?![\p{L}])|(?:уже\s+)?подключен\p{L}*.{0,20}публик/iu.test(
+      state.current,
+    ) &&
     !/не\s+(?:готов|подключен)/iu.test(state.current) &&
-    !/подключ(?:ить|и(?:те)?)(?![\p{L}])|(?:как|хочу|нужно|надо).{0,30}подключ/iu.test(
+    !/подключ(?:ить|и(?:те)?)(?![\p{L}])|(?:как|хочу|нужно|надо).{0,30}подключ|(?:что|где|порядок|шаг).{0,60}подключени|подключени.{0,35}(?<![\p{L}])(?:еще|друг|втор|нов)|(?:как|куда|хочу|нужно|надо).{0,25}добав.{0,35}(?:чат|групп|канал)/iu.test(
       state.current,
     );
   const connectionRequested =
@@ -1136,10 +1157,10 @@ export function createSupportRouter(knowledge) {
         topics(ctx.current).includes('retention')),
     );
     const developer = developerPattern.test(ctx.focus);
-    const profilesRequested = botProfileRequest(ctx.current);
+    const profilesRequested = botProfileRequest(ctx.current) || reserveComparison(ctx.current);
     const reserveHandoff =
       (botDirectory || botCatalogContext || moderatorName.test(ctx.current)) &&
-      /резерв|двойк|в запас/iu.test(ctx.current) &&
+      /резерв|двойк|в запас|запасн/iu.test(ctx.current) &&
       /подхват|перехват|переключ|выбран|выбрать/iu.test(ctx.current);
     const botCatalogRequest =
       reserveHandoff ||

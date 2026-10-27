@@ -66,6 +66,8 @@ Only an unmixed waiting task with no other functional or incident facts takes th
 setup, recovery and additional questions retain grounded inference.
 Forwarding questions for a moderator retain the connection prerequisites. An offered community
 link is not a link-filter task; a reported ready connection is not an onboarding request.
+Named reserve comparisons retain catalog roles and the selection procedure. An incident handoff
+must also answer an explicit AI observation-mode question, including when its subject is in history.
 An unknown delivery label keeps verification of the existing publication ahead of connection
 facts. Link-mode reminders preserve the reported mode and distinguish the desired result from
 a proposed way to achieve it.
