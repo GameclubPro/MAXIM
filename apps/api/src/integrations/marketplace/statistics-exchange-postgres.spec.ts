@@ -1190,25 +1190,72 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     expect(current[0]!.producer_revision).toBe(1n);
   });
 
-  it('does not let one denied recovery head starve another selected entity', async () => {
-    const secondId = '-' + (BigInt(actor) + 1n).toString();
-    await grants.put(grantId, {
-      ...input(),
-      entities: [
-        { entityId, kind: 'CHANNEL', profile: 'moderation' },
-        { entityId: secondId, kind: 'CHANNEL', profile: 'moderation' },
-      ],
-    });
-    await db.$executeRaw`UPDATE statistics_exchange_entities SET binding_id=NULL WHERE grant_id=${grantId}::uuid`;
-    attest
-      .mockRejectedValueOnce(new Error('synthetic unavailable'))
-      .mockRejectedValueOnce(new Error('synthetic unavailable'));
-    await expect(grants.recoverUnavailable(grantId)).rejects.toThrow('synthetic unavailable');
-    await expect(grants.recoverUnavailable(grantId)).rejects.toThrow('synthetic unavailable');
-    expect(
-      new Set(attest.mock.calls.map(([raw]) => (raw as { entityId: string }).entityId)).size,
-    ).toBe(2);
-  });
+  it.each(['default', 'nested-rescan'] as const)(
+    'does not let one denied recovery head starve another selected entity with %s planner',
+    async (planner) => {
+      const secondId = '-' + (BigInt(actor) + 1n).toString();
+      await grants.put(grantId, {
+        ...input(),
+        entities: [
+          { entityId, kind: 'CHANNEL', profile: 'moderation' },
+          { entityId: secondId, kind: 'CHANNEL', profile: 'moderation' },
+        ],
+      });
+      await db.$executeRaw`UPDATE statistics_exchange_entities SET binding_id=NULL WHERE grant_id=${grantId}::uuid`;
+      attest.mockClear();
+      attest
+        .mockRejectedValueOnce(new Error('synthetic unavailable'))
+        .mockRejectedValueOnce(new Error('synthetic unavailable'));
+      type RecoverySchedule = { entity_id: string; kind: string; next_check_at: Date };
+      await db.$transaction(async (tx) => {
+        if (planner === 'nested-rescan') await useNestedRescanPlanner(tx);
+        const transactionPrisma = {
+          $queryRaw: tx.$queryRaw.bind(tx),
+        } satisfies Pick<PrismaService, '$queryRaw'>;
+        const recovering = new StatisticsExchangeGrantsService(
+          transactionPrisma as PrismaService,
+          config,
+          { attest } as unknown as MarketplaceAccessService,
+          state,
+        );
+        const before = await tx.$queryRaw<RecoverySchedule[]>`
+          SELECT entity_id,kind,next_check_at FROM statistics_exchange_entities
+          WHERE grant_id=${grantId}::uuid ORDER BY entity_id,kind`;
+        expect(before).toHaveLength(2);
+        await expect(recovering.recoverUnavailable(grantId)).rejects.toThrow(
+          'synthetic unavailable',
+        );
+        expect(attest).toHaveBeenCalledTimes(1);
+        const afterFirst = await tx.$queryRaw<RecoverySchedule[]>`
+          SELECT entity_id,kind,next_check_at FROM statistics_exchange_entities
+          WHERE grant_id=${grantId}::uuid ORDER BY entity_id,kind`;
+        const changed = afterFirst.filter(
+          (row, index) => row.next_check_at.getTime() !== before[index]!.next_check_at.getTime(),
+        );
+        expect(changed).toHaveLength(1);
+        const attempted = (attest.mock.calls[0]![0] as { entityId: string }).entityId;
+        expect(changed[0]!.entity_id).toBe(attempted);
+        expect(afterFirst.filter((row) => row.entity_id !== attempted)).toEqual(
+          before.filter((row) => row.entity_id !== attempted),
+        );
+        await expect(recovering.recoverUnavailable(grantId)).rejects.toThrow(
+          'synthetic unavailable',
+        );
+        expect(attest).toHaveBeenCalledTimes(2);
+        expect(
+          new Set(attest.mock.calls.map(([raw]) => (raw as { entityId: string }).entityId)),
+        ).toEqual(new Set(before.map((row) => row.entity_id)));
+        const afterSecond = await tx.$queryRaw<RecoverySchedule[]>`
+          SELECT entity_id,kind,next_check_at FROM statistics_exchange_entities
+          WHERE grant_id=${grantId}::uuid ORDER BY entity_id,kind`;
+        expect(
+          afterSecond.filter(
+            (row, index) => row.next_check_at.getTime() !== before[index]!.next_check_at.getTime(),
+          ),
+        ).toHaveLength(2);
+      });
+    },
+  );
   it('refuses mismatched remote binding identity and generation publication after lease loss', async () => {
     await grants.put(grantId, input());
     const fixture = await remoteFixture();
@@ -1240,47 +1287,163 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     ).toEqual([]);
   });
   it('advances bounded cleanup past retained generations before deleting a superseded generation', async () => {
-    await grants.put(grantId, input());
-    const lease = randomUUID();
-    await db.$executeRaw`UPDATE statistics_exchange_grants SET lease_id=${lease}::uuid,lease_until=now()+interval '2 minutes' WHERE id=${grantId}::uuid`;
-    await db.$executeRaw`INSERT INTO statistics_exchange_generations(id,grant_id,grant_revision,entity_id,kind,origin,producer_revision,manifest,rows,created_at)
-      SELECT md5(${grantId}||n::text)::uuid,${grantId}::uuid,1,'-'||n::text,'CHANNEL','MAXIM',1,'{}'::jsonb,'[]'::jsonb,now()-interval '2 days'+n*interval '1 second' FROM generate_series(1,1001)n`;
-    const supersededId = (
-      await db.$queryRaw<
-        Array<{ id: string }>
-      >`SELECT id FROM statistics_exchange_generations WHERE grant_id=${grantId}::uuid AND entity_id='-1001'`
-    )[0]!.id;
-    await db.$executeRaw`INSERT INTO statistics_exchange_generations(id,grant_id,grant_revision,entity_id,kind,origin,producer_revision,manifest,rows)
-      VALUES(${randomUUID()}::uuid,${grantId}::uuid,1,'-1001','CHANNEL','MAXIM',2,'{}'::jsonb,'[]'::jsonb)`;
-    const runtime = new StatisticsExchangeRuntimeService(
-      db as PrismaService,
-      config,
-      statistics,
-      grants,
-    );
-    await runtime.prune(grantId, lease);
-    expect(
-      (
+    const foreignGrantId = randomUUID();
+    try {
+      await grants.put(grantId, input());
+      const lease = randomUUID();
+      await db.$executeRaw`UPDATE statistics_exchange_grants SET lease_id=${lease}::uuid,lease_until=now()+interval '2 minutes' WHERE id=${grantId}::uuid`;
+      await db.$executeRaw`INSERT INTO statistics_exchange_grants(id,actor_user_id,revision,state,input_hash)
+        VALUES(${foreignGrantId}::uuid,${actor + '-cleanup-foreign'},1,'ACTIVE','synthetic')`;
+      // FLAG: Older foreign history must not become an unbounded post-filter before LIMIT.
+      await db.$executeRaw`INSERT INTO statistics_exchange_generations(id,grant_id,grant_revision,entity_id,kind,origin,producer_revision,manifest,rows,created_at)
+        SELECT md5(${foreignGrantId}||n::text)::uuid,${foreignGrantId}::uuid,1,'-foreign-'||n::text,'CHANNEL','MAXIM',1,'{}'::jsonb,'[]'::jsonb,now()-interval '4 days'+n*interval '1 second' FROM generate_series(1,10000)n`;
+      await db.$executeRaw`INSERT INTO statistics_exchange_generations(id,grant_id,grant_revision,entity_id,kind,origin,producer_revision,manifest,rows,created_at)
+        SELECT md5(${grantId}||n::text)::uuid,${grantId}::uuid,1,'-'||n::text,'CHANNEL','MAXIM',1,'{}'::jsonb,'[]'::jsonb,now()-interval '2 days'+n*interval '1 second' FROM generate_series(1,1001)n`;
+      const supersededId = (
         await db.$queryRaw<
-          Array<{ prune_after_id: string | null }>
-        >`SELECT prune_after_id FROM statistics_exchange_grants WHERE id=${grantId}::uuid`
-      )[0]!.prune_after_id,
-    ).not.toBeNull();
-    for (let page = 0; page < 10; page++) await runtime.prune(grantId, lease);
-    expect(
-      await db.$queryRaw`SELECT 1 FROM statistics_exchange_generations WHERE id=${supersededId}::uuid`,
-    ).toEqual([]);
-    expect(
-      (
+          Array<{ id: string }>
+        >`SELECT id FROM statistics_exchange_generations WHERE grant_id=${grantId}::uuid AND entity_id='-1001'`
+      )[0]!.id;
+      await db.$executeRaw`INSERT INTO statistics_exchange_generations(id,grant_id,grant_revision,entity_id,kind,origin,producer_revision,manifest,rows)
+        VALUES(${randomUUID()}::uuid,${grantId}::uuid,1,'-1001','CHANNEL','MAXIM',2,'{}'::jsonb,'[]'::jsonb)`;
+      const visibilityBefore = await db.$queryRaw<
+        Array<{ relpages: number; relallvisible: number }>
+      >`
+        SELECT relpages,relallvisible FROM pg_class WHERE oid='statistics_exchange_generations'::regclass`;
+      // FLAG: Model aged immutable history; normalize visibility/dead entries left by other native fixtures.
+      // The unvacuumed plan is a separate coverage limit, not a universally bounded optimizer guarantee.
+      await db.$executeRaw`VACUUM (ANALYZE) statistics_exchange_generations`;
+      const visibilityAfter = await db.$queryRaw<
+        Array<{ relpages: number; relallvisible: number }>
+      >`
+        SELECT relpages,relallvisible FROM pg_class WHERE oid='statistics_exchange_generations'::regclass`;
+      process.stdout.write(
+        'statistics-cleanup-visibility ' +
+          JSON.stringify({
+            before: visibilityBefore[0],
+            after: visibilityAfter[0],
+          }) +
+          '\n',
+      );
+      type PlanNode = {
+        'Node Type': string;
+        'Index Name'?: string;
+        'Index Cond'?: string;
+        'Actual Rows': number;
+        'Actual Loops': number;
+        'Rows Removed by Filter'?: number;
+        'Heap Fetches'?: number;
+        'Shared Hit Blocks': number;
+        'Shared Read Blocks': number;
+        Plans?: PlanNode[];
+      };
+      type QueryPlan = Array<{ 'QUERY PLAN': Array<{ Plan: PlanNode }> }>;
+      function assertBoundedPage(page: string, result: QueryPlan, cursorId?: string) {
+        const root = result[0]!['QUERY PLAN'][0]!.Plan;
+        const flatten = (node: PlanNode): PlanNode[] => [
+          node,
+          ...(node.Plans ?? []).flatMap(flatten),
+        ];
+        const nodes = flatten(root);
+        const scans = nodes.filter((node) => /^Index (Only )?Scan$/.test(node['Node Type']));
+        process.stdout.write(
+          'statistics-cleanup-page-plan ' +
+            JSON.stringify({
+              page,
+              scans: scans.map((node) => ({
+                type: node['Node Type'],
+                index: node['Index Name'],
+                rows: node['Actual Rows'],
+                loops: node['Actual Loops'],
+                filtered: node['Rows Removed by Filter'] ?? 0,
+                heapFetches: node['Heap Fetches'] ?? null,
+              })),
+              buffers: root['Shared Hit Blocks'] + root['Shared Read Blocks'],
+            }) +
+            '\n',
+        );
+        expect({
+          page,
+          unboundedNodes: nodes.filter((node) =>
+            ['Seq Scan', 'Sort', 'Incremental Sort'].includes(node['Node Type']),
+          ),
+          scans: scans.map((node) => ({
+            index: node['Index Name'],
+            condition: node['Index Cond'],
+            grantBound:
+              node['Index Cond']?.includes('grant_id') && node['Index Cond'].includes(grantId),
+            timeBound: node['Index Cond']?.includes('created_at'),
+            cursorBound:
+              !cursorId ||
+              (node['Index Cond']?.includes('>') && node['Index Cond'].includes(cursorId)),
+            rows: node['Actual Rows'],
+            loops: node['Actual Loops'],
+            filtered: node['Rows Removed by Filter'] ?? 0,
+          })),
+          buffers: root['Shared Hit Blocks'] + root['Shared Read Blocks'],
+        }).toEqual({
+          page,
+          unboundedNodes: [],
+          scans: [
+            {
+              index: expect.any(String),
+              condition: expect.any(String),
+              grantBound: true,
+              timeBound: true,
+              cursorBound: true,
+              rows: 100,
+              loops: 1,
+              filtered: 0,
+            },
+          ],
+          buffers: expect.any(Number),
+        });
+        expect({
+          page,
+          buffersBounded: root['Shared Hit Blocks'] + root['Shared Read Blocks'] <= 256,
+        }).toEqual({ page, buffersBounded: true });
+      }
+      const firstPlan = await db.$queryRaw<QueryPlan>`EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON)
+        SELECT id,created_at::text AS created_at FROM statistics_exchange_generations
+        WHERE grant_id=${grantId}::uuid AND created_at<now()-interval '1 day'
+        ORDER BY statistics_exchange_generations.created_at,statistics_exchange_generations.id LIMIT 100`;
+      assertBoundedPage('first', firstPlan);
+      const runtime = new StatisticsExchangeRuntimeService(
+        db as PrismaService,
+        config,
+        statistics,
+        grants,
+      );
+      await runtime.prune(grantId, lease);
+      const cursor = (
         await db.$queryRaw<
-          Array<{ count: bigint }>
-        >`SELECT count(*) AS count FROM statistics_exchange_generations WHERE grant_id=${grantId}::uuid`
-      )[0]!.count,
-    ).toBe(1001n);
-    const plan = await db.$queryRaw<
-      Array<{ 'QUERY PLAN': unknown }>
-    >`EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT id,created_at FROM statistics_exchange_generations WHERE grant_id=${grantId}::uuid AND created_at<now()-interval '1 day' ORDER BY created_at,id LIMIT 100`;
-    expect(JSON.stringify(plan)).toContain('statistics_exchange_generations_grant_expiry_idx');
+          Array<{ created_at: string | null; id: string | null }>
+        >`SELECT prune_after_created_at::text AS created_at,prune_after_id AS id
+          FROM statistics_exchange_grants WHERE id=${grantId}::uuid`
+      )[0]!;
+      expect(cursor.created_at).not.toBeNull();
+      expect(cursor.id).not.toBeNull();
+      const cursorPlan = await db.$queryRaw<QueryPlan>`EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON)
+        SELECT id,created_at::text AS created_at FROM statistics_exchange_generations
+        WHERE grant_id=${grantId}::uuid AND created_at<now()-interval '1 day'
+          AND (created_at,id)>(${cursor.created_at}::timestamptz,${cursor.id}::uuid)
+        ORDER BY statistics_exchange_generations.created_at,statistics_exchange_generations.id LIMIT 100`;
+      assertBoundedPage('cursor', cursorPlan, cursor.id!);
+      for (let page = 0; page < 10; page++) await runtime.prune(grantId, lease);
+      expect(
+        await db.$queryRaw`SELECT 1 FROM statistics_exchange_generations WHERE id=${supersededId}::uuid`,
+      ).toEqual([]);
+      expect(
+        (
+          await db.$queryRaw<
+            Array<{ count: bigint }>
+          >`SELECT count(*) AS count FROM statistics_exchange_generations WHERE grant_id=${grantId}::uuid`
+        )[0]!.count,
+      ).toBe(1001n);
+    } finally {
+      await db.$executeRaw`DELETE FROM statistics_exchange_generations WHERE grant_id=${foreignGrantId}::uuid`;
+      await db.$executeRaw`DELETE FROM statistics_exchange_grants WHERE id=${foreignGrantId}::uuid`;
+    }
   });
   it('reads only exact-actor imported audience without native generation writes and fences revocation', async () => {
     await grants.put(grantId, input());
