@@ -7,6 +7,7 @@ import {
   type MaxClientService,
 } from '../max/max-client.service';
 import { SanctionAction } from '../prisma/prisma-client';
+import { resolveModerationSanctionExpiry } from './moderation-sanction-expiry.util';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   extractMaxCallbackId,
@@ -259,14 +260,8 @@ export class ModerationReleaseCallbackService {
   }
 
   private isActiveMuteEvent(event: ModerationReleaseSanctionEvent): boolean {
-    const metadata = asRecord(event.metadata);
-    if (metadata?.mutePermanent === true) {
-      return true;
-    }
-
-    const expiresAt = readString(metadata?.muteExpiresAt);
-    const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
-    return Number.isFinite(expiresAtMs) && expiresAtMs > Date.now();
+    const expiry = resolveModerationSanctionExpiry(event.action, event.metadata, event.createdAt);
+    return expiry.permanent || !!(expiry.expiresAt && expiry.expiresAt.getTime() > Date.now());
   }
 
   private async answerCallbackSafe(
@@ -303,10 +298,4 @@ function readString(value: unknown): string | null {
 
 function readLowerString(value: unknown): string | null {
   return readString(value)?.toLowerCase() ?? null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }

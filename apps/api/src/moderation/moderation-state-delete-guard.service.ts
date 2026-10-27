@@ -103,7 +103,7 @@ export class ModerationStateDeleteGuardService {
         this.reject();
       return settings;
     };
-    const settings = await load();
+    await load();
     const options = {
       botId: params.botId,
       bypassCache: true,
@@ -231,16 +231,6 @@ export class ModerationStateDeleteGuardService {
       }
     }
     if (!reasons.length) this.reject();
-    if (
-      (await this.immunity.consumeForMessage({
-        chatId: params.chatId,
-        userId,
-        messageId: params.messageId,
-        scope: 'moderation-state-delete:v1',
-        nightModeTimezone: settings.nightModeTimezone,
-      })) === 'granted'
-    )
-      this.reject();
     const current = await load();
     const sourceAtMs = params.sourceMessageAt?.getTime() ?? liveSourceAtMs;
     const sourceDeadlineAtMs = sourceAtMs + 5 * 60_000;
@@ -353,6 +343,19 @@ export class ModerationStateDeleteGuardService {
       // FLAG: Invitation access is retired. Historical pending reasons cannot revive it.
       if (allowed) reasonDeadlines.push({ reasonKey: reason.reasonKey, deadlineAtMs });
     }
+    // FLAG: Only a current actionable reason can spend participant protection. Obsolete
+    // mute/disabled-policy work must not consume the allowance before it is rejected.
+    if (!reasonDeadlines.some((reason) => Date.now() < reason.deadlineAtMs)) this.reject();
+    if (
+      (await this.immunity.consumeForMessage({
+        chatId: params.chatId,
+        userId,
+        messageId: params.messageId,
+        scope: 'moderation-state-delete:v1',
+        nightModeTimezone: current.nightModeTimezone,
+      })) === 'granted'
+    )
+      this.reject();
     await params.beforeFinalAuthority?.();
     if (fingerprintModerationSettings(await load()) !== fingerprintModerationSettings(current))
       this.reject();

@@ -374,6 +374,21 @@ describe('ModerationReleaseCallbackService', () => {
     );
   });
 
+  it.each([
+    ['active', -1, true],
+    ['expired', -3, false],
+  ] as const)('handles a %s duration-only persisted mute', async (_name, ageHours, active) => {
+    const event = {
+      ...createSanctionEvent({ action: SanctionAction.MUTE, metadata: { muteDurationHours: 2 } }),
+      createdAt: new Date(Date.now() + ageHours * 3_600_000),
+    };
+    const { service, manualModeration } = createHarness({ sanctionEvent: event });
+
+    await service.tryHandle(createCallbackUpdate({ action: 'UNMUTE' }));
+
+    expect(manualModeration.applyManualModerationAction).toHaveBeenCalledTimes(active ? 1 : 0);
+  });
+
   it('answers a regular member with an empty ACK and performs no release work', async () => {
     const { service, prisma, maxClient, manualModeration } = createHarness({
       actorIsAdmin: false,
