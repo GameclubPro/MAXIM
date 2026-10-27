@@ -1,6 +1,9 @@
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
 import { isPristinePostSealHeldJoin } from './webhook-legacy-held-membership';
-import { inspectHeldRemovalDisposition } from './webhook-legacy-held-removal';
+import {
+  inspectHeldMessageDisposition,
+  inspectHeldRemovalDisposition,
+} from './webhook-legacy-held-removal';
 import type { MaxUpdate } from '@maxim/contracts';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
@@ -307,6 +310,26 @@ export async function materializeLegacyReceiptDisposition(
     const sender = record(rawMessage?.sender);
     const recipient = record(rawMessage?.recipient);
     const body = record(rawMessage?.body);
+    // FLAG: Captionless media and a prior known hold deferral must not create an
+    // endless RECEIVED retry. They require the strict original-source, complete
+    // sealed-scope and concurrent claim/journal absence proof before closure.
+    if (
+      event.errorMessage ===
+        'Webhook preparation deferred: Legacy scope installation is not sealed' ||
+      body?.text === undefined ||
+      body?.text === null
+    ) {
+      const heldMessage = await inspectHeldMessageDisposition(tx, event);
+      if (!heldMessage || heldMessage === 'NOT_HELD')
+        return refuse('receipt_post_seal_source_unproved');
+      return writeLegacyReceiptDisposition(
+        tx,
+        event,
+        heldMessage.authorityId,
+        [],
+        'POST_SEAL_MEMBER',
+      );
+    }
     if (
       !['message_created', 'message_edited'].includes(String(update?.type)) ||
       raw?.update_type !== update?.type ||

@@ -496,6 +496,77 @@ native('legacy disposition production ingestion activation regressions', () => {
     expect(await holds.settleHeldReceipt(randomUUID(), source.value)).toBe(false);
   });
 
+  it.each([
+    { caption: 'ordinary caption', alreadyDeferred: true },
+    { caption: undefined, alreadyDeferred: false },
+    { caption: null, alreadyDeferred: false },
+    { caption: undefined, alreadyDeferred: true },
+    { caption: null, alreadyDeferred: true },
+  ])(
+    'projects a held direct image without a caption or after its saved deferral ($caption, deferred=$alreadyDeferred)',
+    async ({ caption, alreadyDeferred }) => {
+      const source = await owner();
+      await seal(source.candidate);
+      const at = Date.now();
+      const image = new WebhookParser().parse(
+        {
+          update_type: 'message_created',
+          update_id: randomUUID(),
+          timestamp: at,
+          message: {
+            sender: { user_id: source.userId, is_bot: false },
+            recipient: { chat_id: source.chatId, chat_type: 'chat' },
+            timestamp: at,
+            body: {
+              mid: randomUUID(),
+              ...(caption === undefined ? {} : { text: caption }),
+              attachments: [
+                { type: 'image', payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } },
+              ],
+            },
+          },
+        },
+        { botId: 'major-1' },
+      );
+      const incoming = await prisma.webhookEvent.create({
+        data: {
+          botId: image.botId,
+          dedupKey: `${image.botId}:${image.updateId}`,
+          semanticKey: buildWebhookReceiptSemanticKey(image, publisherBotId),
+          normalizedPayload: image as unknown as Prisma.InputJsonValue,
+          rawPayload: image.raw as Prisma.InputJsonValue,
+          ...(alreadyDeferred
+            ? {
+                errorMessage:
+                  'Webhook preparation deferred: Legacy scope installation is not sealed',
+                nextEnqueueAt: new Date(Date.now() - 1_000),
+              }
+            : {}),
+        },
+      });
+      receipts.push(incoming.id);
+      await expect(ingress.preparePersistedWebhookEvent(incoming.id)).resolves.toMatchObject({
+        prepared: false,
+        canonical: false,
+        enforced: true,
+      });
+      const after = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: incoming.id } });
+      expect(after.status).toBe('NO_REPLAY_HELD');
+      const proof = await prisma.webhookLegacyReceiptDisposition.findUniqueOrThrow({
+        where: { id: after.legacyDispositionId! },
+      });
+      expect(proof).toMatchObject({ scopeKind: 'POST_SEAL_MEMBER', originalStatus: 'RECEIVED' });
+      expect(rawEvidence({ ...after, status: proof.originalStatus })).toEqual(
+        rawEvidence(incoming),
+      );
+      expect(await holds.isUpdateHeld(image)).toBe(true);
+      expect(
+        await prisma.webhookExecutionClaim.count({ where: { webhookEventId: incoming.id } }),
+      ).toBe(0);
+      expect((await metrics.getLagSnapshot({ maxAgeMs: 0 })).oldestReceivedEventId).toBeNull();
+    },
+  );
+
   it.each(
     ['major-1', publisherBotId].flatMap((botId) =>
       [false, true].flatMap((alreadyDeferred) =>

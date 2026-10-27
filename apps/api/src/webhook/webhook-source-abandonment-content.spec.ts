@@ -1183,3 +1183,59 @@ describe('modern source content profile', () => {
     expect(inspectSourceAbandonmentPostSealSource(f.owner())).toBeNull();
   });
 });
+
+describe('captionless direct media under an existing post-seal legacy hold', () => {
+  it.each(
+    ['image', 'video'].flatMap((type) => [undefined, null].map((caption) => ({ type, caption }))),
+  )(
+    'accepts $type caption=$caption without changing other admission profiles or the original',
+    ({ type, caption }) => {
+      const f = fixture('plain');
+      if (caption === undefined) delete f.body.text;
+      else f.body.text = caption;
+      f.body.attachments = [
+        type === 'image'
+          ? { type, payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } }
+          : {
+              type,
+              payload: { id: 42, url: 'https://vd.mycdn.me/fixture', token: 'fixture-token' },
+            },
+      ];
+      const source = f.owner();
+      const before = structuredClone(source);
+      expect(inspectLegacyPostSealTextSource(source)).not.toBeNull();
+      expect(inspectLegacyRecoverySource(source)).toBeNull();
+      expect(inspectSourceAbandonmentSource(source)).toBeNull();
+      expect(inspectSourceAbandonmentPostSealSource(source)).toBeNull();
+      expect(inspectPristineOperatorDiscardSource(source)).toBeNull();
+      expect(source).toEqual(before);
+    },
+  );
+
+  it.each([
+    'no media',
+    'unknown media',
+    'markup',
+    'number caption',
+    'normalized text',
+    'forward',
+    'command',
+  ])('refuses captionless admission with %s', (fault) => {
+    const f = fixture(fault === 'forward' ? 'forward' : 'plain');
+    delete f.body.text;
+    f.body.attachments = [
+      { type: 'image', payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } },
+    ];
+    if (fault === 'no media') f.body.attachments = [];
+    if (fault === 'unknown media') f.body.attachments = [{ type: 'unknown', payload: {} }];
+    if (fault === 'markup')
+      f.body.markup = [{ type: 'link', from: 0, length: 0, url: 'https://example.com' }];
+    if (fault === 'number caption') f.body.text = 42;
+    if (fault === 'command') f.body.text = '/ban';
+    const source = f.owner();
+    if (fault === 'normalized text')
+      (source.normalizedPayload as unknown as { message: { text: string } }).message.text =
+        'different';
+    expect(inspectLegacyPostSealTextSource(source)).toBeNull();
+  });
+});
