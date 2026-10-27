@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
+import type { MaxBotLinkService } from '../max/max-bot-link.service';
+import type { MaxClientService } from '../max/max-client.service';
 import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-client';
+import type { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
+import { ModerationSanctionStateFenceService } from './moderation-sanction-state-fence.service';
+import { ModerationStateDeleteGuardService } from './moderation-state-delete-guard.service';
 import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
@@ -66,6 +72,134 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
     expect(results.filter((result) => result === 'granted')).toHaveLength(1);
     expect(await prisma.moderationViolationMessageClaim.count({ where: { chatId } })).toBe(1);
   });
+
+  it.each(['released', 'expired'] as const)(
+    'preserves quota after a queued %s mute deletion for the next actionable message',
+    async (state) => {
+      const sourceAtMs = Date.now();
+      await prisma.chatSettings.upsert({
+        where: { chatId },
+        create: { chatId, nightModeTimezone: input.nightModeTimezone },
+        update: { nightModeTimezone: input.nightModeTimezone },
+      });
+      const mute = await prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId: input.userId,
+          eventType: 'MEMBER_ACTION',
+          ruleCode: 'TEST_MUTE',
+          action: 'MUTE',
+          createdAt: new Date(sourceAtMs - 2_000),
+          metadata: {
+            muteExpiresAt: new Date(
+              sourceAtMs + (state === 'expired' ? -1_000 : 3_600_000),
+            ).toISOString(),
+          },
+        },
+      });
+      try {
+        if (state === 'released') {
+          await prisma.moderationEvent.create({
+            data: {
+              chatId,
+              userId: input.userId,
+              eventType: 'MEMBER_ACTION',
+              ruleCode: 'MANUAL_UNMUTE',
+              action: 'NONE',
+              operator: 'ADMIN',
+              createdAt: new Date(sourceAtMs - 1_000),
+            },
+          });
+        }
+        let currentSourceAtMs = sourceAtMs;
+        const max = {
+          getChatMemberAccess: jest.fn(async () => ({
+            userId: input.userId,
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          })),
+          getExactMessageRow: jest.fn(async (_chatId: string, messageId: string) => ({
+            sender: { user_id: input.userId, is_bot: false },
+            recipient: { chat_id: chatId, chat_type: 'chat' },
+            timestamp: currentSourceAtMs,
+            body: { mid: messageId, text: 'hello' },
+          })),
+        } satisfies Pick<MaxClientService, 'getChatMemberAccess' | 'getExactMessageRow'>;
+        const bots = {
+          isKnownBotUserId: jest.fn(() => false),
+        } satisfies Pick<MaxBotLinkService, 'isKnownBotUserId'>;
+        const policy = {
+          evaluatePolicy: jest.fn(async () => {
+            throw new Error('Mute authorization must not evaluate spammer policy');
+          }),
+        } satisfies Pick<GlobalSpammerIntelligenceService, 'evaluatePolicy'>;
+        const guard = new ModerationStateDeleteGuardService(
+          prisma as never,
+          max as never,
+          bots as never,
+          service,
+          new ModerationSanctionStateFenceService(prisma as never),
+          policy as never,
+          new ConfigService(),
+        );
+        const pending = {
+          chatId,
+          messageId: 'stale-muted-message',
+          subjectUserId: input.userId,
+          botId: 'test-bot',
+          sourceMessageAt: new Date(sourceAtMs),
+          reasons: [
+            {
+              ruleCode: 'MUTE_ACTIVE_DELETE',
+              reasonKey: 'mute',
+              metadata: { muteEventId: mute.id },
+            },
+          ],
+        };
+        await expect(guard.authorize(pending)).rejects.toMatchObject({
+          code: 'moderation_state_delete_no_longer_authorized',
+        });
+        const readGrant = () =>
+          prisma.chatParticipantModerationImmunity.findUniqueOrThrow({
+            where: { chatId_userId: { chatId, userId: input.userId } },
+          });
+        expect((await readGrant()).dailyViolationUsage).toBe(0);
+        expect(await prisma.moderationViolationMessageClaim.count({ where: { chatId } })).toBe(0);
+
+        const active = await prisma.moderationEvent.create({
+          data: {
+            chatId,
+            userId: input.userId,
+            eventType: 'MEMBER_ACTION',
+            ruleCode: 'TEST_MUTE',
+            action: 'MUTE',
+            metadata: { muteExpiresAt: new Date(Date.now() + 3_600_000).toISOString() },
+          },
+        });
+        currentSourceAtMs = Date.now();
+        const messageId = 'next-actionable-message';
+        await expect(
+          guard.authorize({
+            ...pending,
+            messageId,
+            sourceMessageAt: new Date(currentSourceAtMs),
+            reasons: [{ ...pending.reasons[0]!, metadata: { muteEventId: active.id } }],
+          }),
+        ).rejects.toMatchObject({ code: 'moderation_state_delete_no_longer_authorized' });
+        expect((await readGrant()).dailyViolationUsage).toBe(1);
+        expect(await prisma.moderationViolationMessageClaim.count({ where: { chatId } })).toBe(1);
+        expect(
+          await prisma.moderationViolationMessageClaim.count({ where: { chatId, messageId } }),
+        ).toBe(1);
+        await expect(service.consumeForMessage({ ...input, messageId })).resolves.toBe('granted');
+        expect((await readGrant()).dailyViolationUsage).toBe(1);
+      } finally {
+        await prisma.moderationEvent.deleteMany({ where: { chatId } });
+      }
+    },
+  );
+
   it('does not treat an old receipt as authority after expiry or revocation', async () => {
     await expect(service.consumeForMessage(input)).resolves.toBe('granted');
     await prisma.chatParticipantModerationImmunity.updateMany({
