@@ -310,14 +310,17 @@ export async function materializeLegacyReceiptDisposition(
     const sender = record(rawMessage?.sender);
     const recipient = record(rawMessage?.recipient);
     const body = record(rawMessage?.body);
-    // FLAG: Captionless media and a prior known hold deferral must not create an
-    // endless RECEIVED retry. They require the strict original-source, complete
+    const link = record(rawMessage?.link);
+    const linkedBody = record(link?.message);
+    // FLAG: Captionless media, formatted forwards and a known hold deferral must
+    // not create an endless RECEIVED retry. They require strict original-source, complete
     // sealed-scope and concurrent claim/journal absence proof before closure.
     if (
       event.errorMessage ===
         'Webhook preparation deferred: Legacy scope installation is not sealed' ||
       body?.text === undefined ||
-      body?.text === null
+      body?.text === null ||
+      (link?.type === 'forward' && (body?.markup !== undefined || linkedBody?.markup !== undefined))
     ) {
       const heldMessage = await inspectHeldMessageDisposition(tx, event);
       if (!heldMessage || heldMessage === 'NOT_HELD')

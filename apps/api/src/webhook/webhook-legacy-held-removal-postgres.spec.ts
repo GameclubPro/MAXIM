@@ -277,6 +277,38 @@ native('native post-seal held message removal without replay', () => {
     );
   }
 
+  function heldFormattedForward(source: LegacyRecoveryCandidate, copied: boolean) {
+    const at = Date.now();
+    const markup = [{ type: 'emphasized', from: 0, length: 6 }];
+    return new WebhookParser().parse(
+      {
+        update_type: 'message_created',
+        update_id: randomUUID(),
+        timestamp: at,
+        message: {
+          sender: { user_id: source.source.userId, is_bot: false },
+          recipient: { chat_id: source.source.chatId, chat_type: 'chat' },
+          timestamp: at,
+          body: { mid: randomUUID(), text: copied ? '' : 'Outer caption', markup },
+          link: {
+            type: 'forward',
+            chat_id: -222,
+            sender: { user_id: 'quoted-author', is_bot: false },
+            message: {
+              mid: randomUUID(),
+              text: 'Quoted caption',
+              markup: structuredClone(markup),
+              attachments: [
+                { type: 'image', payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } },
+              ],
+            },
+          },
+        },
+      },
+      { botId: state().bots[0]!.id },
+    );
+  }
+
   // FLAG: Refusal fixtures seed the same pristine persisted envelope as ingress,
   // then deliberately corrupt exactly one boundary before the real SQL classifier.
   // Success through actual storeReceipt is tested independently below.
@@ -360,6 +392,122 @@ native('native post-seal held message removal without replay', () => {
       },
     });
   }
+
+  it.each(
+    [false, true].flatMap((copied) => [false, true].map((deferred) => ({ copied, deferred }))),
+  )(
+    'settles formatted held forward without execution (copied=$copied, deferred=$deferred)',
+    async ({ copied, deferred }) => {
+      const s = state();
+      const source = await owner();
+      await seal([source]);
+      const update = heldFormattedForward(source, copied);
+      const history = jest.spyOn(s.history, 'remove');
+      const handler = jest.spyOn(s.moderation, 'handleUpdate');
+      const before = deferred
+        ? await stage(update, { errorMessage: heldRetry, executionDeadlineAt: new Date(0) })
+        : undefined;
+      if (before)
+        expect(await s.legacyHolds.materializeReceipt(before.id)).toBe('APPLIED_WITH_PROOF');
+      const receipt = before
+        ? await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: before.id } })
+        : await store(update);
+      expect(receipt.status).toBe('NO_REPLAY_HELD');
+      const proof = await s.prisma.webhookLegacyReceiptDisposition.findUniqueOrThrow({
+        where: { id: receipt.legacyDispositionId! },
+      });
+      expect(proof).toMatchObject({
+        receiptId: receipt.id,
+        originalStatus: 'RECEIVED',
+        scopeKind: 'POST_SEAL_MEMBER',
+        reason: 'NO_REPLAY_HELD',
+      });
+      if (before)
+        expect(receipt).toEqual({
+          ...before,
+          status: 'NO_REPLAY_HELD',
+          legacyDispositionId: proof.id,
+          legacyDispositionReceiptId: before.id,
+        });
+      expect(proof.sourceDigest).toBe(legacyReceiptSourceDigest(receipt, proof.originalStatus));
+      expect(await s.legacyHolds.materializeReceipt(receipt.id)).toBe('ALREADY_APPLIED_SAME_PROOF');
+      expect(await s.ingress.preparePersistedWebhookEvent(receipt.id)).toMatchObject({
+        canonical: false,
+        prepared: false,
+      });
+      await s.moderation.processWebhookEvent(receipt.id);
+      expect(history).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+      expect(
+        await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: receipt.id } }),
+      ).toBe(0);
+      expect(s.requests).toEqual([]);
+      expect(s.effects).toEqual([]);
+      const next = await store(
+        removal(source, { message_id: randomUUID(), user_id: 'next-actor' }),
+      );
+      await s.ingress.preparePersistedWebhookEvent(next.id);
+      await s.prisma.webhookEvent.update({ where: { id: next.id }, data: { status: 'QUEUED' } });
+      await s.moderation.processWebhookEvent(next.id);
+      expect(
+        await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: next.id } }),
+      ).toMatchObject({ status: 'PROCESSED' });
+      expect(await s.legacyHolds.isGlobalUserHeld(source.source.userId)).toBe(true);
+      expect(
+        await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: source.claim.id } }),
+      ).toEqual(source.claim);
+    },
+  );
+
+  it.each([
+    'attempted',
+    'queue name',
+    'raw sample',
+    'unsealed',
+    'authority digest',
+    'linked claim',
+    'canonical claim',
+    'publisher claim',
+    'command claim',
+    'delivery journal',
+  ])('keeps a fresh formatted held forward fenced with %s', async (fault) => {
+    const s = state();
+    const source = await owner();
+    const certificate = await seal([source], fault !== 'unsealed');
+    const update = heldFormattedForward(source, true);
+    if (fault === 'authority digest')
+      await corruptFixture((tx) =>
+        tx.webhookLegacySealedAuthority.update({
+          where: { certificateId: certificate.id },
+          data: { attestationDigest: 'f'.repeat(64) },
+        }),
+      );
+    const receipt = await stage(update, {
+      ...(fault === 'attempted' ? { enqueueAttempts: 1 } : {}),
+      ...(fault === 'queue name' ? { queueName: 'existing-queue' } : {}),
+      ...(fault === 'raw sample' ? { rawPayload: { ...update.raw, unknownField: true } } : {}),
+    });
+    if (fault.endsWith('claim')) {
+      const semanticKey =
+        fault === 'canonical claim'
+          ? buildWebhookSemanticEventKey(update)!
+          : fault === 'publisher claim'
+            ? buildWebhookReceiptSemanticKey(update, update.botId!)!
+            : fault === 'command claim'
+              ? buildGroupCommandKey(chatId, update.message!.messageId)
+              : randomUUID();
+      const claim = await s.prisma.webhookExecutionClaim.create({
+        data: {
+          kind: 'INDEPENDENT_RETAINED_KIND',
+          semanticKey,
+          ...(fault === 'linked claim' ? { webhookEventId: receipt.id } : {}),
+        },
+      });
+      extraClaims.push(claim.id);
+    }
+    if (fault === 'delivery journal') await publisherDelivery(update, source);
+    await blocked(receipt);
+  });
 
   it.each([
     'QUEUED',

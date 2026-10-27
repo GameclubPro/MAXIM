@@ -18,6 +18,7 @@ import {
   isSourceAbandonmentOuterMarkup,
 } from './webhook-source-abandonment-markup';
 import { WebhookParser } from './webhook.parser';
+import { isLegacyPassiveMarkup } from './webhook-legacy-direct-source';
 import { extractVisiblePhotoMessageContent } from '../moderation/photo-duplicate/photo-attachment-extractor';
 
 type ForwardBodyRefusal =
@@ -116,6 +117,35 @@ export function inspectLegacyForwardText(
   return inspectForwardText(update, settings, 'legacy');
 }
 
+// FLAG: Only projection of an existing post-seal hold admits passive formatting.
+// Historical installation, linked identities, media and command authority stay strict.
+export function inspectLegacyPostSealForwardText(
+  update: Record<string, unknown>,
+  settings?: AdminForwardedCommandSettings,
+): LegacyForwardRefusal | null {
+  return inspectForwardText(update, settings, 'legacy-post-seal');
+}
+
+// FLAG: An empty outer caption may carry an exact copy of independently bounded
+// linked passive markup. Composed text never supplies offsets, links or targets.
+export function isLegacyPostSealOuterMarkup(
+  body: Record<string, unknown>,
+  linkValue: unknown,
+): boolean {
+  if (isLegacyPassiveMarkup(body.markup, body.text)) return true;
+  const link = record(linkValue);
+  const linked = record(link?.message);
+  return Boolean(
+    body.text === '' &&
+    link?.type === 'forward' &&
+    linked &&
+    Array.isArray(body.markup) &&
+    body.markup.length <= 64 &&
+    isLegacyPassiveMarkup(linked.markup, linked.text) &&
+    JSON.stringify(body.markup) === JSON.stringify(linked.markup),
+  );
+}
+
 // FLAG: Only modern exact-source holds may accept an omitted linked sender.
 // The outer human remains mandatory; no quoted author is inferred or held, and
 // an explicitly malformed/null sender never becomes missing metadata.
@@ -129,7 +159,7 @@ export function inspectSourceAbandonmentForwardText(
 function inspectForwardText(
   update: Record<string, unknown>,
   settings: AdminForwardedCommandSettings | undefined,
-  profile: 'legacy' | 'source-abandonment',
+  profile: 'legacy' | 'legacy-post-seal' | 'source-abandonment',
 ): LegacyForwardRefusal | null {
   const raw = record(update.raw);
   const message = record(raw?.message);
@@ -140,7 +170,11 @@ function inspectForwardText(
   const direct = body(
     message?.body,
     false,
-    modern ? (item) => isSourceAbandonmentOuterMarkup(item, message?.link) : undefined,
+    modern
+      ? (item) => isSourceAbandonmentOuterMarkup(item, message?.link)
+      : profile === 'legacy-post-seal'
+        ? (item) => isLegacyPostSealOuterMarkup(item, message?.link)
+        : undefined,
     undefined,
     (reason) => {
       directRefusal = reason;
@@ -150,7 +184,11 @@ function inspectForwardText(
   const linked = body(
     link?.message,
     true,
-    modern ? (item) => isSourceAbandonmentMarkup(item.markup, item.text) : undefined,
+    modern
+      ? (item) => isSourceAbandonmentMarkup(item.markup, item.text)
+      : profile === 'legacy-post-seal'
+        ? (item) => isLegacyPassiveMarkup(item.markup, item.text)
+        : undefined,
     modern
       ? (attachments) =>
           isSourceAbandonmentLinkedMedia(attachments, 'forward', 'SOURCE_ABANDONMENT')

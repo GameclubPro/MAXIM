@@ -16,8 +16,10 @@ import {
 } from './webhook-source-abandonment-content';
 import {
   inspectLegacyForwardText,
+  inspectLegacyPostSealForwardText,
   inspectSourceAbandonmentForwardText,
   isLegacyOpaqueSequence,
+  isLegacyPostSealOuterMarkup,
   legacyParsedTextMatches,
   type LegacyForwardRefusal,
 } from './webhook-legacy-forward-source';
@@ -240,7 +242,9 @@ function inspectLegacyTextSource(
   if (
     profile === 'source-abandonment'
       ? !isSourceAbandonmentOuterMarkup(body, message.link)
-      : !isLegacyPassiveMarkup(body.markup, sourceText)
+      : postSealForward && message.link !== undefined
+        ? !isLegacyPostSealOuterMarkup(body, message.link)
+        : !isLegacyPassiveMarkup(body.markup, sourceText)
   )
     return refuse('source_markup');
   if (message.link !== undefined) {
@@ -249,7 +253,9 @@ function inspectLegacyTextSource(
         ? inspectSourceAbandonmentReplyText(update, purpose, settings)
         : profile === 'source-abandonment'
           ? inspectSourceAbandonmentForwardText(update, settings)
-          : inspectLegacyForwardText(update, settings);
+          : postSealForward
+            ? inspectLegacyPostSealForwardText(update, settings)
+            : inspectLegacyForwardText(update, settings);
     if (forwardRefusal) return refuse(forwardRefusal);
   } else if (typeof sourceText !== 'string' || !legacyParsedTextMatches(update))
     return refuse('source_text_mismatch');
