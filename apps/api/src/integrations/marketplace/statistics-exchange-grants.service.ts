@@ -451,13 +451,15 @@ export class StatisticsExchangeGrantsService {
     const grant = await this.row(id);
     if (!grant || grant.state !== 'ACTIVE') return false;
     this.assertActor(grant.actor_user_id);
+    // FLAG: Materialize one recovery candidate before changing eligibility; unstarted entities stay due.
     const rows = await this.prisma.$queryRaw<
       ExchangeEntityKey[]
-    >`UPDATE statistics_exchange_entities SET next_check_at=now()+interval '1 minute'
-      WHERE (grant_id,entity_id,kind) IN(SELECT grant_id,entity_id,kind FROM statistics_exchange_entities
-        WHERE grant_id=${id}::uuid AND binding_id IS NULL AND next_check_at<=now()
-        ORDER BY next_check_at,entity_id,kind FOR UPDATE SKIP LOCKED LIMIT 1)
-      RETURNING entity_id AS "entityId",kind,profile`;
+    >`WITH candidate AS MATERIALIZED(SELECT e.grant_id,e.entity_id,e.kind FROM statistics_exchange_entities e
+        WHERE e.grant_id=${id}::uuid AND e.binding_id IS NULL AND e.next_check_at<=now()
+        ORDER BY e.next_check_at,e.entity_id,e.kind FOR UPDATE OF e SKIP LOCKED LIMIT 1)
+      UPDATE statistics_exchange_entities e SET next_check_at=now()+interval '1 minute'
+      FROM candidate WHERE e.grant_id=candidate.grant_id AND e.entity_id=candidate.entity_id AND e.kind=candidate.kind
+      RETURNING e.entity_id AS "entityId",e.kind,e.profile`;
     const entity = rows[0];
     if (!entity) {
       const pending = await this.prisma.$queryRaw<

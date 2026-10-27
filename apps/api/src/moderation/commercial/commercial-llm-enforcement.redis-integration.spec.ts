@@ -21,11 +21,14 @@ import {
   CommercialLlmEnforcementMailbox,
   COMMERCIAL_LLM_ENFORCEMENT_KEYS as keys,
   COMMERCIAL_LLM_ACTIVE_LIMIT,
+  COMMERCIAL_LLM_CHAT_ACTIVE_LIMIT,
   commercialLlmProofKey,
   type CommercialLlmAdmissionResult,
 } from './commercial-llm-enforcement.mailbox';
 import { CommercialLlmEnforcementProcessor } from './commercial-llm-enforcement.processor';
 import { CommercialLlmBudgetedSecondary } from './commercial-llm-budgeted-secondary';
+import { CommercialLlmSecondaryScheduler } from './commercial-llm-secondary-scheduler';
+import { CommercialLlmError } from './commercial-llm.client';
 import { CommercialLlmCascadeClient } from './commercial-llm-cascade.client';
 import {
   buildCommercialLlmOffer,
@@ -160,6 +163,14 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
         ),
       };
     }
+    async function activate(input: ReturnType<typeof offer>) {
+      await ready();
+      expect(await mailbox.offerDetailed(input)).toBe('accepted');
+      await redis.del(keys.cooldown);
+      const item = await mailbox.take(worker);
+      if (!item) throw new Error('Expected bounded primary admission');
+      return item;
+    }
     it('offline refuses and simultaneous offers retain exactly one pending source', async () => {
       expect(await mailbox.offerDetailed(offer())).toBe('no_worker');
       await ready();
@@ -175,6 +186,94 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
       expect(await redis.hlen(keys.active)).toBe(0);
       expect(await redis.exists(keys.primary, keys.cooldown)).toBe(0);
     });
+    it('accepts a next chat after take without another readiness advertisement', async () => {
+      await ready();
+      const first = offer('running-chat');
+      expect(await mailbox.offerDetailed(first)).toBe('accepted');
+      const active = (await mailbox.take(worker))!;
+      expect(active).not.toBeNull();
+      const second = offer('next-chat');
+      expect(await mailbox.offerDetailed(second)).toBe('accepted');
+      expect(await redis.get(keys.ready)).toBe(worker);
+      expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('chat_busy');
+      expect(await mailbox.offerDetailed(offer('next-chat'))).toBe('chat_busy');
+      expect(await mailbox.offerDetailed(offer('third-chat'))).toBe('buffer_full');
+      const pending = await redis.get(keys.slot);
+      expect(JSON.parse(pending!).source).toEqual(second.source);
+      expect(await redis.get(keys.primary)).toBe(active.raw);
+      expect(await mailbox.take(worker)).toBeNull();
+      expect(await redis.get(keys.slot)).toBe(pending);
+      expect(await mailbox.releasePrimary(active.raw, worker)).toBe(true);
+      expect(await mailbox.take(worker)).toBeNull();
+      expect(await redis.get(keys.slot)).toBe(pending);
+      expect(await mailbox.owns(active.raw)).toBe(true);
+    });
+    it('retains exactly one pending source under concurrent offers after take', async () => {
+      await ready();
+      expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('accepted');
+      const active = (await mailbox.take(worker))!;
+      expect(active).not.toBeNull();
+      const results = await Promise.all(
+        Array.from({ length: 50 }, (_, index) =>
+          mailbox.offerDetailed(offer(`next-chat-${index}`)),
+        ),
+      );
+      expect(results.filter((result) => result === 'accepted')).toHaveLength(1);
+      expect(results.filter((result) => result === 'buffer_full')).toHaveLength(49);
+      expect(await redis.exists(keys.slot)).toBe(1);
+      expect(await redis.hlen(keys.active)).toBe(1);
+      expect(await redis.get(keys.primary)).toBe(active.raw);
+      expect(await mailbox.take(worker)).toBeNull();
+    });
+    it('preserves the readiness expiry and source deadline across consecutive admissions', async () => {
+      await ready();
+      const readyExpiry = await redis.pexpiretime(keys.ready);
+      expect(readyExpiry).toBeGreaterThan(Date.now());
+      expect(await redis.pttl(keys.ready)).toBeLessThanOrEqual(2_500);
+      expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('accepted');
+      expect(await mailbox.take(worker)).not.toBeNull();
+      const next = offer('next-chat');
+      expect(await mailbox.offerDetailed(next)).toBe('accepted');
+      expect(await redis.pexpiretime(keys.ready)).toBe(readyExpiry);
+      expect(await redis.pexpiretime(keys.slot)).toBe(next.source.deadlineAtMs);
+      expect(JSON.parse((await redis.get(keys.slot))!).source).toEqual(next.source);
+    });
+    it.each(['expiry', 'withdrawal'] as const)(
+      'refuses another admission after readiness %s with the worker still alive',
+      async (mode) => {
+        await ready();
+        expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('accepted');
+        const active = (await mailbox.take(worker))!;
+        expect(active).not.toBeNull();
+        await mailbox.withdraw(randomUUID());
+        expect(await redis.get(keys.ready)).toBe(worker);
+        if (mode === 'expiry') await redis.pexpireat(keys.ready, Date.now() - 1);
+        else await mailbox.withdraw(worker);
+        expect(await mailbox.ownsWorker(worker)).toBe(true);
+        expect(await mailbox.offerDetailed(offer('next-chat'))).toBe('not_ready');
+        expect(await redis.exists(keys.slot)).toBe(0);
+        expect(await redis.get(keys.primary)).toBe(active.raw);
+        expect(await mailbox.owns(active.raw)).toBe(true);
+      },
+    );
+    it.each(['missing', 'changed'] as const)(
+      'refuses retained readiness when the worker generation is %s',
+      async (mode) => {
+        await ready();
+        expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('accepted');
+        const active = (await mailbox.take(worker))!;
+        expect(active).not.toBeNull();
+        if (mode === 'missing') await redis.del(keys.worker);
+        else await redis.set(keys.worker, randomUUID(), 'PX', 5000);
+        expect(await redis.get(keys.ready)).toBe(worker);
+        expect(await mailbox.offerDetailed(offer('next-chat'))).toBe(
+          mode === 'missing' ? 'no_worker' : 'worker_changed',
+        );
+        expect(await redis.exists(keys.slot)).toBe(0);
+        expect(await redis.get(keys.primary)).toBe(active.raw);
+        expect(await mailbox.releasePrimary(active.raw, worker)).toBe(false);
+      },
+    );
     it('buffers another chat during primary work and acquires its cooldown only at actual start', async () => {
       await ready();
       const first = offer('first-chat');
@@ -203,67 +302,284 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
       expect(await redis.get(keys.primary)).toBe(next.raw);
       expect(await mailbox.owns(next.raw)).toBe(true);
     });
-    it('completes a second source while the first independently awaits server confirmation', async () => {
-      await ready();
-      const first = offer('slow-server-chat');
-      const second = offer('independent-chat');
-      proofs.push(commercialLlmProofKey(first.source));
-      expect(await mailbox.offer(first)).toBe(true);
+    it.each(['independent-chat', 'slow-server-chat'])(
+      'completes a next source in %s while the first independently awaits server confirmation',
+      async (nextChat) => {
+        await ready();
+        const first = offer('slow-server-chat');
+        const second = offer(nextChat);
+        proofs.push(commercialLlmProofKey(first.source));
+        expect(await mailbox.offer(first)).toBe(true);
+        let serverStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          serverStarted = resolve;
+        });
+        let serverFinish!: (result: CommercialLlmObservationResult) => void;
+        const result = new Promise<CommercialLlmObservationResult>((resolve) => {
+          serverFinish = resolve;
+        });
+        const slow = processor();
+        const firstProcessor = new CommercialLlmEnforcementProcessor(
+          mailbox,
+          ({ raw }) =>
+            new CommercialLlmCascadeClient(
+              { classify: async () => ({ outcome: 'COMPLETE', result: positive }) },
+              {
+                classify: async () => {
+                  serverStarted();
+                  return result;
+                },
+              },
+              async () => true,
+              () => false,
+              async () => {
+                await mailbox.releasePrimary(raw, worker);
+              },
+            ),
+          { ensureIntent: slow.ensureIntent },
+          async () => true,
+        );
+        const running = firstProcessor.run(worker, new AbortController().signal);
+        try {
+          await started;
+          expect(await redis.exists(keys.primary)).toBe(0);
+          expect(await redis.hlen(keys.active)).toBe(1);
+          await ready();
+          expect(await mailbox.offer(second)).toBe(true);
+          await redis.del(keys.cooldown);
+          const independent = processor(async () => ({
+            ...positive,
+            classification: 'NOT_COMMERCIAL',
+            reasonCodes: ['ORDINARY_DISCUSSION'],
+          }));
+          expect(await independent.process.run(worker, new AbortController().signal)).toMatchObject(
+            {
+              outcome: 'kept',
+            },
+          );
+          expect(independent.ensureIntent).not.toHaveBeenCalled();
+          expect(slow.ensureIntent).not.toHaveBeenCalled();
+          expect(await redis.hlen(keys.active)).toBe(1);
+        } finally {
+          serverFinish(positive);
+          await running;
+        }
+        expect(await running).toMatchObject({ outcome: 'delete_registered' });
+        expect(slow.ensureIntent).toHaveBeenCalledTimes(1);
+        expect(await mailbox.hasProof(first.source)).toBe(true);
+        expect(await redis.hlen(keys.active)).toBe(0);
+      },
+    );
+    it('admits only one next message of a confirming chat and preserves the global bound', async () => {
+      expect(COMMERCIAL_LLM_CHAT_ACTIVE_LIMIT).toBe(2);
+      const first = await activate(offer('same-chat'));
+      expect(await mailbox.claimSecondary(first.raw, worker)).toBe(false);
+      expect(await mailbox.releasePrimary(first.raw, worker)).toBe(true);
+      expect(await mailbox.claimSecondary(first.raw, worker)).toBe(true);
+      const duplicate = {
+        ...first.request,
+        source: { ...first.request.source, nonce: randomUUID() },
+      };
+      expect(await mailbox.offerDetailed(duplicate)).toBe('chat_busy');
+      const candidates = Array.from({ length: 50 }, () => offer('same-chat'));
+      const outcomes = await Promise.all(candidates.map((input) => mailbox.offerDetailed(input)));
+      expect(outcomes.filter((outcome) => outcome === 'accepted')).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome === 'chat_busy')).toHaveLength(49);
+      await redis.del(keys.cooldown);
+      const second = (await mailbox.take(worker))!;
+      expect(second).not.toBeNull();
+      expect(second.request.source.messageId).not.toBe(first.request.source.messageId);
+      expect(await mailbox.releasePrimary(second.raw, worker)).toBe(true);
+      expect(await mailbox.offerDetailed(offer('same-chat'))).toBe('chat_busy');
+      const independent = await activate(offer('independent-chat'));
+      expect(await redis.hlen(keys.active)).toBe(COMMERCIAL_LLM_ACTIVE_LIMIT);
+      expect(await mailbox.owns(first.raw)).toBe(true);
+      expect(await mailbox.owns(second.raw)).toBe(true);
+      expect(await mailbox.owns(independent.raw)).toBe(true);
+      expect(await mailbox.offerDetailed(offer('fourth-chat'))).toBe('active_limit');
+      expect(await redis.hlen(keys.secondary)).toBe(1);
+    });
+    it.each(['duplicate_message', 'chat_limit'] as const)(
+      'rechecks %s inside the pending-to-active CAS',
+      async (mode) => {
+        const first = await activate(offer('same-chat'));
+        expect(await mailbox.releasePrimary(first.raw, worker)).toBe(true);
+        if (mode === 'chat_limit') {
+          const second = await activate(offer('same-chat'));
+          expect(await mailbox.releasePrimary(second.raw, worker)).toBe(true);
+        }
+        const input = offer('same-chat');
+        if (mode === 'duplicate_message') input.source.messageId = first.request.source.messageId;
+        const raw = JSON.stringify({ ...input, worker, submittedAtMs: Date.now() });
+        await redis.set(keys.slot, raw, 'PX', 3000);
+        await redis.del(keys.cooldown);
+        const before = await redis.hgetall(keys.active);
+        expect(await mailbox.take(worker)).toBeNull();
+        expect(await redis.get(keys.slot)).toBe(raw);
+        expect(await redis.hgetall(keys.active)).toEqual(before);
+        expect(await redis.exists(keys.primary)).toBe(0);
+        expect(await mailbox.owns(first.raw)).toBe(true);
+      },
+    );
+    it('reserves a chat for one server turn across races, reconnects and obsolete cleanup', async () => {
+      const first = await activate(offer('same-chat'));
+      expect(await mailbox.releasePrimary(first.raw, worker)).toBe(true);
+      const claims = await Promise.all(
+        Array.from({ length: 50 }, () => mailbox.claimSecondary(first.raw, worker)),
+      );
+      expect(claims.filter(Boolean)).toHaveLength(1);
+      const second = await activate(offer('same-chat'));
+      expect(await mailbox.releasePrimary(second.raw, worker)).toBe(true);
+      expect(await mailbox.claimSecondary(second.raw, worker)).toBe(false);
+      const reconnectedRedis = createCommercialLlmRedis(url);
+      try {
+        await reconnectedRedis.connect();
+        const reconnected = new CommercialLlmEnforcementMailbox(reconnectedRedis);
+        expect(await reconnected.claimSecondary(second.raw, worker)).toBe(false);
+      } finally {
+        reconnectedRedis.disconnect();
+      }
+      expect(await mailbox.releaseSecondary(first.raw, randomUUID())).toBe(false);
+      const independent = await activate(offer('independent-chat'));
+      expect(await mailbox.releasePrimary(independent.raw, worker)).toBe(true);
+      expect(await mailbox.claimSecondary(independent.raw, worker)).toBe(true);
+      const reservations = await redis.hgetall(keys.secondary);
+      expect(Object.keys(reservations)).toHaveLength(2);
+      expect(Object.keys(reservations).every((field) => /^[a-f0-9]{64}$/u.test(field))).toBe(true);
+      expect(Object.values(reservations).sort()).toEqual([first.raw, independent.raw].sort());
+      expect(await redis.pexpiretime(keys.secondary)).toBe(
+        Math.max(first.request.source.deadlineAtMs, independent.request.source.deadlineAtMs),
+      );
+      expect(await mailbox.releaseSecondary(first.raw, worker)).toBe(true);
+      expect(await mailbox.owns(first.raw)).toBe(true);
+      expect(await mailbox.claimSecondary(second.raw, worker)).toBe(true);
+      expect(await mailbox.releaseSecondary(first.raw, worker)).toBe(false);
+      await mailbox.finish(first.raw, worker);
+      expect(Object.values(await redis.hgetall(keys.secondary)).sort()).toEqual(
+        [second.raw, independent.raw].sort(),
+      );
+      expect(await mailbox.owns(second.raw)).toBe(true);
+      expect(await mailbox.owns(independent.raw)).toBe(true);
+      expect(await mailbox.claimSecondary(first.raw, worker)).toBe(false);
+      expect(await mailbox.hasProof(first.request.source)).toBe(false);
+    });
+    it('keeps the server waiting slot available for another chat while the first chat confirms', async () => {
+      const first = await activate(offer('same-chat'));
+      expect(await mailbox.releasePrimary(first.raw, worker)).toBe(true);
       let serverStarted!: () => void;
       const started = new Promise<void>((resolve) => {
         serverStarted = resolve;
       });
-      let serverFinish!: (result: CommercialLlmObservationResult) => void;
-      const result = new Promise<CommercialLlmObservationResult>((resolve) => {
+      let serverFinish!: (value: CommercialLlmObservationResult) => void;
+      const completion = new Promise<CommercialLlmObservationResult>((resolve) => {
         serverFinish = resolve;
       });
-      const slow = processor();
-      const firstProcessor = new CommercialLlmEnforcementProcessor(
-        mailbox,
-        ({ raw }) =>
-          new CommercialLlmCascadeClient(
-            { classify: async () => ({ outcome: 'COMPLETE', result: positive }) },
-            {
-              classify: async () => {
-                serverStarted();
-                return result;
-              },
-            },
-            async () => true,
-            () => false,
-            async () => {
-              await mailbox.releasePrimary(raw, worker);
-            },
-          ),
-        { ensureIntent: slow.ensureIntent },
-        async () => true,
+      let waiterStarted!: () => void;
+      const waitingStarted = new Promise<void>((resolve) => {
+        waiterStarted = resolve;
+      });
+      const client = {
+        classify: jest
+          .fn<
+            ReturnType<CommercialLlmClassifier['classify']>,
+            Parameters<CommercialLlmClassifier['classify']>
+          >()
+          .mockImplementationOnce(async () => {
+            serverStarted();
+            return completion;
+          })
+          .mockResolvedValue(positive),
+      } satisfies CommercialLlmClassifier;
+      const scheduler = new CommercialLlmSecondaryScheduler(
+        new CommercialLlmShadowLease(redis),
+        client,
       );
-      const running = firstProcessor.run(worker, new AbortController().signal);
+      const controller = new AbortController();
+      const confirm = async (
+        item: NonNullable<Awaited<ReturnType<CommercialLlmEnforcementMailbox['take']>>>,
+      ) => {
+        if (!(await mailbox.claimSecondary(item.raw, worker))) throw new CommercialLlmError('BUSY');
+        try {
+          return await scheduler.classifyWithin(
+            item.request.excerpt,
+            Date.now() + 20_000,
+            controller.signal,
+            () => mailbox.owns(item.raw),
+            (state) => {
+              if (state === 'waiting') waiterStarted();
+            },
+          );
+        } finally {
+          await mailbox.releaseSecondary(item.raw, worker);
+        }
+      };
+      const running = confirm(first);
+      let waiting: Promise<CommercialLlmObservationResult> | undefined;
       try {
         await started;
-        expect(await redis.exists(keys.primary)).toBe(0);
-        expect(await redis.hlen(keys.active)).toBe(1);
-        await ready();
-        expect(await mailbox.offer(second)).toBe(true);
-        await redis.del(keys.cooldown);
-        const independent = processor(async () => ({
-          ...positive,
-          classification: 'NOT_COMMERCIAL',
-          reasonCodes: ['ORDINARY_DISCUSSION'],
-        }));
-        expect(await independent.process.run(worker, new AbortController().signal)).toMatchObject({
-          outcome: 'kept',
-        });
-        expect(independent.ensureIntent).not.toHaveBeenCalled();
-        expect(slow.ensureIntent).not.toHaveBeenCalled();
-        expect(await redis.hlen(keys.active)).toBe(1);
-      } finally {
+        const serverOwner = await redis.get(COMMERCIAL_LLM_LEASE_KEY);
+        expect(serverOwner).not.toBeNull();
+        const cooldownExpiry = await redis.pexpiretime(COMMERCIAL_LLM_COOLDOWN_KEY);
+        expect(await redis.pttl(COMMERCIAL_LLM_COOLDOWN_KEY)).toBeGreaterThan(8_000);
+        const second = await activate(offer('same-chat'));
+        expect(await mailbox.releasePrimary(second.raw, worker)).toBe(true);
+        await expect(confirm(second)).rejects.toMatchObject({ kind: 'BUSY' });
+        expect(client.classify).toHaveBeenCalledTimes(1);
+        expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(serverOwner);
+        expect(await redis.pexpiretime(COMMERCIAL_LLM_COOLDOWN_KEY)).toBe(cooldownExpiry);
+        const independent = await activate(offer('independent-chat'));
+        expect(await mailbox.releasePrimary(independent.raw, worker)).toBe(true);
+        waiting = confirm(independent);
+        await waitingStarted;
+        expect(client.classify).toHaveBeenCalledTimes(1);
+        expect(await redis.hlen(keys.secondary)).toBe(2);
         serverFinish(positive);
+        await expect(running).resolves.toEqual(positive);
+        expect(await redis.pexpiretime(COMMERCIAL_LLM_COOLDOWN_KEY)).toBe(cooldownExpiry);
+        await redis.pexpireat(COMMERCIAL_LLM_COOLDOWN_KEY, Date.now() - 1);
+        await expect(waiting).resolves.toEqual(positive);
+        expect(client.classify).toHaveBeenCalledTimes(2);
+        expect(await redis.pttl(COMMERCIAL_LLM_COOLDOWN_KEY)).toBeGreaterThan(8_000);
+        expect(await redis.exists(COMMERCIAL_LLM_LEASE_KEY, keys.secondary)).toBe(0);
+        expect(await mailbox.owns(first.raw)).toBe(true);
+        expect(await mailbox.owns(second.raw)).toBe(true);
+        expect(await mailbox.owns(independent.raw)).toBe(true);
+      } finally {
+        controller.abort();
+        serverFinish(positive);
+        await Promise.allSettled(waiting ? [running, waiting] : [running]);
       }
-      expect(await running).toMatchObject({ outcome: 'delete_registered' });
-      expect(slow.ensureIntent).toHaveBeenCalledTimes(1);
-      expect(await mailbox.hasProof(first.source)).toBe(true);
-      expect(await redis.hlen(keys.active)).toBe(0);
+    });
+    it('reclaims only obsolete server reservations after a worker generation changes', async () => {
+      const previousWorker = worker;
+      const previous = await activate(offer('same-chat'));
+      expect(await mailbox.releasePrimary(previous.raw, worker)).toBe(true);
+      expect(await mailbox.claimSecondary(previous.raw, worker)).toBe(true);
+      await redis.del(keys.worker);
+      worker = randomUUID();
+      const current = await activate(offer('same-chat'));
+      expect(await mailbox.releasePrimary(current.raw, worker)).toBe(true);
+      expect(await mailbox.claimSecondary(current.raw, worker)).toBe(true);
+      expect(await mailbox.releaseSecondary(previous.raw, previousWorker)).toBe(false);
+      await mailbox.finish(previous.raw, previousWorker);
+      expect(Object.values(await redis.hgetall(keys.secondary))).toEqual([current.raw]);
+      expect(await mailbox.owns(current.raw)).toBe(true);
+      expect(await mailbox.releaseSecondary(current.raw, worker)).toBe(true);
+      expect(await mailbox.owns(current.raw)).toBe(true);
+    });
+    it('fails closed on an overfull server-reservation hash without deleting its evidence', async () => {
+      const item = await activate(offer());
+      expect(await mailbox.releasePrimary(item.raw, worker)).toBe(true);
+      const unexpected = Object.fromEntries(
+        Array.from({ length: COMMERCIAL_LLM_ACTIVE_LIMIT + 1 }, (_, index) => [
+          String(index),
+          item.raw,
+        ]),
+      );
+      await redis.hset(keys.secondary, unexpected);
+      expect(await mailbox.claimSecondary(item.raw, worker)).toBe(false);
+      expect(await redis.hgetall(keys.secondary)).toEqual(unexpected);
+      expect(await mailbox.owns(item.raw)).toBe(true);
     });
     it('caps active authority at three sources and retains hash-only entry identities', async () => {
       for (let index = 0; index < COMMERCIAL_LLM_ACTIVE_LIMIT; index += 1) {
@@ -391,46 +707,52 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
       expect(await mailbox.owns('invalid json')).toBe(false);
       await expect(mailbox.finish('invalid json')).resolves.toBeUndefined();
     });
-    it('checks a local negative while server capacity is occupied, with its own bounded admission', async () => {
-      const serverOwner = randomUUID();
-      await redis.set(COMMERCIAL_LLM_LEASE_KEY, serverOwner, 'PX', 120_000);
-      await redis.set(COMMERCIAL_LLM_COOLDOWN_KEY, '1', 'PX', 10_000);
-      const classifySecondary = jest.fn<
-        ReturnType<CommercialLlmClassifier['classify']>,
-        Parameters<CommercialLlmClassifier['classify']>
-      >();
-      const secondary = new CommercialLlmBudgetedSecondary(new CommercialLlmShadowLease(redis), {
-        classify: classifySecondary,
-      });
-      const cascade = new CommercialLlmCascadeClient(
-        {
-          classify: async () => ({
-            outcome: 'COMPLETE',
-            result: {
-              ...positive,
-              classification: 'NOT_COMMERCIAL',
-              reasonCodes: ['ORDINARY_DISCUSSION'],
-            },
-          }),
-        },
-        secondary,
-        async () => true,
-        () => false,
-      );
-      await ready();
-      expect(await mailbox.offer(offer())).toBe(true);
-      const h = processor(cascade.classify.bind(cascade));
-      expect(await h.process.run(worker, new AbortController().signal)).toMatchObject({
-        outcome: 'kept',
-        route: 'primary',
-      });
-      expect(classifySecondary).not.toHaveBeenCalled();
-      expect(h.ensureIntent).not.toHaveBeenCalled();
-      expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(serverOwner);
-      expect(await redis.exists(keys.slot)).toBe(0);
-      expect(await redis.pttl(keys.cooldown)).toBeGreaterThan(1_000);
-      expect(await mailbox.advertise(worker)).toBe(true);
-    });
+    it.each([false, true])(
+      'keeps a primary negative while server capacity is occupied (audit=%s)',
+      async (audit) => {
+        const serverOwner = randomUUID();
+        await redis.set(COMMERCIAL_LLM_LEASE_KEY, serverOwner, 'PX', 120_000);
+        await redis.set(COMMERCIAL_LLM_COOLDOWN_KEY, '1', 'PX', 10_000);
+        const classifySecondary = jest.fn<
+          ReturnType<CommercialLlmClassifier['classify']>,
+          Parameters<CommercialLlmClassifier['classify']>
+        >();
+        const secondary = new CommercialLlmBudgetedSecondary(new CommercialLlmShadowLease(redis), {
+          classify: classifySecondary,
+        });
+        const cascade = new CommercialLlmCascadeClient(
+          {
+            classify: async () => ({
+              outcome: 'COMPLETE',
+              result: {
+                ...positive,
+                ...COMMERCIAL_LLM_WORKSTATION_IDENTITY,
+                classification: 'NOT_COMMERCIAL',
+                reasonCodes: ['ORDINARY_DISCUSSION'],
+              },
+            }),
+          },
+          secondary,
+          async () => true,
+          () => audit,
+        );
+        await ready();
+        expect(await mailbox.offer(offer())).toBe(true);
+        const h = processor(cascade.classify.bind(cascade));
+        expect(await h.process.run(worker, new AbortController().signal)).toMatchObject({
+          outcome: 'kept',
+          route: 'primary',
+          classification: 'NOT_COMMERCIAL',
+          ...(audit ? { auditOutcome: 'capacity_skipped' } : {}),
+        });
+        expect(classifySecondary).not.toHaveBeenCalled();
+        expect(h.ensureIntent).not.toHaveBeenCalled();
+        expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(serverOwner);
+        expect(await redis.exists(keys.slot)).toBe(0);
+        expect(await redis.pttl(keys.cooldown)).toBeGreaterThan(1_000);
+        expect(await mailbox.advertise(worker)).toBe(true);
+      },
+    );
     it('skips a positive without waiting or authorizing deletion when server capacity is occupied', async () => {
       const serverOwner = randomUUID();
       await redis.set(COMMERCIAL_LLM_LEASE_KEY, serverOwner, 'PX', 120_000);
