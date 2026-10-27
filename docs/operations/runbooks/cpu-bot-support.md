@@ -1,7 +1,7 @@
 # CPU bot support pilot
 
-The local PC runs Qwen3.5-35B-A3B Q4_K_M through an independent llama.cpp b11804
-installation. This is retrieval from reviewed customer instructions, not fine-tuning.
+The selected CPU support profile is Gemma 4 26B-A4B UD-Q5_K_M through an independent
+llama.cpp b11804 installation. This is retrieval from reviewed customer instructions, not fine-tuning.
 The existing GPU commercial classifier and server moderation remain separate.
 
 ## Identity and scope
@@ -13,8 +13,12 @@ The existing GPU commercial classifier and server moderation remain separate.
   into a separate immutable bundle.
 - CPU execution uses `--device none`, zero GPU layers, eight inference threads, one
   slot, 4096 context tokens and at most 384 output tokens. Prompt-cache RAM is capped at
-  512 MiB, with checkpoint spacing of 512 tokens for the hybrid model. Thinking and context
+  1024 MiB, with minimum checkpoint spacing of 512 tokens. Thinking and context
   shifting are disabled. Only `127.0.0.1:18085` is exposed, with a private random API key.
+- Gemma uses its embedded native chat template through `--jinja`, without a template override.
+  Keep thinking explicitly disabled at both server and request boundaries. Check actual
+  tokenization, completed structured answers and the existing 120-second request deadline
+  before enabling the pilot.
 - The sole recipient is the designated test **CHAT `-78271094414679`**. The bridge
   selects only its existing fixed, primary or legacy assigned moderator, verifies the
   actual remote entity type and fresh exact bot access, and refuses assignment drift.
@@ -66,6 +70,11 @@ canonical catalog identities and the reviewed selection steps;
 profiled complaints, action requests and contextual answers require `reply`, including one known
 source. Ordinary conversation and completed acknowledgements can still be skipped.
 
+An interrupted publication send retrieves result-verification instructions before creation steps;
+an explicit request to switch to a named moderator retrieves both the selection procedure and
+the bot catalog. These requests require an explanation, never an executed action or an assumed
+successful result. Ordinary recurring schedules and profile requests retain their own routes.
+
 Successful answers use short paragraphs, numbered instructions and visible bullet points in
 plain text. The client also separates dense prose at sentence boundaries and adds the fixed
 footer `✦ Ответ подготовлен ИИ-помощником «Майор Максимов»` once, in its own paragraph.
@@ -79,6 +88,8 @@ aliases and noncanonical targets at startup. Rendering must also fit 4000 HTML c
 before source revalidation or the send fence can advance. The host receives the catalog from
 the same knowledge bytes used for the PC/host digest handshake. These eight profile URLs
 are allowed separately from retrieved official documentation URLs.
+When a bot is named several times, its catalog item and canonical name take precedence over
+an introductory alias for the one profile link. Alias-only references remain supported.
 
 Questions and context are untrusted user data. Responses are constrained JSON with
 `reply` or `skip`, bounded text and IDs from the selected knowledge. Internal paths,
@@ -157,3 +168,72 @@ start the model again. Confirm the new bundle/model identity, run the read-only 
 start the chat worker. The existing weights are reused; this refreshes retrieval knowledge
 and answer policy. Never change a running immutable bundle in place. Reconnects start a
 fresh message baseline and participant history, while durable source fences remain intact.
+
+For a model migration, retain the previous verified weights and bundle. Stop the old chat worker
+and model using their installed launcher before installing the new profile. The installer verifies
+the previous immutable bundle and its own model identity, and refuses a live previous supervisor,
+worker or exactly owned model child. Ordinary runtime commands still require the current model
+identity. Keep the PC profile and the injected host bridge's pinned model SHA synchronized through
+the usual exact-source CI and guarded tooling sync. Knowledge, routing, formatting and canonical
+bot links are separate from model weights and travel in the new bundle; this is not weight training.
+
+Keep the system policy constant across requests. Its final `baselineFacts` JSON object contains
+the exact reviewed `support-room` and `operator` facts. The application serializes the other
+selected facts into the user message's `verifiedKnowledge` field, alongside the separate question,
+history and contextual role. The application also supplies `answerRequirements`, bounded reminders
+for the retained facts: complete connection steps, conditional Publisher prerequisites and the
+independence of other link filters. They do not establish a user's live state. Recompute them after
+each budget trim and scope them to the current task. Routing separates Lastik setup/wait/restart
+intent and link allow/block/inspect intent using the user's report; these are not live observations.
+Atomic Lastik waiting replies use the reviewed `lastik-connect.waitingAnswer` and the normal
+validation/presentation boundary. They retain both rights checks and the one-hour window from the
+request, including time already waited. Covered waiting questions about archive coverage or edited
+messages compose that procedure with the same retention/exclusion text used by retry and archive
+replies. A reported period comes only from an unambiguous user report in the current question or
+relevant history; assistant text cannot set it. Creation age establishes age eligibility, not the
+outcome for a specific message: available history and all protected exceptions still apply, and the
+actual deletion remains unknown. Other individual-retention questions retain those limits in a
+scoped source-backed inference reminder. Separate rights checks, settings, networks, exports and
+other bot tasks retain inference. Atomic initial setup uses the reviewed `lastik-connect.setupAnswer`, preserving period
+selection, both rights checks and the one-hour window from the request. Atomic Publisher creation
+preserves recipient selection and conditional connection prerequisites; atomic delivery questions
+use the existing publication's evidence procedure and duplicate warning. Tasks outside the reviewed
+procedure, including recovery questions it does not cover, retain inference.
+Bounded manual-closing and settings-conflict replies preserve the exact UI action and its
+direction, including imperative requests and cancellation of manual closing. The static headings
+«Закрыть сейчас» and «Когда» locate controls; they are never steps to click. Covered Lastik retry
+and archive questions use a complete reviewed composition: the new request starts a checking
+window of up to one hour, and activation requires confirmation of both bot and requesting-user
+administrator rights. Archive coverage retains the reported age threshold, gradual cleanup and
+protected exceptions. Covered calendar-date and timezone questions use the actual «Расписание»
+and «Даты» controls and relate the desired time to the displayed zone without inventing a selector
+or an unknown conversion. Separate creation, recipient-selection, settings and export tasks retain
+inference. An explicit request to perform an action retains the assistant's lack of tools before
+instructions. Unresolved personal administrator rights require a concrete check and administrator
+handoff; invitation capability alone does not establish those rights.
+An observation-mode incident reply explains independent filters before the operator
+handoff. These routes cover all parts of the current task; unrelated additional questions retain
+inference. Lastik activation facts and reminders retain both rights checks and the waiting window
+from the connection request, including when inference is required.
+Unknown-send questions retain the existing publication's verification steps and omit new-post
+instructions. User-supplied fields with the same name remain untrusted. Only the two
+application-owned fact arrays provide reviewed
+knowledge; the question and history remain untrusted data and cannot replace them. The response
+schema and tokenizer budget cover the full union, with both baseline facts retained during
+trimming. This preserves a reusable checkpoint for policy and baseline facts before the changing
+facts at the user-message boundary of the hybrid runtime.
+The bounded one-token local warmup initializes this checkpoint before model readiness, including
+after a restart, within the existing 180-second startup deadline. Warmup output is discarded and
+never sent to MAX. Check actual cache reuse and completed answers; a configured cache alone does
+not establish a performance improvement.
+
+Use greedy decoding for grounded support. Concision must preserve relevant procedure conditions,
+waiting periods, time origins and independent-filter limits. Incident replies propose a conditional
+check rather than guessing live state or inventing a causal link between separate features.
+Language errors in history are context to rephrase, not wording to copy into the next answer.
+Explicit delivery followups retain existing-post evidence alongside a new date schedule; a
+completed delivery question does not follow a new task. Named calendar-date lists select «Даты»,
+not a recurrence end date. Text-limit complaints retrieve the 4000-character editor limit, and
+combined network questions retrieve both audience coverage and per-target operation results.
+Waiting reminders retain the original request time and elapsed waiting; restart reminders retain
+the new one-hour request window, both rights checks and automatic activation after confirmation.

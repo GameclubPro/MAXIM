@@ -8,6 +8,132 @@ import {
   validateSupportAnswer,
 } from './support-llm-client.mjs';
 
+test('manual close imperatives select the procedure while open and mixed requests stay distinct', () => {
+  for (const text of [
+    'Закройте, пожалуйста, мой чат сейчас без срока. Я администратор.',
+    'Я админ. Закрой чат до моего решения, но расписание не меняй.',
+    'Закрывайте чат вручную, администраторы должны писать.',
+  ]) {
+    const route = classifySupportRequest(text);
+    assert.equal(route.primaryIds[0], 'night-manual', text);
+    assert.equal(route.nightManualOnly, true, text);
+    assert.equal(route.liveActionRequested, true, text);
+  }
+  for (const text of [
+    'Закройте чат без срока и включите запрет ссылок.',
+    'Закройте чат без срока. Как выгрузить список участников?',
+    'Не включайте тишину.',
+  ])
+    assert.equal(classifySupportRequest(text).nightManualOnly, false, text);
+  for (const text of [
+    'Не закрывайте чат. Как открыть его вручную?',
+    'Как включить тишину?',
+    'Как выключить тишину?',
+  ]) {
+    assert.equal(classifySupportRequest(text).nightManualOnly, true, text);
+    assert.equal(
+      classifySupportRequest(text).nightManualIntent,
+      text.includes('включить') ? 'close' : 'open',
+      text,
+    );
+  }
+});
+
+test('bounded Lastik retry and calendar-date composition reject independent extra work', () => {
+  for (const [text, field] of [
+    [
+      'Ластик: ожидание истекло. Как запустить снова и что будет со старой историей?',
+      'lastikRestartOnly',
+    ],
+    ['Ластик: «Подключение отменено». Что нажать?', 'lastikRestartOnly'],
+    [
+      'Публик: как задать один пост на 5 и 12 декабря по Москве, если телефон в другом поясе?',
+      'publisherDatesOnly',
+    ],
+  ])
+    assert.equal(classifySupportRequest(text)[field], true, text);
+  for (const [text, field] of [
+    ['Ластик: ожидание истекло. Как запустить снова и выгрузить архив?', 'lastikRestartOnly'],
+    ['Ластик: подключение отменено. Как поменять срок?', 'lastikRestartOnly'],
+    [
+      'Публик: как поставить один пост на 5 и 12 декабря и настроить автоответы?',
+      'publisherDatesOnly',
+    ],
+    [
+      'Публик: как поставить один пост на 5 и 12 декабря и выгрузить список админов?',
+      'publisherDatesOnly',
+    ],
+    [
+      'Публик: даты 5 и 12 декабря. Как создать новый пост и выбрать для него получателей?',
+      'publisherDatesOnly',
+    ],
+    ['Публик: один пост на 5 и 12 декабря, и смените аватар канала.', 'publisherDatesOnly'],
+    [
+      'Ластик: ожидание истекло. Запустить снова и пригласите новых участников.',
+      'lastikRestartOnly',
+    ],
+  ])
+    assert.equal(classifySupportRequest(text)[field], false, text);
+});
+
+test('bounded Lastik waiting retains archive edits and only unambiguous user-reported periods', () => {
+  const history = [
+    {
+      role: 'user',
+      text: 'В Ластике выбрала 48 часов и отправила запрос на подключение 12 минут назад.',
+    },
+    { role: 'assistant', text: 'Вы выбрали 24 часа.' },
+  ];
+  const text =
+    'Он молчит. Подключаться опять? Моё сообщение было создано давно, сегодня его исправила. Его тоже уберёт?';
+  const route = classifySupportRequest(text, history);
+  assert.equal(route.lastikWaitingHistoryOnly, true);
+  assert.equal(route.lastikRetentionHours, 48);
+  assert.ok(selectKnowledge(text, history).some((entry) => entry.id === 'lastik-exclusions'));
+  assert.equal(
+    classifySupportRequest(
+      'Выбран срок 24 или 48 часов. Ластик ждёт подключения; старые сообщения тоже затронет?',
+      history,
+    ).lastikRetentionHours,
+    null,
+  );
+  assert.equal(
+    classifySupportRequest(
+      'Теперь выбрала 24 часа. Ластик молчит, что со старой историей?',
+      history,
+    ).lastikRetentionHours,
+    24,
+  );
+  assert.equal(
+    classifySupportRequest('Он молчит, что будет с прежней историей?', [
+      ...history,
+      { role: 'user', text: 'В Публике выбрала 24 часа для расписания.' },
+      { role: 'user', text: 'Выбрала 168 часов.' },
+      { role: 'user', text: 'Снова про Ластика.' },
+    ]).lastikRetentionHours,
+    48,
+  );
+  for (const extra of [
+    'Как выгрузить переписку?',
+    'Выгрузи переписку.',
+    'Удалите участников.',
+    'Как поменять срок?',
+    'Как проверить мои права?',
+    'Как подключить сетку?',
+    'Покажи прогресс очистки.',
+    'Пригласите новых участников.',
+    'Как подключить Публика?',
+    'Подключите Майора.',
+    'Смените аватар чата.',
+    'Хочу отменить подключение.',
+  ])
+    assert.equal(
+      classifySupportRequest(`${text} ${extra}`, history).lastikWaitingHistoryOnly,
+      false,
+      extra,
+    );
+});
+
 test('Lastik questions select the current task and retain context after a product change', () => {
   checkCases(
     [
@@ -82,6 +208,47 @@ test('bot profile requests and reserve selection retain catalog facts instead of
     'links-policy',
   );
 });
+
+for (const text of [
+  'Я администратор. Переключите, пожалуйста, наш чат с Максимова на Рэкса 2 прямо сейчас и подтвердите, что всё сделано. Я в дороге и в мини-приложение пока не зайду.',
+  'Переключи меня на резервного Рэкса2, в мини-приложение пока не зайду.',
+  'Я админ. Переключи меня на резервного Рэкса 2. В мини-приложение сейчас не могу зайти.',
+  'Я администратор. Переключите меня на резервного Рекса 2: мини-приложение не открывается.',
+  'Я админ канала. Замените Максимова на Рэкса 2, пожалуйста. Не могу сейчас открыть приложение.',
+  'Переключите наш чат с Максимова на Рэкса 2 и дайте правильную ссылку на его профиль.',
+])
+  test(`moderator switch requests retain the selection procedure: ${text}`, () => {
+    const route = classifySupportRequest(text);
+    const ids = selectKnowledge(text).map((entry) => entry.id);
+    assert.equal(route.eligible, true);
+    assert.equal(route.requiredReply, true);
+    assert.equal(ids[0], 'choose-moderator');
+    assert.ok(ids.includes('bots'));
+    assert.ok(ids.includes('operator'));
+    assert.equal(route.botDirectory, false);
+  });
+
+test('moderator switching does not replace profiles, filters or separate bot connection', () => {
+  for (const [text, expected] of [
+    ['Дайте имя и ссылку на Рэкса 2.', 'bots'],
+    ['Я админ группы с Рэксом. Хочу, чтобы ссылки больше не удалялись.', 'links-policy'],
+    ['Как подключить Публика отдельно к нашему каналу?', 'publik'],
+    ['Как переключить ИИ-рекламу на текстовые правила в Рэксе 2?', 'commercial-ai-switch-mode'],
+  ]) {
+    const ids = selectKnowledge(text).map((entry) => entry.id);
+    assert.equal(ids[0], expected, text);
+    assert.ok(!ids.includes('choose-moderator'), text);
+  }
+});
+
+for (const text of [
+  'Замените ссылку на Рэкса 2, нужен правильный профиль.',
+  'Поменяйте старую ссылку на Максимова 2, хочу открыть правильный профиль.',
+])
+  test(`profile link replacement does not change the moderator: ${text}`, () => {
+    assert.equal(eligibleQuestion(text), true);
+    assert.equal(selectKnowledge(text)[0].id, 'bots');
+  });
 
 test('Lastik task details outrank generic role words and stale product history', () => {
   for (const [text, expected] of [

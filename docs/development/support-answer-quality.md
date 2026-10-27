@@ -48,6 +48,54 @@ filters from AI controls, native MAX features from Publisher, and platform suppo
 support. Customer facts must not contain internal imperatives, source metadata or invalid example
 links. A source ID in generated JSON does not prove every sentence is supported.
 
+Application-authored answer requirements may highlight conditions in retained facts. Keep them
+separate from the facts and untrusted question/history; rebuild them after context trimming.
+Scope reminders to the current task, not every retrieved prerequisite. Keep allow/block/inspect
+link goals separate, and describe all three modes neutrally in the shared fact. A URL requested
+for an answer is not itself a link-filter task. An unknown publication result needs its existing
+card and recipient/send evidence; it must not acquire a new-post procedure from a related fact.
+General connection instructions use conditional administrator rights. Already requested Lastik
+connection needs the waiting/activation conditions, not repeated onboarding. A post-creation answer
+mentions separate Publisher connection conditionally, without assuming the recipient is missing.
+Connection intent describes user reports, not verified live status. Waiting, expired/cancelled
+requests and initial setup require different next steps. Keep explicit reading/deletion rights
+and successful rights confirmation in Lastik's activation condition.
+An atomic Lastik waiting question uses the reviewed `lastik-connect.waitingAnswer`, preserving
+both bot and requesting administrator checks and the one-hour window from the connection request.
+Only an unmixed waiting task with no other functional or incident facts takes that shortcut;
+an atomic initial setup uses the reviewed `lastik-connect.setupAnswer` with the verified periods,
+rights and one-hour window from the request. Recovery and additional questions retain inference.
+Atomic Publisher creation preserves recipient selection and conditional separate connection;
+an already reported ready connection is not repeated. An atomic delivery question uses the reviewed
+existing-publication evidence procedure and duplicate warning. Additional tasks retain inference.
+Reviewed manual closing preserves the independent night schedule and distinguishes the section
+heading from the actual toggle. A Lastik conflict distinguishes accepting saved settings from
+overwriting them with the local draft. An observation-mode incident handoff preserves the absence
+of automatic AI deletion, independent filters and the available operator evidence. These bounded
+procedures may cover several parts of one task; an additional unrelated or unknown task retains
+inference. Both activation checks and the request-based waiting window remain in the neural facts
+and reminders as well as the reviewed Lastik replies.
+Forwarding questions for a moderator retain the connection prerequisites. An offered community
+link is not a link-filter task; a reported ready connection is not an onboarding request.
+Named reserve comparisons retain catalog roles and the selection procedure. Moderator selection
+identifies «Сейчас выбран» and requires «Сменить бота» before waiting for «Бот выбран»; choosing
+a radio item alone does not submit. Archive scope preserves the selected age from creation time.
+An incidental completed connection check does not replace the existing publication's inspection
+and unresolved-result handoff. An incident handoff
+must also answer an explicit AI observation-mode question, including when its subject is in history.
+An unknown delivery label keeps verification of the existing publication ahead of connection
+facts. Link-mode reminders preserve the reported mode and distinguish the desired result from
+a proposed way to achieve it.
+An explicit resend followup retains its delivery context alongside a new scheduling question;
+completion or a switch to another task drops that context. Two named calendar dates use «Даты»,
+while «По дате» in repeat settings limits the end of recurrence. Text-length complaints in
+«знаках» retrieve the same 4000-character limit as «символах». Network audience coverage and
+per-target settings results are separate facts even when both are requested in one question.
+Lastik waiting time starts at the submitted request, including elapsed waiting time; restarting
+starts a new request window and still requires both rights checks before automatic activation.
+Catalog links prefer the bot's item or canonical name over an introductory project alias, while
+retaining alias-only links and the separate unlinked AI signature.
+
 Focused tests cover eligibility and required replies together, role changes, contextual topic
 retrieval, API paths, mandatory policy retention, source/link validation, honest AI identity and
 intent-specific FAQ. The installer must include every imported runtime module in its immutable

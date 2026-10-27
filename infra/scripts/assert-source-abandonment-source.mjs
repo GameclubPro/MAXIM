@@ -100,8 +100,11 @@ export const SOURCE_ABANDONMENT_SOURCE_CHECKS = Object.freeze([
       'export function inspectSourceAbandonmentForwardText(',
       "const omittedSender = profile === 'source-abandonment' && link?.sender === undefined;",
       "link.type !== 'forward'",
-      'modern ? (item) => isSourceAbandonmentOuterMarkup(item, message?.link) : undefined',
-      'modern ? (item) => isSourceAbandonmentMarkup(item.markup, item.text) : undefined',
+      // FLAG: Modern markup stays strict while the separate post-seal legacy path
+      // retains its bounded validators. The fresh legacy default remains disabled.
+      "const modern = profile === 'source-abandonment';",
+      "modern\n      ? (item) => isSourceAbandonmentOuterMarkup(item, message?.link)\n      : profile === 'legacy-post-seal'\n        ? (item) => isLegacyPostSealOuterMarkup(item, message?.link)\n        : undefined",
+      "modern\n      ? (item) => isSourceAbandonmentMarkup(item.markup, item.text)\n      : profile === 'legacy-post-seal'\n        ? (item) => isLegacyPassiveMarkup(item.markup, item.text)\n        : undefined",
       "modern\n      ? (attachments) =>\n          isSourceAbandonmentLinkedMedia(attachments, 'forward', 'SOURCE_ABANDONMENT')\n      : undefined",
       'item.attachments.length <= 10',
       'item.attachments.every(isLegacyImageAttachment)',

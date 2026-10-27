@@ -20,14 +20,61 @@ test('customer knowledge uses the public project name without renaming the MAX p
 test('reviewed answers and link examples pass the public response boundary', () => {
   for (const entry of entries.values()) {
     assert.doesNotMatch(entry.answer, /https?:\/\/\S*[<>]|<botName>/iu, entry.id);
-    assert.doesNotThrow(
-      () =>
-        validateSupportAnswer({ action: 'reply', text: entry.answer, sourceIds: [entry.id] }, [
-          entry,
-        ]),
-      entry.id,
-    );
+    for (const field of [
+      'answer',
+      'setupAnswer',
+      'waitingAnswer',
+      'manualAnswer',
+      'conflictSavedAnswer',
+      'conflictMineAnswer',
+      'incidentAnswer',
+    ]) {
+      if (entry[field] === undefined) continue;
+      assert.doesNotThrow(
+        () =>
+          validateSupportAnswer({ action: 'reply', text: entry[field], sourceIds: [entry.id] }, [
+            entry,
+          ]),
+        `${entry.id}.${field}`,
+      );
+    }
   }
+});
+
+test('reviewed conflict and manual controls preserve the UI action direction', () => {
+  const editor = source(
+    'apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx',
+  ).replace(/\s+/gu, ' ');
+  for (const label of ['Загрузить сохранённые', 'Сохранить мой вариант'])
+    assert.ok(editor.includes(label), label);
+  const recovery = entries.get('lastik-save-recovery');
+  assert.match(recovery.conflictSavedAnswer, /^При.*нажмите «Загрузить сохранённые»/u);
+  assert.match(recovery.conflictSavedAnswer, /черновые изменения будут сброшены/u);
+  assert.match(recovery.conflictMineAnswer, /«Сохранить мой вариант» применяет.*поверх/u);
+  assert.doesNotMatch(recovery.conflictSavedAnswer + recovery.conflictMineAnswer, /«Отмена»/u);
+  const night = source('apps/miniapp/src/pages/settings/settings-night-section.tsx');
+  for (const label of ['Закрыть вручную', 'Без срока']) assert.ok(night.includes(label), label);
+  const manual = entries.get('night-manual').manualAnswer;
+  assert.match(manual, /Включите «Закрыть вручную»/u);
+  assert.match(manual, /выключите «Закрыть вручную»/u);
+  assert.match(manual, /включённое расписание продолжает действовать/u);
+  assert.doesNotMatch(manual, /[Вв]ключите «Закрывать по расписанию»/u);
+});
+
+test('reviewed Lastik setup preserves rights, presets and the request-based waiting window', () => {
+  const entry = entries.get('lastik-connect');
+  const text = entry.setupAnswer;
+  assert.doesNotThrow(() =>
+    validateSupportAnswer({ action: 'reply', text, sourceIds: [entry.id] }, [entry]),
+  );
+  for (const label of ['24 часа', '48 часов', '1 неделя', 'Подключить и включить'])
+    assert.ok(text.includes(`«${label}»`), label);
+  assert.match(text, /до 1 часа после запроса на подключение/u);
+  assert.match(text, /только после подтверждения/u);
+  assert.match(text, /чтения всех сообщений и удаления/u);
+  assert.match(text, /запросивший подключение пользователь — администратор/u);
+  assert.match(text, /Ластик не пишет в чат/u);
+  assert.match(text, /Возвращаться.*не нужно/u);
 });
 
 test('customer facts contain no instructions addressed to the model', () => {
@@ -131,6 +178,24 @@ test('the eight public bot identities match their verified product sources', () 
   assert.match(fact('bots'), /не означает автоматического переключения/u);
 });
 
+test('bot selection knowledge quotes exact interface headings without inflection', () => {
+  const views = [
+    source('apps/miniapp/src/components/managed-entity-bots-sheet.tsx'),
+    source('apps/miniapp/src/components/managed-entity-bots-control.tsx'),
+  ];
+  for (const id of ['bots', 'choose-moderator']) {
+    const answer = fact(id);
+    for (const label of ['Боты чата', 'Боты канала']) {
+      assert.ok(
+        views.every((view) => view.includes(`'${label}'`)),
+        label,
+      );
+      assert.ok(answer.includes(`«${label}»`), `${id}: ${label}`);
+    }
+    assert.doesNotMatch(answer, /«Бот(?:ах|ами|ов) (?:чата|канала)»/u);
+  }
+});
+
 test('Lastik connection is separate from a moderator and limited to group chats', () => {
   const answer = fact('lastik-connect');
   const ui =
@@ -140,10 +205,12 @@ test('Lastik connection is separate from a moderator and limited to group chats'
   assert.match(answer, /отдельный бот.*групповых чатах/u);
   assert.match(answer, /администратором с правами чтения всех сообщений и удаления/u);
   assert.match(answer, /После подтверждения запроса откроется профиль бота/u);
-  assert.match(answer, /До 1 часа он сам проверяет права и включает очистку/u);
+  assert.match(answer, /До 1 часа после запроса на подключение/u);
+  assert.match(answer, /запросивший подключение пользователь — администратор чата/u);
+  assert.match(answer, /после подтверждения обоих условий/u);
   assert.match(answer, /возвращаться в мини-приложение не нужно/u);
   assert.match(answer, /В сетке сначала добавьте бота с правами в каждый чат/u);
-  assert.match(answer, /не видит, подключён ли Ластик/u);
+  assert.match(fact('operator'), /не видит текущие права, настройки/u);
   assert.ok(answer.includes(knowledge.botCatalog.find((bot) => bot.id === 'lastik').url));
   for (const label of ['Удаление старых сообщений', 'Подключить и включить', 'Открыть Ластика'])
     assert.ok(answer.includes(label) && ui.includes(label), label);
@@ -402,6 +469,7 @@ test('reviewed delivery is restricted to bounded answers with preserved evidence
     .sort();
   assert.deepEqual(reviewedIds, [
     'max-public-channel-eligibility',
+    'publisher-delivery-status',
     'subscription-membership',
     'support-incident-evidence',
   ]);
@@ -419,9 +487,15 @@ test('reviewed delivery is restricted to bounded answers with preserved evidence
   assert.doesNotMatch(fact('subscription-membership'), /откройте ссылки|подпишитесь|Добавить/u);
 });
 
-test('disabling link deletion selects the actual allow-all mode and saves it', () => {
+test('link modes preserve their actual effects and the required save action', () => {
   const links = fact('links-policy');
-  assert.match(links, /отключить.*«Ссылки» → «Режим».*«Разрешать все».*«Сохранить»/u);
+  assert.match(links, /«Ссылки» → «Режим»/u);
+  assert.match(links, /отключить запрет ссылок, выбирают «Разрешать все»/u);
+  assert.match(links, /«Разрешать все» — этот фильтр не удаляет ссылки/u);
+  assert.match(links, /«Удалять все» — ссылки удаляются/u);
+  assert.match(links, /После изменения нажмите «Сохранить»/u);
+  assert.match(links, /Пустой разрешённый список.*не разрешает все ссылки/u);
+  assert.match(links, /Другие включённые правила.*продолжают работать независимо/u);
   const ui = source('apps/miniapp/src/pages/settings/shared-chat-settings-fields.tsx');
   for (const label of ['Разрешать все', 'Удалять все', 'Разрешать по списку']) {
     assert.ok(ui.includes(`label: '${label}'`), label);
@@ -429,7 +503,6 @@ test('disabling link deletion selects the actual allow-all mode and saves it', (
   }
   assert.match(ui, /value: 'ALERT_ONLY' as const, label: 'Разрешать все'/u);
   assert.match(ui, /value: 'BLOCKLIST_ONLY' as const, label: 'Удалять все'/u);
-  assert.match(links, /«Удалять все» включает запрет ссылок и не подходит для отключения/u);
   const detector = source('apps/api/src/moderation/rule-engine-link-detector.ts');
   assert.match(detector, /policy === LinkPolicy\.ALERT_ONLY\) \{\s*return null;/u);
   assert.match(

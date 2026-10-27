@@ -14,14 +14,92 @@ test('source abandonment keeps exact-source proof and final hold readers on roll
 for (const [path, markers] of SOURCE_ABANDONMENT_SOURCE_CHECKS) {
   for (const marker of markers)
     test(`source rollback refuses ${path}: ${marker}`, () => {
+      const source = read(path);
+      const changed = source.replaceAll(marker, 'removed_guard');
+      assert.notEqual(changed, source, 'mutation must change the actual reviewed source');
       assert.throws(
         () =>
           assertSourceAbandonmentSource('a'.repeat(40), (sourcePath) =>
-            sourcePath === path ? read(path).replaceAll(marker, 'removed_guard') : read(sourcePath),
+            sourcePath === path ? changed : read(sourcePath),
           ),
         /lacks permanent/,
       );
     });
+}
+const forwardPath = 'apps/api/src/webhook/webhook-legacy-forward-source.ts';
+function refusesForwardMutation(change, retained) {
+  const source = read(forwardPath);
+  const changed = change(source);
+  assert.notEqual(changed, source, 'mutation must change the actual reviewed source');
+  for (const callback of retained)
+    assert.ok(changed.includes(callback), 'the independent branch must remain intact');
+  assert.throws(
+    () =>
+      assertSourceAbandonmentSource('a'.repeat(40), (path) =>
+        path === forwardPath ? changed : read(path),
+      ),
+    /lacks permanent.*webhook-legacy-forward-source\.ts/u,
+  );
+}
+
+test('forward rollback keeps the modern profile selector exact', () => {
+  refusesForwardMutation(
+    (source) =>
+      source.replace(
+        "const modern = profile === 'source-abandonment';",
+        "const modern = profile !== 'legacy';",
+      ),
+    [
+      'isSourceAbandonmentOuterMarkup(item, message?.link)',
+      'isLegacyPostSealOuterMarkup(item, message?.link)',
+    ],
+  );
+});
+for (const [body, modern, legacy] of [
+  [
+    'outer',
+    'isSourceAbandonmentOuterMarkup(item, message?.link)',
+    'isLegacyPostSealOuterMarkup(item, message?.link)',
+  ],
+  [
+    'linked',
+    'isSourceAbandonmentMarkup(item.markup, item.text)',
+    'isLegacyPassiveMarkup(item.markup, item.text)',
+  ],
+]) {
+  test(`forward rollback retains the ${body} modern condition with the legacy fallback intact`, () => {
+    refusesForwardMutation(
+      (source) =>
+        source.replace(`modern\n      ? (item) => ${modern}`, `false\n      ? (item) => ${modern}`),
+      [legacy],
+    );
+  });
+  test(`forward rollback retains the ${body} modern validator with the legacy fallback intact`, () => {
+    refusesForwardMutation((source) => source.replace(modern, legacy), [legacy]);
+  });
+  test(`forward rollback retains the ${body} legacy profile condition with the modern validator intact`, () => {
+    refusesForwardMutation(
+      (source) =>
+        source.replace(
+          `profile === 'legacy-post-seal'\n        ? (item) => ${legacy}`,
+          `profile === 'legacy'\n        ? (item) => ${legacy}`,
+        ),
+      [modern],
+    );
+  });
+  test(`forward rollback retains the ${body} legacy validator with the modern validator intact`, () => {
+    refusesForwardMutation((source) => source.replace(legacy, modern), [modern]);
+  });
+  test(`forward rollback retains the ${body} strict default with both validators intact`, () => {
+    refusesForwardMutation(
+      (source) =>
+        source.replace(
+          `? (item) => ${legacy}\n        : undefined`,
+          `? (item) => ${legacy}\n        : (item) => true`,
+        ),
+      [modern, legacy],
+    );
+  });
 }
 test('modern source rows cannot become a member-wide hold through rollback', () => {
   assert.throws(
