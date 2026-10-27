@@ -253,6 +253,30 @@ native('native post-seal held message removal without replay', () => {
     );
   }
 
+  function heldImage(source: LegacyRecoveryCandidate, text?: string) {
+    const at = Date.now();
+    return new WebhookParser().parse(
+      {
+        update_type: 'message_created',
+        update_id: randomUUID(),
+        timestamp: at,
+        message: {
+          sender: { user_id: source.source.userId, is_bot: false },
+          recipient: { chat_id: source.source.chatId, chat_type: 'chat' },
+          timestamp: at,
+          body: {
+            mid: randomUUID(),
+            ...(text === undefined ? {} : { text }),
+            attachments: [
+              { type: 'image', payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } },
+            ],
+          },
+        },
+      },
+      { botId: state().bots[0]!.id },
+    );
+  }
+
   // FLAG: Refusal fixtures seed the same pristine persisted envelope as ingress,
   // then deliberately corrupt exactly one boundary before the real SQL classifier.
   // Success through actual storeReceipt is tested independently below.
@@ -336,6 +360,94 @@ native('native post-seal held message removal without replay', () => {
       },
     });
   }
+
+  it.each([
+    'QUEUED',
+    'attempted',
+    'queue name',
+    'processed',
+    'other error',
+    'command',
+    'raw sample',
+    'normalized text',
+    'old source',
+    'unsealed',
+    'authority digest',
+    'linked claim',
+    'canonical claim',
+    'publisher claim',
+    'command claim',
+    'delivery journal',
+  ])('keeps the held image fenced with %s', async (fault) => {
+    const s = state();
+    const source = await owner();
+    const certificate = await seal([source], fault !== 'unsealed');
+    const update = heldImage(source, fault === 'command' ? '/ban' : undefined);
+    if (fault === 'normalized text') update.message!.text = 'mismatched text';
+    if (fault === 'old source')
+      (update.raw as Record<string, unknown>).timestamp = certificate.sealedAt!.getTime() - 1;
+    if (fault === 'authority digest')
+      await corruptFixture((tx) =>
+        tx.webhookLegacySealedAuthority.update({
+          where: { certificateId: certificate.id },
+          data: { attestationDigest: 'f'.repeat(64) },
+        }),
+      );
+    const receipt = await stage(update, {
+      errorMessage: heldRetry,
+      ...(fault === 'QUEUED' ? { status: 'QUEUED' } : {}),
+      ...(fault === 'attempted' ? { enqueueAttempts: 1 } : {}),
+      ...(fault === 'queue name' ? { queueName: 'existing-queue' } : {}),
+      ...(fault === 'processed' ? { processedAt: new Date() } : {}),
+      ...(fault === 'other error' ? { errorMessage: 'Unproved earlier error' } : {}),
+      ...(fault === 'raw sample' ? { rawPayload: { ...update.raw, unknownField: true } } : {}),
+    });
+    if (fault.endsWith('claim')) {
+      const semanticKey =
+        fault === 'canonical claim'
+          ? buildWebhookSemanticEventKey(update)!
+          : fault === 'publisher claim'
+            ? buildWebhookReceiptSemanticKey(update, update.botId!)!
+            : fault === 'command claim'
+              ? buildGroupCommandKey(chatId, update.message!.messageId)
+              : randomUUID();
+      const claim = await s.prisma.webhookExecutionClaim.create({
+        data: {
+          kind: 'INDEPENDENT_RETAINED_KIND',
+          semanticKey,
+          ...(fault === 'linked claim' ? { webhookEventId: receipt.id } : {}),
+        },
+      });
+      extraClaims.push(claim.id);
+    }
+    if (fault === 'delivery journal') await publisherDelivery(update, source);
+    await blocked(receipt);
+    expect(await s.legacyHolds.isGlobalUserHeld(source.source.userId)).toBe(true);
+  });
+
+  it('settles a captionless held image at ingress and allows independent same-chat work', async () => {
+    const s = state();
+    const source = await owner();
+    await seal([source]);
+    const held = await store(heldImage(source));
+    expect(held.status).toBe('NO_REPLAY_HELD');
+    const next = await store(
+      removal(source, { message_id: randomUUID(), user_id: 'independent-actor' }),
+    );
+    await s.ingress.preparePersistedWebhookEvent(next.id);
+    await s.prisma.webhookEvent.update({ where: { id: next.id }, data: { status: 'QUEUED' } });
+    await s.moderation.processWebhookEvent(next.id);
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: next.id } })).toMatchObject(
+      { status: 'PROCESSED' },
+    );
+    expect(await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: held.id } })).toBe(
+      0,
+    );
+    expect(
+      await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: source.claim.id } }),
+    ).toEqual(source.claim);
+    expect(s.effects).toEqual([]);
+  });
 
   it.each([undefined, false] as const)(
     'holds genuine official removal at ingress without history effects (is_channel=%s)',
@@ -694,13 +806,17 @@ native('native post-seal held message removal without replay', () => {
     },
   );
 
-  it.each(['canonical', 'command'] as const)(
-    'keeps the receipt while a peer owns its %s fence, then settles after the peer commits',
-    async (kind) => {
+  it.each(
+    ['removal', 'message'].flatMap((eventKind) =>
+      ['canonical', 'command'].map((kind) => ({ eventKind, kind })),
+    ),
+  )(
+    'keeps the $eventKind receipt while a peer owns its $kind fence, then settles after the peer commits',
+    async ({ kind, eventKind }) => {
       const s = state();
       const source = await owner();
       await seal([source]);
-      const update = removal(source);
+      const update = eventKind === 'message' ? heldImage(source) : removal(source);
       const receipt = await stage(update);
       const key =
         kind === 'canonical'

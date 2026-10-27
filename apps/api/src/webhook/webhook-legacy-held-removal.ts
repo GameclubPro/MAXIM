@@ -3,7 +3,7 @@ import { Prisma, type WebhookEvent } from '../prisma/prisma-client';
 import { buildPublisherAutoReplySourceSemanticKey } from '../publisher/publisher-auto-reply-source-key';
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
-import { legacySnapshotDigest } from './webhook-legacy-source';
+import { inspectLegacyPostSealTextSource, legacySnapshotDigest } from './webhook-legacy-source';
 import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { tryLockWebhookSemanticClaimFences } from './webhook-semantic-claim-fence';
@@ -47,30 +47,59 @@ export async function inspectHeldRemovalDisposition(
   tx: Prisma.TransactionClient,
   event: WebhookEvent,
 ): Promise<{ authorityId: string } | 'NOT_HELD' | null> {
+  return inspectPristineHeldDisposition(tx, event, 'removal');
+}
+
+// FLAG: A persisted preparation deferral is not an execution attempt. Revalidate
+// the complete original source and the same no-owner fences before projecting the
+// existing hold; no command, unknown content or historical effects are discarded.
+export async function inspectHeldMessageDisposition(
+  tx: Prisma.TransactionClient,
+  event: WebhookEvent,
+): Promise<{ authorityId: string } | 'NOT_HELD' | null> {
+  return inspectPristineHeldDisposition(tx, event, 'message');
+}
+
+async function inspectPristineHeldDisposition(
+  tx: Prisma.TransactionClient,
+  event: WebhookEvent,
+  kind: 'removal' | 'message',
+): Promise<{ authorityId: string } | 'NOT_HELD' | null> {
   const update = object(event.normalizedPayload);
   const message = object(update?.message);
   const raw = object(update?.raw);
   const sampled = object(event.rawPayload);
+  const originalMessage = object(raw?.message);
+  const sampledMessage = object(sampled?.message);
+  const rawChat = kind === 'removal' ? raw?.chat_id : object(originalMessage?.recipient)?.chat_id;
+  const rawActor = kind === 'removal' ? raw?.user_id : object(originalMessage?.sender)?.user_id;
+  const rawMessageId = kind === 'removal' ? raw?.message_id : object(originalMessage?.body)?.mid;
+  const sampledChat =
+    kind === 'removal' ? sampled?.chat_id : object(sampledMessage?.recipient)?.chat_id;
+  const sampledActor =
+    kind === 'removal' ? sampled?.user_id : object(sampledMessage?.sender)?.user_id;
+  const sampledMessageId =
+    kind === 'removal' ? sampled?.message_id : object(sampledMessage?.body)?.mid;
   // FLAG: Both original and normalized bindings nominate possible holds only. A
   // mismatch can never gain abandonment authority by hiding the original held actor.
   const chatIds = [
     ...new Set(
-      [identity(message?.chatId), identity(raw?.chat_id), identity(sampled?.chat_id)].filter(
+      [identity(message?.chatId), identity(rawChat), identity(sampledChat)].filter(
         (v): v is string => v !== null,
       ),
     ),
   ];
   const actors = [
     ...new Set(
-      [identity(message?.senderId), identity(raw?.user_id), identity(sampled?.user_id)].filter(
+      [identity(message?.senderId), identity(rawActor), identity(sampledActor)].filter(
         (v): v is string => v !== null,
       ),
     ),
   ];
   const messageIds = new Set([
     identity(message?.messageId),
-    identity(raw?.message_id),
-    identity(sampled?.message_id),
+    identity(rawMessageId),
+    identity(sampledMessageId),
   ]);
   if (!chatIds.length || !actors.length) return null;
   const scopes = new Map<string, Scope>();
@@ -108,17 +137,20 @@ export async function inspectHeldRemovalDisposition(
     (event.executionDeadlineAt !== null && !finite(event.executionDeadlineAt)) ||
     !identity(event.botId) ||
     update.botId !== event.botId ||
-    update.type !== 'message_removed' ||
-    raw.update_type !== 'message_removed' ||
-    Object.keys(raw).some((key) => !RAW_KEYS.has(key)) ||
-    (raw.is_channel !== undefined && raw.is_channel !== false) ||
+    (kind === 'removal'
+      ? update.type !== 'message_removed' ||
+        raw.update_type !== 'message_removed' ||
+        Object.keys(raw).some((key) => !RAW_KEYS.has(key)) ||
+        (raw.is_channel !== undefined && raw.is_channel !== false)
+      : !['message_created', 'message_edited'].includes(String(update.type)) ||
+        raw.update_type !== update.type) ||
     (message.entityType !== undefined && message.entityType !== 'chat') ||
-    !identity(raw.chat_id) ||
-    identity(raw.chat_id) !== message.chatId ||
-    !identity(raw.message_id) ||
-    identity(raw.message_id) !== message.messageId ||
-    !identity(raw.user_id) ||
-    identity(raw.user_id) !== message.senderId ||
+    !identity(rawChat) ||
+    identity(rawChat) !== message.chatId ||
+    !identity(rawMessageId) ||
+    identity(rawMessageId) !== message.messageId ||
+    !identity(rawActor) ||
+    identity(rawActor) !== message.senderId ||
     (raw.post_id !== undefined && !identity(raw.post_id)) ||
     (raw.update_id !== undefined && !identity(raw.update_id)) ||
     typeof raw.timestamp !== 'number' ||
@@ -127,6 +159,12 @@ export async function inspectHeldRemovalDisposition(
     return null;
   const at = parseWebhookEventTimestampMs(raw.timestamp);
   if (at === null || at > event.createdAt.getTime() + 1_000) return null;
+  if (kind === 'message') {
+    const settings = await tx.chatSettings.findUnique({
+      where: { chatId: message.chatId as string },
+    });
+    if (!inspectLegacyPostSealTextSource(event, settings ?? undefined)) return null;
+  }
   let canonical: string | null;
   let observation: string | null;
   try {

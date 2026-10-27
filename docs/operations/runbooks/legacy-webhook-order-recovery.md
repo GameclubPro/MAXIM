@@ -36,6 +36,18 @@ never rewrites the stored namespace and preserves every independent execution cl
 reader projects the existing sealed hold through normal ingress/preparation; do not rerun the
 historical recovery operation or clear the receipt to remove this deferral.
 
+A pristine post-seal direct image/video may omit its caption or carry JSON `null` only when
+the complete original source reparses to empty text and strict direct-media validation passes.
+This allowance belongs only to projection of an existing permanent hold; historical installation,
+modern source abandonment, forwards, commands and unknown content retain their original guards.
+The exact saved `Legacy scope installation is not sealed` deferral does not itself prove an
+execution attempt. A retry of an otherwise valid ordinary held source revalidates the original
+envelope, every matching sealed authority, pristine zero-attempt RECEIVED state and absence of
+all linked/semantic claims and Publisher journals under the shared admission fences. It may then
+record `NO_REPLAY_HELD`, preserving the error, payloads, deadlines and holds. Other errors,
+queued or attempted work and incomplete evidence remain blocked. This closure releases receipt
+ordering without running moderation, downloading media or reporting successful execution.
+
 A pristine post-seal official `message_removed` notification may also receive the existing
 `POST_SEAL_MEMBER` / `NO_REPLAY_HELD` proof. This is an explicit decision to abandon notification
 execution. The top-level `user_id` identifies the removal actor, never the original message author.
