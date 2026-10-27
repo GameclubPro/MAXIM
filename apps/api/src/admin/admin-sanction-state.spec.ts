@@ -122,6 +122,66 @@ function installSanctionStateHarness(service: AdminService) {
   return { leaseGuard, sanctionStateFence, sanctionStateLock, trace };
 }
 
+describe('duration-only mute release', () => {
+  function fixture() {
+    const prisma = createPrismaMock();
+    const event = {
+      id: 'duration-only-mute',
+      chatId: 'chat-1',
+      userId: 'user-4',
+      action: 'MUTE',
+      metadata: { muteDurationHours: 2 },
+      createdAt: new Date(Date.now() - 3_600_000),
+    };
+    prisma.moderationEvent.findUnique.mockResolvedValue(event);
+    prisma.moderationEvent.findFirst.mockResolvedValue({ id: event.id });
+    const service = createService(prisma, {});
+    const harness = installSanctionStateHarness(service);
+    const run = () =>
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-4',
+        ADMIN_ACTOR,
+        { action: 'UNMUTE' },
+        'group_command',
+        { ...VERIFIED_COMMAND_OPTIONS, expectedSanctionEventId: event.id },
+      );
+    return { prisma, event, harness, run };
+  }
+
+  it('releases an active mute using its stored duration and original creation time', async () => {
+    const { prisma, event, harness, run } = fixture();
+
+    await expect(run()).resolves.toMatchObject({ ok: true, action: 'UNMUTE', userId: 'user-4' });
+
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'MANUAL_UNMUTE',
+        metadata: expect.objectContaining({ releasedSanctionEventId: event.id }),
+      }),
+    });
+    expect(harness.sanctionStateFence.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['expired', 'replaced', 'fenced'] as const)(
+    'rejects a %s duration-only mute without recording a release',
+    async (state) => {
+      const { prisma, event, harness, run } = fixture();
+      if (state === 'expired') event.createdAt = new Date(Date.now() - 3 * 3_600_000);
+      if (state === 'replaced')
+        prisma.moderationEvent.findFirst.mockResolvedValue({ id: 'newer-mute' });
+      if (state === 'fenced')
+        harness.sanctionStateFence.isSanctionEventInvalidated.mockResolvedValue(true);
+
+      await expect(run()).rejects.toBeInstanceOf(ModerationSanctionStateChangedError);
+
+      expect(harness.sanctionStateFence.prepare).not.toHaveBeenCalled();
+      expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('existing sanction-button unban attempt', () => {
   const options = {
     ...VERIFIED_COMMAND_OPTIONS,
