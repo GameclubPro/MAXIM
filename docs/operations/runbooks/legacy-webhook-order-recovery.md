@@ -39,7 +39,7 @@ historical recovery operation or clear the receipt to remove this deferral.
 A pristine post-seal direct image/video may omit its caption or carry JSON `null` only when
 the complete original source reparses to empty text and strict direct-media validation passes.
 This allowance belongs only to projection of an existing permanent hold; historical installation,
-modern source abandonment, forwards, commands and unknown content retain their original guards.
+modern source abandonment, captionless forwards, commands and unknown content retain their guards.
 The exact saved `Legacy scope installation is not sealed` deferral does not itself prove an
 execution attempt. A retry of an otherwise valid ordinary held source revalidates the original
 envelope, every matching sealed authority, pristine zero-attempt RECEIVED state and absence of
@@ -47,6 +47,15 @@ all linked/semantic claims and Publisher journals under the shared admission fen
 record `NO_REPLAY_HELD`, preserving the error, payloads, deadlines and holds. Other errors,
 queued or attempted work and incomplete evidence remain blocked. This closure releases receipt
 ordering without running moderation, downloading media or reporting successful execution.
+
+A flat post-seal held forward may retain bounded passive formatting on its original outer and
+linked text. An empty outer caption may carry only an exact copy of independently validated
+linked passive markup. Links, mentions, extra metadata, invalid offsets and unsupported media
+remain refused; every original text component and the parser-composed text must be non-command.
+Linked sender provenance remains mandatory. Fresh formatted forwards require the same complete
+pristine receipt, sealed-authority and concurrent claim/journal checks as saved deferrals above.
+This projects only an existing hold; historical installation and modern source policies do not
+change. It grants no replay, handler execution, image download or new moderation authority.
 
 A pristine post-seal official `message_removed` notification may also receive the existing
 `POST_SEAL_MEMBER` / `NO_REPLAY_HELD` proof. This is an explicit decision to abandon notification
