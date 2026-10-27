@@ -71,10 +71,19 @@ indexed probes; their values never appear in the report. A removal actor does
 not establish the original message's author. Raw source parsing, canonical key
 reconstruction and original source clock validation remain unevaluated.
 
-Legacy message and global-user families each admit at most 16 matches plus one
-saturation sentinel, with no sort before those limits. Only complete families
-permit deduplication and the bounded owner-first/id ordering used to select a
-legacy scope. A saturated or unavailable family cannot establish its winner.
+The legacy message probe first admits at most 16 rows plus one saturation sentinel
+from the indexed chat prefix, then filters that materialized prefix by message.
+This bounds reads even when PostgreSQL chooses another chat-leading index. The
+global-user family independently admits at most 16 matches plus one sentinel.
+Neither probe sorts before its limit. Only a complete chat prefix, complete user
+family and bounded original metadata permit deduplication and the bounded
+owner-first/id ordering used to select a legacy scope. A saturated chat prefix
+makes the exact-message family incomplete even if no sampled row matches the
+message; zero sampled matches never establishes absence in that case. The report
+exposes prefix counts, saturation and completeness separately. Inspect every
+physical scan's index condition in the plain plan; the existence of the intended
+index alone does not prove a bounded lookup. This mode attests ten complete index
+definitions, including both existing chat/message and chat/user access paths.
 The selected certificate and authority use exact unique lookups. Scalar binding
 and seal comparisons distinguish missing, mismatched and matching records; the
 receipt/seal relationship concerns receipt creation time only.

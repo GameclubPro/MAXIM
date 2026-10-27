@@ -32,6 +32,7 @@ CREATE TABLE webhook_legacy_recoveries (
   owner_snapshot jsonb,private_content text
 );
 CREATE INDEX webhook_legacy_recoveries_chat_message_idx ON webhook_legacy_recoveries(chat_id,message_id);
+CREATE INDEX webhook_legacy_recoveries_chat_user_idx ON webhook_legacy_recoveries(chat_id,user_id);
 CREATE INDEX webhook_legacy_recoveries_global_user_idx ON webhook_legacy_recoveries(user_id);
 CREATE TABLE webhook_legacy_sealed_authorities (
   id text PRIMARY KEY,certificate_id text UNIQUE,authority_version integer,source_sha text,image_id text,
@@ -361,6 +362,161 @@ test('index attestation rejects missing, descending and partial lookups', async 
     CREATE INDEX webhook_legacy_recoveries_global_user_idx ON webhook_legacy_recoveries(user_id) WHERE authority_version=1`);
   assert.equal(await ready(), false);
 });
+
+test(
+  'native PG16 caps the chat prefix before residual message filtering across competing indexes',
+  { skip: !process.env.MAXIM_TEST_POSTGRES_URL, timeout: 90000 },
+  async () => {
+    const url = new URL(process.env.MAXIM_TEST_POSTGRES_URL);
+    assert.ok(
+      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) &&
+        url.pathname.includes('race_test'),
+    );
+    const { default: pg } = await import('pg');
+    const name = `race_test_held_prefix_${randomUUID().replaceAll('-', '')}`;
+    const admin = new pg.Client({ connectionString: url.href });
+    const childUrl = new URL(url);
+    childUrl.pathname = `/${name}`;
+    const db = new pg.Client({
+      connectionString: childUrl.href,
+      options: '-c timezone=UTC -c statement_timeout=10000 -c lock_timeout=250',
+    });
+    db.exec = (sql) => db.query(sql);
+    let created = false;
+    try {
+      await admin.connect();
+      await admin.query(`CREATE DATABASE "${name}" TEMPLATE template0`);
+      created = true;
+      await db.connect();
+      assert.match((await db.query('SHOW server_version')).rows[0].server_version, /^16\./u);
+      await db.exec(fixtureSql);
+      await seedReceipt(db);
+      await seedScope(db, 'private-scope', 'private-cert', receiptId);
+      await seedSeal(db);
+      await db.query(
+        `INSERT INTO webhook_legacy_recoveries
+          (id,chat_id,message_id,user_id,owner_webhook_event_id,certificate_id)
+        SELECT 'distractor-'||n,$1,'000-message-'||lpad(n::text,6,'0')||repeat('x',256),
+          '000-actor-'||lpad(n::text,6,'0'),'other-owner','private-cert'
+        FROM generate_series(1,12000) n`,
+        [privateValue],
+      );
+      // FLAG: A low message-cardinality estimate makes the real, narrower chat/user
+      // index competitive. The scan budget must hold even when message filtering
+      // becomes residual; these statistics affect only this disposable local DB.
+      await db.exec(`ALTER TABLE webhook_legacy_recoveries
+          ALTER COLUMN message_id SET (n_distinct=1);
+        INSERT INTO webhook_events(id,status,created_at)
+          SELECT 'retained-'||n,'PROCESSED','2020-01-01' FROM generate_series(1,12000) n;
+        ANALYZE;
+        SET enable_seqscan=off; SET enable_bitmapscan=off;
+        SET max_parallel_workers_per_gather=0; SET jit=off;
+        SET work_mem='1MB'; SET temp_file_limit='8MB'; SET statement_timeout=2500;`);
+      assert.equal(
+        (await db.query(heldReceiptIndexesSql)).rows[0].held_receipt_indexes_ready,
+        true,
+      );
+      const plan = (
+        await db.query(`EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ${buildHeldReceiptAuditSql()}`)
+      ).rows[0]['QUERY PLAN'][0].Plan;
+      const scans = walk(plan).filter((node) => node['Relation Name']);
+      assert.ok(
+        scans.some((node) => node['Index Name'] === 'webhook_legacy_recoveries_chat_user_idx'),
+        'The fixture must exercise the competing chat/user access path',
+      );
+      for (const scan of scans) {
+        assert.match(scan['Node Type'], /^Index (Only )?Scan$/u);
+        const inspected =
+          (scan['Actual Rows'] +
+            (scan['Rows Removed by Filter'] ?? 0) +
+            (scan['Rows Removed by Index Recheck'] ?? 0)) *
+          scan['Actual Loops'];
+        assert.ok(
+          inspected <= 17,
+          JSON.stringify({
+            relation: scan['Relation Name'],
+            index: scan['Index Name'],
+            rows: scan['Actual Rows'],
+            removedByFilter: scan['Rows Removed by Filter'] ?? 0,
+            removedByRecheck: scan['Rows Removed by Index Recheck'] ?? 0,
+            loops: scan['Actual Loops'],
+            inspected,
+          }),
+        );
+        assert.ok(
+          scan['Index Cond'],
+          JSON.stringify({ relation: scan['Relation Name'], index: scan['Index Name'] }),
+        );
+      }
+      const saturated = await report(db);
+      assert.equal(saturated.scope_metadata.exact_chat_prefix_count_lower_bound, 17);
+      assert.equal(saturated.scope_metadata.exact_chat_prefix_saturated, true);
+      assert.equal(saturated.scope_metadata.exact_chat_prefix_complete, false);
+      assert.equal(saturated.scope_metadata.exact_match_count_lower_bound, 0);
+      assert.equal(saturated.scope_metadata.exact_family_complete, false);
+      assert.equal(saturated.scope_metadata.global_user_match_count_lower_bound, 1);
+      assert.equal(saturated.scope_metadata.global_user_family_complete, true);
+      assert.equal(saturated.scope_metadata.scopes_complete, false);
+      assert.equal(saturated.legacy_scope.selected, false);
+      assert.equal(saturated.legacy_scope.scalar_identity_matches, null);
+      assert.notEqual(saturated.classification, 'no_legacy_scope');
+      assert.notEqual(saturated.classification, 'legacy_sealed_scope_present');
+
+      await db.exec("DELETE FROM webhook_legacy_recoveries WHERE id LIKE 'distractor-%'");
+      await db.query(
+        `INSERT INTO webhook_legacy_recoveries
+          (id,chat_id,message_id,user_id,owner_webhook_event_id,certificate_id)
+        VALUES ('small-distractor',$1,'000-other-message','000-other-actor',
+          'other-owner','private-cert')`,
+        [privateValue],
+      );
+      await db.exec('ANALYZE webhook_legacy_recoveries');
+      const complete = await report(db);
+      assert.equal(complete.scope_metadata.exact_chat_prefix_count_lower_bound, 2);
+      assert.equal(complete.scope_metadata.exact_chat_prefix_saturated, false);
+      assert.equal(complete.scope_metadata.exact_chat_prefix_complete, true);
+      assert.equal(complete.scope_metadata.exact_match_count_lower_bound, 1);
+      assert.equal(complete.scope_metadata.exact_family_complete, true);
+      assert.equal(complete.scope_metadata.global_user_match_count_lower_bound, 1);
+      assert.equal(complete.scope_metadata.global_user_family_complete, true);
+      assert.equal(complete.scope_metadata.scopes_complete, true);
+      assert.equal(complete.legacy_scope.selected, true);
+      assert.equal(complete.legacy_scope.owner_is_receipt, true);
+      assert.equal(complete.legacy_scope.scalar_identity_matches, true);
+
+      // FLAG: An uninspected row in the bounded chat prefix cannot disappear
+      // through a guarded NULL message ID and leave a falsely complete family.
+      await db.query(
+        "UPDATE webhook_legacy_recoveries SET message_id=$1 WHERE id='small-distractor'",
+        ['x'.repeat(12000)],
+      );
+      assert.notEqual(
+        (
+          await db.query(`SELECT pg_column_compression(message_id) AS compression
+            FROM webhook_legacy_recoveries WHERE id='small-distractor'`)
+        ).rows[0].compression,
+        null,
+      );
+      const poisoned = await report(db);
+      assert.equal(poisoned.classification, 'legacy_scope_metadata_uninspected');
+      assert.equal(poisoned.scope_metadata.exact_chat_prefix_count_lower_bound, 2);
+      assert.equal(poisoned.scope_metadata.exact_chat_prefix_saturated, false);
+      assert.equal(poisoned.scope_metadata.exact_chat_prefix_complete, false);
+      assert.equal(poisoned.scope_metadata.exact_family_metadata_bounded, false);
+      assert.equal(poisoned.scope_metadata.exact_match_count_lower_bound, 1);
+      assert.equal(poisoned.scope_metadata.exact_family_complete, false);
+      assert.equal(poisoned.scope_metadata.global_user_match_count_lower_bound, 1);
+      assert.equal(poisoned.scope_metadata.global_user_family_complete, true);
+      assert.equal(poisoned.scope_metadata.scopes_complete, false);
+      assert.equal(poisoned.legacy_scope.selected, false);
+      assert.equal(poisoned.legacy_scope.scalar_identity_matches, null);
+    } finally {
+      await db.end();
+      if (created) await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      await admin.end();
+    }
+  },
+);
 
 test(
   'native PG16 bounds retained scopes, avoids row locks and inspects no compressed text or oversized source',
