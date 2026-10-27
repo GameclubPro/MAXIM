@@ -41,12 +41,14 @@ export type DuplicateEnforcementResult =
         | 'qualification_source_unavailable'
         | 'claim_blocked';
     }
+  | { kind: 'qualification_deferred' }
   | { kind: 'intent_accepted'; intentId: string };
 
 export function duplicateEnforcementObservation(
   result: DuplicateEnforcementResult,
 ): DuplicateObservationOutcome {
   if (result.kind === 'intent_accepted') return 'ENFORCEMENT_REQUESTED';
+  if (result.kind === 'qualification_deferred') return 'DEFERRED';
   switch (result.reason) {
     case 'policy_changed':
       return 'POLICY_CHANGED';
@@ -82,6 +84,7 @@ export class MessageDuplicateEnforcementService {
     assertLease?: () => void;
     update?: MaxUpdate;
     executeFullAction?: ExecuteDuplicateModerationAction;
+    deferQualification?: () => Promise<void>;
   }): Promise<DuplicateEnforcementResult> {
     this.metrics?.record('enforcement.match_found');
     const policy = await this.policy.resolve(params.chatId, true);
@@ -145,9 +148,20 @@ export class MessageDuplicateEnforcementService {
         }),
       );
     } catch (error) {
-      // FLAG: Only the initial source read may stop without action, and only after SQL
-      // proves this exact claim unused and durably revokes it. Existing effects stay fenced.
+      // FLAG: Only the initial source read can hand off qualification before effects.
+      // Without a durable handoff, stopping requires SQL proof and revocation of an unused claim.
       if (error instanceof MessageDuplicateQualificationSourceUnavailableError) {
+        // FLAG: A persisted duplicate job owns only this unfinished qualification. Keep its
+        // exact claim/deadline for retry; never revoke it or replay the whole webhook.
+        if (binding.authorization.jobId && params.assertLease) {
+          params.assertLease();
+          throw error.cause;
+        }
+        if (params.deferQualification) {
+          await params.deferQualification();
+          return { kind: 'qualification_deferred' };
+        }
+
         let released: boolean;
         try {
           released = await this.intents.releaseUnmaterializedMessageAction({ claim, binding });
