@@ -160,13 +160,19 @@ status marks them `pendingDiscardBasis=redis_namespace_cumulative`, separately
 from process outcome totals. `chat_busy` includes a pending/running primary from
 the same chat, repeated message IDs and the two-active-source chat bound;
 it is not a successful duplicate classification. Admission is not completed
-inference or a confirmed MAX effect. Read producer counters as deltas from
-the same process and schema; differing first/last sample windows do not form one
+inference or a confirmed MAX effect. Independent random `observationProcessId` and `observationStartedAt` identify
+each producer/runner generation without exposing its worker lease. Read producer
+counters as deltas from the same process and schema; differing first/last sample windows do not form one
 complete fleet denominator. The original offered counter included disabled chats
 and cannot establish eligible coverage.
 
-`commercial-ai-admission-window` closes only nonempty intake minutes whose offered
-admissions have settled. Its `settled=true` applies to the offers observed by that
+`commercial-ai-admission-window` closes nonempty minutes selected by
+`selectionBasis=offers_or_evaluate_calls` once their offered admissions have settled.
+Per-window ineligible and skip reasons use the same finite categories as cumulative
+counts. `evaluation` counts only calls reaching `evaluate()` while enforcement is
+enabled, with one ordered exclusion (missing message, untrusted event time, protected
+author or another rule). It is not an ingress denominator. An exclusion-only minute
+can have zero offers; an evaluate call and its offer may cross a minute boundary. Its `settled=true` applies to the offers observed by that
 process. `observationStartedAt`, `observedFromAt` and `intakeBoundaryObserved`
 make a partial first minute explicit; `fleetCoverage=not_established` prevents a
 settled process cohort from claiming complete traffic observation. Missing or zero
@@ -174,7 +180,9 @@ traffic minutes are not fabricated. Reconcile all expected process observations
 and preserve shutdown, restart or log gaps before reporting fleet coverage.
 
 `commercial-ai` records result, cascade route, primary/secondary duration, heartbeat
-and last successful classification without raw message text. A retained primary
+and last recorded KEEP/UNSURE/registered-DELETE result without raw message text.
+`lastSuccessAt` does not include classified positives whose registration was refused
+or uncertain; it is not a complete last-classification clock. A retained primary
 negative with `auditOutcome=capacity_skipped` is a 4B classification, not evidence
 of a successful 9B audit or independently verified negative. The
 `commercial-ai-cumulative` record and Redis status expose process totals with
@@ -182,12 +190,27 @@ of a successful 9B audit or independently verified negative. The
 `commercial-ai-secondary` reports `waiting`, `started`, `buffer_full` and
 `budget_exhausted` with wait duration. Record work expiry and model stage separately.
 A fresh heartbeat
-with an old last classification is not proof of current throughput; an offline
+with an old last recorded result is not proof of current throughput; an offline
 primary must be visible even when server fallback succeeds. Capacity skips,
 uncertain answers, stale-source rejection and technical failures remain separate.
 Redis status expires after 30 seconds; missing status is a coverage gap, not proof
 of healthy idleness. Record registered intents separately from confirmed MAX
 DELETE outcomes.
+
+The closed Safety Desk **Observations → Advertising AI** reads only the fixed runner
+status key, atomically capped at 16 KiB before fetching its value. Reads are coalesced
+and cached for two seconds; heartbeat freshness and the last governor/headroom check
+expire independently after 30 seconds. This check is an admission observation, not
+model readiness. The panel labels its manual-refresh snapshot explicitly. It
+separates disabled/observe mode, missing, invalid, unavailable and stale observations;
+unknown evidence remains null. `lastRecordedResultAt` maps to the limited
+`lastSuccessAt` basis above. Legacy status without generation fields remains readable
+with an unknown start. No raw source, worker lease, message text or credentials cross
+this endpoint. Process totals and namespace discard counters have separate bases;
+traffic coverage and confirmed deletes are deliberately not inferred.
+The additional owner panel and validated diagnostics raise the total Safety Desk
+JavaScript gzip budget from 120 to 123 KiB (measured 122.7 KiB); raw JS/CSS limits
+and the 320-byte tolerance stay unchanged. No new browser dependency is introduced.
 
 The sequential `postgres-audit moderation-outcomes [--bot <configured-bot-id>]`
 catalog reports exact `COMMERCIAL_LLM_DELETE` events as `COMMERCIAL_AI`, separately

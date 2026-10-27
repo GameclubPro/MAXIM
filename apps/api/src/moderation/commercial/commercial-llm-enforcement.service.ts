@@ -2,6 +2,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import type { CommercialDeleteSettings } from './commercial-delete-binding';
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'node:crypto';
 import type Redis from 'ioredis';
 import type { RuleViolation } from '../rule-engine.contract';
 import { readExactDeleteOrigin } from '../webhook-effect-origin-context';
@@ -18,9 +19,41 @@ import {
   type CommercialLlmSource,
 } from './commercial-llm-enforcement.protocol';
 
+type AdmissionSkipReason = Exclude<CommercialLlmAdmissionResult, 'accepted'> | 'producer_busy';
+type EvaluationExclusion =
+  | 'missing_message'
+  | 'untrusted_event_time'
+  | 'protected_author'
+  | 'other_rule';
+
+function evaluationCounts() {
+  return {
+    scope: 'evaluate_calls_while_enforcement_enabled' as const,
+    evaluated: 0,
+    forwardedToOffer: 0,
+    excluded: 0,
+    exclusionReasons: {} as Partial<Record<EvaluationExclusion, number>>,
+  };
+}
+
+function admissionWindow() {
+  return {
+    offered: 0,
+    eligible: 0,
+    ineligible: 0,
+    accepted: 0,
+    skipped: 0,
+    unavailable: 0,
+    ineligibleReasons: {} as Partial<Record<CommercialLlmOfferRejection, number>>,
+    skipReasons: {} as Partial<Record<AdmissionSkipReason, number>>,
+    evaluation: evaluationCounts(),
+  };
+}
+
 @Injectable()
 export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(CommercialLlmEnforcementService.name);
+  private readonly observationProcessId = randomUUID();
   private redis: Redis | null = null;
   private connecting: Promise<CommercialLlmEnforcementMailbox> | null = null;
   private offering = false;
@@ -34,22 +67,11 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
     unavailable: 0,
   };
   private readonly ineligibleReasons: Partial<Record<CommercialLlmOfferRejection, number>> = {};
-  private readonly skipReasons: Partial<
-    Record<Exclude<CommercialLlmAdmissionResult, 'accepted'> | 'producer_busy', number>
-  > = {};
+  private readonly skipReasons: Partial<Record<AdmissionSkipReason, number>> = {};
+  private readonly evaluation = evaluationCounts();
   private timer: NodeJS.Timeout | null = null;
   private readonly observationStartedAtMs = Date.now();
-  private readonly windows = new Map<
-    number,
-    {
-      offered: number;
-      eligible: number;
-      ineligible: number;
-      accepted: number;
-      skipped: number;
-      unavailable: number;
-    }
-  >();
+  private readonly windows = new Map<number, ReturnType<typeof admissionWindow>>();
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit(): void {
@@ -67,16 +89,23 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
         {
           stage: 'commercial-ai-admission-window',
           schemaVersion: 1,
+          ...this.observationIdentity(),
           basis: 'offer_intake_minute',
           scope: 'settled_offers_observed_by_this_process',
           windowStartAt: new Date(startedAt).toISOString(),
           windowEndAt: new Date(startedAt + 60_000).toISOString(),
-          observationStartedAt: new Date(this.observationStartedAtMs).toISOString(),
           observedFromAt: new Date(Math.max(startedAt, this.observationStartedAtMs)).toISOString(),
           intakeBoundaryObserved: this.observationStartedAtMs <= startedAt,
           fleetCoverage: 'not_established',
           windowSelection: 'nonempty_only',
+          selectionBasis: 'offers_or_evaluate_calls',
           ...counts,
+          ineligibleReasons: { ...counts.ineligibleReasons },
+          skipReasons: { ...counts.skipReasons },
+          evaluation: {
+            ...counts.evaluation,
+            exclusionReasons: { ...counts.evaluation.exclusionReasons },
+          },
           inFlight,
           settled: true,
         },
@@ -96,14 +125,31 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
     settings: CommercialDeleteSettings,
     protectedAuthor: boolean,
   ): RuleViolation[] {
-    const routed = routeCommercialAiViolations(violations, this.enabled());
+    const enabled = this.enabled();
+    const routed = routeCommercialAiViolations(violations, enabled);
     const message = update.message;
-    if (
-      message &&
-      update.eventTimestampSource === 'payload' &&
-      !protectedAuthor &&
-      routed.length === 0
-    )
+    const exclusion: EvaluationExclusion | null = !message
+      ? 'missing_message'
+      : update.eventTimestampSource !== 'payload'
+        ? 'untrusted_event_time'
+        : protectedAuthor
+          ? 'protected_author'
+          : routed.length > 0
+            ? 'other_rule'
+            : null;
+    if (enabled) {
+      // FLAG: These are calls reaching evaluate, not all logical messages or fleet traffic.
+      // One ordered exclusion accounts for each call without changing its moderation decision.
+      const window = this.window(Math.floor(Date.now() / 60_000) * 60_000);
+      for (const counts of [this.evaluation, window.evaluation]) {
+        counts.evaluated += 1;
+        counts[exclusion ? 'excluded' : 'forwardedToOffer'] += 1;
+        if (exclusion)
+          counts.exclusionReasons[exclusion] = (counts.exclusionReasons[exclusion] ?? 0) + 1;
+      }
+      if (exclusion) this.logCounts();
+    }
+    if (message && exclusion === null)
       this.offer({
         chatId: message.chatId,
         messageId: message.messageId,
@@ -140,16 +186,7 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
   ): void {
     if (!this.enabled()) return;
     const minute = Math.floor(Date.now() / 60_000) * 60_000;
-    if (!this.windows.has(minute))
-      this.windows.set(minute, {
-        offered: 0,
-        eligible: 0,
-        ineligible: 0,
-        accepted: 0,
-        skipped: 0,
-        unavailable: 0,
-      });
-    const window = this.windows.get(minute)!;
+    const window = this.window(minute);
     this.counts.offered += 1;
     window.offered += 1;
     const origin = readExactDeleteOrigin(input.chatId, input.messageId);
@@ -175,6 +212,8 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
       this.counts.ineligible += 1;
       window.ineligible += 1;
       this.ineligibleReasons[prepared.reason] = (this.ineligibleReasons[prepared.reason] ?? 0) + 1;
+      window.ineligibleReasons[prepared.reason] =
+        (window.ineligibleReasons[prepared.reason] ?? 0) + 1;
       this.logCounts();
       return;
     }
@@ -182,6 +221,7 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
     this.counts.eligible += 1;
     window.eligible += 1;
     const trace = {
+      ...this.observationIdentity(),
       traceId: offer.source.nonce,
       intakeWindowStartAt: new Date(minute).toISOString(),
     };
@@ -189,6 +229,7 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
       this.counts.skipped += 1;
       window.skipped += 1;
       this.skipReasons.producer_busy = (this.skipReasons.producer_busy ?? 0) + 1;
+      window.skipReasons.producer_busy = (window.skipReasons.producer_busy ?? 0) + 1;
       this.logger.log(
         { stage: 'commercial-ai-offer', ...trace, outcome: 'producer_busy' },
         'Commercial AI admission',
@@ -203,7 +244,10 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
         const accepted = outcome === 'accepted';
         this.counts[accepted ? 'accepted' : 'skipped'] += 1;
         window[accepted ? 'accepted' : 'skipped'] += 1;
-        if (!accepted) this.skipReasons[outcome] = (this.skipReasons[outcome] ?? 0) + 1;
+        if (!accepted) {
+          this.skipReasons[outcome] = (this.skipReasons[outcome] ?? 0) + 1;
+          window.skipReasons[outcome] = (window.skipReasons[outcome] ?? 0) + 1;
+        }
         this.logger.log(
           {
             stage: 'commercial-ai-offer',
@@ -233,6 +277,22 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
     return this.enabled() && (await (await this.mailbox()).hasProof(source));
   }
 
+  private window(minute: number): ReturnType<typeof admissionWindow> {
+    let window = this.windows.get(minute);
+    if (!window) {
+      window = admissionWindow();
+      this.windows.set(minute, window);
+    }
+    return window;
+  }
+
+  private observationIdentity() {
+    return {
+      observationProcessId: this.observationProcessId,
+      observationStartedAt: new Date(this.observationStartedAtMs).toISOString(),
+    };
+  }
+
   private logCounts() {
     if (Date.now() - this.lastLog < 30_000) return;
     this.lastLog = Date.now();
@@ -240,6 +300,7 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
       {
         stage: 'commercial-ai-admission',
         schemaVersion: 3,
+        ...this.observationIdentity(),
         ...this.counts,
         inFlight:
           this.counts.eligible -
@@ -248,6 +309,10 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
           this.counts.unavailable,
         ineligibleReasons: { ...this.ineligibleReasons },
         skipReasons: { ...this.skipReasons },
+        evaluation: {
+          ...this.evaluation,
+          exclusionReasons: { ...this.evaluation.exclusionReasons },
+        },
       },
       'Commercial AI admission totals',
     );

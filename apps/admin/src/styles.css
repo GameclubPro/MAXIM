@@ -1381,6 +1381,78 @@ button:disabled {
   background: #eef1f5;
 }
 
+.commercial-ai-snapshot {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.commercial-ai-state {
+  padding: 14px 16px;
+  border: 1px solid #d0d5dd;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.commercial-ai-state--fresh {
+  border-color: #a9d8ca;
+  background: #edf8f4;
+}
+
+.commercial-ai-state--warning {
+  border-color: #e4c887;
+  background: #fff8e8;
+}
+
+.commercial-ai-state p,
+.commercial-ai-admission p {
+  margin: 0.35rem 0 0;
+}
+
+.commercial-ai-overview,
+.commercial-ai-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.commercial-ai-overview > div,
+.commercial-ai-metrics > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.commercial-ai-overview dt,
+.commercial-ai-metrics dt {
+  color: #475467;
+  font-size: 0.875rem;
+}
+
+.commercial-ai-overview dd,
+.commercial-ai-metrics dd {
+  margin: 0.4rem 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.commercial-ai-metrics dd {
+  font-size: 1.75rem;
+}
+
+.commercial-ai-snapshot h3 {
+  margin: 0;
+}
+
+.commercial-ai-snapshot summary {
+  padding: 0.65rem 0;
+  cursor: pointer;
+}
+
 .retention-desk {
   min-height: 0;
   display: flex;

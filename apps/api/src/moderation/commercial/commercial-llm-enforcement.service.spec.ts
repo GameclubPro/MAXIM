@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { MaxUpdate } from '@maxim/contracts';
 import { CommercialLlmEnforcementService } from './commercial-llm-enforcement.service';
 import {
   CommercialLlmEnforcementMailbox,
@@ -169,12 +170,154 @@ describe('commercial AI eligibility accounting', () => {
       skipped: 1,
       unavailable: 0,
       inFlight: 0,
+      skipReasons: { buffer_full: 1 },
+      ineligibleReasons: {},
+      observationProcessId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+      observationStartedAt: '2026-10-27T12:00:59.000Z',
+      selectionBasis: 'offers_or_evaluate_calls',
+      evaluation: {
+        scope: 'evaluate_calls_while_enforcement_enabled',
+        evaluated: 0,
+        forwardedToOffer: 0,
+        excluded: 0,
+        exclusionReasons: {},
+      },
     });
     jest.advanceTimersByTime(60_000);
     expect(windows()).toHaveLength(1);
     expect(JSON.stringify(logs.mock.calls)).not.toContain(source.text);
     service.onModuleDestroy();
     redis.disconnect();
+  });
+  it('accounts for evaluate exclusions without changing rule routing or the offer denominator', () => {
+    const now = Date.parse('2026-10-27T12:00:15.000Z');
+    jest.useFakeTimers({ now });
+    const logs = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const service = new CommercialLlmEnforcementService(
+      new ConfigService({ COMMERCIAL_LLM_ENFORCEMENT_ENABLED: true }),
+    );
+    service.onModuleInit();
+    const source = input(now);
+    const update: MaxUpdate = {
+      updateId: 'private-update',
+      botId: 'private-bot',
+      type: 'message_created',
+      eventTimestampSource: 'payload',
+      message: {
+        chatId: 'private-chat',
+        messageId: 'private-message',
+        senderId: 'private-user',
+        text: source.text,
+        createdAt: source.eventAt,
+      },
+    };
+    const commercial = { ruleCode: 'COMMERCIAL_AD', score: 1, reason: 'commercial' };
+    const other = { ruleCode: 'LINK_BLOCKED', score: 1, reason: 'link' };
+    const submit = jest.spyOn(service, 'offer');
+    const connect = jest.spyOn(service, 'mailbox');
+
+    expect(
+      service.evaluate([commercial], { ...update, message: undefined }, settings, true),
+    ).toEqual([]);
+    expect(
+      service.evaluate([], { ...update, eventTimestampSource: 'ingress' }, settings, true),
+    ).toEqual([]);
+    expect(service.evaluate([commercial], update, settings, true)).toEqual([]);
+    expect(service.evaluate([commercial, other], update, settings, false)).toEqual([other]);
+    expect(
+      service.evaluate([], update, { ...settings, commercialAdsFilterEnabled: false }, false),
+    ).toEqual([]);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(connect).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(60_000);
+    const windows = logs.mock.calls.filter(
+      ([value]) => typeof value === 'object' && value.stage === 'commercial-ai-admission-window',
+    );
+    expect(windows).toHaveLength(1);
+    expect(windows[0]?.[0]).toMatchObject({
+      offered: 1,
+      ineligible: 1,
+      eligible: 0,
+      ineligibleReasons: { filter_disabled: 1 },
+      skipReasons: {},
+      evaluation: {
+        scope: 'evaluate_calls_while_enforcement_enabled',
+        evaluated: 5,
+        forwardedToOffer: 1,
+        excluded: 4,
+        exclusionReasons: {
+          missing_message: 1,
+          untrusted_event_time: 1,
+          protected_author: 1,
+          other_rule: 1,
+        },
+      },
+      fleetCoverage: 'not_established',
+      intakeBoundaryObserved: false,
+    });
+    const output = JSON.stringify(logs.mock.calls);
+    for (const privateValue of ['private-chat', 'private-message', 'private-user', source.text])
+      expect(output).not.toContain(privateValue);
+    service.onModuleDestroy();
+  });
+
+  it('emits a real evaluation-only window once and never fabricates quiet traffic', () => {
+    const now = Date.parse('2026-10-27T12:00:00.000Z');
+    jest.useFakeTimers({ now });
+    const logs = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const service = new CommercialLlmEnforcementService(
+      new ConfigService({ COMMERCIAL_LLM_ENFORCEMENT_ENABLED: true }),
+    );
+    service.onModuleInit();
+    service.evaluate([], { updateId: 'private-update', type: 'message_created' }, settings, false);
+    jest.advanceTimersByTime(180_000);
+    const windows = logs.mock.calls.filter(
+      ([value]) => typeof value === 'object' && value.stage === 'commercial-ai-admission-window',
+    );
+    expect(windows).toHaveLength(1);
+    expect(windows[0]?.[0]).toMatchObject({
+      selectionBasis: 'offers_or_evaluate_calls',
+      offered: 0,
+      accepted: 0,
+      eligible: 0,
+      evaluation: { evaluated: 1, excluded: 1, exclusionReasons: { missing_message: 1 } },
+    });
+    const cumulative = logs.mock.calls.find(
+      ([value]) => typeof value === 'object' && value.stage === 'commercial-ai-admission',
+    )?.[0];
+    expect(cumulative).toMatchObject({
+      observationProcessId: windows[0]?.[0].observationProcessId,
+      observationStartedAt: '2026-10-27T12:00:00.000Z',
+    });
+    service.onModuleDestroy();
+  });
+
+  it('keeps separate generations and leaves disabled enforcement silent', () => {
+    jest.useFakeTimers({ now: new Date('2026-10-27T12:00:00.000Z') });
+    const logs = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const disabled = new CommercialLlmEnforcementService(
+      new ConfigService({ COMMERCIAL_LLM_ENFORCEMENT_ENABLED: false }),
+    );
+    disabled.onModuleInit();
+    const commercial = { ruleCode: 'COMMERCIAL_AD', score: 1, reason: 'commercial' };
+    const update: MaxUpdate = { updateId: 'private-update', type: 'message_created' };
+    expect(disabled.evaluate([commercial], update, settings, false)).toEqual([commercial]);
+    jest.advanceTimersByTime(60_000);
+    expect(logs).not.toHaveBeenCalled();
+    disabled.onModuleDestroy();
+
+    const services = [0, 1].map(
+      () =>
+        new CommercialLlmEnforcementService(
+          new ConfigService({ COMMERCIAL_LLM_ENFORCEMENT_ENABLED: true }),
+        ),
+    );
+    for (const service of services) service.evaluate([], update, settings, false);
+    const identities = logs.mock.calls.map(([value]) => value.observationProcessId);
+    expect(identities).toHaveLength(2);
+    expect(new Set(identities).size).toBe(2);
+    services.forEach((service) => service.onModuleDestroy());
   });
   it('reports ineligibility without conflating it with an AI decision or capacity failure', () => {
     const now = Date.now(),

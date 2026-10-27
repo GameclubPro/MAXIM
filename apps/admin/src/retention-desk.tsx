@@ -1,6 +1,7 @@
 import type { SafetyDeskRetentionRuntimeItem } from '@maxim/contracts/safety-desk';
 import { useRetentionDesk, type RetentionDeskProps } from './retention-desk-state';
 import { buildRetentionRetryRequest, formatDateTime } from './safety-desk-model';
+import { retentionDiagnosticLabels } from './retention-diagnostics';
 
 const statusLabels: Record<SafetyDeskRetentionRuntimeItem['status'], string> = {
   off: 'Выключено',
@@ -105,33 +106,9 @@ export function RetentionDesk(props: RetentionDeskProps) {
                               >
                                 {statusLabels[item.status]}
                               </span>
-                              {item.hasTerminalReview && <small>Нужна проверка</small>}
-                              {item.hasUnresolvedReceipt && (
-                                <small>Проверяется результат MAX</small>
-                              )}
-                              {item.connectionStatus && item.connectionStatus !== 'connected' && (
-                                <small>
-                                  {item.connectionStatus === 'missing'
-                                    ? '«Ластик» не подключён'
-                                    : item.connectionStatus === 'no_access'
-                                      ? '«Ластику» нужны права'
-                                      : 'Подключение проверяется'}
-                                </small>
-                              )}
-                              {item.historyStatus && (
-                                <small>
-                                  История:{' '}
-                                  {
-                                    {
-                                      pending: 'ожидает',
-                                      running: 'обход',
-                                      complete: 'обход завершён',
-                                      blocked: 'часть истории отложена',
-                                      off: 'выключена',
-                                    }[item.historyStatus]
-                                  }
-                                </small>
-                              )}
+                              {retentionDiagnosticLabels(item).map((label) => (
+                                <small key={label}>{label}</small>
+                              ))}
                             </td>
                             <td>
                               {item.pendingCount}

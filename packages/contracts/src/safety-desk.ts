@@ -1,5 +1,9 @@
 import { z } from 'zod';
 export {
+  safetyDeskCommercialAiResponseSchema,
+  type SafetyDeskCommercialAiResponse,
+} from './safety-desk-commercial-ai.js';
+export {
   safetyDeskDeleteCohortResponseSchema,
   safetyDeskDeleteCohortRowSchema,
   safetyDeskDeleteCohortStatusSchema,
@@ -618,6 +622,31 @@ export type SafetyDeskRetryDeleteIntentRequest = z.infer<
   typeof safetyDeskRetryDeleteIntentRequestSchema
 >;
 
+export const safetyDeskRetentionDiagnosticsSchema = z.object({
+  // FLAG: Runtime errors may contain upstream text; only known reasons cross the owner API.
+  lastError: z
+    .enum([
+      'bot_removed',
+      'eraser_rights_missing',
+      'membership_unknown',
+      'queue_unavailable',
+      'worker_error',
+      'transport_unknown',
+      'malformed_response',
+      'pin_unknown',
+      'history_unknown',
+      'history_boundary_unknown',
+      'history_duplicate',
+      'delete_unconfirmed',
+      'unknown',
+    ])
+    .nullable()
+    .catch('unknown'),
+  historyBoundaryBlocked: z.boolean(),
+  awaitingCurrentProtection: z.boolean(),
+  awaitingHistoricalProtection: z.boolean(),
+});
+
 export const safetyDeskRetentionRuntimeItemSchema = z.object({
   chatId: z.string().min(1),
   chatTitle: z.string(),
@@ -636,6 +665,7 @@ export const safetyDeskRetentionRuntimeItemSchema = z.object({
   connectionStatus: z.enum(['connected', 'missing', 'no_access', 'unknown']).optional(),
   historyStatus: z.enum(['pending', 'running', 'complete', 'blocked', 'off']).optional(),
   historyScannedCount: z.number().int().nonnegative().optional(),
+  diagnostics: safetyDeskRetentionDiagnosticsSchema.optional(),
   captureAfter: z.string().datetime().nullable().optional(),
   pausedAt: z.string().datetime().nullable().optional(),
   updatedAt: z.string().datetime().optional(),

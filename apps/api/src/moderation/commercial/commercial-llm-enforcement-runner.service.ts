@@ -22,6 +22,8 @@ import { CommercialLlmSecondaryScheduler } from './commercial-llm-secondary-sche
 export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(CommercialLlmEnforcementRunnerService.name);
   private readonly worker = randomUUID();
+  private readonly observationProcessId = randomUUID();
+  private readonly observationStartedAt = new Date().toISOString();
   private readonly controller = new AbortController();
   private redis: Redis | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -32,6 +34,9 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
   private lastStatusAt = 0;
   private lastFailureAt = 0;
   private readonly outcomes: Record<string, number> = {};
+  private availabilityState: 'unknown' | 'ready' | 'governor_paused' | 'headroom_paused' =
+    'unknown';
+  private availabilityObservedAt: string | null = null;
   constructor(
     private readonly config: ConfigService,
     private readonly admission: CommercialLlmEnforcementService,
@@ -62,7 +67,11 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
     if (Date.now() - this.lastFailureAt < 10_000) return;
     this.lastFailureAt = Date.now();
     this.logger.warn(
-      { stage: 'commercial-ai-worker', outcome: 'dependency_unavailable' },
+      {
+        stage: 'commercial-ai-worker',
+        ...this.observationIdentity(),
+        outcome: 'dependency_unavailable',
+      },
       'Commercial AI poll unavailable',
     );
   }
@@ -85,7 +94,13 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       component: 'commercial-llm-shadow',
       sourceTag: 'commercial-llm-shadow',
     });
-    return decision.action === 'run' && (await commercialLlmHostHasHeadroom());
+    const headroom = decision.action === 'run' && (await commercialLlmHostHasHeadroom());
+    // FLAG: Observe the existing gate only. This is its last completed check, not model
+    // readiness or authority to start another request; the status retains that observation clock.
+    this.availabilityState =
+      decision.action !== 'run' ? 'governor_paused' : headroom ? 'ready' : 'headroom_paused';
+    this.availabilityObservedAt = new Date().toISOString();
+    return headroom;
   }
 
   private async writeStatus(outcome = 'idle'): Promise<void> {
@@ -95,11 +110,14 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
     const status = {
       stage: 'commercial-ai',
       schemaVersion: 2,
+      ...this.observationIdentity(),
       mode: 'ENFORCE',
       heartbeatAt: new Date().toISOString(),
       lastSuccessAt: this.lastSuccessAt,
       outcome: this.active.size > 0 ? 'active' : outcome,
       active: this.active.size,
+      availabilityState: this.availabilityState,
+      availabilityObservedAt: this.availabilityObservedAt,
       outcomeBasis: 'process_cumulative',
       outcomes: { ...this.outcomes },
       pendingDiscardBasis: 'redis_namespace_cumulative',
@@ -110,6 +128,13 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       { ...status, stage: 'commercial-ai-cumulative' },
       'Commercial AI cumulative results',
     );
+  }
+
+  private observationIdentity() {
+    return {
+      observationProcessId: this.observationProcessId,
+      observationStartedAt: this.observationStartedAt,
+    };
   }
 
   private async poll(): Promise<void> {
@@ -127,7 +152,12 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
         client,
         (outcome, waitMs) =>
           this.logger.log(
-            { stage: 'commercial-ai-secondary', outcome, waitMs },
+            {
+              stage: 'commercial-ai-secondary',
+              ...this.observationIdentity(),
+              outcome,
+              waitMs,
+            },
             'Commercial AI confirmation admission',
           ),
       );
@@ -146,7 +176,11 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
     const processor = new CommercialLlmEnforcementProcessor(
       mailbox,
       ({ raw, request, deadlineAtMs }) => {
-        const trace = { traceId: request.source.nonce, admittedAtMs: request.submittedAtMs };
+        const trace = {
+          ...this.observationIdentity(),
+          traceId: request.source.nonce,
+          admittedAtMs: request.submittedAtMs,
+        };
         const primary = new CommercialLlmWorkstationMailbox(redis);
         // FLAG: Both confirmation paths reserve the chat in Redis before server admission.
         // Releasing this claim never releases the exact active source or its DELETE proof.
@@ -217,6 +251,7 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
         this.logger.log(
           {
             stage: 'commercial-ai',
+            ...this.observationIdentity(),
             mode: 'ENFORCE',
             heartbeatAt: new Date().toISOString(),
             lastSuccessAt: this.lastSuccessAt,
