@@ -53,7 +53,7 @@ const lastikConnectionRecovery =
 const lastikSettingsConflict =
   /настройки\s+(?:уже\s+)?изменились|конфликт.{0,20}(?:настро|сохран)/iu;
 const retentionHistoryPattern =
-  /истори|переписк|(?:до|раньше).{0,25}(?:добав|подкл)|стар\p{L}*.{0,20}сообщ/iu;
+  /истори|переписк|(?:до|раньше).{0,25}(?:добав|подкл|включ)|стар\p{L}*.{0,20}сообщ/iu;
 const negatedAt = (text, index) =>
   /(?<![\p{L}])не\s+(?:(?:нужно|надо|следует|хочу|хотим|хотел[аи]?|хотели|собираюсь|собираемся|буду|будем|планирую|планируем)\s+)?(?:(?:вообще|полностью|больше)\s+)?$/iu.test(
     text.slice(0, index),
@@ -468,26 +468,31 @@ function atomicLastikWaiting(ctx, state) {
     );
 }
 
-function reviewedTaskCovered(text, topic, generic = /(?!)$/u) {
+function reviewedTaskCovered(text, topic, generic = /(?!)$/u, allowedInfinitives = null) {
   // FLAG: Recognized facts alone cannot prove that every requested task is covered.
   // Split independent questions, including unknown topics, before allowing a reviewed reply.
   return text
     .split(
-      /(?<=[.!?;])\s*|\n|(?<![\p{L}])(?:а|и)\s+(?=(?:(?:еще|также|заодно)\s+)?(?:как|где|почему|что|сколько|какие|можно|помен|включ|выключ|отключ|подключ|настро|добав|убра|объясни|подскажи|расскажи|покажи|поясни))|(?<![\p{L}])(?:а|и)\s+(?:еще|также|заодно)\s+/u,
+      /(?<=[.!?;])\s*|\n|(?<![\p{L}])(?:а|и)\s+(?=(?:(?:еще|также|заодно)\s+)?(?:как|где|почему|что|сколько|какие|можно|помен|включ|выключ|отключ|подключ|настро|добав|убра|объясни|подскажи|расскажи|покажи|поясни|\p{L}{2,}(?:ть|ти|чь)(?:ся)?(?![\p{L}])))|(?<![\p{L}])(?:а|и)\s+(?:еще|также|заодно)\s+/u,
     )
     .map((part) => part.trim())
     .filter(Boolean)
     .every(
       (part) =>
-        !(
+        (!allowedInfinitives ||
+          [...part.matchAll(/(?<![\p{L}])\p{L}{2,}(?:ть|ти|чь)(?:ся)?(?![\p{L}])/gu)].every(
+            (match) => allowedInfinitives.test(match[0]),
+          )) &&
+        (!(
           help.test(part) ||
           actionRequest.test(part) ||
           /^(?:еще|также|заодно|помен|включ|выключ|отключ|подключ|настро|добав|убра|замен|смен)/iu.test(
             part,
-          )
+          ) ||
+          /^\p{L}{2,}(?:ть|ти|чь)(?:ся)?(?![\p{L}])/u.test(part)
         ) ||
-        topic.test(part) ||
-        generic.test(part),
+          topic.test(part) ||
+          generic.test(part)),
     );
 }
 
@@ -547,17 +552,22 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
   const publisherDeliveryOnly =
     state.publisherRequest &&
     primaryIds[0] === 'publisher-delivery-status' &&
-    !state.mixedTopics &&
+    !/(?<![\p{L}])подключ(?:ить|ать|и(?:те)?|ай(?:те)?)(?![\p{L}])|(?:для|порядок|шаг\p{L}*|инструкц\p{L}*)\s+подключени|(?:как|где|хочу|нужно|надо|проверь).{0,30}(?:подключение|добавить\s+бота)/iu.test(
+      ctx.current,
+    ) &&
     only([
       'publisher-delivery-status',
       'publisher-post-targets',
       'publisher-post-create',
       'publik',
+      'max-add-existing-bot-group',
+      'max-add-bot-channel',
     ]) &&
     reviewedTaskCovered(
       ctx.current,
       /нужно\s+проверить|результат|достав|повтор\p{L}*.{0,25}(?:отправ|публиков)|(?:отправ|публиков).{0,25}(?:еще\s+раз|повтор)|пост.{0,35}(?:вижу|не\s+появ)|провер\p{L}*.{0,20}(?:публикац|отправ|получател)/iu,
       /^(?:а\s+)?(?:можно\s+)?(?:повторить|как\s+проверить)[?!.\s]*$/iu,
+      /^(?:проверить|перепроверить|убедиться|сверить|сопоставить|повторить|отправить|переотправить|жать|нажать|посмотреть|открыть|понять|узнать|выяснить|описать|передать|сообщить|написать|обратиться)$/u,
     );
   const aiObservationHandoffOnly = Boolean(
     state.commercialAi &&
@@ -606,8 +616,11 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
     primaryIds.includes('message-retention') &&
     primaryIds.includes('lastik-exclusions') &&
     only(['message-retention', 'lastik-exclusions', 'lastik-connect', 'settings']) &&
-    !/канал|подключить|переподкл|настро|сохран|помен|измен|выбрать.{0,20}срок|включ|выключ|останов|почему|ошиб|ожидан|прогресс|сколько.{0,15}(?:врем|ждать)/iu.test(
-      ctx.current,
+    !/канал|подключить|переподкл|настро|сохран|помен|измен|выбрать.{0,20}срок|включ|запустить|запускать|активир|(?:как|хочу|нужно|надо).{0,20}запуск|выключ|останов|почему|ошиб|ожидан|прогресс|сколько.{0,15}(?:врем|ждать)/iu.test(
+      ctx.current.replace(
+        /(?:до|раньше)\s+(?:(?:его|их)\s+|того\s+как\s+(?:(?:его|их)\s+)?)?включ\p{L}*/giu,
+        '',
+      ),
     ) &&
     reviewedTaskCovered(
       ctx.current,
@@ -1027,7 +1040,10 @@ function semanticFacts(text, state) {
     add('message-retention', 110);
     const connecting =
       state.lastikWaitingOnly ||
-      test(/подкл[юу]ч|добав|назнач|начать|запуст|включи(?:ть|те)?(?![\p{L}])/iu);
+      test(
+        /подкл[юу]ч|добав|назнач|начать|запуст|активир|включ(?:ить|и(?:те)?|ай(?:те)?|ать|ают|аем|ает)(?![\p{L}])/iu,
+      ) ||
+      test(/(?:как|для|порядок|шаги).{0,25}включени/iu);
     if (connecting || test(/канал|какому.{0,15}бот/iu)) add('lastik-connect', 135);
     if (
       !state.lastikWaitingOnly &&
@@ -1043,13 +1059,11 @@ function semanticFacts(text, state) {
       )
     )
       add('lastik-progress', 145);
-    if (
-      retentionHistoryPattern.test(state.current) ||
-      test(
-        /исключ|закреп|(?<![\p{L}])правил|розыгрыш|защищ|сообщен.{0,20}(?:админ|бот)|мои.{0,15}сообщен/iu,
-      )
-    )
-      add('lastik-exclusions', 125);
+    const exclusionQuestion = test(
+      /исключ|закреп|(?<![\p{L}])правил|розыгрыш|защищ|сообщен.{0,20}(?:админ|бот)|мои.{0,15}сообщен/iu,
+    );
+    if (retentionHistoryPattern.test(state.current) || exclusionQuestion)
+      add('lastik-exclusions', exclusionQuestion ? 125 : 100);
     if (
       test(/сохранен|не удалось сохранить|ошибк|неизвестн.{0,15}результат|повтор.{0,15}нажа/iu) ||
       test(lastikSettingsConflict)

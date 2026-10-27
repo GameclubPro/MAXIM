@@ -17,6 +17,45 @@ function needsReply(text, history = []) {
   return route;
 }
 
+test('incidental connection reports do not hide additional delivery and onboarding tasks', () => {
+  const base =
+    'Я админ. У Публика у получателя «Нужно проверить». Проверку подключения уже сделал. Можно повторить отправку?';
+  assert.equal(needsReply(base).publisherDeliveryOnly, true);
+  for (const suffix of [
+    ' Как подключить Публика к новому каналу?',
+    ' Как проверить подключение второго получателя?',
+    ' Как включить ночной режим?',
+    ' Как скачать отчёт о публикациях?',
+    ' И объясните, как поменять аватар?',
+    ' Куда подключить Публика для нового канала?',
+    ' Подключите Публика к новому каналу.',
+    ' Что сделать для подключения нового канала?',
+    ' Можно повторить отправку и сменить аватар канала?',
+    ' Как проверить отправку и выгрузить список администраторов?',
+    ' Как проверить отправку и выгрузить результат?',
+  ])
+    assert.equal(needsReply(base + suffix).publisherDeliveryOnly, false, suffix);
+});
+
+test('Lastik setup verb forms retain connection facts without the archive-only shortcut', () => {
+  for (const text of [
+    'Как включать Ластика для удаления старых сообщений?',
+    'Как включают Ластика для очистки истории?',
+    'Включаем Ластик для удаления старых сообщений — как это сделать?',
+    'Как запустить Ластика для удаления старых сообщений?',
+    'Как происходит включение Ластика для очистки истории?',
+    'Как активировать Ластик для удаления старых сообщений?',
+  ]) {
+    assert.equal(needsReply(text).lastikHistoryOnly, false, text);
+    assert.ok(ids(text).includes('lastik-connect'), text);
+  }
+  for (const text of [
+    'Ластик удаляет сообщения, которые написали до его включения?',
+    'Ластик удалит сообщения до того как его включили?',
+  ])
+    assert.equal(needsReply(text).lastikHistoryOnly, true, text);
+});
+
 test('Publisher-only onboarding excludes moderator controls and preserves actual moderator tasks', () => {
   const text =
     'Я администратор канала. В Майоре канал давно есть, а у Публика список получателей пуст. Может, достаточно выбрать Публика в «Ботах канала», чтобы он увидел канал? Что именно надо подключить?';

@@ -77,7 +77,11 @@ inference. Both activation checks and the request-based waiting window remain in
 and reminders as well as the reviewed Lastik replies.
 Forwarding questions for a moderator retain the connection prerequisites. An offered community
 link is not a link-filter task; a reported ready connection is not an onboarding request.
-Named reserve comparisons retain catalog roles and the selection procedure. An incident handoff
+Named reserve comparisons retain catalog roles and the selection procedure. Moderator selection
+identifies «Сейчас выбран» and requires «Сменить бота» before waiting for «Бот выбран»; choosing
+a radio item alone does not submit. Archive scope preserves the selected age from creation time.
+An incidental completed connection check does not replace the existing publication's inspection
+and unresolved-result handoff. An incident handoff
 must also answer an explicit AI observation-mode question, including when its subject is in history.
 An unknown delivery label keeps verification of the existing publication ahead of connection
 facts. Link-mode reminders preserve the reported mode and distinguish the desired result from

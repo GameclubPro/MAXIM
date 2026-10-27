@@ -469,6 +469,8 @@ export async function answerSupport({
         'publisher-post-targets',
         'publisher-post-create',
         'publik',
+        'max-add-existing-bot-group',
+        'max-add-bot-channel',
       ],
     },
     {

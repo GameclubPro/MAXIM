@@ -16,6 +16,50 @@ import {
 } from './support-llm-client.mjs';
 import { supportModelArgs, SUPPORT_MODEL } from './support-llm-profile.mjs';
 
+test('moderator selection includes the actual submit action and current-bot marker', async () => {
+  const result = await answerSupport({
+    text: 'Я админ чата. Сейчас там Максимов, хочу резервного Рэкса 2. Переключи сам и отпишись, когда будет готово.',
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.match(result.text, /«Сменить бота»/u);
+  assert.match(result.text, /«Сейчас выбран»/u);
+  assert.match(result.text, /«Бот выбран»/u);
+});
+
+test('history before retention activation preserves age and never adds setup actions', async () => {
+  const result = await answerSupport({
+    text: 'Ластик удаляет сообщения, которые написали до его включения?',
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.match(result.text, /старше выбранного срока/u);
+  assert.match(result.text, /от создания сообщения/u);
+  assert.doesNotMatch(result.text, /«Подключить и включить»|«Сохранить»/u);
+});
+
+test('reported connection verification keeps the existing publication inspection procedure', async () => {
+  const result = await answerSupport({
+    text: 'У первого успех, у второго «Нужно проверить». Проверку подключения второго уже сделал — с ней всё нормально. Нажать повторную отправку, раз ошибки подключения нет, или как сначала убедиться, вышел ли тот пост?',
+    history: [
+      {
+        role: 'user',
+        text: 'Я администратор, отправлял из Публика один пост в два канала и не понял итог.',
+      },
+      { role: 'assistant', text: 'Какие результаты показаны у каждого из двух получателей?' },
+    ],
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.match(result.text, /«Пост(?:ы|ах)»/u);
+  for (const label of ['Получатели', 'Отправки']) assert.ok(result.text.includes(`«${label}»`));
+  assert.match(result.text, /оператор/iu);
+  assert.match(result.text, /дубл/iu);
+});
+
 test('Publisher onboarding isolates its own procedure from moderator selection', async () => {
   const result = await answerSupport({
     text: 'Я администратор канала. В Майоре канал давно есть, а у Публика список получателей пуст. Может, достаточно выбрать Публика в «Ботах канала», чтобы он увидел канал? Что именно надо подключить?',
@@ -214,7 +258,7 @@ test('profile and reserve answers use the requested catalog identities and actua
   );
   assert.equal(selected.responseRoute, 'reviewed-faq');
   assert.deepEqual(selected.sourceIds, ['bots', 'choose-moderator', 'operator']);
-  assert.match(selected.text, /«Боты чата».*выберите доступного бота/u);
+  assert.match(selected.text, /«Боты чата».*выберите доступного бота/su);
   assert.match(selected.text, /«Бот выбран»/u);
   assert.doesNotMatch(selected.text, /Публик|«Бот выбран» в чате/u);
   const action = await ask(
