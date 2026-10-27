@@ -392,6 +392,59 @@ export async function answerSupport({
       responseRoute: 'room-policy',
     };
   let selected = selectKnowledge(text, history);
+  // FLAG: Publisher onboarding and archive scope are separate from moderator controls
+  // and first-time retention setup. Use only fully covered, router-confirmed explanations.
+  if (
+    request.publisherConnectOnly &&
+    selected.every((entry) =>
+      [
+        'publik',
+        'publisher-post-targets',
+        'choose-moderator',
+        'max-add-bot-channel',
+        'max-add-existing-bot-group',
+        'support-room',
+        'operator',
+      ].includes(entry.id),
+    )
+  )
+    return {
+      ...validateSupportAnswer(
+        {
+          action: 'reply',
+          sourceIds: ['publik'],
+          text: 'Публик подключается отдельно. Наличие сообщества у Майора и выбор модератора в «Ботах чата» или «Ботах канала» не подключают Публика.\n\nЕсли у вас есть права администратора сообщества:\n\n1. Добавьте самого Публика администратором с доступом ко всем сообщениям.\n2. Перешлите сообщение или пост из сообщества в личный диалог Публика.\n\nСписок сообществ Публика может отличаться от списка Майора. Карточка получателей выбирает уже доступные сообщества и не подключает новые.',
+        },
+        selected,
+      ),
+      durationMs: 0,
+      responseRoute: 'reviewed-faq',
+    };
+  if (
+    request.lastikHistoryOnly &&
+    selected.every((entry) =>
+      [
+        'message-retention',
+        'lastik-exclusions',
+        'lastik-connect',
+        'settings',
+        'support-room',
+        'operator',
+      ].includes(entry.id),
+    )
+  )
+    return {
+      ...validateSupportAnswer(
+        {
+          action: 'reply',
+          sourceIds: ['message-retention', 'lastik-exclusions'],
+          text: 'Ластик удаляет сообщения старше выбранного срока из всей доступной истории, включая сообщения до добавления бота. Большая история очищается постепенно.\n\nЭто относится и к сообщениям администраторов, если они не защищены исключениями. Все закреплённые сообщения сохраняются. Также защищены правила, объявления розыгрышей и их итоги из наших модулей. Это не защита любого текста с такими названиями.\n\nСнимать закрепы для запуска очистки не нужно. Срок считается от создания сообщения. Редактирование его не продлевает.',
+        },
+        selected,
+      ),
+      durationMs: 0,
+      responseRoute: 'reviewed-faq',
+    };
   // FLAG: These reviewed procedures require a router-confirmed atomic intent and an
   // allowlisted fact set. Additional tasks must retain inference and their own facts.
   const procedure = [

@@ -52,6 +52,8 @@ const lastikConnectionRecovery =
   /время ожидания истек|отмен(?:ил[аи]?|или|ено|ен[ао]?)\s+(?:(?:его|это)\s+)?подключ|подключ\p{L}*\s+(?:было\s+)?отмен/iu;
 const lastikSettingsConflict =
   /настройки\s+(?:уже\s+)?изменились|конфликт.{0,20}(?:настро|сохран)/iu;
+const retentionHistoryPattern =
+  /истори|переписк|(?:до|раньше).{0,25}(?:добав|подкл)|стар\p{L}*.{0,20}сообщ/iu;
 const negatedAt = (text, index) =>
   /(?<![\p{L}])не\s+(?:(?:нужно|надо|следует|хочу|хотим|хотел[аи]?|хотели|собираюсь|собираемся|буду|будем|планирую|планируем)\s+)?(?:(?:вообще|полностью|больше)\s+)?$/iu.test(
     text.slice(0, index),
@@ -573,7 +575,52 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
       /(?:что|какие|как|куда).{0,45}(?:оператор|разбор|данн|присл|переда|написать|описать)|(?:удал|исчез|пропал|наблюда|тест|без\s+автоматических\s+удалений)|событи.{0,30}(?:нет|не\s+вижу|не\s+открыва|недоступ)/iu,
     ),
   );
-  return { lastikConflictIntent, nightManualOnly, publisherDeliveryOnly, aiObservationHandoffOnly };
+  const publisherConnectOnly =
+    state.publisherRequest &&
+    !state.publisherConnectionReady &&
+    !/(?<![\p{L}])не\s+подкл|подкл\p{L}*\s+не\s+(?:нужно|надо)|отключ|отсоедин/iu.test(
+      ctx.current,
+    ) &&
+    !state.eraserRequest &&
+    !state.botDirectory &&
+    primaryIds.includes('publik') &&
+    only([
+      'publik',
+      'publisher-post-targets',
+      'choose-moderator',
+      'max-add-bot-channel',
+      'max-add-existing-bot-group',
+    ]) &&
+    /подкл|получател.{0,20}(?:пуст|нет)|(?:пуст|нет).{0,20}получател/iu.test(ctx.current) &&
+    !moderatorSwitchRequest(ctx.current) &&
+    !/(?:как|хочу|нужно|надо).{0,25}выбрать.{0,15}модератор/iu.test(ctx.current) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /(?<![\p{L}])подключ(?:ить|ать|и(?:те)?|ай(?:те)?)(?![\p{L}])[^.!?\n]{0,35}(?:публик|чат|канал|групп)|(?:публик|чат|канал|групп)[^.!?\n]{0,35}(?<![\p{L}])подключ(?:ить|ать|и(?:те)?|ай(?:те)?)(?![\p{L}])|(?:спис|получател).{0,20}(?:пуст|нет)|выбрать.{0,25}публик.{0,35}ботах/iu,
+      /^(?:(?:а|и)\s+)?(?:что|кого)\s+(?:(?:именно|надо|нужно)\s+)*подключить[?!.\s]*$/iu,
+    );
+  const lastikHistoryOnly =
+    state.eraserRequest &&
+    !state.publisherRequest &&
+    retentionHistoryPattern.test(ctx.current) &&
+    primaryIds.includes('message-retention') &&
+    primaryIds.includes('lastik-exclusions') &&
+    only(['message-retention', 'lastik-exclusions', 'lastik-connect', 'settings']) &&
+    !/канал|подключить|переподкл|настро|сохран|помен|измен|выбрать.{0,20}срок|включ|выключ|останов|почему|ошиб|ожидан|прогресс|сколько.{0,15}(?:врем|ждать)/iu.test(
+      ctx.current,
+    ) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /(?:удал|стира|сотр|стер|очист|добер|затрон).{0,60}(?:истори|переписк|сообщ)|(?:истори|переписк|сообщ).{0,60}(?:удал|стира|сотр|стер|очист|добер|затрон)|закреп.{0,40}(?:сним|сохра|защит|трог|удал)|(?:сним|трог|удал).{0,35}закреп|исключ.{0,35}(?:кого|какие|сохра|защит)/iu,
+    );
+  return {
+    lastikConflictIntent,
+    nightManualOnly,
+    publisherDeliveryOnly,
+    aiObservationHandoffOnly,
+    publisherConnectOnly,
+    lastikHistoryOnly,
+  };
 }
 
 function atomicLastikSetup(ctx, state) {
@@ -836,8 +883,26 @@ function semanticFacts(text, state) {
     /(?:подкл[юу]ч\p{L}*|добав\p{L}*|постав\p{L}*)\s+(?:(?:еще|также|отдельно)\s+)?(?:публик|майор|рэкс|модератор)|(?:публик|майор|рэкс|модератор)\p{L}*\s+(?:подкл[юу]ч|добав|постав)|ластик(?:а|у|ом|е)?[»"]?\s*(?:,?\s+и|,\s*а\s+также)\s+(?:публик|майор|рэкс|модератор)/iu,
   );
   const connecting = connectionRequested && (!eraserName.test(text) || otherBotConnection);
+  const connectingPublisher = publ || (publisherName.test(text) && otherBotConnection);
   if (connecting) {
-    add('connect', 90);
+    // FLAG: Publisher onboarding has its own UI. Moderator-only controls must not
+    // become its instructions merely because the question mentions an existing Major chat.
+    const moderatorConnection =
+      !connectingPublisher ||
+      moderatorForwardingRequest(state.current) ||
+      [
+        ...state.current.matchAll(
+          /подключ(?:ить|ать|и(?:те)?|ай(?:те)?)(?![\p{L}])[^.!?,;\n]{0,35}(?:майор|модератор|рэкс)|(?:майор|модератор|рэкс)\p{L}*[^.!?,;\n]{0,25}подключ(?:ить|ать|и(?:те)?|ай(?:те)?)(?![\p{L}])/giu,
+        ),
+      ].some(
+        (match) =>
+          !negatedAt(state.current, match.index) &&
+          !negatedAt(state.current, match.index + match[0].search(/подключ/iu)) &&
+          !/^\s+не\s+(?:нужно|надо|хочу|буду)/iu.test(
+            state.current.slice(match.index + match[0].length),
+          ),
+      );
+    if (moderatorConnection) add('connect', 90);
     add(test(/канал/iu) ? 'max-add-bot-channel' : 'max-add-existing-bot-group', 70);
     if (test(/модерац|участник|спам|удал/iu)) add('max-delete-rights', 75);
   }
@@ -858,7 +923,7 @@ function semanticFacts(text, state) {
   );
   if (missingCommunity) add('community-access', 95);
   // FLAG: A recipient picker cannot onboard a community; preserve the separate Publik connection procedure.
-  if (publ && (connecting || missingCommunity)) add('connect', 120);
+  if (connectingPublisher && (connecting || missingCommunity)) add('publik', 120);
   const switchingModerator = moderatorSwitchRequest(state.current);
   if (
     switchingModerator ||
@@ -979,6 +1044,7 @@ function semanticFacts(text, state) {
     )
       add('lastik-progress', 145);
     if (
+      retentionHistoryPattern.test(state.current) ||
       test(
         /исключ|закреп|(?<![\p{L}])правил|розыгрыш|защищ|сообщен.{0,20}(?:админ|бот)|мои.{0,15}сообщен/iu,
       )

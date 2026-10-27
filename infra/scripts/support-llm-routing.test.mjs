@@ -106,7 +106,7 @@ test('moderator switching does not replace profiles, filters or separate bot con
   for (const [text, expected] of [
     ['Дайте имя и ссылку на Рэкса 2.', 'bots'],
     ['Я админ группы с Рэксом. Хочу, чтобы ссылки больше не удалялись.', 'links-policy'],
-    ['Как подключить Публика отдельно к нашему каналу?', 'connect'],
+    ['Как подключить Публика отдельно к нашему каналу?', 'publik'],
     ['Как переключить ИИ-рекламу на текстовые правила в Рэксе 2?', 'commercial-ai-switch-mode'],
   ]) {
     const ids = selectKnowledge(text).map((entry) => entry.id);

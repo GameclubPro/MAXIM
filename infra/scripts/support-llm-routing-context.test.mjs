@@ -17,6 +17,79 @@ function needsReply(text, history = []) {
   return route;
 }
 
+test('Publisher-only onboarding excludes moderator controls and preserves actual moderator tasks', () => {
+  const text =
+    'Я администратор канала. В Майоре канал давно есть, а у Публика список получателей пуст. Может, достаточно выбрать Публика в «Ботах канала», чтобы он увидел канал? Что именно надо подключить?';
+  assert.equal(needsReply(text).publisherConnectOnly, true);
+  assert.ok(ids(text).includes('publik'));
+  assert.ok(!ids(text).includes('connect'));
+  for (const mixed of [
+    'Я админ. Как подключить Публика и подключить Майора к каналу?',
+    'Я админ. Майора надо подключить к каналу и Публика подключить тоже. Как это сделать?',
+    'Я админ. Как подключить Публика и выбрать модератора Рэкса?',
+    'Я админ. Как подключить Публика и создать новый пост?',
+    'Я админ. Публик уже подключён. Как выбрать получателей?',
+    'Я админ. Как подключить Публика и как сменить аватар Публика?',
+    'Я админ. Как подключить Публика и как подключить телевизор?',
+    'Я админ. Публика подключать не нужно. Как отключить Публика?',
+    'Я админ. Как подключить Публика и как поменять название подключённого канала?',
+    'Я админ. Не подключайте Публика, объясните как его отключить?',
+  ])
+    assert.equal(needsReply(mixed).publisherConnectOnly, false, mixed);
+  assert.ok(
+    ids('Я админ. Как подключить Публика и подключить Майора к каналу?').includes('connect'),
+  );
+  assert.ok(
+    ids(
+      'Я админ. Майора надо подключить к каналу и Публика подключить тоже. Как это сделать?',
+    ).includes('connect'),
+  );
+});
+
+test('a completed or declined moderator connection cannot contaminate Publisher onboarding', () => {
+  for (const text of [
+    'Я админ канала. Майор уже подключён, а у Публика получатели пусты. Как подключить Публика?',
+    'Я админ. Майора подключать не нужно, как подключить Публика?',
+    'Я админ. Майора не нужно подключать. Как подключить Публика?',
+  ])
+    assert.ok(!ids(text).includes('connect'), text);
+});
+
+test('retention archive explanation excludes settings, recovery, channel and progress tasks', () => {
+  const text =
+    'У нас Ластик на 48 часов, я администратор чата. Он доберётся до переписки, которая была ещё до его добавления? И мои старые сообщения тоже сотрёт? Закрепы для запуска придётся снимать?';
+  assert.equal(needsReply(text).lastikHistoryOnly, true);
+  for (const fact of ['message-retention', 'lastik-exclusions'])
+    assert.ok(ids(text).includes(fact));
+  for (const suffix of [
+    ' Как настроить срок?',
+    ' Как восстановить удалённое?',
+    ' Как подключить его в канал?',
+    ' Почему прогресс стоит?',
+    ' Сколько ждать очистку?',
+    ' Как скачать историю?',
+    ' Как экспортировать всю переписку?',
+  ])
+    assert.equal(needsReply(text + suffix).lastikHistoryOnly, false, suffix);
+});
+
+for (const [base, flag] of [
+  ['Я админ. Как подключить Публика?', 'publisherConnectOnly'],
+  ['Я админ чата. Ластик сотрёт старые сообщения до добавления?', 'lastikHistoryOnly'],
+]) {
+  test(`bounded explanation preserves unknown second questions: ${flag}`, () => {
+    assert.equal(needsReply(base)[flag], true);
+    for (const suffix of [
+      ' Как сменить аватар?',
+      ' И как поменять аватар?',
+      ' и объясните, как сменить аватар?',
+      ' и подскажите, как сменить аватар?',
+      ' и расскажите, как сменить аватар?',
+    ])
+      assert.equal(needsReply(base + suffix)[flag], false, suffix);
+  });
+}
+
 for (const [text, flag, enabled] of [
   ['Я администратор. Как закрыть чат сейчас', 'nightManualOnly', true],
   [
@@ -373,8 +446,10 @@ test('a reported connected Publik does not become a new onboarding task', () => 
     'Публик уже подключён и готов. Что нажимать для подключения ещё одной группы?',
     'Публик уже подключён и готов. Как добавить ещё один канал?',
     'Публик ещё не подключён и не готов. Как начать?',
-  ])
-    assert.ok(ids(other).includes('connect'), other);
+  ]) {
+    assert.ok(ids(other).includes('publik'), other);
+    assert.ok(!ids(other).includes('connect'), other);
+  }
 });
 
 test('an explicit publisher topic does not inherit an old AI observation test', () => {
@@ -604,13 +679,14 @@ test('reported Publisher readiness cannot replace an unknown delivery question w
   assert.ok(!ids(text, history).includes('connect'));
   const mixed = `${text} И как подключить Публика к третьему каналу?`;
   assert.equal(needsReply(mixed, history).mixedTopics, true);
-  assert.ok(ids(mixed, history).includes('connect'));
+  assert.ok(ids(mixed, history).includes('publik'));
+  assert.ok(!ids(mixed, history).includes('connect'));
   assert.ok(ids(mixed, history).includes('publisher-delivery-status'));
   for (const text of [
     'В карточке подключения Публик не готов. Как исправить?',
     'В карточке подключения Публик не подключен. Что делать?',
   ])
-    assert.equal(needsReply(text).primaryIds[0], 'connect', text);
+    assert.equal(needsReply(text).primaryIds[0], 'publik', text);
 });
 
 test('an offered group link is not a link-filter task for a participant advertisement', () => {
@@ -1150,7 +1226,8 @@ test('missing Publik communities prioritize connection before the recipient pick
     ],
   ]) {
     assert.equal(needsReply(text, history).publisherRequest, true);
-    assert.equal(ids(text, history)[0], 'connect', text);
+    assert.equal(ids(text, history)[0], 'publik', text);
+    assert.ok(!ids(text, history).includes('connect'), text);
     assert.ok(ids(text, history).includes('community-access'), text);
     assert.ok(ids(text, history).includes('publik'), text);
   }
@@ -1266,7 +1343,8 @@ test('Lastik questions and follow-ups retrieve the independent cleanup instructi
     'Как подключить Ластика и Публика?',
     'Как подключить Ластика, а Публика подключить к каналу?',
   ]) {
-    assert.ok(ids(mixed).includes('connect'), mixed);
+    assert.ok(ids(mixed).includes('publik'), mixed);
+    assert.ok(!ids(mixed).includes('connect'), mixed);
     assert.ok(ids(mixed).includes('message-retention'), mixed);
   }
   const unrelated = 'Как переработать пластиковый пакет?';

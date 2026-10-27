@@ -16,6 +16,35 @@ import {
 } from './support-llm-client.mjs';
 import { supportModelArgs, SUPPORT_MODEL } from './support-llm-profile.mjs';
 
+test('Publisher onboarding isolates its own procedure from moderator selection', async () => {
+  const result = await answerSupport({
+    text: 'Я администратор канала. В Майоре канал давно есть, а у Публика список получателей пуст. Может, достаточно выбрать Публика в «Ботах канала», чтобы он увидел канал? Что именно надо подключить?',
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.match(result.text, /Публик подключается отдельно/u);
+  assert.match(result.text, /администратором.*доступом ко всем сообщениям/su);
+  assert.match(result.text, /перешлите.*личный диалог Публика/isu);
+  assert.match(result.text, /выбор модератора.*не подключают Публика/iu);
+  assert.doesNotMatch(result.text, /«Подключить чат или канал»|выберите Публика/iu);
+});
+
+test('retention history explanations preserve protected authors without setup actions', async () => {
+  const result = await answerSupport({
+    text: 'У нас Ластик на 48 часов, я администратор чата. Он доберётся до переписки, которая была ещё до его добавления? И мои старые сообщения тоже сотрёт? Закрепы для запуска придётся снимать?',
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.match(result.text, /до добавления/u);
+  assert.match(result.text, /администратор/u);
+  assert.match(result.text, /закреплённые/u);
+  assert.match(result.text, /снимать закрепы.*не нужно/iu);
+  assert.match(result.text, /постепенно/u);
+  assert.doesNotMatch(result.text, /«Подключить и включить»|«Сохранить»|выберите срок/iu);
+});
+
 for (const scenario of [
   {
     name: 'manual closing preserves the configured schedule and the selected moderator',
@@ -492,7 +521,7 @@ test('reviewed setup and publishing procedures preserve independent tasks in inf
     },
     {
       text: 'Публик уже подключён и готов. Как отправить пост в ещё одной группе, где его пока нет?',
-      facts: ['connect', 'publisher-post-create'],
+      facts: ['publik', 'publisher-post-create'],
     },
     {
       text: 'Как подключить Ластика к каналу?',
@@ -512,7 +541,7 @@ test('reviewed setup and publishing procedures preserve independent tasks in inf
     },
     {
       text: 'Я администратор. Публик пока не подключён. Как опубликовать обычный пост прямо сейчас?',
-      facts: ['connect', 'publisher-post-create'],
+      facts: ['publik', 'publisher-post-create'],
     },
   ];
   for (const item of cases) {
