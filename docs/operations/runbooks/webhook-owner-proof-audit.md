@@ -44,6 +44,61 @@ It caps distinct blockers before reading claims, retains semantic and linked-cla
 and bounds journal bytes before JSON inspection. It reuses the existing grant groups, performs
 no effect-ledger search and never grants replay or settlement authority.
 
+## Held removal metadata
+
+When the oldest RECEIVED receipt is a `message_removed` with a saved preparation
+deferral, inspect its structural hold and seal metadata:
+
+```bash
+./infra/scripts/vps-connect.sh postgres-audit webhook-held-receipt --explain
+./infra/scripts/vps-connect.sh postgres-audit webhook-held-receipt
+```
+
+Synchronize the exact green tooling through `deploy <reviewed-branch> --plan`,
+then review the audit-role provisioning preview before its separate maintenance
+apply. This opt-in mode needs 28 scalar column SELECT grants across legacy
+recoveries, sealed authorities, quiescence certificates, source abandonments and
+backlog receipts. It grants no snapshots or attestation JSON. Existing catalogs
+accept either the entire new group or none; this mode requires the entire group.
+Keep the source SHA, actual API image SHA and observation window separately.
+Tooling synchronization does not roll out the API image or restore availability.
+
+The report selects one oldest RECEIVED through `(status, created_at, id)` before
+inspecting its type. A different event type remains explicit. Original normalized
+payload storage must pass the existing PostgreSQL 16 decoded-size bound before
+JSON extraction. Only bounded normalized chat, message and actor fields guide
+indexed probes; their values never appear in the report. A removal actor does
+not establish the original message's author. Raw source parsing, canonical key
+reconstruction and original source clock validation remain unevaluated.
+
+The legacy message probe first admits at most 16 rows plus one saturation sentinel
+from the indexed chat prefix, then filters that materialized prefix by message.
+This bounds reads even when PostgreSQL chooses another chat-leading index. The
+global-user family independently admits at most 16 matches plus one sentinel.
+Neither probe sorts before its limit. Only a complete chat prefix, complete user
+family and bounded original metadata permit deduplication and the bounded
+owner-first/id ordering used to select a legacy scope. A saturated chat prefix
+makes the exact-message family incomplete even if no sampled row matches the
+message; zero sampled matches never establishes absence in that case. The report
+exposes prefix counts, saturation and completeness separately. Inspect every
+physical scan's index condition in the plain plan; the existence of the intended
+index alone does not prove a bounded lookup. This mode attests ten complete index
+definitions, including both existing chat/message and chat/user access paths.
+The selected certificate and authority use exact unique lookups. Scalar binding
+and seal comparisons distinguish missing, mismatched and matching records; the
+receipt/seal relationship concerns receipt creation time only.
+
+Modern exact-message presence, backlog exact-receipt presence and backlog stored
+semantic-key presence are independent metadata observations. They are not a
+reconstructed `isUpdateHeld` result. Existing disposition pointers remain explicit.
+No claim, effect history, handler or materializer runs. The report retains
+`runtime_classifier_evaluated=false`, `settlement_authorized=false`,
+`replay_authorized=false` and `effect_completeness=unknown`. In particular,
+`legacy_scope_unsealed` is a lossy saved error, not proof that a seal is absent.
+A matching seal cannot authorize settlement or replay of an unsupported lifecycle
+event. Read the plain plan before execution; retain the shared audit lock, exact
+index and privilege attestations, private error handling and existing time limits.
+
 ## Selection and limits
 
 The `canonical_owner` section describes the already selected claim owner's status,

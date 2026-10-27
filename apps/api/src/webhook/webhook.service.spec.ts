@@ -5,6 +5,7 @@ import type { WebhookCanonicalExecutionService } from '../moderation/webhook-can
 import {
   ChatEntityType,
   type Prisma,
+  type WebhookEvent,
   type WebhookExecutionClaim,
   WebhookExecutionClaimStatus,
   WebhookStatus,
@@ -219,6 +220,10 @@ function coherentSemanticClaims(service: object) {
       nextEnqueueAt: null,
       timeoutQuarantineExpiresAt: null,
       executionDeadlineAt: null,
+      legacyDispositionId: null,
+      legacyDispositionReceiptId: null,
+      sourceDispositionId: null,
+      sourceDispositionReceiptId: null,
       createdAt: new Date(),
       ...source,
       ...receiptWrites.get(id),
@@ -366,13 +371,16 @@ function coherentSemanticClaims(service: object) {
       }
       if (sql.includes('WITH authority_ids AS MATERIALIZED')) return [];
       if (sql.includes('SELECT claim.id, claim.webhook_event_id AS "ownerId"')) return [];
-      // Receipt admission uses its own lock before domain membership projection.
+      if (sql.includes('pg_try_advisory_xact_lock')) return [{ locked: true }];
+      // Claim admission rereads the persisted fixture under its receipt lock.
       if (
-        sql.includes('SELECT error_message AS') &&
+        sql.includes('legacy_disposition_id AS "legacyDispositionId"') &&
         sql.includes('FROM webhook_events') &&
         sql.includes('FOR UPDATE')
-      )
-        return [];
+      ) {
+        const receipt = await readReceipt(String(query.values?.[0]));
+        return receipt ? [receipt] : [];
+      }
       if (sql.includes("migration_name = '20261005020000_add_multibot_order_fences'"))
         return [{ finishedAt: new Date(0) }];
       if (
@@ -4788,10 +4796,38 @@ describe('WebhookService', () => {
   it.each(['current', 'incoming'])(
     'retains required owner recovery when the %s live probe is unavailable',
     async (failedProbe) => {
+      const update: MaxUpdate = {
+        updateId: 'owner-retry',
+        botId: 'incoming',
+        type: 'message_created',
+        message: {
+          chatId: '-owner-retry',
+          senderId: 'actor',
+          text: 'ordinary',
+          messageId: 'owner-retry',
+          createdAt: new Date().toISOString(),
+        },
+      };
+      const receipt = {
+        ...persistedReceipt('owner-retry', update),
+        legacyDispositionId: null,
+        legacyDispositionReceiptId: null,
+        sourceDispositionId: null,
+        sourceDispositionReceiptId: null,
+      } satisfies Pick<
+        WebhookEvent,
+        | 'status'
+        | 'errorMessage'
+        | 'legacyDispositionId'
+        | 'legacyDispositionReceiptId'
+        | 'sourceDispositionId'
+        | 'sourceDispositionReceiptId'
+      >;
+      const store = mockedReceiptStore([receipt]);
       const prisma = {
         webhookEvent: {
-          create: jest.fn().mockResolvedValue({ id: 'owner-retry' }),
-          updateMany: jest.fn(),
+          findUnique: store.findUnique,
+          updateMany: store.updateMany,
         },
         chatBotMembership: {
           findUnique: jest.fn().mockResolvedValue({
@@ -4817,18 +4853,6 @@ describe('WebhookService', () => {
         undefined,
         { getCurrentChatMemberAccess: probe } as never,
       );
-      const update: MaxUpdate = {
-        updateId: 'owner-retry',
-        botId: 'incoming',
-        type: 'message_created',
-        message: {
-          chatId: '-owner-retry',
-          senderId: 'actor',
-          text: 'ordinary',
-          messageId: 'owner-retry',
-          createdAt: new Date().toISOString(),
-        },
-      };
       await expect(
         service.preparePersistedWebhookEvent('owner-retry', update),
       ).rejects.toBeInstanceOf(WebhookPreparationDeferredError);

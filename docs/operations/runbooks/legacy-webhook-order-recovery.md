@@ -36,6 +36,53 @@ never rewrites the stored namespace and preserves every independent execution cl
 reader projects the existing sealed hold through normal ingress/preparation; do not rerun the
 historical recovery operation or clear the receipt to remove this deferral.
 
+A pristine post-seal direct image/video may omit its caption or carry JSON `null` only when
+the complete original source reparses to empty text and strict direct-media validation passes.
+This allowance belongs only to projection of an existing permanent hold; historical installation,
+modern source abandonment, captionless forwards, commands and unknown content retain their guards.
+The exact saved `Legacy scope installation is not sealed` deferral does not itself prove an
+execution attempt. A retry of an otherwise valid ordinary held source revalidates the original
+envelope, every matching sealed authority, pristine zero-attempt RECEIVED state and absence of
+all linked/semantic claims and Publisher journals under the shared admission fences. It may then
+record `NO_REPLAY_HELD`, preserving the error, payloads, deadlines and holds. Other errors,
+queued or attempted work and incomplete evidence remain blocked. This closure releases receipt
+ordering without running moderation, downloading media or reporting successful execution.
+
+A flat post-seal held forward may retain bounded passive formatting on its original outer and
+linked text. An empty outer caption may carry only an exact copy of independently validated
+linked passive markup. Links, mentions, extra metadata, invalid offsets and unsupported media
+remain refused; every original text component and the parser-composed text must be non-command.
+Linked sender provenance remains mandatory. Fresh formatted forwards require the same complete
+pristine receipt, sealed-authority and concurrent claim/journal checks as saved deferrals above.
+This projects only an existing hold; historical installation and modern source policies do not
+change. It grants no replay, handler execution, image download or new moderation authority.
+
+A pristine post-seal official `message_removed` notification may also receive the existing
+`POST_SEAL_MEMBER` / `NO_REPLAY_HELD` proof. This is an explicit decision to abandon notification
+execution. The top-level `user_id` identifies the removal actor, never the original message author.
+Reparse the persisted original envelope and require exact bot, chat, message, actor and receipt
+identity; retain the original payloads, error and digest. A missing sampled raw body is allowed
+only when the complete original envelope remains in `normalized_payload.raw` and reparses exactly.
+Every matching legacy scope must have a complete matching sealed authority/certificate, with
+finite source and receipt clocks after its seal. Saturated or inconsistent scope evidence refuses.
+Reconstruct the canonical semantic key independently of the saved key and prove absence of every
+linked or semantic execution/command/Publisher source claim inside the receipt transaction.
+An exact existing Publisher delivery journal also keeps the notification held, even when its
+original source claim is absent. Concurrent admission
+must preserve this proof and recheck the persisted receipt before acquiring execution authority.
+An old scope deferral is permitted; queued/prepared/started/completed work and other errors are not.
+
+This path preserves every installed hold and unknown historical effect. It invokes no ordinary
+removal handler, duplicate-history revocation, message-retention removal handling or MAX action;
+it creates neither `PROCESSED` nor an `EXECUTION_FINISHED` checkpoint. Existing webhook-body
+retention remains distinct from those product effects and keeps the permanent holds/proof journal.
+The persisted proof format and terminal readers remain version 1. Both rollback paths additionally
+require the semantic claim fence and final receipt checks in EXECUTION, COMMAND and Publisher
+claim writers. Publisher cancellation also locks and rereads the exact receipt in the same
+transaction as its delivery-journal update, including transient source-fence failure. An older
+writer can add authority or change a journal from a stale snapshot even if it reads the proof
+format. New runtime admission is covered by native full-ingress and race regressions.
+
 ## Install compatible tooling
 
 All 14 API roles and both native auxiliaries must first run the same reviewed

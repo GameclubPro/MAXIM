@@ -16,8 +16,10 @@ import {
 } from './webhook-source-abandonment-content';
 import {
   inspectLegacyForwardText,
+  inspectLegacyPostSealForwardText,
   inspectSourceAbandonmentForwardText,
   isLegacyOpaqueSequence,
+  isLegacyPostSealOuterMarkup,
   legacyParsedTextMatches,
   type LegacyForwardRefusal,
 } from './webhook-legacy-forward-source';
@@ -225,10 +227,24 @@ function inspectLegacyTextSource(
       : !isLegacyDirectMedia(body.attachments)
   )
     return refuse('source_attachments');
+  // FLAG: MAX may omit a direct image/video caption or persist JSON null. Only
+  // an already-held post-seal legacy source may use the parser's empty text;
+  // admission of historical sources and forwarded/unknown content stays strict.
+  const emptyDirectCaption =
+    profile === 'legacy' &&
+    postSealForward &&
+    message.link === undefined &&
+    (body.text === undefined || body.text === null) &&
+    Array.isArray(body.attachments) &&
+    body.attachments.length > 0 &&
+    normalized.text === '';
+  const sourceText = emptyDirectCaption ? '' : body.text;
   if (
     profile === 'source-abandonment'
       ? !isSourceAbandonmentOuterMarkup(body, message.link)
-      : !isLegacyPassiveMarkup(body.markup, body.text)
+      : postSealForward && message.link !== undefined
+        ? !isLegacyPostSealOuterMarkup(body, message.link)
+        : !isLegacyPassiveMarkup(body.markup, sourceText)
   )
     return refuse('source_markup');
   if (message.link !== undefined) {
@@ -237,11 +253,13 @@ function inspectLegacyTextSource(
         ? inspectSourceAbandonmentReplyText(update, purpose, settings)
         : profile === 'source-abandonment'
           ? inspectSourceAbandonmentForwardText(update, settings)
-          : inspectLegacyForwardText(update, settings);
+          : postSealForward
+            ? inspectLegacyPostSealForwardText(update, settings)
+            : inspectLegacyForwardText(update, settings);
     if (forwardRefusal) return refuse(forwardRefusal);
-  } else if (typeof body.text !== 'string' || !legacyParsedTextMatches(update))
+  } else if (typeof sourceText !== 'string' || !legacyParsedTextMatches(update))
     return refuse('source_text_mismatch');
-  if (typeof body.text !== 'string') return refuse('source_text_mismatch');
+  if (typeof sourceText !== 'string') return refuse('source_text_mismatch');
   if (typeof raw.timestamp !== 'number' || typeof message.timestamp !== 'number')
     return refuse('source_clock_type');
   const chatId = identity(recipient.chat_id);
@@ -268,7 +286,7 @@ function inspectLegacyTextSource(
     return refuse('source_clock_order');
   if (typeof normalized.createdAt !== 'string' || Date.parse(normalized.createdAt) !== eventAt)
     return refuse('source_normalized_clock');
-  if (isManagedEntityHandshakeStartCommand(update) || /^[/$]/u.test(body.text.trim()))
+  if (isManagedEntityHandshakeStartCommand(update) || /^[/$]/u.test(sourceText.trim()))
     return refuse('source_command');
   const storedRaw = record(owner.rawPayload);
   if (
@@ -278,8 +296,8 @@ function inspectLegacyTextSource(
     return refuse('source_raw_mismatch');
   try {
     if (
-      parseAdminForwardedModerationCommand(body.text) ||
-      (settings && parseAdminForwardedModerationCommand(body.text, settings))
+      parseAdminForwardedModerationCommand(sourceText) ||
+      (settings && parseAdminForwardedModerationCommand(sourceText, settings))
     )
       return refuse('source_command');
   } catch {

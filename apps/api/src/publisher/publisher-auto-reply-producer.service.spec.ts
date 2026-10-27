@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import {
   PublisherAutoReplyDeliveryStatus,
   PublisherAutoReplyMatchKind,
+  WebhookStatus,
+  type WebhookEvent,
 } from '../prisma/prisma-client';
 import {
   PublisherAutoReplyProducerService,
@@ -10,6 +12,17 @@ import {
 } from './publisher-auto-reply-producer.service';
 import { PublisherAutoReplyAdmissionError } from './publisher-auto-reply.queue';
 import type { PublisherAutoReplyFloodGateResult } from './publisher-auto-reply-flood-gate.service';
+import { PublisherAutoReplySourceReceiptHeldError } from './publisher-auto-reply-source-fence.service';
+
+type AdmissionReceipt = Pick<
+  WebhookEvent,
+  | 'status'
+  | 'errorMessage'
+  | 'legacyDispositionId'
+  | 'legacyDispositionReceiptId'
+  | 'sourceDispositionId'
+  | 'sourceDispositionReceiptId'
+>;
 
 function update(type = 'message_created', text = 'ПРАЙС'): MaxUpdate {
   return {
@@ -78,6 +91,7 @@ function harness(
     sourceFenceAdmit?: 'admitted' | 'canceled' | 'missing';
     sourceFenceRead?: 'admitted' | 'canceled' | 'missing';
     sourceFenceFailure?: Error;
+    sourceReceiptStatus?: WebhookStatus;
     triggerRows?: ReturnType<typeof triggerRow>[];
     extendedMatchingMode?: 'off' | 'shadow' | 'on';
   } = {},
@@ -90,7 +104,25 @@ function harness(
     dispatchStartedAt: null,
   };
   const triggerRows = options.triggerRows ?? [triggerRow()];
+  const deliveryModel = {
+    createMany: jest.fn().mockResolvedValue({ count: options.duplicate ? 0 : 1 }),
+    findUnique: jest.fn().mockResolvedValue(options.deliveryExists === false ? null : delivery),
+    updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+  };
+  const receipt: AdmissionReceipt = {
+    status: options.sourceReceiptStatus ?? WebhookStatus.RECEIVED,
+    errorMessage: null,
+    legacyDispositionId: null,
+    legacyDispositionReceiptId: null,
+    sourceDispositionId: null,
+    sourceDispositionReceiptId: null,
+  };
+  const queryRaw = jest.fn(async (): Promise<AdmissionReceipt[]> => [receipt]);
+  const transaction = { publisherAutoReplyDelivery: deliveryModel, $queryRaw: queryRaw };
   const prisma = {
+    $transaction: jest.fn(async (callback: (tx: typeof transaction) => Promise<unknown>) =>
+      callback(transaction),
+    ),
     chat: {
       findFirst: jest.fn().mockResolvedValue({
         publisherSettings: {
@@ -125,11 +157,7 @@ function harness(
         );
       }),
     },
-    publisherAutoReplyDelivery: {
-      createMany: jest.fn().mockResolvedValue({ count: options.duplicate ? 0 : 1 }),
-      findUnique: jest.fn().mockResolvedValue(options.deliveryExists === false ? null : delivery),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-    },
+    publisherAutoReplyDelivery: deliveryModel,
   };
   const queue = {
     assertNewDeliveryAdmissionEnabled: options.admissionFailure
@@ -670,6 +698,40 @@ describe('PublisherAutoReplyProducerService', () => {
     expect(queue.assertNewDeliveryAdmissionEnabled).not.toHaveBeenCalled();
     expect(floodGate.reserve).not.toHaveBeenCalled();
   });
+
+  it.each(['message_edited', 'message_removed'] as const)(
+    'preserves delivery journals when %s belongs to a held receipt',
+    async (type) => {
+      const { service, prisma, queue } = harness({
+        sourceFenceFailure: new PublisherAutoReplySourceReceiptHeldError(),
+      });
+
+      await expect(service.observeWebhook(update(type), 'webhook-held')).resolves.toEqual({
+        matched: false,
+        disposition: 'no_match',
+      });
+
+      expect(prisma.publisherAutoReplyDelivery.updateMany).not.toHaveBeenCalled();
+      expect(prisma.publisherAutoReplyDelivery.createMany).not.toHaveBeenCalled();
+      expect(queue.ensureDeliveryJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['message_edited', 'message_removed'] as const)(
+    'preserves the journal when %s closes after source cancellation returns',
+    async (type) => {
+      const { service, prisma, sourceFence } = harness({
+        sourceReceiptStatus: WebhookStatus.NO_REPLAY_HELD,
+      });
+      await expect(service.observeWebhook(update(type), 'webhook-closed')).resolves.toEqual({
+        matched: false,
+        disposition: 'no_match',
+      });
+      expect(sourceFence.cancel).toHaveBeenCalled();
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.publisherAutoReplyDelivery.updateMany).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['message_edited', 'message_removed'] as const)(
     'cancels an unsent delivery on %s without creating another one',

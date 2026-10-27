@@ -69,11 +69,23 @@ export class CommercialLlmCascadeClient implements CommercialLlmClassifier {
       signal?.aborted
     )
       throw new CommercialLlmError('ABORTED');
-    const result = await (audit ? this.auditSecondary : this.secondary).classify(
-      excerpt,
-      signal,
-      mayContinue,
-    );
+    let result: CommercialLlmObservationResult;
+    if (audit && primary) {
+      try {
+        result = await this.auditSecondary.classify(excerpt, signal, mayContinue);
+      } catch (error) {
+        if (!(error instanceof CommercialLlmError) || error.kind !== 'BUSY') throw error;
+        if (signal?.aborted || (mayContinue && !(await mayContinue())) || signal?.aborted)
+          throw new CommercialLlmError('ABORTED');
+        // FLAG: Only optional audit capacity loss may retain the completed primary negative.
+        // Its original identity and fresh source ownership grant no DELETE authority.
+        return {
+          ...primary,
+          durationMs: Math.round(performance.now() - startedAt),
+          cascade: { ...cascade, route: 'primary', auditOutcome: 'capacity_skipped' },
+        };
+      }
+    } else result = await this.secondary.classify(excerpt, signal, mayContinue);
     return {
       ...result,
       durationMs: Math.round(performance.now() - startedAt),

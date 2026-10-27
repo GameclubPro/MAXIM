@@ -115,9 +115,18 @@ export const MANAGED_ENTITY_ACTIVATION_SOURCE_CHECKS = Object.freeze([
     'apps/api/src/webhook/webhook.service.ts',
     [
       'await settleDormantWebhookObservation(',
-      'SELECT error_message AS "errorMessage" FROM webhook_events',
-      'WHERE id = ${webhookEventId} FOR UPDATE',
-      'receipt.errorMessage === DORMANT_BOT_OBSERVATION_MARKER',
+      'if (!(await lockWebhookClaimReceiptAdmission(tx, webhookEventId))) return false;',
+    ],
+  ],
+  [
+    'apps/api/src/webhook/webhook-semantic-claim-fence.ts',
+    [
+      'WEBHOOK_SEMANTIC_CLAIM_FENCE_VERSION = 1',
+      'export async function lockWebhookClaimReceiptAdmission(',
+      'error_message AS "errorMessage"',
+      'FROM webhook_events WHERE id = ${receiptId} FOR UPDATE',
+      'rows.length === 1',
+      'receipt.errorMessage !== DORMANT_BOT_OBSERVATION_MARKER',
     ],
   ],
   [
@@ -221,9 +230,23 @@ export function assertManagedEntityActivationSource(
     throw new Error('Rollback target probes dormant bots before its activation gate');
   const webhook = readSource('apps/api/src/webhook/webhook.service.ts');
   const settle = webhook.indexOf('await settleDormantWebhookObservation(');
-  const marker = webhook.indexOf('receipt.errorMessage === DORMANT_BOT_OBSERVATION_MARKER', settle);
+  const transaction = webhook.indexOf(
+    'const executionAdmitted = await this.prisma.$transaction(async (tx) => {',
+    settle,
+  );
+  const receiptAdmission = webhook.indexOf(
+    'if (!(await lockWebhookClaimReceiptAdmission(tx, webhookEventId))) return false;',
+    settle,
+  );
   const claim = webhook.indexOf('await tx.webhookExecutionClaim.createMany(', settle);
-  if (settle < 0 || marker <= settle || claim <= marker)
+  // FLAG: The shared helper rejects the durable dormant marker under a receipt
+  // lock. Its awaited result must gate claim creation inside the same transaction.
+  if (
+    settle < 0 ||
+    transaction <= settle ||
+    receiptAdmission <= transaction ||
+    claim <= receiptAdmission
+  )
     throw new Error('Rollback target admits execution before dormant receipt settlement');
 }
 

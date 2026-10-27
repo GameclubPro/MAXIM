@@ -1,10 +1,14 @@
 import { readLegacyReceiptClaims } from './webhook-legacy-claims';
 import { isPristinePostSealHeldJoin } from './webhook-legacy-held-membership';
+import {
+  inspectHeldMessageDisposition,
+  inspectHeldRemovalDisposition,
+} from './webhook-legacy-held-removal';
 import type { MaxUpdate } from '@maxim/contracts';
 import { buildGroupCommandKey } from '../common/group-command-key';
 import { parseAdminForwardedModerationCommand } from '../moderation/admin-forwarded-command.util';
 import { randomUUID } from 'node:crypto';
-import { Prisma, type WebhookEvent } from '../prisma/prisma-client';
+import { Prisma, type WebhookEvent, type WebhookExecutionClaim } from '../prisma/prisma-client';
 import {
   inspectLegacyPostSealTextSource,
   inspectLegacyRecoverySource,
@@ -34,6 +38,7 @@ export type LegacyReceiptDispositionRefusal =
   | 'receipt_owner_snapshot_unproved'
   | 'receipt_post_seal_provenance_unproved'
   | 'receipt_post_seal_source_unproved'
+  | 'receipt_post_seal_removal_unproved'
   | 'source_unproved';
 type Options = {
   preSeal: true;
@@ -50,12 +55,13 @@ export type LegacyReceiptScopeMetadata = {
   messageId: string | null;
   userId: string | null;
   scopeOversize: boolean;
+  updateType?: string | null;
 };
 type RecoveryScope = { chatId: string; messageId: string; userId: string };
 
 // FLAG: The single-receipt classifier and offline page use exactly the same bounded
 // metadata. A page caller must hold every returned receipt lock until cursor commit.
-export const legacyReceiptScopeMetadataSql = Prisma.sql`"id", octet_length("raw_payload"::text) + octet_length("normalized_payload"::text) AS "payloadBytes",
+export const legacyReceiptScopeMetadataSql = Prisma.sql`"id", normalized_payload->>'type' AS "updateType", octet_length("raw_payload"::text) + octet_length("normalized_payload"::text) AS "payloadBytes",
       legacy_disposition_id AS "legacyDispositionId", legacy_disposition_receipt_id AS "legacyDispositionReceiptId",
       CASE WHEN jsonb_typeof(normalized_payload->'message'->'chatId') = 'string' THEN left(normalized_payload->'message'->>'chatId', 512) END AS "chatId",
       CASE WHEN jsonb_typeof(normalized_payload->'message'->'messageId') = 'string' THEN left(normalized_payload->'message'->>'messageId', 512) END AS "messageId",
@@ -137,6 +143,19 @@ export async function materializeLegacyReceiptDisposition(
   if (locked.length !== 1 || !meta || !knownScopeMetadata(meta))
     return refuse('receipt_metadata_unproved');
   const hasProof = Boolean(meta.legacyDispositionId || meta.legacyDispositionReceiptId);
+  if (!hasProof && meta.updateType === 'message_removed') {
+    if (meta.payloadBytes > 256 * 1024) return refuse('receipt_payload_oversized');
+    const event = await tx.webhookEvent.findUnique({ where: { id: receiptId } });
+    if (!event) return refuse('receipt_missing');
+    if (event.sourceDispositionId || event.sourceDispositionReceiptId)
+      return refuse('receipt_pointer_unproved');
+    const removal = await inspectHeldRemovalDisposition(tx, event);
+    if (removal === 'NOT_HELD') return 'NOT_HELD';
+    if (!removal) return refuse('receipt_post_seal_removal_unproved');
+    // FLAG: Reuse the compatible v1 abandonment proof, never a successful removal
+    // checkpoint. The original error/envelope and all underlying holds survive.
+    return writeLegacyReceiptDisposition(tx, event, removal.authorityId, [], 'POST_SEAL_MEMBER');
+  }
   let scopes: Array<{ recoveryId: string; authorityId: string | null }> = [];
   if (!hasProof) {
     if (meta.chatId === null)
@@ -161,7 +180,6 @@ export async function materializeLegacyReceiptDisposition(
   if (!event) return refuse('receipt_missing');
   if (event.sourceDispositionId || event.sourceDispositionReceiptId)
     return refuse('receipt_pointer_unproved');
-  const sourceDigest = legacyReceiptSourceDigest(event);
   if (hasProof) {
     if (!event.legacyDispositionId || event.legacyDispositionReceiptId !== event.id)
       return refuse('receipt_pointer_unproved');
@@ -292,6 +310,29 @@ export async function materializeLegacyReceiptDisposition(
     const sender = record(rawMessage?.sender);
     const recipient = record(rawMessage?.recipient);
     const body = record(rawMessage?.body);
+    const link = record(rawMessage?.link);
+    const linkedBody = record(link?.message);
+    // FLAG: Captionless media, formatted forwards and a known hold deferral must
+    // not create an endless RECEIVED retry. They require strict original-source, complete
+    // sealed-scope and concurrent claim/journal absence proof before closure.
+    if (
+      event.errorMessage ===
+        'Webhook preparation deferred: Legacy scope installation is not sealed' ||
+      body?.text === undefined ||
+      body?.text === null ||
+      (link?.type === 'forward' && (body?.markup !== undefined || linkedBody?.markup !== undefined))
+    ) {
+      const heldMessage = await inspectHeldMessageDisposition(tx, event);
+      if (!heldMessage || heldMessage === 'NOT_HELD')
+        return refuse('receipt_post_seal_source_unproved');
+      return writeLegacyReceiptDisposition(
+        tx,
+        event,
+        heldMessage.authorityId,
+        [],
+        'POST_SEAL_MEMBER',
+      );
+    }
     if (
       !['message_created', 'message_edited'].includes(String(update?.type)) ||
       raw?.update_type !== update?.type ||
@@ -331,12 +372,22 @@ export async function materializeLegacyReceiptDisposition(
     }
     scopeKind = 'POST_SEAL_MEMBER';
   }
+  return writeLegacyReceiptDisposition(tx, event, authority.id, claims, scopeKind);
+}
+
+async function writeLegacyReceiptDisposition(
+  tx: Prisma.TransactionClient,
+  event: WebhookEvent,
+  authorityId: string,
+  claims: WebhookExecutionClaim[],
+  scopeKind: 'EXACT_OWNER' | 'PRE_SEAL_SOURCE' | 'POST_SEAL_MEMBER',
+): Promise<LegacyReceiptDispositionResult> {
   const proof = await tx.webhookLegacyReceiptDisposition.create({
     data: {
       id: randomUUID(),
       receiptId: event.id,
-      authorityId: authority.id,
-      sourceDigest,
+      authorityId,
+      sourceDigest: legacyReceiptSourceDigest(event),
       originalStatus: event.status,
       originalSnapshot: JSON.parse(
         JSON.stringify({

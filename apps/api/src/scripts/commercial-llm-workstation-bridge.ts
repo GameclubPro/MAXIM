@@ -10,6 +10,10 @@ import {
   commercialLlmWorkstationIdentityMatches,
 } from '../moderation/commercial/commercial-llm-workstation.protocol';
 
+// FLAG: Thirty starts emit 90 control frames, plus 40 periodic readiness frames and hello.
+// The finite 160-frame budget includes 29 frames of delivery headroom; model admission is separate.
+const WORKSTATION_INBOUND_FRAMES_PER_MINUTE = 160;
+
 // FLAG: SSH stdio carries sanitized, expiring observations only; no DB or MAX client is loaded.
 export async function commercialLlmWorkstationBridge(): Promise<void> {
   if (
@@ -60,7 +64,8 @@ export async function commercialLlmWorkstationBridge(): Promise<void> {
             windowAt = Date.now();
             receivedInWindow = 0;
           }
-          if (++receivedInWindow > 120) throw new Error('workstation_rate_refused');
+          if (++receivedInWindow > WORKSTATION_INBOUND_FRAMES_PER_MINUTE)
+            throw new Error('workstation_rate_refused');
           const message: unknown = JSON.parse(
             new TextDecoder('utf-8', { fatal: true }).decode(line),
           );

@@ -7,11 +7,15 @@ import { ModerationDeleteIntentService } from '../moderation-delete-intent.servi
 import { CommercialLlmEnforcementService } from './commercial-llm-enforcement.service';
 import { CommercialLlmEnforcementProcessor } from './commercial-llm-enforcement.processor';
 import { CommercialLlmCascadeClient } from './commercial-llm-cascade.client';
-import { CommercialLlmClient } from './commercial-llm.client';
+import { CommercialLlmClient, CommercialLlmError } from './commercial-llm.client';
+import type { CommercialLlmClassifier } from './commercial-llm.protocol';
 import { CommercialLlmWorkstationMailbox } from './commercial-llm-workstation.mailbox';
 import { CommercialLlmShadowLease, createCommercialLlmRedis } from './commercial-llm-shadow.lease';
 import { commercialLlmHostHasHeadroom } from './commercial-llm-shadow.processor';
-import { COMMERCIAL_LLM_ENFORCEMENT_KEYS } from './commercial-llm-enforcement.mailbox';
+import {
+  COMMERCIAL_LLM_ENFORCEMENT_KEYS,
+  COMMERCIAL_LLM_POLL_INTERVAL_MS,
+} from './commercial-llm-enforcement.mailbox';
 import { CommercialLlmSecondaryScheduler } from './commercial-llm-secondary-scheduler';
 
 @Injectable()
@@ -41,7 +45,7 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       this.config.get<string>('APP_SERVICE_NAME') !== 'api-moderation-background'
     )
       return;
-    this.timer = setInterval(() => this.wake(), 250);
+    this.timer = setInterval(() => this.wake(), COMMERCIAL_LLM_POLL_INTERVAL_MS);
     this.timer.unref();
   }
 
@@ -134,7 +138,8 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       return;
     }
     await mailbox.advertise(this.worker);
-    // FLAG: At most primary running + secondary running + one waiting confirmation, plus one pending input.
+    // FLAG: At most primary running + secondary running + one waiting confirmation.
+    // The mailbox admits a second pending input only when both starts fit their original budget.
     if (this.active.size >= 3) return;
     const redis = this.redis;
     const secondary = this.secondary!;
@@ -143,6 +148,19 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       ({ raw, request, deadlineAtMs }) => {
         const trace = { traceId: request.source.nonce, admittedAtMs: request.submittedAtMs };
         const primary = new CommercialLlmWorkstationMailbox(redis);
+        // FLAG: Both confirmation paths reserve the chat in Redis before server admission.
+        // Releasing this claim never releases the exact active source or its DELETE proof.
+        const withSecondary = async (
+          classify: () => ReturnType<CommercialLlmClassifier['classify']>,
+        ) => {
+          if (!(await mailbox.claimSecondary(raw, this.worker)))
+            throw new CommercialLlmError('BUSY');
+          try {
+            return await classify();
+          } finally {
+            await mailbox.releaseSecondary(raw, this.worker).catch(() => undefined);
+          }
+        };
         return new CommercialLlmCascadeClient(
           {
             classify: async (excerpt, signal) => {
@@ -163,10 +181,12 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
           },
           {
             classify: (excerpt, signal, valid) =>
-              secondary.classifyWithin(excerpt, deadlineAtMs, signal, valid, (outcome, waitMs) =>
-                this.logger.log(
-                  { stage: 'commercial-ai-secondary', ...trace, outcome, waitMs },
-                  'Commercial AI confirmation admission',
+              withSecondary(() =>
+                secondary.classifyWithin(excerpt, deadlineAtMs, signal, valid, (outcome, waitMs) =>
+                  this.logger.log(
+                    { stage: 'commercial-ai-secondary', ...trace, outcome, waitMs },
+                    'Commercial AI confirmation admission',
+                  ),
                 ),
               ),
           },
@@ -177,7 +197,10 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
             this.wake();
           },
           // Audit negatives never occupy the one waiting slot needed by an actionable confirmation.
-          { classify: (excerpt, signal, valid) => secondary.classifyAudit(excerpt, signal, valid) },
+          {
+            classify: (excerpt, signal, valid) =>
+              withSecondary(() => secondary.classifyAudit(excerpt, signal, valid)),
+          },
         );
       },
       this.intents,

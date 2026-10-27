@@ -153,14 +153,87 @@ describe('bounded commercial model cascade', () => {
     expect(secondary.classify).not.toHaveBeenCalled();
     expect(auditSecondary.classify).not.toHaveBeenCalled();
   });
-  it('uses the separate fail-fast negative audit without falling through to queued confirmation', async () => {
+  it('retains the completed primary negative when its separate fail-fast audit is busy', async () => {
     auditSecondary.classify.mockRejectedValue(new CommercialLlmError('BUSY'));
-    await expect(client(true).classify('synthetic', undefined, lease)).rejects.toMatchObject({
-      kind: 'BUSY',
+    const result = await client(true).classify('synthetic', undefined, lease);
+    expect(result).toMatchObject({
+      ...COMMERCIAL_LLM_WORKSTATION_IDENTITY,
+      policyVersion: primaryResult.policyVersion,
+      classification: 'NOT_COMMERCIAL',
+      reasonCodes: primaryResult.reasonCodes,
+      cascade: {
+        route: 'primary',
+        primaryClassification: 'NOT_COMMERCIAL',
+        primaryDurationMs: primaryResult.durationMs,
+        auditOutcome: 'capacity_skipped',
+      },
     });
+    expect(commercialLlmMayDelete(result)).toBe(false);
+    expect(primary.classify).toHaveBeenCalledTimes(1);
     expect(auditSecondary.classify).toHaveBeenCalledTimes(1);
     expect(secondary.classify).not.toHaveBeenCalled();
     expect(primaryFinished).toHaveBeenCalledTimes(1);
+  });
+  it.each(['abort', 'lease', 'abort_during_lease'] as const)(
+    'rejects a busy negative audit after %s invalidates the completed primary',
+    async (guard) => {
+      const controller = new AbortController();
+      auditSecondary.classify.mockImplementation(async () => {
+        if (guard === 'abort') controller.abort();
+        else
+          lease.mockImplementation(async () => {
+            if (guard === 'abort_during_lease') controller.abort();
+            return guard !== 'lease';
+          });
+        throw new CommercialLlmError('BUSY');
+      });
+      await expect(
+        client(true).classify('synthetic', controller.signal, lease),
+      ).rejects.toMatchObject({
+        kind: 'ABORTED',
+      });
+      expect(primary.classify).toHaveBeenCalledTimes(1);
+      expect(auditSecondary.classify).toHaveBeenCalledTimes(1);
+      expect(secondary.classify).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['ABORTED', 'TIMEOUT', 'UNAVAILABLE'] as const)(
+    'does not retain a primary negative after audit %s',
+    async (kind) => {
+      const error = new CommercialLlmError(kind);
+      auditSecondary.classify.mockRejectedValue(error);
+      await expect(client(true).classify('synthetic', undefined, lease)).rejects.toBe(error);
+      expect(secondary.classify).not.toHaveBeenCalled();
+    },
+  );
+  it('does not retain a primary negative after an unexpected audit error', async () => {
+    const error = new Error('audit failed');
+    auditSecondary.classify.mockRejectedValue(error);
+    await expect(client(true).classify('synthetic', undefined, lease)).rejects.toBe(error);
+    expect(secondary.classify).not.toHaveBeenCalled();
+  });
+  it.each(['COMMERCIAL', 'UNSURE', 'FAILED'] as const)(
+    'does not retain a primary result when mandatory confirmation is busy after %s',
+    async (outcome) => {
+      primary.classify.mockResolvedValue(
+        outcome === 'FAILED'
+          ? { outcome }
+          : { outcome: 'COMPLETE', result: { ...primaryResult, classification: outcome } },
+      );
+      const error = new CommercialLlmError('BUSY');
+      secondary.classify.mockRejectedValue(error);
+      await expect(client(true).classify('synthetic', undefined, lease)).rejects.toBe(error);
+      expect(secondary.classify).toHaveBeenCalledTimes(1);
+      expect(auditSecondary.classify).not.toHaveBeenCalled();
+    },
+  );
+  it('does not retain a negative when primary resource release fails before its audit', async () => {
+    const error = new Error('primary ownership lost');
+    primaryFinished.mockRejectedValue(error);
+    auditSecondary.classify.mockRejectedValue(new CommercialLlmError('BUSY'));
+    await expect(client(true).classify('synthetic', undefined, lease)).rejects.toBe(error);
+    expect(auditSecondary.classify).not.toHaveBeenCalled();
+    expect(secondary.classify).not.toHaveBeenCalled();
   });
   it('retains the primary-negative veto when a server audit disagrees', async () => {
     auditSecondary.classify.mockResolvedValue({

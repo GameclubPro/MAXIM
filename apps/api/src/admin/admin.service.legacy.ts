@@ -1,3 +1,4 @@
+import { resolveModerationSanctionExpiry } from '../moderation/moderation-sanction-expiry.util';
 import { resolveAdminBotUserId } from './admin-bot-identity';
 import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
 import { assertPublisherSuggestionDeliveryReady } from './publisher-suggestion-setup-block';
@@ -9910,13 +9911,12 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (expectedAction === SanctionAction.MUTE) {
-      const metadata = this.readObjectPayloadOrNull(expectedEvent.metadata);
-      const expiresAt = this.readTrimmedString(metadata?.muteExpiresAt);
-      const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
-      if (
-        metadata?.mutePermanent !== true &&
-        (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now())
-      ) {
+      const expiry = resolveModerationSanctionExpiry(
+        expectedEvent.action,
+        expectedEvent.metadata,
+        expectedEvent.createdAt,
+      );
+      if (!expiry.permanent && !(expiry.expiresAt && expiry.expiresAt.getTime() > Date.now())) {
         throw new ModerationSanctionStateChangedError();
       }
     }

@@ -1,7 +1,14 @@
-import { WebhookExecutionClaimStatus } from '../prisma/prisma-client';
+import {
+  WebhookExecutionClaimStatus,
+  WebhookStatus,
+  type Prisma,
+  type WebhookEvent,
+  type WebhookExecutionClaim,
+} from '../prisma/prisma-client';
 import {
   PUBLISHER_AUTO_REPLY_SOURCE_FENCE_TESTING,
   PublisherAutoReplySourceFenceService,
+  PublisherAutoReplySourceReceiptHeldError,
 } from './publisher-auto-reply-source-fence.service';
 
 const identity = {
@@ -10,22 +17,53 @@ const identity = {
   sourceMessageId: 'message-1',
 };
 
-function harness(states: Array<WebhookExecutionClaimStatus | null>) {
-  const findUnique = jest
-    .fn()
-    .mockImplementation(() => {
-      const status = states.shift() ?? null;
-      return Promise.resolve(status ? { status } : null);
-    });
+type AdmissionReceipt = Pick<
+  WebhookEvent,
+  | 'status'
+  | 'errorMessage'
+  | 'legacyDispositionId'
+  | 'legacyDispositionReceiptId'
+  | 'sourceDispositionId'
+  | 'sourceDispositionReceiptId'
+>;
+
+function harness(
+  states: Array<WebhookExecutionClaimStatus | null>,
+  receipt: AdmissionReceipt | null = {
+    status: WebhookStatus.RECEIVED,
+    errorMessage: null,
+    legacyDispositionId: null,
+    legacyDispositionReceiptId: null,
+    sourceDispositionId: null,
+    sourceDispositionReceiptId: null,
+  },
+) {
+  const findUnique = jest.fn().mockImplementation(() => {
+    const status = states.shift() ?? null;
+    return Promise.resolve(status ? { status } : null);
+  });
   const createMany = jest.fn().mockResolvedValue({ count: 1 });
   const updateMany = jest.fn().mockResolvedValue({ count: 1 });
-  const queryRaw = jest.fn().mockResolvedValue([{ status: WebhookExecutionClaimStatus.READY }]);
+  const queryRaw = jest.fn(
+    async (
+      query: Prisma.Sql,
+    ): Promise<Array<AdmissionReceipt | Pick<WebhookExecutionClaim, 'status'>>> => {
+      const sql = query.strings.join(' ');
+      if (sql.includes('pg_advisory_xact_lock')) return [];
+      if (sql.includes('FROM webhook_events')) return receipt ? [receipt] : [];
+      return [{ status: WebhookExecutionClaimStatus.READY }];
+    },
+  );
   const model = { findUnique, createMany, updateMany };
   const prisma = {
     webhookExecutionClaim: model,
     $transaction: jest.fn(
-      (callback: (tx: { webhookExecutionClaim: typeof model; $queryRaw: typeof queryRaw }) => unknown) =>
-        callback({ webhookExecutionClaim: model, $queryRaw: queryRaw }),
+      (
+        callback: (tx: {
+          webhookExecutionClaim: typeof model;
+          $queryRaw: typeof queryRaw;
+        }) => unknown,
+      ) => callback({ webhookExecutionClaim: model, $queryRaw: queryRaw }),
     ),
   };
   return {
@@ -50,7 +88,8 @@ describe('PublisherAutoReplySourceFenceService', () => {
       data: [
         expect.objectContaining({
           kind: PUBLISHER_AUTO_REPLY_SOURCE_FENCE_TESTING.kind,
-          semanticKey: expect.stringMatching(/^publisher-auto-reply-source:[a-f0-9]{64}$/u),
+          semanticKey:
+            'publisher-auto-reply-source:9784a8ddb0bc2a9d63a2e2c5a8e317f1db4a31280d55893f559a269036660331',
           webhookEventId: 'webhook-created-1',
           status: WebhookExecutionClaimStatus.READY,
         }),
@@ -91,7 +130,9 @@ describe('PublisherAutoReplySourceFenceService', () => {
   it('accepts a duplicate cancellation without requiring another webhook id', async () => {
     const { service, prisma } = harness([WebhookExecutionClaimStatus.COMPLETED]);
 
-    await expect(service.cancel({ ...identity, sourceWebhookEventId: null })).resolves.toBeUndefined();
+    await expect(
+      service.cancel({ ...identity, sourceWebhookEventId: null }),
+    ).resolves.toBeUndefined();
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
@@ -104,6 +145,45 @@ describe('PublisherAutoReplySourceFenceService', () => {
     ).resolves.toBe('canceled');
 
     expect(createMany).not.toHaveBeenCalled();
+  });
+
+  it.each(['admit', 'cancel'] as const)(
+    'refuses %s from a receipt closed after its first read without writing source claims',
+    async (operation) => {
+      const { service, createMany, updateMany } = harness([null], {
+        status: WebhookStatus.NO_REPLAY_HELD,
+        errorMessage: null,
+        legacyDispositionId: 'disposition-1',
+        legacyDispositionReceiptId: 'proof-1',
+        sourceDispositionId: null,
+        sourceDispositionReceiptId: null,
+      });
+
+      await expect(
+        service[operation]({ ...identity, sourceWebhookEventId: 'webhook-closed-1' }),
+      ).rejects.toBeInstanceOf(PublisherAutoReplySourceReceiptHeldError);
+
+      expect(createMany).not.toHaveBeenCalled();
+      expect(updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses a duplicate cancellation from a held receipt before callers can mutate delivery journals', async () => {
+    const { service, createMany, updateMany } = harness([WebhookExecutionClaimStatus.COMPLETED], {
+      status: WebhookStatus.NO_REPLAY_HELD,
+      errorMessage: null,
+      legacyDispositionId: 'disposition-1',
+      legacyDispositionReceiptId: 'proof-1',
+      sourceDispositionId: null,
+      sourceDispositionReceiptId: null,
+    });
+
+    await expect(
+      service.cancel({ ...identity, sourceWebhookEventId: 'webhook-closed-duplicate' }),
+    ).rejects.toBeInstanceOf(PublisherAutoReplySourceReceiptHeldError);
+
+    expect(createMany).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   it('locks the source claim and admits dispatch only from READY', async () => {

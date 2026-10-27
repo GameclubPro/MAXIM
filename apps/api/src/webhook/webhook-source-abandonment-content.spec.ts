@@ -751,6 +751,86 @@ describe('modern source content profile', () => {
     },
   );
 
+  it.each([false, true])(
+    'admits passive formatted forwards only for post-seal legacy projection (copied=%s)',
+    (copied) => {
+      const f = fixture('forward');
+      f.body.text = copied ? '' : 'Outer caption';
+      f.linkedBody.text = 'Quoted caption';
+      f.linkedBody.markup = [{ type: 'emphasized', from: 0, length: 6 }];
+      f.body.markup = structuredClone(f.linkedBody.markup);
+      const source = f.owner();
+      const before = structuredClone(source);
+      expect(inspectLegacyPostSealTextSource(source)).toEqual({
+        chatId: '-111',
+        messageId: 'outer-mid',
+        userId: 'outer-user',
+        sourceAt: new Date(f.at),
+      });
+      expect(inspectLegacyRecoverySource(source)).toBeNull();
+      expect(source).toEqual(before);
+    },
+  );
+
+  it.each([
+    'copied mismatch',
+    'outer bounds',
+    'linked bounds',
+    'link',
+    'mention',
+    'extra key',
+    'missing sender',
+    'unsupported media',
+    'reply',
+    'outer command',
+    'linked command',
+    'normalized mismatch',
+    'too many spans',
+    'negative offset',
+    'zero length',
+  ])('rejects unsafe post-seal formatted forwards: %s', (fault) => {
+    const f = fixture('forward');
+    f.body.text = '';
+    f.linkedBody.text = 'Quoted caption';
+    f.linkedBody.markup = [{ type: 'emphasized', from: 0, length: 6 }];
+    f.body.markup = structuredClone(f.linkedBody.markup);
+    if (fault === 'copied mismatch') f.body.markup = [{ type: 'strong', from: 0, length: 6 }];
+    if (fault === 'outer bounds') f.body.text = 'x';
+    if (fault === 'linked bounds') f.linkedBody.text = 'x';
+    if (fault === 'link')
+      f.linkedBody.markup = [{ type: 'link', from: 0, length: 6, url: 'https://example.com' }];
+    if (fault === 'mention')
+      f.linkedBody.markup = [{ type: 'user_mention', from: 0, length: 6, user_id: 7 }];
+    if (fault === 'extra key')
+      f.linkedBody.markup = [{ type: 'emphasized', from: 0, length: 6, target: 7 }];
+    if (fault === 'too many spans')
+      f.linkedBody.markup = Array.from({ length: 65 }, () => ({
+        type: 'emphasized',
+        from: 0,
+        length: 6,
+      }));
+    if (fault === 'negative offset')
+      f.linkedBody.markup = [{ type: 'emphasized', from: -1, length: 6 }];
+    if (fault === 'zero length') f.linkedBody.markup = [{ type: 'emphasized', from: 0, length: 0 }];
+    if (
+      ['link', 'mention', 'extra key', 'too many spans', 'negative offset', 'zero length'].includes(
+        fault,
+      )
+    )
+      f.body.markup = structuredClone(f.linkedBody.markup);
+    if (fault === 'missing sender') delete f.link.sender;
+    if (fault === 'unsupported media') f.linkedBody.attachments = [{ type: 'file', payload: {} }];
+    if (fault === 'reply') f.link.type = 'reply';
+    if (fault === 'outer command') f.body.text = '/ban user';
+    if (fault === 'linked command') f.linkedBody.text = '/ban user';
+    const source = f.owner();
+    if (fault === 'normalized mismatch') {
+      const normalized = source.normalizedPayload as unknown as { message: { text: string } };
+      normalized.message.text = 'Different text';
+    }
+    expect(inspectLegacyPostSealTextSource(source)).toBeNull();
+  });
+
   it('accepts only identical linked formatting copied onto an empty forward body', () => {
     const f = fixture('forward');
     f.body.text = '';
@@ -1181,5 +1261,61 @@ describe('modern source content profile', () => {
     f.body.markup = [{ type: 'link', from: 2, length: 8, url: 'https://example.com', ...patch }];
     expect(inspectSourceAbandonmentSource(f.owner())).toBeNull();
     expect(inspectSourceAbandonmentPostSealSource(f.owner())).toBeNull();
+  });
+});
+
+describe('captionless direct media under an existing post-seal legacy hold', () => {
+  it.each(
+    ['image', 'video'].flatMap((type) => [undefined, null].map((caption) => ({ type, caption }))),
+  )(
+    'accepts $type caption=$caption without changing other admission profiles or the original',
+    ({ type, caption }) => {
+      const f = fixture('plain');
+      if (caption === undefined) delete f.body.text;
+      else f.body.text = caption;
+      f.body.attachments = [
+        type === 'image'
+          ? { type, payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } }
+          : {
+              type,
+              payload: { id: 42, url: 'https://vd.mycdn.me/fixture', token: 'fixture-token' },
+            },
+      ];
+      const source = f.owner();
+      const before = structuredClone(source);
+      expect(inspectLegacyPostSealTextSource(source)).not.toBeNull();
+      expect(inspectLegacyRecoverySource(source)).toBeNull();
+      expect(inspectSourceAbandonmentSource(source)).toBeNull();
+      expect(inspectSourceAbandonmentPostSealSource(source)).toBeNull();
+      expect(inspectPristineOperatorDiscardSource(source)).toBeNull();
+      expect(source).toEqual(before);
+    },
+  );
+
+  it.each([
+    'no media',
+    'unknown media',
+    'markup',
+    'number caption',
+    'normalized text',
+    'forward',
+    'command',
+  ])('refuses captionless admission with %s', (fault) => {
+    const f = fixture(fault === 'forward' ? 'forward' : 'plain');
+    delete f.body.text;
+    f.body.attachments = [
+      { type: 'image', payload: { photo_id: 42, url: 'https://i.oneme.ru/fixture' } },
+    ];
+    if (fault === 'no media') f.body.attachments = [];
+    if (fault === 'unknown media') f.body.attachments = [{ type: 'unknown', payload: {} }];
+    if (fault === 'markup')
+      f.body.markup = [{ type: 'link', from: 0, length: 0, url: 'https://example.com' }];
+    if (fault === 'number caption') f.body.text = 42;
+    if (fault === 'command') f.body.text = '/ban';
+    const source = f.owner();
+    if (fault === 'normalized text')
+      (source.normalizedPayload as unknown as { message: { text: string } }).message.text =
+        'different';
+    expect(inspectLegacyPostSealTextSource(source)).toBeNull();
   });
 });

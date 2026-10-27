@@ -12,6 +12,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type ChatSettings, type PrismaClient } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
+import {
+  lockWebhookClaimReceiptAdmission,
+  lockWebhookSemanticClaimFences,
+} from '../webhook/webhook-semantic-claim-fence';
 import { normalizeMaxActionIdempotencyKeyPart } from '../max/max-client.service';
 import {
   isPendingWebhookTimeoutQuarantineMessage,
@@ -199,6 +203,7 @@ export class GroupCommandAuthorityService {
   async observeStart(update: MaxUpdate): Promise<void> {
     const chatId = update.message?.chatId?.trim() ?? '';
     const messageId = update.message?.messageId?.trim() ?? '';
+    const semanticKey = buildGroupCommandKey(chatId, messageId);
     const dedupKey = update.botId ? `${update.botId}:${update.updateId}` : String(update.updateId);
     const receipt = await this.prisma.webhookEvent.findUnique({ where: { dedupKey } });
     if (!receipt) throw new Error('Group Start requires a persisted webhook receipt');
@@ -206,18 +211,31 @@ export class GroupCommandAuthorityService {
       const command = await this.legacyHolds!.readFreshCommandReceipt(receipt.id, update);
       if (!command || command.deadlineAt.getTime() <= Date.now()) return;
     }
-    await this.prisma.webhookExecutionClaim.createMany({
-      data: [
-        {
-          kind: 'COMMAND',
-          semanticKey: buildGroupCommandKey(chatId, messageId),
-          webhookEventId: receipt.id,
-          enforced: true,
-          status: 'PENDING',
-          preparedAt: new Date(),
-        },
-      ],
-      skipDuplicates: true,
+    await this.prisma.$transaction(async (tx) => {
+      // FLAG: Serialize absent command authority before locking its receipt. A stale
+      // observer must not create a claim after positive no-replay settlement.
+      await lockWebhookSemanticClaimFences(tx, [semanticKey]);
+      if (!(await lockWebhookClaimReceiptAdmission(tx, receipt.id))) return;
+      // FLAG: Completion locks the claim before its receipt. Read committed identity
+      // without locking; an INSERT conflict under the receipt lock reverses that order.
+      const existingClaim = await tx.webhookExecutionClaim.findUnique({
+        where: { kind_semanticKey: { kind: 'COMMAND', semanticKey } },
+        select: { id: true },
+      });
+      if (existingClaim) return;
+      await tx.webhookExecutionClaim.createMany({
+        data: [
+          {
+            kind: 'COMMAND',
+            semanticKey,
+            webhookEventId: receipt.id,
+            enforced: true,
+            status: 'PENDING',
+            preparedAt: new Date(),
+          },
+        ],
+        skipDuplicates: true,
+      });
     });
   }
 
@@ -334,19 +352,34 @@ export class GroupCommandAuthorityService {
       const command = await this.legacyHolds!.readFreshCommandReceipt(receipt.id, update);
       if (!command) return null;
     }
-    await this.prisma.webhookExecutionClaim.createMany({
-      data: [
-        {
-          kind: 'COMMAND',
-          semanticKey,
-          webhookEventId: receipt.id,
-          executionBotId,
-          enforced: true,
-          status: 'PENDING',
-        },
-      ],
-      skipDuplicates: true,
+    const admitted = await this.prisma.$transaction(async (tx) => {
+      // FLAG: Wait for the same semantic fence as receipt disposition, then reread
+      // exact receipt admission. Contention is not evidence that a command is closed.
+      await lockWebhookSemanticClaimFences(tx, [semanticKey]);
+      if (!(await lockWebhookClaimReceiptAdmission(tx, receipt.id))) return false;
+      // FLAG: Retain claim-before-receipt completion order when authority already
+      // exists; the semantic fence serializes only absent-authority creation.
+      const existingClaim = await tx.webhookExecutionClaim.findUnique({
+        where: { kind_semanticKey: { kind: 'COMMAND', semanticKey } },
+        select: { id: true },
+      });
+      if (existingClaim) return true;
+      await tx.webhookExecutionClaim.createMany({
+        data: [
+          {
+            kind: 'COMMAND',
+            semanticKey,
+            webhookEventId: receipt.id,
+            executionBotId,
+            enforced: true,
+            status: 'PENDING',
+          },
+        ],
+        skipDuplicates: true,
+      });
+      return true;
     });
+    if (!admitted) return null;
     let claim = await this.prisma.webhookExecutionClaim.findUnique({
       where: { kind_semanticKey: { kind: 'COMMAND', semanticKey } },
       include: { webhookEvent: true },

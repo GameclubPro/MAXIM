@@ -15,6 +15,18 @@
   );
 }
 
+html[data-max-client='native'] .app-shell {
+  /* FLAG: Bound the nav's native safe area before deducting space already reserved by the host. */
+  --bottom-nav-edge-inset: max(
+    0px,
+    calc(
+      clamp(0px, var(--app-safe-bottom), 48px) -
+        max(var(--app-visual-viewport-bottom), var(--app-layout-viewport-bottom))
+    )
+  );
+  --bottom-nav-content-inset: var(--bottom-nav-edge-inset);
+}
+
 .app-shell--no-topbar {
   grid-template-rows: 1fr;
 }

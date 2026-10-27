@@ -93,6 +93,32 @@ describe('current moderation state delete authorization', () => {
     },
   );
 
+  it.each(['released', 'expired', 'replaced', 'fenced', 'disabled', 'retired'])(
+    'preserves the participant quota for a no-longer-actionable %s reason',
+    async (variant) => {
+      const s = fixture({
+        ruleCode:
+          variant === 'disabled'
+            ? 'BOT_ACCOUNT_MESSAGE_DELETE'
+            : variant === 'retired'
+              ? 'INVITATION_ACCESS_DELETE'
+              : 'MUTE_ACTIVE_DELETE',
+      });
+      if (variant === 'released') Object.assign(s.event, { action: 'NONE', id: 'release' });
+      if (variant === 'expired') s.event.metadata.muteExpiresAt = new Date(0).toISOString();
+      if (variant === 'replaced') s.event.id = 'new-mute';
+      if (variant === 'fenced') s.fence.isSanctionEventInvalidated.mockResolvedValue(true);
+      if (variant === 'disabled') s.settings.removeBotsFromGroupEnabled = false;
+      // FLAG: A positive grant must not hide an obsolete reason by spending its quota.
+      s.immunity.consumeForMessage.mockResolvedValue('granted');
+
+      await expect(s.service.authorize(s.input)).rejects.toMatchObject({
+        code: 'moderation_state_delete_no_longer_authorized',
+      });
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
   function voiceFixture() {
     const s = fixture();
     const source = {

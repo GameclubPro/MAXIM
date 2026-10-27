@@ -11,14 +11,42 @@ retain their own authority.
 ## Admission and failures
 
 The background role advertises readiness through a short Redis worker lease.
-The version-2 Redis mailbox keeps one pending primary slot and at most three
-active sources. Atomic checks reject another offer from a chat already pending
-or active. The process separately retains at most one waiting server confirmation;
+Readiness is a worker-generation marker with a 2.5-second TTL, retained when an
+offer fills the pending slot. Offers never renew it. Pressure withdrawal, expiry
+or a different worker generation prevents further admission; readiness does not
+replace the separate pending, active-source or primary-model capacity checks.
+The version-3 pending mailbox keeps a FIFO head and at most one additional pending
+input. The additional input requires a schema-valid, current head from the same
+worker, no running primary, at most one active source and no more than 250 ms of
+primary cooldown. Both planned starts must fit their original three-second
+admission limits, including polling reserves. A cooldown without a bounded TTL,
+an invalid or changed head, or insufficient remaining time refuses the extra input.
+This smooths feasible short bursts; it does not add model concurrency or capacity
+for sustained overload. There is at most one pending input per chat and at most three
+active sources. A chat may retain at most two distinct active messages, allowing
+another primary check after its previous primary finishes while confirmation is
+still pending. Atomic offer and take checks reject a pending or running primary
+from the same chat, repeated message IDs regardless of nonce, and the per-chat
+bound. A separate bounded Redis reservation permits only one running or waiting
+server confirmation per chat, including negative audits. Exact source and worker
+checks survive connection replacement; obsolete cleanup cannot release another
+source's reservation or proof. The process separately retains at most one waiting server confirmation;
 the shared server lease permits one actual server request. Waiting for confirmation
 must not block unrelated primary negatives. Admission is fire-and-forget on a
 separate fail-fast Redis connection, with one in-flight admission per producer.
-These buffers are temporary admission state, never historical replay or a second
+Taking or discarding the FIFO head atomically promotes the exact pending tail,
+preserving its submitted time and absolute expiry. New arrivals cannot pass it.
+Every take still enforces the original three-second limit; a slow first check may
+cause the second input to expire without inference. Expiry remains a discard,
+not a completed classification. These buffers are temporary admission state, never historical replay or a second
 execution authority. Rejected admission has a finite reason.
+
+Only the pending keys use the version-3 namespace. Worker generation, active-source
+authority, primary and secondary reservations, cooldown and discard metrics retain
+their shared version-2 keys; issued proofs and status retain version 1. A mixed
+reader cannot consume the new pending encoding or reset the shared model fences.
+Roll out through the normal producer quiescence and old-worker shutdown/drain;
+old pending inputs are not copied or replayed into the new namespace.
 
 The workstation's atomic two-second admission interval and the server's shared
 ten-second lease/cooldown remain separate. A primary positive or uncertain answer
@@ -27,7 +55,12 @@ unexpired confirmation work. The primary verdict must not be recomputed to retry
 confirmation. Confirmation waiting spends the original inference budget and
 reserves six seconds for server work; it never increases model concurrency or
 the server rate. Random negative audits use the immediate shared server lease and
-never occupy the waiting confirmation slot. The governor and 12 GiB headroom guard remain. Busy, absent,
+never occupy the waiting confirmation slot. If that optional audit alone returns
+`BUSY`, the completed primary negative is retained with its original 4B identity
+and `auditOutcome=capacity_skipped`, after fresh abort and source-ownership checks.
+This is not a completed audit. Other audit errors, cancellation and authority loss
+still fail closed; positives and uncertainty still require server confirmation.
+The governor and 12 GiB headroom guard remain. Busy, absent,
 pressured, stale, oversized, uncertain and failed work cannot authorize deletion.
 Actual rates can be lower than the admission limits: this is **partial traffic
 coverage**, not a promise to classify every message. Failure leaves that message
@@ -124,7 +157,8 @@ Producer saturation remains `producer_busy`. Mailbox admission separately report
 counters separately report `pending_expired`, `foreign_worker` and
 `invalid_pending`. They persist in the Redis v2 namespace across worker generations;
 status marks them `pendingDiscardBasis=redis_namespace_cumulative`, separately
-from process outcome totals. `chat_busy` includes repeated offers for a pending/active chat;
+from process outcome totals. `chat_busy` includes a pending/running primary from
+the same chat, repeated message IDs and the two-active-source chat bound;
 it is not a successful duplicate classification. Admission is not completed
 inference or a confirmed MAX effect. Read producer counters as deltas from
 the same process and schema; differing first/last sample windows do not form one
@@ -140,7 +174,9 @@ traffic minutes are not fabricated. Reconcile all expected process observations
 and preserve shutdown, restart or log gaps before reporting fleet coverage.
 
 `commercial-ai` records result, cascade route, primary/secondary duration, heartbeat
-and last successful classification without raw message text. The
+and last successful classification without raw message text. A retained primary
+negative with `auditOutcome=capacity_skipped` is a 4B classification, not evidence
+of a successful 9B audit or independently verified negative. The
 `commercial-ai-cumulative` record and Redis status expose process totals with
 `outcomeBasis=process_cumulative`; they are not closed result windows.
 `commercial-ai-secondary` reports `waiting`, `started`, `buffer_full` and
