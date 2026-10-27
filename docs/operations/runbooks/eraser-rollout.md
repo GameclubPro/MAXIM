@@ -128,6 +128,23 @@ acknowledgement or an authenticated `message_removed` receipt settles deletion.
 Keep uncertain journals across restarts without replaying the DELETE. Failed message
 reads defer that journal while other eligible messages continue through fresh rights,
 pin and policy checks; authentication failures and rate limits stop the current visit.
+An issued attempt settles only its exact dispatch ID. Stale pending decisions cannot
+reopen, protect or confirm an issued journal; a rejected 429 permits a fresh guarded
+attempt only after its deadline. Any failed DELETE ends that visit after recording its
+outcome, preventing a cascade of uncertain effects. Final dispatch checks the database
+clock after lock waits, and removal ingestion uses the same policy-before-candidate
+lock order as dispatch and settlement.
+
+Migration `0004-scan-generation.sql` adds a cursor generation with a constant zero
+default; it does not change activation or existing effect journals. A late webhook or
+protection rewind invalidates an older page, including an empty response. New messages
+outside the due window do not invalidate it. Preserve these rules when changing scans.
+The authenticated `/internal/v1/runtime` page includes `diagnostics.lastError`,
+`historyBoundaryBlocked`, `awaitingCurrentProtection` and `awaitingHistoricalProtection`.
+These operational fields stay outside ordinary settings responses; `blocked` alone is
+not a reason to discard protection or replay a DELETE. See the
+[27 October audit and regression plan](../plans/2026-10-27-lastik-deletion-audit.md).
+
 Live acceptance records deletion acknowledgements separately from any unavailable
 absence readback and preserves its exact operation journal.
 

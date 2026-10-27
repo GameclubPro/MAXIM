@@ -111,6 +111,239 @@ beforeEach(async () => {
 });
 
 describe('real PostgreSQL ownership, journals and restart', () => {
+  test('stale candidate decisions cannot reopen or hide an issued deletion', async () => {
+    await enable();
+    const wake = await reserve();
+    const stale = await candidate('racing-delete');
+    const dispatch = await store.assertAndMarkDispatch(
+      stale,
+      wake.leaseToken,
+      Date.now(),
+      Date.now(),
+    );
+    for (const state of ['pending', 'protected', 'deleted', 'uncertain'] as const) {
+      await store.settle(stale, state, 'stale-worker');
+      const current = (
+        await pool.query<Candidate>(
+          "SELECT * FROM eraser_candidates WHERE message_id='racing-delete'",
+        )
+      ).rows[0]!;
+      assert.equal(current.state, 'dispatching', `stale ${state} must preserve the journal`);
+      assert.equal(current.dispatch_id, dispatch);
+    }
+    const issued = { ...stale, state: 'dispatching', dispatch_id: dispatch };
+    await store.settle(issued, 'uncertain', 'reconciliation');
+    await store.defer(stale, 'policy_changed', 1000);
+    assert.equal(await store.reconciliation('-1'), null, 'reconciliation remains deferred');
+    assert.equal(
+      (await pool.query("SELECT state FROM eraser_candidates WHERE message_id='racing-delete'"))
+        .rows[0].state,
+      'uncertain',
+    );
+    await store.settle(issued, 'deleted', 'deleted');
+    assert.equal((await store.snapshot('-1')).deletedCount, 1);
+  });
+  test('429 retry requires its deadline and a fresh attempt; an old acknowledgement cannot settle it', async () => {
+    await enable();
+    const wake = await reserve();
+    const row = await candidate('rate-limited');
+    const first = {
+      ...row,
+      state: 'dispatching',
+      dispatch_id: await store.assertAndMarkDispatch(row, wake.leaseToken, Date.now(), Date.now()),
+    };
+    await store.settle(first, 'pending', 'rate_limited', 30_000);
+    let retry = (
+      await pool.query<Candidate>("SELECT * FROM eraser_candidates WHERE message_id='rate-limited'")
+    ).rows[0]!;
+    await assert.rejects(
+      store.assertAndMarkDispatch(retry, wake.leaseToken, Date.now(), Date.now()),
+      { code: 'ERASER_GUARD_CHANGED' },
+    );
+    await pool.query(
+      "UPDATE eraser_candidates SET next_attempt_at=clock_timestamp() WHERE message_id='rate-limited'",
+    );
+    retry = (
+      await pool.query<Candidate>("SELECT * FROM eraser_candidates WHERE message_id='rate-limited'")
+    ).rows[0]!;
+    const second = {
+      ...retry,
+      state: 'dispatching',
+      dispatch_id: await store.assertAndMarkDispatch(
+        retry,
+        wake.leaseToken,
+        Date.now(),
+        Date.now(),
+      ),
+    };
+    assert.notEqual(first.dispatch_id, second.dispatch_id);
+    await store.settle(first, 'deleted', 'deleted');
+    assert.equal((await store.snapshot('-1')).deletedCount, 0);
+    await store.settle(second, 'deleted', 'deleted');
+    assert.equal((await store.snapshot('-1')).deletedCount, 1);
+  });
+  test('removal ingestion waits for the policy before locking its candidate', async () => {
+    await enable();
+    await candidate('removed-race');
+    const blocker = await pool.connect();
+    let ingestion: Promise<void> | undefined;
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query("SELECT chat_id FROM eraser_policies WHERE chat_id='-1' FOR UPDATE");
+      ingestion = store.ingest(
+        { update_type: 'message_removed', chat_id: -1, message_id: 'removed-race' },
+        'removed-race-receipt',
+      );
+      const deadline = Date.now() + 3000;
+      for (;;) {
+        const waiting = await admin.query<{ waiting: boolean }>(
+          "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%eraser_policies%' AND pid<>pg_backend_pid()) AS waiting",
+        );
+        if (waiting.rows[0]!.waiting) break;
+        assert.ok(Date.now() < deadline, 'ingestion must reach the policy lock');
+        await delay(10);
+      }
+      await blocker.query(
+        "SELECT * FROM eraser_candidates WHERE message_id='removed-race' FOR UPDATE NOWAIT",
+      );
+      await blocker.query('COMMIT');
+      await ingestion;
+      assert.equal((await store.snapshot('-1')).deletedCount, 1);
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      await ingestion;
+    }
+  });
+  test('final dispatch rechecks evidence after waiting for a candidate row lock', async () => {
+    await enable();
+    const wake = await reserve();
+    const row = await candidate('locked-delete');
+    const blocker = await pool.connect();
+    let dispatch: Promise<string> | undefined;
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query(
+        "SELECT * FROM eraser_candidates WHERE message_id='locked-delete' FOR UPDATE",
+      );
+      const checked = Date.now();
+      const pinChecked = checked - 4000;
+      dispatch = store.assertAndMarkDispatch(row, wake.leaseToken, checked, pinChecked);
+      const rejected = assert.rejects(dispatch, { code: 'ERASER_GUARD_CHANGED' });
+      const deadline = Date.now() + 3000;
+      for (;;) {
+        const waiting = await admin.query<{ waiting: boolean }>(
+          "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT * FROM eraser_candidates WHERE chat_id=%') AS waiting",
+        );
+        if (waiting.rows[0]!.waiting) break;
+        assert.ok(Date.now() < deadline, 'dispatch must reach the real candidate row lock');
+        await delay(10);
+      }
+      await delay(Math.max(0, pinChecked + 5100 - Date.now()));
+      await blocker.query('COMMIT');
+      await rejected;
+      assert.equal(
+        (await pool.query("SELECT state FROM eraser_candidates WHERE message_id='locked-delete'"))
+          .rows[0].state,
+        'pending',
+      );
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+      await dispatch?.catch(() => {});
+    }
+  });
+  test('a late webhook during a live page cannot be skipped when that page finishes', async () => {
+    await enable();
+    const at = source();
+    await pool.query(
+      "UPDATE eraser_policies SET live_floor=$1,history_complete=true WHERE chat_id='-1'",
+      [at],
+    );
+    const wake = await reserve();
+    const policy = (await store.active('-1', wake.leaseToken))!;
+    await store.openScan(policy, 'live');
+    const late = { id: 'late', chatId: '-1', authorId: '5', isBot: false, sourceMs: at - 1000 };
+    await store.ingest({ update_type: 'message_created' }, 'late-receipt', late);
+    await store.savePage(policy, 'live', []);
+    const fresh = (await store.active('-1', wake.leaseToken))!;
+    const window = await store.openScan(fresh, 'live');
+    assert.ok(
+      window && window.lower! <= late.sourceMs,
+      'the late message remains in a scan window',
+    );
+  });
+  test('protection rewind cannot be overwritten by a historical page already in flight', async () => {
+    await enable();
+    const at = source();
+    await pool.query(
+      "UPDATE eraser_policies SET history_cursor=$1,deferred_from=$2,deferred_to=$2 WHERE chat_id='-1'",
+      [at, at + 1000],
+    );
+    const wake = await reserve();
+    const policy = (await store.active('-1', wake.leaseToken))!;
+    await store.protect('-1', protection({ sourceRevision: 2 }));
+    await store.savePage(policy, 'history', []);
+    const fresh = (await store.policy('-1'))!;
+    assert.equal(fresh.history_complete, false);
+    assert.equal(Number(fresh.history_cursor), at + 1000);
+  });
+  test('ordinary new messages do not invalidate a due page or starve history scanning', async () => {
+    await enable();
+    const at = source();
+    await pool.query("UPDATE eraser_policies SET live_floor=$1 WHERE chat_id='-1'", [at]);
+    const wake = await reserve();
+    const policy = (await store.active('-1', wake.leaseToken))!;
+    await store.openScan(policy, 'live');
+    await store.ingest({ update_type: 'message_created' }, 'new-message', {
+      id: 'new-message',
+      chatId: '-1',
+      authorId: '5',
+      isBot: false,
+      sourceMs: Date.now(),
+    });
+    const due: Message = { id: 'due', chatId: '-1', authorId: '5', isBot: false, sourceMs: at };
+    await store.savePage(policy, 'live', [due]);
+    assert.equal((await store.nextCandidates('-1'))[0]?.message_id, 'due');
+    const fresh = (await store.policy('-1'))!;
+    assert.equal(fresh.live_cursor, null);
+    assert.ok(Number(fresh.live_floor) > at);
+    const count = fresh.scanned_count;
+    await store.savePage(policy, 'live', [due]);
+    assert.equal(
+      (await store.policy('-1'))!.scanned_count,
+      count,
+      'a duplicate page cannot advance twice',
+    );
+  });
+  for (const status of [401, 429, 503]) {
+    test(`DELETE ${status} stops the current visit without attempting other messages`, async () => {
+      await enable();
+      await candidate('a-first');
+      await candidate('b-independent');
+      const attempts: string[] = [];
+      const runtime = new CleanupRuntime(
+        store,
+        transport({
+          remove: async (_chat, id, before) => {
+            await before();
+            attempts.push(id);
+            throw new MaxError(status, 'upstream_failure', status !== 429, 30_000);
+          },
+        }),
+        { enabled: true, redisUrl },
+      );
+      await runtime.visit(await reserve());
+      assert.deepEqual(attempts, ['a-first']);
+      const rows = (
+        await pool.query<Candidate>('SELECT * FROM eraser_candidates ORDER BY message_id')
+      ).rows;
+      assert.equal(rows[0]!.state, status === 429 ? 'pending' : 'uncertain');
+      assert.equal(rows[1]!.state, 'pending');
+      assert.equal(rows[1]!.attempt_count, 0);
+      assert.ok((await store.policy('-1'))!.next_run_at.getTime() > Date.now());
+    });
+  }
   test('migration is immutable/idempotent and all periods survive snapshots', async () => {
     await migrate(pool);
     for (const [i, hours] of ([24, 48, 168] as const).entries()) {
@@ -219,7 +452,13 @@ describe('real PostgreSQL ownership, journals and restart', () => {
     await enable();
     const visit = await reserve();
     const row = await candidate('before-hold');
-    await store.assertAndMarkDispatch(row, visit.leaseToken, Date.now(), Date.now());
+    const dispatch = await store.assertAndMarkDispatch(
+      row,
+      visit.leaseToken,
+      Date.now(),
+      Date.now(),
+    );
+    const issued = { ...row, state: 'dispatching', dispatch_id: dispatch };
     await assert.rejects(store.globalHolds([], [{ chatId: '-1', messageId: 'before-hold' }]), {
       code: 'ERASER_HOLD_EFFECT_PENDING',
     });
@@ -229,11 +468,11 @@ describe('real PostgreSQL ownership, journals and restart', () => {
       1,
       'negative authority survives refusal',
     );
-    await store.settle(row, 'uncertain', 'reconciliation');
+    await store.settle(issued, 'uncertain', 'reconciliation');
     await assert.rejects(store.globalHolds([], [{ chatId: '-1', messageId: 'before-hold' }]), {
       code: 'ERASER_HOLD_EFFECT_PENDING',
     });
-    await store.settle(row, 'deleted', 'confirmed_absence');
+    await store.settle(issued, 'deleted', 'deleted');
     await store.globalHolds([], [{ chatId: '-1', messageId: 'before-hold' }]);
     const future = await candidate('future-hold');
     await store.globalHolds([], [{ chatId: '-1', messageId: 'future-hold' }]);
@@ -1004,6 +1243,20 @@ test('control HTTP is authenticated and an unavailable service never falsely ack
     };
     assert.equal(reviewBody.items[0]?.intentStatus, 'AMBIGUOUS');
     assert.equal(reviewBody.items[0]?.retryAllowed, false);
+    await pool.query("UPDATE eraser_policies SET historical_deferred_from=$1 WHERE chat_id='-1'", [
+      source(),
+    ]);
+    assert.equal((await fetch(`${base}/internal/v1/runtime`)).status, 403);
+    const diagnostic = await fetch(`${base}/internal/v1/runtime`, { headers });
+    const diagnosticBody = (await diagnostic.json()) as { items: Array<{ diagnostics: unknown }> };
+    assert.deepEqual(diagnosticBody.items[0]?.diagnostics, {
+      lastError: null,
+      historyBoundaryBlocked: false,
+      awaitingCurrentProtection: false,
+      awaitingHistoricalProtection: true,
+    });
+    const publicState = await fetch(`${base}/internal/v1/chats/-1/policy`, { headers });
+    assert.equal(Object.hasOwn((await publicState.json()) as object, 'diagnostics'), false);
     const checksBeforeRemoval = rightsChecks;
     await store.ingest({ update_type: 'bot_removed', chat_id: -1 }, 'authenticated-bot-removal');
     assert.equal((await store.snapshot('-1')).connectionStatus, 'missing');

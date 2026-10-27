@@ -203,6 +203,12 @@ export function createHttpServer(
               nextRunAt: policy.next_run_at.toISOString(),
               hasTerminalReview: flags.review,
               hasUnresolvedReceipt: flags.uncertain,
+              diagnostics: {
+                lastError: policy.last_error,
+                historyBoundaryBlocked: policy.history_gap,
+                awaitingCurrentProtection: policy.deferred_from !== null,
+                awaitingHistoricalProtection: policy.historical_deferred_from !== null,
+              },
               updatedAt: policy.updated_at.toISOString(),
             });
           }
