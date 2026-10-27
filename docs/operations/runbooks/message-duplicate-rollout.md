@@ -331,8 +331,24 @@ current/original HTTP 404 at this boundary may end the inline action after an ex
 SQL update commits the retry. This returns no DELETE proof and runs no sanction or notice;
 the intent, action claim, reasons and original deadline remain intact. Failed persistence,
 changed ownership, later checks and previously attempted intents retain the failure fence.
-Initial qualification uses its separate unused-claim revocation; neither path treats an
-unstructured 404 as confirmed absence. Immediate DELETE does not use the irreversible-action
+Initial qualification must not discard a detected duplicate merely because an exact current/original
+GET returns an unproven 404 or the typed pre-dispatch quota refusal. The inline path first persists
+one job in the existing `message-duplicates` queue using its durable canonical receipt, unchanged
+settings/control digest and original action deadline. Only successful handoff returns `DEFERRED`;
+queue failure still fails the handler and retains its fence. The SQL action claim and cleanup
+obligation stay owned. Without a durable source receipt, the existing unused-claim revocation
+remains the fallback. No path treats an unstructured 404 as confirmed absence.
+
+The same worker resumes TEXT and plain MESSAGE qualification directly from their retained receipt
+and history, without media downloads or candidate-cache work. Media qualification keeps its existing
+queue owner on that source-read failure instead of completing and revoking the job. Both use the
+existing finite retries and original ten-minute maximum; they never replay the webhook, extend a
+window, undo a revocation or reset uncertain effects. Fresh settings, author immunity, source holds,
+both message contents and final dispatch guards remain mandatory. Terminal rejection/expiry still
+releases only an unused exact claim through the existing cleanup journal. Native initial-dispatch
+tests cover mirrored receipts, following same-chat progress, actual BullMQ recovery, a repeated
+queued refusal, and disable/edit/revocation/expiry refusal. Other lookup errors retain their existing
+failure behavior; this correction is not a guarantee through an indefinite MAX outage. Immediate DELETE does not use the irreversible-action
 ledger, so zero DELETE ledger rows alone cannot prove that an intent has never executed.
 
 The closed dashboard reports the active `message-duplicates` queue rather than the retired photo

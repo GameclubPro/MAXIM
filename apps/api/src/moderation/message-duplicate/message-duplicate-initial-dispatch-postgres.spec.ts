@@ -1,4 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { Queue, QueueEvents, Worker } from 'bullmq';
+import {
+  MessageDuplicateEnqueueService,
+  type MessageDuplicateJob,
+} from './message-duplicate.queue';
+import { MessageDuplicateAdmissionService } from './message-duplicate-admission.service';
+import { MessageDuplicateEnforcementService } from './message-duplicate-enforcement.service';
+import { MessageDuplicateMediaService } from './message-duplicate-media.service';
+import { MessageDuplicateProcessor } from './message-duplicate.processor';
+import type { ModerationExecutionService } from '../moderation-execution.service';
 import { MaxApiInternalRateLimitError } from '../../max/max-client.service';
 import type {
   ChatSettings,
@@ -23,8 +33,11 @@ jest.setTimeout(60_000);
 
 describeStores('native duplicate source unavailability at the exact dispatch boundary', () => {
   let h: MultibotHarness | undefined;
+  let disposeRecovery: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
+    await disposeRecovery?.();
+    disposeRecovery = undefined;
     jest.restoreAllMocks();
     await h?.dispose();
     h = undefined;
@@ -34,7 +47,13 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     bots: number,
     duplicateBotMessageEnabled = true,
     settingsOverrides: Partial<
-      Pick<ChatSettings, 'duplicateWarnEnabled' | 'duplicateMuteEnabled' | 'duplicateBanEnabled'>
+      Pick<
+        ChatSettings,
+        | 'duplicateWarnEnabled'
+        | 'duplicateMuteEnabled'
+        | 'duplicateBanEnabled'
+        | 'duplicateCompareMode'
+      >
     > = {},
   ) {
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' });
@@ -77,6 +96,78 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     // The test observes webhook completion separately from this intentionally pending work.
     await s.deleteQueue.pause();
     return { s, chatId, originalId, duplicateId, text };
+  }
+
+  async function qualificationRecovery(s: MultibotHarness) {
+    const queue = new Queue<MessageDuplicateJob>(`qualification-${randomUUID()}`, {
+      connection: { url: redisUrl },
+    });
+    const events = new QueueEvents(queue.name, { connection: { url: redisUrl } });
+    await events.waitUntilReady();
+    Object.assign(s.duplicateService, {
+      queue: new MessageDuplicateEnqueueService(
+        queue,
+        s.duplicateOrdering,
+        new MessageDuplicateAdmissionService(s.prisma as never),
+      ),
+    });
+    const media = new MessageDuplicateMediaService(
+      s.prisma as never,
+      s.counters,
+      {} as never,
+      s.duplicatePolicy,
+      s.history,
+      new MessageDuplicateEnforcementService(s.intents, s.duplicatePolicy, s.duplicateGuard),
+      s.links,
+      {} as never,
+      s.config,
+      s.max,
+      s.botContext,
+      undefined,
+      s.readiness,
+      s.legacyHolds,
+    );
+    const execution = {
+      processMessageDuplicateJob: (job, lease) =>
+        media
+          .process(job, lease, (request) => s.moderation.executeDuplicateAction(request))
+          .then(() => undefined),
+    } satisfies Pick<ModerationExecutionService, 'processMessageDuplicateJob'>;
+    const processor = new MessageDuplicateProcessor(
+      execution as never,
+      s.duplicateOrdering,
+      undefined,
+      queue,
+      s.intents,
+    );
+    const worker = new Worker<MessageDuplicateJob>(
+      queue.name,
+      (job, token) => processor.process(job, token),
+      { connection: { url: redisUrl }, autorun: false },
+    );
+    disposeRecovery = async () => {
+      await worker.close();
+      await events.close();
+      await queue.obliterate({ force: true });
+      await queue.close();
+    };
+    return {
+      queue,
+      run: async () => {
+        const jobs = await queue.getJobs(['delayed', 'waiting']);
+        expect(jobs).toHaveLength(1);
+        const job = jobs[0]!;
+        const done = job.waitUntilFinished(events, 20_000);
+        const running = worker.run();
+        if ((await job.getState()) === 'delayed') await job.promote();
+        try {
+          await done;
+        } finally {
+          await worker.close();
+          await running;
+        }
+      },
+    };
   }
 
   async function waitForReceipts(s: MultibotHarness, ids: string[]) {
@@ -535,15 +626,27 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
     },
   );
 
-  it.each(['current', 'original'] as const)(
-    'preserves same-chat progress after a local %s quota refusal during qualification',
-    async (source) => {
-      const { s, chatId, originalId, duplicateId, text } = await fixture(3);
+  it.each(
+    (['TEXT', 'MESSAGE'] as const).flatMap((mode) =>
+      (['current', 'original'] as const).map((source) => ({ mode, source })),
+    ),
+  )(
+    'recovers $mode qualification after temporary $source refusal without replaying the webhook',
+    async ({ mode, source }) => {
+      const { s, chatId, originalId, duplicateId, text } = await fixture(3, true, {
+        duplicateCompareMode: mode,
+      });
+      const recovery = await qualificationRecovery(s);
       const unavailableId = source === 'current' ? duplicateId : originalId;
       const read = s.max.getExactMessageRow.bind(s.max);
       jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
-        if (args[1] === unavailableId)
-          throw new MaxApiInternalRateLimitError('Native qualification quota', 7);
+        if (args[1] === unavailableId) {
+          if (mode === 'TEXT')
+            throw new MaxApiInternalRateLimitError('Native qualification quota', 7);
+          throw Object.assign(new Error('Native source GET unavailable'), {
+            response: { status: 404, data: {} },
+          });
+        }
         return read(...args);
       });
       const handler = jest.spyOn(s.moderation, 'handleUpdate');
@@ -561,7 +664,14 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
         where: { chatId, messageId: duplicateId, ruleCode: 'DUPLICATE_MESSAGE_ACTION' },
       });
       expect(claims).toHaveLength(1);
-      expect(claims[0]!.messageActionKey).toBeNull();
+      expect(claims[0]!.messageActionKey).not.toBeNull();
+      const [job] = await recovery.queue.getJobs(['delayed', 'waiting']);
+      expect(job).toBeDefined();
+      expect(job!.data.deadlineAtMs).toBe(at + 600_000);
+      const cleanup = await s.prisma.messageDuplicateClaimCleanup.findUniqueOrThrow({
+        where: { claimId: claims[0]!.id },
+      });
+      expect(cleanup.deadlineAt.getTime()).toBe(job!.data.deadlineAtMs);
       expect(
         await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId: duplicateId } }),
       ).toBe(0);
@@ -576,6 +686,85 @@ describeStores('native duplicate source unavailability at the exact dispatch bou
       expect((await waitForReceipts(s, [next]))[0]!.status).toBe('PROCESSED');
       expect(s.failures).toEqual([]);
       expect(s.effects).toEqual([]);
+      let queuedRefusals = mode === 'TEXT' && source === 'current' ? 1 : 0;
+      jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
+        if (args[1] === unavailableId && queuedRefusals > 0) {
+          queuedRefusals -= 1;
+          throw new MaxApiInternalRateLimitError('Temporary queued qualification quota', 7);
+        }
+        return read(...args);
+      });
+      await recovery.run();
+      const completedJob = await recovery.queue.getJob(job!.id!);
+      expect(completedJob!.attemptsMade).toBe(mode === 'TEXT' && source === 'current' ? 2 : 1);
+      const retainedClaim = await s.prisma.moderationViolationMessageClaim.findUniqueOrThrow({
+        where: { id: claims[0]!.id },
+      });
+      expect(retainedClaim.messageActionKey).toBe(claims[0]!.messageActionKey);
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId, messageId: duplicateId } },
+      });
+      expect(intent.status).toBe('SUCCEEDED');
+      expect(intent.remoteDeleteSucceededAt).not.toBeNull();
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.path === '/messages'),
+      ).toHaveLength(1);
+      expect(handler).toHaveBeenCalledTimes(2);
+      for (const id of ids) await s.moderation.processWebhookEvent(id);
+      expect(handler).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(['disabled', 'current-edited', 'original-edited', 'revoked', 'expired'] as const)(
+    'refuses deferred qualification when its authority is %s',
+    async (reason) => {
+      const { s, chatId, originalId, duplicateId, text } = await fixture(1);
+      const recovery = await qualificationRecovery(s);
+      const read = s.max.getExactMessageRow.bind(s.max);
+      jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(async (...args) => {
+        if (args[1] === duplicateId) throw new MaxApiInternalRateLimitError('Temporary quota', 7);
+        return read(...args);
+      });
+      const at = Date.now();
+      const id = await s.ingest({ chatId, messageId: duplicateId, text, at });
+      await waitForReceipts(s, [id]);
+      jest.spyOn(s.max, 'getExactMessageRow').mockImplementation(read);
+      const [job] = await recovery.queue.getJobs(['delayed', 'waiting']);
+      expect(job).toBeDefined();
+      if (reason === 'disabled') {
+        await s.prisma.chatSettings.update({
+          where: { chatId },
+          data: { antiDuplicateEnabled: false },
+        });
+      } else if (reason === 'current-edited' || reason === 'original-edited') {
+        const messageId = reason === 'current-edited' ? duplicateId : originalId;
+        const raw = s.messages.get(messageId)!;
+        s.messages.set(messageId, {
+          ...raw,
+          body: { ...(raw.body as object), text: 'New content must survive' },
+        });
+      } else if (reason === 'revoked') {
+        const claim = await s.prisma.moderationViolationMessageClaim.findFirstOrThrow({
+          where: { chatId, messageId: duplicateId, ruleCode: 'DUPLICATE_MESSAGE_ACTION' },
+        });
+        await s.authorization.revoke({
+          chatId,
+          messageId: duplicateId,
+          senderId: claim.userId,
+          eventTimestampMs: at,
+        });
+      } else {
+        await job!.updateData({ ...job!.data, deadlineAtMs: Date.now() - 1 });
+      }
+      await recovery.run();
+      expect(s.effects).toEqual([]);
+      expect(
+        await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId: duplicateId } }),
+      ).toBe(0);
+      const claim = await s.prisma.moderationViolationMessageClaim.findFirstOrThrow({
+        where: { chatId, messageId: duplicateId, ruleCode: 'DUPLICATE_MESSAGE_ACTION' },
+      });
+      expect(claim.messageActionKey).toBeNull();
     },
   );
 

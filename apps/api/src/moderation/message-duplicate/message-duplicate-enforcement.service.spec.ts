@@ -112,6 +112,75 @@ async function enforcementCase() {
 }
 
 describe('message duplicate delete-only action claims', () => {
+  it('retains a queued qualification owner after a temporary source read failure', async () => {
+    const s = await enforcementCase();
+    const failure = new Error('Temporary source lookup');
+    s.params.binding.authorization!.jobId = 'owned-job';
+    s.guard.qualify.mockRejectedValue(
+      new MessageDuplicateQualificationSourceUnavailableError('current', failure),
+    );
+    await expect(s.service.enqueue({ ...s.params, assertLease: jest.fn() })).rejects.toBe(failure);
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+    expect(s.executeFullAction).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges deferred qualification only after durable queue acceptance', async () => {
+    const s = await enforcementCase();
+    s.guard.qualify.mockRejectedValue(
+      new MessageDuplicateQualificationSourceUnavailableError(
+        'original',
+        new Error('GET unavailable'),
+      ),
+    );
+    let accept!: () => void;
+    let started!: () => void;
+    const begun = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const deferQualification = jest.fn(() => {
+      started();
+      return new Promise<void>((resolve) => {
+        accept = resolve;
+      });
+    });
+    let settled = false;
+    const running = s.service.enqueue({ ...s.params, deferQualification }).then((value) => {
+      settled = true;
+      return value;
+    });
+    await begun;
+    expect(settled).toBe(false);
+    expect(s.executeFullAction).not.toHaveBeenCalled();
+    accept();
+    const result = await running;
+    expect(result).toEqual({ kind: 'qualification_deferred' });
+    expect(duplicateEnforcementObservation(result)).toBe('DEFERRED');
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+    expect(s.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+  });
+
+  it('fails without releasing the owner when qualification handoff cannot persist', async () => {
+    const s = await enforcementCase();
+    s.guard.qualify.mockRejectedValue(
+      new MessageDuplicateQualificationSourceUnavailableError(
+        'current',
+        new Error('GET unavailable'),
+      ),
+    );
+    const failure = new Error('Queue persistence unavailable');
+    await expect(
+      s.service.enqueue({
+        ...s.params,
+        deferQualification: async () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(s.intents.releaseUnmaterializedMessageAction).not.toHaveBeenCalled();
+    expect(s.executeFullAction).not.toHaveBeenCalled();
+  });
+
   it('reports source unavailable only after the unused-claim release commits', async () => {
     const s = await enforcementCase();
     const sourceError = { response: { status: 404, data: {} } };
