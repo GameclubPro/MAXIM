@@ -264,6 +264,23 @@ export class MessageDuplicateService {
             settings: params.settings,
             update: params.update,
             executeFullAction: params.executeFullAction,
+            deferQualification: params.webhookEventId
+              ? () =>
+                  this.queue.enqueue({
+                    webhookEventId: params.webhookEventId!,
+                    chatId: message.chatId,
+                    messageId: message.messageId,
+                    eventTimestampMs,
+                    sourceCreatedAt: new Date(eventTimestampMs).toISOString(),
+                    controlRevision: policy.revision,
+                    policyRevision: params.settings.duplicatePolicyRevision,
+                    settingsDigest: result.binding.settingsDigest,
+                    actionEligible: true,
+                    // FLAG: Persist before acknowledging the handler, retaining the inline
+                    // owner's deadline. No new observation or action is admitted by this handoff.
+                    deadlineAtMs: result.binding.authorization!.deadlineAtMs,
+                  })
+              : undefined,
           }),
         );
         return finish(duplicateEnforcementObservation(enforcement));

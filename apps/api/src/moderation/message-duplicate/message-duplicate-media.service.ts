@@ -43,7 +43,10 @@ import { DUPLICATE_JOB_MAX_LIFETIME_MS } from '../photo-duplicate/photo-duplicat
 import { PhotoDuplicateSourceNotReadyError } from '../photo-duplicate/photo-duplicate.queue';
 import { isPendingWebhookTimeoutQuarantineMessage } from '../../webhook/webhook-timeout-quarantine';
 import { MessageDuplicatePolicyService } from './message-duplicate-policy.service';
-import { MessageDuplicateHistoryService } from './message-duplicate-history.service';
+import {
+  MessageDuplicateHistoryService,
+  type MessageDuplicateHistoryObservation,
+} from './message-duplicate-history.service';
 import {
   MessageDuplicateEnforcementService,
   duplicateEnforcementObservation,
@@ -53,6 +56,7 @@ import {
   canRefreshDuplicatePhotoSources,
   extractDuplicateMessageContent,
   isExactImageContent,
+  isDuplicateContentComparable,
   type DuplicateMessageContent,
 } from './message-duplicate-content';
 import {
@@ -270,7 +274,7 @@ export class MessageDuplicateMediaService {
       });
       if (
         !settings?.antiDuplicateEnabled ||
-        settings.duplicateCompareMode === 'TEXT' ||
+        (imageOnly && settings.duplicateCompareMode === 'TEXT') ||
         settings.chat.entityType !== 'CHAT' ||
         settings.chat.admins.some((admin) => admin.userId === message.senderId) ||
         settings.duplicatePolicyRevision !== job.policyRevision ||
@@ -300,6 +304,78 @@ export class MessageDuplicateMediaService {
         return finish('EVENT_TIME_REJECTED');
       }
       const content = extractDuplicateMessageContent(source.update.raw);
+      const textOnly =
+        !imageOnly && (settings.duplicateCompareMode === 'TEXT' || content.media.length === 0);
+      const enforce = async (observation: MessageDuplicateHistoryObservation) => {
+        const result = observation.match;
+        if (observation.outcome === 'MATCHED') comparedOutcome = 'MATCHED_ACTION_FAILED';
+        if (result) {
+          if (job.actionEligible !== true || !(await lease.resolveActionEligibility())) {
+            this.metrics?.record('media.action_ineligible');
+            return finish('MATCHED_INELIGIBLE');
+          }
+          result.binding.authorization = {
+            jobId: job.idempotencyKey,
+            eventTimestampMs: job.eventTimestampMs,
+            deadlineAtMs: Math.min(
+              job.deadlineAtMs,
+              result.binding.eventTimestampMs + DUPLICATE_JOB_MAX_LIFETIME_MS,
+              textOnly ? Number.MAX_SAFE_INTEGER : (dailyWindow?.endMs ?? Number.MAX_SAFE_INTEGER),
+            ),
+          };
+          const enforcement = await measureDuplicatePhase(this.metrics, 'enforcement', () =>
+            this.enforcement.enqueue({
+              ...result,
+              chatId: job.chatId,
+              botId: source.botId,
+              readSelectedBotId: () => this.botContext.getActiveBotId() ?? source.botId,
+              sourceCreatedAt: message.createdAt,
+              text: content.text,
+              settings,
+              update: source.update,
+              executeFullAction: executeFullAction
+                ? async (request) => {
+                    businessExecutionStarted = true;
+                    return this.botContext.runWithBot(source.botId, () =>
+                      executeFullAction({
+                        ...request,
+                        rulesPublishedUrl: settings.chat.rules?.publishedUrl ?? null,
+                        rulesPublishedMessageId: settings.chat.rules?.publishedMessageId ?? null,
+                      }),
+                    );
+                  }
+                : undefined,
+              assertLease: lease.assertOwned,
+            }),
+          );
+          return finish(duplicateEnforcementObservation(enforcement));
+        }
+        return finish(
+          observation.outcome === 'MATCHED' ? 'CONTENT_UNVERIFIED' : observation.outcome,
+        );
+      };
+      if (textOnly) {
+        // FLAG: Deferred text qualification reuses the immutable receipt and existing history.
+        // It needs no media downloads/candidate cache; final guards still read both MAX sources.
+        supported = isDuplicateContentComparable(
+          content,
+          settings.duplicateCompareMode === 'TEXT' ? 'TEXT' : 'MESSAGE',
+        );
+        const observation = await measureDuplicatePhase(this.metrics, 'history', () =>
+          this.history.observeWithOutcome({
+            content,
+            chatId: job.chatId,
+            userId: message.senderId,
+            messageId: job.messageId,
+            eventTimestampMs: job.eventTimestampMs,
+            publishedAtMs: duplicatePublicationTime(source.update) ?? 0,
+            controlRevision: policy.revision,
+            settings,
+          }),
+        );
+        lease.assertOwned();
+        return await enforce(observation);
+      }
       if (
         !content.complete ||
         content.media.length === 0 ||
@@ -526,47 +602,7 @@ export class MessageDuplicateMediaService {
         lease.assertOwned();
         await this.redis.setStringWithTtl(key, JSON.stringify(ownPointer), windowSec);
       }
-      if (result) {
-        if (job.actionEligible !== true || !(await lease.resolveActionEligibility())) {
-          this.metrics?.record('media.action_ineligible');
-          return finish('MATCHED_INELIGIBLE');
-        }
-        result.binding.authorization = {
-          jobId: job.idempotencyKey,
-          eventTimestampMs: job.eventTimestampMs,
-          deadlineAtMs: Math.min(
-            job.deadlineAtMs,
-            result.binding.eventTimestampMs + DUPLICATE_JOB_MAX_LIFETIME_MS,
-            dailyWindow?.endMs ?? Number.MAX_SAFE_INTEGER,
-          ),
-        };
-        const enforcement = await measureDuplicatePhase(this.metrics, 'enforcement', () =>
-          this.enforcement.enqueue({
-            ...result,
-            chatId: job.chatId,
-            botId: source.botId,
-            readSelectedBotId: () => this.botContext.getActiveBotId() ?? source.botId,
-            sourceCreatedAt: message.createdAt,
-            text: content.text,
-            settings,
-            update: source.update,
-            executeFullAction: executeFullAction
-              ? async (request) => {
-                  businessExecutionStarted = true;
-                  return this.botContext.runWithBot(source.botId, () =>
-                    executeFullAction({
-                      ...request,
-                      rulesPublishedUrl: settings.chat.rules?.publishedUrl ?? null,
-                      rulesPublishedMessageId: settings.chat.rules?.publishedMessageId ?? null,
-                    }),
-                  );
-                }
-              : undefined,
-            assertLease: lease.assertOwned,
-          }),
-        );
-        return finish(duplicateEnforcementObservation(enforcement));
-      }
+      if (result) return await enforce(observation);
       return finish(
         baselineUnverified || observation.outcome === 'MATCHED'
           ? 'CONTENT_UNVERIFIED'
