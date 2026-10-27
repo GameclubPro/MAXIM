@@ -9,6 +9,7 @@ import {
   PublisherAutoReplyMatchKind,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { lockWebhookClaimReceiptAdmission } from '../webhook/webhook-semantic-claim-fence';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
   WEBHOOK_PREPARATION_DEFER_DEFAULT_MS,
@@ -23,6 +24,7 @@ import {
 import { PublisherAutoReplyFloodGateService } from './publisher-auto-reply-flood-gate.service';
 import {
   PublisherAutoReplySourceFenceService,
+  PublisherAutoReplySourceReceiptHeldError,
   type PublisherAutoReplySourceFenceState,
 } from './publisher-auto-reply-source-fence.service';
 import {
@@ -554,27 +556,37 @@ export class PublisherAutoReplyProducerService {
         sourceWebhookEventId,
       });
     } catch (error: unknown) {
+      if (error instanceof PublisherAutoReplySourceReceiptHeldError) return;
       fenceError = error;
     }
     const now = new Date();
-    await this.prisma.publisherAutoReplyDelivery.updateMany({
-      where: {
-        chatId,
-        sourceMessageId,
-        publisherBotId: this.publisherBotId,
-        status: {
-          in: [PublisherAutoReplyDeliveryStatus.PENDING, PublisherAutoReplyDeliveryStatus.SENDING],
+    // FLAG: Cancellation may have returned before this receipt was closed. Hold
+    // its current row through the journal write, including the transient-error path.
+    await this.prisma.$transaction(async (tx) => {
+      const receiptId = sourceWebhookEventId?.trim();
+      if (receiptId && !(await lockWebhookClaimReceiptAdmission(tx, receiptId))) return;
+      await tx.publisherAutoReplyDelivery.updateMany({
+        where: {
+          chatId,
+          sourceMessageId,
+          publisherBotId: this.publisherBotId,
+          status: {
+            in: [
+              PublisherAutoReplyDeliveryStatus.PENDING,
+              PublisherAutoReplyDeliveryStatus.SENDING,
+            ],
+          },
+          dispatchStartedAt: null,
         },
-        dispatchStartedAt: null,
-      },
-      data: {
-        status: PublisherAutoReplyDeliveryStatus.CANCELED,
-        canceledAt: now,
-        lockedAt: null,
-        lockToken: null,
-        failureCode: updateType === 'message_edited' ? 'SOURCE_EDITED' : 'SOURCE_REMOVED',
-        failureMessage: null,
-      },
+        data: {
+          status: PublisherAutoReplyDeliveryStatus.CANCELED,
+          canceledAt: now,
+          lockedAt: null,
+          lockToken: null,
+          failureCode: updateType === 'message_edited' ? 'SOURCE_EDITED' : 'SOURCE_REMOVED',
+          failureMessage: null,
+        },
+      });
     });
     if (fenceError) {
       throw new PublisherAutoReplyEnqueuePendingError(fenceError);

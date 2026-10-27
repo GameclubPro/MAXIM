@@ -71,9 +71,10 @@ import {
 } from './webhook-semantic-event-key';
 import { writeWebhookPayload } from './webhook-payload-write';
 import {
-  DORMANT_BOT_OBSERVATION_MARKER,
-  settleDormantWebhookObservation,
-} from './webhook-dormant-observation';
+  lockWebhookClaimReceiptAdmission,
+  tryLockWebhookSemanticClaimFences,
+} from './webhook-semantic-claim-fence';
+import { settleDormantWebhookObservation } from './webhook-dormant-observation';
 import {
   buildWebhookExecutionDeadlineAt,
   hasExpiredWebhookReadinessWait,
@@ -787,14 +788,11 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
     }
 
     const executionAdmitted = await this.prisma.$transaction(async (tx) => {
-      // FLAG: Serialize claim creation with receipt-only dormant settlement. A task
-      // holding an older receipt snapshot must never execute an observed-only message.
-      const receipts = await tx.$queryRaw<Array<{ errorMessage: string | null }>>`
-        SELECT error_message AS "errorMessage" FROM webhook_events
-        WHERE id = ${webhookEventId} FOR UPDATE
-      `;
-      if (receipts.some((receipt) => receipt.errorMessage === DORMANT_BOT_OBSERVATION_MARKER))
-        return false;
+      // FLAG: A stale preparation snapshot cannot add semantic authority after
+      // receipt closure. Contention retries before business start, never drops work.
+      if (!(await tryLockWebhookSemanticClaimFences(tx, [semanticKey])))
+        throw new WebhookPreparationDeferredError('Semantic claim admission is busy', 1_000);
+      if (!(await lockWebhookClaimReceiptAdmission(tx, webhookEventId))) return false;
       // FLAG: Completion locks an existing claim before settling its receipt. Read its
       // committed identity without a row lock; an INSERT conflict here would invert
       // that order while admission holds the receipt and deadlock the two paths.
