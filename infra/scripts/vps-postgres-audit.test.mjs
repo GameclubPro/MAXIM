@@ -22,6 +22,7 @@ import {
   buildPublisherPublicationPrivilegesSql,
 } from './publisher-publications-audit.mjs';
 import { buildNetworkStatisticsAuditSql } from './network-statistics-audit.mjs';
+import { HELD_RECEIPT_COLUMNS, heldReceiptPrivilegesSql } from './webhook-held-receipt-audit.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const audit = resolve(root, 'infra/scripts/vps-postgres-audit.sh');
@@ -1176,6 +1177,205 @@ test('owner proof is opt-in, fixed, preserves cleanup and suppresses raw databas
   assert.equal(runAudit(data, ['all']).status, 0);
   assert.doesNotMatch(readFileSync(data.sql, 'utf8'), /'audit', 'webhook_owner_proof'/u);
 });
+
+test('held receipt catalog is opt-in, read-only and keeps database errors private', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { force: true, recursive: true }));
+  for (const options of [[], ['--explain']]) {
+    const result = runAudit(data, ['webhook-held-receipt', ...options]);
+    assert.equal(result.status, 0, result.stderr);
+    const sql = readFileSync(data.sql, 'utf8');
+    assert.match(sql, /^BEGIN READ ONLY;$/mu);
+    assert.match(sql, /held_receipt_privileges_ready/u);
+    assert.match(sql, /held_receipt_indexes_ready/u);
+    assert.match(sql, /'audit',\s*'webhook_held_receipt'/u);
+    assert.equal(sql.includes('EXPLAIN (FORMAT JSON)'), options.length > 0);
+    assert.doesNotMatch(sql, /EXPLAIN ANALYZE|FOR UPDATE/u);
+    const dockerArgs = readFileSync(data.dockerArgs, 'utf8');
+    for (const expected of [
+      'search_path=pg_catalog,public,pg_temp',
+      'default_transaction_read_only=on',
+      'statement_timeout=2500ms',
+      'lock_timeout=250ms',
+      'work_mem=1MB',
+    ])
+      assert.ok(dockerArgs.includes(expected), expected);
+    assert.equal(
+      runConnect(data, ['postgres-audit', 'webhook-held-receipt', ...options]).status,
+      0,
+    );
+    assert.match(readFileSync(data.sshArgs, 'utf8'), /webhook-held-receipt/u);
+  }
+  for (const options of [
+    ['SELECT 1'],
+    ['--apply'],
+    ['/tmp/private-query.sql'],
+    ['private-receipt'],
+    ['--privileges'],
+    ['--explain', '--explain'],
+  ]) {
+    rmSync(data.dockerArgs, { force: true });
+    rmSync(data.sshArgs, { force: true });
+    assert.equal(runAudit(data, ['webhook-held-receipt', ...options]).status, 2);
+    assert.equal(
+      runConnect(data, ['postgres-audit', 'webhook-held-receipt', ...options]).status,
+      2,
+    );
+    assert.equal(existsSync(data.dockerArgs), false);
+    assert.equal(existsSync(data.sshArgs), false);
+  }
+  const failed = runAudit(data, ['webhook-held-receipt'], { MOCK_AUDIT_FAIL: '1' });
+  assert.equal(failed.status, 7);
+  assert.match(failed.stderr, /held_receipt_unavailable/u);
+  assert.doesNotMatch(failed.stdout + failed.stderr, /fixture-event-0001|ERROR near/u);
+  assert.match(readFileSync(data.cleanupArgs, 'utf8'), /pg_terminate_backend/u);
+  for (const mode of ['queue', 'all']) {
+    assert.equal(runAudit(data, [mode]).status, 0);
+    const sql = readFileSync(data.sql, 'utf8');
+    assert.match(sql, /held_receipt_privileges_ready/u);
+    assert.doesNotMatch(sql, /'audit',\s*'webhook_held_receipt'/u);
+  }
+});
+
+async function assertHeldReceiptProvisioning(engine, role = 'maxim_audit') {
+  const localSql = (sql) =>
+    sql.replaceAll('maxim_audit', role).replaceAll('held_receipt_extra', `${role}_extra`);
+  const database = {
+    exec: (sql) => engine.exec(localSql(sql)),
+    query: (sql) => engine.query(localSql(sql)),
+  };
+  const source = readFileSync(provision, 'utf8');
+  const grantStart = source.indexOf('DO $webhook_held_receipt_grants$');
+  const grantEndMarker = '$webhook_held_receipt_grants$;';
+  const grantEnd = source.indexOf(grantEndMarker, grantStart) + grantEndMarker.length;
+  assert.notEqual(grantStart, -1);
+  assert.ok(grantEnd > grantStart);
+  const grantSql = source.slice(grantStart, grantEnd);
+  const verifyStart = source.indexOf('  -- FLAG: Effective PUBLIC/inherited excess');
+  const verifyEnd = source.indexOf('  -- FLAG: Zero or all eight', verifyStart);
+  assert.notEqual(verifyStart, -1);
+  assert.ok(verifyEnd > verifyStart);
+  const verifySql = `DO $verify_held_receipt$ BEGIN\n${source.slice(verifyStart, verifyEnd)}END\n$verify_held_receipt$;`;
+  assert.equal(Object.values(HELD_RECEIPT_COLUMNS).flat().length, 28);
+  assert.doesNotMatch(
+    grantSql,
+    /original_snapshot|owner_snapshot|claim_snapshot|settings_snapshot|\battestation\b|raw_payload|normalized_payload/u,
+  );
+  await database.exec(
+    'CREATE ROLE maxim_audit LOGIN; GRANT USAGE ON SCHEMA public TO maxim_audit;',
+  );
+  const readiness = async (requireAll) => {
+    await database.exec('SET ROLE maxim_audit');
+    try {
+      return (await database.query(heldReceiptPrivilegesSql(requireAll))).rows[0]
+        .held_receipt_privileges_ready;
+    } finally {
+      await database.exec('RESET ROLE');
+    }
+  };
+  assert.equal(await readiness(false), true);
+  assert.equal(await readiness(true), false);
+  for (const [table, columns] of Object.entries(HELD_RECEIPT_COLUMNS)) {
+    await database.exec(
+      `CREATE TABLE ${table} (${columns.map((column) => `${column} text`).join(',')}, private_snapshot jsonb);`,
+    );
+  }
+  await database.exec(grantSql);
+  assert.equal(await readiness(true), true);
+  await database.exec(verifySql);
+  const grants = (
+    await database.query(`SELECT table_name, column_name FROM information_schema.role_column_grants
+    WHERE grantee='maxim_audit' AND table_schema='public' ORDER BY table_name,column_name`)
+  ).rows;
+  assert.deepEqual(
+    grants.map((row) => `${row.table_name}.${row.column_name}`),
+    Object.entries(HELD_RECEIPT_COLUMNS)
+      .flatMap(([table, columns]) => columns.map((column) => `${table}.${column}`))
+      .sort(),
+  );
+  // FLAG: Revoking a table privilege also revokes its explicit column privileges.
+  // Roll back each excess fixture to preserve the exact baseline grant group.
+  for (const grant of [
+    'GRANT SELECT(private_snapshot) ON webhook_legacy_recoveries TO PUBLIC',
+    'GRANT UPDATE(disposition) ON webhook_legacy_recoveries TO maxim_audit',
+    'GRANT SELECT ON webhook_source_abandonments TO maxim_audit',
+    'CREATE ROLE held_receipt_extra; GRANT SELECT(private_snapshot) ON webhook_backlog_receipts TO held_receipt_extra; GRANT held_receipt_extra TO maxim_audit',
+  ]) {
+    await database.exec(`BEGIN; ${grant}`);
+    try {
+      assert.equal(await readiness(false), false);
+      await assert.rejects(
+        database.exec(verifySql),
+        /held receipt column privileges are not exact/u,
+      );
+    } finally {
+      await database.exec('ROLLBACK');
+    }
+  }
+  assert.equal(await readiness(true), true);
+  await database.exec(
+    'REVOKE SELECT(sealed_at) ON webhook_legacy_sealed_authorities FROM maxim_audit',
+  );
+  assert.equal(await readiness(false), false);
+  await assert.rejects(database.exec(verifySql), /held receipt column privileges are not exact/u);
+  for (const [table, columns] of Object.entries(HELD_RECEIPT_COLUMNS))
+    await database.exec(`REVOKE SELECT(${columns.join(',')}) ON ${table} FROM maxim_audit`);
+  await database.exec('ALTER TABLE webhook_legacy_sealed_authorities DROP COLUMN sealed_at');
+  await database.exec(grantSql);
+  assert.equal(await readiness(false), true);
+  assert.equal(await readiness(true), false);
+  await database.exec(verifySql);
+}
+
+test('held receipt provisioning grants only the complete scalar metadata contract', async (t) => {
+  const database = new PGlite();
+  t.after(() => database.close());
+  await assertHeldReceiptProvisioning(database);
+});
+
+test(
+  'native held receipt provisioning preserves exact grants and rejects effective excess',
+  { skip: !nativePostgresUrl, timeout: 30_000 },
+  async () => {
+    const address = new URL(nativePostgresUrl);
+    assert.ok(
+      ['127.0.0.1', 'localhost', '[::1]'].includes(address.hostname) &&
+        address.pathname.includes('race_test'),
+      'Native held receipt grants require disposable local PostgreSQL race_test',
+    );
+    const { default: pg } = await import('pg');
+    const suffix = randomUUID().replaceAll('-', '');
+    const name = `race_test_held_grants_${suffix}`;
+    const role = `held_grants_${suffix}`;
+    const admin = new pg.Client({ connectionString: nativePostgresUrl });
+    const childUrl = new URL(address);
+    childUrl.pathname = `/${name}`;
+    const database = new pg.Client({
+      connectionString: childUrl.href,
+      connectionTimeoutMillis: 5000,
+      query_timeout: 10_000,
+      options: '-c statement_timeout=5000 -c lock_timeout=250 -c timezone=UTC',
+    });
+    // FLAG: Grants and schema changes belong only to a new disposable database
+    // and unique fixture roles; production URLs fail before any connection.
+    database.exec = (sql) => database.query(sql);
+    let created = false;
+    try {
+      await admin.connect();
+      await admin.query(`CREATE DATABASE "${name}" TEMPLATE template0`);
+      created = true;
+      await database.connect();
+      await assertHeldReceiptProvisioning(database, role);
+    } finally {
+      await database.end();
+      if (created) {
+        await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+        await admin.query(`DROP ROLE IF EXISTS ${role}, ${role}_extra`);
+      }
+      await admin.end();
+    }
+  },
+);
 
 test('queue audit uses the dedicated role and a hard read-only resource envelope', (t) => {
   const data = fixture();

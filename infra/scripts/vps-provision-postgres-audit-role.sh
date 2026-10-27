@@ -44,6 +44,8 @@ local Docker-socket access under the production pg_hba rules, with:
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported
   - 25 owner-proof columns across execution claims and action ledger; source keys,
     lease/dispatch tokens and command journal are join/check-only and never report output
+  - 28 optional held-receipt scalar metadata columns; identities and seal bindings
+    are join/check-only, with no payload, snapshot, attestation or effect authority
   - no publication content, media, tokens or raw permission payloads
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
@@ -144,7 +146,10 @@ BEGIN
         'publications', 'publication_schedules', 'publication_occurrences',
         'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
         'managed_broadcast_deliveries', 'managed_broadcasts', 'chats', 'commercial_review_samples', '_prisma_migrations',
-        'webhook_execution_claims', 'max_action_ledger'
+        'webhook_execution_claims', 'max_action_ledger',
+        'webhook_legacy_recoveries', 'webhook_legacy_sealed_authorities',
+        'webhook_legacy_quiescence_certificates', 'webhook_source_abandonments',
+        'webhook_backlog_receipts'
         , 'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
         'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
         'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
@@ -565,6 +570,40 @@ BEGIN
   END IF;
 END
 $webhook_owner_proof_grants$;
+-- FLAG: Grant the complete scalar-only group or none. Scope and seal matches are
+-- diagnostics; snapshots, attestation JSON and source/effect evidence stay unreadable.
+DO $webhook_held_receipt_grants$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM (VALUES
+      ('webhook_legacy_recoveries', ARRAY['id', 'chat_id', 'message_id', 'user_id',
+        'owner_webhook_event_id', 'certificate_id', 'authority_version', 'disposition']),
+      ('webhook_legacy_sealed_authorities', ARRAY['id', 'certificate_id', 'authority_version',
+        'source_sha', 'image_id', 'attestation_digest', 'preview_sha256', 'sealed_at']),
+      ('webhook_legacy_quiescence_certificates', ARRAY['id', 'authority_version', 'source_sha',
+        'image_id', 'attestation_digest', 'preview_sha256', 'quiesced_at', 'sealed_at']),
+      ('webhook_source_abandonments', ARRAY['chat_id', 'message_id']),
+      ('webhook_backlog_receipts', ARRAY['receipt_id', 'semantic_key'])
+    ) required(table_name, columns)
+    CROSS JOIN LATERAL unnest(required.columns) expected(column_name)
+    LEFT JOIN pg_attribute attribute ON attribute.attrelid = to_regclass('public.' || required.table_name)
+      AND attribute.attname = expected.column_name AND attribute.attnum > 0 AND NOT attribute.attisdropped
+    WHERE attribute.attnum IS NULL
+  ) THEN
+    GRANT SELECT (id, chat_id, message_id, user_id, owner_webhook_event_id,
+      certificate_id, authority_version, disposition)
+      ON TABLE public.webhook_legacy_recoveries TO maxim_audit;
+    GRANT SELECT (id, certificate_id, authority_version, source_sha, image_id,
+      attestation_digest, preview_sha256, sealed_at)
+      ON TABLE public.webhook_legacy_sealed_authorities TO maxim_audit;
+    GRANT SELECT (id, authority_version, source_sha, image_id, attestation_digest,
+      preview_sha256, quiesced_at, sealed_at)
+      ON TABLE public.webhook_legacy_quiescence_certificates TO maxim_audit;
+    GRANT SELECT (chat_id, message_id) ON TABLE public.webhook_source_abandonments TO maxim_audit;
+    GRANT SELECT (receipt_id, semantic_key) ON TABLE public.webhook_backlog_receipts TO maxim_audit;
+  END IF;
+END
+$webhook_held_receipt_grants$;
 GRANT pg_read_all_stats TO maxim_audit;
 
 ALTER ROLE maxim_audit RESET ALL;
@@ -814,6 +853,36 @@ BEGIN
     RAISE EXCEPTION 'maxim_audit owner proof column privileges are not exact';
   END IF;
 
+  -- FLAG: Effective PUBLIC/inherited excess and every mutation privilege must fail
+  -- provisioning before a held-receipt report can admit the optional scalar group.
+  IF (
+    WITH allowed(table_name, columns) AS (VALUES
+      ('webhook_legacy_recoveries', ARRAY['id', 'chat_id', 'message_id', 'user_id',
+        'owner_webhook_event_id', 'certificate_id', 'authority_version', 'disposition']),
+      ('webhook_legacy_sealed_authorities', ARRAY['id', 'certificate_id', 'authority_version',
+        'source_sha', 'image_id', 'attestation_digest', 'preview_sha256', 'sealed_at']),
+      ('webhook_legacy_quiescence_certificates', ARRAY['id', 'authority_version', 'source_sha',
+        'image_id', 'attestation_digest', 'preview_sha256', 'quiesced_at', 'sealed_at']),
+      ('webhook_source_abandonments', ARRAY['chat_id', 'message_id']),
+      ('webhook_backlog_receipts', ARRAY['receipt_id', 'semantic_key'])
+    ), relations AS (
+      SELECT table_name, columns, to_regclass('public.' || table_name) AS oid FROM allowed
+    )
+    SELECT
+      (SELECT count(*) FROM relations r JOIN pg_attribute a ON a.attrelid = r.oid
+        WHERE a.attnum > 0 AND NOT a.attisdropped
+          AND has_column_privilege('maxim_audit', r.oid, a.attnum, 'SELECT')) NOT IN (0, 28)
+      OR EXISTS (SELECT 1 FROM relations r WHERE r.oid IS NOT NULL
+        AND has_table_privilege('maxim_audit', r.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
+      OR EXISTS (SELECT 1 FROM relations r JOIN pg_attribute a ON a.attrelid = r.oid
+        WHERE a.attnum > 0 AND NOT a.attisdropped
+          AND (has_column_privilege('maxim_audit', r.oid, a.attnum, 'INSERT,UPDATE,REFERENCES')
+            OR (has_column_privilege('maxim_audit', r.oid, a.attnum, 'SELECT')
+              AND NOT (a.attname = ANY(r.columns)))))
+  ) THEN
+    RAISE EXCEPTION 'maxim_audit held receipt column privileges are not exact';
+  END IF;
+
   -- FLAG: Zero or all eight effective receipt SELECTs preserve old catalogs and
   -- reject partial, inherited, PUBLIC, table-level and mutation privileges.
   IF (
@@ -1007,6 +1076,9 @@ BEGIN
               'publication_targets', 'managed_entity_access_edges', 'managed_bot_chat_catalog',
               'managed_broadcast_deliveries', 'managed_broadcasts', 'chats', 'commercial_review_samples', '_prisma_migrations',
               'webhook_execution_claims', 'max_action_ledger',
+              'webhook_legacy_recoveries', 'webhook_legacy_sealed_authorities',
+              'webhook_legacy_quiescence_certificates', 'webhook_source_abandonments',
+              'webhook_backlog_receipts',
               'channel_audience_snapshots', 'channel_stats_sync_states', 'channel_posts', 'channel_post_view_snapshots',
               'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
               'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
