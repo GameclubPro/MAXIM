@@ -40,7 +40,7 @@ test('rollback refuses a cache read ahead of the activation gate', () => {
     /probes dormant bots/u,
   );
 });
-test('rollback refuses claim admission ahead of the durable dormant marker', () => {
+test('rollback refuses claim admission ahead of the shared durable receipt guard', () => {
   assert.throws(
     () =>
       assertManagedEntityActivationSource('a'.repeat(40), (path) =>
@@ -50,6 +50,23 @@ test('rollback refuses claim admission ahead of the durable dormant marker', () 
               '    await tx.webhookExecutionClaim.createMany({});\n    const executionAdmitted = await this.prisma.$transaction(async (tx) => {',
             )
           : read(path),
+      ),
+    /admits execution/u,
+  );
+});
+test('rollback refuses a durable receipt guard outside the claim transaction', () => {
+  const webhookPath = 'apps/api/src/webhook/webhook.service.ts';
+  const guard =
+    '      if (!(await lockWebhookClaimReceiptAdmission(tx, webhookEventId))) return false;';
+  const transaction =
+    '    const executionAdmitted = await this.prisma.$transaction(async (tx) => {';
+  const source = read(webhookPath);
+  assert.ok(source.includes(guard) && source.includes(transaction));
+  const changed = source.replace(guard, '').replace(transaction, `${guard}\n${transaction}`);
+  assert.throws(
+    () =>
+      assertManagedEntityActivationSource('a'.repeat(40), (path) =>
+        path === webhookPath ? changed : read(path),
       ),
     /admits execution/u,
   );

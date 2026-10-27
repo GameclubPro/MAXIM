@@ -1,17 +1,25 @@
 import { Injectable } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 import { Prisma, WebhookExecutionClaimStatus } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  lockWebhookClaimReceiptAdmission,
+  lockWebhookSemanticClaimFences,
+} from '../webhook/webhook-semantic-claim-fence';
+import {
+  buildPublisherAutoReplySourceSemanticKey,
+  type PublisherAutoReplySourceIdentity,
+} from './publisher-auto-reply-source-key';
 
 const PUBLISHER_AUTO_REPLY_SOURCE_FENCE_KIND = 'PUBLISHER_AUTO_REPLY_SOURCE';
 
 export type PublisherAutoReplySourceFenceState = 'admitted' | 'canceled' | 'missing';
 
-type PublisherAutoReplySourceIdentity = {
-  publisherBotId: string;
-  chatId: string;
-  sourceMessageId: string;
-};
+export class PublisherAutoReplySourceReceiptHeldError extends Error {
+  constructor() {
+    super('Publisher auto-reply source receipt no longer admits claims');
+    this.name = 'PublisherAutoReplySourceReceiptHeldError';
+  }
+}
 
 type PublisherAutoReplySourceMutation = PublisherAutoReplySourceIdentity & {
   sourceWebhookEventId?: string | null;
@@ -21,10 +29,13 @@ type PublisherAutoReplySourceMutation = PublisherAutoReplySourceIdentity & {
 export class PublisherAutoReplySourceFenceService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async admit(params: PublisherAutoReplySourceMutation): Promise<PublisherAutoReplySourceFenceState> {
-    const semanticKey = this.buildSemanticKey(params);
+  async admit(
+    params: PublisherAutoReplySourceMutation,
+  ): Promise<PublisherAutoReplySourceFenceState> {
+    const semanticKey = buildPublisherAutoReplySourceSemanticKey(params);
     const existing = await this.readBySemanticKey(semanticKey);
     if (existing !== 'missing') {
+      await this.checkExistingSourceReceiptAdmission(semanticKey, params.sourceWebhookEventId);
       return existing;
     }
     const sourceWebhookEventId = this.requireWebhookEventId(params.sourceWebhookEventId);
@@ -32,25 +43,29 @@ export class PublisherAutoReplySourceFenceService {
 
     // FLAG: COMPLETED is an absorbing cancellation state. Admission may create READY only when
     // no source fence exists and must never overwrite a concurrent edit/removal tombstone.
-    await this.prisma.webhookExecutionClaim.createMany({
-      data: [
-        {
-          kind: PUBLISHER_AUTO_REPLY_SOURCE_FENCE_KIND,
-          semanticKey,
-          webhookEventId: sourceWebhookEventId,
-          enforced: true,
-          status: WebhookExecutionClaimStatus.READY,
-          preparedAt: now,
-        },
-      ],
-      skipDuplicates: true,
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockSourceReceiptAdmission(tx, semanticKey, sourceWebhookEventId);
+      await tx.webhookExecutionClaim.createMany({
+        data: [
+          {
+            kind: PUBLISHER_AUTO_REPLY_SOURCE_FENCE_KIND,
+            semanticKey,
+            webhookEventId: sourceWebhookEventId,
+            enforced: true,
+            status: WebhookExecutionClaimStatus.READY,
+            preparedAt: now,
+          },
+        ],
+        skipDuplicates: true,
+      });
     });
     return this.readBySemanticKey(semanticKey);
   }
 
   async cancel(params: PublisherAutoReplySourceMutation): Promise<void> {
-    const semanticKey = this.buildSemanticKey(params);
+    const semanticKey = buildPublisherAutoReplySourceSemanticKey(params);
     if ((await this.readBySemanticKey(semanticKey)) === 'canceled') {
+      await this.checkExistingSourceReceiptAdmission(semanticKey, params.sourceWebhookEventId);
       return;
     }
     const sourceWebhookEventId = this.requireWebhookEventId(params.sourceWebhookEventId);
@@ -59,6 +74,7 @@ export class PublisherAutoReplySourceFenceService {
     // FLAG: Cancellation wins regardless of whether READY was committed before or during this
     // transaction. The unique kind/semantic key serializes concurrent source lifecycle updates.
     await this.prisma.$transaction(async (tx) => {
+      await this.lockSourceReceiptAdmission(tx, semanticKey, sourceWebhookEventId);
       await tx.webhookExecutionClaim.createMany({
         data: [
           {
@@ -91,14 +107,14 @@ export class PublisherAutoReplySourceFenceService {
   }
 
   read(params: PublisherAutoReplySourceIdentity): Promise<PublisherAutoReplySourceFenceState> {
-    return this.readBySemanticKey(this.buildSemanticKey(params));
+    return this.readBySemanticKey(buildPublisherAutoReplySourceSemanticKey(params));
   }
 
   async lockAdmitted(
     tx: Prisma.TransactionClient,
     params: PublisherAutoReplySourceIdentity,
   ): Promise<boolean> {
-    const semanticKey = this.buildSemanticKey(params);
+    const semanticKey = buildPublisherAutoReplySourceSemanticKey(params);
     const rows = await tx.$queryRaw<Array<{ status: string }>>(Prisma.sql`
       /* publisher_auto_reply_source_fence_lock */
       SELECT "status"::text AS "status"
@@ -134,22 +150,29 @@ export class PublisherAutoReplySourceFenceService {
     throw new Error('Publisher auto-reply source fence has an invalid pending state');
   }
 
-  private buildSemanticKey(params: PublisherAutoReplySourceIdentity): string {
-    const publisherBotId = this.requireIdentity(params.publisherBotId, 'publisherBotId');
-    const chatId = this.requireIdentity(params.chatId, 'chatId');
-    const sourceMessageId = this.requireIdentity(params.sourceMessageId, 'sourceMessageId');
-    const digest = createHash('sha256')
-      .update(JSON.stringify([publisherBotId, chatId, sourceMessageId]))
-      .digest('hex');
-    return `publisher-auto-reply-source:${digest}`;
+  private async lockSourceReceiptAdmission(
+    tx: Prisma.TransactionClient,
+    semanticKey: string,
+    receiptId: string,
+  ): Promise<void> {
+    // FLAG: Source claims may be linked by a caller with a stale receipt snapshot.
+    // Fence before the row lock and refuse all journal changes after no-replay closure.
+    await lockWebhookSemanticClaimFences(tx, [semanticKey]);
+    if (!(await lockWebhookClaimReceiptAdmission(tx, receiptId)))
+      throw new PublisherAutoReplySourceReceiptHeldError();
   }
 
-  private requireIdentity(value: string, label: string): string {
-    const normalized = value.trim();
-    if (!normalized) {
-      throw new Error(`Publisher auto-reply source fence ${label} is required`);
-    }
-    return normalized;
+  private async checkExistingSourceReceiptAdmission(
+    semanticKey: string,
+    sourceWebhookEventId: string | null | undefined,
+  ): Promise<void> {
+    const receiptId = sourceWebhookEventId?.trim();
+    if (!receiptId) return;
+    // FLAG: Even an existing source tombstone must not let a closed receipt's
+    // stale observer proceed to delivery journal mutations after this call.
+    await this.prisma.$transaction((tx) =>
+      this.lockSourceReceiptAdmission(tx, semanticKey, receiptId),
+    );
   }
 
   private requireWebhookEventId(value: string | null | undefined): string {

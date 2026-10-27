@@ -36,6 +36,32 @@ never rewrites the stored namespace and preserves every independent execution cl
 reader projects the existing sealed hold through normal ingress/preparation; do not rerun the
 historical recovery operation or clear the receipt to remove this deferral.
 
+A pristine post-seal official `message_removed` notification may also receive the existing
+`POST_SEAL_MEMBER` / `NO_REPLAY_HELD` proof. This is an explicit decision to abandon notification
+execution. The top-level `user_id` identifies the removal actor, never the original message author.
+Reparse the persisted original envelope and require exact bot, chat, message, actor and receipt
+identity; retain the original payloads, error and digest. A missing sampled raw body is allowed
+only when the complete original envelope remains in `normalized_payload.raw` and reparses exactly.
+Every matching legacy scope must have a complete matching sealed authority/certificate, with
+finite source and receipt clocks after its seal. Saturated or inconsistent scope evidence refuses.
+Reconstruct the canonical semantic key independently of the saved key and prove absence of every
+linked or semantic execution/command/Publisher source claim inside the receipt transaction.
+An exact existing Publisher delivery journal also keeps the notification held, even when its
+original source claim is absent. Concurrent admission
+must preserve this proof and recheck the persisted receipt before acquiring execution authority.
+An old scope deferral is permitted; queued/prepared/started/completed work and other errors are not.
+
+This path preserves every installed hold and unknown historical effect. It invokes no ordinary
+removal handler, duplicate-history revocation, message-retention removal handling or MAX action;
+it creates neither `PROCESSED` nor an `EXECUTION_FINISHED` checkpoint. Existing webhook-body
+retention remains distinct from those product effects and keeps the permanent holds/proof journal.
+The persisted proof format and terminal readers remain version 1. Both rollback paths additionally
+require the semantic claim fence and final receipt checks in EXECUTION, COMMAND and Publisher
+claim writers. Publisher cancellation also locks and rereads the exact receipt in the same
+transaction as its delivery-journal update, including transient source-fence failure. An older
+writer can add authority or change a journal from a stale snapshot even if it reads the proof
+format. New runtime admission is covered by native full-ingress and race regressions.
+
 ## Install compatible tooling
 
 All 14 API roles and both native auxiliaries must first run the same reviewed
