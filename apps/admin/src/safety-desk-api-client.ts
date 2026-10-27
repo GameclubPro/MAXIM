@@ -29,6 +29,8 @@ import {
   type SafetyDeskPublicationDeliveryCohortResponse,
   safetyDeskPublicationDeliveryEvidenceResponseSchema,
   type SafetyDeskPublicationDeliveryEvidenceResponse,
+  safetyDeskCommercialAiResponseSchema,
+  type SafetyDeskCommercialAiResponse,
 } from '@maxim/contracts/safety-desk';
 import { createAdminApiTransport, type AdminApiTransport } from './admin-request';
 
@@ -105,6 +107,14 @@ export class SafetyDeskApiClient {
       `${SAFETY_DESK_API_BASE}/runtime/deletes`,
       accessCode,
       safetyDeskDeleteRuntimeResponseSchema,
+    );
+  }
+
+  fetchCommercialAiRuntime(accessCode: string): Promise<SafetyDeskCommercialAiResponse> {
+    return this.transport.request(
+      `${SAFETY_DESK_API_BASE}/runtime/commercial-ai`,
+      accessCode,
+      safetyDeskCommercialAiResponseSchema,
     );
   }
 

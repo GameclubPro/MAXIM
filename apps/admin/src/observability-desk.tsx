@@ -2,6 +2,7 @@ import { PublicationCohortDesk } from './publication-cohort-desk';
 import { WebhookCohortDesk } from './webhook-cohort-desk';
 import { DeleteCohortDesk } from './delete-cohort-desk';
 import { PublicationDeliveryCohortDesk } from './publication-delivery-cohort-desk';
+import { CommercialAiDesk } from './commercial-ai-desk';
 import { useState } from 'react';
 
 const families = {
@@ -9,6 +10,7 @@ const families = {
   deletion: 'Намерения удаления',
   publication: 'Запуски Публика',
   delivery: 'Доставки Публика',
+  commercialAi: 'Рекламный ИИ',
 } as const;
 
 export function ObservabilityDesk(props: { accessCode: string; refreshToken: number }) {
@@ -32,6 +34,7 @@ export function ObservabilityDesk(props: { accessCode: string; refreshToken: num
       {family === 'publication' && <PublicationCohortDesk {...props} />}
       {family === 'deletion' && <DeleteCohortDesk {...props} />}
       {family === 'delivery' && <PublicationDeliveryCohortDesk {...props} />}
+      {family === 'commercialAi' && <CommercialAiDesk {...props} />}
     </div>
   );
 }

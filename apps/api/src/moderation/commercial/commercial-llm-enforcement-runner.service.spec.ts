@@ -1,11 +1,15 @@
 import { randomInt } from 'node:crypto';
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type Redis from 'ioredis';
 import type { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
 import type { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import { CommercialLlmEnforcementRunnerService } from './commercial-llm-enforcement-runner.service';
 import { CommercialLlmEnforcementService } from './commercial-llm-enforcement.service';
-import { CommercialLlmEnforcementMailbox } from './commercial-llm-enforcement.mailbox';
+import {
+  CommercialLlmEnforcementMailbox,
+  COMMERCIAL_LLM_ENFORCEMENT_KEYS,
+} from './commercial-llm-enforcement.mailbox';
 import { CommercialLlmEnforcementProcessor } from './commercial-llm-enforcement.processor';
 import { CommercialLlmWorkstationMailbox } from './commercial-llm-workstation.mailbox';
 import { CommercialLlmSecondaryScheduler } from './commercial-llm-secondary-scheduler';
@@ -163,6 +167,129 @@ describe('commercial AI runner resource lifecycle', () => {
     const finish = jest.spyOn(mailbox, 'finish').mockResolvedValue(undefined);
     return { items, take, finish };
   }
+
+  function writtenStatuses(): Array<Record<string, unknown>> {
+    return jest
+      .mocked(redis.set)
+      .mock.calls.filter(([key]) => key === COMMERCIAL_LLM_ENFORCEMENT_KEYS.status)
+      .map(([, value]) => JSON.parse(String(value)) as Record<string, unknown>);
+  }
+
+  it('identifies one observation generation without exposing its worker lease or declaring initial readiness', async () => {
+    const logs = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const job = pendingJob();
+    const run = jest
+      .spyOn(CommercialLlmEnforcementProcessor.prototype, 'run')
+      .mockReturnValue(job.promise);
+    runner!.onModuleInit();
+    await jest.advanceTimersByTimeAsync(250);
+    expect(writtenStatuses()).toHaveLength(1);
+    const initial = writtenStatuses()[0]!;
+    expect(initial).toMatchObject({
+      schemaVersion: 2,
+      observationProcessId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+      observationStartedAt: '2026-10-27T09:00:00.000Z',
+      heartbeatAt: '2026-10-27T09:00:00.250Z',
+      lastSuccessAt: null,
+      outcome: 'idle',
+      active: 0,
+      availabilityState: 'unknown',
+      availabilityObservedAt: null,
+      outcomeBasis: 'process_cumulative',
+      outcomes: {},
+      pendingDiscardBasis: 'redis_namespace_cumulative',
+      pendingDiscards: {},
+    });
+    const worker = run.mock.calls[0]![0];
+    expect(initial.observationProcessId).not.toBe(worker);
+
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(writtenStatuses()).toHaveLength(2);
+    expect(writtenStatuses()[1]).toMatchObject({
+      observationProcessId: initial.observationProcessId,
+      observationStartedAt: initial.observationStartedAt,
+      heartbeatAt: '2026-10-27T09:00:10.250Z',
+      lastSuccessAt: null,
+      outcome: 'active',
+      active: 3,
+      availabilityState: 'ready',
+      availabilityObservedAt: '2026-10-27T09:00:10.000Z',
+      outcomes: {},
+    });
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(governor.decide).toHaveBeenCalledTimes(41);
+    expect(shadowProcessor.commercialLlmHostHasHeadroom).toHaveBeenCalledTimes(41);
+    const statusWrites: readonly (readonly unknown[])[] = jest.mocked(redis.set).mock.calls;
+    expect(statusWrites.every((call) => call[2] === 'EX' && call[3] === 30)).toBe(true);
+    expect(JSON.stringify(writtenStatuses())).not.toContain(worker);
+    expect(JSON.stringify(logs.mock.calls)).not.toContain(worker);
+  });
+
+  it.each([
+    { action: 'pause' as const, headroom: true, state: 'governor_paused', headroomCalls: 0 },
+    { action: 'slow' as const, headroom: true, state: 'governor_paused', headroomCalls: 0 },
+    { action: 'run' as const, headroom: false, state: 'headroom_paused', headroomCalls: 41 },
+  ])(
+    'observes $action/$headroom without adding gate calls or starting work',
+    async ({ action, headroom, state, headroomCalls }) => {
+      governor.decide.mockResolvedValue({ action, reason: 'synthetic', retryAfterMs: 250 });
+      jest.mocked(shadowProcessor.commercialLlmHostHasHeadroom).mockResolvedValue(headroom);
+      const run = jest
+        .spyOn(CommercialLlmEnforcementProcessor.prototype, 'run')
+        .mockResolvedValue({ outcome: 'idle' });
+      runner!.onModuleInit();
+      await jest.advanceTimersByTimeAsync(10_250);
+      expect(writtenStatuses()).toHaveLength(2);
+      expect(writtenStatuses()[1]).toMatchObject({
+        outcome: 'idle',
+        active: 0,
+        lastSuccessAt: null,
+        availabilityState: state,
+        availabilityObservedAt: '2026-10-27T09:00:10.000Z',
+        outcomes: {},
+      });
+      expect(governor.decide).toHaveBeenCalledTimes(41);
+      expect(shadowProcessor.commercialLlmHostHasHeadroom).toHaveBeenCalledTimes(headroomCalls);
+      expect(mailbox.withdraw).toHaveBeenCalledTimes(41);
+      expect(mailbox.advertise).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+
+      governor.decide.mockResolvedValue({ action: 'run', reason: 'normal', retryAfterMs: 0 });
+      jest.mocked(shadowProcessor.commercialLlmHostHasHeadroom).mockResolvedValue(true);
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(writtenStatuses()[2]).toMatchObject({
+        availabilityState: 'ready',
+        availabilityObservedAt: '2026-10-27T09:00:20.000Z',
+        active: 0,
+        outcome: 'idle',
+        lastSuccessAt: null,
+        outcomes: {},
+      });
+      expect(run).toHaveBeenCalledTimes(40);
+      expect(mailbox.advertise).toHaveBeenCalledTimes(40);
+    },
+  );
+
+  it('keeps the last completed gate observation clock when a later gate check fails', async () => {
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const run = jest
+      .spyOn(CommercialLlmEnforcementProcessor.prototype, 'run')
+      .mockResolvedValue({ outcome: 'idle' });
+    runner!.onModuleInit();
+    await jest.advanceTimersByTimeAsync(250);
+    governor.decide.mockRejectedValue(new Error('Synthetic unavailable governor'));
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(writtenStatuses()[1]).toMatchObject({
+      heartbeatAt: '2026-10-27T09:00:10.250Z',
+      availabilityState: 'ready',
+      availabilityObservedAt: '2026-10-27T09:00:00.250Z',
+      lastSuccessAt: null,
+      outcome: 'idle',
+      outcomes: {},
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(shadowProcessor.commercialLlmHostHasHeadroom).toHaveBeenCalledTimes(1);
+  });
 
   it('keeps heartbeats alive at three active jobs and admits a replacement only after completion', async () => {
     const jobs = [pendingJob(), pendingJob(), pendingJob(), pendingJob()];

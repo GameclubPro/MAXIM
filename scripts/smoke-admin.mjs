@@ -146,6 +146,42 @@ async function smokeProfile(activeBrowser, profile) {
   let deliveryEvidenceRequests = 0;
   let deliveryEvidenceMalformed = false;
   let deliveryEvidenceDenied = false;
+  let commercialAiRequests = 0;
+  let commercialAiMalformed = false;
+  let commercialAiGate;
+  let retentionRequests = 0;
+  let commercialAi = {
+    schemaVersion: 1,
+    generatedAt: '2026-10-28T10:00:00.000Z',
+    observedAt: '2026-10-28T09:59:50.000Z',
+    mode: 'DELETE_ONLY',
+    availability: 'FRESH',
+    heartbeatAt: '2026-10-28T09:59:50.000Z',
+    lastRecordedResultAt: '2026-10-28T09:58:00.000Z',
+    observationStartedAt: '2026-10-28T07:00:00.000Z',
+    observationProcessId: '1348126b-9210-4a0e-88cb-e8c1afbd959e',
+    active: 1,
+    admission: 'READY',
+    admissionObservedAt: '2026-10-28T09:59:40.000Z',
+    outcomeBasis: 'PROCESS_CUMULATIVE',
+    outcomes: {
+      kept: 12,
+      unsure: 3,
+      deleteRegistered: 5,
+      deleteNotAdmitted: 2,
+      registrationUnknown: 1,
+      capacitySkipped: 4,
+      unavailableSkipped: 6,
+      sourceExpired: 7,
+      pressureSkipped: 8,
+      dependencyUnavailable: 9,
+      other: 0,
+    },
+    pendingDiscardBasis: 'REDIS_NAMESPACE_CUMULATIVE',
+    pendingDiscards: { expired: 15, foreignWorker: 16, invalidPending: 17 },
+    trafficCoverage: 'NOT_ESTABLISHED',
+    confirmedDeletes: null,
+  };
   let expectedAccessCode = accessCode;
   let releaseDelayedDelivery;
   const delayedDelivery = new Promise((resolve) => {
@@ -414,7 +450,9 @@ async function smokeProfile(activeBrowser, profile) {
     }
   });
   page.on('requestfailed', (request) =>
-    errors.push(`requestfailed: ${request.method()} ${request.url()}`),
+    errors.push(
+      `requestfailed: ${request.method()} ${request.url()} (${request.failure()?.errorText ?? 'unknown'})`,
+    ),
   );
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
@@ -428,6 +466,58 @@ async function smokeProfile(activeBrowser, profile) {
     }
     if (request.headers()['x-admin-access-code'] !== expectedAccessCode) {
       await route.fulfill({ status: 401, json: { message: 'missing access code' } });
+      return;
+    }
+    if (url.pathname.endsWith('/safety-desk/runtime/commercial-ai')) {
+      if (request.method() !== 'GET' || request.postData())
+        throw new Error('Commercial AI observation attempted a mutation.');
+      commercialAiRequests += 1;
+      if (commercialAiGate) await commercialAiGate;
+      await route.fulfill({
+        status: 200,
+        json: commercialAiMalformed ? { schemaVersion: 0 } : commercialAi,
+      });
+      return;
+    }
+    if (url.pathname.endsWith('/safety-desk/runtime/retention')) {
+      if (request.method() !== 'GET' || request.postData())
+        throw new Error('Retention observation attempted a mutation.');
+      retentionRequests += 1;
+      await route.fulfill({
+        status: 200,
+        json: {
+          generatedAt,
+          mode: 'on',
+          nextAfter: null,
+          quotas: [],
+          items: [
+            {
+              chatId: 'retention-diagnostics-smoke',
+              chatTitle: 'Диагностика истории',
+              enabled: true,
+              hours: 24,
+              revision: 1,
+              activationId: 'retention-smoke-activation',
+              pendingCount: 1,
+              deletedCount: 2,
+              skippedCount: 0,
+              status: 'error',
+              oldestDueAt: generatedAt,
+              nextRunAt: null,
+              hasTerminalReview: false,
+              hasUnresolvedReceipt: false,
+              connectionStatus: 'connected',
+              historyStatus: 'blocked',
+              diagnostics: {
+                lastError: 'delete_unconfirmed',
+                historyBoundaryBlocked: true,
+                awaitingCurrentProtection: false,
+                awaitingHistoricalProtection: true,
+              },
+            },
+          ],
+        },
+      });
       return;
     }
     for (const [endpoint, fixture] of [
@@ -618,7 +708,7 @@ async function smokeProfile(activeBrowser, profile) {
   await page.getByText('За этот интервал события не наблюдались.', { exact: false }).waitFor();
   await page.getByText('Обработка события не подтверждает удаление', { exact: false }).waitFor();
   await page.getByText(/21:00:00 МСК — .*21:00:30 МСК/).waitFor();
-  if (publicationRequests || deleteCohortRequests || deliveryCohortRequests)
+  if (publicationRequests || deleteCohortRequests || deliveryCohortRequests || commercialAiRequests)
     throw new Error('Hidden observation families loaded eagerly.');
   cohort.sampleComplete = false;
   cohort.totalCountLowerBound = 512;
@@ -744,6 +834,92 @@ async function smokeProfile(activeBrowser, profile) {
   if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)) {
     throw new Error(`${profile.name} cohort view has horizontal overflow.`);
   }
+
+  if (commercialAiRequests !== 0)
+    throw new Error('Commercial AI loaded before its observation family was selected.');
+  await observationSelector.getByRole('button', { name: 'Рекламный ИИ', exact: true }).click();
+  const aiPanel = page.getByRole('region', { name: 'Рекламный ИИ', exact: true });
+  await aiPanel.getByText('Сигнал был свежим на момент снимка', { exact: true }).waitFor();
+  await aiPanel.getByText('Последний учтённый результат', { exact: true }).waitFor();
+  await aiPanel.getByText(/Данные обновляются кнопкой «Обновить»/).waitFor();
+  await aiPanel
+    .getByText('Регистрация намерения не подтверждает удаление сообщения.', { exact: false })
+    .waitFor();
+  if (commercialAiRequests !== 1) throw new Error('Commercial AI request repeated.');
+  await aiPanel.getByText('Отброшенные ожидания', { exact: true }).click();
+  await aiPanel.getByText('включая предыдущие процессы', { exact: false }).waitFor();
+  if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1))
+    throw new Error(`${profile.name} commercial AI view has horizontal overflow.`);
+
+  let releaseCommercialAi;
+  commercialAiGate = new Promise((resolve) => {
+    releaseCommercialAi = resolve;
+  });
+  commercialAi.availability = 'STALE';
+  commercialAi.admission = 'GOVERNOR_PAUSED';
+  const delayedAiRequest = page.waitForRequest((request) =>
+    request.url().endsWith('/safety-desk/runtime/commercial-ai'),
+  );
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await delayedAiRequest;
+  await aiPanel.getByText('Читаю сохранённые наблюдения…', { exact: true }).waitFor();
+  if (await aiPanel.locator('.commercial-ai-metrics').count())
+    throw new Error('Commercial AI refresh retained counters from the previous snapshot.');
+  releaseCommercialAi();
+  commercialAiGate = undefined;
+  await aiPanel.getByText('Сигнал процесса устарел', { exact: true }).waitFor();
+  await aiPanel.getByText(/Пауза из-за нагрузки на основные задачи/).waitFor();
+
+  commercialAi = {
+    ...commercialAi,
+    availability: 'MISSING',
+    observedAt: null,
+    heartbeatAt: null,
+    lastRecordedResultAt: null,
+    observationStartedAt: null,
+    observationProcessId: null,
+    active: null,
+    admission: 'UNKNOWN',
+    admissionObservedAt: null,
+    outcomes: null,
+    pendingDiscards: null,
+  };
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await aiPanel.getByText('Нет наблюдений', { exact: true }).waitFor();
+  await aiPanel.getByText('Счётчики результатов отсутствуют.', { exact: true }).waitFor();
+  await aiPanel.getByText('Начало периода не записано.', { exact: false }).waitFor();
+  if (await aiPanel.locator('.commercial-ai-metrics').count())
+    throw new Error('Missing AI observations were rendered as counters.');
+
+  commercialAiMalformed = true;
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  await aiPanel.getByRole('alert').waitFor();
+  if (await aiPanel.locator('.commercial-ai-snapshot').count())
+    throw new Error('Invalid AI response retained the previous snapshot.');
+  const previousAiReads = commercialAiRequests;
+  cohortUnavailable = false;
+  await observationSelector.getByRole('button', { name: 'Входящие события', exact: true }).click();
+  await page
+    .getByRole('region', { name: 'Результаты обработки событий' })
+    .getByRole('table')
+    .waitFor();
+  const webhookRefreshResponse = page.waitForResponse((response) =>
+    response.url().endsWith('/safety-desk/runtime/webhook-cohort'),
+  );
+  await page.getByRole('button', { name: 'Обновить', exact: true }).click();
+  const refreshedWebhook = await webhookRefreshResponse;
+  const webhookRefreshFailure = await refreshedWebhook.finished();
+  if (!refreshedWebhook.ok() || webhookRefreshFailure)
+    throw new Error(
+      `Webhook refresh did not finish successfully: ${webhookRefreshFailure ?? refreshedWebhook.status()}`,
+    );
+  // The webhook panel keeps its previous table while refreshing; its presence is not completion.
+  await page
+    .locator('section[aria-label="Результаты обработки событий"][aria-busy="false"]')
+    .waitFor();
+  if (commercialAiRequests !== previousAiReads)
+    throw new Error('Hidden commercial AI observations were refreshed.');
+
   // A fresh owner session requires a new explicit delivery selection.
   expectedAccessCode = 'admin-smoke-next-owner';
   cohortUnavailable = false;
@@ -763,6 +939,22 @@ async function smokeProfile(activeBrowser, profile) {
   ) {
     throw new Error('A new owner session retained or loaded the previous delivery selection.');
   }
+  if (retentionRequests !== 0) throw new Error('Hidden retention diagnostics loaded eagerly.');
+  await page.getByRole('button', { name: 'Очистка', exact: true }).click();
+  const retentionPanel = page.getByRole('region', { name: 'Очистка старых сообщений' });
+  await retentionPanel
+    .getByText('История: граница обхода не подтверждена', { exact: true })
+    .waitFor();
+  await retentionPanel
+    .getByText('Нет подтверждения защиты старой истории', { exact: true })
+    .waitFor();
+  await retentionPanel.getByText('MAX не подтвердил результат удаления', { exact: true }).waitFor();
+  if (retentionRequests !== 1)
+    throw new Error('Retention diagnostics repeated the runtime request.');
+  if (await retentionPanel.getByRole('button', { name: /повтор|удалить/i }).count())
+    throw new Error('Retention diagnostics exposed a recovery action without a selected record.');
+  if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1))
+    throw new Error(`${profile.name} retention diagnostics have horizontal overflow.`);
   await page.getByRole('button', { name: 'Публикации' }).click();
 
   const state = await page.evaluate(() => ({

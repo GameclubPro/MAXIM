@@ -141,7 +141,10 @@ protection rewind invalidates an older page, including an empty response. New me
 outside the due window do not invalidate it. Preserve these rules when changing scans.
 The authenticated `/internal/v1/runtime` page includes `diagnostics.lastError`,
 `historyBoundaryBlocked`, `awaitingCurrentProtection` and `awaitingHistoricalProtection`.
-These operational fields stay outside ordinary settings responses; `blocked` alone is
+The closed Safety Desk forwards these optional flags and allowlisted error reasons;
+unrecognized errors become `unknown`, and older runtimes keep diagnostics absent
+rather than implying clean flags. These fields grant no retry or mutation authority.
+They stay outside ordinary settings responses; `blocked` alone is
 not a reason to discard protection or replay a DELETE. See the
 [27 October audit and regression plan](../plans/2026-10-27-lastik-deletion-audit.md).
 
