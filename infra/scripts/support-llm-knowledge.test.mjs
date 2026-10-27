@@ -131,6 +131,24 @@ test('the eight public bot identities match their verified product sources', () 
   assert.match(fact('bots'), /не означает автоматического переключения/u);
 });
 
+test('bot selection knowledge quotes exact interface headings without inflection', () => {
+  const views = [
+    source('apps/miniapp/src/components/managed-entity-bots-sheet.tsx'),
+    source('apps/miniapp/src/components/managed-entity-bots-control.tsx'),
+  ];
+  for (const id of ['bots', 'choose-moderator']) {
+    const answer = fact(id);
+    for (const label of ['Боты чата', 'Боты канала']) {
+      assert.ok(
+        views.every((view) => view.includes(`'${label}'`)),
+        label,
+      );
+      assert.ok(answer.includes(`«${label}»`), `${id}: ${label}`);
+    }
+    assert.doesNotMatch(answer, /«Бот(?:ах|ами|ов) (?:чата|канала)»/u);
+  }
+});
+
 test('Lastik connection is separate from a moderator and limited to group chats', () => {
   const answer = fact('lastik-connect');
   const ui =

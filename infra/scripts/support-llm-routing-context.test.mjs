@@ -232,6 +232,105 @@ test('an instruction to insert an answer URL does not become a link-filter task'
   assert.ok(ids(`А если он уже админ? ${instruction}`, history).includes('links-policy'));
 });
 
+test('moderator forwarding questions identify onboarding before lexical fallback', () => {
+  for (const text of [
+    'я админ канала. максимову добавил, дальше запутался: что ей переслать и куда, чтоб канал появился в приложении? напишите по шагам плз',
+    'Бота уже добавил. Что ему переслать и куда?',
+    'Как переслать сообщение Рэксу, чтобы подключить чат?',
+  ]) {
+    assert.equal(needsReply(text).primaryIds[0], 'connect', text);
+    assert.equal(ids(text)[0], 'connect', text);
+  }
+  for (const text of [
+    'Дайте профиль Рэкса 2, куда переслать ссылку на него?',
+    'Куда Максимов пересылает свои уведомления?',
+    'Что переслать Ластику?',
+    'Бот удалил моё объявление. Как переслать вам пример для разбора?',
+    'Максимов удалил объявление. Как переслать вам скриншот для разбора?',
+    'Как переслать сообщение Рэкса в другой чат?',
+  ])
+    assert.ok(!needsReply(text).primaryIds.includes('connect'), text);
+  const history = [
+    user('Ластик: нажал «Подключить и включить», жду проверки прав.'),
+    assistant('Проверка может занять до часа.'),
+  ];
+  const next = 'Теперь Максимову добавил в канал. Что ей переслать и куда?';
+  assert.equal(ids(next, history)[0], 'connect');
+  assert.ok(!ids(next, history).includes('lastik-connect'));
+});
+
+test('atomic Lastik waiting retains connection rather than cleanup progress or restore', () => {
+  for (const text of [
+    'В групповом чате нажал «Подключить и включить», Ластику дал админку минут 40 назад. В чате от него вообще ни слова. Ещё раз подключать, «Старт» ему туда писать или обратно в приложение идти?',
+    'Ластик: нажал «Подключить и включить», дал права 40 минут назад. Он молчит, мне опять Старт писать или в приложение вернуться?',
+    'Ластик: подключение уже 40 минут в статусе «Ожидание». Что делать?',
+  ]) {
+    const state = needsReply(text);
+    assert.equal(state.lastikWaitingOnly, true, text);
+    assert.equal(state.mixedTopics, false, text);
+    assert.equal(ids(text)[0], 'lastik-connect', text);
+    assert.ok(!ids(text).includes('lastik-progress'), text);
+    assert.ok(!ids(text).includes('lastik-stop-restore'), text);
+  }
+  for (const text of [
+    'Ластик: нажал «Подключить и включить». Как теперь выбрать срок 48 часов?',
+    'Ластик ожидает подключения. Как выдать ему права чтения?',
+    'Ластик: нажал «Подключить и включить». И как проверить прогресс очистки?',
+    'Ластик: подключение отменено, что делать?',
+    'Ластик подключён. Как вернуть удалённые сообщения?',
+    'Ластик: нажал «Подключить и включить», жду. А можно двое суток хранить?',
+    'Ластик: нажал «Подключить и включить», жду. Как увеличить хранение до двух суток?',
+    'Ластик: нажал «Подключить и включить», жду. Сколько он стоит?',
+    'Ластик: нажал «Подключить и включить», жду. Какие сообщения он удаляет?',
+    'Ластик: нажал «Подключить и включить», жду. Можно его в канал?',
+    'Ластик: нажал «Подключить и включить», жду. Что он умеет?',
+    'Ластик: нажал «Подключить и включить», жду. Как он работает?',
+    'Ластик: нажал «Подключить и включить», жду. Что он удаляет?',
+  ])
+    assert.equal(needsReply(text).lastikWaitingOnly, false, text);
+  const history = [user('Ластик: нажал «Подключить и включить», жду проверки прав.')];
+  for (const text of [
+    'А можно двое суток хранить?',
+    'Сколько он стоит?',
+    'Какие сообщения он удаляет?',
+  ])
+    assert.equal(needsReply(text, history).lastikWaitingOnly, false, text);
+});
+
+test('reported Publisher readiness cannot replace an unknown delivery question with onboarding', () => {
+  const history = [
+    user(
+      'Я админ двух каналов. Через Публика отправил один пост сразу в оба. В первом вижу сообщение, во втором пока не нашёл.',
+    ),
+    assistant(
+      'Откройте сведения этой публикации в «Постах» и посмотрите результаты по каждому получателю.',
+    ),
+  ];
+  const text =
+    'Посмотрел: первый доставлен, у второго «Нужно проверить». При этом в карточке подключения Публик готов. Жать «Повторить», чтобы наверняка дошло?';
+  assert.equal(needsReply(text, history).primaryIds[0], 'publisher-delivery-status');
+  assert.ok(!ids(text, history).includes('connect'));
+  const mixed = `${text} И как подключить Публика к третьему каналу?`;
+  assert.equal(needsReply(mixed, history).mixedTopics, true);
+  assert.ok(ids(mixed, history).includes('connect'));
+  assert.ok(ids(mixed, history).includes('publisher-delivery-status'));
+  for (const text of [
+    'В карточке подключения Публик не готов. Как исправить?',
+    'В карточке подключения Публик не подключен. Что делать?',
+  ])
+    assert.equal(needsReply(text).primaryIds[0], 'connect', text);
+});
+
+test('an offered group link is not a link-filter task for a participant advertisement', () => {
+  const text =
+    'Я не админ, просто в районной группе состою. Куда вам кинуть текст объявления про ремонт квартир, чтоб вы его там разместили? Ссылку на группу дам.';
+  assert.equal(needsReply(text).participantAdvertisement, true);
+  assert.ok(!ids(text).includes('links-policy'));
+  const mixed = `${text} И как работает фильтр ссылок у бота?`;
+  assert.equal(needsReply(mixed).participantAdvertisement, false);
+  assert.ok(ids(mixed).includes('links-policy'));
+});
+
 test('link policy intent separates allowing, blocking and inspecting without claiming a setting', () => {
   for (const [text, expected] of [
     ['Как отключить удаление ссылок?', 'allow'],

@@ -60,6 +60,15 @@ mentions separate Publisher connection conditionally, without assuming the recip
 Connection intent describes user reports, not verified live status. Waiting, expired/cancelled
 requests and initial setup require different next steps. Keep explicit reading/deletion rights
 and successful rights confirmation in Lastik's activation condition.
+An atomic Lastik waiting question uses the reviewed `lastik-connect.waitingAnswer`, preserving
+both bot and requesting administrator checks and the one-hour window from the connection request.
+Only an unmixed waiting task with no other functional or incident facts takes that shortcut;
+setup, recovery and additional questions retain grounded inference.
+Forwarding questions for a moderator retain the connection prerequisites. An offered community
+link is not a link-filter task; a reported ready connection is not an onboarding request.
+An unknown delivery label keeps verification of the existing publication ahead of connection
+facts. Link-mode reminders preserve the reported mode and distinguish the desired result from
+a proposed way to achieve it.
 
 Focused tests cover eligibility and required replies together, role changes, contextual topic
 retrieval, API paths, mandatory policy retention, source/link validation, honest AI identity and

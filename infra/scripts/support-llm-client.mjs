@@ -135,7 +135,7 @@ function answerRequirements(selected, request) {
       block:
         'Цель — запрещать ссылки. «Удалять все» удаляет все ссылки; «Разрешать все» их не удаляет. Не советуй разрешение всех ссылок для включения запрета.',
       inspect:
-        'Текущий режим неизвестен. Уточни режим с учётом вопроса, не назначай его за пользователя. Объясни «Ссылки» → «Режим» и значения: «Разрешать все» не удаляет ссылки; «Удалять все» удаляет; «Разрешать по списку» допускает выбранные. Сохрани цель выборочного допуска, если она названа. Не объявляй нужным режим «Разрешать все» на жалобу о пропуске ссылок.',
+        'Учитывай сообщённый пользователем режим. Уточняй его только если он не назван и нужен для следующего шага. Не назначай режим за пользователя. Объясни «Ссылки» → «Режим» и значения: «Разрешать все» не удаляет ссылки; «Удалять все» удаляет; «Разрешать по списку» допускает выбранные. Сохрани желаемый результат: упоминание режима в вопросе не означает его выбор. Для выборочного допуска нужен «Разрешать по списку»; для разрешения любых ссылок — «Разрешать все». Не объявляй нужным режим «Разрешать все» на жалобу о пропуске ссылок.',
     }[request.linkPolicyIntent ?? 'inspect'];
     add(
       'links-policy',
@@ -387,6 +387,25 @@ export async function answerSupport({
       responseRoute: 'room-policy',
     };
   let selected = selectKnowledge(text, history);
+  // FLAG: The atomic waiting reply preserves both rights checks and their time origin.
+  // Setup, recovery and any other functional or incident fact must remain in inference.
+  if (
+    request.lastikConnectionIntent === 'waiting' &&
+    request.lastikWaitingOnly &&
+    !request.mixedTopics &&
+    selected[0].id === 'lastik-connect' &&
+    selected.every((entry) =>
+      ['lastik-connect', 'message-retention', 'support-room', 'operator'].includes(entry.id),
+    )
+  )
+    return {
+      ...validateSupportAnswer(
+        { action: 'reply', text: selected[0].waitingAnswer, sourceIds: ['lastik-connect'] },
+        selected,
+      ),
+      durationMs: 0,
+      responseRoute: 'reviewed-faq',
+    };
   // FLAG: A reviewed catalog answer must retain every functional or incident task in inference.
   const catalogOnly = selected.every((entry) =>
     ['bots', 'choose-moderator', 'support-room', 'operator'].includes(entry.id),

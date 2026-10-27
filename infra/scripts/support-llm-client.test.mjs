@@ -149,6 +149,30 @@ test('rules replacement and manual VK import keep their reviewed procedure witho
   }
 });
 
+test('atomic Lastik waiting answers retain activation conditions without inference', async () => {
+  for (const text of [
+    'Ластик: нажал «Подключить и включить», дал права 40 минут назад. Он молчит, мне опять Старт писать или в приложение вернуться?',
+    'Ластик: подключение уже 40 минут в статусе «Ожидание». Что делать?',
+  ]) {
+    const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    assert.equal(result.durationMs, 0);
+    assert.deepEqual(result.sourceIds, ['lastik-connect']);
+    const body = presentedBody(result);
+    assert.match(body, /не пишет в чат/u);
+    assert.match(body, /до 1 часа после запроса «Подключить и включить»/u);
+    assert.match(body, /только после подтверждения/u);
+    assert.match(body, /администратор с правами чтения всех сообщений и удаления/u);
+    assert.match(body, /Запросивший подключение пользователь — администратор/u);
+    assert.equal(body.split('\n').filter((line) => line.startsWith('• ')).length, 2);
+    assert.match(body, /повторять подключение или писать «Старт» не нужно/u);
+    assert.match(body, /Возвращаться.*для завершения.*не требуется/u);
+    assert.match(body, /Статус.*мини-приложении.*«Удаление старых сообщений»/u);
+    assert.match(body, /не видит.*текущие права.*состояние подключения/u);
+    assert.ok(body.split('\n\n').length >= 4, text);
+  }
+});
+
 function presentedBody(result) {
   assert.equal(result.action, 'reply');
   assert.equal(result.text.split(SUPPORT_ANSWER_FOOTER).length, 2);
@@ -192,6 +216,32 @@ async function completionFixture(t, answer) {
   };
   return fixture;
 }
+
+test('Lastik waiting shortcut preserves setup, recovery, rights and additional tasks in inference', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Уточните нужное действие.',
+    sourceIds: ['lastik-connect'],
+  });
+  const cases = [
+    'Как подключить Ластика к новому чату?',
+    'Ластик: два часа назад нажал «Подключить и включить», теперь «Время ожидания истекло». Как запустить снова?',
+    'Ластик: я нажал «Подключить и включить», а как проверить права?',
+    'Ластик: нажал «Подключить и включить», жду 40 минут. Как выключить ночной режим?',
+    'Ластик: нажал «Подключить и включить», жду 40 минут. Он тронет старые сообщения до подключения?',
+    'Ластик: нажал «Подключить и включить», жду 40 минут. Как посмотреть прогресс очистки?',
+    'Ластик: нажал «Подключить и включить», жду 40 минут. А как поменять срок на неделю?',
+    'Ластик: нажал «Подключить и включить», жду 40 минут. Хочу отменить подключение.',
+  ];
+  for (const text of cases) {
+    fixture.answer.sourceIds = selectKnowledge(text)
+      .slice(0, 2)
+      .map((entry) => entry.id);
+    const result = await answerSupport({ ...fixture.input, text });
+    assert.equal(result.responseRoute, 'model-inference', text);
+  }
+  assert.equal(fixture.requests, cases.length);
+});
 
 test('catalog and procedure shortcuts preserve additional tasks, incidents and unknown identities', async (t) => {
   const fixture = await completionFixture(t, {
@@ -935,6 +985,11 @@ test('request requirements preserve procedural conditions without inventing user
       absent: ['links-policy'],
     },
     {
+      text: 'я админ канала. максимову добавил, дальше запутался: что ей переслать и куда, чтоб канал появился в приложении? напишите по шагам плз',
+      source: 'connect',
+      required: /администратор.*всем сообщениям.*личный диалог/iu,
+    },
+    {
       text: 'Но она всё ещё оставляет ссылки. Как проверить именно режим фильтра, а не права?',
       history: [
         {
@@ -943,7 +998,15 @@ test('request requirements preserve procedural conditions without inventing user
         },
       ],
       source: 'links-policy',
-      required: /текущий режим неизвестен.*Разрешать все.*не удаляет.*Удалять все.*удаляет/iu,
+      required: /учитывай сообщённый.*режим.*Разрешать все.*не удаляет.*Удалять все.*удаляет/iu,
+      forbidden: /текущий режим неизвестен/iu,
+    },
+    {
+      text: 'Я админ, хочу убрать запрет на ссылки совсем, пусть любые кидают. Сейчас там «Удалять все». Мне на «Разрешать по списку» переключиться и пустой список оставить?',
+      source: 'links-policy',
+      required:
+        /учитывай сообщённый.*уточняй.*только если.*не назван.*упоминание режима.*не означает его выбор/iu,
+      forbidden: /текущий режим неизвестен|цель — (?:проверить режим|выборочный допуск)/iu,
     },
     {
       text: 'Связь оборвалась сразу после «Опубликовать». В ленте пока не нашёл пост. Сделать второй такой же и отправить?',
@@ -964,7 +1027,7 @@ test('request requirements preserve procedural conditions without inventing user
       required: /порядок подключения.*прав.*1 часа/iu,
     },
     {
-      text: 'Ластик: нажал «Подключить и включить», дал права 40 минут назад. Он молчит, мне опять Старт писать или в приложение вернуться?',
+      text: 'Ластик: нажал «Подключить и включить», дал права 40 минут назад. Он молчит; помогите включить ночной режим.',
       source: 'lastik-connect',
       required: /только после подтверждения.*чтения всех сообщений.*удаления.*не нужно.*статус/iu,
     },
@@ -994,6 +1057,12 @@ test('request requirements preserve procedural conditions without inventing user
         input.answerRequirements.find((entry) => entry.sourceId === item.source)?.instruction ?? '',
         item.required,
       );
+      if (item.forbidden)
+        assert.doesNotMatch(
+          input.answerRequirements.find((entry) => entry.sourceId === item.source)?.instruction ??
+            '',
+          item.forbidden,
+        );
       for (const requirement of input.answerRequirements)
         assert.ok(input.verifiedKnowledge.some((fact) => fact.id === requirement.sourceId));
       for (const id of item.absent ?? [])

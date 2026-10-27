@@ -33,6 +33,20 @@ const negatedAt = (text, index) =>
   /(?<![\p{L}])не\s+(?:(?:нужно|надо|следует|хочу|хотим|хотел[аи]?|хотели|собираюсь|собираемся|буду|будем|планирую|планируем)\s+)?(?:(?:вообще|полностью|больше)\s+)?$/iu.test(
     text.slice(0, index),
   );
+const moderatorForwardingRequest = (text) =>
+  !publisherName.test(text) &&
+  !eraserName.test(text) &&
+  !botProfileRequest(text) &&
+  !/(?:вам|тебе|оператору|поддержке).{0,25}(?:переслать|пересылать)|(?:переслать|пересылать).{0,15}(?:вам|тебе|оператору|поддержке)|для\s+разбора/iu.test(
+    text,
+  ) &&
+  (moderatorName.test(text) || /(?<![\p{L}])бот(?:а|у|ом|е)?(?![\p{L}])|модератор/iu.test(text)) &&
+  /максимову|максимовой|майору|р[эе]ксу|(?<![\p{L}])боту(?![\p{L}])|модератору|добавил|добавлен|назначил|подключить/iu.test(
+    text,
+  ) &&
+  /(?:что|куда|кому|как).{0,55}(?:переслать|пересылать|перешлю|перешлите|пересылаю)|(?:переслать|пересылать|перешлю|перешлите|пересылаю).{0,45}(?:куда|кому|чтобы|чтоб)/iu.test(
+    text,
+  );
 function productOf(text) {
   const transition = text.match(/(?:^|[,!.]\s*|\s+)(?:а\s+)?теперь\s+(.+)$/iu);
   if (transition) {
@@ -47,6 +61,7 @@ function productOf(text) {
   if (publisher) return 'publisher';
   if (publisherTask.test(text)) return 'publisher';
   if (eraserTask.test(text)) return 'eraser';
+  if (moderatorName.test(text) && moderatorForwardingRequest(text)) return 'major';
   if (moderatorName.test(text) && /резерв|выбран|модерац/iu.test(text)) return 'major';
   if (/(?:в|через|у)\s+майор/iu.test(text)) return 'major';
   return null;
@@ -293,6 +308,7 @@ function reviewedIntents(ctx) {
 }
 
 function mixedRequests(ctx, state) {
+  if (state.lastikWaitingOnly) return false;
   if (state.subscriptionIntent === 'mixed') return true;
   if (
     state.publisherRequest &&
@@ -310,6 +326,8 @@ function mixedRequests(ctx, state) {
   if (state.reviewedIntents.eligibility) currentTopics.add('public-channel');
   if (state.reviewedIntents.evidence) currentTopics.add('incident-evidence');
   if (placement.test(ctx.current)) currentTopics.add('publication');
+  if (state.publisherRequest && /[«"„]нужно проверить[»"“]/iu.test(ctx.current))
+    currentTopics.add('delivery');
   if (/подкл[юу]ч|подклюить/iu.test(ctx.current)) currentTopics.add('connection');
   const secondTask =
     /(?<![\p{L}])(?:и|а)\s+(?:еще|также|заодно|как|где|почему|сколько|какие|можно|настрой|включ|выключ|подключ|добав|провер|расскаж|объясни|переключ|смен|замен|помен|запрет|разреш)|кроме того|а также|;|[.!?]\s*(?:а\s+|и\s+)?(?:как|где|почему|что|сколько|какие|можно|нужно|настрой|включ|выключ|подключ|добав|провер|переключ|смен|замен|помен|запрет|разреш)/iu.test(
@@ -357,6 +375,33 @@ function lastikConnectionIntent(ctx, state, primaryIds) {
     if (intent) return intent;
   }
   return null;
+}
+
+function atomicLastikWaiting(ctx, state) {
+  if (
+    !state.eraserRequest ||
+    state.publisherRequest ||
+    state.botDirectory ||
+    state.botCatalogRequest ||
+    lastikConnectionIntent(ctx, state, ['lastik-connect']) !== 'waiting' ||
+    topics(ctx.current).some((topic) => topic !== 'retention')
+  )
+    return false;
+  if (
+    /прогресс|числ|подробност|счетчик|срок|хран|сут|недел|месяц|(?:24|48)\s*час|сто(?:ит|ят|имост)|плат|цен|тариф|сообщен|канал|закреп|исключ|сохран|настрой|истори|останов|отключ|выключ|пауз|вернуть(?!ся)|восстанов|отмен|истек|(?:как|какие|где|нужно).{0,35}(?:дать|выдать|назначить|права)|удал|очист|чист|уме|работ/iu.test(
+      ctx.current,
+    )
+  )
+    return false;
+  // FLAG: A waiting report alone must not swallow a second unrecognised question.
+  return ctx.current
+    .split(/[.!?;\n]+/u)
+    .filter((part) => part.trim())
+    .every((part) =>
+      /подкл|ожидан|жд(?:у|ать|ем)|молч|ни слова|старт|в приложение|мини-прилож|вернуться|прав[ао]|админ|провер|что.{0,12}(?:делать|дальше)|минут|час/iu.test(
+        part,
+      ),
+    );
 }
 
 function linkPolicyIntent(ctx, state, primaryIds) {
@@ -577,9 +622,19 @@ function semanticFacts(text, state) {
     )
   )
     add('max-platform-default-commands', 105);
-  const connectionRequested = test(
-    /подкл[юу]ч|подклюить|(?:постав|добав).{0,25}(?:майор|рэкс|публик|готов.{0,10}бот)|(?:бот|майор).{0,20}добавлен.{0,10}участник/iu,
-  );
+  const reportedConnectionReady =
+    publ &&
+    /карточк\p{L}*\s+подключ\p{L}*.{0,25}(?:готов|подключен)/iu.test(state.current) &&
+    !/не\s+(?:готов|подключен)/iu.test(state.current) &&
+    !/подключ(?:ить|и(?:те)?)(?![\p{L}])|(?:как|хочу|нужно|надо).{0,30}подключ/iu.test(
+      state.current,
+    );
+  const connectionRequested =
+    !reportedConnectionReady &&
+    (moderatorForwardingRequest(state.current) ||
+      test(
+        /подкл[юу]ч|подклюить|(?:постав|добав).{0,25}(?:майор|рэкс|публик|готов.{0,10}бот)|(?:бот|майор).{0,20}добавлен.{0,10}участник/iu,
+      ));
   const otherBotConnection = test(
     /(?:подкл[юу]ч\p{L}*|добав\p{L}*|постав\p{L}*)\s+(?:(?:еще|также|отдельно)\s+)?(?:публик|майор|рэкс|модератор)|(?:публик|майор|рэкс|модератор)\p{L}*\s+(?:подкл[юу]ч|добав|постав)|ластик(?:а|у|ом|е)?[»"]?\s*(?:,?\s+и|,\s*а\s+также)\s+(?:публик|майор|рэкс|модератор)/iu,
   );
@@ -655,11 +710,16 @@ function semanticFacts(text, state) {
   const answerLinkInstruction = test(
     /(?:встав|добав|включ|укаж|напиш|привед|прилож).{0,25}(?:в|к)\s+(?:сво[йе]\s+)?ответ.{0,30}ссылк|ссылк.{0,30}(?:в|к)\s+(?:сво[йе]\s+)?ответ/iu,
   );
+  const offeredCommunityLink =
+    advert.test(state.current) &&
+    /ссылк\p{L}*\s+на\s+(?:(?:эту|ту|нужную|районную)\s+)?(?:групп|чат|канал)/iu.test(
+      state.current,
+    );
   if (profileRequested) add('bots', 145);
   if (moderatorName.test(text) && test(/резерв|в запас/iu)) add('bots', 120);
   if (
     (test(/домен|allowlist|whitelist/iu) ||
-      (!answerLinkInstruction && test(/(?<![\p{L}])ссылк/iu)) ||
+      (!answerLinkInstruction && !offeredCommunityLink && test(/(?<![\p{L}])ссылк/iu)) ||
       explicitLinkFilter) &&
     ((!publ &&
       !profileRequested &&
@@ -702,15 +762,19 @@ function semanticFacts(text, state) {
         )))
   ) {
     add('message-retention', 110);
-    const connecting = test(/подкл[юу]ч|добав|назнач|начать|запуст|включи(?:ть|те)?(?![\p{L}])/iu);
+    const connecting =
+      state.lastikWaitingOnly ||
+      test(/подкл[юу]ч|добав|назнач|начать|запуст|включи(?:ть|те)?(?![\p{L}])/iu);
     if (connecting || test(/канал|какому.{0,15}бот/iu)) add('lastik-connect', 135);
     if (
-      test(/переподключ|снят|вернул|потерял|не админ|нет доступа|нужны права|проверить права/iu) ||
-      test(lastikConnectionRecovery) ||
-      (!connecting && test(/прав[ао]|правам|правами/iu))
+      !state.lastikWaitingOnly &&
+      (test(/переподключ|снят|вернул|потерял|не админ|нет доступа|нужны права|проверить права/iu) ||
+        test(lastikConnectionRecovery) ||
+        (!connecting && test(/прав[ао]|правам|правами/iu)))
     )
       add('lastik-permissions', 140);
     if (
+      !state.lastikWaitingOnly &&
       test(
         /прогресс|сколько.{0,20}(?:удал|обработ|остал|очищ)|статус|проверена|подробности|счетчик|числа|постепенн|очеред|завис|не удаля|не чист|остал/iu,
       )
@@ -720,7 +784,7 @@ function semanticFacts(text, state) {
       add('lastik-exclusions', 125);
     if (test(/сохранен|не удалось сохранить|ошибк|неизвестн.{0,15}результат|повтор.{0,15}нажа/iu))
       add('lastik-save-recovery', 135);
-    if (test(/останов|отключ|выключ|пауз|вернуть|восстанов|отменить/iu))
+    if (test(/останов|отключ|выключ|пауз|вернуть(?!ся)|восстанов|отменить/iu))
       add('lastik-stop-restore', 140);
   }
   if (state.botDirectory) add('bots', 150);
@@ -851,7 +915,8 @@ function semanticFacts(text, state) {
       );
     const currentUnknownSend =
       contextualDeliveryUncertain &&
-      (currentMissingResult ||
+      (/[«"„]нужно проверить[»"“]/iu.test(state.current) ||
+        currentMissingResult ||
         (repeatSendAttempt(state.current) && !explicitCurrentSchedule && !currentResultConfirmed));
     const deliveryUncertain =
       (interruptedSendIn(text) &&
@@ -1100,6 +1165,7 @@ export function createSupportRouter(knowledge) {
       nightSources: nightSources(ctx, role),
       reviewedIntents: reviewedIntents(ctx),
     };
+    state.lastikWaitingOnly = atomicLastikWaiting(ctx, state);
     const mixedTopics = mixedRequests(ctx, state);
     state.mixedTopics = mixedTopics;
     const primaryIds = factsFor(state);
@@ -1135,6 +1201,7 @@ export function createSupportRouter(knowledge) {
       botDirectory,
       botCatalogRequest,
       primaryIds,
+      lastikWaitingOnly: state.lastikWaitingOnly,
       lastikConnectionIntent: lastikConnectionIntent(ctx, state, primaryIds),
       linkPolicyIntent: linkPolicyIntent(ctx, state, primaryIds),
       botProfilesRequested: profilesRequested,
