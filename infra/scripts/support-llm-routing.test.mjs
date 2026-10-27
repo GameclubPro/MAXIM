@@ -8,6 +8,74 @@ import {
   validateSupportAnswer,
 } from './support-llm-client.mjs';
 
+test('manual close imperatives select the procedure while open and mixed requests stay distinct', () => {
+  for (const text of [
+    'Закройте, пожалуйста, мой чат сейчас без срока. Я администратор.',
+    'Я админ. Закрой чат до моего решения, но расписание не меняй.',
+    'Закрывайте чат вручную, администраторы должны писать.',
+  ]) {
+    const route = classifySupportRequest(text);
+    assert.equal(route.primaryIds[0], 'night-manual', text);
+    assert.equal(route.nightManualOnly, true, text);
+    assert.equal(route.liveActionRequested, true, text);
+  }
+  for (const text of [
+    'Закройте чат без срока и включите запрет ссылок.',
+    'Закройте чат без срока. Как выгрузить список участников?',
+    'Не включайте тишину.',
+  ])
+    assert.equal(classifySupportRequest(text).nightManualOnly, false, text);
+  for (const text of [
+    'Не закрывайте чат. Как открыть его вручную?',
+    'Как включить тишину?',
+    'Как выключить тишину?',
+  ]) {
+    assert.equal(classifySupportRequest(text).nightManualOnly, true, text);
+    assert.equal(
+      classifySupportRequest(text).nightManualIntent,
+      text.includes('включить') ? 'close' : 'open',
+      text,
+    );
+  }
+});
+
+test('bounded Lastik retry and calendar-date composition reject independent extra work', () => {
+  for (const [text, field] of [
+    [
+      'Ластик: ожидание истекло. Как запустить снова и что будет со старой историей?',
+      'lastikRestartOnly',
+    ],
+    ['Ластик: «Подключение отменено». Что нажать?', 'lastikRestartOnly'],
+    [
+      'Публик: как задать один пост на 5 и 12 декабря по Москве, если телефон в другом поясе?',
+      'publisherDatesOnly',
+    ],
+  ])
+    assert.equal(classifySupportRequest(text)[field], true, text);
+  for (const [text, field] of [
+    ['Ластик: ожидание истекло. Как запустить снова и выгрузить архив?', 'lastikRestartOnly'],
+    ['Ластик: подключение отменено. Как поменять срок?', 'lastikRestartOnly'],
+    [
+      'Публик: как поставить один пост на 5 и 12 декабря и настроить автоответы?',
+      'publisherDatesOnly',
+    ],
+    [
+      'Публик: как поставить один пост на 5 и 12 декабря и выгрузить список админов?',
+      'publisherDatesOnly',
+    ],
+    [
+      'Публик: даты 5 и 12 декабря. Как создать новый пост и выбрать для него получателей?',
+      'publisherDatesOnly',
+    ],
+    ['Публик: один пост на 5 и 12 декабря, и смените аватар канала.', 'publisherDatesOnly'],
+    [
+      'Ластик: ожидание истекло. Запустить снова и пригласите новых участников.',
+      'lastikRestartOnly',
+    ],
+  ])
+    assert.equal(classifySupportRequest(text)[field], false, text);
+});
+
 test('Lastik questions select the current task and retain context after a product change', () => {
   checkCases(
     [

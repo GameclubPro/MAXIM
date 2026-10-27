@@ -193,7 +193,18 @@ preserves recipient selection and conditional connection prerequisites; atomic d
 use the existing publication's evidence procedure and duplicate warning. Tasks outside the reviewed
 procedure, including recovery questions it does not cover, retain inference.
 Bounded manual-closing and settings-conflict replies preserve the exact UI action and its
-direction. An observation-mode incident reply explains independent filters before the operator
+direction, including imperative requests and cancellation of manual closing. The static headings
+«Закрыть сейчас» and «Когда» locate controls; they are never steps to click. Covered Lastik retry
+and archive questions use a complete reviewed composition: the new request starts a checking
+window of up to one hour, and activation requires confirmation of both bot and requesting-user
+administrator rights. Archive coverage retains the reported age threshold, gradual cleanup and
+protected exceptions. Covered calendar-date and timezone questions use the actual «Расписание»
+and «Даты» controls and relate the desired time to the displayed zone without inventing a selector
+or an unknown conversion. Separate creation, recipient-selection, settings and export tasks retain
+inference. An explicit request to perform an action retains the assistant's lack of tools before
+instructions. Unresolved personal administrator rights require a concrete check and administrator
+handoff; invitation capability alone does not establish those rights.
+An observation-mode incident reply explains independent filters before the operator
 handoff. These routes cover all parts of the current task; unrelated additional questions retain
 inference. Lastik activation facts and reminders retain both rights checks and the waiting window
 from the connection request, including when inference is required.

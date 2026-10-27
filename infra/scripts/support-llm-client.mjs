@@ -126,7 +126,7 @@ function answerRequirements(selected, request) {
   if (active('connect'))
     add(
       'connect',
-      'Ответь на подключение сразу, с условием «если у вас есть права администратора». Дай проверенный порядок: «Подключить чат или канал»; выбранный бот — администратор с доступом ко всем сообщениям; затем переслать сообщение или пост из сообщества в личный диалог с этим ботом. Простое добавление бота не подтверждает нужных прав. Сохрани уже выполненные шаги, но не подменяй всю инструкцию вопросом о роли.',
+      `Ответь на подключение сразу, с условием «если у вас есть права администратора». Дай проверенный порядок: «Подключить чат или канал»; выбранный бот — администратор с доступом ко всем сообщениям; затем переслать сообщение или пост из сообщества в личный диалог с этим ботом. Простое добавление бота не подтверждает нужных прав. Сохрани уже выполненные шаги, но не подменяй всю инструкцию вопросом о роли.${request.role !== 'admin' ? ' Если свои права неизвестны, сначала уточните у администратора чата, являетесь ли вы администратором. Возможность приглашать участников сама по себе не подтверждает ваши права администратора. Если их нет, попросите администратора этого чата выполнить подключение; не обещай доступные пользователю настройки до выполнения этого условия.' : ''}`,
     );
   if (active('links-policy')) {
     const intent = {
@@ -155,7 +155,12 @@ function answerRequirements(selected, request) {
   else if (request.lastikConnectionIntent === 'restart')
     add(
       'lastik-permissions',
-      'Если ожидание истекло или подключение отменено, дай повторный запуск кнопкой «Проверить и включить» после проверки прав чтения всех сообщений и удаления. Новая проверка идёт до 1 часа после нового запроса; очистка включится автоматически после подтверждения двух условий: нужных прав Ластика и того, что запросивший подключение пользователь — администратор чата. Не советуй просто ждать дальше или лишь открыть профиль. Не подтверждай текущие права пользователя или бота.',
+      'Если ожидание истекло или подключение отменено, в нужном чате открой «Удаление старых сообщений» и дай повторный запуск кнопкой «Проверить и включить». Новая проверка идёт до 1 часа после нового запроса. Это срок проверки, не обещание успешного включения: очистка включится автоматически только после подтверждения двух условий — Ластик является администратором с правами чтения всех сообщений и удаления, а запросивший подключение пользователь является администратором чата. Сообщённая пользователем роль не подтверждает завершённую проверку. Не советуй просто ждать дальше или лишь открыть профиль. Не подтверждай текущие права пользователя или бота.',
+    );
+  if (request.primaryIds.includes('night-manual'))
+    add(
+      'night-manual',
+      '«Закрыть сейчас» — статический заголовок блока, не кнопка: не предлагай нажимать на него. В «Ночном режиме» настоящий переключатель — «Закрыть вручную»; для закрытия его включают, для отмены выключают и сохраняют. Сохрани выбранный срок или «Без срока», право администраторов писать и независимость ночного расписания. Просьба выполнить действие требует сначала сказать, что помощник сам не меняет настройки.',
     );
   if (active('publisher-delivery-status'))
     add(
@@ -173,7 +178,12 @@ function answerRequirements(selected, request) {
   )
     add(
       'publisher-schedule-dates',
-      'Для одинакового поста в отдельные календарные даты используй «Когда» → «Расписание» → «Даты». Задать даты и время, проверить получателей и часовой пояс, «Проверить расписание» → «Сохранить расписание». Не заменяй «Даты» веткой «Повтор»: «По дате» в завершении повтора не является выбором отдельных дат. Отдельно ответь о результате прошлой публикации, если он тоже спрашивается.',
+      'Для одинакового поста в отдельные календарные даты в блоке «Когда» выбери «Расписание», затем «Даты». «Когда» — статический заголовок, не кнопка: не предлагай нажимать на него. Задать даты и время, проверить получателей и часовой пояс, «Проверить расписание» → «Сохранить расписание». Не заменяй «Даты» веткой «Повтор»: «По дате» в завершении повтора не является выбором отдельных дат. Отдельно ответь о результате прошлой публикации, если он тоже спрашивается.',
+    );
+  if (request.primaryIds.includes('publisher-schedule-timezone'))
+    add(
+      'publisher-schedule-timezone',
+      'Пояс показан в блоке «Когда», это не кнопка и не выбор пояса. Если задано московское время, явно скажи соотнести нужные дату и время по Москве с показанным поясом перед подтверждением. Не придумывай числовой пересчёт без известного пояса и даты. Отдельного меню выбора часового пояса нет; новый черновик берёт пояс устройства/браузера, с Europe/Moscow только как запасным значением.',
     );
   if (ids.has('publisher-post-media') && request.primaryIds.includes('publisher-post-media'))
     add(
@@ -413,6 +423,108 @@ export async function answerSupport({
       responseRoute: 'room-policy',
     };
   let selected = selectKnowledge(text, history);
+  const actionBoundary = request.liveActionRequested
+    ? 'Я не могу сам изменить настройки или запустить действие в вашем сообществе.\n\n'
+    : '';
+  // FLAG: These complete reviewed compositions cover only retry/archive and dates/zone.
+  // Unknown or independent tasks stay in inference; no model draft is generated or rewritten.
+  if (
+    request.lastikRestartOnly &&
+    ['lastik-connect', 'lastik-permissions'].every((id) =>
+      selected.some((entry) => entry.id === id),
+    ) &&
+    (!request.lastikRestartHistory ||
+      ['message-retention', 'lastik-exclusions'].every((id) =>
+        selected.some((entry) => entry.id === id),
+      )) &&
+    selected.every(
+      (entry) =>
+        mandatoryIds.has(entry.id) ||
+        [
+          'lastik-connect',
+          'lastik-permissions',
+          'message-retention',
+          'lastik-exclusions',
+          'bots',
+          'settings',
+        ].includes(entry.id),
+    )
+  ) {
+    const age =
+      request.lastikRetentionHours === 168
+        ? 'старше 1 недели'
+        : request.lastikRetentionHours
+          ? `старше ${request.lastikRetentionHours} часов`
+          : 'старше выбранного срока';
+    const parts = [
+      `${actionBoundary}В мини-приложении откройте нужный чат → «Удаление старых сообщений». Проверьте права и нажмите «Проверить и включить» для нового запроса. Само открытие профиля и «Обновить состояние» не запускают новый час ожидания.`,
+      'Проверка идёт до 1 часа после нового запроса. Очистка включится автоматически только после подтверждения обоих условий:\n• Ластик — администратор с правами чтения всех сообщений и удаления.\n• Запросивший подключение пользователь — администратор чата.',
+      'Ластик не пишет в чат. Возвращаться в мини-приложение для завершения не нужно; там можно посмотреть статус. Помощник не видит текущие права и состояние подключения.',
+    ];
+    if (request.lastikRestartHistory)
+      parts.push(
+        `Ластик удаляет сообщения ${age} из всей доступной истории, включая переписку до добавления бота. Срок считается от создания сообщения; редактирование его не продлевает. Большая история очищается постепенно, точное время окончания неизвестно.`,
+        'Сохраняются все закреплённые сообщения, а также правила, объявления розыгрышей и их итоги из наших модулей — не любой текст с такими названиями. Остальные сообщения, включая сообщения администраторов, входят в очистку по сроку.',
+      );
+    return {
+      ...validateSupportAnswer(
+        {
+          action: 'reply',
+          text: parts.join('\n\n'),
+          sourceIds: [
+            'lastik-permissions',
+            'lastik-connect',
+            ...(request.lastikRestartHistory ? ['message-retention', 'lastik-exclusions'] : []),
+          ],
+        },
+        selected,
+      ),
+      durationMs: 0,
+      responseRoute: 'reviewed-faq',
+    };
+  }
+  if (
+    request.publisherDatesOnly &&
+    selected.some((entry) => entry.id === 'publisher-schedule-dates') &&
+    (!request.publisherDatesTimezone ||
+      selected.some((entry) => entry.id === 'publisher-schedule-timezone')) &&
+    selected.every(
+      (entry) =>
+        mandatoryIds.has(entry.id) ||
+        [
+          'publisher-schedule-dates',
+          'publisher-schedule-timezone',
+          'publisher-drafts-history',
+          'publisher-post-create',
+          'publisher-post-targets',
+          'publik',
+        ].includes(entry.id),
+    )
+  ) {
+    const parts = [
+      `${actionBoundary}${request.role === 'admin' ? 'В редакторе одного поста:' : 'Если у вас есть права администратора сообщества, в редакторе одного поста:'}\n\n1. В блоке «Когда» выберите «Расписание», затем «Даты».\n2. Добавьте нужные даты и задайте время.\n3. Проверьте получателей, все даты и время в показанном часовом поясе.\n4. Нажмите «Проверить расписание», затем «Сохранить расписание».`,
+      'Все даты используют один пост. Для разных текстов или вложений нужны отдельные публикации. «Даты» — отдельные календарные даты, а не ежедневный или недельный «Повтор».',
+    ];
+    if (request.publisherDatesTimezone)
+      parts.push(
+        'Новый черновик берёт пояс устройства или браузера; если определить его не удалось — Europe/Moscow. При продолжении сохранённого поста проверьте показанный пояс. Желаемые дату и время соотнесите с показанным поясом перед подтверждением. Если требуется московское время, а показан другой пояс, пересчитайте его для выбранной даты. Без известного пояса точный пересчёт сделать нельзя. Отдельного меню выбора часового пояса нет.',
+      );
+    return {
+      ...validateSupportAnswer(
+        {
+          action: 'reply',
+          text: parts.join('\n\n'),
+          sourceIds: [
+            'publisher-schedule-dates',
+            ...(request.publisherDatesTimezone ? ['publisher-schedule-timezone'] : []),
+          ],
+        },
+        selected,
+      ),
+      durationMs: 0,
+      responseRoute: 'reviewed-faq',
+    };
+  }
   // FLAG: Publisher onboarding and archive scope are separate from moderator controls
   // and first-time retention setup. Use only fully covered, router-confirmed explanations.
   if (
@@ -473,7 +585,14 @@ export async function answerSupport({
       active: request.nightManualOnly,
       id: 'night-manual',
       field: 'manualAnswer',
-      allowed: ['night-manual', 'night-permissions', 'night', 'choose-moderator'],
+      allowed: [
+        'night-manual',
+        'night-permissions',
+        'night',
+        'choose-moderator',
+        'admin-commands',
+        'settings',
+      ],
     },
     {
       active: ['saved', 'mine'].includes(request.lastikConflictIntent),
@@ -514,13 +633,18 @@ export async function answerSupport({
   );
   if (procedure) {
     const fact = selected.find((entry) => entry.id === procedure.id);
+    const procedureText =
+      procedure.id === 'night-manual' && request.nightManualIntent === 'open'
+        ? 'Для отмены ручного закрытия откройте в настройках своего чата «Ночной режим» → блок «Закрыть сейчас». Выключите «Закрыть вручную» и нажмите «Сохранить».\n\nЭто отменяет только ручное закрытие. Включённое ночное расписание продолжает действовать; если сейчас его закрытый период, чат останется закрытым по расписанию. Администраторы смогут писать.'
+        : fact[procedure.field];
     const prefix =
-      request.role === 'admin' || request.aiObservationHandoffOnly
+      actionBoundary +
+      (request.role === 'admin' || request.aiObservationHandoffOnly
         ? ''
-        : 'Если у вас есть права администратора сообщества:\n\n';
+        : 'Если у вас есть права администратора сообщества:\n\n');
     return {
       ...validateSupportAnswer(
-        { action: 'reply', text: prefix + fact[procedure.field], sourceIds: [fact.id] },
+        { action: 'reply', text: prefix + procedureText, sourceIds: [fact.id] },
         selected,
       ),
       durationMs: 0,

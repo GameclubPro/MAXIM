@@ -16,7 +16,123 @@ import {
 } from './support-llm-client.mjs';
 import { supportModelArgs, SUPPORT_MODEL } from './support-llm-profile.mjs';
 
-test('mixed Lastik waiting and recovery preserve the request time origin and both activation checks', async (t) => {
+test('reviewed manual closing accepts imperative requests and preserves the no-tools boundary', async () => {
+  for (const text of [
+    'Закройте, пожалуйста, мой чат сейчас без срока. Я администратор, коллегам надо продолжать писать.',
+    'Я админ. Закрой чат до моего решения, но расписание не меняй.',
+    'Нужно закрыть чат вручную без срока. Как это сделать?',
+  ]) {
+    const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    assert.match(result.text, /блок «Закрыть сейчас»/u);
+    assert.match(result.text, /Включите «Закрыть вручную»/u);
+    assert.match(result.text, /«Без срока».*«Сохранить»/su);
+    assert.match(result.text, /администраторы смогут писать/iu);
+    assert.doesNotMatch(result.text, /(?:нажмите|кнопк\p{L}*)\s+«Закрыть сейчас»/iu);
+    if (/закрой/iu.test(text)) assert.match(result.text, /не могу.*(?:настрой|измен)/isu);
+  }
+});
+
+test('manual opening and silence intents preserve direction without changing the schedule', async () => {
+  for (const text of [
+    'Не закрывайте чат. Как открыть его вручную?',
+    'Как выключить тишину?',
+    'Откройте чат вручную, пожалуйста.',
+  ]) {
+    const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    assert.match(result.text, /Выключите «Закрыть вручную».*«Сохранить»/su);
+    assert.match(result.text, /расписание продолжает действовать/u);
+    assert.doesNotMatch(result.text, /Включите «Закрыть вручную»/u);
+  }
+});
+
+test('reviewed Lastik retry composes activation and archive scope without inventing completion', async () => {
+  for (const text of [
+    'Я админ. Ластик показывает «Время ожидания истекло». Ставил 48 часов. Профиль уже открыт, как повторить подключение? Старую переписку тоже удалит?',
+    'Ластик: «Подключение отменено». Что нажать для нового запроса? Если запустится, сообщения до добавления и закрепы попадут под очистку?',
+    'Ластик: ожидание истекло, как запустить снова?',
+  ]) {
+    const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    const body = presentedBody(result).replace(/\s+/gu, ' ');
+    assert.match(body, /«Удаление старых сообщений».*«Проверить и включить»/u);
+    assert.match(body, /до 1 часа после нового запроса/u);
+    assert.match(body, /автоматически только после подтверждения/iu);
+    assert.match(body, /Ластик.*администратор.*чтения всех сообщений и удаления/iu);
+    assert.match(body, /запросивший.*администратор чата/iu);
+    assert.match(body, /профиля.*не запускают новый час/iu);
+    if (/переписк|сообщения до/iu.test(text)) {
+      assert.match(body, /всей доступной истории.*до добавления/iu);
+      assert.match(body, /постепенно/u);
+      assert.match(body, /закреплённые.*правила.*розыгрыш/iu);
+      assert.match(body, /от создания сообщения/u);
+    }
+    if (/48/iu.test(text)) assert.match(body, /старше 48 часов/u);
+  }
+});
+
+test('reviewed calendar dates and timezone name actual controls and reconcile the desired zone', async () => {
+  for (const text of [
+    'Публик: один пост только 6, 13 и 20 декабря в 17:00 по Москве. Я путешествую, телефон в другом часовом поясе. Где задать даты и время?',
+    'В Публике новый черновик. Нужны одинаковые анонсы 2 ноября и 9 декабря, не повтор. Как выбрать эти даты?',
+    'Я админ. Поставьте в Публике один пост на несколько конкретных дат, часовой пояс отличается от московского.',
+  ]) {
+    const result = await answerSupport({ text, key: 'unused', endpoint: 'http://127.0.0.1:1' });
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    assert.match(result.text, /В блоке «Когда» выберите «Расписание», затем «Даты»/u);
+    assert.match(result.text, /«Проверить расписание».*«Сохранить расписание»/su);
+    assert.doesNotMatch(result.text, /(?:нажмите|кнопк\p{L}*)\s+«Когда»/iu);
+    if (/пояс|Москв/iu.test(text)) {
+      assert.match(
+        result.text,
+        /московск\p{L}* время.*соотнес|соотнес\p{L}*.*московск\p{L}* время/isu,
+      );
+      assert.match(result.text, /(?:нет|не предусмотрено).*меню|меню.*нет/iu);
+      assert.match(result.text, /Europe\/Moscow/u);
+    }
+    if (/поставьте/iu.test(text)) assert.match(result.text, /не могу.*(?:настрой|измен)/isu);
+  }
+});
+
+test('extra tasks and reversed actions keep inference with source-backed control and rights reminders', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Текущее состояние помощнику недоступно.',
+    sourceIds: ['operator'],
+  });
+  for (const text of [
+    'Я админ. Закройте чат без срока и объясните, как выгрузить список участников.',
+    'Ластик: «Время ожидания истекло». Как начать снова и выгрузить архив?',
+    'Ластик: подключение отменено. Как запустить и изменить срок на неделю?',
+    'Публик: один пост на 7 и 14 ноября. Как выбрать даты и настроить автоответы?',
+    'Публик: один пост на 7 и 14 ноября. Как задать даты и выгрузить список администраторов?',
+    'Публик: один пост на 7 и 14 ноября, и смените аватар канала.',
+    'Публик: даты 7 и 14 ноября. Как создать новый пост и выбрать получателей?',
+    'Ластик: ожидание истекло, запустите снова и пригласите новых участников.',
+    'Как подключить Майора? Я не уверен в своих правах: возможно, могу только приглашать участников.',
+  ]) {
+    assert.equal(
+      (await answerSupport({ ...fixture.input, text })).responseRoute,
+      'model-inference',
+      text,
+    );
+    const requirements = fixture.inputs.at(-1).answerRequirements;
+    const instruction = (id) =>
+      requirements.find((entry) => entry.sourceId === id)?.instruction ?? '';
+    if (/Закройте/iu.test(text))
+      assert.match(instruction('night-manual'), /заголовок.*не кнопка/iu);
+    if (/Публик/iu.test(text))
+      assert.match(instruction('publisher-schedule-dates'), /заголовок.*не кнопка/iu);
+    if (/Майора/iu.test(text)) {
+      assert.match(instruction('connect'), /приглашать участников.*не подтверждает/iu);
+      assert.match(instruction('connect'), /если.*нет.*администратор/iu);
+    }
+  }
+  assert.equal(fixture.requests, 9);
+});
+
+test('mixed Lastik waiting retains inference while a covered retry preserves both activation checks', async (t) => {
   const fixture = await completionFixture(t, {
     action: 'reply',
     text: 'Текущее состояние помощнику недоступно.',
@@ -40,10 +156,15 @@ test('mixed Lastik waiting and recovery preserve the request time origin and bot
     },
   ]) {
     const result = await answerSupport({ ...fixture.input, ...scenario });
-    assert.equal(result.responseRoute, 'model-inference');
+    assert.equal(
+      result.responseRoute,
+      scenario.id === 'lastik-permissions' ? 'reviewed-faq' : 'model-inference',
+    );
     const instruction =
-      fixture.inputs.at(-1).answerRequirements.find((entry) => entry.sourceId === scenario.id)
-        ?.instruction ?? '';
+      scenario.id === 'lastik-permissions'
+        ? result.text
+        : (fixture.inputs.at(-1).answerRequirements.find((entry) => entry.sourceId === scenario.id)
+            ?.instruction ?? '');
     assert.match(instruction, /1 час/iu);
     assert.match(instruction, /после.*запрос|от.*запрос/iu);
     assert.match(instruction, /чтени[ея].*удалени/iu);
@@ -663,7 +784,7 @@ test('reviewed setup and publishing procedures preserve independent tasks in inf
   assert.equal(fixture.requests, cases.length);
 });
 
-test('Lastik shortcuts preserve recovery, rights and additional tasks in inference', async (t) => {
+test('Lastik shortcuts preserve waiting, rights and additional tasks in inference', async (t) => {
   const fixture = await completionFixture(t, {
     action: 'reply',
     text: 'Уточните нужное действие.',
@@ -671,7 +792,6 @@ test('Lastik shortcuts preserve recovery, rights and additional tasks in inferen
   });
   const cases = [
     'Как подключить Ластика к новому чату и включить ночной режим?',
-    'Ластик: два часа назад нажал «Подключить и включить», теперь «Время ожидания истекло». Как запустить снова?',
     'Ластик: я нажал «Подключить и включить», а как проверить права?',
     'Ластик: нажал «Подключить и включить», жду 40 минут. Как выключить ночной режим?',
     'Ластик: нажал «Подключить и включить», жду 40 минут. Он тронет старые сообщения до подключения?',
@@ -1440,9 +1560,10 @@ test('request requirements preserve procedural conditions without inventing user
       required: /если.*ещё не подключ.*не утверждай.*не подключён/iu,
     },
     {
-      text: 'Ластик: два часа назад нажал «Подключить и включить», теперь «Время ожидания истекло». Как запустить снова?',
+      text: 'Ластик: два часа назад нажал «Подключить и включить», теперь «Время ожидания истекло». Как запустить снова? И как выгрузить архив?',
       source: 'lastik-permissions',
-      required: /истекло.*отменено.*Проверить и включить.*проверки прав/iu,
+      required:
+        /истекло.*отменено.*Проверить и включить.*до 1 часа после нового запроса.*только после подтверждения двух условий/iu,
     },
   ];
   try {

@@ -54,8 +54,12 @@ const publisherTask =
   /автоответ|автопост|предложк|согласован.{0,15}личк|\bvk\b|(?:^|\s)вк(?:\s|[.!?,]|$)|импорт.{0,20}пост|пост.{0,20}импорт|отложенн.{0,20}пост|пост.{0,20}отлож|регулярн.{0,20}пост|переехал.{0,20}публикац|майор.{0,35}пост|пост.{0,35}майор/iu;
 const eraserTask =
   /стар.{0,15}(?:сообщен|переписк)|очист.{0,15}(?:истор|переписк)|удаление по срок/iu;
+const chatClosure = /закр[ыо]\p{L}*[^.!?\n]{0,65}чат|чат[^.!?\n]{0,65}закр[ыо]/iu;
+const closeAction = /(?<![\p{L}])(?:закры(?:ть|вать)|закрой(?:те)?|закрывай(?:те)?)(?![\p{L}])/giu;
+const liveAction =
+  /(?<![\p{L}])(?:закрой(?:те)?|закрывай(?:те)?|открой(?:те)?|включи(?:те)?|выключи(?:те)?|отключи(?:те)?|подключи(?:те)?|настрой(?:те)?|поставь(?:те)?|сохрани(?:те)?|запусти(?:те)?|опубликуй(?:те)?)(?![\p{L}])/giu;
 const lastikConnectionRecovery =
-  /время ожидания истек|отмен(?:ил[аи]?|или|ено|ен[ао]?)\s+(?:(?:его|это)\s+)?подключ|подключ\p{L}*\s+(?:было\s+)?отмен/iu;
+  /(?:время\s+)?ожидани\p{L}*\s+истек|отмен(?:ил[аи]?|или|ено|ен[ао]?)\s+(?:(?:его|это)\s+)?подключ|подключ\p{L}*\s+(?:было\s+)?отмен/iu;
 const lastikSettingsConflict =
   /настройки\s+(?:уже\s+)?изменились|конфликт.{0,20}(?:настро|сохран)/iu;
 const retentionHistoryPattern =
@@ -105,7 +109,7 @@ const removal = /удал|снес|снос|исчез|пропал|заблок
 const help =
   /\?|(?:^|\s)(?:как|почему|где|зачем|какой|какие|что|можно|сколько|вопрос|подскаж\p{L}*|помог\p{L}*|объясн\p{L}*|хочу|нужно|надо|нужен|нужна)(?:\s|$)|не\s+(?:работа|открыва|пуска|получа|приход|могу|вижу|размещ|включ|сохраня|добавля|отправля|публику|загружа)|удал|снес|снос|исчез|пропал|заблок|недоступ|ошибк|слетел|(?:нет|не видно).{0,30}(?:чат|канал|доступ|кноп|модул)/iu;
 const actionRequest =
-  /(?:^|[\s,.!])(?:включи(?:те)?|выключи(?:те)?|отключи(?:те)?|подключи(?:те)?|настрой(?:те)?|выставь(?:те)?|поставь(?:те)?|проверь(?:те)?|исправь(?:те)?|подтверди(?:те)?|покажи(?:те)?|расскаж(?:и|ите)|объясни(?:те)?|подскаж\p{L}*|дай(?:те)?|сделай(?:те)?|верни(?:те)?|найди(?:те)?|пришли(?:те)?|напиши(?:те)?|прими(?:те)?|поменяй(?:те)?|(?:о)?публикуй(?:те)?)(?![\p{L}])/iu;
+  /(?:^|[\s,.!])(?:закрой(?:те)?|закрывай(?:те)?|открой(?:те)?|включи(?:те)?|выключи(?:те)?|отключи(?:те)?|подключи(?:те)?|настрой(?:те)?|выставь(?:те)?|поставь(?:те)?|проверь(?:те)?|исправь(?:те)?|подтверди(?:те)?|покажи(?:те)?|расскаж(?:и|ите)|объясни(?:те)?|подскаж\p{L}*|дай(?:те)?|сделай(?:те)?|верни(?:те)?|найди(?:те)?|пришли(?:те)?|напиши(?:те)?|прими(?:те)?|поменяй(?:те)?|смени(?:те)?|замени(?:те)?|выгрузи(?:те)?|скачай(?:те)?|пригласи(?:те)?|удали(?:те)?|обнови(?:те)?|запусти(?:те)?|(?:о)?публикуй(?:те)?)(?![\p{L}])/iu;
 const unresolvedHelp =
   /не\s+(?:работа|заработ|открыва|пуска|получа|приход|могу|вижу|размещ|включ|сохраня|добавля|отправля|публику|загружа|появ|получил)|(?:все еще|по-прежнему|снова|опять|все равно).{0,30}(?:ошибк|сбо|удал|пропал|молчит)|(?:проблем|ошибк).{0,15}(?:остал|сохрани|не исчез)|недоступ|слетел/iu;
 const developerPattern =
@@ -488,7 +492,7 @@ function reviewedTaskCovered(text, topic, generic = /(?!)$/u, allowedInfinitives
   // Split independent questions, including unknown topics, before allowing a reviewed reply.
   return text
     .split(
-      /(?<=[.!?;])\s*|\n|(?<![\p{L}])(?:а|и)\s+(?=(?:(?:еще|также|заодно)\s+)?(?:как|где|почему|что|сколько|какие|можно|помен|включ|выключ|отключ|подключ|настро|добав|убра|объясни|подскажи|расскажи|покажи|поясни|\p{L}{2,}(?:ть|ти|чь)(?:ся)?(?![\p{L}])))|(?<![\p{L}])(?:а|и)\s+(?:еще|также|заодно)\s+/u,
+      /(?<=[.!?;])\s*|\n|(?<![\p{L}])(?:а|и)\s+(?=(?:(?:еще|также|заодно)\s+)?(?:как|где|почему|что|сколько|какие|можно|помен|смен|замен|выгруз|скача|приглас|удал|обнов|включ|выключ|отключ|подключ|настро|добав|убра|объясни|подскажи|расскажи|покажи|поясни|\p{L}{2,}(?:ть|ти|чь)(?:ся)?(?![\p{L}])))|(?<![\p{L}])(?:а|и)\s+(?:еще|также|заодно)\s+/u,
     )
     .map((part) => part.trim())
     .filter(Boolean)
@@ -501,7 +505,7 @@ function reviewedTaskCovered(text, topic, generic = /(?!)$/u, allowedInfinitives
         (!(
           help.test(part) ||
           actionRequest.test(part) ||
-          /^(?:еще|также|заодно|помен|включ|выключ|отключ|подключ|настро|добав|убра|замен|смен)/iu.test(
+          /^(?:еще|также|заодно|помен|включ|выключ|отключ|подключ|настро|добав|убра|замен|смен|выгруз|скача|приглас|удал|обнов)/iu.test(
             part,
           ) ||
           /^\p{L}{2,}(?:ть|ти|чь)(?:ся)?(?![\p{L}])/u.test(part)
@@ -545,6 +549,25 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
         ? 'saved'
         : 'mine'
       : null;
+  const closing = [...ctx.current.matchAll(closeAction)].some(
+    (match) => !negatedAt(ctx.current, match.index),
+  );
+  const opening = [
+    ...ctx.current.matchAll(
+      /откры(?:ть|вать)|открой(?:те)?|(?:выключ|отключ|отмен)(?:ить|и(?:те)?)/giu,
+    ),
+  ].some((match) => !negatedAt(ctx.current, match.index));
+  const manualContext = /ручн|тишин/iu.test(ctx.current);
+  const silenceOn = [
+    ...ctx.current.matchAll(/(?:включ\p{L}*.{0,20}тишин|тишин\p{L}*\s+вкл)/giu),
+  ].some((match) => !negatedAt(ctx.current, match.index));
+  const silenceOff = /тишин\p{L}*\s+выкл/iu.test(ctx.current);
+  const nightManualIntent =
+    closing || (silenceOn && !opening)
+      ? 'close'
+      : (opening && manualContext) || silenceOff
+        ? 'open'
+        : null;
   const nightManualOnly =
     primaryIds[0] === 'night-manual' &&
     !state.publisherRequest &&
@@ -556,13 +579,11 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
     ].some((match) => !negatedAt(ctx.current, match.index)) &&
     only(['night-manual', 'night-permissions', 'night', 'settings', 'admin-commands', 'bots']) &&
     !/закры(?:ть|вать)\s+(?:(?:чат|его)\s+)?не\s+(?:хочу|надо|нужно|буду)/iu.test(ctx.current) &&
-    [...ctx.current.matchAll(/закры(?:ть|вать)|ручн\p{L}*\s+(?:закры|откр)|тишин/giu)].some(
-      (match) => !negatedAt(ctx.current, match.index),
-    ) &&
+    Boolean(nightManualIntent) &&
     reviewedTaskCovered(
       ctx.current,
-      /закры(?:ть|вать)|откр(?:ыть|ывать)|закрыть\s+вручную|тишин|(?:не\s+менять|остав|сохран).{0,30}расписан|расписан.{0,30}(?:остав|сохран)/iu,
-      /^(?:а\s+)?как\s+(?:это\s+)?(?:включить|выключить|убрать|отменить)(?:\s+и\s+(?:потом\s+)?(?:включить|выключить|убрать|отменить))?[?!.\s]*$/iu,
+      /закры(?:ть|вать)|закрой|закрывай|откр(?:ыть|ывать|ой|ывай)|тишин|(?:не\s+менять|остав|сохран).{0,30}расписан|расписан.{0,30}(?:остав|сохран)|админ\p{L}*.{0,40}писать/iu,
+      /^(?:а\s+)?как\s+(?:это\s+)?(?:сделать|включить|выключить|убрать|отменить)(?:\s+и\s+(?:потом\s+)?(?:включить|выключить|убрать|отменить))?[?!.\s]*$/iu,
     );
   const publisherDeliveryOnly =
     state.publisherRequest &&
@@ -641,13 +662,73 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
       ctx.current,
       /(?:удал|стира|сотр|стер|очист|добер|затрон).{0,60}(?:истори|переписк|сообщ)|(?:истори|переписк|сообщ).{0,60}(?:удал|стира|сотр|стер|очист|добер|затрон)|закреп.{0,40}(?:сним|сохра|защит|трог|удал)|(?:сним|трог|удал).{0,35}закреп|исключ.{0,35}(?:кого|какие|сохра|защит)/iu,
     );
+  // FLAG: Retry plus archive scope is one covered composition. A second settings,
+  // export or product task must retain inference even when its topic has no fact ID.
+  const lastikRestartOnly =
+    state.eraserRequest &&
+    !state.publisherRequest &&
+    !state.botDirectory &&
+    lastikConnectionIntent(ctx, state, primaryIds) === 'restart' &&
+    only([
+      'lastik-permissions',
+      'lastik-connect',
+      'message-retention',
+      'lastik-exclusions',
+      'bots',
+      'settings',
+    ]) &&
+    !/сетк|канал|помен|измен|настро|выбрать\s+срок|сохран\p{L}*.{0,20}настрой/iu.test(
+      ctx.current,
+    ) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /ожидан\p{L}*.{0,20}истек|отмен\p{L}*.{0,20}подключ|подключ\p{L}*.{0,20}отмен|запус|подключ|запрос|профил|провер|прав|админ|истори|переписк|сообщ|закреп|исключ/iu,
+      /^(?:(?:а|и)\s+)?(?:(?:что|куда)\s+(?:дальше\s+)?(?:мне\s+)?нажать|как\s+(?:начать|запустить|повторить)\s+(?:снова|заново))[?!.\s]*$/iu,
+      /^(?:проверить|включить|подключить|переподключить|запустить|повторить|дождаться|ждать|вернуться|открыть|нажать|сделать|удалить|почистить|очистить|очищаться|снимать|снять|читать)$/u,
+    );
+  const publisherDatesOnly =
+    state.publisherRequest &&
+    !state.eraserRequest &&
+    !state.botDirectory &&
+    primaryIds.includes('publisher-schedule-dates') &&
+    only([
+      'publisher-schedule-dates',
+      'publisher-schedule-timezone',
+      'publisher-drafts-history',
+      'publik',
+    ]) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /дат|числ|расписан|пост|анонс|чернов|врем|пояс|москв|телефон|поездк/iu,
+      /^(?:(?:а|и)\s+)?(?:как|где)\s+(?:это\s+)?(?:выбрать|задать|указать|сохранить)[?!.\s]*$/iu,
+      /^(?:выбрать|задать|поставить|запланировать|назначить|указать|добавить|настроить|проверить|сохранить|соотнести|попасть|промахнуться|ошибиться|выйти|повторять)$/u,
+    );
+  const retentionPeriods = new Set(
+    [
+      ...ctx.current.matchAll(
+        /(?<!\d)(24|48|168)\s*час\p{L}*(?![\p{L}])|(?<![\p{L}])(?:1|одну)\s+недел\p{L}*/giu,
+      ),
+    ].map((match) => Number(match[1] ?? 168)),
+  );
   return {
     lastikConflictIntent,
     nightManualOnly,
+    nightManualIntent,
     publisherDeliveryOnly,
     aiObservationHandoffOnly,
     publisherConnectOnly,
     lastikHistoryOnly,
+    lastikRestartOnly,
+    lastikRestartHistory: lastikRestartOnly && retentionHistoryPattern.test(ctx.current),
+    lastikRetentionHours:
+      retentionPeriods.size === 1 &&
+      /срок|выбра|ставил|поставил|ластик\p{L}*\s+на/iu.test(ctx.current)
+        ? [...retentionPeriods][0]
+        : null,
+    publisherDatesOnly,
+    publisherDatesTimezone:
+      publisherDatesOnly &&
+      /пояс|москв|московск|врем.{0,20}телефон|телефон.{0,30}врем/iu.test(ctx.current),
   };
 }
 
@@ -724,8 +805,9 @@ function linkPolicyIntent(ctx, state, primaryIds) {
 }
 
 function nightSources(ctx, role) {
-  const relevant = /ночн|тишин|закры.{0,20}чат|чат.{0,20}закры|ручн.{0,20}откр|откр.{0,20}ручн/iu;
-  if (!relevant.test(ctx.focus)) return [];
+  const relevant = (text) =>
+    chatClosure.test(text) || /ночн|тишин|ручн.{0,20}откр|откр.{0,20}ручн/iu.test(text);
+  if (!relevant(ctx.focus)) return [];
   const detect = (text) => {
     const result = [];
     if (
@@ -736,7 +818,7 @@ function nightSources(ctx, role) {
     )
       result.push('night-permissions');
     if (
-      /ручн.{0,20}(?:закры|откр)|(?:закры|откр).{0,20}ручн|команд.{0,20}тишин|тишина\s+(?:вкл|выкл)|закры.{0,30}(?:сейчас|без срока|до\s+(?:(?:моего|своего)\s+)?решения)|(?:прямо\s+)?сейчас.{0,30}закры/iu.test(
+      /ручн.{0,20}(?:закр[ыо]|откр)|(?:закр[ыо]|откр).{0,20}ручн|команд.{0,20}тишин|тишина\s+(?:вкл|выкл)|закр[ыо].{0,65}(?:сейчас|без срока|до\s+(?:(?:моего|своего)\s+)?решения)|(?:прямо\s+)?сейчас.{0,65}закр[ыо]|(?<![\p{L}])(?:закрой|закрывай)(?:те)?(?![\p{L}])/iu.test(
         text,
       ) ||
       (/тишин/iu.test(text) && !/расписан|кажд.{0,8}ноч/iu.test(text))
@@ -753,7 +835,7 @@ function nightSources(ctx, role) {
   const current = detect(ctx.current);
   if (current.length) return current;
   for (const item of ctx.recent.filter((item) => item.role === 'user').reverse()) {
-    if (!relevant.test(item.text)) continue;
+    if (!relevant(item.text)) continue;
     const found = detect(item.text);
     if (found.length) return found;
   }
@@ -901,12 +983,16 @@ function semanticFacts(text, state) {
     add('max-platform-default-commands', 105);
   const reportedConnectionReady =
     reportedPublisherReady(state.current, publ) || reportedPublisherReady(state.focus, publ);
+  const editorPlacement =
+    publ &&
+    test(
+      /(?:постав|добав)\p{L}*[^.!?\n]{0,30}(?:в|через)\s+публик\p{L}*[^.!?\n]{0,35}(?:пост|публикац|анонс|расписан)/iu,
+    );
   const connectionRequested =
     !reportedConnectionReady &&
     (moderatorForwardingRequest(state.current) ||
-      test(
-        /подкл[юу]ч|подклюить|(?:постав|добав).{0,25}(?:майор|рэкс|публик|готов.{0,10}бот)|(?:бот|майор).{0,20}добавлен.{0,10}участник/iu,
-      ));
+      test(/подкл[юу]ч|подклюить|(?:бот|майор).{0,20}добавлен.{0,10}участник/iu) ||
+      (!editorPlacement && test(/(?:постав|добав).{0,25}(?:майор|рэкс|публик|готов.{0,10}бот)/iu)));
   const otherBotConnection = test(
     /(?:подкл[юу]ч\p{L}*|добав\p{L}*|постав\p{L}*)\s+(?:(?:еще|также|отдельно)\s+)?(?:публик|майор|рэкс|модератор)|(?:публик|майор|рэкс|модератор)\p{L}*\s+(?:подкл[юу]ч|добав|постав)|ластик(?:а|у|ом|е)?[»"]?\s*(?:,?\s+и|,\s*а\s+также)\s+(?:публик|майор|рэкс|модератор)/iu,
   );
@@ -971,9 +1057,7 @@ function semanticFacts(text, state) {
   if (
     !state.lastikWaitingOnly &&
     (!commercialAi || mixedTopics) &&
-    test(
-      /ночн|тишин|закрыв.{0,20}чат|закры.{0,20}(?:чат|расписан)|чат.{0,20}закры|ручн.{0,20}откр|откр.{0,20}ручн/iu,
-    ) &&
+    state.nightSources.length > 0 &&
     !test(/не.{0,8}про.{0,15}(?:ночн|закрыт)/iu)
   ) {
     for (const id of state.nightSources) add(id, id === 'night-manual' ? 115 : 105);
@@ -1240,7 +1324,7 @@ function semanticFacts(text, state) {
           /отложенн|завтра|(?<![\p{L}])дат(?:[аеуы]|ам|ами|ах)?(?![\p{L}])|расписан|заплан|регулярн.{0,15}пост|кажд.{0,12}(?:день|недел)|ежеднев|еженедель|по понедельник|повтор/iu,
         )) &&
       (!contextualDeliveryUncertain || explicitCurrentSchedule) &&
-      !test(/автоответ/iu)
+      (!test(/автоответ/iu) || selectedDates)
     ) {
       add(
         selectedDates
@@ -1298,6 +1382,9 @@ function semanticFacts(text, state) {
   if (test(/комментари/iu) && test(/майор/iu) && publ) add('channel-settings', 90);
   if (
     test(/(?:разниц|отлича|сравни|вместо него|тоже модератор|разные боты)/iu) &&
+    !test(
+      /часов\p{L}*\s+пояс\p{L}*[^.!?\n]{0,25}отлич|отлич\p{L}*[^.!?\n]{0,25}часов\p{L}*\s+пояс/iu,
+    ) &&
     (moderatorName.test(text) || publisherName.test(text) || eraserName.test(text))
   ) {
     add('bots', 120);
@@ -1517,6 +1604,9 @@ export function createSupportRouter(knowledge) {
       lastikWaitingOnly: state.lastikWaitingOnly,
       lastikSetupOnly: state.lastikSetupOnly,
       lastikConnectionIntent: lastikConnectionIntent(ctx, state, primaryIds),
+      liveActionRequested: [...ctx.current.matchAll(liveAction)].some(
+        (match) => !negatedAt(ctx.current, match.index),
+      ),
       linkPolicyIntent: linkPolicyIntent(ctx, state, primaryIds),
       botProfilesRequested: profilesRequested,
       reasons: [
