@@ -11,7 +11,7 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 source "$ROOT_DIR/infra/scripts/lib/legacy-cold-maintenance.sh"
 
 case "${1:-status}" in
-  status|smoke|check-client|workstation-bridge|check-workstation|check-workstation-offline)
+  status|smoke|check-client|workstation-bridge|workstation-pool-bridge|check-workstation|check-workstation-offline)
     nice -n 10 ionice -c 2 -n 7 node infra/scripts/commercial-llm-runtime.mjs "$@"
     ;;
   install|replace|stop|enable|disable)

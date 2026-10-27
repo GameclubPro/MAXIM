@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
-function probe(mode, ai = false) {
+function probe(mode, ai = false, pool = false) {
   return spawnSync(
     'bash',
     [
@@ -27,16 +27,25 @@ function probe(mode, ai = false) {
         sed s/hasProof/removedProof/g "$MAXIM_TEST_ROOT/$source_path"
       elif [[ "$MAXIM_TEST_MODE" == ai-no-origin && "$source_path" == *commercial-llm-effect-origin.ts ]]; then
         return 1
+      elif [[ "$MAXIM_TEST_MODE" == pool-no-v2 && "$source_path" == *commercial-llm-enforcement.protocol.ts ]]; then
+        sed s/commercial-pool-v2/removed-pool-reader/g "$MAXIM_TEST_ROOT/$source_path"
+      elif [[ "$MAXIM_TEST_MODE" == pool-no-v1 && "$source_path" == *commercial-llm-enforcement.protocol.ts ]]; then
+        sed s/legacyCommercialLlmSourceSchema/removedLegacyReader/g "$MAXIM_TEST_ROOT/$source_path"
       else
         cat "$MAXIM_TEST_ROOT/$source_path"
       fi
     }
-    ${ai ? 'maxim_topology_require_commercial_ai_delete_guard' : 'maxim_topology_require_commercial_text_delete_guard'} target
+    ${pool ? 'maxim_topology_require_commercial_ai_pool_delete_reader' : ai ? 'maxim_topology_require_commercial_ai_delete_guard' : 'maxim_topology_require_commercial_text_delete_guard'} target
   `,
     ],
     {
       cwd: root,
-      env: { ...process.env, MAXIM_TEST_ROOT: root, MAXIM_TEST_MODE: mode },
+      env: {
+        ...process.env,
+        MAXIM_TEST_ROOT: root,
+        MAXIM_TEST_MODE: mode,
+        COMMERCIAL_LLM_POOL_ENABLED: 'false',
+      },
       encoding: 'utf8',
     },
   );
@@ -54,7 +63,7 @@ test('both API rollback paths require commercial binding and final dispatch guar
 });
 
 test('AI rollback floor retains fresh proof, original source and final dispatch wiring', () => {
-  for (const file of ['vps-release-rollback.sh', 'vps-runtime-rollback.sh', 'vps-connect.sh'])
+  for (const file of ['vps-release-rollback.sh', 'vps-runtime-rollback.sh'])
     assert.match(
       readFileSync(resolve(root, 'infra/scripts', file), 'utf8'),
       /maxim_topology_require_commercial_ai_delete_guard/u,
@@ -63,4 +72,16 @@ test('AI rollback floor retains fresh proof, original source and final dispatch 
   assert.equal(current.status, 0, current.stderr);
   for (const mode of ['missing', 'ai-unwired', 'ai-no-proof', 'ai-no-origin'])
     assert.notEqual(probe(mode, true).status, 0);
+});
+
+test('both rollback paths and tooling bootstrap retain v1/v2 pool readers with routing disabled', () => {
+  for (const file of ['vps-release-rollback.sh', 'vps-runtime-rollback.sh', 'vps-connect.sh'])
+    assert.match(
+      readFileSync(resolve(root, 'infra/scripts', file), 'utf8'),
+      /maxim_topology_require_commercial_ai_pool_delete_reader/u,
+    );
+  const current = probe('current', true, true);
+  assert.equal(current.status, 0, current.stderr);
+  for (const mode of ['pool-no-v2', 'pool-no-v1', 'ai-no-proof', 'ai-unwired'])
+    assert.notEqual(probe(mode, true, true).status, 0);
 });

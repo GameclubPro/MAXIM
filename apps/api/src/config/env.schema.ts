@@ -467,6 +467,11 @@ const envSchema = z.object({
   PHOTO_DUPLICATE_HISTORY_MAX_ITEMS: z.coerce.number().int().min(10).max(2_000).default(250),
   COMMERCIAL_LLM_SHADOW_ENABLED: envBoolean(false),
   COMMERCIAL_LLM_ENFORCEMENT_ENABLED: envBoolean(false),
+  COMMERCIAL_LLM_POOL_WORKERS_ENABLED: envBoolean(false),
+  COMMERCIAL_LLM_POOL_ENABLED: envBoolean(false),
+  COMMERCIAL_LLM_POOL_4B_POLICY: z
+    .enum(['confirm-positive', 'direct-4b'])
+    .default('confirm-positive'),
   COMMERCIAL_LLM_ENDPOINT: z
     .literal('http://gemma-commercial-shadow:8080')
     .default('http://gemma-commercial-shadow:8080'),
@@ -771,6 +776,11 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
       .join('; ');
     throw new Error(`Environment validation failed: ${details}`);
   }
+
+  if (parsed.data.COMMERCIAL_LLM_POOL_ENABLED && !parsed.data.COMMERCIAL_LLM_POOL_WORKERS_ENABLED)
+    throw new Error(
+      'Environment validation failed: COMMERCIAL_LLM_POOL_ENABLED requires COMMERCIAL_LLM_POOL_WORKERS_ENABLED',
+    );
 
   if (
     parsed.data.ERASER_ENABLED &&

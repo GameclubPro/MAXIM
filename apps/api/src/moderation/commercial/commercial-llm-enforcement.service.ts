@@ -11,11 +11,13 @@ import {
   type CommercialLlmAdmissionResult,
 } from './commercial-llm-enforcement.mailbox';
 import { resolveCommercialAiTriage } from './commercial-ai-triage';
+import { CommercialLlmPoolAdmissionMailbox } from './commercial-llm-pool-admission.mailbox';
 import {
   buildCommercialLlmOffer,
   prepareCommercialLlmOffer,
   type CommercialLlmOfferRejection,
   type CommercialLlmSource,
+  type CommercialLlmPoolPolicy,
 } from './commercial-llm-enforcement.protocol';
 
 @Injectable()
@@ -90,6 +92,22 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
     return this.config.get<boolean>('COMMERCIAL_LLM_ENFORCEMENT_ENABLED', false) === true;
   }
 
+  poolPolicy(): CommercialLlmPoolPolicy | undefined {
+    return this.config.get<boolean>('COMMERCIAL_LLM_POOL_ENABLED', false) === true &&
+      this.config.get<boolean>('COMMERCIAL_LLM_POOL_WORKERS_ENABLED', false) === true
+      ? this.config.get<CommercialLlmPoolPolicy>(
+          'COMMERCIAL_LLM_POOL_4B_POLICY',
+          'confirm-positive',
+        )
+      : undefined;
+  }
+
+  private createMailbox(redis: Redis): CommercialLlmEnforcementMailbox {
+    return this.poolPolicy()
+      ? new CommercialLlmPoolAdmissionMailbox(redis)
+      : new CommercialLlmEnforcementMailbox(redis);
+  }
+
   evaluate(
     violations: RuleViolation[],
     update: MaxUpdate,
@@ -118,12 +136,12 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
 
   async mailbox(): Promise<CommercialLlmEnforcementMailbox> {
     if (!this.enabled()) throw new Error('Commercial AI enforcement disabled');
-    if (this.redis?.status === 'ready') return new CommercialLlmEnforcementMailbox(this.redis);
+    if (this.redis?.status === 'ready') return this.createMailbox(this.redis);
     if (this.connecting) return this.connecting;
     this.redis?.disconnect();
     const redis = createCommercialLlmRedis(this.config.getOrThrow<string>('REDIS_URL'));
     this.redis = redis;
-    this.connecting = redis.connect().then(() => new CommercialLlmEnforcementMailbox(redis));
+    this.connecting = redis.connect().then(() => this.createMailbox(redis));
     try {
       return await this.connecting;
     } finally {
@@ -154,18 +172,22 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
     window.offered += 1;
     const origin = readExactDeleteOrigin(input.chatId, input.messageId);
     const prepared: ReturnType<typeof prepareCommercialLlmOffer> = origin
-      ? prepareCommercialLlmOffer({
-          ...input,
-          originBotId: origin.sourceExecutionBotId,
-          eventAt: origin.sourceEventAt.toISOString(),
-          origin: {
-            sourceWebhookEventId: origin.sourceWebhookEventId,
-            sourceReceivingBotId: origin.sourceReceivingBotId,
-            sourceExecutionBotId: origin.sourceExecutionBotId,
-            sourceEventAtMs: origin.sourceEventAt.getTime(),
-            sourceEvidenceVersion: 1,
+      ? prepareCommercialLlmOffer(
+          {
+            ...input,
+            originBotId: origin.sourceExecutionBotId,
+            eventAt: origin.sourceEventAt.toISOString(),
+            origin: {
+              sourceWebhookEventId: origin.sourceWebhookEventId,
+              sourceReceivingBotId: origin.sourceReceivingBotId,
+              sourceExecutionBotId: origin.sourceExecutionBotId,
+              sourceEventAtMs: origin.sourceEventAt.getTime(),
+              sourceEvidenceVersion: 1,
+            },
           },
-        })
+          Date.now(),
+          this.poolPolicy(),
+        )
       : {
           reason: input.settings.commercialAdsFilterEnabled
             ? ('invalid_origin' as const)
@@ -230,7 +252,10 @@ export class CommercialLlmEnforcementService implements OnModuleDestroy, OnModul
   }
 
   async hasProof(source: CommercialLlmSource): Promise<boolean> {
-    return this.enabled() && (await (await this.mailbox()).hasProof(source));
+    // FLAG: A retained v2 proof cannot outlive its configured routing/4B authority.
+    if (!this.enabled() || (source.version === 2 && source.poolPolicy !== this.poolPolicy()))
+      return false;
+    return (await this.mailbox()).hasProof(source);
   }
 
   private logCounts() {
