@@ -77,6 +77,13 @@ const indexes = [
     false,
   ],
   [
+    'webhook_legacy_recoveries_chat_user_idx',
+    'webhook_legacy_recoveries',
+    ['chat_id', 'user_id'],
+    false,
+    false,
+  ],
+  [
     'webhook_legacy_recoveries_global_user_idx',
     'webhook_legacy_recoveries',
     ['user_id'],
@@ -114,7 +121,7 @@ const indexes = [
   ],
 ];
 
-// FLAG: Each family is an exact indexed prefix before its sentinel cap. Attest
+// FLAG: Each family is a bounded indexed prefix before its sentinel cap. Attest
 // the complete access paths; an index name or a top-level LIMIT is insufficient.
 export const heldReceiptIndexesSql = `WITH expected(name,parent,keys,is_unique,is_primary) AS (VALUES
 ${indexes
@@ -194,6 +201,8 @@ const recoveryColumns =
   `,${scalarBounded('r.disposition')} AS disposition_bounded,
     ${recoveryTextFields.map((c) => `COALESCE(${scalarBounded(`r.${c}`)},false)`).join(' AND ')} AS metadata_bounded`;
 
+// FLAG: Materialize the capped chat prefix before testing message_id. PostgreSQL
+// may choose chat/user and otherwise discard unbounded history below LIMIT.
 export function buildHeldReceiptAuditSql(explain = false) {
   const query = `WITH head AS MATERIALIZED (
   SELECT id FROM public.webhook_events WHERE status='RECEIVED'::public."WebhookStatus"
@@ -221,26 +230,29 @@ export function buildHeldReceiptAuditSql(explain = false) {
   SELECT *,normalized->>'type'='message_removed' AS is_removal,
     ${identity('chatId')} AS chat_id,${identity('messageId')} AS message_id,
     ${identity('senderId')} AS user_id FROM candidate
-), exact_scopes AS MATERIALIZED (
+), exact_chat_prefix AS MATERIALIZED (
   SELECT r.* FROM scope s CROSS JOIN LATERAL (
     SELECT ${recoveryColumns} FROM public.webhook_legacy_recoveries r
     WHERE s.is_removal AND s.chat_id IS NOT NULL AND s.message_id IS NOT NULL
-      AND r.chat_id=s.chat_id AND r.message_id=s.message_id LIMIT 17
+      AND r.chat_id=s.chat_id LIMIT 17
   ) r
+), exact_scopes AS MATERIALIZED (
+  SELECT r.* FROM exact_chat_prefix r CROSS JOIN scope s WHERE r.message_id=s.message_id
 ), user_scopes AS MATERIALIZED (
   SELECT r.* FROM scope s CROSS JOIN LATERAL (
     SELECT ${recoveryColumns} FROM public.webhook_legacy_recoveries r
     WHERE s.is_removal AND s.user_id IS NOT NULL AND r.user_id=s.user_id LIMIT 17
   ) r
 ), coverage AS MATERIALIZED (
-  SELECT s.*,(SELECT count(*) FROM exact_scopes) AS exact_count,
+  SELECT s.*,(SELECT count(*) FROM exact_chat_prefix) AS exact_chat_prefix_count,
+    (SELECT count(*) FROM exact_scopes) AS exact_count,
     (SELECT count(*) FROM user_scopes) AS user_count,
-    (SELECT COALESCE(bool_and(metadata_bounded),true) FROM exact_scopes) AS exact_metadata_bounded,
+    (SELECT COALESCE(bool_and(metadata_bounded),true) FROM exact_chat_prefix) AS exact_metadata_bounded,
     (SELECT COALESCE(bool_and(metadata_bounded),true) FROM user_scopes) AS user_metadata_bounded,
     s.is_removal AND s.chat_id IS NOT NULL AND s.message_id IS NOT NULL
-      AND s.user_id IS NOT NULL AND (SELECT count(*) FROM exact_scopes)<17
+      AND s.user_id IS NOT NULL AND (SELECT count(*) FROM exact_chat_prefix)<17
       AND (SELECT count(*) FROM user_scopes)<17
-      AND (SELECT COALESCE(bool_and(metadata_bounded),true) FROM exact_scopes)
+      AND (SELECT COALESCE(bool_and(metadata_bounded),true) FROM exact_chat_prefix)
       AND (SELECT COALESCE(bool_and(metadata_bounded),true) FROM user_scopes) AS scopes_complete
   FROM scope s
 ), complete_scopes AS MATERIALIZED (
@@ -317,10 +329,13 @@ SELECT jsonb_build_object(
     'message_id_valid',v.message_id IS NOT NULL,'normalized_actor_valid',v.user_id IS NOT NULL,
     'original_author_proven',false,'scopes_complete',v.scopes_complete,
     'exact_family_available',v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL,
+    'exact_chat_prefix_count_lower_bound',CASE WHEN v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL THEN v.exact_chat_prefix_count END,
+    'exact_chat_prefix_saturated',CASE WHEN v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL THEN v.exact_chat_prefix_count=17 END,
+    'exact_chat_prefix_complete',CASE WHEN v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL THEN v.exact_chat_prefix_count<17 AND v.exact_metadata_bounded END,
     'exact_match_count_lower_bound',CASE WHEN v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL THEN v.exact_count END,
     'exact_saturated',CASE WHEN v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL THEN v.exact_count=17 END,
     'exact_family_metadata_bounded',CASE WHEN v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL THEN v.exact_metadata_bounded END,
-    'exact_family_complete',CASE WHEN v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL THEN v.exact_count<17 AND v.exact_metadata_bounded END,
+    'exact_family_complete',CASE WHEN v.is_removal AND v.chat_id IS NOT NULL AND v.message_id IS NOT NULL THEN v.exact_chat_prefix_count<17 AND v.exact_metadata_bounded END,
     'global_user_family_available',v.is_removal AND v.user_id IS NOT NULL,
     'global_user_match_count_lower_bound',CASE WHEN v.is_removal AND v.user_id IS NOT NULL THEN v.user_count END,
     'global_user_saturated',CASE WHEN v.is_removal AND v.user_id IS NOT NULL THEN v.user_count=17 END,
