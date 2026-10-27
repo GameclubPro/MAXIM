@@ -283,6 +283,13 @@ secondary-commercial and offline-secondary routes without MAX calls or review-ro
 writes. Finish with one connected status and fresh content-free shadow observation;
 retain any admission/coverage gaps rather than treating an old heartbeat as success.
 
+The SSH bridge allows at most 160 inbound control frames per minute. Thirty primary
+starts produce 90 readiness/response frames; periodic readiness contributes 40 and
+the initial handshake one. The remaining 29 frames cover delivery timing at the
+window boundary. This control-frame budget does not raise inference admission or
+the single-request limit. Oversized, malformed and foreign frames still end the
+session, and a frame flood still clears only that worker's expiring mailbox state.
+
 Focused native coverage includes `commercial-llm-workstation.redis-integration`,
 `commercial-llm-workstation-bridge`, the cascade routing tests and existing
 `commercial-llm-shadow-postgres` cases through the public API test commands and
