@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import type Redis from 'ioredis';
 import type { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
@@ -13,7 +14,13 @@ import type { CommercialLlmObservationResult } from './commercial-llm.protocol';
 import * as shadowLease from './commercial-llm-shadow.lease';
 import * as shadowProcessor from './commercial-llm-shadow.processor';
 
+jest.mock('node:crypto', () => ({
+  ...jest.requireActual<typeof import('node:crypto')>('node:crypto'),
+  randomInt: jest.fn(() => 1),
+}));
+
 type ProcessorResult = Awaited<ReturnType<CommercialLlmEnforcementProcessor['run']>>;
+type MailboxItem = NonNullable<Awaited<ReturnType<CommercialLlmEnforcementMailbox['take']>>>;
 
 const negative: CommercialLlmObservationResult = {
   classification: 'NOT_COMMERCIAL',
@@ -35,11 +42,11 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function source(chatId: string) {
+function source(chatId: string, messageId = `message-${chatId}`) {
   const now = Date.now();
   const offer = buildCommercialLlmOffer({
     chatId,
-    messageId: `message-${chatId}`,
+    messageId,
     userId: 'user',
     originBotId: 'bot',
     text: 'Обсуждение объявления в чате.',
@@ -57,7 +64,7 @@ function source(chatId: string) {
       textFiltersBotMessageEnabled: true,
     },
     origin: {
-      sourceWebhookEventId: `receipt-${chatId}`,
+      sourceWebhookEventId: `receipt-${messageId}`,
       sourceReceivingBotId: 'bot',
       sourceExecutionBotId: 'bot',
       sourceEventAtMs: now,
@@ -89,6 +96,7 @@ describe('commercial AI runner resource lifecycle', () => {
   beforeEach(() => {
     jest.useFakeTimers({ now: new Date('2026-10-27T09:00:00.000Z') });
     cleanups = [];
+    jest.mocked(randomInt).mockImplementation(() => 1);
     const config = new ConfigService({
       APP_SERVICE_NAME: 'api-moderation-background',
       COMMERCIAL_LLM_ENFORCEMENT_ENABLED: true,
@@ -108,6 +116,8 @@ describe('commercial AI runner resource lifecycle', () => {
     jest.spyOn(mailbox, 'readObservations').mockResolvedValue({});
     jest.spyOn(mailbox, 'withdraw').mockResolvedValue(undefined);
     jest.spyOn(mailbox, 'releasePrimary').mockResolvedValue(true);
+    jest.spyOn(mailbox, 'claimSecondary').mockResolvedValue(true);
+    jest.spyOn(mailbox, 'releaseSecondary').mockResolvedValue(true);
     const admission = new CommercialLlmEnforcementService(config);
     jest.spyOn(admission, 'mailbox').mockResolvedValue(mailbox);
     governor.decide
@@ -135,6 +145,23 @@ describe('commercial AI runner resource lifecycle', () => {
     const job = deferred<ProcessorResult>();
     cleanups.push(() => job.resolve({ outcome: 'idle' }));
     return job;
+  }
+
+  function offeredSources(sources: ReturnType<typeof source>[]) {
+    const items: MailboxItem[] = [];
+    const take = jest.spyOn(mailbox, 'take').mockResolvedValue(null);
+    for (const offered of sources) {
+      take.mockImplementationOnce(async (worker) => {
+        const request = { ...offered, submittedAtMs: Date.now(), worker };
+        const item = { request, raw: JSON.stringify(request) };
+        items.push(item);
+        return item;
+      });
+    }
+    jest.spyOn(mailbox, 'owns').mockResolvedValue(true);
+    jest.spyOn(mailbox, 'ownsWorker').mockResolvedValue(true);
+    const finish = jest.spyOn(mailbox, 'finish').mockResolvedValue(undefined);
+    return { items, take, finish };
   }
 
   it('keeps heartbeats alive at three active jobs and admits a replacement only after completion', async () => {
@@ -231,6 +258,8 @@ describe('commercial AI runner resource lifecycle', () => {
     const releasedRaw = jest.mocked(mailbox.releasePrimary).mock.calls[0]![0];
     expect(JSON.parse(releasedRaw).source.chatId).toBe('first-chat');
     expect(mailbox.releasePrimary).toHaveBeenCalledWith(releasedRaw, worker);
+    expect(mailbox.claimSecondary).toHaveBeenCalledWith(releasedRaw, worker);
+    expect(mailbox.releaseSecondary).not.toHaveBeenCalled();
     expect(finish).not.toHaveBeenCalled();
     expect(jest.mocked(mailbox.releasePrimary).mock.invocationCallOrder[0]).toBeLessThan(
       secondary.mock.invocationCallOrder[0]!,
@@ -246,6 +275,128 @@ describe('commercial AI runner resource lifecycle', () => {
     firstSecondary.resolve(negative);
     secondPrimary.resolve({ outcome: 'COMPLETE', result: negative });
     await jest.advanceTimersByTimeAsync(0);
+    expect(mailbox.releaseSecondary).toHaveBeenCalledWith(releasedRaw, worker);
     expect(finish).toHaveBeenCalledWith(releasedRaw, worker);
+  });
+
+  it.each(['confirmation', 'audit'] as const)(
+    'claims the exact source for %s and releases it when server work fails',
+    async (path) => {
+      const offered = offeredSources([source('reserved-chat')]);
+      jest.mocked(randomInt).mockImplementation(() => (path === 'audit' ? 0 : 1));
+      jest.spyOn(CommercialLlmWorkstationMailbox.prototype, 'classify').mockResolvedValue({
+        outcome: 'COMPLETE',
+        result:
+          path === 'audit'
+            ? negative
+            : { ...negative, classification: 'UNSURE', reasonCodes: ['INSUFFICIENT_CONTEXT'] },
+      });
+      const within = jest
+        .spyOn(CommercialLlmSecondaryScheduler.prototype, 'classifyWithin')
+        .mockRejectedValue(new Error('Synthetic server failure'));
+      const audit = jest
+        .spyOn(CommercialLlmSecondaryScheduler.prototype, 'classifyAudit')
+        .mockRejectedValue(new Error('Synthetic server failure'));
+
+      runner!.onModuleInit();
+      await jest.advanceTimersByTimeAsync(250);
+      const { raw, request } = offered.items[0]!;
+      const invoked = path === 'audit' ? audit : within;
+      const unused = path === 'audit' ? within : audit;
+      expect(mailbox.claimSecondary).toHaveBeenCalledWith(raw, request.worker);
+      expect(invoked).toHaveBeenCalledTimes(1);
+      expect(unused).not.toHaveBeenCalled();
+      expect(jest.mocked(mailbox.claimSecondary).mock.invocationCallOrder[0]).toBeLessThan(
+        invoked.mock.invocationCallOrder[0]!,
+      );
+      expect(mailbox.releaseSecondary).toHaveBeenCalledWith(raw, request.worker);
+      expect(offered.finish).toHaveBeenCalledWith(raw, request.worker);
+      expect(jest.mocked(mailbox.releaseSecondary).mock.invocationCallOrder[0]).toBeLessThan(
+        offered.finish.mock.invocationCallOrder[0]!,
+      );
+      expect(intents.ensureIntent).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['confirmation', 'audit'] as const)(
+    'does not enter %s or release another source after chat reservation refusal',
+    async (path) => {
+      const offered = offeredSources([source('occupied-chat')]);
+      jest.mocked(randomInt).mockImplementation(() => (path === 'audit' ? 0 : 1));
+      jest.mocked(mailbox.claimSecondary).mockResolvedValue(false);
+      jest.spyOn(CommercialLlmWorkstationMailbox.prototype, 'classify').mockResolvedValue({
+        outcome: 'COMPLETE',
+        result:
+          path === 'audit'
+            ? negative
+            : { ...negative, classification: 'UNSURE', reasonCodes: ['INSUFFICIENT_CONTEXT'] },
+      });
+      const within = jest.spyOn(CommercialLlmSecondaryScheduler.prototype, 'classifyWithin');
+      const audit = jest.spyOn(CommercialLlmSecondaryScheduler.prototype, 'classifyAudit');
+
+      runner!.onModuleInit();
+      await jest.advanceTimersByTimeAsync(250);
+      const { raw, request } = offered.items[0]!;
+      expect(mailbox.claimSecondary).toHaveBeenCalledWith(raw, request.worker);
+      expect(within).not.toHaveBeenCalled();
+      expect(audit).not.toHaveBeenCalled();
+      expect(mailbox.releaseSecondary).not.toHaveBeenCalled();
+      expect(offered.finish).toHaveBeenCalledWith(raw, request.worker);
+      expect(intents.ensureIntent).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves a chat reservation across secondary scheduler replacement after Redis reconnect', async () => {
+    const firstResult = deferred<CommercialLlmObservationResult>();
+    cleanups.push(() => firstResult.resolve(negative));
+    const offered = offeredSources([
+      source('same-chat', 'first-message'),
+      source('same-chat', 'next-message'),
+    ]);
+    const reservations = new Map<string, string>();
+    jest.mocked(mailbox.claimSecondary).mockImplementation(async (raw) => {
+      const request = JSON.parse(raw) as MailboxItem['request'];
+      if (reservations.has(request.source.chatId)) return false;
+      reservations.set(request.source.chatId, raw);
+      return true;
+    });
+    jest.mocked(mailbox.releaseSecondary).mockImplementation(async (raw) => {
+      const request = JSON.parse(raw) as MailboxItem['request'];
+      if (reservations.get(request.source.chatId) !== raw) return false;
+      return reservations.delete(request.source.chatId);
+    });
+    jest.spyOn(CommercialLlmWorkstationMailbox.prototype, 'classify').mockResolvedValue({
+      outcome: 'COMPLETE',
+      result: { ...negative, classification: 'UNSURE', reasonCodes: ['INSUFFICIENT_CONTEXT'] },
+    });
+    const within = jest
+      .spyOn(CommercialLlmSecondaryScheduler.prototype, 'classifyWithin')
+      .mockReturnValue(firstResult.promise);
+
+    runner!.onModuleInit();
+    await jest.advanceTimersByTimeAsync(250);
+    const first = offered.items[0]!;
+    expect(reservations.get('same-chat')).toBe(first.raw);
+    expect(mailbox.releaseSecondary).not.toHaveBeenCalled();
+    redis.status = 'end';
+    jest.mocked(redis.connect).mockImplementationOnce(async () => {
+      redis.status = 'ready';
+    });
+    await jest.advanceTimersByTimeAsync(250);
+    const next = offered.items[1]!;
+    expect(shadowLease.createCommercialLlmRedis).toHaveBeenCalledTimes(2);
+    expect(mailbox.claimSecondary).toHaveBeenCalledTimes(2);
+    expect(within).toHaveBeenCalledTimes(1);
+    expect(reservations.get('same-chat')).toBe(first.raw);
+    expect(mailbox.releaseSecondary).not.toHaveBeenCalled();
+    expect(offered.finish).toHaveBeenCalledWith(next.raw, next.request.worker);
+    expect(offered.finish).not.toHaveBeenCalledWith(first.raw, first.request.worker);
+
+    firstResult.resolve(negative);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(mailbox.releaseSecondary).toHaveBeenCalledWith(first.raw, first.request.worker);
+    expect(reservations.size).toBe(0);
+    expect(offered.finish).toHaveBeenCalledWith(first.raw, first.request.worker);
+    expect(intents.ensureIntent).not.toHaveBeenCalled();
   });
 });
