@@ -1,4 +1,10 @@
 const mandatoryIds = new Set(['support-room', 'operator']);
+const calendarMonth = String.raw`(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\p{L}*`;
+const calendarDay = String.raw`\d{1,2}(?:-?(?:го|е|ое))?`;
+const calendarDates = new RegExp(
+  `${calendarDay}(?:\\s*[,и]\\s*${calendarDay})+\\s+${calendarMonth}|${calendarDay}\\s+${calendarMonth}[^.!?\\n]{0,20}${calendarDay}\\s+${calendarMonth}`,
+  'iu',
+);
 const normalize = (value) =>
   String(value ?? '')
     .toLowerCase()
@@ -130,6 +136,10 @@ const topicPatterns = [
     /(?<![\p{L}\p{N}_])ластик(?:а|у|ом|е)?(?![\p{L}\p{N}_])|стар.{0,15}сообщен|очист.{0,15}истор|удаление по срок/iu,
   ],
   ['networks', /сетк|избранн|категори/iu],
+  [
+    'delivery',
+    /[«"„]нужно проверить[»"“]|статус.{0,20}нужно проверить|результат.{0,20}(?:отправ|неизвест)|достав|(?:отправ|публиков).{0,25}(?:еще раз|повтор|заново)|(?:повтор|заново).{0,25}(?:отправ|публиков)/iu,
+  ],
   ['auto-replies', /автоответ|автоматическ.{0,8}ответ/iu],
   ['vk', /\bvk\b|(?:^|\s)вк(?:\s|[.!?,]|$)|вконтакт|согласован.{0,15}личк/iu],
   ['suggestions', /предложк|при[её]м.{0,15}предлож|предложенн.{0,10}пост|предложить пост/iu],
@@ -416,10 +426,15 @@ function lastikConnectionIntent(ctx, state, primaryIds) {
   // FLAG: These are user-described question topics, never observed live connection states.
   const current = detect(ctx.current);
   if (current) return current;
+  const waitingFollowup = /молч|ждать|ожида|(?:опять|снова|еще раз).{0,25}подкл/iu.test(
+    ctx.current,
+  );
   if (
-    /прогресс|числ|подробност|срок|недел|месяц|закреп|исключ|сохран|настрой|истори|стар.{0,15}сообщен|уже подключ|подключился|подключилась/iu.test(
-      ctx.current,
-    )
+    /уже подключ|подключился|подключилась/iu.test(ctx.current) ||
+    (!waitingFollowup &&
+      /прогресс|числ|подробност|срок|недел|месяц|закреп|исключ|сохран|настрой|истори|стар.{0,15}сообщен/iu.test(
+        ctx.current,
+      ))
   )
     return null;
   for (const item of ctx.recent.filter((turn) => turn.role === 'user').reverse()) {
@@ -565,7 +580,7 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
     ]) &&
     reviewedTaskCovered(
       ctx.current,
-      /нужно\s+проверить|результат|достав|повтор\p{L}*.{0,25}(?:отправ|публиков)|(?:отправ|публиков).{0,25}(?:еще\s+раз|повтор)|пост.{0,35}(?:вижу|не\s+появ)|провер\p{L}*.{0,20}(?:публикац|отправ|получател)/iu,
+      /нужно\s+проверить|результат|достав|повтор\p{L}*.{0,25}(?:отправ|публиков)|(?:отправ|публиков).{0,25}(?:еще\s+раз|повтор|заново)|пост.{0,35}(?:вижу|не\s+появ|дошел)|провер\p{L}*.{0,20}(?:публикац|отправ|получател)/iu,
       /^(?:а\s+)?(?:можно\s+)?(?:повторить|как\s+проверить)[?!.\s]*$/iu,
       /^(?:проверить|перепроверить|убедиться|сверить|сопоставить|повторить|отправить|переотправить|жать|нажать|посмотреть|открыть|понять|узнать|выяснить|описать|передать|сообщить|написать|обратиться)$/u,
     );
@@ -1083,14 +1098,13 @@ function semanticFacts(text, state) {
     add('settings', 55);
   }
   if (test(/сетк|избранн|категори|массов.{0,15}настрой|общие настройки.{0,20}чат/iu)) {
-    add(
-      test(/статистик|аудитори|прирост|за месяц|за недел|7.{0,8}30/iu)
-        ? 'networks-audience-statistics'
-        : test(/настрой|примен|ошиб|откат|провери.{0,12}изменени/iu)
-          ? 'networks-settings-statistics'
-          : 'networks-compose',
-      105,
+    const audience = test(/статистик|аудитори|прирост|за месяц|за недел|7.{0,8}30/iu);
+    const operation = test(
+      /настрой|примен|ошиб|откат|провери.{0,12}изменени|результат.{0,20}операци/iu,
     );
+    if (audience) add('networks-audience-statistics', 105);
+    if (operation) add('networks-settings-statistics', 105);
+    if (!audience && !operation) add('networks-compose', 105);
     add('networks-management', 55);
   }
   if (
@@ -1174,7 +1188,7 @@ function semanticFacts(text, state) {
         value,
       );
     const repeatSendAttempt = (value) =>
-      /(?:отправ|публиков)[^.!?\n]{0,20}(?:еще раз|повтор)|(?:повтор|заново)[^.!?\n]{0,20}(?:отправ|публиков)/iu.test(
+      /(?:отправ|публиков)[^.!?\n]{0,20}(?:еще раз|повтор|заново)|(?:повтор|заново)[^.!?\n]{0,20}(?:отправ|публиков)/iu.test(
         value,
       );
     const interruptedSendIn = (value) =>
@@ -1190,6 +1204,7 @@ function semanticFacts(text, state) {
     const contextualDeliveryUncertain =
       interruptedSendIn(state.focus) || unknownDeliveryLabel.test(state.focus);
     const explicitCurrentSchedule =
+      calendarDates.test(state.current) ||
       /отложенн|завтра|(?<![\p{L}])дат(?:[аеуы]|ам|ами|ах)?(?![\p{L}])|расписан|ежеднев|еженедель|регулярн|кажд.{0,12}(?:день|недел)|(?:\d{1,2}\s*[,и]\s*){2}\d{1,2}/iu.test(
         state.current,
       );
@@ -1215,9 +1230,10 @@ function semanticFacts(text, state) {
       )
     )
       add('publisher-delivery-status', currentUnknownSend ? 135 : 110);
-    const selectedDates = test(
-      /конкретн.{0,10}дат|три выбранн|именно эти|нескольк.{0,10}дат|выбранн.{0,15}(?:дат|дн)|(?:\d{1,2}\s*[,и]\s*){2}\d{1,2}/iu,
-    );
+    const selectedDates =
+      test(
+        /конкретн.{0,10}дат|три выбранн|именно эти|нескольк.{0,10}дат|выбранн.{0,15}(?:дат|дн)|(?:\d{1,2}\s*[,и]\s*){2}\d{1,2}/iu,
+      ) || test(calendarDates);
     if (
       (selectedDates ||
         test(
@@ -1263,7 +1279,11 @@ function semanticFacts(text, state) {
       )
     )
       add('publisher-post-targets', 95);
-    if (test(/фото|фотк|видео|символ|мб|мегабайт|вложен|кнопк|ссылк|предпросмотр/iu)) {
+    if (
+      test(
+        /фото|фотк|видео|символ|знаков|знака|знаки|мб|мегабайт|вложен|кнопк|ссылк|предпросмотр|(?:лимит|предел|огранич).{0,25}(?:текст|редактор)|(?:текст|редактор).{0,25}(?:не (?:берет|влез)|слишком длин)/iu,
+      )
+    ) {
       add('publisher-post-media', 95);
       add('publisher-post-create', 60);
     }

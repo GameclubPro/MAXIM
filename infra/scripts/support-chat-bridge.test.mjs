@@ -61,17 +61,59 @@ test('the screenshot catalog retains eight item lines and eight links in the fin
   assert.doesNotMatch(presented.text, /MAXIM/iu);
 });
 
+test('directory bot items retain all eight links after introductory project aliases', () => {
+  for (const introduction of [
+    'Я — ИИ-помощник «Майор Максимов». Вот боты проекта:',
+    'В проекте «Майор Максимов» доступны восемь ботов:',
+    'Каталог ботов «Майор Максимов»:',
+  ]) {
+    const items = knowledge.botCatalog.map((bot) => `• ${bot.name} — ${bot.kind}`).join('\n');
+    const presented = renderSupportMessage(
+      `${introduction}\n\n${items}\n\n${SUPPORT_ANSWER_FOOTER}`,
+      knowledge.botCatalog,
+    ).text;
+    assert.ok(presented.startsWith(`${introduction}\n\n`));
+    assert.equal((presented.match(/<a href=/gu) ?? []).length, 8);
+    for (const bot of knowledge.botCatalog)
+      assert.ok(presented.includes(`• <a href="${bot.url}">${bot.name}</a> —`), bot.name);
+    assert.ok(presented.endsWith(`\n\n${SUPPORT_ANSWER_FOOTER}`));
+  }
+});
+
+test('canonical names and directory items take precedence over earlier prose aliases', () => {
+  const canonical = renderSupportMessage(
+    'Профиль Ластика; Ластик удаляет старые сообщения.\n\nЛастик\n\nРэкс2 — резервный бот, его точное имя Рэкс 2.',
+    knowledge.botCatalog,
+  ).text;
+  assert.ok(canonical.startsWith('Профиль Ластика; Ластик удаляет старые сообщения.\n\n'));
+  assert.ok(canonical.includes('\n<a href="https://max.ru/id613000037577_5_bot">Ластик</a>\n'));
+  assert.ok(canonical.includes('Рэкс2 — резервный бот, его точное имя '));
+  assert.ok(canonical.endsWith('<a href="https://max.ru/id613070470872_6_bot">Рэкс 2</a>.'));
+  for (const marker of ['•', '-', '1.']) {
+    const item = renderSupportMessage(
+      `Рэкс 2 упомянут во введении.\n${marker} Рэкс2 — резервный модератор.`,
+      knowledge.botCatalog,
+    ).text;
+    assert.ok(item.startsWith('Рэкс 2 упомянут во введении.\n'));
+    assert.ok(item.includes(`${marker} <a href="https://max.ru/id613070470872_6_bot">Рэкс2</a>`));
+    assert.equal((item.match(/<a href=/gu) ?? []).length, 1);
+  }
+});
+
 test('bot links escape untrusted markup, prefer full aliases and preserve unrelated words', () => {
   const text =
     'Майор Максимов 2 и Максимов; Рэкс2. Ластика & <img src=x onerror="bad()">. Ластик повторно. _Ластик и Ластиковый.';
   const value = renderSupportMessage(text, knowledge.botCatalog).text;
   assert.ok(value.includes('<a href="https://max.ru/id613070470872_9_bot">Майор Максимов 2</a>'));
   assert.ok(value.includes('<a href="https://max.ru/id613070470872_6_bot">Рэкс2</a>'));
-  assert.ok(value.includes('<a href="https://max.ru/id613000037577_5_bot">Ластика</a>'));
+  assert.ok(value.includes('Ластика &amp;'));
+  assert.ok(value.includes('<a href="https://max.ru/id613000037577_5_bot">Ластик</a> повторно.'));
   assert.ok(value.includes('&amp; &lt;img src=x onerror=&quot;bad()&quot;&gt;'));
   assert.equal((value.match(/href="https:\/\/max.ru\/id613000037577_5_bot"/gu) ?? []).length, 1);
   assert.ok(value.includes('_Ластик и Ластиковый.'));
   assert.doesNotMatch(value, /<img|<script/iu);
+  const inflected = renderSupportMessage('Профиль Ластика.', knowledge.botCatalog).text;
+  assert.equal(inflected, 'Профиль <a href="https://max.ru/id613000037577_5_bot">Ластика</a>.');
   const dashed = renderSupportMessage(
     'Рэкс-2 и Максимов-2, Максимова-2; laſtik.',
     knowledge.botCatalog,

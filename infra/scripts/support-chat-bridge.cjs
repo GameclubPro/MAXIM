@@ -55,7 +55,7 @@ function renderSupportMessage(text, catalog = []) {
   for (const bot of catalog.length ? validateSupportBotCatalog(catalog) : [])
     for (const alias of [bot.name, ...bot.aliases]) {
       const key = alias.toLocaleLowerCase('ru');
-      aliases.set(key, bot.url);
+      aliases.set(key, { url: bot.url, canonical: key === bot.name.toLocaleLowerCase('ru') });
     }
   let html = '',
     last = 0;
@@ -68,17 +68,30 @@ function renderSupportMessage(text, catalog = []) {
       `(?<![\\p{L}\\p{N}_])(?:${pattern})(?![\\p{L}\\p{N}_])(?!(?:\\s*[№#-]\\s*|\\s+)\\d)`,
       'giu',
     );
-    const linked = new Set();
+    const matches = [...body.matchAll(names)];
+    const preferred = new Map();
     // FLAG: Model/user markup is escaped. Only verified catalog names create anchors;
-    // the AI identity footer is kept separate from bot links.
-    for (const match of body.matchAll(names)) {
-      const url = aliases.get(match[0].toLocaleLowerCase('ru'));
+    // directory items and canonical names outrank alias prose. Keep the AI footer separate.
+    for (const match of matches) {
+      const target = aliases.get(match[0].toLocaleLowerCase('ru'));
+      if (!target) continue;
+      const lineStart = body.lastIndexOf('\n', match.index - 1) + 1;
+      const lineEnd = body.indexOf('\n', match.index);
+      const before = body.slice(lineStart, match.index);
+      const after = body.slice(match.index + match[0].length, lineEnd < 0 ? body.length : lineEnd);
+      const item = /^\s*(?:[•*+–—-]|\d+[.)])\s+$/u.test(before);
+      const standalone = target.canonical && !before.trim() && !after.trim();
+      const rank = (item ? 4 : standalone ? 2 : 0) + Number(target.canonical);
+      if (!preferred.has(target.url) || rank > preferred.get(target.url).rank)
+        preferred.set(target.url, { index: match.index, rank });
+    }
+    for (const match of matches) {
+      const target = aliases.get(match[0].toLocaleLowerCase('ru'));
       html += escape(body.slice(last, match.index));
       html +=
-        !url || linked.has(url)
-          ? escape(match[0])
-          : `<a href="${escape(url)}">${escape(match[0])}</a>`;
-      linked.add(url);
+        target && preferred.get(target.url)?.index === match.index
+          ? `<a href="${escape(target.url)}">${escape(match[0])}</a>`
+          : escape(match[0]);
       last = match.index + match[0].length;
     }
   }

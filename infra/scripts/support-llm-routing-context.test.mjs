@@ -17,6 +17,67 @@ function needsReply(text, history = []) {
   return route;
 }
 
+test('a delivery followup retains the existing result alongside a new schedule task', () => {
+  const history = [
+    user(
+      'Я админ каналов. Публик подключён, у сегодняшнего поста первый получатель успешный, второй — «Нужно проверить».',
+    ),
+  ];
+  for (const text of [
+    'По второму отправить ещё раз? На будущее нужен одинаковый пост только 3 и 10 ноября, без еженедельного повтора. Какой режим?',
+    'Повторить отправку второму безопасно? И как поставить один анонс на 5, 12 и 19 декабря?',
+  ]) {
+    const selected = ids(text, history);
+    assert.ok(selected.includes('publisher-delivery-status'), text);
+    assert.ok(selected.includes('publisher-schedule-dates'), text);
+    assert.ok(!selected.includes('publisher-schedule-recurrence'), text);
+    assert.equal(needsReply(text, history).mixedTopics, true, text);
+  }
+  const newTask = 'С этим постом разобрался. Теперь нужен ежедневный пост через Публика.';
+  assert.ok(!ids(newTask, history).includes('publisher-delivery-status'));
+  assert.ok(ids(newTask, history).includes('publisher-schedule-recurrence'));
+  assert.ok(
+    ids('Что нужно проверить перед включением?', [
+      user('Я админ. Как настроить ночной режим?'),
+    ]).includes('night'),
+    'a general check question must retain its own context',
+  );
+});
+
+test('two explicit calendar dates are distinct from a weekly repeat', () => {
+  for (const text of [
+    'Публик: один пост только 4 и 11 ноября, недельный повтор не нужен.',
+    'Как в Публике выбрать 3-го и 10-го декабря для одинакового поста?',
+    'Хочу в Публике один пост 2 ноября и 9 декабря. Где задать даты?',
+  ]) {
+    assert.ok(ids(text).includes('publisher-schedule-dates'), text);
+    assert.ok(!ids(text).includes('publisher-schedule-recurrence'), text);
+  }
+});
+
+test('editor length complaints retrieve the actual Publisher text limit', () => {
+  for (const text of [
+    'Публик не берёт текст на 4270 знаков. Сколько можно и что делать?',
+    'В Публике объявление на 4500 знаков не влезает, какой предел?',
+  ])
+    assert.equal(ids(text)[0], 'publisher-post-media', text);
+});
+
+test('audience coverage and applied network settings retain both independent facts', () => {
+  const text =
+    'Я админ сетки. В статистике аудитория по 7 из 12 за 30 дней и неполная история — это точный прирост всей сетки? И где узнать, в какие чаты вчера применились общие настройки?';
+  const selected = ids(text);
+  assert.ok(selected.includes('networks-audience-statistics'));
+  assert.ok(selected.includes('networks-settings-statistics'));
+});
+
+test('past connectivity checks do not turn a resend question into a new connection task', () => {
+  const text =
+    'Публик у первого получателя показал успех, у второго «Нужно проверить». Проверку подключения сделал, там «Готов к публикации». Значит вчерашний пост дошёл во второй канал или отправить его заново?';
+  assert.equal(needsReply(text).publisherDeliveryOnly, true);
+  assert.equal(needsReply(text + ' И как подключить новый канал?').publisherDeliveryOnly, false);
+});
+
 test('incidental connection reports do not hide additional delivery and onboarding tasks', () => {
   const base =
     'Я админ. У Публика у получателя «Нужно проверить». Проверку подключения уже сделал. Можно повторить отправку?';

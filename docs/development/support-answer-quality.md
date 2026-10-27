@@ -86,6 +86,15 @@ must also answer an explicit AI observation-mode question, including when its su
 An unknown delivery label keeps verification of the existing publication ahead of connection
 facts. Link-mode reminders preserve the reported mode and distinguish the desired result from
 a proposed way to achieve it.
+An explicit resend followup retains its delivery context alongside a new scheduling question;
+completion or a switch to another task drops that context. Two named calendar dates use «Даты»,
+while «По дате» in repeat settings limits the end of recurrence. Text-length complaints in
+«знаках» retrieve the same 4000-character limit as «символах». Network audience coverage and
+per-target settings results are separate facts even when both are requested in one question.
+Lastik waiting time starts at the submitted request, including elapsed waiting time; restarting
+starts a new request window and still requires both rights checks before automatic activation.
+Catalog links prefer the bot's item or canonical name over an introductory project alias, while
+retaining alias-only links and the separate unlinked AI signature.
 
 Focused tests cover eligibility and required replies together, role changes, contextual topic
 retrieval, API paths, mandatory policy retention, source/link validation, honest AI identity and

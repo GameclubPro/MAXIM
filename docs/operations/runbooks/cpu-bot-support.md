@@ -88,6 +88,8 @@ aliases and noncanonical targets at startup. Rendering must also fit 4000 HTML c
 before source revalidation or the send fence can advance. The host receives the catalog from
 the same knowledge bytes used for the PC/host digest handshake. These eight profile URLs
 are allowed separately from retrieved official documentation URLs.
+When a bot is named several times, its catalog item and canonical name take precedence over
+an introductory alias for the one profile link. Alias-only references remain supported.
 
 Questions and context are untrusted user data. Responses are constrained JSON with
 `reply` or `skip`, bounded text and IDs from the selected knowledge. Internal paths,
@@ -211,3 +213,9 @@ Use greedy decoding for grounded support. Concision must preserve relevant proce
 waiting periods, time origins and independent-filter limits. Incident replies propose a conditional
 check rather than guessing live state or inventing a causal link between separate features.
 Language errors in history are context to rephrase, not wording to copy into the next answer.
+Explicit delivery followups retain existing-post evidence alongside a new date schedule; a
+completed delivery question does not follow a new task. Named calendar-date lists select «Даты»,
+not a recurrence end date. Text-limit complaints retrieve the 4000-character editor limit, and
+combined network questions retrieve both audience coverage and per-target operation results.
+Waiting reminders retain the original request time and elapsed waiting; restart reminders retain
+the new one-hour request window, both rights checks and automatic activation after confirmation.

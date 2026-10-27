@@ -16,6 +16,68 @@ import {
 } from './support-llm-client.mjs';
 import { supportModelArgs, SUPPORT_MODEL } from './support-llm-profile.mjs';
 
+test('mixed Lastik waiting and recovery preserve the request time origin and both activation checks', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Текущее состояние помощнику недоступно.',
+    sourceIds: ['operator'],
+  });
+  for (const scenario of [
+    {
+      text: 'Ластик молчит. Жать подключение ещё раз? И старое сообщение после правки сегодня тоже удалится?',
+      history: [
+        {
+          role: 'user',
+          text: 'Я администратор. В удалении старых сообщений нажал «Подключить и включить» 15 минут назад, выбрал 48 часов.',
+        },
+      ],
+      id: 'lastik-connect',
+    },
+    {
+      text: 'Я админ. У Ластика «Время ожидания истекло», что нажать для повторного запуска? И старые сообщения до добавления тоже будут очищаться?',
+      history: [],
+      id: 'lastik-permissions',
+    },
+  ]) {
+    const result = await answerSupport({ ...fixture.input, ...scenario });
+    assert.equal(result.responseRoute, 'model-inference');
+    const instruction =
+      fixture.inputs.at(-1).answerRequirements.find((entry) => entry.sourceId === scenario.id)
+        ?.instruction ?? '';
+    assert.match(instruction, /1 час/iu);
+    assert.match(instruction, /после.*запрос|от.*запрос/iu);
+    assert.match(instruction, /чтени[ея].*удалени/iu);
+    assert.match(instruction, /запросивш.*администратор/iu);
+    assert.match(instruction, /автоматическ/iu);
+  }
+});
+
+test('mixed publication delivery and dates send both grounded procedures to inference', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Неизвестный результат требует проверки.',
+    sourceIds: ['operator'],
+  });
+  const result = await answerSupport({
+    ...fixture.input,
+    text: 'Второму безопасно отправить ещё раз? И на будущее один пост только 3 и 10 ноября, без недельного повтора: какой режим?',
+    history: [
+      {
+        role: 'user',
+        text: 'Я админ каналов. У Публика первый получатель успешный, второй «Нужно проверить».',
+      },
+    ],
+  });
+  assert.equal(result.responseRoute, 'model-inference');
+  const input = fixture.inputs.at(-1);
+  const instruction = (id) =>
+    input.answerRequirements.find((entry) => entry.sourceId === id)?.instruction ?? '';
+  assert.match(instruction('publisher-delivery-status'), /Получатели.*Отправки/u);
+  assert.match(instruction('publisher-delivery-status'), /дубл/iu);
+  assert.match(instruction('publisher-schedule-dates'), /«Расписание».*«Даты»/u);
+  assert.match(instruction('publisher-schedule-dates'), /Сохранить расписание/u);
+});
+
 test('moderator selection includes the actual submit action and current-bot marker', async () => {
   const result = await answerSupport({
     text: 'Я админ чата. Сейчас там Максимов, хочу резервного Рэкса 2. Переключи сам и отпишись, когда будет готово.',
