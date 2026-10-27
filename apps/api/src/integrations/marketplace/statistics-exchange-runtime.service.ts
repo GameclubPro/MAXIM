@@ -246,7 +246,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
           THEN now()+interval '1 second' ELSE (date_trunc('day',now() AT TIME ZONE 'UTC')+interval '1 day') AT TIME ZONE 'UTC' END WHERE id=${id}::uuid`;
       }
       const cursor = grants[0];
-      // FLAG: Materialize a bounded indexed candidate page before testing whether newer data exists.
+      // FLAG: Bound candidates before newer-data checks; sort by timestamp columns, never the text cursor alias.
       const after =
         cursor.prune_after_created_at === null
           ? Prisma.sql`true`
@@ -254,7 +254,7 @@ export class StatisticsExchangeRuntimeService implements OnModuleInit, OnModuleD
       const candidates = await tx.$queryRaw<Array<{ id: string; created_at: string }>>(Prisma.sql`
         SELECT id,created_at::text AS created_at FROM statistics_exchange_generations WHERE grant_id=${id}::uuid
           AND created_at<now()-interval '1 day' AND ${after}
-        ORDER BY created_at,id LIMIT 100`);
+        ORDER BY statistics_exchange_generations.created_at,statistics_exchange_generations.id LIMIT 100`);
       if (candidates.length) {
         const ids = candidates.map((candidate) => candidate.id);
         await tx.$executeRaw`DELETE FROM statistics_exchange_generations old WHERE old.id=ANY(${ids}::uuid[])

@@ -175,6 +175,94 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
       expect(await redis.hlen(keys.active)).toBe(0);
       expect(await redis.exists(keys.primary, keys.cooldown)).toBe(0);
     });
+    it('accepts a next chat after take without another readiness advertisement', async () => {
+      await ready();
+      const first = offer('running-chat');
+      expect(await mailbox.offerDetailed(first)).toBe('accepted');
+      const active = (await mailbox.take(worker))!;
+      expect(active).not.toBeNull();
+      const second = offer('next-chat');
+      expect(await mailbox.offerDetailed(second)).toBe('accepted');
+      expect(await redis.get(keys.ready)).toBe(worker);
+      expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('chat_busy');
+      expect(await mailbox.offerDetailed(offer('next-chat'))).toBe('chat_busy');
+      expect(await mailbox.offerDetailed(offer('third-chat'))).toBe('buffer_full');
+      const pending = await redis.get(keys.slot);
+      expect(JSON.parse(pending!).source).toEqual(second.source);
+      expect(await redis.get(keys.primary)).toBe(active.raw);
+      expect(await mailbox.take(worker)).toBeNull();
+      expect(await redis.get(keys.slot)).toBe(pending);
+      expect(await mailbox.releasePrimary(active.raw, worker)).toBe(true);
+      expect(await mailbox.take(worker)).toBeNull();
+      expect(await redis.get(keys.slot)).toBe(pending);
+      expect(await mailbox.owns(active.raw)).toBe(true);
+    });
+    it('retains exactly one pending source under concurrent offers after take', async () => {
+      await ready();
+      expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('accepted');
+      const active = (await mailbox.take(worker))!;
+      expect(active).not.toBeNull();
+      const results = await Promise.all(
+        Array.from({ length: 50 }, (_, index) =>
+          mailbox.offerDetailed(offer(`next-chat-${index}`)),
+        ),
+      );
+      expect(results.filter((result) => result === 'accepted')).toHaveLength(1);
+      expect(results.filter((result) => result === 'buffer_full')).toHaveLength(49);
+      expect(await redis.exists(keys.slot)).toBe(1);
+      expect(await redis.hlen(keys.active)).toBe(1);
+      expect(await redis.get(keys.primary)).toBe(active.raw);
+      expect(await mailbox.take(worker)).toBeNull();
+    });
+    it('preserves the readiness expiry and source deadline across consecutive admissions', async () => {
+      await ready();
+      const readyExpiry = await redis.pexpiretime(keys.ready);
+      expect(readyExpiry).toBeGreaterThan(Date.now());
+      expect(await redis.pttl(keys.ready)).toBeLessThanOrEqual(2_500);
+      expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('accepted');
+      expect(await mailbox.take(worker)).not.toBeNull();
+      const next = offer('next-chat');
+      expect(await mailbox.offerDetailed(next)).toBe('accepted');
+      expect(await redis.pexpiretime(keys.ready)).toBe(readyExpiry);
+      expect(await redis.pexpiretime(keys.slot)).toBe(next.source.deadlineAtMs);
+      expect(JSON.parse((await redis.get(keys.slot))!).source).toEqual(next.source);
+    });
+    it.each(['expiry', 'withdrawal'] as const)(
+      'refuses another admission after readiness %s with the worker still alive',
+      async (mode) => {
+        await ready();
+        expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('accepted');
+        const active = (await mailbox.take(worker))!;
+        expect(active).not.toBeNull();
+        await mailbox.withdraw(randomUUID());
+        expect(await redis.get(keys.ready)).toBe(worker);
+        if (mode === 'expiry') await redis.pexpireat(keys.ready, Date.now() - 1);
+        else await mailbox.withdraw(worker);
+        expect(await mailbox.ownsWorker(worker)).toBe(true);
+        expect(await mailbox.offerDetailed(offer('next-chat'))).toBe('not_ready');
+        expect(await redis.exists(keys.slot)).toBe(0);
+        expect(await redis.get(keys.primary)).toBe(active.raw);
+        expect(await mailbox.owns(active.raw)).toBe(true);
+      },
+    );
+    it.each(['missing', 'changed'] as const)(
+      'refuses retained readiness when the worker generation is %s',
+      async (mode) => {
+        await ready();
+        expect(await mailbox.offerDetailed(offer('running-chat'))).toBe('accepted');
+        const active = (await mailbox.take(worker))!;
+        expect(active).not.toBeNull();
+        if (mode === 'missing') await redis.del(keys.worker);
+        else await redis.set(keys.worker, randomUUID(), 'PX', 5000);
+        expect(await redis.get(keys.ready)).toBe(worker);
+        expect(await mailbox.offerDetailed(offer('next-chat'))).toBe(
+          mode === 'missing' ? 'no_worker' : 'worker_changed',
+        );
+        expect(await redis.exists(keys.slot)).toBe(0);
+        expect(await redis.get(keys.primary)).toBe(active.raw);
+        expect(await mailbox.releasePrimary(active.raw, worker)).toBe(false);
+      },
+    );
     it('buffers another chat during primary work and acquires its cooldown only at actual start', async () => {
       await ready();
       const first = offer('first-chat');
