@@ -57,6 +57,7 @@ export type CommercialLlmObservationResult = CommercialLlmDecision & {
     primaryModelSha256: string;
     primaryDurationMs?: number;
     secondaryDurationMs?: number;
+    auditOutcome?: 'capacity_skipped';
   };
 };
 

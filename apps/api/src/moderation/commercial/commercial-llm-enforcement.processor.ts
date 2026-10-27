@@ -78,6 +78,9 @@ export class CommercialLlmEnforcementProcessor {
         ...(result.cascade?.secondaryDurationMs !== undefined
           ? { secondaryDurationMs: result.cascade.secondaryDurationMs }
           : {}),
+        ...(result.cascade?.auditOutcome === 'capacity_skipped'
+          ? { auditOutcome: 'capacity_skipped' }
+          : {}),
       };
       if (!commercialLlmMayDelete(result))
         return {
