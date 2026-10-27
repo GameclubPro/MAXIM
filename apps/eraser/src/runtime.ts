@@ -297,13 +297,18 @@ export class CleanupRuntime {
           await this.store.defer(candidate, 'pinned', 60_000);
           continue;
         }
-        let dispatched = false;
+        let issued = candidate;
         try {
           await this.max.remove(chatId, candidate.message_id, async () => {
-            await this.store.assertAndMarkDispatch(candidate, leaseToken, rightsAt, pinAt);
-            dispatched = true;
+            const dispatch = await this.store.assertAndMarkDispatch(
+              candidate,
+              leaseToken,
+              rightsAt,
+              pinAt,
+            );
+            issued = { ...candidate, state: 'dispatching', dispatch_id: dispatch };
           });
-          await this.store.settle(candidate, 'deleted', 'deleted');
+          await this.store.settle(issued, 'deleted', 'deleted');
         } catch (failure) {
           if (failure instanceof ServiceError) {
             if (failure.code === 'ERASER_PROTECTED')
@@ -312,10 +317,12 @@ export class CleanupRuntime {
               await this.store.deferProtection(candidate);
             else await this.store.defer(candidate, 'policy_changed', 1000);
           } else if (failure instanceof MaxError && failure.status === 429 && !failure.attempted) {
-            await this.store.settle(candidate, 'pending', 'rate_limited', failure.retryAfterMs);
-          } else if (dispatched) {
+            await this.store.settle(issued, 'pending', 'rate_limited', failure.retryAfterMs);
+            throw failure;
+          } else if (issued !== candidate) {
             // FLAG: Timeout, malformed acknowledgement and generic errors retain mutation uncertainty.
-            await this.store.settle(candidate, 'uncertain', 'reconciliation', 10_000);
+            await this.store.settle(issued, 'uncertain', 'reconciliation', 10_000);
+            throw failure;
           } else throw failure;
         }
       }
