@@ -132,7 +132,7 @@ test('extra tasks and reversed actions keep inference with source-backed control
   assert.equal(fixture.requests, 9);
 });
 
-test('mixed Lastik waiting retains inference while a covered retry preserves both activation checks', async (t) => {
+test('covered Lastik waiting and retry preserve both activation checks', async (t) => {
   const fixture = await completionFixture(t, {
     action: 'reply',
     text: 'Текущее состояние помощнику недоступно.',
@@ -156,21 +156,74 @@ test('mixed Lastik waiting retains inference while a covered retry preserves bot
     },
   ]) {
     const result = await answerSupport({ ...fixture.input, ...scenario });
-    assert.equal(
-      result.responseRoute,
-      scenario.id === 'lastik-permissions' ? 'reviewed-faq' : 'model-inference',
-    );
-    const instruction =
-      scenario.id === 'lastik-permissions'
-        ? result.text
-        : (fixture.inputs.at(-1).answerRequirements.find((entry) => entry.sourceId === scenario.id)
-            ?.instruction ?? '');
+    assert.equal(result.responseRoute, 'reviewed-faq');
+    const instruction = result.text;
     assert.match(instruction, /1 час/iu);
     assert.match(instruction, /после.*запрос|от.*запрос/iu);
     assert.match(instruction, /чтени[ея].*удалени/iu);
     assert.match(instruction, /запросивш.*администратор/iu);
     assert.match(instruction, /автоматическ/iu);
   }
+  assert.equal(fixture.requests, 0);
+});
+
+test('reviewed waiting plus edited history preserves conditions without a specific deletion promise', async () => {
+  const result = await answerSupport({
+    text: 'Он молчит. Подключаться опять? Моё незакреплённое сообщение недельной давности я исправила сегодня — его тоже уберёт?',
+    history: [
+      {
+        role: 'user',
+        text: 'Я администратор. В Ластике выбрала 48 часов, подтвердила запрос на подключение 12 минут назад и дала боту права администратора.',
+      },
+    ],
+    key: 'unused',
+    endpoint: 'http://127.0.0.1:1',
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.equal(result.durationMs, 0);
+  const body = presentedBody(result);
+  assert.match(body, /до 1 часа после.*запрос/u);
+  assert.match(body, /уже.*ждали.*входит в этот час/iu);
+  assert.match(body, /только после подтверждения двух условий/iu);
+  assert.match(body, /Запросивший подключение пользователь — администратор/u);
+  assert.match(body, /не видит.*текущие права.*состояние подключения/u);
+  assert.match(body, /повторять подключение или писать «Старт» не нужно/u);
+  assert.match(body, /Возвращаться.*для завершения.*не требуется/u);
+  assert.match(body, /старше 48 часов/u);
+  assert.match(body, /всей доступной истории.*до добавления/iu);
+  assert.match(body, /от создания сообщения.*редактирование.*не продлевает/isu);
+  assert.match(body, /постепенно/u);
+  assert.match(body, /закреплённые.*правила.*объявления розыгрышей.*итоги/isu);
+  assert.match(body, /сообщения администраторов/u);
+  assert.match(body, /конкретн\p{L}* сообщени\p{L}*.*(?:неизвестно|не могу подтвердить)/isu);
+  assert.doesNotMatch(body, /оно будет удалено|его (?:точно|обязательно) удалит/iu);
+  assert.deepEqual(result.sourceIds, ['lastik-connect', 'message-retention', 'lastik-exclusions']);
+});
+
+test('individual retention inference receives available-history and exception limits without losing other tasks', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Текущее состояние неизвестно.',
+    sourceIds: ['operator'],
+  });
+  for (const text of [
+    'Ластик на 48 часов. Сообщение я редактировал сегодня. Удалит его? И как выгрузить переписку?',
+    'Ластик: нажал «Подключить и включить», жду. Моё старое сообщение удалит? И как подключить сетку?',
+  ]) {
+    const result = await answerSupport({ ...fixture.input, text });
+    assert.equal(result.responseRoute, 'model-inference', text);
+    const input = fixture.inputs.at(-1);
+    assert.equal(input.question, text);
+    const instruction =
+      input.answerRequirements.find((entry) => entry.sourceId === 'message-retention')
+        ?.instruction ?? '';
+    assert.match(instruction, /от создания.*редактирован/iu);
+    assert.match(instruction, /доступн\p{L}* истори/iu);
+    assert.match(instruction, /закреп.*правила.*розыгрыш.*итоги/iu);
+    assert.match(instruction, /конкретн\p{L}* сообщени\p{L}*.*(?:неизвест|не подтвержд|не обещ)/iu);
+    assert.ok(input.verifiedKnowledge.some((entry) => entry.id === 'lastik-exclusions'));
+  }
+  assert.equal(fixture.requests, 2);
 });
 
 test('mixed publication delivery and dates send both grounded procedures to inference', async (t) => {
@@ -794,7 +847,6 @@ test('Lastik shortcuts preserve waiting, rights and additional tasks in inferenc
     'Как подключить Ластика к новому чату и включить ночной режим?',
     'Ластик: я нажал «Подключить и включить», а как проверить права?',
     'Ластик: нажал «Подключить и включить», жду 40 минут. Как выключить ночной режим?',
-    'Ластик: нажал «Подключить и включить», жду 40 минут. Он тронет старые сообщения до подключения?',
     'Ластик: нажал «Подключить и включить», жду 40 минут. Как посмотреть прогресс очистки?',
     'Ластик: нажал «Подключить и включить», жду 40 минут. А как поменять срок на неделю?',
     'Ластик: нажал «Подключить и включить», жду 40 минут. Хочу отменить подключение.',

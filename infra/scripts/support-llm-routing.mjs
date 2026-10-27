@@ -64,6 +64,13 @@ const lastikSettingsConflict =
   /настройки\s+(?:уже\s+)?изменились|конфликт.{0,20}(?:настро|сохран)/iu;
 const retentionHistoryPattern =
   /истори|переписк|(?:до|раньше).{0,25}(?:добав|подкл|включ)|стар\p{L}*.{0,20}сообщ/iu;
+const individualRetentionQuestion = (text) =>
+  /сообщен|пост|текст/iu.test(text) &&
+  (/редакт|поправ|правк|исправ|создан|давност|возраст/iu.test(text) ||
+    (/удал|убер|сотр|стер/iu.test(text) &&
+      /сообщени[ею](?![\p{L}])|(?:мо[ейяию]|это|конкретн)\p{L}*.{0,25}(?:сообщен|пост|текст)/iu.test(
+        text,
+      )));
 const negatedAt = (text, index) =>
   /(?<![\p{L}])не\s+(?:(?:нужно|надо|следует|хочу|хотим|хотел[аи]?|хотели|собираюсь|собираемся|буду|будем|планирую|планируем)\s+)?(?:(?:вообще|полностью|больше)\s+)?$/iu.test(
     text.slice(0, index),
@@ -403,7 +410,7 @@ function lastikConnectionIntent(ctx, state, primaryIds) {
     if (lastikConnectionRecovery.test(value)) return 'restart';
     const submitted = [
       ...value.matchAll(
-        /(?<![\p{L}])(?:нажал[аи]?|нажали|запросил[аи]?|запустил[аи]?|отправил[аи]?).{0,45}(?:подключ|проверить и включить)/giu,
+        /(?<![\p{L}])(?:нажал[аи]?|нажали|запросил[аи]?|запустил[аи]?|отправил[аи]?|подтвердил[аи]?|подтвердили).{0,45}(?:подключ|проверить и включить)/giu,
       ),
     ].some((match) => !negatedAt(value, match.index));
     const submittedRequest = [
@@ -500,7 +507,8 @@ function reviewedTaskCovered(text, topic, generic = /(?!)$/u, allowedInfinitives
       (part) =>
         (!allowedInfinitives ||
           [...part.matchAll(/(?<![\p{L}])\p{L}{2,}(?:ть|ти|чь)(?:ся)?(?![\p{L}])/gu)].every(
-            (match) => allowedInfinitives.test(match[0]),
+            (match) =>
+              /^(?:опять|пять)$|ости$/u.test(match[0]) || allowedInfinitives.test(match[0]),
           )) &&
         (!(
           help.test(part) ||
@@ -703,13 +711,63 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
       /^(?:(?:а|и)\s+)?(?:как|где)\s+(?:это\s+)?(?:выбрать|задать|указать|сохранить)[?!.\s]*$/iu,
       /^(?:выбрать|задать|поставить|запланировать|назначить|указать|добавить|настроить|проверить|сохранить|соотнести|попасть|промахнуться|ошибиться|выйти|повторять)$/u,
     );
-  const retentionPeriods = new Set(
-    [
-      ...ctx.current.matchAll(
-        /(?<!\d)(24|48|168)\s*час\p{L}*(?![\p{L}])|(?<![\p{L}])(?:1|одну)\s+недел\p{L}*/giu,
+  // FLAG: Waiting plus archive/edit scope is covered only as an explanation. Rights
+  // checks, settings changes and independent tasks must keep their inference path.
+  const lastikWaitingHistoryOnly =
+    state.eraserRequest &&
+    !state.publisherRequest &&
+    !state.botDirectory &&
+    !state.botCatalogRequest &&
+    !moderatorName.test(ctx.current) &&
+    !actionRequest.test(
+      ctx.current.replace(
+        /(?<![\p{L}])(?:подскаж\p{L}*|расскаж(?:и|ите)|объясни(?:те)?)(?![\p{L}])/giu,
+        '',
       ),
-    ].map((match) => Number(match[1] ?? 168)),
-  );
+    ) &&
+    lastikConnectionIntent(ctx, state, primaryIds) === 'waiting' &&
+    (retentionHistoryPattern.test(ctx.current) || individualRetentionQuestion(ctx.current)) &&
+    ['lastik-connect', 'message-retention', 'lastik-exclusions'].every((id) =>
+      primaryIds.includes(id),
+    ) &&
+    only([
+      'lastik-connect',
+      'message-retention',
+      'lastik-exclusions',
+      'settings',
+      'announcement-removal',
+    ]) &&
+    !/сетк|канал|прогресс|счетчик|подробност|тариф|стоимост|цен|настрой|сохран|выключ|отключ|останов|отмен|восстанов|вернуть(?!ся)|почему|(?:помен|измен|выбра|выбери|смен).{0,20}(?:срок|прав)|(?:как|где|какие).{0,30}(?:провер\p{L}*\s+прав|дать\s+прав|назнач\p{L}*\s+прав)|(?:провер\p{L}*|дать|выдать)\s+(?:(?:мои|свои|его|ее|боту|ластику)\s+)?права/iu.test(
+      ctx.current,
+    ) &&
+    reviewedTaskCovered(
+      ctx.current,
+      /подкл|ожидан|жд(?:у|ать|ем)|молч|ни слова|старт|мини-прилож|вернуться|(?<![\p{L}])(?:минут|час)|истори|переписк|сообщ|закреп|исключ|редакт|правк|исправ|убер|удал/iu,
+      /^(?:(?:а|и)\s+)?(?:что\s+(?:мне\s+)?делать|(?:это\s+)?нормально)[?!.\s]*$/iu,
+      /^(?:подключиться|подключаться|подключить|переподключить|повторить|ждать|дождаться|вернуться|возвращаться|открыть|нажать|жать|писать|сделать|удалить|почистить|очистить|очищаться|снимать|снять)$/u,
+    );
+  let lastikRetentionHours = null;
+  // FLAG: Only user reports can supply a selected period. A conflicting current
+  // report stays ambiguous instead of falling back to an older or assistant value.
+  const retentionReports = [];
+  let reportProduct = null;
+  for (const item of ctx.recent.filter((turn) => turn.role === 'user')) {
+    reportProduct = productOf(item.text) ?? reportProduct;
+    if (reportProduct === 'eraser') retentionReports.push(item.text);
+  }
+  for (const value of [ctx.current, ...retentionReports.reverse()]) {
+    if (!/срок|выбра|ставил|поставил|ластик\p{L}*\s+на/iu.test(value)) continue;
+    const periods = new Set(
+      [
+        ...value.matchAll(
+          /(?<!\d)((?:24|48|168)(?:\s*(?:или|и|,|\/)\s*(?:24|48|168))*)\s*час\p{L}*(?![\p{L}])|(?<![\p{L}])(?:1|одну)\s+недел\p{L}*/giu,
+        ),
+      ].flatMap((match) => (match[1] ? match[1].match(/\d+/gu).map(Number) : [168])),
+    );
+    if (!periods.size) continue;
+    if (periods.size === 1) lastikRetentionHours = [...periods][0];
+    break;
+  }
   return {
     lastikConflictIntent,
     nightManualOnly,
@@ -720,11 +778,9 @@ function reviewedAtomicIntents(ctx, state, primaryIds) {
     lastikHistoryOnly,
     lastikRestartOnly,
     lastikRestartHistory: lastikRestartOnly && retentionHistoryPattern.test(ctx.current),
-    lastikRetentionHours:
-      retentionPeriods.size === 1 &&
-      /срок|выбра|ставил|поставил|ластик\p{L}*\s+на/iu.test(ctx.current)
-        ? [...retentionPeriods][0]
-        : null,
+    lastikWaitingHistoryOnly,
+    lastikRetentionHours,
+    individualRetentionQuestion: state.eraserRequest && individualRetentionQuestion(ctx.current),
     publisherDatesOnly,
     publisherDatesTimezone:
       publisherDatesOnly &&
@@ -996,7 +1052,8 @@ function semanticFacts(text, state) {
   const otherBotConnection = test(
     /(?:подкл[юу]ч\p{L}*|добав\p{L}*|постав\p{L}*)\s+(?:(?:еще|также|отдельно)\s+)?(?:публик|майор|рэкс|модератор)|(?:публик|майор|рэкс|модератор)\p{L}*\s+(?:подкл[юу]ч|добав|постав)|ластик(?:а|у|ом|е)?[»"]?\s*(?:,?\s+и|,\s*а\s+также)\s+(?:публик|майор|рэкс|модератор)/iu,
   );
-  const connecting = connectionRequested && (!eraserName.test(text) || otherBotConnection);
+  const connecting =
+    connectionRequested && (!(state.eraserRequest || eraserName.test(text)) || otherBotConnection);
   const connectingPublisher = publ || (publisherName.test(text) && otherBotConnection);
   if (connecting) {
     // FLAG: Publisher onboarding has its own UI. Moderator-only controls must not
@@ -1161,7 +1218,11 @@ function semanticFacts(text, state) {
     const exclusionQuestion = test(
       /исключ|закреп|(?<![\p{L}])правил|розыгрыш|защищ|сообщен.{0,20}(?:админ|бот)|мои.{0,15}сообщен/iu,
     );
-    if (retentionHistoryPattern.test(state.current) || exclusionQuestion)
+    if (
+      retentionHistoryPattern.test(state.current) ||
+      individualRetentionQuestion(state.current) ||
+      exclusionQuestion
+    )
       add('lastik-exclusions', exclusionQuestion ? 125 : 100);
     if (
       test(/сохранен|не удалось сохранить|ошибк|неизвестн.{0,15}результат|повтор.{0,15}нажа/iu) ||

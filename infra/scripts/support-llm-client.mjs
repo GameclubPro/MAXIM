@@ -157,6 +157,11 @@ function answerRequirements(selected, request) {
       'lastik-permissions',
       'Если ожидание истекло или подключение отменено, в нужном чате открой «Удаление старых сообщений» и дай повторный запуск кнопкой «Проверить и включить». Новая проверка идёт до 1 часа после нового запроса. Это срок проверки, не обещание успешного включения: очистка включится автоматически только после подтверждения двух условий — Ластик является администратором с правами чтения всех сообщений и удаления, а запросивший подключение пользователь является администратором чата. Сообщённая пользователем роль не подтверждает завершённую проверку. Не советуй просто ждать дальше или лишь открыть профиль. Не подтверждай текущие права пользователя или бота.',
     );
+  if (request.individualRetentionQuestion && ids.has('lastik-exclusions'))
+    add(
+      'message-retention',
+      'Срок считается от создания сообщения; редактирование не делает его новым. Соотнеси возраст с сообщённым выбранным сроком, если он однозначен. Возраст — лишь условие очистки доступной истории, включая сообщения до включения и сообщения администраторов; большая история очищается постепенно. Сохраняются все закреплённые сообщения, а также правила, объявления розыгрышей и их итоги из наших модулей. Отсутствие закрепа не отменяет остальные исключения. Удаление конкретного сообщения неизвестно: не обещай его по одному возрасту и не утверждай, что проверил доступность или исключения. Сохрани остальные задачи вопроса.',
+    );
   if (request.primaryIds.includes('night-manual'))
     add(
       'night-manual',
@@ -398,6 +403,24 @@ function presentSupportText(text) {
   return result;
 }
 
+function reviewedLastikWaiting(entry) {
+  return `${entry.waitingAnswer}\n\nВремя, которое вы уже ждали после отправки запроса, входит в этот час; новый час от этого ответа не начинается.`;
+}
+
+function reviewedRetentionHistory(request) {
+  const age =
+    request.lastikRetentionHours === 168
+      ? 'старше 1 недели'
+      : request.lastikRetentionHours
+        ? `старше ${request.lastikRetentionHours} часов`
+        : 'старше выбранного срока';
+  return [
+    `Ластик удаляет сообщения ${age} из всей доступной истории, включая переписку до добавления бота. Срок считается от создания сообщения; редактирование его не продлевает. Большая история очищается постепенно, точное время окончания неизвестно.`,
+    'Сохраняются все закреплённые сообщения, а также правила, объявления розыгрышей и их итоги из наших модулей — не любой текст с такими названиями. Остальные сообщения, включая сообщения администраторов, входят в очистку по сроку, если не защищены этими исключениями. Снимать закрепы для запуска очистки не нужно.',
+    'Возраст — лишь одно условие: удаление конкретного сообщения помощнику неизвестно. Оно зависит от доступной истории и исключений; отсутствие закрепа не отменяет остальные исключения.',
+  ].join('\n\n');
+}
+
 export async function answerSupport({
   text,
   history = [],
@@ -426,14 +449,13 @@ export async function answerSupport({
   const actionBoundary = request.liveActionRequested
     ? 'Я не могу сам изменить настройки или запустить действие в вашем сообществе.\n\n'
     : '';
-  // FLAG: These complete reviewed compositions cover only retry/archive and dates/zone.
+  // FLAG: These complete reviewed compositions cover waiting/retry with archive and dates/zone.
   // Unknown or independent tasks stay in inference; no model draft is generated or rewritten.
   if (
-    request.lastikRestartOnly &&
-    ['lastik-connect', 'lastik-permissions'].every((id) =>
-      selected.some((entry) => entry.id === id),
-    ) &&
-    (!request.lastikRestartHistory ||
+    (request.lastikRestartOnly || request.lastikWaitingHistoryOnly) &&
+    selected.some((entry) => entry.id === 'lastik-connect') &&
+    (!request.lastikRestartOnly || selected.some((entry) => entry.id === 'lastik-permissions')) &&
+    (!(request.lastikRestartHistory || request.lastikWaitingHistoryOnly) ||
       ['message-retention', 'lastik-exclusions'].every((id) =>
         selected.some((entry) => entry.id === id),
       )) &&
@@ -447,34 +469,32 @@ export async function answerSupport({
           'lastik-exclusions',
           'bots',
           'settings',
+          ...(request.lastikWaitingHistoryOnly ? ['announcement-removal'] : []),
         ].includes(entry.id),
     )
   ) {
-    const age =
-      request.lastikRetentionHours === 168
-        ? 'старше 1 недели'
-        : request.lastikRetentionHours
-          ? `старше ${request.lastikRetentionHours} часов`
-          : 'старше выбранного срока';
-    const parts = [
-      `${actionBoundary}В мини-приложении откройте нужный чат → «Удаление старых сообщений». Проверьте права и нажмите «Проверить и включить» для нового запроса. Само открытие профиля и «Обновить состояние» не запускают новый час ожидания.`,
-      'Проверка идёт до 1 часа после нового запроса. Очистка включится автоматически только после подтверждения обоих условий:\n• Ластик — администратор с правами чтения всех сообщений и удаления.\n• Запросивший подключение пользователь — администратор чата.',
-      'Ластик не пишет в чат. Возвращаться в мини-приложение для завершения не нужно; там можно посмотреть статус. Помощник не видит текущие права и состояние подключения.',
-    ];
-    if (request.lastikRestartHistory)
-      parts.push(
-        `Ластик удаляет сообщения ${age} из всей доступной истории, включая переписку до добавления бота. Срок считается от создания сообщения; редактирование его не продлевает. Большая история очищается постепенно, точное время окончания неизвестно.`,
-        'Сохраняются все закреплённые сообщения, а также правила, объявления розыгрышей и их итоги из наших модулей — не любой текст с такими названиями. Остальные сообщения, включая сообщения администраторов, входят в очистку по сроку.',
-      );
+    const parts = request.lastikWaitingHistoryOnly
+      ? [
+          `${actionBoundary}${reviewedLastikWaiting(selected.find((entry) => entry.id === 'lastik-connect'))}`,
+        ]
+      : [
+          `${actionBoundary}В мини-приложении откройте нужный чат → «Удаление старых сообщений». Проверьте права и нажмите «Проверить и включить» для нового запроса. Само открытие профиля и «Обновить состояние» не запускают новый час ожидания.`,
+          'Проверка идёт до 1 часа после нового запроса. Очистка включится автоматически только после подтверждения обоих условий:\n• Ластик — администратор с правами чтения всех сообщений и удаления.\n• Запросивший подключение пользователь — администратор чата.',
+          'Ластик не пишет в чат. Возвращаться в мини-приложение для завершения не нужно; там можно посмотреть статус. Помощник не видит текущие права и состояние подключения.',
+        ];
+    if (request.lastikRestartHistory || request.lastikWaitingHistoryOnly)
+      parts.push(reviewedRetentionHistory(request));
     return {
       ...validateSupportAnswer(
         {
           action: 'reply',
           text: parts.join('\n\n'),
           sourceIds: [
-            'lastik-permissions',
+            ...(request.lastikRestartOnly ? ['lastik-permissions'] : []),
             'lastik-connect',
-            ...(request.lastikRestartHistory ? ['message-retention', 'lastik-exclusions'] : []),
+            ...(request.lastikRestartHistory || request.lastikWaitingHistoryOnly
+              ? ['message-retention', 'lastik-exclusions']
+              : []),
           ],
         },
         selected,
@@ -571,7 +591,7 @@ export async function answerSupport({
         {
           action: 'reply',
           sourceIds: ['message-retention', 'lastik-exclusions'],
-          text: 'Ластик удаляет сообщения старше выбранного срока из всей доступной истории, включая сообщения до добавления бота. Большая история очищается постепенно.\n\nЭто относится и к сообщениям администраторов, если они не защищены исключениями. Все закреплённые сообщения сохраняются. Также защищены правила, объявления розыгрышей и их итоги из наших модулей. Это не защита любого текста с такими названиями.\n\nСнимать закрепы для запуска очистки не нужно. Срок считается от создания сообщения. Редактирование его не продлевает.',
+          text: reviewedRetentionHistory(request),
         },
         selected,
       ),
@@ -688,7 +708,11 @@ export async function answerSupport({
   )
     return {
       ...validateSupportAnswer(
-        { action: 'reply', text: selected[0].waitingAnswer, sourceIds: ['lastik-connect'] },
+        {
+          action: 'reply',
+          text: reviewedLastikWaiting(selected[0]),
+          sourceIds: ['lastik-connect'],
+        },
         selected,
       ),
       durationMs: 0,

@@ -76,6 +76,64 @@ test('bounded Lastik retry and calendar-date composition reject independent extr
     assert.equal(classifySupportRequest(text)[field], false, text);
 });
 
+test('bounded Lastik waiting retains archive edits and only unambiguous user-reported periods', () => {
+  const history = [
+    {
+      role: 'user',
+      text: 'В Ластике выбрала 48 часов и отправила запрос на подключение 12 минут назад.',
+    },
+    { role: 'assistant', text: 'Вы выбрали 24 часа.' },
+  ];
+  const text =
+    'Он молчит. Подключаться опять? Моё сообщение было создано давно, сегодня его исправила. Его тоже уберёт?';
+  const route = classifySupportRequest(text, history);
+  assert.equal(route.lastikWaitingHistoryOnly, true);
+  assert.equal(route.lastikRetentionHours, 48);
+  assert.ok(selectKnowledge(text, history).some((entry) => entry.id === 'lastik-exclusions'));
+  assert.equal(
+    classifySupportRequest(
+      'Выбран срок 24 или 48 часов. Ластик ждёт подключения; старые сообщения тоже затронет?',
+      history,
+    ).lastikRetentionHours,
+    null,
+  );
+  assert.equal(
+    classifySupportRequest(
+      'Теперь выбрала 24 часа. Ластик молчит, что со старой историей?',
+      history,
+    ).lastikRetentionHours,
+    24,
+  );
+  assert.equal(
+    classifySupportRequest('Он молчит, что будет с прежней историей?', [
+      ...history,
+      { role: 'user', text: 'В Публике выбрала 24 часа для расписания.' },
+      { role: 'user', text: 'Выбрала 168 часов.' },
+      { role: 'user', text: 'Снова про Ластика.' },
+    ]).lastikRetentionHours,
+    48,
+  );
+  for (const extra of [
+    'Как выгрузить переписку?',
+    'Выгрузи переписку.',
+    'Удалите участников.',
+    'Как поменять срок?',
+    'Как проверить мои права?',
+    'Как подключить сетку?',
+    'Покажи прогресс очистки.',
+    'Пригласите новых участников.',
+    'Как подключить Публика?',
+    'Подключите Майора.',
+    'Смените аватар чата.',
+    'Хочу отменить подключение.',
+  ])
+    assert.equal(
+      classifySupportRequest(`${text} ${extra}`, history).lastikWaitingHistoryOnly,
+      false,
+      extra,
+    );
+});
+
 test('Lastik questions select the current task and retain context after a product change', () => {
   checkCases(
     [

@@ -187,7 +187,14 @@ each budget trim and scope them to the current task. Routing separates Lastik se
 intent and link allow/block/inspect intent using the user's report; these are not live observations.
 Atomic Lastik waiting replies use the reviewed `lastik-connect.waitingAnswer` and the normal
 validation/presentation boundary. They retain both rights checks and the one-hour window from the
-request. Atomic initial setup uses the reviewed `lastik-connect.setupAnswer`, preserving period
+request, including time already waited. Covered waiting questions about archive coverage or edited
+messages compose that procedure with the same retention/exclusion text used by retry and archive
+replies. A reported period comes only from an unambiguous user report in the current question or
+relevant history; assistant text cannot set it. Creation age establishes age eligibility, not the
+outcome for a specific message: available history and all protected exceptions still apply, and the
+actual deletion remains unknown. Other individual-retention questions retain those limits in a
+scoped source-backed inference reminder. Separate rights checks, settings, networks, exports and
+other bot tasks retain inference. Atomic initial setup uses the reviewed `lastik-connect.setupAnswer`, preserving period
 selection, both rights checks and the one-hour window from the request. Atomic Publisher creation
 preserves recipient selection and conditional connection prerequisites; atomic delivery questions
 use the existing publication's evidence procedure and duplicate warning. Tasks outside the reviewed
