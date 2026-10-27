@@ -84,7 +84,7 @@
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) auto;
     gap: 8px;
-    padding-bottom: calc(var(--app-safe-bottom) + 8px);
+    padding-bottom: calc(var(--bottom-nav-edge-inset) + 8px);
   }
 
   body[data-miniapp-profile='publisher'] .app-shell--publisher-catalog .shell-content {
