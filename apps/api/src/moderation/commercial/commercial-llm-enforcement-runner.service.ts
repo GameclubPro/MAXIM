@@ -12,7 +12,10 @@ import type { CommercialLlmClassifier } from './commercial-llm.protocol';
 import { CommercialLlmWorkstationMailbox } from './commercial-llm-workstation.mailbox';
 import { CommercialLlmShadowLease, createCommercialLlmRedis } from './commercial-llm-shadow.lease';
 import { commercialLlmHostHasHeadroom } from './commercial-llm-shadow.processor';
-import { COMMERCIAL_LLM_ENFORCEMENT_KEYS } from './commercial-llm-enforcement.mailbox';
+import {
+  COMMERCIAL_LLM_ENFORCEMENT_KEYS,
+  COMMERCIAL_LLM_POLL_INTERVAL_MS,
+} from './commercial-llm-enforcement.mailbox';
 import { CommercialLlmSecondaryScheduler } from './commercial-llm-secondary-scheduler';
 
 @Injectable()
@@ -42,7 +45,7 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       this.config.get<string>('APP_SERVICE_NAME') !== 'api-moderation-background'
     )
       return;
-    this.timer = setInterval(() => this.wake(), 250);
+    this.timer = setInterval(() => this.wake(), COMMERCIAL_LLM_POLL_INTERVAL_MS);
     this.timer.unref();
   }
 
@@ -135,7 +138,8 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       return;
     }
     await mailbox.advertise(this.worker);
-    // FLAG: At most primary running + secondary running + one waiting confirmation, plus one pending input.
+    // FLAG: At most primary running + secondary running + one waiting confirmation.
+    // The mailbox admits a second pending input only when both starts fit their original budget.
     if (this.active.size >= 3) return;
     const redis = this.redis;
     const secondary = this.secondary!;

@@ -10,14 +10,18 @@ import {
   type CommercialLlmSource,
 } from './commercial-llm-enforcement.protocol';
 const prefix = 'commercial-llm-enforcement:v2';
+const pendingPrefix = 'commercial-llm-enforcement:v3';
 const proofPrefix = 'commercial-llm-enforcement:v1';
 export const COMMERCIAL_LLM_PRIMARY_INTERVAL_MS = 2_000;
+export const COMMERCIAL_LLM_POLL_INTERVAL_MS = 250;
+const burstCooldownMaximumMs = 250;
 export const COMMERCIAL_LLM_ACTIVE_LIMIT = 3;
 export const COMMERCIAL_LLM_CHAT_ACTIVE_LIMIT = 2;
 export const COMMERCIAL_LLM_ENFORCEMENT_KEYS = {
   worker: `${prefix}:worker`,
   ready: `${prefix}:ready`,
-  slot: `${prefix}:slot`,
+  slot: `${pendingPrefix}:slot`,
+  slotNext: `${pendingPrefix}:slot-next`,
   active: `${prefix}:active`,
   primary: `${prefix}:primary`,
   secondary: `${prefix}:secondary`,
@@ -58,6 +62,12 @@ const decodeLua = `local function decode(value)
   local ok, request = pcall(cjson.decode, value)
   if ok and type(request) == 'table' then return request end
   return nil
+end
+`;
+// FLAG: Only the current worker and an exact head/absence CAS may promote the tail. RENAME preserves its
+// absolute Redis expiry, raw source and admission clock; no caller refills ahead of it.
+const promotePendingLua = `local function promotePending(head, tail)
+  if redis.call('EXISTS', tail) > 0 then redis.call('RENAME', tail, head) end
 end
 `;
 // FLAG: Inspect at most the bounded active set; same-message nonce changes never bypass exclusion.
@@ -127,17 +137,18 @@ export class CommercialLlmEnforcementMailbox {
     return (
       (await this.redis.eval(
         `${pruneActiveLua}
-      if redis.call('GET', KEYS[3]) ~= ARGV[1] or redis.call('EXISTS', KEYS[2]) > 0
+      if redis.call('GET', KEYS[3]) ~= ARGV[1] or redis.call('EXISTS', KEYS[2], KEYS[5]) >= 2
           or redis.call('HLEN', KEYS[4]) > tonumber(ARGV[2]) then return 0 end
       local time = redis.call('TIME'); local now = time[1] * 1000 + math.floor(time[2] / 1000)
       pruneActive(KEYS[4], ARGV[1], now)
       if redis.call('HLEN', KEYS[4]) >= tonumber(ARGV[2]) then return 0 end
       redis.call('SET', KEYS[1], ARGV[1], 'PX', 2500); return 1`,
-        4,
+        5,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
         COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
+        COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
         worker,
         COMMERCIAL_LLM_ACTIVE_LIMIT,
       )) === 1
@@ -157,7 +168,15 @@ export class CommercialLlmEnforcementMailbox {
     excerpt: string;
   }): Promise<CommercialLlmAdmissionResult> {
     if (!commercialLlmSourceCurrent(offer.source)) return 'source_expired';
-    const worker = await this.redis.get(COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready);
+    const [worker, pendingRaw] = await this.redis.mget(
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
+    );
+    const pending = pendingRaw ? parseRequest(pendingRaw) : null;
+    const validatedPendingRaw =
+      pending && pending.worker === worker && commercialLlmSourceCurrent(pending.source)
+        ? pendingRaw!
+        : '';
     const request = commercialLlmRequestSchema.parse({
       ...offer,
       worker: worker ?? '00000000-0000-4000-8000-000000000000',
@@ -165,6 +184,9 @@ export class CommercialLlmEnforcementMailbox {
     });
     // FLAG: A chat awaiting 9B may admit another message's primary, never a duplicate message
     // or concurrent same-chat primary. Model limits and original source clocks remain independent.
+    // FLAG: Append at most one distinct-chat burst tail behind an exact validated head,
+    // only with free primary, active <= 1 and <= 250ms of the unchanged two-second cooldown.
+    // Both projected starts spend their own original three seconds, including two poll reserves.
     // FLAG: Readiness retains its short eligibility TTL across offers; it is not a model lease.
     return (await this.redis.eval(
       `${pruneActiveLua}${chatAdmissionLua}
@@ -175,22 +197,43 @@ export class CommercialLlmEnforcementMailbox {
       if not worker then return 'no_worker' end
       if redis.call('HLEN', KEYS[4]) > tonumber(ARGV[6]) then return 'active_limit' end
       pruneActive(KEYS[4], worker, now)
-      local pending = decode(redis.call('GET', KEYS[2]))
+      local pendingRaw = redis.call('GET', KEYS[2])
+      local pending = decode(pendingRaw)
+      local nextRaw = redis.call('GET', KEYS[6])
+      local next = decode(nextRaw)
       if pending and type(pending.source) == 'table' and pending.source.chatId == ARGV[5] then return 'chat_busy' end
+      if next and type(next.source) == 'table' and next.source.chatId == ARGV[5] then return 'chat_busy' end
       if chatBusy(KEYS[4], redis.call('GET', KEYS[5]), ARGV[5], ARGV[7], tonumber(ARGV[8])) then return 'chat_busy' end
-      if redis.call('EXISTS', KEYS[2]) > 0 then return 'buffer_full' end
+      local target = KEYS[2]
+      if pendingRaw or nextRaw then
+        if not pendingRaw or not pending or nextRaw or ARGV[9] == '' or pendingRaw ~= ARGV[9] then return 'buffer_full' end
+        if redis.call('HLEN', KEYS[4]) > 1 or redis.call('EXISTS', KEYS[5]) > 0 then return 'buffer_full' end
+        local cooldown = redis.call('PTTL', KEYS[7])
+        if cooldown == -1 or cooldown > tonumber(ARGV[12]) then return 'buffer_full' end
+        cooldown = math.max(0, cooldown)
+        local headStart = now + cooldown + tonumber(ARGV[14])
+        if tonumber(pending.submittedAtMs) > now + 1000
+          or headStart > tonumber(pending.submittedAtMs) + tonumber(ARGV[11])
+          or headStart >= tonumber(pending.source.deadlineAtMs) then return 'buffer_full' end
+        local tailStart = headStart + tonumber(ARGV[13]) + tonumber(ARGV[14])
+        if tonumber(ARGV[10]) > now + 1000 or tailStart > tonumber(ARGV[10]) + tonumber(ARGV[11])
+          or tailStart >= tonumber(ARGV[3]) then return 'buffer_full' end
+        target = KEYS[6]
+      end
       if redis.call('HLEN', KEYS[4]) >= tonumber(ARGV[6]) then return 'active_limit' end
       local ready = redis.call('GET', KEYS[1])
       if not ready then return 'not_ready' end
       if ready ~= ARGV[1] or worker ~= ARGV[1] then return 'worker_changed' end
-      redis.call('SET', KEYS[2], ARGV[2], 'PX', tonumber(ARGV[3]) - now)
+      redis.call('SET', target, ARGV[2], 'PXAT', ARGV[3])
       return 'accepted'`,
-      5,
+      7,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.primary,
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.cooldown,
       worker ?? '',
       JSON.stringify(request),
       offer.source.deadlineAtMs,
@@ -199,6 +242,12 @@ export class CommercialLlmEnforcementMailbox {
       COMMERCIAL_LLM_ACTIVE_LIMIT,
       offer.source.messageId,
       COMMERCIAL_LLM_CHAT_ACTIVE_LIMIT,
+      validatedPendingRaw,
+      request.submittedAtMs,
+      COMMERCIAL_LLM_PENDING_MAX_AGE_MS,
+      burstCooldownMaximumMs,
+      COMMERCIAL_LLM_PRIMARY_INTERVAL_MS,
+      COMMERCIAL_LLM_POLL_INTERVAL_MS,
     )) as CommercialLlmAdmissionResult;
   }
 
@@ -208,13 +257,14 @@ export class CommercialLlmEnforcementMailbox {
     reason: CommercialLlmPendingDiscardReason,
   ): Promise<void> {
     const discarded = await this.redis.eval(
-      `if redis.call('GET', KEYS[2]) ~= ARGV[2] or redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-      redis.call('DEL', KEYS[1]); redis.call('HINCRBY', KEYS[3], ARGV[3], 1)
+      `${promotePendingLua}if redis.call('GET', KEYS[2]) ~= ARGV[2] or redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+      redis.call('DEL', KEYS[1]); promotePending(KEYS[1], KEYS[4]); redis.call('HINCRBY', KEYS[3], ARGV[3], 1)
       redis.call('EXPIRE', KEYS[3], 86400); return 1`,
-      3,
+      4,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.metrics,
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
       raw,
       worker,
       reason,
@@ -264,8 +314,17 @@ export class CommercialLlmEnforcementMailbox {
 
   async take(worker: string): Promise<{ request: CommercialLlmRequest; raw: string } | null> {
     if (!(await this.ownsWorker(worker))) return null;
-    const raw = await this.redis.get(COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot);
-    if (!raw) return null;
+    const raw = await this.redis.eval(
+      `${promotePendingLua}if redis.call('GET', KEYS[3]) ~= ARGV[1] then return nil end
+      if redis.call('EXISTS', KEYS[1]) == 0 then promotePending(KEYS[1], KEYS[2]) end
+      return redis.call('GET', KEYS[1])`,
+      3,
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
+      worker,
+    );
+    if (typeof raw !== 'string') return null;
     const request = parseRequest(raw);
     const reason: CommercialLlmPendingDiscardReason | null = !request
       ? 'invalid_pending'
@@ -280,14 +339,15 @@ export class CommercialLlmEnforcementMailbox {
       await this.discardPending(raw, worker, reason ?? 'invalid_pending');
       return null;
     }
-    // FLAG: Transferring pending to active is one CAS. A busy primary cannot consume the buffer,
+    // FLAG: Transferring the FIFO head to active and promoting its tail is one CAS.
+    // A busy primary cannot consume the buffer,
     // and releasing 4B never releases the active source/proof authority still needed by 9B.
     const taken = await this.redis.eval(
-      `${pruneActiveLua}${chatAdmissionLua}
+      `${pruneActiveLua}${chatAdmissionLua}${promotePendingLua}
       if redis.call('GET', KEYS[2]) ~= ARGV[2] or redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
       local time = redis.call('TIME'); local now = time[1] * 1000 + math.floor(time[2] / 1000)
       if tonumber(ARGV[5]) <= now or now - tonumber(ARGV[4]) > tonumber(ARGV[6]) or tonumber(ARGV[4]) > now + 1000 then
-        redis.call('DEL', KEYS[1]); redis.call('HINCRBY', KEYS[6], 'pending_expired', 1)
+        redis.call('DEL', KEYS[1]); promotePending(KEYS[1], KEYS[7]); redis.call('HINCRBY', KEYS[6], 'pending_expired', 1)
         redis.call('EXPIRE', KEYS[6], 86400); return 2
       end
       if redis.call('HLEN', KEYS[3]) > tonumber(ARGV[8]) then return 0 end
@@ -298,14 +358,15 @@ export class CommercialLlmEnforcementMailbox {
       local expire = redis.call('PEXPIRETIME', KEYS[3])
       if expire < tonumber(ARGV[5]) then redis.call('PEXPIREAT', KEYS[3], ARGV[5]) end
       redis.call('SET', KEYS[4], ARGV[1], 'PX', tonumber(ARGV[5]) - now)
-      redis.call('SET', KEYS[5], '1', 'PX', ARGV[7]); redis.call('DEL', KEYS[1]); return 1`,
-      6,
+      redis.call('SET', KEYS[5], '1', 'PX', ARGV[7]); redis.call('DEL', KEYS[1]); promotePending(KEYS[1], KEYS[7]); return 1`,
+      7,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.primary,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.cooldown,
       COMMERCIAL_LLM_ENFORCEMENT_KEYS.metrics,
+      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
       raw,
       worker,
       rawKey(raw),
