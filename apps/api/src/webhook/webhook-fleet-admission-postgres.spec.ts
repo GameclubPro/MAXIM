@@ -594,6 +594,11 @@ native('fleet admission isolation from one unknown ordered scope', () => {
       await Promise.all(internal.activeEnqueueUnits.values());
       await internal.enqueueBatch();
       expect(admitted).toEqual([rows[1]!.id, rows[0]!.id]);
+      // FLAG: A poll may return before its final admitted SQL task settles.
+      await Promise.all(internal.activeEnqueueUnits.values());
+      expect(await prisma.webhookEvent.findUnique({ where: { id: rows[0]!.id } })).toMatchObject({
+        status: 'PROCESSED',
+      });
       expect(preparation.snapshot()).toMatchObject({ inFlight: 5, ordinary: 5, interactive: 0 });
     } finally {
       releases.forEach((release) => release());
