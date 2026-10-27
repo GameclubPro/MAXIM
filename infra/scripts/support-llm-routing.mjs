@@ -27,6 +27,20 @@ const reserveComparison = (text) =>
   moderatorName.test(text) &&
   /резерв|запасн|двойк/iu.test(text) &&
   /(?:это|он|они).{0,20}(?:запасн|резерв)|сильнее|мощнее|лучше|отлич|разниц/iu.test(text);
+const reportedPublisherReady = (text, publisherRequest) =>
+  Boolean(
+    publisherRequest &&
+    /карточк\p{L}*\s+подключ\p{L}*.{0,25}(?:готов|подключен)|публик\p{L}*\s+(?:уже\s+)?подключен(?![\p{L}])|(?:уже\s+)?подключен\p{L}*.{0,20}публик/iu.test(
+      text,
+    ) &&
+    !/не\s+(?:готов|подключен)/iu.test(text) &&
+    !/(?<![\p{L}])(?:еще|друг|втор|нов)\p{L}*(?:\s+\p{L}+){0,3}\s+(?:групп|чат|канал)|(?:групп|чат|канал).{0,30}(?:его|публик\p{L}*).{0,15}(?:нет|не подключ)/iu.test(
+      text,
+    ) &&
+    !/подключ(?:ить|и(?:те)?)(?![\p{L}])|(?:как|хочу|нужно|надо).{0,30}подключ|(?:что|где|порядок|шаг).{0,60}подключени|подключени.{0,35}(?<![\p{L}])(?:еще|друг|втор|нов)|(?:как|куда|хочу|нужно|надо).{0,25}добав.{0,35}(?:чат|групп|канал)/iu.test(
+      text,
+    ),
+  );
 const publisherTask =
   /автоответ|автопост|предложк|согласован.{0,15}личк|\bvk\b|(?:^|\s)вк(?:\s|[.!?,]|$)|импорт.{0,20}пост|пост.{0,20}импорт|отложенн.{0,20}пост|пост.{0,20}отлож|регулярн.{0,20}пост|переехал.{0,20}публикац|майор.{0,35}пост|пост.{0,35}майор/iu;
 const eraserTask =
@@ -312,7 +326,13 @@ function reviewedIntents(ctx) {
 }
 
 function mixedRequests(ctx, state) {
-  if (state.lastikWaitingOnly) return false;
+  if (state.lastikWaitingOnly || state.lastikSetupOnly) return false;
+  if (
+    (state.publisherRequest || state.eraserRequest) &&
+    ctx.current.includes('?') &&
+    /[\p{L}]/u.test(ctx.current.slice(ctx.current.indexOf('?') + 1))
+  )
+    return true;
   if (state.subscriptionIntent === 'mixed') return true;
   if (
     state.publisherRequest &&
@@ -363,9 +383,15 @@ function lastikConnectionIntent(ctx, state, primaryIds) {
         /(?<![\p{L}])(?:нажал[аи]?|нажали|запросил[аи]?|запустил[аи]?|отправил[аи]?).{0,45}(?:подключ|проверить и включить)/giu,
       ),
     ].some((match) => !negatedAt(value, match.index));
+    const submittedRequest = [
+      ...value.matchAll(
+        /(?:запрос|подключ\p{L}*)[^.!?\n]{0,65}(?<action>отправил[аи]?|отправили|подал[аи]?|подали|запустил[аи]?|запустили)(?![\p{L}])/giu,
+      ),
+    ].some((match) => !negatedAt(value, match.index + match[0].lastIndexOf(match.groups.action)));
     if (
       submitted ||
-      /статус.{0,20}[«"'„]?(?:ожидани)|(?:подключение|запрос).{0,25}(?:ожида|в процессе)|(?:жду|ожидаю).{0,40}подключ/iu.test(
+      submittedRequest ||
+      /статус.{0,20}[«"'„]?(?:ожидани)|(?:подключение|запрос|в (?:мини-)?приложении).{0,25}(?:ожида|в процессе)|(?:жду|ожидаю).{0,40}подключ/iu.test(
         value,
       )
     )
@@ -395,13 +421,19 @@ function lastikConnectionIntent(ctx, state, primaryIds) {
 }
 
 function atomicLastikWaiting(ctx, state) {
+  const explicitNightTask =
+    /ночн|закрыв.{0,20}чат|закры.{0,20}(?:чат|расписан)|чат.{0,20}закры|(?:включ|выключ|настро|команд|режим).{0,25}тишин|тишина\s+(?:вкл|выкл)/iu.test(
+      ctx.current,
+    );
   if (
     !state.eraserRequest ||
     state.publisherRequest ||
     state.botDirectory ||
     state.botCatalogRequest ||
     lastikConnectionIntent(ctx, state, ['lastik-connect']) !== 'waiting' ||
-    topics(ctx.current).some((topic) => topic !== 'retention')
+    topics(ctx.current).some(
+      (topic) => topic !== 'retention' && (topic !== 'night' || explicitNightTask),
+    )
   )
     return false;
   if (
@@ -416,6 +448,29 @@ function atomicLastikWaiting(ctx, state) {
     .filter((part) => part.trim())
     .every((part) =>
       /подкл|ожидан|жд(?:у|ать|ем)|молч|ни слова|старт|в приложение|мини-прилож|вернуться|прав[ао]|админ|провер|что.{0,12}(?:делать|дальше)|минут|час/iu.test(
+        part,
+      ),
+    );
+}
+
+function atomicLastikSetup(ctx, state) {
+  if (
+    !state.eraserRequest ||
+    state.publisherRequest ||
+    state.botDirectory ||
+    state.botCatalogRequest ||
+    lastikConnectionIntent(ctx, state, ['lastik-connect']) !== 'setup' ||
+    topics(ctx.current).some((topic) => topic !== 'retention') ||
+    /истори|прогресс|закреп|исключ|розыгрыш|восстанов|вернуть(?!ся)|останов|отключ|выключ|пауз|отмен|истек|почему|зачем|не удаля|снес|исчез|пропал|месяц|год|сетк|канал|разрешени|участник/iu.test(
+      ctx.current,
+    )
+  )
+    return false;
+  return ctx.current
+    .split(/[.!?;\n]+/u)
+    .filter((part) => part.trim())
+    .every((part) =>
+      /подкл|админ|владел|права|перв|(?:24|48)\s*час|недел|выбрать\s+срок|вернуться|возвращ|заходить.{0,25}(?:прилож|назад)/iu.test(
         part,
       ),
     );
@@ -641,15 +696,7 @@ function semanticFacts(text, state) {
     )
   )
     add('max-platform-default-commands', 105);
-  const reportedConnectionReady =
-    publ &&
-    /карточк\p{L}*\s+подключ\p{L}*.{0,25}(?:готов|подключен)|публик\p{L}*\s+(?:уже\s+)?подключен(?![\p{L}])|(?:уже\s+)?подключен\p{L}*.{0,20}публик/iu.test(
-      state.current,
-    ) &&
-    !/не\s+(?:готов|подключен)/iu.test(state.current) &&
-    !/подключ(?:ить|и(?:те)?)(?![\p{L}])|(?:как|хочу|нужно|надо).{0,30}подключ|(?:что|где|порядок|шаг).{0,60}подключени|подключени.{0,35}(?<![\p{L}])(?:еще|друг|втор|нов)|(?:как|куда|хочу|нужно|надо).{0,25}добав.{0,35}(?:чат|групп|канал)/iu.test(
-      state.current,
-    );
+  const reportedConnectionReady = reportedPublisherReady(state.current, publ);
   const connectionRequested =
     !reportedConnectionReady &&
     (moderatorForwardingRequest(state.current) ||
@@ -700,6 +747,7 @@ function semanticFacts(text, state) {
   )
     add('max-delete-rights', 95);
   if (
+    !state.lastikWaitingOnly &&
     (!commercialAi || mixedTopics) &&
     test(
       /ночн|тишин|закрыв.{0,20}чат|закры.{0,20}(?:чат|расписан)|чат.{0,20}закры|ручн.{0,20}откр|откр.{0,20}ручн/iu,
@@ -801,7 +849,11 @@ function semanticFacts(text, state) {
       )
     )
       add('lastik-progress', 145);
-    if (test(/исключ|закреп|правил|розыгрыш|защищ|сообщен.{0,20}(?:админ|бот)|мои.{0,15}сообщен/iu))
+    if (
+      test(
+        /исключ|закреп|(?<![\p{L}])правил|розыгрыш|защищ|сообщен.{0,20}(?:админ|бот)|мои.{0,15}сообщен/iu,
+      )
+    )
       add('lastik-exclusions', 125);
     if (test(/сохранен|не удалось сохранить|ошибк|неизвестн.{0,15}результат|повтор.{0,15}нажа/iu))
       add('lastik-save-recovery', 135);
@@ -1175,6 +1227,7 @@ export function createSupportRouter(knowledge) {
       role,
       eligible,
       publisherRequest,
+      publisherConnectionReady: reportedPublisherReady(ctx.current, publisherRequest),
       eraserRequest,
       developer,
       commercialAi,
@@ -1187,6 +1240,7 @@ export function createSupportRouter(knowledge) {
       reviewedIntents: reviewedIntents(ctx),
     };
     state.lastikWaitingOnly = atomicLastikWaiting(ctx, state);
+    state.lastikSetupOnly = atomicLastikSetup(ctx, state);
     const mixedTopics = mixedRequests(ctx, state);
     state.mixedTopics = mixedTopics;
     const primaryIds = factsFor(state);
@@ -1217,12 +1271,14 @@ export function createSupportRouter(knowledge) {
       commercialAi,
       mixedTopics,
       publisherRequest,
+      publisherConnectionReady: state.publisherConnectionReady,
       eraserRequest,
       developer,
       botDirectory,
       botCatalogRequest,
       primaryIds,
       lastikWaitingOnly: state.lastikWaitingOnly,
+      lastikSetupOnly: state.lastikSetupOnly,
       lastikConnectionIntent: lastikConnectionIntent(ctx, state, primaryIds),
       linkPolicyIntent: linkPolicyIntent(ctx, state, primaryIds),
       botProfilesRequested: profilesRequested,

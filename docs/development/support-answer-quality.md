@@ -63,7 +63,11 @@ and successful rights confirmation in Lastik's activation condition.
 An atomic Lastik waiting question uses the reviewed `lastik-connect.waitingAnswer`, preserving
 both bot and requesting administrator checks and the one-hour window from the connection request.
 Only an unmixed waiting task with no other functional or incident facts takes that shortcut;
-setup, recovery and additional questions retain grounded inference.
+an atomic initial setup uses the reviewed `lastik-connect.setupAnswer` with the verified periods,
+rights and one-hour window from the request. Recovery and additional questions retain inference.
+Atomic Publisher creation preserves recipient selection and conditional separate connection;
+an already reported ready connection is not repeated. An atomic delivery question uses the reviewed
+existing-publication evidence procedure and duplicate warning. Additional tasks retain inference.
 Forwarding questions for a moderator retain the connection prerequisites. An offered community
 link is not a link-filter task; a reported ready connection is not an onboarding request.
 Named reserve comparisons retain catalog roles and the selection procedure. An incident handoff

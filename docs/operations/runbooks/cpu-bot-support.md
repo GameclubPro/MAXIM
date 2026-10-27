@@ -185,7 +185,11 @@ each budget trim and scope them to the current task. Routing separates Lastik se
 intent and link allow/block/inspect intent using the user's report; these are not live observations.
 Atomic Lastik waiting replies use the reviewed `lastik-connect.waitingAnswer` and the normal
 validation/presentation boundary. They retain both rights checks and the one-hour window from the
-request; mixed tasks, recovery, setup and additional functional or incident facts stay in inference.
+request. Atomic initial setup uses the reviewed `lastik-connect.setupAnswer`, preserving period
+selection, both rights checks and the one-hour window from the request. Atomic Publisher creation
+preserves recipient selection and conditional connection prerequisites; atomic delivery questions
+use the existing publication's evidence procedure and duplicate warning. Mixed tasks, recovery
+and additional functional or incident facts stay in inference.
 Unknown-send questions retain the existing publication's verification steps and omit new-post
 instructions. User-supplied fields with the same name remain untrusted. Only the two
 application-owned fact arrays provide reviewed

@@ -210,6 +210,14 @@ test('Lastik initial setup recognizes a request for the connection procedure', (
   const text =
     'Я владелец группы, хочу впервые настроить удаление сообщений через 48 часов. Что нажимать для подключения Ластика?';
   assert.equal(needsReply(text).lastikConnectionIntent, 'setup');
+  assert.equal(needsReply(text).mixedTopics, false);
+  assert.ok(!ids(text).includes('announcement-removal'));
+  for (const other of [
+    `${text} И как выключить фильтр ссылок?`,
+    `${text} И как поменять его аватар?`,
+    `${text} Старую историю он тоже удалит?`,
+  ])
+    assert.equal(needsReply(other).mixedTopics, true, other);
   assert.equal(
     needsReply('Ластик уже подключён. Где посмотреть прогресс?').lastikConnectionIntent,
     null,
@@ -376,6 +384,25 @@ test('atomic Lastik waiting retains connection rather than cleanup progress or r
     'Какие сообщения он удаляет?',
   ])
     assert.equal(needsReply(text, history).lastikWaitingOnly, false, text);
+});
+
+test('a submitted Lastik request and conversational silence remain waiting', () => {
+  const text =
+    'Я админ, запрос «Подключить и включить» для Ластика отправил минут двадцать назад. В приложении ещё ожидание, а в группе от него тишина. Мне сейчас что-то дописать ему или снова заходить завершать подключение?';
+  const route = needsReply(text);
+  assert.equal(route.lastikConnectionIntent, 'waiting');
+  assert.equal(route.lastikWaitingOnly, true);
+  assert.equal(route.mixedTopics, false);
+  assert.ok(!ids(text).includes('night-manual'));
+  assert.ok(!ids(text).includes('lastik-exclusions'));
+  const mixed = `${text} И как включить ночной режим?`;
+  assert.equal(needsReply(mixed).lastikWaitingOnly, false);
+  assert.ok(ids(mixed).includes('night'));
+  assert.equal(
+    needsReply('Я ещё не отправил запрос подключения Ластика. Как подключить?')
+      .lastikConnectionIntent,
+    'setup',
+  );
 });
 
 test('reported Publisher readiness cannot replace an unknown delivery question with onboarding', () => {

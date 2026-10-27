@@ -392,8 +392,32 @@ export async function answerSupport({
       responseRoute: 'room-policy',
     };
   let selected = selectKnowledge(text, history);
+  // FLAG: Atomic setup uses the reviewed procedure so rights and activation conditions
+  // survive intact. Recovery and additional functional or incident tasks stay in inference.
+  if (
+    request.lastikConnectionIntent === 'setup' &&
+    request.lastikSetupOnly &&
+    !request.mixedTopics &&
+    request.primaryIds[0] === 'lastik-connect' &&
+    selected[0].id === 'lastik-connect' &&
+    selected.every((entry) =>
+      ['lastik-connect', 'message-retention', 'support-room', 'operator'].includes(entry.id),
+    )
+  )
+    return {
+      ...validateSupportAnswer(
+        {
+          action: 'reply',
+          text: selected[0].setupAnswer,
+          sourceIds: ['lastik-connect', 'message-retention'],
+        },
+        selected,
+      ),
+      durationMs: 0,
+      responseRoute: 'reviewed-faq',
+    };
   // FLAG: The atomic waiting reply preserves both rights checks and their time origin.
-  // Setup, recovery and any other functional or incident fact must remain in inference.
+  // Recovery and any other functional or incident fact must remain in inference.
   if (
     request.lastikConnectionIntent === 'waiting' &&
     request.lastikWaitingOnly &&
@@ -411,6 +435,42 @@ export async function answerSupport({
       durationMs: 0,
       responseRoute: 'reviewed-faq',
     };
+  // FLAG: Keep every creation step, including recipient selection. A user's report that
+  // Publik is ready suppresses repeated onboarding; it never proves live connection state.
+  if (
+    request.primaryIds[0] === 'publisher-post-create' &&
+    !request.mixedTopics &&
+    selected[0].id === 'publisher-post-create' &&
+    selected.every((entry) =>
+      ['publisher-post-create', 'publik', 'support-room', 'operator'].includes(entry.id),
+    )
+  ) {
+    const parts = [
+      ...(request.role === 'admin'
+        ? []
+        : ['Если у вас есть права администратора сообщества, выполните эти шаги.']),
+      selected[0].answer,
+    ];
+    if (!request.publisherConnectionReady)
+      parts.push(
+        'Если нужное сообщество ещё не подключено к Публику: вы должны быть его администратором. Добавьте самого Публика администратором с доступом ко всем сообщениям, затем перешлите сообщение или пост из сообщества в личку Публика.',
+      );
+    return {
+      ...validateSupportAnswer(
+        {
+          action: 'reply',
+          text: parts.join('\n\n'),
+          sourceIds: [
+            'publisher-post-create',
+            ...(!request.publisherConnectionReady ? ['publik'] : []),
+          ],
+        },
+        selected,
+      ),
+      durationMs: 0,
+      responseRoute: 'reviewed-faq',
+    };
+  }
   // FLAG: A reviewed catalog answer must retain every functional or incident task in inference.
   const catalogOnly = selected.every((entry) =>
     ['bots', 'choose-moderator', 'support-room', 'operator'].includes(entry.id),
@@ -470,7 +530,22 @@ export async function answerSupport({
     !/ошиб|сбой|не загруз|не импорт|недоступ|не (?:вижу|откры|работ|могу)|удалить.{0,15}(?:группу|источник)/iu.test(
       text,
     );
-  if ((selected[0].delivery === 'reviewed' || rulesReplacement || manualVk) && !request.mixedTopics)
+  const deliveryOnly =
+    selected[0].id !== 'publisher-delivery-status' ||
+    selected.every((entry) =>
+      [
+        'publisher-delivery-status',
+        'publisher-post-targets',
+        'publisher-post-create',
+        'publik',
+        'support-room',
+        'operator',
+      ].includes(entry.id),
+    );
+  if (
+    ((selected[0].delivery === 'reviewed' && deliveryOnly) || rulesReplacement || manualVk) &&
+    !request.mixedTopics
+  )
     return {
       ...validateSupportAnswer(
         { action: 'reply', text: selected[0].answer, sourceIds: [selected[0].id] },

@@ -30,6 +30,22 @@ test('reviewed answers and link examples pass the public response boundary', () 
   }
 });
 
+test('reviewed Lastik setup preserves rights, presets and the request-based waiting window', () => {
+  const entry = entries.get('lastik-connect');
+  const text = entry.setupAnswer;
+  assert.doesNotThrow(() =>
+    validateSupportAnswer({ action: 'reply', text, sourceIds: [entry.id] }, [entry]),
+  );
+  for (const label of ['24 часа', '48 часов', '1 неделя', 'Подключить и включить'])
+    assert.ok(text.includes(`«${label}»`), label);
+  assert.match(text, /до 1 часа после запроса на подключение/u);
+  assert.match(text, /только после подтверждения/u);
+  assert.match(text, /чтения всех сообщений и удаления/u);
+  assert.match(text, /запросивший подключение пользователь — администратор/u);
+  assert.match(text, /Ластик не пишет в чат/u);
+  assert.match(text, /Возвращаться.*не нужно/u);
+});
+
 test('customer facts contain no instructions addressed to the model', () => {
   for (const entry of entries.values())
     assert.doesNotMatch(
@@ -420,6 +436,7 @@ test('reviewed delivery is restricted to bounded answers with preserved evidence
     .sort();
   assert.deepEqual(reviewedIds, [
     'max-public-channel-eligibility',
+    'publisher-delivery-status',
     'subscription-membership',
     'support-incident-evidence',
   ]);

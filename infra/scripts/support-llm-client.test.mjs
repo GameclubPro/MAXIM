@@ -210,8 +210,15 @@ function presentedBody(result) {
 }
 
 async function completionFixture(t, answer) {
-  const fixture = { answer, requests: 0, inputs: [], timings: { prompt_n: 180, predicted_n: 24 } };
+  const fixture = {
+    answer,
+    requests: 0,
+    httpRequests: 0,
+    inputs: [],
+    timings: { prompt_n: 180, predicted_n: 24 },
+  };
   const server = createServer(async (req, res) => {
+    fixture.httpRequests++;
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const input = JSON.parse(raw);
@@ -302,16 +309,14 @@ test('an administrator promotion with Publik already ready keeps publishing and 
       },
     ],
   });
-  assert.equal(result.responseRoute, 'model-inference');
-  assert.equal(fixture.requests, 1);
-  const input = fixture.inputs[0];
-  assert.equal(input.role, 'admin');
-  assert.ok(input.verifiedKnowledge.some((entry) => entry.id === 'publisher-post-create'));
-  assert.ok(input.answerRequirements.every((entry) => entry.sourceId !== 'connect'));
-  assert.doesNotMatch(
-    input.answerRequirements.map((entry) => entry.instruction).join(' '),
-    /Дай проверенный порядок: «Подключить чат или канал»/u,
-  );
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.equal(fixture.requests, 0);
+  assert.equal(fixture.httpRequests, 0);
+  assert.deepEqual(result.sourceIds, ['publisher-post-create']);
+  const body = presentedBody(result).replace(/\s+/gu, ' ');
+  assert.match(body, /«Посты» → «Создать» → «Написать пост».*Выберите получателей/u);
+  assert.match(body, /«Когда».*«Сейчас».*«Проверить пост».*получателей.*«Опубликовать»/u);
+  assert.doesNotMatch(body, /подключ|перешл|администратором|доступом ко всем/iu);
 });
 
 test('first Lastik connection expressed as a noun retains rights and activation conditions', async (t) => {
@@ -324,26 +329,146 @@ test('first Lastik connection expressed as a noun retains rights and activation 
     ...fixture.input,
     text: 'Я владелец группы, хочу впервые настроить удаление сообщений через 48 часов. Что нажимать для подключения Ластика?',
   });
-  assert.equal(result.responseRoute, 'model-inference');
-  assert.equal(fixture.requests, 1);
-  const input = fixture.inputs[0];
-  assert.ok(input.verifiedKnowledge.some((entry) => entry.id === 'lastik-connect'));
-  const instruction =
-    input.answerRequirements.find((entry) => entry.sourceId === 'lastik-connect')?.instruction ??
-    '';
-  assert.match(instruction, /«Удаление старых сообщений».*срок.*«Подключить и включить»/u);
-  assert.match(instruction, /администратор.*чтения всех сообщений и удаления/iu);
-  assert.match(instruction, /до 1 часа.*только после подтверждения прав/iu);
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.equal(fixture.requests, 0);
+  assert.equal(fixture.httpRequests, 0);
+  assert.deepEqual(result.sourceIds, ['lastik-connect', 'message-retention']);
+  const body = presentedBody(result).replace(/\s+/gu, ' ');
+  assert.ok(body.length <= 1500);
+  assert.match(body, /«Удаление старых сообщений».*«48 часов».*«Подключить и включить»/u);
+  assert.match(body, /администратор.*чтения всех сообщений и удаления/iu);
+  assert.match(body, /до 1 часа/iu);
+  assert.match(body, /только после подтверждения/iu);
+  assert.match(body, /не (?:пишет|отправляет сообщения).*чат/iu);
+  assert.match(body, /возвращаться.*не нужно/iu);
 });
 
-test('Lastik waiting shortcut preserves setup, recovery, rights and additional tasks in inference', async (t) => {
+test('atomic Publik creation retains recipients and conditional separate connection without inference', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Неполный черновик без выбора получателей.',
+    sourceIds: ['operator'],
+  });
+  for (const text of [
+    'Как опубликовать пост через Публика?',
+    'Я администратор канала, как выложить рекламу через Публик?',
+    'Я администратор. Как создать пост через Публика?',
+  ]) {
+    const result = await answerSupport({ ...fixture.input, text });
+    assert.equal(result.responseRoute, 'reviewed-faq', text);
+    assert.deepEqual(result.sourceIds, ['publisher-post-create', 'publik']);
+    const body = presentedBody(result).replace(/\s+/gu, ' ');
+    assert.ok(body.length <= 1500);
+    assert.ok(
+      body.includes(
+        knowledge.entries
+          .find((entry) => entry.id === 'publisher-post-create')
+          .answer.replace(/\s+/gu, ' '),
+      ),
+    );
+    assert.match(body, /если.*ещё не подключ/iu);
+    assert.match(body, /Публик.*администратором.*всем сообщениям.*перешл.*личку Публика/iu);
+    if (text.startsWith('Как')) assert.match(body, /если у вас есть права администратора/iu);
+  }
+  assert.equal(fixture.requests, 0);
+  assert.equal(fixture.httpRequests, 0);
+});
+
+test('an atomic unknown publication result uses the full reviewed delivery procedure without inference', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Неполный черновик без проверки получателя.',
+    sourceIds: ['operator'],
+  });
+  const result = await answerSupport({
+    ...fixture.input,
+    text: 'Связь оборвалась сразу после «Опубликовать». В ленте пока не нашёл пост. Сделать второй такой же и отправить?',
+    history: [{ role: 'user', text: 'Работаю в Публике, отправлял публикацию в свой канал.' }],
+  });
+  assert.equal(result.responseRoute, 'reviewed-faq');
+  assert.equal(fixture.requests, 0);
+  assert.equal(fixture.httpRequests, 0);
+  assert.deepEqual(result.sourceIds, ['publisher-delivery-status']);
+  const body = presentedBody(result).replace(/\s+/gu, ' ');
+  assert.equal(
+    body,
+    knowledge.entries
+      .find((entry) => entry.id === 'publisher-delivery-status')
+      .answer.replace(/\s+/gu, ' '),
+  );
+  assert.match(body, /«Получатели».*«Отправки».*фактически появившимся сообщением/u);
+  assert.match(body, /повторная отправка.*может создать дубль/iu);
+});
+
+test('reviewed setup and publishing procedures preserve independent tasks in inference', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Проверьте нужные настройки.',
+    sourceIds: ['operator'],
+  });
+  const cases = [
+    {
+      text: 'Как подключить Ластика? Возможна ли выгрузка переписки?',
+      facts: ['lastik-connect'],
+    },
+    {
+      text: 'Как подключить Ластика? Как настроить разрешения участников?',
+      facts: ['lastik-connect'],
+    },
+    {
+      text: 'Я администратор. Как создать пост через Публик? Можно ли приглашать участников?',
+      facts: ['publisher-post-create'],
+    },
+    {
+      text: 'В Публике у поста «Нужно проверить». Хочу удалить автоответ.',
+      facts: ['publisher-delivery-status', 'publisher-auto-replies-create'],
+    },
+    {
+      text: 'Публик уже подключён и готов. Как отправить пост в ещё одной группе, где его пока нет?',
+      facts: ['connect', 'publisher-post-create'],
+    },
+    {
+      text: 'Как подключить Ластика к каналу?',
+      facts: ['lastik-connect'],
+    },
+    {
+      text: 'Как подключить Ластика к новому чату и включить ночной режим?',
+      facts: ['lastik-connect', 'night'],
+    },
+    {
+      text: 'Я администратор. Публик уже подключён и готов. Как опубликовать пост и запретить ссылки в чате?',
+      facts: ['publisher-post-create', 'links-policy'],
+    },
+    {
+      text: 'В Публике связь оборвалась после «Опубликовать», пост в канале не нашёл. Повторить отправку? И как включить ночной режим?',
+      facts: ['publisher-delivery-status', 'night'],
+    },
+    {
+      text: 'Я администратор. Публик пока не подключён. Как опубликовать обычный пост прямо сейчас?',
+      facts: ['connect', 'publisher-post-create'],
+    },
+  ];
+  for (const item of cases) {
+    const result = await answerSupport({ ...fixture.input, text: item.text });
+    assert.equal(result.responseRoute, 'model-inference', item.text);
+    const input = fixture.inputs.at(-1);
+    for (const id of item.facts)
+      assert.ok(
+        input.verifiedKnowledge.some((entry) => entry.id === id),
+        id,
+      );
+  }
+  assert.equal(fixture.requests, cases.length);
+});
+
+test('Lastik shortcuts preserve recovery, rights and additional tasks in inference', async (t) => {
   const fixture = await completionFixture(t, {
     action: 'reply',
     text: 'Уточните нужное действие.',
     sourceIds: ['lastik-connect'],
   });
   const cases = [
-    'Как подключить Ластика к новому чату?',
+    'Как подключить Ластика к новому чату и включить ночной режим?',
     'Ластик: два часа назад нажал «Подключить и включить», теперь «Время ожидания истекло». Как запустить снова?',
     'Ластик: я нажал «Подключить и включить», а как проверить права?',
     'Ластик: нажал «Подключить и включить», жду 40 минут. Как выключить ночной режим?',
@@ -544,75 +669,31 @@ test('participant advertisement requests receive the owner policy without infere
   }
 });
 
-test('administrator publishing requests and role followups reach grounded inference', async () => {
-  const requests = [];
-  const server = createServer(async (req, res) => {
-    let raw = '';
-    for await (const chunk of req) raw += chunk;
-    const body = JSON.parse(raw);
-    res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/tokenize') {
-      res.end(JSON.stringify({ tokens: [1] }));
-      return;
-    }
-    requests.push(body);
-    res.end(
-      JSON.stringify({
-        model: SUPPORT_MODEL.alias,
-        choices: [
-          {
-            finish_reason: 'stop',
-            message: {
-              content: JSON.stringify({
-                action: 'reply',
-                text: 'Откройте Публик → Посты → Создать.',
-                sourceIds: ['operator'],
-              }),
-            },
-          },
-        ],
-      }),
-    );
+test('administrator publishing requests and role followups keep the full reviewed creation steps', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Неполный черновик без выбора получателей.',
+    sourceIds: ['operator'],
   });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const common = { key: 'fixture', endpoint: `http://127.0.0.1:${server.address().port}` };
-  try {
-    assert.equal(
-      (
-        await answerSupport({
-          ...common,
-          text: 'Я администратор канала, как выложить рекламу через Публик?',
-        })
-      ).action,
-      'reply',
-    );
-    assert.equal(
-      (
-        await answerSupport({
-          ...common,
-          text: 'Я администратор',
-          history: [
-            { role: 'user', text: 'Как выложить объявление?' },
-            { role: 'assistant', text: 'Вы участник или администратор?' },
-          ],
-        })
-      ).action,
-      'reply',
-    );
-    assert.equal(requests.length, 2);
-    for (const body of requests) {
-      assert.deepEqual(body.response_format.json_schema.schema.properties.action.enum, ['reply']);
-      assert.ok(
-        JSON.parse(body.messages[1].content).verifiedKnowledge.some(
-          (entry) => entry.id === 'publisher-post-create',
-        ),
-      );
-    }
-  } finally {
-    server.close();
-    await once(server, 'close');
+  const cases = [
+    { text: 'Я администратор канала, как выложить рекламу через Публик?' },
+    {
+      text: 'Я администратор',
+      history: [
+        { role: 'user', text: 'Как выложить объявление?' },
+        { role: 'assistant', text: 'Вы участник или администратор?' },
+      ],
+    },
+  ];
+  for (const input of cases) {
+    const result = await answerSupport({ ...fixture.input, ...input });
+    assert.equal(result.responseRoute, 'reviewed-faq');
+    const body = presentedBody(result).replace(/\s+/gu, ' ');
+    assert.match(body, /Выберите получателей.*«Проверить пост».*«Опубликовать»/u);
+    assert.deepEqual(result.sourceIds, ['publisher-post-create', 'publik']);
   }
+  assert.equal(fixture.requests, 0);
+  assert.equal(fixture.httpRequests, 0);
 });
 
 test('self-reported roles route explanations without matching Russian word suffixes', async () => {
@@ -656,9 +737,9 @@ test('self-reported roles route explanations without matching Russian word suffi
       { text: 'Я владелец чата. Почему бот удаляет объявления обычных участников?' },
       { text: 'Я — администратор своего чата. Как проверить удаление объявлений?' },
       { text: 'Я являюсь администратором своего чата. Почему удаляют объявления?' },
-      { text: 'Я тут админ. Как опубликовать объявление?' },
+      { text: 'Я тут админ. Как опубликовать объявление и включить ночной режим?' },
       { text: 'Я обычный администратор своего чата. Почему удаляют объявления?' },
-      { text: 'Мы администраторы своего канала. Как выложить пост?' },
+      { text: 'Мы администраторы своего канала. Как выложить пост и включить ночной режим?' },
       { text: 'Почему бот удаляет объявления обычных людей?', history: [admin] },
       {
         text: 'Почему удаляют объявления?',
@@ -1128,7 +1209,7 @@ test('request requirements preserve procedural conditions without inventing user
       forbidden: /текущий режим неизвестен|цель — (?:проверить режим|выборочный допуск)/iu,
     },
     {
-      text: 'Связь оборвалась сразу после «Опубликовать». В ленте пока не нашёл пост. Сделать второй такой же и отправить?',
+      text: 'Связь оборвалась сразу после «Опубликовать». В ленте пока не нашёл пост. Сделать второй такой же и отправить? И как включить ночной режим?',
       history: [{ role: 'user', text: 'Работаю в Публике, отправлял публикацию в свой канал.' }],
       source: 'publisher-delivery-status',
       required: /существующей публикации.*Получатели.*Отправки.*не создавай/iu,
@@ -1151,7 +1232,7 @@ test('request requirements preserve procedural conditions without inventing user
       required: /только после подтверждения.*чтения всех сообщений.*удаления.*не нужно.*статус/iu,
     },
     {
-      text: 'Теперь я администратор своего канала. Как через Публика опубликовать пост прямо сейчас?',
+      text: 'Теперь я администратор своего канала. Как через Публика опубликовать пост прямо сейчас и включить ночной режим?',
       source: 'publik',
       required: /если.*ещё не подключ.*не утверждай.*не подключён/iu,
     },
