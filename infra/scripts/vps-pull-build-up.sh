@@ -937,6 +937,7 @@ reexec_if_current_script_changed() {
     "infra/scripts/lib/deploy-lock.sh" \
     "infra/scripts/lib/legacy-cold-maintenance.sh" \
     "infra/scripts/lib/deploy-topology.sh" \
+    "infra/scripts/lib/eraser-deploy.sh" \
     "infra/scripts/lib/photo-native-lifecycle.sh" \
     "infra/scripts/lib/webhook-rollout-quiescence.sh" \
     "infra/scripts/lib/outcome-cohort-online-prepare.sh" \
@@ -1059,10 +1060,12 @@ sync_branch() {
   git fetch origin "$BRANCH"
   require_market_statistics_lock_dispatch "origin/$BRANCH" || return 2
   maxim_topology_require_eraser_bridge "$(git rev-parse "origin/$BRANCH")" || return 2
+  maxim_topology_require_eraser_rate_limit_reader "$(git rev-parse "origin/$BRANCH")" tooling || return 2
 
   if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
     require_market_statistics_lock_dispatch "refs/heads/$BRANCH" || return 2
     maxim_topology_require_eraser_bridge "$(git rev-parse "refs/heads/$BRANCH")" || return 2
+    maxim_topology_require_eraser_rate_limit_reader "$(git rev-parse "refs/heads/$BRANCH")" tooling || return 2
     git checkout "$BRANCH"
   else
     git checkout -b "$BRANCH" "origin/$BRANCH"
@@ -1627,6 +1630,9 @@ fi
 TARGET_SHA="$(git rev-parse HEAD)"
 if [[ "$BUILD_API_IMAGE" -eq 1 ]] || contains_service eraser "${SERVICES[@]}"; then
   maxim_eraser_install_connection_request_floor "$TARGET_SHA"
+fi
+if contains_service eraser "${SERVICES[@]}"; then
+  maxim_eraser_install_rate_limit_reader_floor "$TARGET_SHA"
 fi
 RELEASE_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_SHA:0:12}"
 TARGET_HAS_MEDIA_ANALYSIS=0

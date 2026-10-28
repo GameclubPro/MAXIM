@@ -237,7 +237,18 @@ export class Store {
         review: number;
         oldest: string | null;
       }>(
-        `SELECT COUNT(*) FILTER(WHERE state='pending')::int AS pending,COUNT(*) FILTER(WHERE state IN ('uncertain','dispatching'))::int AS unresolved,COUNT(*) FILTER(WHERE state='review')::int AS review,MIN(source_ms)::text AS oldest FROM (SELECT state,source_ms FROM eraser_candidates WHERE chat_id=$1 AND state IN ('pending','uncertain','dispatching','review') LIMIT 201) c`,
+        // FLAG: Journals outlive the pending buffer. Probe each indexed state independently;
+        // one large uncertainty history must not hide pending work, review or the oldest source.
+        `SELECT
+          (SELECT COUNT(*)::int FROM (SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state='pending' LIMIT ${CHAT_BUFFER + 1}) p) AS pending,
+          (EXISTS(SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state IN ('uncertain','dispatching')))::int AS unresolved,
+          (EXISTS(SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state='review'))::int AS review,
+          (SELECT MIN(source_ms)::text FROM (
+            (SELECT source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='pending' ORDER BY source_ms,message_id LIMIT 1)
+            UNION ALL (SELECT source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='uncertain' ORDER BY source_ms,message_id LIMIT 1)
+            UNION ALL (SELECT source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='dispatching' ORDER BY source_ms,message_id LIMIT 1)
+            UNION ALL (SELECT source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='review' ORDER BY source_ms,message_id LIMIT 1)
+          ) oldest) AS oldest`,
         [chatId],
       )
     ).rows[0]!;
@@ -406,6 +417,25 @@ export class Store {
           cutoff,
         ],
       );
+      if (enabled && input.hours < policy.hours) {
+        // FLAG: A shorter age may wake only never-issued age deferrals. Pin waits, rejected
+        // rate limits and all effect journals keep their deadlines and dispatch identities.
+        // Filter through the unissued-age index before the cap; late rejected attempts may
+        // exceed the ordinary buffer but cannot displace any of its at-most-200 age deferrals.
+        await client.query(
+          `WITH pending AS MATERIALIZED (
+            SELECT message_id FROM eraser_candidates WHERE chat_id=$1 AND state='pending'
+              AND outcome_code='not_due' AND dispatch_id IS NULL AND attempt_count=0
+              AND source_ms<=$2 ORDER BY source_ms,message_id LIMIT ${CHAT_BUFFER}
+          ) UPDATE eraser_candidates candidate
+            SET next_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+            FROM pending WHERE candidate.chat_id=$1 AND candidate.message_id=pending.message_id
+              AND candidate.state='pending' AND candidate.outcome_code='not_due'
+              AND candidate.dispatch_id IS NULL AND candidate.attempt_count=0
+              AND candidate.source_ms<=$2 AND candidate.next_attempt_at>CURRENT_TIMESTAMP`,
+          [chatId, cutoff],
+        );
+      }
       if (input.connectWhenReady) {
         await client.query(
           `INSERT INTO eraser_connection_requests(chat_id,operation_id,actor_user_id,policy_revision,status,expires_at)
@@ -639,9 +669,12 @@ export class Store {
     return opened.rowCount ? { upper: cutoff, lower: floor } : null;
   }
   async bufferSize(chatId: string, client: pg.Pool | pg.PoolClient = this.pool): Promise<number> {
+    // FLAG: Accepted uncertain/issued/review journals remain unique and durable, but consume
+    // no ordinary page capacity; unresolved effects cannot stop independent history progress.
+    // The cap governs new intake: late known 429s retain retries even when they exceed that cap.
     return (
       await client.query<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM (SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state NOT IN ('deleted','protected') LIMIT 201) c",
+        `SELECT COUNT(*)::int AS count FROM (SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state='pending' LIMIT ${CHAT_BUFFER + 1}) c`,
         [chatId],
       )
     ).rows[0]!.count;

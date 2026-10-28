@@ -2498,3 +2498,12 @@ maxim_topology_require_eraser_connection_requests() {
 maxim_topology_require_karavan_marketplaces() {
   node infra/scripts/assert-karavan-marketplace-source.mjs "$1"
 }
+
+# FLAG: Token cooldown state belongs only to Lastik; API image rollback does not read it.
+maxim_topology_require_eraser_rate_limit_reader() {
+  local source_sha="$1" component="${2:-all}"
+  local marker=/var/lib/maxim-deploy/eraser-rate-limit-reader-version
+  [[ -e "$marker" || -L "$marker" ]] || return 0
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" --validate-rate-limit-reader-floor || return
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" --rate-limit-reader "$component"
+}

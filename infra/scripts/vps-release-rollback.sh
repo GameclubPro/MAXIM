@@ -303,6 +303,8 @@ fi
 if [[ "$SELECT_ERASER" -eq 1 ]]; then
   # FLAG: Older Lastik writers must not leave a cancelled request eligible after re-upgrade.
   maxim_topology_require_eraser_connection_requests "${COMPONENT_SOURCE_SHA[eraser]}" eraser
+  # FLAG: Saved token cooldowns must still gate both worker and subscription requests.
+  maxim_topology_require_eraser_rate_limit_reader "${COMPONENT_SOURCE_SHA[eraser]}" eraser
 fi
 
 if [[ "$SELECT_API" -eq 1 ]]; then
