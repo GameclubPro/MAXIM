@@ -13,10 +13,10 @@ export class MaxError extends Error {
   }
 }
 export type MaxTransport = {
-  rights(chatId: string, before?: () => Promise<void>): Promise<void>;
+  rights(chatId: string, before?: () => Promise<void>, purpose?: 'safety'): Promise<void>;
   actorRights(chatId: string, actorUserId: string, before?: () => Promise<void>): Promise<void>;
   pin(chatId: string): Promise<string | null>;
-  page(chatId: string, upperMs: number, lowerMs?: number): Promise<Message[]>;
+  page(chatId: string, upperMs: number, lowerMs?: number, purpose?: 'safety'): Promise<Message[]>;
   remove(chatId: string, messageId: string, before: () => Promise<void>): Promise<void>;
   presence(chatId: string, messageId: string): Promise<'present' | 'unknown'>;
 };
@@ -29,10 +29,15 @@ export class MaxClient implements MaxTransport {
   private async request(
     method: string,
     path: string,
-    options: { chatDelete?: string; before?: () => Promise<void>; body?: unknown } = {},
+    options: {
+      chatDelete?: string;
+      before?: () => Promise<void>;
+      body?: unknown;
+      purpose?: 'safety';
+    } = {},
   ): Promise<Record<string, unknown>> {
     try {
-      await this.limiter.acquire(options.chatDelete);
+      await this.limiter.acquire(options.chatDelete, undefined, options.purpose);
     } catch (error) {
       if (error instanceof HttpAdmissionDeferred)
         throw new MaxError(429, 'rate_limit_cooldown', false, error.retryAfterMs);
@@ -87,9 +92,10 @@ export class MaxClient implements MaxTransport {
     if (!body) throw new MaxError(0, 'malformed_response', method === 'DELETE');
     return body;
   }
-  async rights(chatId: string, before?: () => Promise<void>): Promise<void> {
+  async rights(chatId: string, before?: () => Promise<void>, purpose?: 'safety'): Promise<void> {
     const member = await this.request('GET', `/chats/${encodeURIComponent(chatId)}/members/me`, {
       before,
+      purpose,
     });
     const role = String(member.role ?? member.status ?? '').toLowerCase();
     const owner =
@@ -170,14 +176,19 @@ export class MaxClient implements MaxTransport {
       throw new MaxError(0, 'pin_unknown', false);
     return body.mid;
   }
-  async page(chatId: string, upperMs: number, lowerMs?: number): Promise<Message[]> {
+  async page(
+    chatId: string,
+    upperMs: number,
+    lowerMs?: number,
+    purpose?: 'safety',
+  ): Promise<Message[]> {
     const query = new URLSearchParams({
       chat_id: chatId,
       count: '100',
       from: String(upperMs),
       ...(lowerMs === undefined ? {} : { to: String(lowerMs) }),
     });
-    const result = await this.request('GET', `/messages?${query}`);
+    const result = await this.request('GET', `/messages?${query}`, { purpose });
     if (!Array.isArray(result.messages) || result.messages.length > 100)
       throw new MaxError(0, 'history_unknown', false);
     const items = result.messages.map((row) => parseMessage(row, chatId));

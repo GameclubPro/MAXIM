@@ -9,7 +9,7 @@ import { createHttpServer } from '../src/http.js';
 import type { Config } from '../src/config.js';
 import { migrate } from '../src/migrate.js';
 import { Store } from '../src/store.js';
-import { CleanupRuntime, MAX_WAKEUPS } from '../src/runtime.js';
+import { CleanupRuntime, MAX_SAFETY_WAKEUPS, MAX_WAKEUPS, type Wakeup } from '../src/runtime.js';
 import { HttpLimiter } from '../src/limiter.js';
 import { MaxClient, MaxError, type MaxTransport } from '../src/max.js';
 import type { Candidate, Message, Protection } from '../src/types.js';
@@ -53,7 +53,7 @@ async function enable(id = '-1', hours: 24 | 48 | 168 = 24) {
 }
 async function reserve(id = '-1') {
   await pool.query(
-    "UPDATE eraser_policies SET next_run_at=CASE WHEN chat_id=$1 THEN CURRENT_TIMESTAMP ELSE CURRENT_TIMESTAMP+INTERVAL '1 hour' END",
+    "UPDATE eraser_policies SET normal_next_at=CASE WHEN chat_id=$1 THEN CURRENT_TIMESTAMP ELSE CURRENT_TIMESTAMP+INTERVAL '1 hour' END,next_run_at=LEAST(safety_next_at,CASE WHEN chat_id=$1 THEN CURRENT_TIMESTAMP ELSE CURRENT_TIMESTAMP+INTERVAL '1 hour' END)",
     [id],
   );
   const rows = await store.reserve(1);
@@ -256,13 +256,17 @@ describe('real PostgreSQL ownership, journals and restart', () => {
   test('a late webhook during a live page cannot be skipped when that page finishes', async () => {
     await enable();
     const at = source();
-    await pool.query(
-      "UPDATE eraser_policies SET live_floor=$1,history_complete=true WHERE chat_id='-1'",
-      [at],
-    );
+    await store.ingest({}, 'original-due', {
+      id: 'original',
+      chatId: '-1',
+      authorId: '5',
+      isBot: false,
+      sourceMs: at,
+    });
+    await pool.query("UPDATE eraser_policies SET history_complete=true WHERE chat_id='-1'");
     const wake = await reserve();
     const policy = (await store.active('-1', wake.leaseToken))!;
-    await store.openScan(policy, 'live');
+    assert.ok(await store.openScan(policy, 'live'));
     const late = { id: 'late', chatId: '-1', authorId: '5', isBot: false, sourceMs: at - 1000 };
     await store.ingest({ update_type: 'message_created' }, 'late-receipt', late);
     await store.savePage(policy, 'live', []);
@@ -291,10 +295,16 @@ describe('real PostgreSQL ownership, journals and restart', () => {
   test('ordinary new messages do not invalidate a due page or starve history scanning', async () => {
     await enable();
     const at = source();
-    await pool.query("UPDATE eraser_policies SET live_floor=$1 WHERE chat_id='-1'", [at]);
+    await store.ingest({}, 'original-due', {
+      id: 'due',
+      chatId: '-1',
+      authorId: '5',
+      isBot: false,
+      sourceMs: at,
+    });
     const wake = await reserve();
     const policy = (await store.active('-1', wake.leaseToken))!;
-    await store.openScan(policy, 'live');
+    assert.ok(await store.openScan(policy, 'live'));
     await store.ingest({ update_type: 'message_created' }, 'new-message', {
       id: 'new-message',
       chatId: '-1',
@@ -307,7 +317,12 @@ describe('real PostgreSQL ownership, journals and restart', () => {
     assert.equal((await store.nextCandidates('-1'))[0]?.message_id, 'due');
     const fresh = (await store.policy('-1'))!;
     assert.equal(fresh.live_cursor, null);
-    assert.ok(Number(fresh.live_floor) > at);
+    assert.equal(fresh.due_floor, null);
+    assert.equal(
+      fresh.last_live_completed_at,
+      null,
+      'a known due page does not certify broad coverage',
+    );
     const count = fresh.scanned_count;
     await store.savePage(policy, 'live', [due]);
     assert.equal(
@@ -566,10 +581,14 @@ describe('real PostgreSQL ownership, journals and restart', () => {
       await pool.query(
         "UPDATE eraser_candidates SET next_attempt_at=CURRENT_TIMESTAMP WHERE message_id='message'",
       );
+      let presenceReads = 0;
       const restarted = new CleanupRuntime(
         new Store(pool, true),
         transport({
-          presence: async () => presence,
+          presence: async () => {
+            presenceReads++;
+            return presence;
+          },
           remove: async () => {
             deletes++;
           },
@@ -577,6 +596,7 @@ describe('real PostgreSQL ownership, journals and restart', () => {
         { enabled: true, redisUrl },
       );
       await restarted.visit(await reserve());
+      assert.equal(presenceReads, 0, 'restart cannot resume automatic uncertainty polling');
       assert.equal(deletes, 1);
       assert.equal((await store.snapshot('-1')).deletedCount, 0);
     }
@@ -593,8 +613,10 @@ describe('real PostgreSQL ownership, journals and restart', () => {
     [404, 'uncertain'],
     [500, 'dispatching'],
     [503, 'uncertain'],
+    [401, 'uncertain'],
+    [429, 'dispatching'],
   ] as const) {
-    test(`reconciliation read ${status} preserves its ${state} journal while an independent delete proceeds`, async () => {
+    test(`automatic visits never issue presence read ${status} or change its ${state} journal`, async () => {
       await enable();
       await candidate('uncertain');
       await candidate('ordinary');
@@ -603,11 +625,16 @@ describe('real PostgreSQL ownership, journals and restart', () => {
         "UPDATE eraser_candidates SET state=$1,dispatch_id=$2,attempt_count=1 WHERE message_id='uncertain'",
         [state, dispatchId],
       );
+      const beforeJournal = (
+        await pool.query<Candidate>("SELECT * FROM eraser_candidates WHERE message_id='uncertain'")
+      ).rows[0]!;
       const removed: string[] = [];
+      let presenceReads = 0;
       const runtime = new CleanupRuntime(
         store,
         transport({
           presence: async () => {
+            presenceReads++;
             throw new MaxError(status, 'lookup.failed', false);
           },
           remove: async (_chat, id, before) => {
@@ -617,24 +644,19 @@ describe('real PostgreSQL ownership, journals and restart', () => {
         }),
         { enabled: true, redisUrl },
       );
-      const started = Date.now();
       await runtime.visit(await reserve());
       const journal = (
         await pool.query<Candidate>("SELECT * FROM eraser_candidates WHERE message_id='uncertain'")
       ).rows[0]!;
-      assert.equal(journal.state, 'uncertain');
-      assert.equal(journal.dispatch_id, dispatchId);
-      assert.equal(journal.attempt_count, 1);
-      assert.equal(journal.outcome_code, 'reconciliation_unavailable');
-      assert.ok(journal.next_attempt_at.getTime() >= started + 290_000);
-      assert.ok(journal.next_attempt_at.getTime() <= Date.now() + 310_000);
+      assert.equal(presenceReads, 0);
+      assert.deepEqual(journal, beforeJournal);
       assert.deepEqual(removed, ['ordinary']);
       assert.equal((await store.snapshot('-1')).deletedCount, 1);
       assert.equal((await store.snapshot('-1')).status, 'delayed');
     });
   }
   for (const status of [401, 429] as const) {
-    test(`reconciliation read ${status} stops the visit before independent deletes`, async () => {
+    test(`required rights failure ${status} still stops independent deletes without polling uncertainty`, async () => {
       await enable();
       await candidate('uncertain');
       await candidate('ordinary');
@@ -644,15 +666,18 @@ describe('real PostgreSQL ownership, journals and restart', () => {
         [dispatchId],
       );
       let rightsChecks = 0;
+      let presenceReads = 0;
       const removed: string[] = [];
       const runtime = new CleanupRuntime(
         store,
         transport({
           presence: async () => {
-            throw new MaxError(status, 'lookup.failed', false, 10_000);
+            presenceReads++;
+            return 'unknown';
           },
           rights: async () => {
             rightsChecks++;
+            throw new MaxError(status, 'lookup.failed', false, 10_000);
           },
           remove: async (_chat, id) => {
             removed.push(id);
@@ -663,7 +688,8 @@ describe('real PostgreSQL ownership, journals and restart', () => {
       const started = Date.now();
       await runtime.visit(await reserve());
       assert.deepEqual(removed, []);
-      assert.equal(rightsChecks, 0);
+      assert.equal(presenceReads, 0);
+      assert.equal(rightsChecks, 1);
       const journal = (
         await pool.query<Candidate>("SELECT * FROM eraser_candidates WHERE message_id='uncertain'")
       ).rows[0]!;
@@ -677,7 +703,7 @@ describe('real PostgreSQL ownership, journals and restart', () => {
     });
   }
   for (const code of [null, 'not.found', 'message.not.found']) {
-    test(`issued DELETE 404 ${code ?? 'without code'} stays uncertain through ambiguous readback`, async () => {
+    test(`issued DELETE 404 ${code ?? 'without code'} stays uncertain without automatic readback`, async () => {
       await enable();
       await candidate();
       const deleted: string[] = [];
@@ -709,7 +735,7 @@ describe('real PostgreSQL ownership, journals and restart', () => {
           if (init?.method === 'GET' && url.pathname === '/messages')
             return Response.json({ messages: [] });
           if (init?.method === 'GET' && url.pathname === '/messages/message')
-            return Response.json({ code: 'not.found' }, { status: 404 });
+            assert.fail('An unknown DELETE is not polled automatically');
           assert.equal(init?.method, 'DELETE');
           assert.equal(url.pathname, '/messages');
           const messageId = url.searchParams.get('message_id');
@@ -733,13 +759,10 @@ describe('real PostgreSQL ownership, journals and restart', () => {
       await pool.query(
         "UPDATE eraser_candidates SET next_attempt_at=CURRENT_TIMESTAMP WHERE message_id='message'",
       );
-      const started = Date.now();
+      const beforeVisit = await readJournal();
       await runtime.visit(await reserve());
       const reconciled = await readJournal();
-      assert.equal(reconciled.state, 'uncertain');
-      assert.equal(reconciled.dispatch_id, issued.dispatch_id);
-      assert.equal(reconciled.attempt_count, 1);
-      assert.ok(reconciled.next_attempt_at.getTime() >= started + 290_000);
+      assert.deepEqual(reconciled, beforeVisit);
       assert.deepEqual(deleted, ['message', 'ordinary']);
       assert.equal((await store.snapshot('-1')).deletedCount, 1);
     });
@@ -1055,7 +1078,7 @@ describe('bounded history and same-chat progress', () => {
       { code: 'ERASER_GUARD_CHANGED' },
     );
   });
-  test('shortening wakes the full age buffer after multiple late rejected dispatches overflow it', async () => {
+  test('shortening wakes a legacy full age buffer after multiple late rejected dispatches overflow it', async () => {
     await enable();
     const wake = await reserve();
     const issued: Candidate[] = [];
@@ -1073,16 +1096,6 @@ describe('bounded history and same-chat progress', () => {
       });
     }
     const at = Date.now() - 72 * 3_600_000;
-    for (const offset of [0, 100]) {
-      const page: Message[] = Array.from({ length: 100 }, (_, index) => ({
-        id: `z-age-${offset + index}`,
-        chatId: '-1',
-        authorId: '5',
-        isBot: false,
-        sourceMs: at - offset - index,
-      }));
-      await store.savePage((await store.active('-1', wake.leaseToken))!, 'history', page);
-    }
     await store.update('-1', {
       enabled: true,
       hours: 168,
@@ -1090,8 +1103,13 @@ describe('bounded history and same-chat progress', () => {
       operationId: randomUUID(),
       actorUserId: '5',
     });
+    // FLAG: A compatible older writer can leave age waits after a rollback. New workers
+    // park young rows in minute buckets, but must still read and wake these existing rows.
     await pool.query(
-      "UPDATE eraser_candidates SET outcome_code='not_due',next_attempt_at=CURRENT_TIMESTAMP+INTERVAL '1 hour' WHERE state='pending'",
+      `INSERT INTO eraser_candidates(chat_id,message_id,author_id,is_bot,source_ms,lane,outcome_code,next_attempt_at)
+       SELECT '-1','z-age-'||id,'5',false,$1::bigint-id,'history','not_due',CURRENT_TIMESTAMP+INTERVAL '1 hour'
+       FROM generate_series(1,200) id`,
+      [at],
     );
     for (const row of issued) await store.settle(row, 'pending', 'rate_limited', 60_000);
     assert.equal(
@@ -1160,17 +1178,18 @@ describe('bounded history and same-chat progress', () => {
   ] as const) {
     test(`shortening ${oldHours} to ${hours} hours wakes only newly due unissued age deferrals`, async () => {
       await enable('-1', oldHours);
-      const due = await candidate('age-deferred');
+      await candidate('age-deferred');
       await pool.query(
         "UPDATE eraser_candidates SET source_ms=$1 WHERE message_id='age-deferred'",
         [Date.now() - (hours + 1) * 3_600_000],
       );
-      await store.defer(due, 'not_due', 3_600_000);
-      const notDue = await candidate('still-young');
+      await candidate('still-young');
       await pool.query("UPDATE eraser_candidates SET source_ms=$1 WHERE message_id='still-young'", [
         Date.now() - (hours - 2) * 3_600_000,
       ]);
-      await store.defer(notDue, 'not_due', 3_600_000);
+      await pool.query(
+        "UPDATE eraser_candidates SET outcome_code='not_due',next_attempt_at=CURRENT_TIMESTAMP+INTERVAL '1 hour' WHERE message_id IN ('age-deferred','still-young')",
+      );
       for (const [id, state, code, dispatch] of [
         ['pinned', 'pending', 'pinned', false],
         ['rate-limited', 'pending', 'rate_limited', true],
@@ -1301,10 +1320,13 @@ describe('bounded history and same-chat progress', () => {
     await enable();
     await candidate('historical');
     const liveAt = Date.now() - 24 * 3600000 - 1000;
-    await pool.query(
-      "UPDATE eraser_policies SET live_floor=$1,live_upper=NULL,live_cursor=NULL WHERE chat_id='-1'",
-      [liveAt - 1000],
-    );
+    await store.ingest({}, 'known-live', {
+      id: 'live',
+      chatId: '-1',
+      authorId: '5',
+      isBot: false,
+      sourceMs: liveAt,
+    });
     const removed: string[] = [];
     const max = transport({
       page: async () => [
@@ -1319,6 +1341,306 @@ describe('bounded history and same-chat progress', () => {
     await runtime.visit(await reserve());
     assert.deepEqual(removed, ['live', 'historical']);
   });
+  test('a scanned page reuses its conservative same-visit rights proof for final deletion', async (context) => {
+    await enable();
+    const removed: string[] = [];
+    const rightsStarted: number[] = [];
+    const dispatchProofs: number[] = [];
+    const original = store.assertAndMarkDispatch.bind(store);
+    context.mock.method(
+      store,
+      'assertAndMarkDispatch',
+      async (...args: Parameters<Store['assertAndMarkDispatch']>) => {
+        dispatchProofs.push(args[2]);
+        return original(...args);
+      },
+    );
+    const runtime = new CleanupRuntime(
+      store,
+      transport({
+        rights: async () => {
+          rightsStarted.push(Date.now());
+          await delay(30);
+        },
+        page: async () => [
+          { id: 'scanned', chatId: '-1', authorId: '5', isBot: false, sourceMs: source() },
+        ],
+        remove: async (_chat, id, before) => {
+          await before();
+          removed.push(id);
+        },
+      }),
+      { enabled: true, redisUrl },
+    );
+    await runtime.visit(await reserve());
+    assert.deepEqual(removed, ['scanned']);
+    assert.equal(rightsStarted.length, 1);
+    assert.equal(dispatchProofs.length, 1);
+    assert.ok(dispatchProofs[0]! <= rightsStarted[0]!, 'proof starts before awaiting MAX');
+  });
+  test('a page that outlives its rights proof requires fresh rights before deletion', async (context) => {
+    await enable();
+    const now = Date.now.bind(Date);
+    let offset = 0;
+    context.mock.method(Date, 'now', () => now() + offset);
+    let rights = 0;
+    const removed: string[] = [];
+    const runtime = new CleanupRuntime(
+      store,
+      transport({
+        rights: async () => {
+          rights++;
+        },
+        page: async () => {
+          offset = 31_000;
+          return [
+            { id: 'slow-page', chatId: '-1', authorId: '5', isBot: false, sourceMs: source() },
+          ];
+        },
+        remove: async (_chat, id, before) => {
+          await before();
+          removed.push(id);
+        },
+      }),
+      { enabled: true, redisUrl },
+    );
+    await runtime.visit(await reserve());
+    assert.deepEqual(removed, ['slow-page']);
+    assert.equal(rights, 2);
+  });
+  test('empty live and historical scans reuse one fresh rights proof through deletion', async () => {
+    await enable();
+    await store.ingest({}, 'known-live', {
+      id: 'already-removed',
+      chatId: '-1',
+      authorId: '5',
+      isBot: false,
+      sourceMs: Date.now() - 24 * 3_600_000 - 1000,
+    });
+    let rights = 0;
+    let pages = 0;
+    const removed: string[] = [];
+    const runtime = new CleanupRuntime(
+      store,
+      transport({
+        rights: async () => {
+          rights++;
+        },
+        page: async () =>
+          pages++
+            ? [
+                {
+                  id: 'historical-scan',
+                  chatId: '-1',
+                  authorId: '5',
+                  isBot: false,
+                  sourceMs: source(),
+                },
+              ]
+            : [],
+        remove: async (_chat, id, before) => {
+          await before();
+          removed.push(id);
+        },
+      }),
+      { enabled: true, redisUrl },
+    );
+    const wakeup = await reserve();
+    await runtime.visit({ chatId: wakeup.chatId, leaseToken: wakeup.leaseToken });
+    assert.equal(pages, 2);
+    assert.equal(rights, 1);
+    assert.deepEqual(removed, ['historical-scan']);
+  });
+  test('safety coverage proceeds alongside live candidates and its continuation stays on the safety budget', async (context) => {
+    await enable();
+    const savePage = store.savePage.bind(store);
+    context.mock.method(store, 'savePage', async (...args: Parameters<Store['savePage']>) => {
+      await savePage(...args);
+      // FLAG: A whole-millisecond deadline cannot depend on incidental PostgreSQL precision.
+      await pool.query(
+        "UPDATE eraser_policies SET safety_next_at=date_trunc('milliseconds',safety_next_at) WHERE chat_id='-1'",
+      );
+    });
+    await candidate('ordinary-live');
+    await pool.query("UPDATE eraser_candidates SET lane='live' WHERE message_id='ordinary-live'");
+    const at = source();
+    const page = Array.from(
+      { length: 100 },
+      (_, index): Message => ({
+        id: `safety-${index}`,
+        chatId: '-1',
+        authorId: '5',
+        isBot: false,
+        sourceMs: at - index,
+      }),
+    );
+    await store.protect(
+      '-1',
+      protection({ sourceRevision: 2, protectedMessageIds: page.map((row) => row.id) }),
+    );
+    await pool.query(
+      "UPDATE eraser_policies SET history_complete=true,live_floor=$1,safety_floor=$1,live_due=false,normal_next_at=CURRENT_TIMESTAMP+INTERVAL '1 hour',next_run_at=CURRENT_TIMESTAMP,safety_next_at=CURRENT_TIMESTAMP WHERE chat_id='-1'",
+      [at - 1000],
+    );
+    const reads: Array<{ kind: string; purpose: string | undefined }> = [];
+    const removed: string[] = [];
+    let pages = 0;
+    const runtime = new CleanupRuntime(
+      store,
+      transport({
+        rights: async (_chat, _before, purpose) => {
+          reads.push({ kind: 'rights', purpose });
+        },
+        page: async (_chat, _upper, _lower, purpose) => {
+          reads.push({ kind: 'page', purpose });
+          return pages++ ? [] : page;
+        },
+        remove: async (_chat, id, before) => {
+          assert.equal(id, 'ordinary-live', 'Protected safety results cannot delete');
+          await before();
+          removed.push(id);
+        },
+      }),
+      { enabled: true, redisUrl },
+    );
+    for (let visit = 0; visit < 2; visit++) {
+      await pool.query(
+        "UPDATE eraser_policies SET safety_next_at=CURRENT_TIMESTAMP WHERE chat_id='-1'",
+      );
+      const [wakeup] = await store.reserve(1, 'safety');
+      assert.ok(wakeup);
+      await runtime.visit(wakeup);
+      assert.equal(
+        (await store.reserve(1)).length,
+        0,
+        'safety continuation has no ordinary due wakeup',
+      );
+    }
+    assert.deepEqual(reads, [
+      { kind: 'rights', purpose: 'safety' },
+      { kind: 'page', purpose: 'safety' },
+      { kind: 'rights', purpose: 'safety' },
+      { kind: 'page', purpose: 'safety' },
+    ]);
+    assert.deepEqual(removed, ['ordinary-live']);
+    const finished = (await store.policy('-1'))!;
+    assert.ok(finished.last_live_completed_at);
+    assert.equal(
+      finished.live_due,
+      false,
+      'projecting a safety deadline cannot invent ordinary work',
+    );
+    assert.ok(finished.normal_next_at > finished.safety_next_at);
+  });
+  for (const arrival of ['late', 'future'] as const) {
+    test(`a ${arrival} due arrival keeps ordinary progress separate from an unfinished safety window`, async (context) => {
+      const initialNow = Math.floor(Date.now() / 60_000) * 60_000;
+      let elapsed = 0;
+      if (arrival === 'future') context.mock.method(Date, 'now', () => initialNow + elapsed);
+      await enable();
+      const old = source();
+      const safetyPage = Array.from(
+        { length: 100 },
+        (_, index): Message => ({
+          id: `protected-safety-${index}`,
+          chatId: '-1',
+          authorId: '5',
+          isBot: false,
+          sourceMs: old - index,
+        }),
+      );
+      await store.protect(
+        '-1',
+        protection({ sourceRevision: 2, protectedMessageIds: safetyPage.map((row) => row.id) }),
+      );
+      const safetyFloor = old - 1000;
+      await pool.query(
+        "UPDATE eraser_policies SET history_complete=true,live_floor=$1,safety_floor=$1,live_due=false,normal_next_at='9999-01-01',next_run_at=clock_timestamp(),safety_next_at=clock_timestamp() WHERE chat_id='-1'",
+        [safetyFloor],
+      );
+      const dueMessage: Message = {
+        id: 'independent-due',
+        chatId: '-1',
+        authorId: '5',
+        isBot: false,
+        sourceMs: Date.now() - 24 * 3_600_000 + (arrival === 'future' ? 1 : -60_000),
+      };
+      const requests: Array<{
+        upper: number;
+        lower: number | undefined;
+        purpose: string | undefined;
+      }> = [];
+      const rights: Array<string | undefined> = [];
+      const removed: string[] = [];
+      let safetyPages = 0;
+      const runtime = new CleanupRuntime(
+        store,
+        transport({
+          rights: async (_chat, _before, purpose) => {
+            rights.push(purpose);
+          },
+          page: async (_chat, upper, lower, purpose) => {
+            requests.push({ upper, lower, purpose });
+            return purpose === 'safety' ? (safetyPages++ === 0 ? safetyPage : []) : [dueMessage];
+          },
+          remove: async (_chat, id, before) => {
+            await before();
+            removed.push(id);
+          },
+        }),
+        { enabled: true, redisUrl },
+      );
+      const visit = async (purpose: 'due' | 'safety') => {
+        if (purpose === 'due')
+          await pool.query(
+            "UPDATE eraser_policies SET normal_next_at=clock_timestamp(),next_run_at=LEAST(safety_next_at,clock_timestamp()) WHERE chat_id='-1'",
+          );
+        else
+          await pool.query(
+            "UPDATE eraser_policies SET safety_next_at=clock_timestamp() WHERE chat_id='-1'",
+          );
+        const [wakeup] = await store.reserve(1, purpose);
+        assert.ok(wakeup);
+        // FLAG: The future variant advances the process clock only. Keep its native lease
+        // valid on both clocks while observing window provenance, independently of expiry timing.
+        await pool.query(
+          "UPDATE eraser_policies SET lease_until=clock_timestamp()+INTERVAL '2 minutes' WHERE chat_id='-1'",
+        );
+        await runtime.visit(wakeup);
+      };
+      await visit('safety');
+      assert.equal(requests.length, 1);
+      await store.ingest({}, randomUUID(), dueMessage);
+      if (arrival === 'future') elapsed = 60_001;
+      await visit('due');
+      assert.deepEqual(removed, ['independent-due']);
+      assert.equal(requests.length, 2);
+      assert.equal(requests[1]!.purpose, undefined);
+      assert.equal(
+        requests[1]!.lower,
+        arrival === 'future'
+          ? Math.floor(dueMessage.sourceMs / 60_000) * 60_000
+          : dueMessage.sourceMs,
+        'ordinary work cannot inherit the broad unfinished safety range',
+      );
+      assert.equal(
+        (await store.policy('-1'))!.last_live_completed_at,
+        null,
+        'an exact due scan cannot certify the unfinished broad safety coverage',
+      );
+      await visit('safety');
+      assert.equal(requests.length, 3);
+      assert.deepEqual(requests[2], {
+        // FLAG: A late receipt inside the scanned range invalidates its coverage proof.
+        // A future receipt beyond that range preserves the existing continuation.
+        upper: arrival === 'late' ? requests[0]!.upper : safetyPage.at(-1)!.sourceMs,
+        lower: safetyFloor,
+        purpose: 'safety',
+      });
+      assert.deepEqual(rights, ['safety', undefined, 'safety']);
+      assert.ok((await store.policy('-1'))!.last_live_completed_at);
+    });
+  }
   test('repeated full timestamp boundary is exposed as incomplete rather than skipping history', async () => {
     await enable();
     const visit = await reserve();
@@ -1365,7 +1687,7 @@ describe('bounded history and same-chat progress', () => {
           }),
         );
         await store.savePage(p, 'history', page);
-        await store.finishVisit(wake.chatId, wake.leaseToken, null, 3600000);
+        await store.finishVisit(wake.chatId, wake.leaseToken);
       }
     }
     assert.equal(visited.size, 192);
@@ -1374,20 +1696,30 @@ describe('bounded history and same-chat progress', () => {
     );
     assert.equal(count, 19200);
     assert.ok(count < 100_000_000 / 1000);
+    const buffered = new Set(visited);
     while (visited.size < 10000) {
-      const batch = await store.reserve(MAX_WAKEUPS);
+      const batch = await store.reserve(Math.min(MAX_WAKEUPS, 10000 - visited.size));
       assert.ok(batch.length > 0 && batch.length <= MAX_WAKEUPS);
       for (const wake of batch) {
         assert.ok(!visited.has(wake.chatId));
         visited.add(wake.chatId);
       }
       await pool.query(
-        "UPDATE eraser_policies SET lease_token=NULL,lease_until=NULL,next_run_at=CURRENT_TIMESTAMP+INTERVAL '1 hour' WHERE chat_id=ANY($1::text[])",
+        "UPDATE eraser_policies SET lease_token=NULL,lease_until=NULL,normal_next_at=CURRENT_TIMESTAMP+INTERVAL '1 hour',next_run_at=LEAST(safety_next_at,CURRENT_TIMESTAMP+INTERVAL '1 hour') WHERE chat_id=ANY($1::text[])",
         [batch.map((wake) => wake.chatId)],
       );
     }
     assert.equal(visited.size, 10000);
-    assert.equal((await store.reserve(MAX_WAKEUPS)).length, 0);
+    const readyAt = (
+      await pool.query<{ ready_at: Date }>(
+        'SELECT MAX(normal_next_at) AS ready_at FROM eraser_policies WHERE chat_id=ANY($1::text[])',
+        [[...buffered]],
+      )
+    ).rows[0]!.ready_at.getTime();
+    if (readyAt > Date.now()) await delay(readyAt - Date.now() + 10);
+    const nextRotation = await store.reserve(MAX_WAKEUPS);
+    assert.equal(nextRotation.length, MAX_WAKEUPS);
+    assert.ok(nextRotation.every((wake) => buffered.has(wake.chatId)));
   });
 });
 
@@ -1456,6 +1788,44 @@ test('real BullMQ replicas share 64 durable wakeup slots and close their owned c
     assert.equal(await queue.getGlobalConcurrency(), 8);
     assert.ok(first.health().schedulerLastSuccessfulAt);
     assert.ok(second.health().schedulerLastSuccessfulAt);
+  } finally {
+    await first.close();
+    await second.close();
+    await queue.close();
+  }
+});
+
+test('replicas reserve two safety slots before continuous history can take every chat lease', async () => {
+  await pool.query(
+    `INSERT INTO eraser_policies(chat_id,enabled,hours,activation_id,history_cursor,live_floor,next_run_at,safety_next_at,history_complete)
+     SELECT (-id)::text,true,24,$1,$2,$3,CURRENT_TIMESTAMP,
+       CASE WHEN id<=2 THEN CURRENT_TIMESTAMP ELSE CURRENT_TIMESTAMP+INTERVAL '1 hour' END,
+       false FROM generate_series(1,200) id`,
+    [randomUUID(), source(), Date.now()],
+  );
+  const queuePrefix = `${prefix}:partition`;
+  const queue = new Queue<Wakeup>('cleanup', {
+    connection: { url: redisUrl, maxRetriesPerRequest: 1 },
+    prefix: queuePrefix,
+  });
+  const first = new CleanupRuntime(store, transport(), { enabled: true, redisUrl }, queuePrefix);
+  const second = new CleanupRuntime(store, transport(), { enabled: true, redisUrl }, queuePrefix);
+  try {
+    await queue.pause();
+    await first.start();
+    await second.start();
+    await Promise.all([first.tick(), second.tick()]);
+    const jobs = await queue.getJobs(['wait', 'paused', 'active']);
+    assert.equal(jobs.length, MAX_WAKEUPS);
+    assert.equal(jobs.filter((job) => job.data.purpose === 'safety').length, MAX_SAFETY_WAKEUPS);
+    assert.equal(
+      jobs.filter((job) => job.data.purpose === 'due').length,
+      MAX_WAKEUPS - MAX_SAFETY_WAKEUPS,
+    );
+    for (const job of jobs) {
+      const index = Number(job.id!.slice('slot-'.length));
+      assert.equal(job.data.purpose, index < MAX_WAKEUPS - MAX_SAFETY_WAKEUPS ? 'due' : 'safety');
+    }
   } finally {
     await first.close();
     await second.close();

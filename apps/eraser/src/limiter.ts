@@ -12,12 +12,16 @@ export class HttpAdmissionDeferred extends Error {
 export const ADMIT_HTTP_LUA = `
 local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000)
 local cooldown=tonumber(redis.call('GET',KEYS[1]) or '0')
+if cooldown-now>1000 then return -(cooldown-now) end
 local gap=tonumber(ARGV[1]); local next=tonumber(redis.call('GET',KEYS[2]) or '0')
 local chat=KEYS[3] ~= '' and tonumber(redis.call('GET',KEYS[3]) or '0') or 0
-local at=math.max(cooldown,next,chat)
+local safetyKey=KEYS[4] or ''
+local safety=safetyKey ~= '' and tonumber(redis.call('GET',safetyKey) or '0') or 0
+local at=math.max(cooldown,next,chat,safety)
 if at>now then return at-now end
 redis.call('SET',KEYS[2],now+gap,'PX',60000)
 if KEYS[3] ~= '' then redis.call('SET',KEYS[3],now+1000,'PX',60000) end
+if safetyKey ~= '' then redis.call('SET',safetyKey,now+1000,'PX',60000) end
 return 0`;
 export const COOLDOWN_LUA = `
 local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000)
@@ -44,7 +48,7 @@ export class HttpLimiter {
     const remaining = await this.durable.remainingMs();
     if (remaining > 0) throw new HttpAdmissionDeferred(remaining);
   }
-  async acquire(chatId?: string, signal?: AbortSignal): Promise<void> {
+  async acquire(chatId?: string, signal?: AbortSignal, purpose?: 'safety'): Promise<void> {
     for (;;) {
       signal?.throwIfAborted();
       await this.checkDurable();
@@ -53,13 +57,17 @@ export class HttpLimiter {
       const wait = Number(
         await this.redis.eval(
           ADMIT_HTTP_LUA,
-          3,
+          4,
           `${this.prefix}:cooldown`,
           `${this.prefix}:next`,
           chatId ? `${this.prefix}:chat:${chatId}` : '',
+          purpose === 'safety' ? `${this.prefix}:safety` : '',
           Math.ceil(1000 / effectiveRps),
         ),
       );
+      // FLAG: Long legacy Redis cooldowns also release the worker. Short cadence waits
+      // stay local, so a safety rights read cannot repeatedly starve its following page.
+      if (wait < 0) throw new HttpAdmissionDeferred(-wait);
       if (wait === 0) {
         // FLAG: Another response may persist a cooldown while Redis admission is in flight.
         await this.checkDurable();

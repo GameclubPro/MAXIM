@@ -6,11 +6,12 @@ import { Store, CHAT_BUFFER, HOUSEKEEPING_INTERVAL_MS } from './store.js';
 import { ServiceError, type Lane } from './types.js';
 
 export const MAX_WAKEUPS = 64;
+export const MAX_SAFETY_WAKEUPS = 2;
 export const ERASER_CONNECTION_REQUEST_VERSION = 1;
 export const MAX_CONNECTION_WAKEUPS = 16;
 const WORKER_PROGRESS_LIMIT_MS = 120_000;
 const DIAGNOSTIC_LOG_INTERVAL_MS = 30_000;
-export type Wakeup = { chatId: string; leaseToken: string };
+export type Wakeup = { chatId: string; leaseToken: string; purpose?: 'due' | 'safety' };
 type WorkerErrorCode = 'worker_error' | 'job_failed' | 'job_stalled' | 'worker_closed';
 type WorkerObservation = {
   ready: boolean;
@@ -304,13 +305,22 @@ export class CleanupRuntime {
         Array.from({ length: MAX_WAKEUPS }, async (_, index) => {
           const id = `slot-${index}`;
           const job = await this.queue!.getJob(id);
-          return { id, occupied: Boolean(job), timestamp: job?.timestamp ?? null };
+          return {
+            id,
+            purpose: index < MAX_WAKEUPS - MAX_SAFETY_WAKEUPS ? 'due' : 'safety',
+            occupied: Boolean(job),
+            timestamp: job?.timestamp ?? null,
+          };
         }),
       );
       this.sampleWorker(this.cleanupObservation, slots);
-      const available = slots.filter((slot) => !slot.occupied);
-      if (available.length) {
-        const reserved = await this.store.reserve(available.length);
+      // FLAG: Reserve only two fixed slots for the shared safety budget. A backlog of slow
+      // safety probes cannot occupy all ordinary slots or expire their health deadline.
+      // Reserve them first so continuous due history cannot monopolize the same chat's lease.
+      for (const purpose of ['safety', 'due'] as const) {
+        const available = slots.filter((slot) => !slot.occupied && slot.purpose === purpose);
+        if (!available.length) continue;
+        const reserved = await this.store.reserve(available.length, purpose);
         for (const [index, wakeup] of reserved.entries()) {
           const jobId = available[index]!.id;
           try {
@@ -343,56 +353,45 @@ export class CleanupRuntime {
     }
   }
   async visit(wakeup: Wakeup): Promise<void> {
-    const { chatId, leaseToken } = wakeup;
+    const { chatId, leaseToken, purpose = 'due' } = wakeup;
     let error: string | null = null,
       wait = 1000;
     try {
       let policy = await this.store.active(chatId, leaseToken);
       if (!policy || this.stopping || !this.config.enabled) return;
-      const reconcile = await this.store.reconciliation(chatId);
-      if (reconcile) {
-        let reconciliationCode = 'reconciliation';
-        try {
-          await this.max.presence(chatId, reconcile.message_id);
-        } catch (failure) {
-          if (
-            !(failure instanceof MaxError) ||
-            !(
-              failure.status === 0 ||
-              failure.status === 403 ||
-              failure.status === 404 ||
-              (failure.status >= 500 && failure.status < 600)
-            )
-          )
-            throw failure;
-          error = failure.code;
-          reconciliationCode = 'reconciliation_unavailable';
-        }
-        // FLAG: A read cannot certify a DELETE effect. Preserve its journal and let independent
-        // candidates proceed; authentication failures and rate limits still stop the visit.
-        await this.store.settle(reconcile, 'uncertain', reconciliationCode, 300_000);
-      }
-      let candidates = await this.store.nextCandidates(chatId);
+      // FLAG: Unknown DELETE journals have no automatic readback or replay. Only a positive
+      // acknowledgement or authenticated removal event can settle the original attempt.
+      let rightsAt = 0;
+      let candidates = await this.store.nextCandidates(chatId, policy.hours);
       if (
-        candidates.every((candidate) => candidate.lane !== 'live') &&
+        (purpose === 'safety' || candidates.every((candidate) => candidate.lane !== 'live')) &&
         (await this.store.bufferSize(chatId)) <= CHAT_BUFFER - 100
       ) {
         // FLAG: Current expiry wins admission. History uses only the visit's spare capacity.
-        for (const lane of ['live', 'history'] as const satisfies readonly Lane[]) {
+        const lanes: readonly Lane[] = purpose === 'safety' ? ['live'] : ['live', 'history'];
+        for (const lane of lanes) {
           policy = await this.store.active(chatId, leaseToken);
           if (!policy || this.stopping) return;
-          const window = await this.store.openScan(policy, lane);
+          const window = await this.store.openScan(policy, lane, purpose);
           if (!window) continue;
-          await this.max.rights(chatId);
-          await this.store.connection(chatId, 'connected');
-          const page = await this.max.page(chatId, window.upper, window.lower);
-          await this.store.savePage(policy, lane, page);
-          candidates = await this.store.nextCandidates(chatId);
+          // FLAG: Evidence begins before admission/request; reusing it never extends freshness.
+          if (Date.now() - rightsAt >= 30_000) {
+            rightsAt = Date.now();
+            await this.max.rights(chatId, undefined, purpose === 'safety' ? 'safety' : undefined);
+            await this.store.connection(chatId, 'connected');
+          }
+          const page = await this.max.page(
+            chatId,
+            window.upper,
+            window.lower,
+            purpose === 'safety' ? 'safety' : undefined,
+          );
+          await this.store.savePage(policy, lane, page, purpose);
+          candidates = await this.store.nextCandidates(chatId, policy.hours);
           if (candidates.length) break;
         }
       }
-      let rightsAt = 0,
-        pinAt = 0;
+      let pinAt = 0;
       let pin: string | null = null;
       for (const candidate of candidates) {
         policy = await this.store.active(chatId, leaseToken);
@@ -446,7 +445,6 @@ export class CleanupRuntime {
           } else throw failure;
         }
       }
-      if (!candidates.length) wait = 30_000;
     } catch (failure) {
       if (failure instanceof MaxError) {
         error = failure.code;
