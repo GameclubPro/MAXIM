@@ -22,6 +22,7 @@ import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readCurrentManifest, validateCompleteReleaseManifest } from './release-manifest.mjs';
 import { WORKSTATION_IDENTITY } from './commercial-llm-workstation-profile.mjs';
+import { poolProfile } from './commercial-llm-pool-profile.mjs';
 
 import {
   COMMERCIAL_LLM_RUNTIME,
@@ -683,21 +684,24 @@ function checkClient() {
   emit('check_client', validateCommercialLlmClientSmokeResponse(response));
 }
 
-// FLAG: One bounded observational SSH session; never hold the deployment lock or expose a port.
-async function workstationBridge() {
+export function commercialLlmWorkstationBridgeCommand(nodeId) {
+  if (nodeId === undefined)
+    return ['node', 'apps/api/dist/apps/api/src/scripts/commercial-llm-workstation-bridge.js'];
+  poolProfile(nodeId);
+  return ['node', 'apps/api/dist/apps/api/src/scripts/commercial-llm-pool-bridge.js', nodeId];
+}
+
+// FLAG: Each bounded SSH bridge enters the exact attested API image. Node selection is closed;
+// no deployment lock, model port, database client or MAX client is added by this host command.
+async function workstationBridge(nodeId) {
+  const command = commercialLlmWorkstationBridgeCommand(nodeId);
   const id = inspectBackgroundClient();
   await new Promise((resolve, reject) => {
-    const child = spawn(
-      'docker',
-      [
-        'exec',
-        '-i',
-        id,
-        'node',
-        'apps/api/dist/apps/api/src/scripts/commercial-llm-workstation-bridge.js',
-      ],
-      { stdio: 'inherit', timeout: 31 * 60_000, killSignal: 'SIGTERM' },
-    );
+    const child = spawn('docker', ['exec', '-i', id, ...command], {
+      stdio: 'inherit',
+      timeout: 31 * 60_000,
+      killSignal: 'SIGTERM',
+    });
     const stop = () => child.kill('SIGTERM');
     process.once('SIGTERM', stop);
     process.once('SIGINT', stop);
@@ -1253,6 +1257,10 @@ function status() {
 
 async function cli(argv) {
   const [operation = 'status', ...args] = argv;
+  if (operation === 'workstation-pool-bridge') {
+    if (args.length !== 1) throw new Error('Usage: workstation-pool-bridge pc-a-4b|pc-b-9b');
+    return workstationBridge(args[0]);
+  }
   if (
     ![
       'install',

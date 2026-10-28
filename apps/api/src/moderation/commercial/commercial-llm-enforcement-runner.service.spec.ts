@@ -13,7 +13,13 @@ import {
 import { CommercialLlmEnforcementProcessor } from './commercial-llm-enforcement.processor';
 import { CommercialLlmWorkstationMailbox } from './commercial-llm-workstation.mailbox';
 import { CommercialLlmSecondaryScheduler } from './commercial-llm-secondary-scheduler';
-import { buildCommercialLlmOffer } from './commercial-llm-enforcement.protocol';
+import {
+  buildCommercialLlmOffer,
+  type CommercialLlmPoolPolicy,
+} from './commercial-llm-enforcement.protocol';
+import { CommercialLlmPoolClient } from './commercial-llm-pool.client';
+import { CommercialLlmPoolMailbox } from './commercial-llm-pool.mailbox';
+import { CommercialLlmPoolServer } from './commercial-llm-pool-server';
 import type { CommercialLlmObservationResult } from './commercial-llm.protocol';
 import * as shadowLease from './commercial-llm-shadow.lease';
 import * as shadowProcessor from './commercial-llm-shadow.processor';
@@ -46,35 +52,39 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function source(chatId: string, messageId = `message-${chatId}`) {
+function source(chatId: string, messageId = `message-${chatId}`, policy?: CommercialLlmPoolPolicy) {
   const now = Date.now();
-  const offer = buildCommercialLlmOffer({
-    chatId,
-    messageId,
-    userId: 'user',
-    originBotId: 'bot',
-    text: 'Обсуждение объявления в чате.',
-    eventAt: new Date(now).toISOString(),
-    settings: {
-      commercialAdsFilterEnabled: true,
-      commercialAdsSensitivity: 'BALANCED',
-      commercialAdsWarnThreshold: 45,
-      commercialAdsDeleteThreshold: 65,
-      nightModeTimezone: 'Europe/Moscow',
-      textFiltersWarnEnabled: true,
-      textFiltersMuteEnabled: true,
-      textFiltersBanEnabled: true,
-      textFiltersMuteDurationHours: 1,
-      textFiltersBotMessageEnabled: true,
+  const offer = buildCommercialLlmOffer(
+    {
+      chatId,
+      messageId,
+      userId: 'user',
+      originBotId: 'bot',
+      text: 'Обсуждение объявления в чате.',
+      eventAt: new Date(now).toISOString(),
+      settings: {
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 45,
+        commercialAdsDeleteThreshold: 65,
+        nightModeTimezone: 'Europe/Moscow',
+        textFiltersWarnEnabled: true,
+        textFiltersMuteEnabled: true,
+        textFiltersBanEnabled: true,
+        textFiltersMuteDurationHours: 1,
+        textFiltersBotMessageEnabled: true,
+      },
+      origin: {
+        sourceWebhookEventId: `receipt-${messageId}`,
+        sourceReceivingBotId: 'bot',
+        sourceExecutionBotId: 'bot',
+        sourceEventAtMs: now,
+        sourceEvidenceVersion: 1,
+      },
     },
-    origin: {
-      sourceWebhookEventId: `receipt-${messageId}`,
-      sourceReceivingBotId: 'bot',
-      sourceExecutionBotId: 'bot',
-      sourceEventAtMs: now,
-      sourceEvidenceVersion: 1,
-    },
-  });
+    now,
+    policy,
+  );
   if (!offer) throw new Error('Synthetic current source required');
   return offer;
 }
@@ -84,6 +94,7 @@ describe('commercial AI runner resource lifecycle', () => {
   let redis: Redis;
   let mailbox: CommercialLlmEnforcementMailbox;
   let cleanups: Array<() => void>;
+  let config: ConfigService;
   const governor = {
     decide: jest.fn<
       ReturnType<BackgroundRuntimeGovernorService['decide']>,
@@ -101,7 +112,7 @@ describe('commercial AI runner resource lifecycle', () => {
     jest.useFakeTimers({ now: new Date('2026-10-27T09:00:00.000Z') });
     cleanups = [];
     jest.mocked(randomInt).mockImplementation(() => 1);
-    const config = new ConfigService({
+    config = new ConfigService({
       APP_SERVICE_NAME: 'api-moderation-background',
       COMMERCIAL_LLM_ENFORCEMENT_ENABLED: true,
       COMMERCIAL_LLM_ENDPOINT: 'http://127.0.0.1:1',
@@ -150,6 +161,81 @@ describe('commercial AI runner resource lifecycle', () => {
     cleanups.push(() => job.resolve({ outcome: 'idle' }));
     return job;
   }
+
+  function enablePool() {
+    config.set('COMMERCIAL_LLM_POOL_ENABLED', true);
+    config.set('COMMERCIAL_LLM_POOL_WORKERS_ENABLED', true);
+    config.set('COMMERCIAL_LLM_POOL_4B_POLICY', 'confirm-positive');
+    jest.spyOn(CommercialLlmPoolServer.prototype, 'tick').mockResolvedValue(undefined);
+    jest.spyOn(CommercialLlmPoolServer.prototype, 'close').mockResolvedValue(undefined);
+    jest.spyOn(CommercialLlmPoolMailbox.prototype, 'available').mockResolvedValue(['pc-b-9b']);
+  }
+
+  it('routes fresh v2 sources to the pool without applying CPU memory admission to GPU PCs', async () => {
+    enablePool();
+    jest.mocked(shadowProcessor.commercialLlmHostHasHeadroom).mockResolvedValue(false);
+    const offered = offeredSources([source('pool-chat', 'message', 'confirm-positive')]);
+    const classify = jest
+      .spyOn(CommercialLlmPoolClient.prototype, 'classify')
+      .mockResolvedValue(negative);
+    const legacy = jest.spyOn(CommercialLlmWorkstationMailbox.prototype, 'classify');
+    runner!.onModuleInit();
+    await jest.advanceTimersByTimeAsync(250);
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(legacy).not.toHaveBeenCalled();
+    expect(offered.finish).toHaveBeenCalledWith(
+      offered.items[0]!.raw,
+      offered.items[0]!.request.worker,
+    );
+    expect(intents.ensureIntent).not.toHaveBeenCalled();
+  });
+
+  it('rejects a legacy source in the pool namespace before classification', async () => {
+    enablePool();
+    offeredSources([source('legacy-source')]);
+    const classify = jest.spyOn(CommercialLlmPoolClient.prototype, 'classify');
+    runner!.onModuleInit();
+    await jest.advanceTimersByTimeAsync(250);
+    expect(classify).not.toHaveBeenCalled();
+    expect(intents.ensureIntent).not.toHaveBeenCalled();
+  });
+
+  it('retains short pending work while all physical pool slots are occupied', async () => {
+    enablePool();
+    const first = deferred<CommercialLlmObservationResult>();
+    cleanups.push(() => first.resolve(negative));
+    const offered = offeredSources([
+      source('first', 'one', 'confirm-positive'),
+      source('next', 'two', 'confirm-positive'),
+    ]);
+    jest
+      .spyOn(CommercialLlmPoolClient.prototype, 'classify')
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(negative);
+    runner!.onModuleInit();
+    await jest.advanceTimersByTimeAsync(250);
+    expect(offered.take).toHaveBeenCalledTimes(1);
+    jest.mocked(CommercialLlmPoolMailbox.prototype.available).mockResolvedValue([]);
+    await jest.advanceTimersByTimeAsync(500);
+    expect(offered.take).toHaveBeenCalledTimes(1);
+    expect(mailbox.withdraw).not.toHaveBeenCalled();
+    jest.mocked(CommercialLlmPoolMailbox.prototype.available).mockResolvedValue(['pc-a-4b']);
+    await jest.advanceTimersByTimeAsync(250);
+    expect(offered.take).toHaveBeenCalledTimes(2);
+    first.resolve(negative);
+  });
+
+  it('registers pool server capacity for closed preflight without starting enforcement', async () => {
+    enablePool();
+    config.set('COMMERCIAL_LLM_ENFORCEMENT_ENABLED', false);
+    const run = jest.spyOn(CommercialLlmEnforcementProcessor.prototype, 'run');
+    runner!.onModuleInit();
+    await jest.advanceTimersByTimeAsync(500);
+    expect(CommercialLlmPoolServer.prototype.tick).toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(mailbox.heartbeat).not.toHaveBeenCalled();
+    expect(intents.ensureIntent).not.toHaveBeenCalled();
+  });
 
   function offeredSources(sources: ReturnType<typeof source>[]) {
     const items: MailboxItem[] = [];

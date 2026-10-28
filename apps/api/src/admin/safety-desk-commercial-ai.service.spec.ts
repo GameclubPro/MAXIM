@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import type Redis from 'ioredis';
 import { createCommercialLlmRedis } from '../moderation/commercial/commercial-llm-shadow.lease';
 import { COMMERCIAL_LLM_ENFORCEMENT_KEYS } from '../moderation/commercial/commercial-llm-enforcement.mailbox';
+import { COMMERCIAL_LLM_POOL_ADMISSION_KEYS } from '../moderation/commercial/commercial-llm-pool-admission.mailbox';
 import {
   COMMERCIAL_AI_STATUS_MAX_BYTES,
   READ_COMMERCIAL_AI_STATUS,
@@ -193,7 +194,7 @@ describe('commercial AI bounded public projection', () => {
 
 describe('SafetyDeskCommercialAiService', () => {
   afterEach(() => jest.restoreAllMocks());
-  function harness(enabled = true, shadow = false) {
+  function harness(enabled = true, shadow = false, pool = false, workers = false) {
     const redis = {
       status: 'ready',
       connect: jest.fn<ReturnType<Redis['connect']>, []>().mockResolvedValue(),
@@ -208,6 +209,8 @@ describe('SafetyDeskCommercialAiService', () => {
       new ConfigService({
         COMMERCIAL_LLM_ENFORCEMENT_ENABLED: enabled,
         COMMERCIAL_LLM_SHADOW_ENABLED: shadow,
+        COMMERCIAL_LLM_POOL_ENABLED: pool,
+        COMMERCIAL_LLM_POOL_WORKERS_ENABLED: workers,
         REDIS_URL: 'redis://synthetic.invalid',
       }),
     );
@@ -242,6 +245,27 @@ describe('SafetyDeskCommercialAiService', () => {
     expect(redis.eval).toHaveBeenCalledTimes(2);
     service.onModuleDestroy();
   });
+
+  it.each([
+    [true, true, COMMERCIAL_LLM_POOL_ADMISSION_KEYS.status],
+    [false, true, COMMERCIAL_LLM_ENFORCEMENT_KEYS.status],
+    [true, false, COMMERCIAL_LLM_ENFORCEMENT_KEYS.status],
+  ] as const)(
+    'reads only the active namespace for routing=%s/workers=%s',
+    async (pool, workers, key) => {
+      const { service, redis } = harness(true, false, pool, workers);
+      redis.eval.mockResolvedValue(['missing']);
+      expect((await service.getSnapshot()).availability).toBe('MISSING');
+      expect(redis.eval).toHaveBeenCalledTimes(1);
+      expect(redis.eval).toHaveBeenCalledWith(
+        READ_COMMERCIAL_AI_STATUS,
+        1,
+        key,
+        COMMERCIAL_AI_STATUS_MAX_BYTES,
+      );
+      service.onModuleDestroy();
+    },
+  );
 
   it.each([
     [false, false, 'DISABLED'],

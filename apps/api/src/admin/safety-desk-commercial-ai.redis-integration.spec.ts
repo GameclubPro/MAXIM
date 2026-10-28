@@ -3,6 +3,7 @@ import { setTimeout as pause } from 'node:timers/promises';
 import { ConfigService } from '@nestjs/config';
 import type Redis from 'ioredis';
 import { COMMERCIAL_LLM_ENFORCEMENT_KEYS as keys } from '../moderation/commercial/commercial-llm-enforcement.mailbox';
+import { COMMERCIAL_LLM_POOL_ADMISSION_KEYS as poolKeys } from '../moderation/commercial/commercial-llm-pool-admission.mailbox';
 import { createCommercialLlmRedis } from '../moderation/commercial/commercial-llm-shadow.lease';
 import {
   COMMERCIAL_AI_STATUS_MAX_BYTES,
@@ -17,6 +18,7 @@ integration('bounded commercial AI diagnostics on disposable Redis', () => {
   let redis: Redis;
   let fixtureCreated = false;
   let ownsStatus = false;
+  let ownsPoolStatus = false;
   const owner = randomUUID();
   const services: SafetyDeskCommercialAiService[] = [];
 
@@ -25,7 +27,7 @@ integration('bounded commercial AI diagnostics on disposable Redis', () => {
       throw new Error('Disposable loopback Redis required');
     redis = createCommercialLlmRedis(redisUrl);
     await redis.connect();
-    if ((await redis.exists(keys.status, keys.worker)) !== 0)
+    if ((await redis.exists(keys.status, keys.worker, poolKeys.status)) !== 0)
       throw new Error('Commercial AI diagnostic fixture keys must be absent');
     expect(await redis.set(keys.worker, owner, 'NX')).toBe('OK');
     fixtureCreated = true;
@@ -41,6 +43,8 @@ integration('bounded commercial AI diagnostics on disposable Redis', () => {
     } finally {
       if (ownsStatus) await redis.del(keys.status);
       ownsStatus = false;
+      if (ownsPoolStatus) await redis.del(poolKeys.status);
+      ownsPoolStatus = false;
     }
   });
 
@@ -85,6 +89,49 @@ integration('bounded commercial AI diagnostics on disposable Redis', () => {
       void redis.ping(marker).catch(finish);
     });
   }
+
+  it('reads pool generations without substituting a healthy legacy status when pool evidence disappears', async () => {
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    const snapshot = (kept: number) =>
+      JSON.stringify({
+        stage: 'commercial-ai',
+        schemaVersion: 2,
+        mode: 'ENFORCE',
+        heartbeatAt: new Date(now).toISOString(),
+        lastSuccessAt: null,
+        active: 0,
+        observationProcessId: randomUUID(),
+        observationStartedAt: new Date(now).toISOString(),
+        outcomeBasis: 'process_cumulative',
+        outcomes: { kept },
+        pendingDiscardBasis: 'redis_namespace_cumulative',
+        pendingDiscards: {},
+      });
+    const legacy = snapshot(99);
+    await write(legacy, 30_000);
+    const pool = snapshot(2);
+    ownsPoolStatus = true;
+    await redis.set(poolKeys.status, pool, 'PX', 30_000);
+    const service = new SafetyDeskCommercialAiService(
+      new ConfigService({
+        COMMERCIAL_LLM_ENFORCEMENT_ENABLED: true,
+        COMMERCIAL_LLM_POOL_ENABLED: true,
+        COMMERCIAL_LLM_POOL_WORKERS_ENABLED: true,
+        REDIS_URL: redisUrl,
+      }),
+    );
+    services.push(service);
+    expect(await service.getSnapshot()).toMatchObject({
+      availability: 'FRESH',
+      observationProcessId: JSON.parse(pool).observationProcessId,
+      outcomes: { kept: 2 },
+    });
+    await redis.del(poolKeys.status);
+    clock.mockReturnValue(now + 2_001);
+    expect(await service.getSnapshot()).toMatchObject({ availability: 'MISSING', outcomes: null });
+    expect(await redis.get(keys.status)).toBe(legacy);
+  });
 
   it('returns missing for the absent exact status key and preserves neighboring ownership', async () => {
     await expect(read()).resolves.toEqual(['missing']);

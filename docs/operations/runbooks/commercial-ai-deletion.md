@@ -1,5 +1,12 @@
 # Commercial AI deletion
 
+This page describes the legacy workstation/server cascade and shared deletion
+guards. The optional three-node pool has separate registration and routing flags,
+an explicit 4B policy and durable source version 2; see the
+[pool rollout and recovery runbook](commercial-ai-pool.md). With pool routing off,
+the legacy cascade below remains selected. Rollback retains both source readers
+regardless of flags.
+
 `COMMERCIAL_LLM_ENFORCEMENT_ENABLED=true` replaces only `COMMERCIAL_AD` text-rule
 verdicts in opted-in chats. The local workstation 4B model runs first. Commercial
 and uncertain answers require the pinned server 9B model; unavailable primary also

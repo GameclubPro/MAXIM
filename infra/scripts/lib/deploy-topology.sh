@@ -2445,6 +2445,31 @@ maxim_topology_require_commercial_ai_delete_guard() {
   done
 }
 
+maxim_topology_require_commercial_ai_pool_delete_reader() {
+  local commit_sha="$1" source
+  maxim_topology_require_commercial_ai_delete_guard "$commit_sha" || return
+  # FLAG: Issued v2 pool sources outlive routing flags. Rollback must retain both the old
+  # v1 reader and the policy-bound v2 reader; disabling or draining the pool lowers no floor.
+  source="$(git show "${commit_sha}:apps/api/src/moderation/commercial/commercial-llm-enforcement.protocol.ts" 2>/dev/null)" || return
+  if ! printf '%s' "$source" | node -e '
+    const source = require("node:fs").readFileSync(0).toString("utf8");
+    if (source.length > 2 * 1024 * 1024) process.exit(1);
+    const required = [
+      "COMMERCIAL_LLM_ENFORCEMENT_VERSION = 1",
+      "legacyCommercialLlmSourceSchema",
+      "commercialLlmSourceSchema = z.union(",
+      "commercialLlmPoolEnforcementIdentity",
+      "commercial-pool-v2",
+      "version: z.literal(2)",
+      "poolPolicy: z.literal("
+    ];
+    process.exit(required.every(marker => source.includes(marker)) ? 0 : 1);
+  '; then
+    echo 'Rollback target lacks the compatible commercial AI v1/v2 pool source reader.' >&2
+    return 1
+  fi
+}
+
 # FLAG: Installed Lastik ownership survives a disabled flag; rollback must retain its final fence.
 maxim_topology_require_eraser_bridge() {
   local source_sha="$1"

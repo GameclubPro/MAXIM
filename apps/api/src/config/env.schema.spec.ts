@@ -19,6 +19,31 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('separates pool registration from routing and keeps 4B positives conservative', () => {
+    const defaults = validateEnv(createValidEnv());
+    expect(defaults.COMMERCIAL_LLM_POOL_ENABLED).toBe(false);
+    expect(defaults.COMMERCIAL_LLM_POOL_WORKERS_ENABLED).toBe(false);
+    expect(defaults.COMMERCIAL_LLM_POOL_4B_POLICY).toBe('confirm-positive');
+    expect(() => validateEnv(createValidEnv({ COMMERCIAL_LLM_POOL_ENABLED: 'true' }))).toThrow(
+      /COMMERCIAL_LLM_POOL_WORKERS_ENABLED/u,
+    );
+    expect(
+      validateEnv(createValidEnv({ COMMERCIAL_LLM_POOL_WORKERS_ENABLED: 'true' }))
+        .COMMERCIAL_LLM_POOL_ENABLED,
+    ).toBe(false);
+    expect(
+      validateEnv(
+        createValidEnv({
+          COMMERCIAL_LLM_POOL_WORKERS_ENABLED: 'true',
+          COMMERCIAL_LLM_POOL_ENABLED: 'true',
+          COMMERCIAL_LLM_POOL_4B_POLICY: 'direct-4b',
+        }),
+      ).COMMERCIAL_LLM_POOL_4B_POLICY,
+    ).toBe('direct-4b');
+    expect(() =>
+      validateEnv(createValidEnv({ COMMERCIAL_LLM_POOL_4B_POLICY: 'anything' })),
+    ).toThrow(/COMMERCIAL_LLM_POOL_4B_POLICY/u);
+  });
   it('requires independent Lastik control credentials only when its feature is enabled', () => {
     expect(validateEnv(createValidEnv()).ERASER_ENABLED).toBe(false);
     expect(() => validateEnv(createValidEnv({ ERASER_ENABLED: 'true' }))).toThrow(/ERASER_ENABLED/);

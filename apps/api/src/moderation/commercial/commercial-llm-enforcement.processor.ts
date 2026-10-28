@@ -72,6 +72,17 @@ export class CommercialLlmEnforcementProcessor {
         primaryWaitMs,
         durationMs: result.durationMs,
         ...(result.cascade ? { route: result.cascade.route } : {}),
+        ...(result.pool
+          ? {
+              route: result.pool.route,
+              nodeId: result.pool.nodeId,
+              poolPolicy: result.pool.policy,
+              attempts: result.pool.attempts,
+              ...(result.pool.consultationOutcome
+                ? { consultationOutcome: result.pool.consultationOutcome }
+                : {}),
+            }
+          : {}),
         ...(result.cascade?.primaryDurationMs !== undefined
           ? { primaryDurationMs: result.cascade.primaryDurationMs }
           : {}),
@@ -82,7 +93,7 @@ export class CommercialLlmEnforcementProcessor {
           ? { auditOutcome: 'capacity_skipped' }
           : {}),
       };
-      if (!commercialLlmMayDelete(result))
+      if (!commercialLlmMayDelete(result, source))
         return {
           outcome: result.classification === 'UNSURE' ? 'unsure' : 'kept',
           ...observation,
@@ -118,7 +129,7 @@ export class CommercialLlmEnforcementProcessor {
                 modelSha256: result.modelSha256,
                 promptSha256: result.promptSha256,
                 reasonCodes: result.reasonCodes,
-                cascadeRoute: result.cascade!.route,
+                ...(result.pool ? { pool: result.pool } : { cascadeRoute: result.cascade!.route }),
               },
             },
           }),

@@ -6,7 +6,16 @@ import { setTimeout as pause } from 'node:timers/promises';
 import type Redis from 'ioredis';
 import { createCommercialLlmRedis } from '../moderation/commercial/commercial-llm-shadow.lease';
 import { CommercialLlmWorkstationMailbox } from '../moderation/commercial/commercial-llm-workstation.mailbox';
+import { CommercialLlmPoolMailbox } from '../moderation/commercial/commercial-llm-pool.mailbox';
+import { buildCommercialLlmRequest } from '../moderation/commercial/commercial-llm.protocol';
 import {
+  COMMERCIAL_LLM_POOL_PROFILES,
+  commercialLlmPoolJobKey,
+  commercialLlmPoolNodeKeys,
+  type CommercialLlmPoolBridgeNodeId,
+} from '../moderation/commercial/commercial-llm-pool.protocol';
+import {
+  COMMERCIAL_LLM_PRIMARY_TIMEOUT_MS,
   COMMERCIAL_LLM_WORKSTATION_IDENTITY as identity,
   COMMERCIAL_LLM_WORKSTATION_KEYS as keys,
 } from '../moderation/commercial/commercial-llm-workstation.protocol';
@@ -192,4 +201,302 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
       expect(frames).toEqual([]);
     },
   );
+});
+
+(url ? describe : describe.skip)('existing first-PC v1 worker in the independent pool', () => {
+  let redis: Redis;
+  const children: Array<{
+    child: ChildProcessWithoutNullStreams;
+    closed: Promise<unknown>;
+    frames: Record<string, unknown>[];
+  }> = [];
+  const jobs = new Set<string>();
+  const firstKeys = commercialLlmPoolNodeKeys('pc-a-4b');
+  const secondKeys = commercialLlmPoolNodeKeys('pc-b-9b');
+  const stateKeys = [
+    ...Object.values(keys),
+    ...Object.values(firstKeys),
+    ...Object.values(secondKeys),
+  ];
+  beforeAll(async () => {
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname))
+      throw new Error('disposable loopback Redis required');
+    redis = createCommercialLlmRedis(url);
+    await redis.connect();
+  });
+  beforeEach(async () => {
+    await redis.del(...stateKeys, ...jobs);
+    jobs.clear();
+  });
+  afterEach(async () => {
+    for (const { child } of children)
+      if (child.exitCode === null && child.signalCode === null) child.stdin.end();
+    await Promise.all(children.map(({ closed }) => closed));
+    children.length = 0;
+    await redis.del(...stateKeys, ...jobs);
+  });
+  afterAll(() => redis.disconnect());
+
+  function launch(
+    nodeId?: CommercialLlmPoolBridgeNodeId,
+    environment: Record<string, string> = {},
+  ) {
+    const child = spawn(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        resolve(
+          nodeId
+            ? 'src/scripts/commercial-llm-pool-bridge.ts'
+            : 'src/scripts/commercial-llm-workstation-bridge.ts',
+        ),
+        ...(nodeId ? [nodeId] : []),
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          REDIS_URL: url,
+          APP_SERVICE_NAME: 'api-moderation-background',
+          COMMERCIAL_LLM_POOL_ENABLED: 'true',
+          COMMERCIAL_LLM_POOL_WORKERS_ENABLED: 'true',
+          // The compatible pool path is independent from the retired legacy SHADOW flag.
+          COMMERCIAL_LLM_SHADOW_ENABLED: 'false',
+          ...environment,
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+    const state = { child, closed: once(child, 'close'), frames: [] as Record<string, unknown>[] };
+    children.push(state);
+    let pending = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      pending += chunk.toString();
+      let at: number;
+      while ((at = pending.indexOf('\n')) >= 0) {
+        state.frames.push(JSON.parse(pending.slice(0, at)));
+        pending = pending.slice(at + 1);
+      }
+    });
+    child.stderr.resume();
+    return state;
+  }
+  async function waitFor<T>(read: () => Promise<T>, accepts: (value: T) => boolean): Promise<T> {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const value = await read();
+      if (accepts(value)) return value;
+      await pause(10);
+    }
+    throw new Error('compatible_bridge_test_deadline');
+  }
+  const send = (state: ReturnType<typeof launch>, frame: unknown) =>
+    state.child.stdin.write(JSON.stringify(frame) + '\n');
+  async function connected(nodeId?: CommercialLlmPoolBridgeNodeId) {
+    const state = launch(nodeId);
+    send(
+      state,
+      nodeId
+        ? { type: 'hello', nodeId, identity: COMMERCIAL_LLM_POOL_PROFILES[nodeId].identity }
+        : { type: 'hello', identity },
+    );
+    await waitFor(
+      async () => state.frames,
+      (frames) => frames.some((frame) => frame.type === 'hello'),
+    );
+    send(state, { type: 'ready', ready: true });
+    const selected = nodeId ?? 'pc-a-4b';
+    await waitFor(
+      () => new CommercialLlmPoolMailbox(redis).available(),
+      (available) => available.includes(selected),
+    );
+    return state;
+  }
+  async function reserve(nodeId: CommercialLlmPoolBridgeNodeId) {
+    const jobId = randomUUID();
+    jobs.add(commercialLlmPoolJobKey(jobId));
+    const reservation = await new CommercialLlmPoolMailbox(redis).reserve(nodeId, {
+      jobId,
+      attempt: 1,
+      deadlineAtMs: Date.now() + 5000,
+      body: JSON.stringify({
+        ...buildCommercialLlmRequest('Продам свой старый холодильник'),
+        model: COMMERCIAL_LLM_POOL_PROFILES[nodeId].identity.modelAlias,
+      }),
+    });
+    expect(reservation).not.toBeNull();
+    return reservation!;
+  }
+  async function requestFrame(state: ReturnType<typeof launch>) {
+    await waitFor(
+      async () => state.frames,
+      (frames) => frames.some((frame) => frame.type === 'request'),
+    );
+    return state.frames.find((frame) => frame.type === 'request')!;
+  }
+  const responseBody = (nodeId: CommercialLlmPoolBridgeNodeId) =>
+    JSON.stringify({
+      model: COMMERCIAL_LLM_POOL_PROFILES[nodeId].identity.modelAlias,
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: {
+            role: 'assistant',
+            content: '{"classification":"NOT_COMMERCIAL","reasonCodes":["PERSONAL_SALE"]}',
+          },
+        },
+      ],
+    });
+
+  it('preserves the exact v1 handshake and raw request/response while using only the fixed pool slot', async () => {
+    const state = await connected();
+    expect(state.frames[0]).toEqual({ type: 'hello', identity });
+    expect(await redis.exists(...Object.values(keys))).toBe(0);
+    expect(JSON.parse((await redis.get(firstKeys.heartbeat))!).identity).toEqual(
+      COMMERCIAL_LLM_POOL_PROFILES['pc-a-4b'].identity,
+    );
+    const reservation = await reserve('pc-a-4b');
+    const frame = await requestFrame(state);
+    expect(frame).toEqual({
+      type: 'request',
+      id: reservation.id,
+      body: reservation.body,
+      timeoutMs: COMMERCIAL_LLM_PRIMARY_TIMEOUT_MS,
+    });
+    const body = responseBody('pc-a-4b');
+    send(state, { type: 'response', id: reservation.id, body });
+    expect(await new CommercialLlmPoolMailbox(redis).wait(reservation)).toEqual({
+      outcome: 'COMPLETE',
+      body,
+    });
+    state.child.stdin.end();
+    await state.closed;
+    expect(await redis.exists(...stateKeys)).toBe(0);
+  });
+
+  it('runs the unchanged first-PC wire beside the second-PC v2 worker without a shared slot', async () => {
+    const [first, second] = await Promise.all([connected(), connected('pc-b-9b')]);
+    const reservations = await Promise.all([reserve('pc-a-4b'), reserve('pc-b-9b')]);
+    const requests = await Promise.all([requestFrame(first), requestFrame(second)]);
+    expect(requests.map((frame) => frame.id)).toEqual(reservations.map((request) => request.id));
+    expect(Number(requests[0].timeoutMs)).toBeLessThanOrEqual(COMMERCIAL_LLM_PRIMARY_TIMEOUT_MS);
+    expect(Number(requests[1].timeoutMs)).toBeGreaterThan(COMMERCIAL_LLM_PRIMARY_TIMEOUT_MS);
+    for (const [index, state] of [first, second].entries())
+      send(state, {
+        type: 'response',
+        id: reservations[index].id,
+        body: responseBody(reservations[index].nodeId as CommercialLlmPoolBridgeNodeId),
+      });
+    const mailbox = new CommercialLlmPoolMailbox(redis);
+    expect(
+      (await Promise.all(reservations.map((reservation) => mailbox.wait(reservation)))).map(
+        (outcome) => outcome.outcome,
+      ),
+    ).toEqual(['COMPLETE', 'COMPLETE']);
+  });
+
+  it.each(['foreign-pins', 'caller-selected-node'] as const)(
+    'rejects %s without advertising either mailbox',
+    async (kind) => {
+      const state = launch();
+      send(
+        state,
+        kind === 'foreign-pins'
+          ? { type: 'hello', identity: { ...identity, modelSha256: 'wrong' } }
+          : { type: 'hello', identity, nodeId: 'pc-b-9b' },
+      );
+      await state.closed;
+      expect(state.frames).toEqual([]);
+      expect(await redis.exists(...stateKeys)).toBe(0);
+    },
+  );
+
+  it.each(['false', ''] as const)(
+    'refuses enabled pool with workers flag %j instead of silently using legacy routing',
+    async (enabled) => {
+      const state = launch(undefined, {
+        COMMERCIAL_LLM_POOL_WORKERS_ENABLED: enabled,
+        COMMERCIAL_LLM_SHADOW_ENABLED: 'true',
+      });
+      await state.closed;
+      expect(state.frames).toEqual([]);
+      expect(await redis.exists(...stateKeys)).toBe(0);
+    },
+  );
+
+  it('keeps the first PC on the legacy mailbox during workers-only preflight', async () => {
+    const state = launch(undefined, {
+      COMMERCIAL_LLM_POOL_ENABLED: 'false',
+      COMMERCIAL_LLM_SHADOW_ENABLED: 'true',
+    });
+    send(state, { type: 'hello', identity });
+    await waitFor(
+      async () => state.frames,
+      (frames) => frames.some((frame) => frame.type === 'hello'),
+    );
+    send(state, { type: 'ready', ready: true });
+    await waitFor(() => redis.get(keys.heartbeat), Boolean);
+    expect(await redis.exists(firstKeys.lease, firstKeys.heartbeat)).toBe(0);
+    expect(state.frames[0]).toEqual({ type: 'hello', identity });
+  });
+
+  it('a v2 first-PC worker cannot duplicate the compatible v1 worker’s physical lease', async () => {
+    const first = await connected();
+    const lease = await redis.get(firstKeys.lease);
+    const duplicate = launch('pc-a-4b');
+    send(duplicate, {
+      type: 'hello',
+      nodeId: 'pc-a-4b',
+      identity: COMMERCIAL_LLM_POOL_PROFILES['pc-a-4b'].identity,
+    });
+    await duplicate.closed;
+    expect(duplicate.frames).toEqual([]);
+    expect(first.child.exitCode).toBeNull();
+    expect(await redis.get(firstKeys.lease)).toBe(lease);
+    expect(await new CommercialLlmPoolMailbox(redis).available()).toContain('pc-a-4b');
+  });
+
+  it('does not renew a silent handshake or let its delayed hello clear a replacement session', async () => {
+    const stale = launch();
+    await waitFor(() => redis.get(firstKeys.lease), Boolean);
+    expect(await redis.get(firstKeys.heartbeat)).toBeNull();
+    await redis.pexpire(firstKeys.lease, 20);
+    await pause(350);
+    expect(await redis.exists(firstKeys.lease, firstKeys.heartbeat)).toBe(0);
+    const replacement = await connected();
+    const owner = await redis.get(firstKeys.lease);
+    send(stale, { type: 'hello', identity });
+    await stale.closed;
+    expect(replacement.child.exitCode).toBeNull();
+    expect(await redis.get(firstKeys.lease)).toBe(owner);
+    expect(await new CommercialLlmPoolMailbox(redis).available()).toContain('pc-a-4b');
+  });
+
+  it('ends a failed v1 computation without fabricating a null response or disturbing the second PC', async () => {
+    const first = await connected();
+    const second = await connected('pc-b-9b');
+    const reservation = await reserve('pc-a-4b');
+    await requestFrame(first);
+    send(first, { type: 'failed', id: reservation.id });
+    await first.closed;
+    const mailbox = new CommercialLlmPoolMailbox(redis);
+    expect(await mailbox.wait(reservation)).toEqual({ outcome: 'UNAVAILABLE' });
+    expect(await redis.get(firstKeys.response)).toBeNull();
+    expect(await redis.exists(...Object.values(keys))).toBe(0);
+    expect(second.child.exitCode).toBeNull();
+    expect(await mailbox.available()).toContain('pc-b-9b');
+  });
+
+  it('uses the pool’s bounded 512-frame budget without retaining a flooded worker', async () => {
+    const state = await connected();
+    const ready = JSON.stringify({ type: 'ready', ready: true }) + '\n';
+    state.child.stdin.write(ready.repeat(200));
+    const reservation = await reserve('pc-a-4b');
+    await requestFrame(state);
+    send(state, { type: 'response', id: reservation.id, body: responseBody('pc-a-4b') });
+    expect((await new CommercialLlmPoolMailbox(redis).wait(reservation)).outcome).toBe('COMPLETE');
+    state.child.stdin.write(ready.repeat(400));
+    await state.closed;
+    expect(await redis.exists(...stateKeys)).toBe(0);
+  });
 });

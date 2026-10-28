@@ -1,0 +1,383 @@
+import { randomUUID } from 'node:crypto';
+import { setTimeout as pause } from 'node:timers/promises';
+import type Redis from 'ioredis';
+import { createCommercialLlmRedis } from './commercial-llm-shadow.lease';
+import { buildCommercialLlmRequest } from './commercial-llm.protocol';
+import {
+  CommercialLlmPoolMailbox,
+  type CommercialLlmPoolReservation,
+} from './commercial-llm-pool.mailbox';
+import {
+  COMMERCIAL_LLM_POOL_PROFILES,
+  POOL_NODE_IDS,
+  POOL_PENDING_KEYS,
+  POOL_DISPATCH_PENDING_KEY,
+  POOL_ADMISSION_WORKER_KEY,
+  commercialLlmPoolJobKey,
+  commercialLlmPoolNodeKeys,
+  type CommercialLlmPoolNodeId,
+} from './commercial-llm-pool.protocol';
+
+const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
+(url ? describe : describe.skip)('commercial pool capacity and attempts on real Redis', () => {
+  let redis: Redis;
+  let mailbox: CommercialLlmPoolMailbox;
+  let sessions: Record<CommercialLlmPoolNodeId, string>;
+  const jobs = new Set<string>();
+  const nodeKeys = POOL_NODE_IDS.flatMap((id) => Object.values(commercialLlmPoolNodeKeys(id)));
+  const body = (nodeId: CommercialLlmPoolNodeId, text = 'Продам свой старый холодильник') =>
+    JSON.stringify({
+      ...buildCommercialLlmRequest(text),
+      model: COMMERCIAL_LLM_POOL_PROFILES[nodeId].identity.modelAlias,
+    });
+  const response = (nodeId: CommercialLlmPoolNodeId) =>
+    JSON.stringify({
+      model: COMMERCIAL_LLM_POOL_PROFILES[nodeId].identity.modelAlias,
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: {
+            role: 'assistant',
+            content: '{"classification":"NOT_COMMERCIAL","reasonCodes":["PERSONAL_SALE"]}',
+          },
+        },
+      ],
+    });
+  const job = (nodeId: CommercialLlmPoolNodeId, lifetimeMs = 3000) => {
+    const jobId = randomUUID();
+    jobs.add(commercialLlmPoolJobKey(jobId));
+    return {
+      jobId,
+      attempt: 1 as const,
+      deadlineAtMs: Date.now() + lifetimeMs,
+      body: body(nodeId),
+    };
+  };
+  const ready = async (nodeId: CommercialLlmPoolNodeId) => {
+    expect(await mailbox.acquireWorker(nodeId, sessions[nodeId])).toBe(true);
+    await mailbox.refreshWorker(nodeId, sessions[nodeId], true);
+  };
+  const reserved = async (nodeId: CommercialLlmPoolNodeId, request = job(nodeId)) => {
+    const value = await mailbox.reserve(nodeId, request);
+    expect(value).not.toBeNull();
+    return value!;
+  };
+  const complete = async (value: CommercialLlmPoolReservation) => {
+    expect(
+      await mailbox.respond(value.nodeId, value.session, value.id, response(value.nodeId)),
+    ).toBe(true);
+    expect(await mailbox.wait(value)).toMatchObject({ outcome: 'COMPLETE' });
+  };
+  beforeAll(async () => {
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname))
+      throw new Error('disposable loopback Redis required');
+    redis = createCommercialLlmRedis(url);
+    await redis.connect();
+  });
+  beforeEach(async () => {
+    await redis.del(
+      ...nodeKeys,
+      ...POOL_PENDING_KEYS,
+      POOL_DISPATCH_PENDING_KEY,
+      POOL_ADMISSION_WORKER_KEY,
+      ...jobs,
+    );
+    jobs.clear();
+    mailbox = new CommercialLlmPoolMailbox(redis);
+    sessions = { 'server-9b': randomUUID(), 'pc-a-4b': randomUUID(), 'pc-b-9b': randomUUID() };
+  });
+  afterAll(async () => {
+    await redis.del(
+      ...nodeKeys,
+      ...POOL_PENDING_KEYS,
+      POOL_DISPATCH_PENDING_KEY,
+      POOL_ADMISSION_WORKER_KEY,
+      ...jobs,
+    );
+    redis.disconnect();
+  });
+
+  it('executes three independent sources concurrently without the old global 9B lease', async () => {
+    await Promise.all(POOL_NODE_IDS.map(ready));
+    expect(await mailbox.available()).toEqual([...POOL_NODE_IDS]);
+    const values = await Promise.all(POOL_NODE_IDS.map((nodeId) => reserved(nodeId)));
+    expect(await mailbox.available()).toEqual([]);
+    await Promise.all(values.map(complete));
+    expect(await mailbox.available()).toEqual([...POOL_NODE_IDS]);
+  });
+
+  it('one atomic winner reserves a node and losers consume no job attempt', async () => {
+    await ready('pc-b-9b');
+    const requests = Array.from({ length: 8 }, () => job('pc-b-9b'));
+    const results = await Promise.all(
+      requests.map((request) => mailbox.reserve('pc-b-9b', request)),
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
+    for (let i = 0; i < requests.length; i++) {
+      expect(await redis.exists(commercialLlmPoolJobKey(requests[i].jobId))).toBe(
+        results[i] ? 1 : 0,
+      );
+    }
+    await complete(results.find(Boolean)!);
+  });
+
+  it('a shared job can reserve only one of two otherwise free nodes', async () => {
+    await ready('server-9b');
+    await ready('pc-b-9b');
+    const request = job('server-9b');
+    const values = await Promise.all([
+      mailbox.reserve('server-9b', request),
+      mailbox.reserve('pc-b-9b', request),
+    ]);
+    expect(values.filter(Boolean)).toHaveLength(1);
+    await complete(values.find(Boolean)!);
+  });
+
+  it('consultation never waits behind primary FIFO work and expired pending keys stop blocking it', async () => {
+    await ready('pc-b-9b');
+    await redis.set(POOL_PENDING_KEYS[0], 'bounded-primary', 'PX', 100);
+    const request = job('pc-b-9b');
+    expect(await mailbox.reserve('pc-b-9b', request, { consultation: true })).toBeNull();
+    expect(await redis.exists(commercialLlmPoolJobKey(request.jobId))).toBe(0);
+    await pause(130);
+    const value = await mailbox.reserve('pc-b-9b', request, { consultation: true });
+    expect(value).not.toBeNull();
+    await complete(value!);
+  });
+
+  it('the final atomic primary priority check closes a read/reserve race', async () => {
+    await ready('pc-b-9b');
+    const hooked = new CommercialLlmPoolMailbox({
+      get: redis.get.bind(redis),
+      mget: redis.mget.bind(redis),
+      eval: (async (...args: Parameters<Redis['eval']>) => {
+        await redis.set(POOL_PENDING_KEYS[1], 'primary-won', 'PX', 3000);
+        return redis.eval(...args);
+      }) as Redis['eval'],
+    });
+    expect(await hooked.reserve('pc-b-9b', job('pc-b-9b'), { consultation: true })).toBeNull();
+  });
+
+  it('a primary between FIFO take and model dispatch blocks consultation until its reservation wins', async () => {
+    await ready('pc-a-4b');
+    await ready('pc-b-9b');
+    const primary = job('pc-a-4b');
+    const consultation = job('pc-b-9b');
+    await redis.set(POOL_ADMISSION_WORKER_KEY, 'current-worker', 'PX', 3000);
+    await redis.hset(
+      POOL_DISPATCH_PENDING_KEY,
+      primary.jobId,
+      JSON.stringify({
+        worker: 'current-worker',
+        source: { nonce: primary.jobId, deadlineAtMs: primary.deadlineAtMs },
+      }),
+    );
+    expect(await mailbox.reserve('pc-b-9b', consultation, { consultation: true })).toBeNull();
+    const value = await reserved('pc-a-4b', primary);
+    expect(await redis.hlen(POOL_DISPATCH_PENDING_KEY)).toBe(0);
+    const secondary = await mailbox.reserve('pc-b-9b', consultation, { consultation: true });
+    expect(secondary).not.toBeNull();
+    await Promise.all([complete(value), complete(secondary!)]);
+  });
+
+  it('a lost primary reservation never removes its pending-dispatch marker', async () => {
+    await ready('pc-b-9b');
+    const busy = await reserved('pc-b-9b');
+    const pending = job('pc-b-9b');
+    await redis.hset(POOL_DISPATCH_PENDING_KEY, pending.jobId, 'marker');
+    expect(await mailbox.reserve('pc-b-9b', pending)).toBeNull();
+    expect(await redis.hget(POOL_DISPATCH_PENDING_KEY, pending.jobId)).toBe('marker');
+    await complete(busy);
+  });
+
+  it('expired, malformed and obsolete-owner dispatch markers cannot permanently block consultations', async () => {
+    await ready('pc-b-9b');
+    const request = job('pc-b-9b');
+    await redis.set(POOL_ADMISSION_WORKER_KEY, 'current-worker', 'PX', 3000);
+    await redis.hset(
+      POOL_DISPATCH_PENDING_KEY,
+      'expired',
+      JSON.stringify({
+        worker: 'current-worker',
+        source: { nonce: 'expired', deadlineAtMs: Date.now() - 1 },
+      }),
+      'obsolete',
+      JSON.stringify({
+        worker: 'old-worker',
+        source: { nonce: 'obsolete', deadlineAtMs: request.deadlineAtMs },
+      }),
+      'malformed',
+      JSON.stringify({ worker: 'current-worker', source: 1 }),
+    );
+    const value = await mailbox.reserve('pc-b-9b', request, { consultation: true });
+    expect(value).not.toBeNull();
+    expect(await redis.hlen(POOL_DISPATCH_PENDING_KEY)).toBe(0);
+    await complete(value!);
+  });
+
+  it('busy and stale nodes do not advertise capacity; a failed session does not block peers', async () => {
+    await ready('pc-a-4b');
+    await ready('pc-b-9b');
+    await mailbox.refreshWorker('pc-a-4b', sessions['pc-a-4b'], false);
+    expect(await mailbox.available()).toEqual(['pc-b-9b']);
+    await redis.del(commercialLlmPoolNodeKeys('pc-b-9b').heartbeat);
+    expect(await mailbox.available()).toEqual([]);
+    expect(await mailbox.reserve('pc-a-4b', job('pc-a-4b'))).toBeNull();
+    await mailbox.refreshWorker('pc-b-9b', sessions['pc-b-9b'], true);
+    await complete(await reserved('pc-b-9b'));
+  });
+
+  it('session loss invalidates its in-flight result and admits one fenced retry on another model', async () => {
+    await ready('pc-a-4b');
+    await ready('pc-b-9b');
+    const request = job('pc-a-4b');
+    const first = await reserved('pc-a-4b', request);
+    await mailbox.releaseWorker(first.nodeId, first.session);
+    expect(await mailbox.wait(first)).toEqual({ outcome: 'UNAVAILABLE' });
+    const second = await mailbox.reserve('pc-b-9b', {
+      ...request,
+      attempt: 2,
+      body: body('pc-b-9b'),
+    });
+    expect(second).not.toBeNull();
+    expect(
+      await mailbox.respond(first.nodeId, first.session, first.id, response(first.nodeId)),
+    ).toBe(false);
+    await mailbox.release(first);
+    await complete(second!);
+    expect(
+      await mailbox.reserve('pc-b-9b', { ...request, attempt: 2, body: body('pc-b-9b') }),
+    ).toBeNull();
+  });
+
+  it('an abandoned computation stays physically occupied until its old answer arrives', async () => {
+    await ready('pc-a-4b');
+    await ready('pc-b-9b');
+    const request = job('pc-a-4b');
+    const first = await reserved('pc-a-4b', request);
+    await mailbox.release(first);
+    expect(await mailbox.available()).toEqual(['pc-b-9b']);
+    const second = await mailbox.reserve('pc-b-9b', {
+      ...request,
+      attempt: 2,
+      body: body('pc-b-9b'),
+    });
+    expect(second).not.toBeNull();
+    await complete(second!);
+    await mailbox.release(first);
+    expect(await redis.exists(commercialLlmPoolNodeKeys('pc-a-4b').slot)).toBe(1);
+    expect(
+      await mailbox.respond(first.nodeId, first.session, first.id, response(first.nodeId)),
+    ).toBe(false);
+    expect(await redis.exists(commercialLlmPoolNodeKeys('pc-a-4b').slot)).toBe(0);
+  });
+
+  it('retries cannot replace content or renew the original computation deadline', async () => {
+    await ready('pc-a-4b');
+    await ready('pc-b-9b');
+    const request = job('pc-a-4b');
+    const first = await reserved('pc-a-4b', request);
+    await mailbox.release(first);
+    await mailbox.respond(first.nodeId, first.session, first.id, response(first.nodeId));
+    expect(await mailbox.reserve('pc-a-4b', { ...request, attempt: 2 })).toBeNull();
+    expect(
+      await mailbox.reserve('pc-b-9b', {
+        ...request,
+        attempt: 2,
+        body: body('pc-b-9b', 'Другой текст'),
+      }),
+    ).toBeNull();
+    expect(
+      await mailbox.reserve('pc-b-9b', {
+        ...request,
+        attempt: 2,
+        deadlineAtMs: request.deadlineAtMs + 100,
+        body: body('pc-b-9b'),
+      }),
+    ).toBeNull();
+    await complete(
+      (await mailbox.reserve('pc-b-9b', { ...request, attempt: 2, body: body('pc-b-9b') }))!,
+    );
+  });
+
+  it('only one waiter accepts a response and the terminal job fence survives resource release', async () => {
+    await ready('pc-b-9b');
+    const value = await reserved('pc-b-9b');
+    await mailbox.respond(value.nodeId, value.session, value.id, response(value.nodeId));
+    const results = await Promise.all([mailbox.wait(value), mailbox.wait(value)]);
+    expect(results.filter((r) => r.outcome === 'COMPLETE')).toHaveLength(1);
+    const stored = JSON.parse((await redis.get(commercialLlmPoolJobKey(value.jobId)))!);
+    expect(stored.state).toBe('complete');
+    expect(await mailbox.reserve(value.nodeId, { ...value, attempt: 2 })).toBeNull();
+  });
+
+  it('an obsolete worker cannot clear a newly registered session or its request', async () => {
+    await ready('pc-b-9b');
+    const first = await reserved('pc-b-9b');
+    await redis.pexpire(commercialLlmPoolNodeKeys('pc-b-9b').lease, 1);
+    await pause(10);
+    sessions['pc-b-9b'] = randomUUID();
+    await ready('pc-b-9b');
+    const second = await reserved('pc-b-9b');
+    await mailbox.releaseWorker('pc-b-9b', first.session);
+    await mailbox.release(first);
+    expect(await redis.get(commercialLlmPoolNodeKeys('pc-b-9b').lease)).toBe(second.session);
+    await complete(second);
+  });
+
+  it('rejects malformed answers and source-contract drift without classifying failure as negative', async () => {
+    await ready('pc-b-9b');
+    const request = job('pc-b-9b');
+    const value = await reserved('pc-b-9b', request);
+    expect(await mailbox.respond(value.nodeId, value.session, value.id, 'null')).toBe(true);
+    expect(await mailbox.wait(value)).toEqual({ outcome: 'FAILED' });
+    await expect(
+      mailbox.reserve('pc-b-9b', {
+        ...job('pc-b-9b'),
+        body: JSON.stringify({ ...JSON.parse(request.body), tools: [] }),
+      }),
+    ).rejects.toThrow('pool_request_refused');
+    expect(await redis.exists(commercialLlmPoolNodeKeys('pc-b-9b').slot)).toBe(0);
+  });
+
+  it('expiry rejects late answers and never extends job or source authority', async () => {
+    await ready('pc-b-9b');
+    const value = await reserved('pc-b-9b', job('pc-b-9b', 180));
+    expect(await mailbox.wait(value)).toEqual({ outcome: 'TIMEOUT' });
+    expect(
+      await mailbox.respond(value.nodeId, value.session, value.id, response(value.nodeId)),
+    ).toBe(false);
+    expect(await mailbox.reserve(value.nodeId, { ...value, attempt: 2 })).toBeNull();
+  });
+
+  it('external cancellation abandons the attempt and rejects its eventual response', async () => {
+    await ready('pc-b-9b');
+    const value = await reserved('pc-b-9b');
+    const controller = new AbortController();
+    controller.abort();
+    await expect(mailbox.wait(value, controller.signal)).rejects.toMatchObject({ kind: 'ABORTED' });
+    expect(
+      await mailbox.respond(value.nodeId, value.session, value.id, response(value.nodeId)),
+    ).toBe(false);
+    expect(await redis.exists(commercialLlmPoolNodeKeys(value.nodeId).slot)).toBe(0);
+  });
+
+  it('releases only an undispatched local-server reservation and retains its attempt fence', async () => {
+    await ready('server-9b');
+    await ready('pc-b-9b');
+    const local = await reserved('server-9b');
+    expect(await mailbox.releaseUndispatched(local)).toBe(true);
+    expect(await mailbox.releaseUndispatched(local)).toBe(false);
+    expect(JSON.parse((await redis.get(commercialLlmPoolJobKey(local.jobId)))!).state).toBe(
+      'released',
+    );
+    expect(await mailbox.available()).toEqual(['server-9b', 'pc-b-9b']);
+    const remote = await reserved('pc-b-9b');
+    await expect(mailbox.releaseUndispatched(remote)).rejects.toThrow('pool_local_release_refused');
+    expect(await redis.exists(commercialLlmPoolNodeKeys('pc-b-9b').slot)).toBe(1);
+    const replied = await reserved('server-9b');
+    await mailbox.respond(replied.nodeId, replied.session, replied.id, response(replied.nodeId));
+    expect(await mailbox.releaseUndispatched(replied)).toBe(false);
+    expect(await mailbox.wait(replied)).toMatchObject({ outcome: 'COMPLETE' });
+  });
+});

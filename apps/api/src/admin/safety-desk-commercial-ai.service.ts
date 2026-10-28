@@ -8,6 +8,7 @@ import type Redis from 'ioredis';
 import { z } from 'zod';
 import { createCommercialLlmRedis } from '../moderation/commercial/commercial-llm-shadow.lease';
 import { COMMERCIAL_LLM_ENFORCEMENT_KEYS } from '../moderation/commercial/commercial-llm-enforcement.mailbox';
+import { COMMERCIAL_LLM_POOL_ADMISSION_KEYS } from '../moderation/commercial/commercial-llm-pool-admission.mailbox';
 
 export const COMMERCIAL_AI_STATUS_MAX_BYTES = 16_384;
 const FRESH_MS = 30_000;
@@ -225,10 +226,13 @@ export class SafetyDeskCommercialAiService implements OnModuleDestroy {
         await this.redis.connect();
       }
       if (this.stopping) throw new Error();
+      const poolEnabled =
+        this.config.get<boolean>('COMMERCIAL_LLM_POOL_ENABLED') === true &&
+        this.config.get<boolean>('COMMERCIAL_LLM_POOL_WORKERS_ENABLED') === true;
       const reply: unknown = await this.redis.eval(
         READ_COMMERCIAL_AI_STATUS,
         1,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.status,
+        (poolEnabled ? COMMERCIAL_LLM_POOL_ADMISSION_KEYS : COMMERCIAL_LLM_ENFORCEMENT_KEYS).status,
         COMMERCIAL_AI_STATUS_MAX_BYTES,
       );
       const at = Date.now();

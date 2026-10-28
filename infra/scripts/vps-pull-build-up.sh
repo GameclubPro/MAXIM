@@ -47,6 +47,13 @@ STATISTICS_CENTRAL_DEPLOY_EPOCH="${MAXIM_STATISTICS_CENTRAL_EPOCH:-}"
 COMMERCIAL_OCR_DEPLOY_MODE=""
 COMMERCIAL_AI_DEPLOY_ENABLED="${MAXIM_COMMERCIAL_LLM_ENFORCEMENT:-}"
 COMMERCIAL_AI_STATE_HELPER="$ROOT_DIR/infra/scripts/commercial-ai-rollout-state.mjs"
+COMMERCIAL_AI_POOL_WORKERS_DEPLOY_ENABLED="${MAXIM_COMMERCIAL_LLM_POOL_WORKERS_ENABLED:-}"
+COMMERCIAL_AI_POOL_DEPLOY_ENABLED="${MAXIM_COMMERCIAL_LLM_POOL_ENABLED:-}"
+COMMERCIAL_AI_POOL_DEPLOY_POLICY="${MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY:-}"
+COMMERCIAL_AI_POOL_DEPLOY_REQUESTED=""
+COMMERCIAL_AI_POOL_TARGET_WORKERS=""
+COMMERCIAL_AI_POOL_TARGET_ENABLED=""
+COMMERCIAL_AI_POOL_TARGET_POLICY=""
 
 SERVICES=()
 if [[ $# -ge 2 ]]; then
@@ -227,6 +234,63 @@ verify_commercial_ai_deploy_flag() {
     fi
     docker inspect --format '{{json .Config.Env}}' "$container_id" |
       node "$COMMERCIAL_AI_STATE_HELPER" verify-runtime-env "$COMMERCIAL_AI_DEPLOY_ENABLED" || return
+  done
+}
+
+validate_commercial_ai_pool_deploy_flags() {
+  local value
+  for value in "$COMMERCIAL_AI_POOL_WORKERS_DEPLOY_ENABLED" "$COMMERCIAL_AI_POOL_DEPLOY_ENABLED"; do
+    case "$value" in
+      ''|true|false) ;;
+      *) echo 'Commercial AI pool deploy flags must be true or false when supplied.' >&2; return 2 ;;
+    esac
+  done
+  case "$COMMERCIAL_AI_POOL_DEPLOY_POLICY" in
+    ''|confirm-positive|direct-4b) ;;
+    *) echo 'Commercial AI pool policy must be confirm-positive or direct-4b.' >&2; return 2 ;;
+  esac
+  if [[ -n "$COMMERCIAL_AI_POOL_WORKERS_DEPLOY_ENABLED" || -n "$COMMERCIAL_AI_POOL_DEPLOY_ENABLED" || -n "$COMMERCIAL_AI_POOL_DEPLOY_POLICY" ]]; then
+    COMMERCIAL_AI_POOL_DEPLOY_REQUESTED=true
+  fi
+}
+
+prepare_commercial_ai_pool_deploy_flags() {
+  # FLAG: Canonical dotenv owns all pool interpolation. A process environment cannot silently
+  # activate routing or direct 4B decisions outside the explicit guarded deploy request.
+  unset COMMERCIAL_LLM_POOL_WORKERS_ENABLED COMMERCIAL_LLM_POOL_ENABLED COMMERCIAL_LLM_POOL_4B_POLICY
+  node "$COMMERCIAL_AI_STATE_HELPER" read-pool-env .env >/dev/null || return
+  [[ -n "$COMMERCIAL_AI_POOL_DEPLOY_REQUESTED" ]] || return 0
+  unset MAXIM_COMPOSE_SERVICE_ENV_FILE
+  export MAXIM_COMPOSE_SERVICE_ENV_FILE=../.env
+  local target
+  target="$(node "$COMMERCIAL_AI_STATE_HELPER" resolve-pool-env .env \
+    "$COMMERCIAL_AI_POOL_WORKERS_DEPLOY_ENABLED" "$COMMERCIAL_AI_POOL_DEPLOY_ENABLED" "$COMMERCIAL_AI_POOL_DEPLOY_POLICY")" || return
+  read -r COMMERCIAL_AI_POOL_TARGET_WORKERS COMMERCIAL_AI_POOL_TARGET_ENABLED COMMERCIAL_AI_POOL_TARGET_POLICY <<< "$target"
+}
+
+persist_commercial_ai_pool_deploy_flags() {
+  [[ -n "$COMMERCIAL_AI_POOL_DEPLOY_REQUESTED" ]] || return 0
+  require_deploy_lock || return
+  maxim_webhook_assert_api_rollout_quiescence COMPOSE_FILES || return
+  node "$COMMERCIAL_AI_STATE_HELPER" patch-pool-env .env \
+    "$COMMERCIAL_AI_POOL_TARGET_WORKERS" "$COMMERCIAL_AI_POOL_TARGET_ENABLED" "$COMMERCIAL_AI_POOL_TARGET_POLICY" || return
+  docker compose "${COMPOSE_FILES[@]}" config --format json |
+    node "$COMMERCIAL_AI_STATE_HELPER" verify-pool-compose \
+      "$COMMERCIAL_AI_POOL_TARGET_WORKERS" "$COMMERCIAL_AI_POOL_TARGET_ENABLED" "$COMMERCIAL_AI_POOL_TARGET_POLICY" "${API_SERVICES[@]}"
+}
+
+verify_commercial_ai_pool_deploy_flags() {
+  [[ -n "$COMMERCIAL_AI_POOL_DEPLOY_REQUESTED" ]] || return 0
+  local service container_id
+  for service in "${API_SERVICES[@]}"; do
+    container_id="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || return
+    if [[ ! "$container_id" =~ ^[0-9a-f]{12,64}$ ]]; then
+      echo 'Commercial AI pool verification requires exactly one container for every API role.' >&2
+      return 1
+    fi
+    docker inspect --format '{{json .Config.Env}}' "$container_id" |
+      node "$COMMERCIAL_AI_STATE_HELPER" verify-pool-runtime-env \
+        "$COMMERCIAL_AI_POOL_TARGET_WORKERS" "$COMMERCIAL_AI_POOL_TARGET_ENABLED" "$COMMERCIAL_AI_POOL_TARGET_POLICY" || return
   done
 }
 
@@ -516,7 +580,7 @@ impact_plan_selects_component() {
 
 derive_auto_services() {
   SERVICES=()
-  if [[ -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "${COMMERCIAL_AI_DEPLOY_ENABLED:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ]] || impact_plan_selects_component api-shared; then
+  if [[ -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "${COMMERCIAL_AI_DEPLOY_ENABLED:-}" || -n "${COMMERCIAL_AI_POOL_DEPLOY_REQUESTED:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ]] || impact_plan_selects_component api-shared; then
     SERVICES+=("api-ingress")
   fi
   if impact_plan_selects_component miniapp-major-static; then
@@ -537,7 +601,7 @@ print_deploy_plan() {
 
   for component in "${RELEASE_COMPONENTS[@]}"; do
     current_sha="$(release_field "$component" sourceSha || printf '%s' unknown)"
-    if [[ "$component" == api-shared && ( -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "${COMMERCIAL_AI_DEPLOY_ENABLED:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ) ]] || impact_plan_selects_component "$component"; then
+    if [[ "$component" == api-shared && ( -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "${COMMERCIAL_AI_DEPLOY_ENABLED:-}" || -n "${COMMERCIAL_AI_POOL_DEPLOY_REQUESTED:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "${STATISTICS_EXCHANGE_DEPLOY_ENABLED:-}" || -n "${STATISTICS_CENTRAL_DEPLOY_EPOCH:-}" ) ]] || impact_plan_selects_component "$component"; then
       selected+=("$component")
     fi
     echo "$component current=$current_sha target=$(git rev-parse HEAD)"
@@ -1473,6 +1537,7 @@ validate_post_release_reclaim
 validate_retention_deploy_mode
 COMMERCIAL_OCR_DEPLOY_MODE="$(maxim_topology_requested_commercial_ocr_deploy_mode)"
 validate_commercial_ai_deploy_flag
+validate_commercial_ai_pool_deploy_flags
 validate_statistics_exchange_deploy_flag
 validate_statistics_central_deploy_epoch
 acquire_deploy_lock
@@ -1492,6 +1557,7 @@ maxim_require_ordinary_effect_authority "$ROOT_DIR" || exit $?
 ensure_compose_env
 prepare_retention_deploy_mode
 prepare_commercial_ai_deploy_flag
+prepare_commercial_ai_pool_deploy_flags
 prepare_statistics_exchange_deploy_flag
 prepare_statistics_central_deploy_epoch
 initialize_release_inventory
@@ -1515,7 +1581,7 @@ fi
 validate_admin_access_code
 warn_postgres_password_fallback
 
-if [[ -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "${COMMERCIAL_AI_DEPLOY_ENABLED:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" || -n "$STATISTICS_CENTRAL_DEPLOY_EPOCH" ]] && ! has_requested_api_service; then
+if [[ -n "${COMMERCIAL_OCR_DEPLOY_MODE:-}" || -n "${COMMERCIAL_AI_DEPLOY_ENABLED:-}" || -n "${COMMERCIAL_AI_POOL_DEPLOY_REQUESTED:-}" || -n "$RETENTION_DEPLOY_MODE" || -n "$STATISTICS_EXCHANGE_DEPLOY_ENABLED" || -n "$STATISTICS_CENTRAL_DEPLOY_EPOCH" ]] && ! has_requested_api_service; then
   SERVICES+=("api-ingress")
 fi
 BUILD_API_IMAGE=0
@@ -1696,6 +1762,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
 
   persist_retention_deploy_mode
   persist_commercial_ai_deploy_flag
+  persist_commercial_ai_pool_deploy_flags
   persist_statistics_exchange_deploy_flag
   persist_statistics_central_deploy_epoch
 
@@ -1749,6 +1816,7 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   done
   verify_retention_deploy_mode
   verify_commercial_ai_deploy_flag
+  verify_commercial_ai_pool_deploy_flags
   verify_statistics_exchange_deploy_flag
   verify_statistics_central_deploy_epoch
   if [[ "$TARGET_HAS_OCR_NATIVE_SANDBOX" -eq 1 ]]; then
