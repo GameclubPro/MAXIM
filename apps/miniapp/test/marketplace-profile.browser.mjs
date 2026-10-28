@@ -71,10 +71,10 @@ try {
         await page.goto(
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=delayed`,
         );
-        const entry = page.getByRole('button', { name: 'Профиль на бирже', exact: true });
+        const entry = page.getByRole('button', { name: 'Биржик', exact: true });
         await entry.waitFor();
         assert.equal(await entry.getAttribute('data-settings-navigation-entry'), 'true');
-        assert.equal((await entry.textContent()).trim(), 'Профиль на бирже');
+        assert.equal((await entry.textContent()).trim(), 'Биржик');
         assert.equal(
           await entry
             .locator('small, .settings-section__summary, .settings-section__state')
@@ -83,7 +83,7 @@ try {
         );
         await entry.click();
         assert.equal(await entry.getAttribute('aria-expanded'), 'true');
-        const workspace = page.locator('.marketplace-profile');
+        const workspace = page.locator('.marketplace-entry');
         await workspace.getByLabel('Название', { exact: true }).waitFor();
         await assertInternalExchangeHidden(workspace);
         await workspace.getByLabel('Название', { exact: true }).fill('Мой несохранённый профиль');
@@ -135,39 +135,50 @@ try {
         );
         assert.match(
           await workspace.textContent(),
-          /Для рекламы и взаимопиара подключите бота «Связки»/u,
+          /Для рекламы и взаимопиара подключите бота «Биржика»/u,
         );
-        const toggle = workspace.getByRole('checkbox', { name: /Кнопка «Профиль на бирже»/u });
+        const toggle = workspace.getByRole('checkbox', {
+          name:
+            profile === 'publisher'
+              ? 'В публикациях'
+              : kind === 'channel'
+                ? 'В новых постах канала'
+                : 'В уведомлениях модерации',
+          exact: true,
+        });
         assert.equal(await toggle.isChecked(), false);
         assert.equal(await toggle.isDisabled(), true);
         await assertInternalExchangeHidden(workspace);
         await workspace.getByRole('button', { name: 'Опубликовать на бирже', exact: true }).click();
         await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
         const connect = workspace.getByRole('button', {
-          name: 'Подключить бота «Связки»',
+          name: 'Подключить бота «Биржика»',
           exact: true,
         });
         await connect.click();
-        assert.equal(
-          await page.evaluate(
-            (expected) =>
-              window.__MAXIM_VISUAL_BRIDGE_EVENTS__.some((event) =>
-                JSON.stringify(event).includes(expected),
-              ),
-            `connect_${kind}_-100`,
-          ),
-          true,
+        await page.waitForFunction(
+          (expected) =>
+            window.__MAXIM_VISUAL_BRIDGE_EVENTS__.some((event) =>
+              JSON.stringify(event).includes(expected),
+            ),
+          `connect_${kind}_-100`,
         );
         assert.match(
           await workspace.textContent(),
           new RegExp(
-            profile === 'publisher' ? 'публикациях Публика' : 'публикациях ботов Майора',
+            profile === 'publisher'
+              ? 'В публикациях'
+              : kind === 'channel'
+                ? 'В новых постах канала'
+                : 'В уведомлениях модерации',
             'u',
           ),
         );
         await toggle.click();
-        await page.waitForFunction(
-          () => document.querySelector('.marketplace-profile__switch input')?.checked === true,
+        await page.waitForFunction(() =>
+          [...document.querySelectorAll('.marketplace-profile__switch input')].some(
+            (input) => input.checked,
+          ),
         );
         await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
         assert.equal(await toggle.isChecked(), true);
@@ -198,7 +209,14 @@ try {
         await assertInternalExchangeHidden(workspace);
         await workspace.getByRole('button', { name: 'Скрыть профиль', exact: true }).click();
         await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
-        assert.equal(await toggle.isChecked(), false);
+        assert.equal(
+          await toggle.isChecked(),
+          true,
+          'Pausing suppresses the button without removing the explicit policy',
+        );
+        await workspace
+          .getByText('Кнопка появится после публикации доступного профиля.', { exact: true })
+          .waitFor();
         await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).click();
         await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
         const hide = workspace.getByRole('button', { name: 'Скрыть профиль', exact: true });
@@ -206,8 +224,8 @@ try {
         await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
         assert.equal(
           await toggle.isChecked(),
-          false,
-          'Refreshing the profile must not re-enable CTA',
+          true,
+          'Refreshing preserves the explicit policy while the paused profile suppresses its effect',
         );
         await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
         const save = workspace.getByRole('button', { name: 'Сохранить изменения', exact: true });
@@ -221,12 +239,12 @@ try {
         await save.click();
         await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).waitFor();
         await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
-        assert.equal((await entry.textContent()).trim(), 'Профиль на бирже');
+        assert.equal((await entry.textContent()).trim(), 'Биржик');
         assert.equal(await entry.getAttribute('aria-expanded'), 'false');
         await page.goto(
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=0`,
         );
-        await page.getByRole('button', { name: 'Профиль на бирже', exact: true }).click();
+        await page.getByRole('button', { name: 'Биржик', exact: true }).click();
         await workspace.getByLabel('Название', { exact: true }).waitFor();
         await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
         await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
@@ -247,13 +265,72 @@ try {
           ),
           fullPage: false,
         });
+        await page.goto(
+          `${baseUrl}${route}?preview=1&profile=${profile}&marketplaceOwner=0&focus=birzhik`,
+        );
+        await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
+        assert.equal(
+          await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).count(),
+          0,
+        );
+        assert.equal(await workspace.getByLabel('Название', { exact: true }).count(), 0);
+        const expectedCount = profile === 'moderation' && kind === 'chat' ? 2 : 1;
+        assert.equal(await workspace.getByRole('checkbox').count(), expectedCount);
+        await toggle.click();
+        await page.waitForFunction(() =>
+          [...document.querySelectorAll('.marketplace-profile__switch input')].some(
+            (input) => input.checked,
+          ),
+        );
+        assert.equal(await toggle.isChecked(), true);
+        if (expectedCount === 2)
+          assert.equal(
+            await workspace
+              .getByRole('checkbox', { name: 'В приветствиях', exact: true })
+              .isChecked(),
+            false,
+          );
+        await page.screenshot({
+          path: path.join(
+            output,
+            `${deviceName}-${colorScheme}-${profile}-${kind}-second-admin.png`,
+          ),
+          fullPage: false,
+        });
+        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+        await workspace.waitFor({ state: 'hidden' });
+        assert.equal(new URL(page.url()).searchParams.has('focus'), false);
+        if (profile === 'moderation' && kind === 'chat') {
+          await page.goto(`${baseUrl}?preview=1`);
+          const catalog = page.getByRole('link', { name: 'Биржик', exact: true });
+          await catalog.waitFor();
+          await applyNativeVisualMode(page, {
+            safeTop: deviceName === 'iphone' ? 20 : 24,
+            safeBottom: 0,
+          });
+          const bounds = await catalog.boundingBox();
+          assert.ok(
+            bounds && bounds.y >= 0 && bounds.y + bounds.height <= device.viewport.height,
+            'Birzhik entry is visible without scrolling the platform list',
+          );
+          await catalog.click();
+          await page.waitForFunction(() =>
+            window.__MAXIM_VISUAL_BRIDGE_EVENTS__.some((event) =>
+              JSON.stringify(event).includes('startapp=catalog'),
+            ),
+          );
+          await page.screenshot({
+            path: path.join(output, `${deviceName}-${colorScheme}-home-birzhik.png`),
+            fullPage: false,
+          });
+        }
         assert.deepEqual(errors, []);
         await context.close();
       }
     }
   }
   process.stdout.write(
-    'Marketplace profile: 16 browser scenarios passed (Major/Publisher, chat/channel, iPhone/Android, light/dark).\n',
+    'Marketplace profile: 16 owner and 16 second-administrator browser scenarios passed (Major/Publisher, chat/channel, iPhone/Android, light/dark).\n',
   );
   process.stdout.write(`Screenshots: ${output}\n`);
 } finally {

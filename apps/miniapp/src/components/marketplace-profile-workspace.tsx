@@ -6,7 +6,7 @@ import {
   type MarketplaceProfileState,
 } from '@maxim/contracts/marketplace-integration';
 import { EntityAvatar } from './ui/entity-avatar';
-import { openMaxBotLink } from '../lib/max-bridge';
+import { marketplaceTargetFromLink, openMarketplace } from '../lib/marketplace-launch';
 import { ApiRequestError } from '../lib/api-request-error';
 import {
   marketplaceDetails,
@@ -22,7 +22,7 @@ import {
 } from '../lib/marketplace-profile-view';
 import type { MarketplaceProfileCardProps } from './marketplace-profile-card';
 
-type Action = 'save' | 'publish' | 'pause' | 'toggle';
+type Action = 'save' | 'publish' | 'pause';
 type Draft = { details: MarketplaceDetails; original: MarketplaceDetails; revision: number };
 
 export default function MarketplaceProfileWorkspace({
@@ -71,18 +71,12 @@ export default function MarketplaceProfileWorkspace({
   const state = query.data;
   const dirty = draft !== null && JSON.stringify(draft.details) !== JSON.stringify(draft.original);
   const mutation = useMutation({
-    mutationFn: async ({ action, appendEnabled }: { action: Action; appendEnabled?: boolean }) => {
+    mutationFn: async ({ action }: { action: Action }) => {
       if (!state) throw new Error('Сначала проверьте состояние профиля');
       const change = {
         action,
-        expectedRevision:
-          action === 'toggle'
-            ? state.appendRevision
-            : action === 'save'
-              ? (draft?.revision ?? state.revision)
-              : state.revision,
+        expectedRevision: action === 'save' ? (draft?.revision ?? state.revision) : state.revision,
         ...(action === 'save' ? { details: draft?.details ?? marketplaceDetails(state) } : {}),
-        ...(action === 'toggle' ? { appendEnabled } : {}),
       };
       const fingerprint = JSON.stringify(change);
       if (attempt.current?.fingerprint !== fingerprint)
@@ -107,6 +101,12 @@ export default function MarketplaceProfileWorkspace({
         setNotice('Профиль сохранён.');
       } else setNotice('');
       void cache.invalidateQueries({ queryKey });
+      void cache.invalidateQueries({
+        queryKey: ['marketplace-entry', profile, entityType, entityId],
+      });
+      void cache.invalidateQueries({
+        queryKey: ['marketplace-button-policy', profile, entityType, entityId],
+      });
     },
     onError: () => void cache.invalidateQueries({ queryKey }),
   });
@@ -178,14 +178,18 @@ export default function MarketplaceProfileWorkspace({
   const profileUnavailable = !marketplaceProfileAvailable(state);
   const stats = state.statistics;
   const openLink = (url: string | null | undefined) => {
-    if (url) openMaxBotLink(url);
+    const target = url ? marketplaceTargetFromLink(url, state.kind, state.entityId) : null;
+    if (!target) return;
+    void openMarketplace(api, target).catch(() =>
+      setNotice('Не удалось открыть Биржик. Проверьте соединение и повторите переход.'),
+    );
   };
   const placementCopy = {
-    BOT_REQUIRED: 'Для рекламы и взаимопиара подключите бота «Связки».',
+    BOT_REQUIRED: 'Для рекламы и взаимопиара подключите бота «Биржика».',
     SETUP_REQUIRED: 'Бот подключён. Настройте предложения для размещений.',
     READY:
       'Можно принимать заявки. Публикации требуют согласованных условий и отдельных разрешений.',
-    UNAVAILABLE: 'Размещения сейчас недоступны. Проверьте настройки в «Связке».',
+    UNAVAILABLE: 'Размещения сейчас недоступны. Проверьте настройки в «Биржике».',
   }[view.placement];
   return (
     <div className="marketplace-profile">
@@ -401,7 +405,7 @@ export default function MarketplaceProfileWorkspace({
                   openLink(state.capabilities?.connectUrl);
                 }}
               >
-                Подключить бота «Связки»
+                Подключить бота «Биржика»
               </button>
             ) : state.capabilities?.manageUrl && view.placement !== 'READY' ? (
               <button
@@ -418,7 +422,7 @@ export default function MarketplaceProfileWorkspace({
             ) : null}
             {handoff && (
               <p role="status">
-                В «Связке» добавьте бота в этот {entityType === 'channel' ? 'канал' : 'чат'} и
+                В «Биржике» добавьте бота в этот {entityType === 'channel' ? 'канал' : 'чат'} и
                 завершите проверку. Вернитесь сюда и нажмите «Проверить состояние». Согласия на
                 размещения настраиваются отдельно.
               </p>
@@ -494,33 +498,6 @@ export default function MarketplaceProfileWorkspace({
               </button>
             )}
           </div>
-          <label className="marketplace-profile__toggle">
-            <span>
-              <strong>Кнопка «Профиль на бирже»</strong>
-              <small>
-                В новых публикациях {profile === 'publisher' ? 'Публика' : 'ботов Майора'} в этом{' '}
-                {entityType === 'channel' ? 'канале' : 'чате'}.
-              </small>
-            </span>
-            <span className="marketplace-profile__switch">
-              <input
-                type="checkbox"
-                checked={state.appendEnabled}
-                disabled={busy || (!state.appendEnabled && !view.canAppend)}
-                onChange={(event) =>
-                  mutation.mutate({ action: 'toggle', appendEnabled: event.target.checked })
-                }
-              />
-              <span className="marketplace-profile__track" aria-hidden />
-            </span>
-          </label>
-          <p className="marketplace-profile-card__intro">
-            Сообщения участников, личные превью и старые посты не меняются. Если профиль недоступен
-            или для кнопки нет места, публикация отправится без неё.
-            {!view.canAppend && !state.appendEnabled
-              ? ' Для включения нужен доступный опубликованный профиль.'
-              : ''}
-          </p>
         </>
       )}
       {notice && <p role="status">{notice}</p>}
@@ -530,11 +507,6 @@ export default function MarketplaceProfileWorkspace({
             mutation.error,
             'Не удалось сохранить изменение. Введённые данные сохранены; проверьте состояние и повторите.',
           )}
-        </p>
-      )}
-      {state.buttonDiagnostic === 'KEYBOARD_FULL' && (
-        <p className="marketplace-profile__notice" role="status">
-          В последней публикации не хватило места для кнопки профиля. Остальные кнопки сохранены.
         </p>
       )}
       <button

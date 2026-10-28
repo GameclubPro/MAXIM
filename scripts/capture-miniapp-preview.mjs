@@ -173,78 +173,28 @@ async function openSettingsSection(page, name, panelSelector) {
   await page.waitForTimeout(350);
 }
 
-async function assertAdvertisingSoonModule(page) {
-  const entry = page.getByRole('button', { name: 'Рекламная площадка', exact: true });
+async function assertBirzhikModule(page) {
+  const entry = page.getByRole('button', { name: 'Биржик', exact: true });
   await entry.waitFor({ state: 'visible' });
-  await page.getByRole('searchbox', { name: 'Найти настройку', exact: true }).fill('Связка');
+  await page.getByRole('searchbox', { name: 'Найти настройку', exact: true }).fill('Биржик');
   await page.waitForFunction(
     () => document.querySelectorAll('.settings-home-entry:not([hidden])').length === 1,
   );
-  if (!(await entry.isVisible())) throw new Error('Settings search must find the upcoming module.');
+  if (!(await entry.isVisible())) throw new Error('Settings search must find Birzhik.');
   await page.getByRole('button', { name: 'Очистить поиск', exact: true }).click();
   await entry.scrollIntoViewIfNeeded();
-  if (!(await entry.isDisabled()))
-    throw new Error('The advertising announcement must be unavailable.');
-  if (await page.evaluate(() => innerWidth <= 600)) {
-    await assertSettingsOverviewNavigation(page, { name: 'advertising-unavailable' });
-  } else {
-    const badge = entry.locator('.settings-advertising-soon__badge');
-    if (!(await badge.isVisible()) || (await badge.textContent())?.trim() !== 'Скоро') {
-      throw new Error('Desktop must retain the unavailable module context.');
-    }
-  }
-  const initialUrl = page.url();
-  const writes = [];
-  const recordWrite = (request) => {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) writes.push(request.method());
-  };
-  page.on('request', recordWrite);
-  try {
-    await entry.evaluate((button) => button.click());
-    const box = await entry.boundingBox();
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-    await page.evaluate(
-      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-    );
-    if (
-      page.url() !== initialUrl ||
-      writes.length ||
-      (await page.locator('.settings-drilldown__panel:visible').count())
-    ) {
-      throw new Error('The coming-soon module cannot navigate, open a sheet or mutate settings.');
-    }
-  } finally {
-    page.off('request', recordWrite);
-  }
+  if (await entry.isDisabled()) throw new Error('Birzhik entry must be available to all users.');
+  if (await page.getByRole('button', { name: 'Рекламная площадка', exact: true }).count())
+    throw new Error('Birzhik must replace the duplicate advertising placeholder.');
+  if (await page.evaluate(() => innerWidth <= 600))
+    await assertSettingsOverviewNavigation(page, { name: 'birzhik' });
 }
 
-async function assertAdvertisingPilotModule(page) {
-  const entry = page.getByRole('button', { name: 'Рекламная площадка', exact: true });
-  await page.waitForFunction(() => {
-    const button = document.querySelector('button[aria-label="Рекламная площадка"]');
-    return button && !button.disabled;
-  });
-  await entry.click();
-  const workspace = page.locator('.advertising-workspace');
-  await workspace.waitFor({ state: 'visible' });
-  const toggle = workspace.getByRole('checkbox', { name: 'Включить рекламную площадку' });
-  await toggle.click();
-  await page.waitForFunction(
-    () => document.querySelector('.advertising-workspace input[type="checkbox"]')?.checked === true,
-  );
-  const send = workspace.getByRole('button', { name: 'Отправить кнопку', exact: true });
-  await send.click();
-  await workspace.getByText('Кнопка отправлена', { exact: true }).waitFor();
-  await toggle.click();
-  await page.waitForFunction(
-    () =>
-      document.querySelector('.advertising-workspace input[type="checkbox"]')?.checked === false,
-  );
-  if (!(await send.isDisabled())) throw new Error('Disabled placement cannot send a button');
-  await page.keyboard.press('Escape');
-  await workspace.waitFor({ state: 'hidden' });
-  await entry.click();
-  await workspace.getByText('Кнопка отправлена', { exact: true }).waitFor();
+async function assertBirzhikProfileModule(page) {
+  await assertBirzhikModule(page);
+  await page.getByRole('button', { name: 'Биржик', exact: true }).click();
+  await page.locator('.marketplace-entry').waitFor({ state: 'visible' });
+  await page.getByRole('heading', { name: 'Кнопка «Профиль в Биржике»', exact: true }).waitFor();
 }
 
 async function assertHintDismissal(page, panel, trigger) {
@@ -2648,25 +2598,17 @@ const scenarioBehaviors = [
     },
   },
   {
-    name: 'chat-settings-advertising-soon',
-    beforeShot: assertAdvertisingSoonModule,
+    name: 'chat-settings-birzhik',
+    beforeShot: assertBirzhikModule,
   },
   {
-    name: 'chat-settings-advertising-pilot',
-    beforeShot: assertAdvertisingPilotModule,
+    name: 'chat-settings-birzhik-profile',
+    beforeShot: assertBirzhikProfileModule,
   },
   {
     name: 'chat-settings',
     beforeShot: async (page, profile) => {
-      await assertAdvertisingSoonModule(page);
-      const originalUrl = page.url();
-      const pilotUrl = new URL(originalUrl);
-      pilotUrl.searchParams.set('advertisingPilot', '1');
-      await page.goto(pilotUrl.href);
-      await assertAdvertisingPilotModule(page);
-      await applyNativeScreenshotMode(page, profile);
-      await page.goto(originalUrl);
-      await assertAdvertisingSoonModule(page);
+      await assertBirzhikModule(page);
       await applyNativeScreenshotMode(page, profile);
       await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
     },

@@ -91,6 +91,12 @@
     color: var(--text-secondary);
     font-size: 14px;
   }
+  .marketplace-entry {
+    display: grid;
+    gap: 20px;
+    min-width: 0;
+    padding-bottom: 28px;
+  }
   .marketplace-profile {
     display: grid;
     gap: 20px;
@@ -140,7 +146,8 @@
   .marketplace-profile__facts dd {
     margin: 4px 0 0;
   }
-  .marketplace-profile .button {
+  .marketplace-profile .button,
+  .marketplace-entry .button {
     min-height: 44px;
     white-space: normal;
     overflow-wrap: anywhere;

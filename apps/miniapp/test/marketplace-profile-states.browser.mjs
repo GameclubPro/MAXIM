@@ -100,6 +100,52 @@ try {
         const url = new URL(route.request().url());
         if (url.origin !== new URL(baseUrl).origin) return route.abort();
         if (url.pathname !== '/app/__marketplace-fixture') return route.continue();
+        const requestedPath = url.searchParams.get('path') ?? '';
+        if (requestedPath.includes('/entry?') && status === 200) {
+          return route.fulfill({
+            json: {
+              entityId: state.entityId,
+              kind: state.kind,
+              profile: 'publisher',
+              publicState: state.capabilities.publicState,
+              listing: state.listing
+                ? {
+                    id: state.listing.id,
+                    ownershipKey: 'a'.repeat(64),
+                    title: state.listing.title,
+                    publicUrl: state.listing.publicUrl,
+                    profileOnly: state.listing.profileOnly,
+                  }
+                : null,
+              isOwner: true,
+              canCreate: false,
+              manageUrl: state.capabilities.manageUrl,
+              connectUrl: state.capabilities.connectUrl,
+              checkedAt: new Date().toISOString(),
+              validUntil: new Date(Date.now() + 300000).toISOString(),
+            },
+          });
+        }
+        if (requestedPath.includes('/button-policy?')) {
+          return route.fulfill({
+            json: {
+              entityId: state.entityId,
+              kind: state.kind,
+              profile: 'publisher',
+              revision: 0,
+              contexts: [
+                {
+                  context: 'PUBLICATIONS',
+                  enabled: false,
+                  effective: false,
+                  status: 'OFF',
+                  enabledAt: null,
+                },
+              ],
+              buttonDiagnostic: null,
+            },
+          });
+        }
         if (route.request().method() === 'POST') {
           const body = route.request().postDataJSON();
           mutations.push(body);
@@ -135,7 +181,7 @@ try {
       code = 'SERVICE_UNAVAILABLE';
       await workspace.getByRole('button', { name: 'Проверить снова', exact: true }).click();
       await workspace.getByRole('alert').waitFor();
-      assert.match(await workspace.textContent(), /Не удалось получить состояние/u);
+      assert.match(await workspace.textContent(), /Не удалось получить профиль/u);
       status = 200;
       await workspace.getByRole('button', { name: 'Проверить снова', exact: true }).click();
       await workspace.getByRole('button', { name: 'Настроить размещения', exact: true }).waitFor();
@@ -147,7 +193,7 @@ try {
       );
       assert.equal(
         await workspace
-          .getByRole('button', { name: 'Подключить бота «Связки»', exact: true })
+          .getByRole('button', { name: 'Подключить бота «Биржика»', exact: true })
           .count(),
         0,
       );
