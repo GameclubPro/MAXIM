@@ -23,10 +23,10 @@ export const marketplaceButtonStatus: Record<
 > = {
   OFF: '',
   READY: '',
-  CHECKING: 'Проверяем доступность кнопки…',
-  PROFILE_UNAVAILABLE: 'Кнопка появится после публикации доступного профиля.',
-  ACCESS_REQUIRED: 'Для кнопки нужны действующие права администратора и бота.',
-  CONFIRM_REQUIRED: 'Подтвердите включение с текущими правами.',
+  CHECKING: 'Проверяем доступ…',
+  PROFILE_UNAVAILABLE: 'Профиль недоступен посетителям.',
+  ACCESS_REQUIRED: 'Проверьте права администратора и бота.',
+  CONFIRM_REQUIRED: 'Нужно повторное подтверждение.',
 };
 
 export function mergeMarketplaceButtonPolicy(

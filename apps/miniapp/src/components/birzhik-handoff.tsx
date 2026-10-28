@@ -37,7 +37,7 @@ export default function BirzhikHandoff({ api }: { api: ApiTransport }) {
       </a>
       {failed && (
         <p role="alert">
-          Не удалось подготовить переход. <a href={BIRZHIK_CATALOG_URL}>Открыть Биржик</a>
+          Не удалось открыть Биржик. <a href={BIRZHIK_CATALOG_URL}>Открыть Биржик</a>
         </p>
       )}
     </div>

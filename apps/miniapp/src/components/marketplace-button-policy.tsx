@@ -108,18 +108,16 @@ export default function MarketplaceButtonPolicy({
         </div>
       ))}
       {!canEnable && !query.isPending && (
-        <p className="marketplace-profile-card__intro">
-          Для включения нужен доступный опубликованный профиль.
-        </p>
+        <p className="marketplace-profile-card__intro">Для кнопки нужен опубликованный профиль.</p>
       )}
       {query.data?.buttonDiagnostic === 'KEYBOARD_FULL' && (
-        <p role="status">Для кнопки не хватило места. Остальные кнопки сохранены.</p>
+        <p role="status">Под сообщением нет места для ещё одной кнопки.</p>
       )}
       {mutation.isError && (
         <p role="alert">
           {conflict
-            ? 'Настройки изменил другой администратор. Проверьте текущее состояние и повторите выбор.'
-            : 'Не удалось подтвердить сохранение. Проверьте состояние и повторите.'}
+            ? 'Настройки изменил другой администратор. Проверьте их и повторите выбор.'
+            : 'Сохранение не подтверждено. Проверьте настройки и повторите.'}
         </p>
       )}
       {query.isError && <p role="alert">Не удалось обновить настройки кнопки.</p>}
@@ -129,7 +127,7 @@ export default function MarketplaceButtonPolicy({
           disabled={query.isFetching || mutation.isPending}
           onClick={() => void query.refetch()}
         >
-          Проверить настройки кнопки
+          Проверить настройки
         </button>
       )}
     </section>

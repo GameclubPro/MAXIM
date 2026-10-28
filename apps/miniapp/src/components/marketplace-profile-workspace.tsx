@@ -139,11 +139,11 @@ export default function MarketplaceProfileWorkspace({
         <p role={waiting ? 'status' : 'alert'}>
           {waiting
             ? waitingAttempts.current >= 4
-              ? 'Проверка задерживается. Можно вернуться позже или проверить снова.'
+              ? 'Проверка задерживается. Попробуйте позже.'
               : 'Проверяем ваши права…'
             : query.error instanceof ApiRequestError && query.error.status === 403
-              ? 'Доступ не подтверждён. Проверьте свои права администратора и подключение бота этого сервиса.'
-              : 'Не удалось получить состояние профиля. Проверьте соединение и повторите.'}
+              ? 'Проверьте права администратора и подключение бота.'
+              : 'Не удалось загрузить профиль. Попробуйте ещё раз.'}
         </p>
         {!query.isPending && (
           <button className="button button--ghost" disabled={query.isFetching} onClick={refresh}>
@@ -181,14 +181,13 @@ export default function MarketplaceProfileWorkspace({
     const target = url ? marketplaceTargetFromLink(url, state.kind, state.entityId) : null;
     if (!target) return;
     void openMarketplace(api, target).catch(() =>
-      setNotice('Не удалось открыть Биржик. Проверьте соединение и повторите переход.'),
+      setNotice('Не удалось открыть Биржик. Попробуйте ещё раз.'),
     );
   };
   const placementCopy = {
     BOT_REQUIRED: 'Для рекламы и взаимопиара подключите бота «Биржика».',
     SETUP_REQUIRED: 'Бот подключён. Настройте предложения для размещений.',
-    READY:
-      'Можно принимать заявки. Публикации требуют согласованных условий и отдельных разрешений.',
+    READY: 'Можно принимать заявки.',
     UNAVAILABLE: 'Размещения сейчас недоступны. Проверьте настройки в «Биржике».',
   }[view.placement];
   return (
@@ -207,15 +206,15 @@ export default function MarketplaceProfileWorkspace({
       {(query.isError || !view.active) && (
         <p className="marketplace-profile__notice" role="status">
           {waiting
-            ? 'Проверяем ваши права. Подключение ещё не подтверждено.'
+            ? 'Проверяем ваши права…'
             : query.isError
-              ? 'Не удалось обновить состояние. Показаны последние полученные данные; введённые изменения сохранены в форме.'
-              : 'Доступ не подтверждён. Проверьте права администратора и подключение бота этого сервиса.'}
+              ? 'Не удалось обновить профиль. Показаны прежние данные, изменения остались в форме.'
+              : 'Проверьте права администратора и подключение бота.'}
         </p>
       )}
       {profileUnavailable && (
         <p className="marketplace-profile__notice" role="status">
-          Профиль пока недоступен. Проверьте состояние позже.
+          Профиль пока недоступен.
         </p>
       )}
       {formOpen ? (
@@ -284,8 +283,8 @@ export default function MarketplaceProfileWorkspace({
           {conflict && (
             <div className="marketplace-profile__notice" role="alert">
               <p>
-                Профиль изменился во время редактирования. Ваш ввод сохранён. Проверьте новую версию
-                перед сохранением своего варианта.
+                Профиль изменился. Ваш ввод сохранён. Сравните его с новой версией перед
+                сохранением.
               </p>
               <dl className="marketplace-profile__facts">
                 {Object.entries(marketplaceDetails(state)).map(([key, value]) => (
@@ -339,7 +338,7 @@ export default function MarketplaceProfileWorkspace({
                 setDraft(null);
               }}
             >
-              К сводке профиля
+              К профилю
             </button>
           )}
         </form>
@@ -358,8 +357,7 @@ export default function MarketplaceProfileWorkspace({
           {!published && (
             <>
               <p className="marketplace-profile-card__intro">
-                После публикации профиль смогут открыть все посетители биржи. Это не разрешение на
-                отправку рекламы.
+                Опубликованный профиль будет виден всем посетителям Биржика.
               </p>
               <button
                 className="button button--accent"
@@ -375,8 +373,8 @@ export default function MarketplaceProfileWorkspace({
                   {profileUnavailable
                     ? 'Публикация пока недоступна. Проверьте состояние позже.'
                     : view.publicState === 'REVIEW'
-                      ? 'Публикация станет доступна после проверки биржи.'
-                      : 'Публикация станет доступна после подтверждения состояния профиля.'}
+                      ? 'Профиль проходит проверку.'
+                      : 'Проверьте состояние профиля перед публикацией.'}
                 </p>
               )}
             </>
@@ -422,9 +420,7 @@ export default function MarketplaceProfileWorkspace({
             ) : null}
             {handoff && (
               <p role="status">
-                В «Биржике» добавьте бота в этот {entityType === 'channel' ? 'канал' : 'чат'} и
-                завершите проверку. Вернитесь сюда и нажмите «Проверить состояние». Согласия на
-                размещения настраиваются отдельно.
+                Завершите подключение в «Биржике», затем вернитесь и нажмите «Проверить состояние».
               </p>
             )}
           </section>
@@ -436,8 +432,8 @@ export default function MarketplaceProfileWorkspace({
                 : !stats || stats.state === 'PENDING'
                   ? 'История загружается.'
                   : stats.state === 'AVAILABLE'
-                    ? `Даты с замерами: ${stats.observedDays} за период истории.`
-                    : 'За последние 90 дней замеров аудитории пока нет.'}
+                    ? `Дней со статистикой: ${stats.observedDays}`
+                    : 'За последние 90 дней статистики пока нет.'}
             </p>
             {stats?.from && stats.to && !profileUnavailable && (
               <p className="marketplace-profile-card__intro">
@@ -449,12 +445,11 @@ export default function MarketplaceProfileWorkspace({
                 {new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeZone: 'UTC' }).format(
                   new Date(stats.to),
                 )}
-                . Даты статистики — UTC.
               </p>
             )}
             {stats?.lastObservedAt && !profileUnavailable && (
               <p className="marketplace-profile-card__intro">
-                Последний замер:{' '}
+                Обновлено:{' '}
                 {new Intl.DateTimeFormat('ru-RU', {
                   dateStyle: 'medium',
                   timeStyle: 'short',
@@ -505,7 +500,7 @@ export default function MarketplaceProfileWorkspace({
         <p role="alert">
           {marketplaceProfileError(
             mutation.error,
-            'Не удалось сохранить изменение. Введённые данные сохранены; проверьте состояние и повторите.',
+            'Сохранение не подтверждено. Ваш ввод остался в форме. Проверьте состояние и повторите.',
           )}
         </p>
       )}

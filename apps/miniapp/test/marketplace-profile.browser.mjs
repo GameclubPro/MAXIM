@@ -214,9 +214,7 @@ try {
           true,
           'Pausing suppresses the button without removing the explicit policy',
         );
-        await workspace
-          .getByText('Кнопка появится после публикации доступного профиля.', { exact: true })
-          .waitFor();
+        await workspace.getByText('Профиль недоступен посетителям.', { exact: true }).waitFor();
         await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).click();
         await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
         const hide = workspace.getByRole('button', { name: 'Скрыть профиль', exact: true });
@@ -249,9 +247,7 @@ try {
         await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
         await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
         await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
-        await workspace
-          .getByText('Профиль пока недоступен. Проверьте состояние позже.', { exact: true })
-          .waitFor();
+        await workspace.getByText('Профиль пока недоступен.', { exact: true }).waitFor();
         assert.equal(
           await create.isDisabled(),
           true,

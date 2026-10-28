@@ -185,7 +185,7 @@ try {
       status = 200;
       await workspace.getByRole('button', { name: 'Проверить снова', exact: true }).click();
       await workspace.getByRole('button', { name: 'Настроить размещения', exact: true }).waitFor();
-      assert.match(await workspace.textContent(), /Даты с замерами: 2/u);
+      assert.match(await workspace.textContent(), /Дней со статистикой: 2/u);
       assert.match(
         await workspace.textContent(),
         /1 окт.*17:00/u,
@@ -204,7 +204,7 @@ try {
       state.listing.title = 'Изменено на бирже';
       await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
       await workspace
-        .getByText('Профиль изменился во время редактирования.', { exact: false })
+        .getByText('Профиль изменился. Ваш ввод сохранён.', { exact: false })
         .waitFor();
       assert.equal(
         await workspace.getByLabel('Название', { exact: true }).inputValue(),
