@@ -1,0 +1,191 @@
+import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import {
+  SUPPORT_API_PROFILE,
+  supportApiJson,
+  attestSupportApi,
+  readSupportProvider,
+  readSupportProviderKey,
+} from './support-llm-provider.mjs';
+import { answerSupport, SUPPORT_ANSWER_FOOTER } from './support-llm-client.mjs';
+import bridge from './support-chat-bridge.cjs';
+
+const json = (value, status = 200) =>
+  new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+
+test('provider configuration and credentials are private, exact and separate from the CPU key', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'support-provider-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'service'));
+  assert.equal(readSupportProvider(root).backend, 'cpu');
+  const config = join(root, 'service/provider.json');
+  writeFileSync(config, JSON.stringify({ version: 1, backend: 'api' }), { mode: 0o600 });
+  const provider = readSupportProvider(root);
+  assert.equal(provider.model, 'gpt-6.1-sol');
+  assert.equal(provider.backend, 'api');
+  writeFileSync(provider.keyPath, 'sk-private-fixture-key-123456789', { mode: 0o600 });
+  assert.equal(readSupportProviderKey(provider), 'sk-private-fixture-key-123456789');
+  chmodSync(provider.keyPath, 0o644);
+  assert.throws(() => readSupportProviderKey(provider), /support_provider_private_file/u);
+  chmodSync(provider.keyPath, 0o600);
+  for (const value of [
+    { version: 1, backend: 'unknown' },
+    { version: 1, backend: 'api', endpoint: 'https://unapproved.example' },
+    { version: 2, backend: 'api' },
+  ]) {
+    writeFileSync(config, JSON.stringify(value));
+    assert.throws(() => readSupportProvider(root), /support_provider_config/u);
+  }
+  rmSync(config);
+  symlinkSync(provider.keyPath, config);
+  assert.throws(() => readSupportProvider(root), /support_provider_private_file/u);
+});
+
+test('API requests pin HTTPS origin, refuse redirects, preserve cancellation and never retry errors', async () => {
+  const signal = new AbortController().signal;
+  let calls = 0;
+  const fetchImpl = async (url, options) => {
+    calls++;
+    assert.equal(url.href, `${SUPPORT_API_PROFILE.endpoint}/v1/models`);
+    assert.equal(options.redirect, 'error');
+    assert.equal(options.signal, signal);
+    assert.equal(options.headers.Authorization, 'Bearer fixture');
+    return json({ private: 'PROVIDER_SECRET_ERROR_TEXT' }, 429);
+  };
+  await assert.rejects(supportApiJson('/v1/models', 'fixture', signal, fetchImpl), {
+    message: 'support_provider_http_429',
+  });
+  assert.equal(calls, 1);
+  await assert.rejects(
+    supportApiJson('https://unapproved.example', 'fixture', signal, fetchImpl),
+    /support_provider_path/u,
+  );
+  assert.equal(calls, 1);
+});
+
+test('API availability requires the exact selected model and bounded JSON', async () => {
+  await attestSupportApi('fixture', AbortSignal.timeout(1000), async () =>
+    json({ data: [{ id: 'gpt-6.1-sol' }] }),
+  );
+  for (const data of [{ data: [{ id: 'gpt-5.6-terra' }] }, { data: null }])
+    await assert.rejects(
+      attestSupportApi('fixture', AbortSignal.timeout(1000), async () => json(data)),
+      /support_provider_model/u,
+    );
+  await assert.rejects(
+    supportApiJson(
+      '/v1/models',
+      'fixture',
+      AbortSignal.timeout(1000),
+      async () =>
+        new Response('x'.repeat(140000), { headers: { 'Content-Type': 'application/json' } }),
+    ),
+    /support_provider_output_limit/u,
+  );
+});
+
+test('API inference uses medium, structured sources and the existing presentation without a CPU tokenizer', async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(url.href, `${SUPPORT_API_PROFILE.endpoint}/v1/chat/completions`);
+    const payload = JSON.parse(options.body);
+    assert.equal(payload.model, 'gpt-6.1-sol');
+    assert.equal(payload.reasoning_effort, 'medium');
+    assert.equal(payload.max_completion_tokens, 4096);
+    assert.equal(payload.temperature, undefined);
+    assert.equal(payload.cache_prompt, undefined);
+    assert.equal(payload.chat_template_kwargs, undefined);
+    assert.equal(payload.response_format.json_schema.strict, true);
+    const selected = JSON.parse(payload.messages[1].content).verifiedKnowledge;
+    assert.ok(selected.some((item) => item.id === 'publisher-post-create'));
+    assert.ok(payload.messages[0].content.includes('baselineFacts'));
+    return json({
+      model: 'gpt-6.1-sol',
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              action: 'reply',
+              text: 'Выберите получателей.\n\nПроверьте пост перед публикацией.',
+              sourceIds: ['publisher-post-create'],
+            }),
+          },
+        },
+      ],
+    });
+  });
+  const answer = await answerSupport({
+    text: 'Я администратор. Как создать пост через Публик и добавить фото?',
+    key: 'fixture',
+    api: true,
+  });
+  assert.equal(calls, 1);
+  assert.equal(answer.responseRoute, 'model-inference');
+  assert.ok(answer.text.endsWith(`\n\n${SUPPORT_ANSWER_FOOTER}`));
+});
+
+test('API failures and incomplete responses cannot fall back to a second model or public error', async (t) => {
+  let calls = 0;
+  const scenario = { model: 'gpt-6.1-sol', finish: 'length' };
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    return json({
+      model: scenario.model,
+      choices: [
+        {
+          finish_reason: scenario.finish,
+          message: {
+            content: JSON.stringify({
+              action: 'reply',
+              text: 'Ответ',
+              sourceIds: ['publisher-post-create'],
+            }),
+          },
+        },
+      ],
+    });
+  });
+  const input = {
+    text: 'Я администратор. Как создать пост через Публик и добавить фото?',
+    key: 'fixture',
+    api: true,
+  };
+  await assert.rejects(answerSupport(input), /support_response_incomplete/u);
+  scenario.finish = 'stop';
+  scenario.model = 'gpt-5.6-terra';
+  await assert.rejects(answerSupport(input), /support_response_incomplete/u);
+  assert.equal(calls, 2);
+});
+
+test('oversized questions stay ineligible before any paid API request', async (t) => {
+  t.mock.method(globalThis, 'fetch', () => {
+    assert.fail('Oversized prompt must not be sent');
+  });
+  const answer = await answerSupport({
+    text: `Я администратор. Как настроить бота и Публик? ${'дополнение '.repeat(6000)}`,
+    key: 'fixture',
+    api: true,
+  });
+  assert.equal(answer.action, 'skip');
+});
+
+test('bridge distinguishes the exact API configuration digest from verified CPU weights', () => {
+  assert.equal(bridge.API_PROFILE_SHA, SUPPORT_API_PROFILE.sha256);
+  assert.equal(
+    bridge.supportProfileMatches({ apiProfileSha256: SUPPORT_API_PROFILE.sha256 }),
+    true,
+  );
+  assert.equal(bridge.supportProfileMatches({ modelSha256: bridge.MODEL_SHA }), true);
+  for (const value of [
+    {},
+    { apiProfileSha256: 'a'.repeat(64) },
+    { apiProfileSha256: SUPPORT_API_PROFILE.sha256, modelSha256: bridge.MODEL_SHA },
+    { modelSha256: SUPPORT_API_PROFILE.sha256 },
+  ])
+    assert.equal(bridge.supportProfileMatches(value), false);
+});

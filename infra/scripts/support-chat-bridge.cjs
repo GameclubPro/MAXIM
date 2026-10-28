@@ -6,8 +6,18 @@ const PREFIX = `support-cpu-pilot:v1:${CHAT_ID}`;
 const SOURCE_AGE_MS = 180_000;
 const RETENTION_MS = 7 * 86400_000;
 const MODEL_SHA = '769d386a69d43782321c1bad04d41d29a2e84b2c06e6a277cd99fd6265ec0e80';
+const API_PROFILE_SHA = '15148942c53fad1f22aaaf344b22dc37b508c1a523da1d737f13394199e7a73d';
 const DIGEST = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ANSWER_FOOTER = '✦ Ответ подготовлен ИИ-помощником «Майор Максимов»';
+
+function supportProfileMatches(value) {
+  // FLAG: API configuration identity is distinct from a CPU weight digest. Require exactly
+  // one reviewed profile; neither a claimed model name nor an arbitrary endpoint grants access.
+  return (
+    (value.modelSha256 === MODEL_SHA && value.apiProfileSha256 === undefined) ||
+    (value.apiProfileSha256 === API_PROFILE_SHA && value.modelSha256 === undefined)
+  );
+}
 
 function validateSupportBotCatalog(catalog) {
   if (
@@ -473,7 +483,7 @@ async function runBridge(runtime, { preview = false } = {}) {
           if (
             value.type === 'hello' &&
             !hello &&
-            value.modelSha256 === MODEL_SHA &&
+            supportProfileMatches(value) &&
             value.knowledgeSha256 === process.env.SUPPORT_KNOWLEDGE_SHA256
           ) {
             hello = true;
@@ -571,6 +581,8 @@ async function runBridge(runtime, { preview = false } = {}) {
 module.exports = {
   CHAT_ID,
   MODEL_SHA,
+  API_PROFILE_SHA,
+  supportProfileMatches,
   SOURCE_AGE_MS,
   sourceMessage,
   PilotFence,

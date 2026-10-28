@@ -14,6 +14,7 @@ import {
   supportChatFailureCode,
 } from './support-chat-worker.mjs';
 import { SUPPORT_ANSWER_FOOTER } from './support-llm-client.mjs';
+import { SUPPORT_API_PROFILE } from './support-llm-provider.mjs';
 import bridge from './support-chat-bridge.cjs';
 
 const question = () => ({
@@ -135,7 +136,7 @@ test(
     mkdirSync(bin);
     writeFileSync(join(state, 'chat-enabled'), '1\n');
     writeFileSync(join(state, 'installation.json'), JSON.stringify({ bundle: dirname(worker) }));
-    writeFileSync(join(state, 'api-key'), 'closed-fixture');
+    writeFileSync(join(state, 'api-key'), 'a'.repeat(64), { mode: 0o600 });
     writeFileSync(
       join(bin, 'ssh'),
       `#!${process.execPath}
@@ -549,5 +550,35 @@ test(
     });
     assert.equal(statuses.includes('sent'), false);
     assert.equal(statuses.includes('inference_failed'), false);
+  },
+);
+
+test(
+  'API worker sends its configuration identity and selects API inference without CPU identity',
+  { timeout: 10000 },
+  async () => {
+    const apiPeer = peer.replace(
+      "if(value.type==='hello') {",
+      `if(value.type==='hello') {
+      if(value.apiProfileSha256!==${JSON.stringify(SUPPORT_API_PROFILE.sha256)} || value.modelSha256!==undefined) process.exit(9);`,
+    );
+    let invoked = false;
+    const statuses = [];
+    await supportChatSession({
+      key: 'fixture-key',
+      api: true,
+      signal: AbortSignal.timeout(5000),
+      command: process.execPath,
+      args: ['-e', apiPeer],
+      onStatus: (value) => statuses.push(value),
+      invoke: async ({ api, key }) => {
+        assert.equal(api, true);
+        assert.equal(key, 'fixture-key');
+        invoked = true;
+        return { action: 'reply', text: presentedAnswer };
+      },
+    });
+    assert.equal(invoked, true);
+    assert.ok(statuses.includes('sent'));
   },
 );
