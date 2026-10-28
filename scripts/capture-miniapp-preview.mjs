@@ -194,7 +194,9 @@ async function assertBirzhikProfileModule(page) {
   await assertBirzhikModule(page);
   await page.getByRole('button', { name: 'Рекламная биржа', exact: true }).click();
   await page.locator('.marketplace-entry').waitFor({ state: 'visible' });
-  await page.getByRole('heading', { name: 'Кнопка «Профиль в Биржике»', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).waitFor();
+  if (await page.locator('.marketplace-entry').getByRole('checkbox').count())
+    throw new Error('Marketplace overview must keep button controls inside their own screen.');
 }
 
 async function assertHintDismissal(page, panel, trigger) {
