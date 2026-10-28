@@ -119,6 +119,57 @@ dispatching/uncertain journal refuses installation. Additive holds survive that 
 reconcile the exact journal before continuing, without deleting holds or blindly
 repeating an uncertain operation. The Lastik bot token never enters these clients.
 
+## Due scheduling and control scans
+
+Migration `0006-due-scheduling.sql` stores future arrivals in hourly rows with a
+60-bit minute bitmap, without creating a candidate for every young message. Repeated
+arrivals within a minute reuse its bit. A known minute becomes due at its end plus the
+selected retention period; this batching adds at most one minute before scheduling,
+not a bound on queue or MAX delay. An already-due arrival wakes the chat immediately.
+Expired hour rows are compacted in bounded batches into a durable live continuation
+under the policy lock before removal. A completed page clears only wholly covered
+minutes. Partial minutes and a repeated full 100-message timestamp boundary remain
+unresolved; they never authorize skipping a millisecond or declaring coverage complete.
+
+Ordinary scheduling takes the nearest candidate deadline, known future minute or
+unfinished eligible scan. Candidate eligibility is the later of the current policy's
+age threshold and the existing `next_attempt_at` retry/pin deadline. Indexed selection
+for each supported period takes at most five candidates per visit, preferring live
+work to history. Changing the period does not turn a retry deadline into an age wait
+or make an uncertain DELETE eligible. Young, never-issued candidates can return to
+compact ranges when their retained deadline permits it. Page completion and visit
+completion recheck durable state under the same policy lock used by ingress; an old
+visit cannot overwrite a newer webhook wakeup.
+
+Known due work and control scans have independent durable windows and cursors. A new
+due message cannot convert an unfinished control scan to the ordinary request budget,
+and completing its narrower window cannot certify the broader coverage. A late receipt
+inside an open control window invalidates that window's older page; a receipt outside
+it preserves the cursor. An ambiguous full control-page boundary retains its gap and
+requests another control attempt after six hours, within the same shared budget.
+
+The shared cleanup queue has 64 fixed slots: 62 for ordinary due work and two for
+control scans, with the existing global concurrency of eight workers. Control scans
+visit only the live window. Their rights and page requests share one aggregate HTTP
+request/second across replicas and also consume the total MAX request budget. Scan
+continuations keep that purpose; eligible deletions discovered by a control scan use
+the ordinary budget and the same final guards. Rights evidence may be reused within
+a visit, retaining its original request-start timestamp and 30-second lifetime; pin
+evidence still expires after five seconds. Short admission waits remain within a
+visit, while a long cooldown releases the worker and preserves a durable retry time.
+
+Completed empty control windows request the next control scan after 15, 30, 60, 120,
+240 and then 360 minutes; a nonempty completion resets the desired interval to
+15 minutes. These are desired intervals, not coverage guarantees. With 20,000 empty
+chats, one rights read plus one page per chat already requires at least 40,000 seconds
+(11 hours 6 minutes 40 seconds) at one request/second. Extra pages, retries and other
+delays extend that time. The durable `last_live_completed_at` records actual completed
+control windows; a missing timestamp means no recorded completion. Ordinary due work,
+partial pages and blocked windows do not refresh it. This timestamp is not yet exposed
+by the runtime diagnostics response, so that response's existing fields cannot prove
+control-scan coverage. Retained gaps outside a completed window remain separate from
+its completion time.
+
 ## Acceptance and rollback
 
 Verify availability, deletion and protected exceptions separately using only uniquely
@@ -131,9 +182,10 @@ chat has at most one Lastik deletion/second.
 MAX documents an exact-message `404` as either missing or inaccessible. Neither
 `not.found` nor `message.not.found` certifies absence. Only a positive DELETE
 acknowledgement or an authenticated `message_removed` receipt settles deletion.
-Keep uncertain journals across restarts without replaying the DELETE. Failed message
-reads defer that journal while other eligible messages continue through fresh rights,
-pin and policy checks; authentication failures and rate limits stop the current visit.
+Keep uncertain journals across restarts without replaying the DELETE. They cause no
+automatic presence reads or scheduled retries; independent eligible messages continue
+through fresh rights, pin and policy checks. A diagnostic read cannot settle an unknown
+effect. Authentication failures and rate limits stop the current visit.
 An issued attempt settles only its exact dispatch ID. Stale pending decisions cannot
 reopen, protect or confirm an issued journal; a rejected 429 permits a fresh guarded
 attempt only after its deadline. Any failed DELETE ends that visit after recording its
@@ -146,8 +198,14 @@ Its token-wide deadline is also stored in PostgreSQL and survives client restart
 durable admission stops new requests. The 200-candidate cap applies to new pending
 intake, separately from issued, uncertain and review journals. A late exact rejected
 attempt keeps its retry even if it temporarily fills an extra pending slot; further
-intake waits for space. Shortening a period wakes only already-due, never-issued
-`not_due` rows, preserving pin, rate-limit and unknown-effect waits.
+intake waits for space. A known rejection arriving after its visit restores its own
+retry wakeup. Shortening a period recomputes age eligibility while preserving pin,
+rate-limit and unknown-effect waits; new age deferrals never replace those deadlines.
+An authenticated removal receipt that frees pending capacity recomputes the schedule
+so already-due work can resume. Operator retry accepts only the exact never-issued
+review intent under its current policy revision and activation, and saves its wakeup
+in the same transaction. Preserve the review response's complete timestamp when
+submitting that request; truncating its PostgreSQL microseconds fails the identity check.
 
 Startup keeps authenticated webhook ingress available while a known 429 defers
 subscription verification. Workers remain stopped and health remains not ready until
@@ -178,5 +236,17 @@ absence readback and preserves its exact operation journal.
 An immutable `rollback-release <release-id> eraser` selects only Lastik's recorded
 application image. It never restores or recreates either store. API rollback must retain
 the installed Lastik ownership reader even when its availability flag is disabled.
+The due-scheduling migration is additive and introduces no new reader floor. Native
+scheduling writes keep the finite legacy `next_run_at` projection of ordinary and
+control-scan deadlines and a conservative `live_floor` covering unfinished work from
+both windows. A narrow trigger recognizes older writers that change only `next_run_at`.
+It preserves their active cursor and routes unclassified discovery back to the control
+scan after a forward upgrade. The transaction-local `eraser.native_schedule` marker
+prevents native projection repairs from being mistaken
+for legacy work. Preserve this compatibility contract, the original retry deadlines and
+all existing ownership, connection-request and rate-limit floors. A compatible older
+image can resume its earlier polling and automatic diagnostic reads: the adaptive
+schedule and separate one-request/second control-scan budget apply only to images
+implementing this stage. Rollback does not establish those efficiency guarantees.
 Stopping Lastik blocks new deletions, but an already sent request can finish; preserve
 its journal for reconciliation. Do not clear the queue or invent successful receipts.
