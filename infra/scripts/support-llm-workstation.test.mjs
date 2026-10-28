@@ -89,6 +89,29 @@ async function fixtureProcess(t, executable, args) {
   return child;
 }
 
+test('stopped chat status preserves the last finite transport diagnostic', async (t) => {
+  const previous = previousBundleFixture(t, { modelSha256: SUPPORT_MODEL.sha256 });
+  const diagnostics = {
+    lastFailureCode: 'support_clock_skew',
+    lastFailureAt: '2026-10-28T12:00:00.000Z',
+    lastDisconnectCode: 'support_session_closed',
+    lastDisconnectAt: '2026-10-28T12:30:00.000Z',
+  };
+  writeFileSync(
+    join(previous.state, 'chat-status.json'),
+    JSON.stringify({
+      phase: 'stopped',
+      heartbeatAt: diagnostics.lastDisconnectAt,
+      ...diagnostics,
+    }),
+    { mode: 0o600 },
+  );
+  const status = await createSupportController({ root: previous.root }).status(true);
+  assert.equal(status.running, false);
+  assert.equal(status.ready, false);
+  for (const [key, value] of Object.entries(diagnostics)) assert.equal(status[key], value);
+});
+
 async function tinyController(source, root, gpuRoot, bin, modelText, filename) {
   mkdirSync(source);
   for (const name of [
