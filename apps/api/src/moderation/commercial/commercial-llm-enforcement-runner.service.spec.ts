@@ -200,6 +200,48 @@ describe('commercial AI runner resource lifecycle', () => {
     expect(intents.ensureIntent).not.toHaveBeenCalled();
   });
 
+  it('preserves pool primary and consultation durations in the terminal observation', async () => {
+    enablePool();
+    offeredSources([source('pool-observation', 'message', 'confirm-positive')]);
+    const logs = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    jest.spyOn(CommercialLlmPoolClient.prototype, 'classify').mockResolvedValue({
+      ...negative,
+      pool: {
+        version: 'commercial-pool-v2',
+        nodeId: 'server-9b',
+        route: 'consulted',
+        policy: 'confirm-positive',
+        attempts: 1,
+        primaryNodeId: 'pc-a-4b',
+        primaryClassification: 'UNSURE',
+        primaryDurationMs: 130,
+        consultationDurationMs: 900,
+        consultationOutcome: 'completed',
+      },
+    });
+    runner!.onModuleInit();
+    await jest.advanceTimersByTimeAsync(250);
+    expect(logs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: 'commercial-ai',
+        outcome: 'kept',
+        primaryDurationMs: 130,
+        consultationDurationMs: 900,
+        consultationOutcome: 'completed',
+        nodeId: 'server-9b',
+      }),
+      'Commercial AI result',
+    );
+    await jest.advanceTimersByTimeAsync(10000);
+    const statuses = jest
+      .mocked(redis.set)
+      .mock.calls.map(([, value]) => JSON.parse(String(value)) as Record<string, unknown>);
+    expect(statuses.at(-1)).toMatchObject({
+      poolDiagnostics: { consultations: { completed: 1, noCapacity: 0, budgetExhausted: 0 } },
+    });
+    expect(intents.ensureIntent).not.toHaveBeenCalled();
+  });
+
   it('retains short pending work while all physical pool slots are occupied', async () => {
     enablePool();
     const first = deferred<CommercialLlmObservationResult>();

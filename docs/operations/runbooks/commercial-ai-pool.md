@@ -75,6 +75,31 @@ highly available. Busy, uncertain, stale and failed work cannot delete a message
 The [commercial AI deletion guards](commercial-ai-deletion.md#durable-effects)
 and independently enabled moderation rules keep their existing authority.
 
+## Observations in Safety Desk
+
+The owner-only `GET /api/v1/safety-desk/runtime/commercial-ai/pool` reads the three
+fixed node registrations independently of the enforcement process. It distinguishes
+ready, occupied slot, connected-but-not-ready, missing registration, invalid data
+and expired cached observations. An occupied slot does not establish that inference
+is progressing; a missing registration does not establish why a PC disconnected.
+The atomic bounded reader checks types, byte limits, exact model/session identity
+and TTLs before projecting states. It never reads a slot body or returns ownership
+tokens, model inputs, responses or source identities. The two-second cache cannot
+extend a node's observed TTL. There are no MAX calls or runtime mutations.
+
+The process publishes three bounded attempt summaries and completed/no-capacity/
+budget-exhausted consultation counters in its existing status. Attempts include
+primaries, consultations and retries; they are not unique message counts or final
+moderation decisions. Smoothed response duration is the existing routing EWMA,
+shown only after a real completed attempt. Old producers without metrics show
+unknown, not zero. Process generation and observation clocks bound the counters;
+cached or expired status is explicitly stale. Neither these metrics nor READY
+prove advertisement accuracy, traffic coverage or confirmed remote deletion.
+
+The original process-status endpoint is unchanged, so old open clients remain
+compatible during the API/static rollout. `confirm-positive`, immediate consultation
+admission, source deadlines and all deletion guards remain unchanged.
+
 ## Flags and first host rollout
 
 All fourteen API roles must agree on these canonical dotenv values:
