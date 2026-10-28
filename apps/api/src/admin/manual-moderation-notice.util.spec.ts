@@ -1,4 +1,5 @@
 import { buildModerationReleaseCallbackPayload } from '../moderation/moderation-release-callback.util';
+import type { MaxClientService } from '../max/max-client.service';
 import { sendManualBanChatNotice } from './manual-moderation-notice.util';
 
 describe('manual moderation notice', () => {
@@ -7,7 +8,12 @@ describe('manual moderation notice', () => {
     ['user-3', 'Пользователь'],
   ] as const)('renders %s as a linked target label', async (displayName, expectedLabel) => {
     const maxClient = {
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest
+        .fn<
+          ReturnType<MaxClientService['sendMessage']>,
+          Parameters<MaxClientService['sendMessage']>
+        >()
+        .mockResolvedValue(undefined),
     };
 
     await sendManualBanChatNotice(
@@ -38,8 +44,32 @@ describe('manual moderation notice', () => {
           ],
         ],
         textFormat: 'markdown',
+        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
       },
       { immediate: true },
     );
+  });
+
+  it('keeps group-command notices owned by the durable command sender', async () => {
+    const maxClient = {
+      sendMessage: jest
+        .fn<
+          ReturnType<MaxClientService['sendMessage']>,
+          Parameters<MaxClientService['sendMessage']>
+        >()
+        .mockResolvedValue(undefined),
+    };
+    await sendManualBanChatNotice(
+      maxClient as never,
+      { warn: jest.fn() },
+      {
+        chatId: 'chat-1',
+        targetUserId: 'user-3',
+        sanctionEventId: 'sanction-event-ban-1',
+        source: 'group_command',
+        removedOnly: false,
+      },
+    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 });

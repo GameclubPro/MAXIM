@@ -1,3 +1,4 @@
+import { channelDecorationStart, channelSettingsForSource } from './channel-marketplace-decoration';
 import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
 import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -21,7 +22,8 @@ export class ChannelPostDemandRuntime {
   constructor(
     private readonly deps: {
       prisma: PrismaService;
-      maxClient: Pick<MaxClientService, 'getExactMessageRow'>;
+      maxClient: Pick<MaxClientService, 'getExactMessageRow'> &
+        Partial<Pick<MaxClientService, 'getMarketplaceChannelPostActivation'>>;
       resolveBotId: (chatId: string) => Promise<string | null>;
       isMessageHeld: (chatId: string, messageId: string) => Promise<boolean>;
       attach: (
@@ -46,11 +48,9 @@ export class ChannelPostDemandRuntime {
   ): Promise<void> {
     const { prisma, maxClient } = this.deps;
     const settings = context.channelSettings;
-    const enabled =
-      settings.postSignatureEnabled ||
-      settings.quickButtonsEnabled ||
-      settings.commentsEnabled ||
-      settings.postSuggestionsEnabled;
+    const activation =
+      (await maxClient.getMarketplaceChannelPostActivation?.(settings.chatId)) ?? null;
+    const enabledFrom = channelDecorationStart(settings, activation);
     let botId: string | null = null;
     try {
       for (let attempt = 0; attempt < Math.max(1, Math.min(32, maxMessages)); attempt++) {
@@ -59,9 +59,9 @@ export class ChannelPostDemandRuntime {
         const [item] = await claimChannelPostDemandItems(prisma, settings.chatId, 1, retryMs);
         if (!item) break;
         if (
-          !enabled ||
+          enabledFrom === null ||
           item.expiresAt.getTime() <= Date.now() ||
-          item.sourceAt.getTime() < settings.updatedAt.getTime() ||
+          item.sourceAt.getTime() < enabledFrom ||
           (await this.deps.isMessageHeld(item.chatId, item.messageId))
         ) {
           await settleChannelPostDemand(prisma, item);
@@ -109,7 +109,7 @@ export class ChannelPostDemandRuntime {
         const message = parseChannelAutoPostListedMessage(
           raw,
           item.chatId,
-          settings.quickButtonsEnabled,
+          channelSettingsForSource(settings, item.sourceAt.toISOString()).quickButtonsEnabled,
         );
         if (
           !message ||

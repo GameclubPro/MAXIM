@@ -348,6 +348,82 @@ describe('ModerationService channel auto post buttons', () => {
     jest.spyOn(ChannelPostDemandRuntime.prototype, 'selectChannels').mockResolvedValue([]),
   );
   afterEach(() => jest.restoreAllMocks());
+  it.each(['new', 'forward', 'old', 'revoked-before-edit'] as const)(
+    'uses only an in-place edit for a marketplace-only %s post',
+    async (scenario) => {
+      const marker = createChannelAutoPostAttachMarkerMock();
+      const prisma = {
+        ...createChannelMutationGuardPrismaMock(),
+        chat: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({
+              id: 'channel-1',
+              title: 'Channel',
+              entityType: 'CHANNEL',
+              channelSettings: {
+                commentsEnabled: false,
+                postSuggestionsEnabled: false,
+                postSignatureEnabled: false,
+                quickButtonsEnabled: false,
+                updatedAt: new Date('2026-03-06T15:00:00Z'),
+              },
+              admins: [],
+            }),
+        },
+        channelAutoPostAttachMarker: marker.delegate,
+        auditLog: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      };
+      const maxClient = {
+        ...createChannelMutationGuardMaxClientMock(),
+        getMarketplaceChannelPostActivation: jest
+          .fn()
+          .mockResolvedValue(
+            new Date(scenario === 'old' ? '2026-03-06T16:00:00Z' : '2026-03-06T15:00:00Z'),
+          ),
+        getChatAdminIds: jest.fn().mockResolvedValue([]),
+        editMessageInlineKeyboard: jest.fn().mockResolvedValue(scenario !== 'revoked-before-edit'),
+        sendMessageCopyWithInlineKeyboard: jest.fn(),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        {} as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        createConfigMock() as never,
+      );
+      configureDefaultChannelAutoPostEditRoute(service);
+      const update =
+        scenario === 'forward'
+          ? createForwardedChannelPostUpdate()
+          : createChannelPostUpdateWithoutSender();
+      await service.handleUpdate(update);
+      if (scenario === 'old') expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+      else
+        expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+          'channel-1',
+          update.message!.messageId,
+          scenario === 'forward' ? null : update.message!.text,
+          expect.objectContaining({
+            marketplaceChannelPost: {
+              entityId: 'channel-1',
+              sourceAt: update.message!.createdAt,
+              only: true,
+            },
+            requireAllAttachmentsPreserved: true,
+          }),
+          expect.anything(),
+        );
+      expect(maxClient.sendMessageCopyWithInlineKeyboard).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      if (scenario === 'revoked-before-edit') expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    },
+  );
   it.each(['webhook', 'poll'] as const)(
     'hands off a genuine first-edit route rejection without delivery or scan advancement: %s',
     async (source) => {

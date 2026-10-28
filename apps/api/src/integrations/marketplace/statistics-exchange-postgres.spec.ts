@@ -1,3 +1,4 @@
+import { MarketplaceProfileAccessService } from './marketplace-profile-access.service';
 import { createHash, randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -235,6 +236,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
       state,
       {} as MarketplaceStatisticsService,
       db as PrismaService,
+      {} as MarketplaceProfileAccessService,
     );
     await controller.revoke(bindingId, {
       requestId: randomUUID(),

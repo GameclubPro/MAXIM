@@ -2735,13 +2735,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
           order.push('guard');
         },
       });
-      expect(order).toEqual(['resolve', 'guard']);
+      expect(order).toEqual(['resolve', 'guard', 'resolve']);
       expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledWith({
         chatId: '-100',
         botId: '777000_bot',
+        purpose: 'PUBLICATION',
       });
       expect(f.http.request.mock.calls[0][0].data.attachments[0].payload.buttons).toEqual([
-        [{ type: 'link', text: 'Профиль на бирже', url: marketplaceUrl }],
+        [{ type: 'link', text: 'Профиль в Биржике', url: marketplaceUrl }],
       ]);
       expect(f.http.request.mock.calls[0][0].data).not.toHaveProperty('marketplacePublication');
       await service.sendMessageImmediateToUser('100', 'Превью', { marketplacePublication: intent });
@@ -2750,9 +2751,112 @@ describe('MaxClientService inline keyboard guardrails', () => {
         marketplacePublication: intent,
       });
       await service.sendMessageImmediateWithId('-100', 'Служебное уведомление');
-      expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledTimes(1);
+      expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledTimes(2);
       await service.onModuleDestroy();
     });
+
+    it.each(['GREETING', 'MODERATION_NOTICE'] as const)(
+      'resolves %s only for the authorized queued destination and final sender',
+      async (purpose) => {
+        const f = fixture();
+        const service = createService(f.http, {}, undefined, undefined, f.marketplace);
+        try {
+          await service.executeActionJob({
+            actionType: 'SEND_MESSAGE',
+            chatId: '-100',
+            text: 'Notice',
+            options: { marketplacePublication: { entityId: '-100', purpose } },
+            attempt: 1,
+            idempotencyKey: `marketplace-${purpose}`,
+            createdAt: new Date().toISOString(),
+          });
+          expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledWith({
+            chatId: '-100',
+            botId: '777000_bot',
+            purpose,
+          });
+          expect(
+            f.http.request.mock.calls[0][0].data.attachments[0].payload.buttons[0][0].url,
+          ).toBe(marketplaceUrl);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['ADDED', 'DUPLICATE', 'EXPIRED', 'FULL'] as const)(
+      'channel edit %s preserves the post and never sends a replacement',
+      async (outcome) => {
+        const existing =
+          outcome === 'DUPLICATE'
+            ? [[{ type: 'link', text: 'Existing', url: marketplaceUrl }]]
+            : outcome === 'FULL'
+              ? Array.from({ length: 30 }, (_, n) => [
+                  { type: 'link', text: `Link ${n}`, url: `https://example.com/${n}` },
+                ])
+              : [[{ type: 'callback', text: 'Comments', payload: 'comments' }]];
+        const media = { type: 'image', payload: { token: 'source-image' } };
+        const original = {
+          body: {
+            mid: 'source',
+            text: 'Original post',
+            attachments: [media, { type: 'inline_keyboard', payload: { buttons: existing } }],
+          },
+        };
+        const http = {
+          request: jest.fn().mockImplementation((request: { method: string }) =>
+            of({
+              status: 200,
+              data: request.method === 'get' ? { messages: [original] } : { success: true },
+            }),
+          ),
+        };
+        const f = fixture();
+        if (outcome === 'EXPIRED') f.marketplace.resolvePublicationButton.mockResolvedValue(null);
+        const service = createService(http, {}, undefined, undefined, f.marketplace);
+        try {
+          const edited = await service.editMessageInlineKeyboard('-100', 'source', null, {
+            preserveExistingInlineKeyboard: true,
+            requireAllAttachmentsPreserved: true,
+            marketplaceChannelPost: {
+              entityId: '-100',
+              sourceAt: '2026-10-28T09:00:00.000Z',
+              only: true,
+            },
+          });
+          expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledWith({
+            chatId: '-100',
+            botId: '777000_bot',
+            purpose: 'CHANNEL_POST',
+            sourceAt: new Date('2026-10-28T09:00:00.000Z'),
+          });
+          const writes = http.request.mock.calls.map(([r]) => r).filter((r) => r.method !== 'get');
+          if (outcome === 'ADDED') {
+            expect(edited).toBe(true);
+            expect(writes).toHaveLength(1);
+            expect(writes[0].method).toBe('put');
+            expect(writes[0].data.text).toBeUndefined();
+            expect(writes[0].data.attachments).toEqual([
+              media,
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: [
+                    ...existing,
+                    [{ type: 'link', text: 'Профиль в Биржике', url: marketplaceUrl }],
+                  ],
+                },
+              },
+            ]);
+          } else {
+            expect(edited).toBe(false);
+            expect(writes).toEqual([]);
+          }
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
 
     it('honors policy disabled or expired after enqueue and survives integration failures', async () => {
       const f = fixture();
@@ -2777,7 +2881,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       await service.onModuleDestroy();
     });
 
-    it('resolves the keyboard before the durable fence and never resends recovered messages', async () => {
+    it('keeps the durable fence before HTTP and never prepares or resends recovered messages', async () => {
       const f = fixture();
       const ledger = {
         claimSendDispatch: jest.fn().mockResolvedValue({ kind: 'claimed', dispatchToken: 'token' }),
@@ -2795,11 +2899,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
         createdAt: new Date().toISOString(),
       };
       await service.executeActionJob(job);
-      expect(f.marketplace.resolvePublicationButton.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(f.marketplace.resolvePublicationButton.mock.invocationCallOrder[0]).toBeGreaterThan(
         ledger.claimSendDispatch.mock.invocationCallOrder[0],
       );
-      expect(ledger.claimSendDispatch.mock.calls[0][0].options.buttons).toEqual([
-        [{ type: 'link', text: 'Профиль на бирже', url: marketplaceUrl }],
+      expect(f.http.request.mock.calls[0][0].data.attachments[0].payload.buttons).toEqual([
+        [{ type: 'link', text: 'Профиль в Биржике', url: marketplaceUrl }],
       ]);
       ledger.claimSendDispatch.mockResolvedValueOnce({
         kind: 'recovered',
@@ -2809,8 +2913,107 @@ describe('MaxClientService inline keyboard guardrails', () => {
       f.marketplace.resolvePublicationButton.mockResolvedValueOnce(null);
       await service.executeActionJob(job);
       expect(f.http.request).toHaveBeenCalledTimes(1);
+      expect(f.marketplace.resolvePublicationButton).toHaveBeenCalledTimes(1);
       await service.onModuleDestroy();
     });
+
+    it('drops a queued optional button revoked during quota wait before the final notice permit', async () => {
+      const f = fixture();
+      const order: string[] = [];
+      let enabled = true;
+      f.marketplace.resolvePublicationButton.mockImplementation(async () => {
+        order.push('profile');
+        return enabled ? { url: marketplaceUrl, revision: 3 } : null;
+      });
+      f.http.request.mockImplementation(() => {
+        order.push('http');
+        return of({ status: 200, data: { mid: 'marketplace-send' } });
+      });
+      const service = createService(f.http, {}, undefined, undefined, f.marketplace);
+      const internal = service as unknown as {
+        reserveRateLimitSlot: (...args: unknown[]) => Promise<string | undefined>;
+      };
+      jest.spyOn(internal, 'reserveRateLimitSlot').mockImplementation(async () => {
+        order.push('quota');
+        enabled = false;
+        return undefined;
+      });
+      try {
+        await service.executeActionJob(
+          {
+            actionType: 'SEND_MESSAGE',
+            chatId: '-100',
+            text: 'Notice',
+            options: { marketplacePublication: { entityId: '-100', purpose: 'MODERATION_NOTICE' } },
+            attempt: 1,
+            idempotencyKey: 'profile-quota-revoke',
+            createdAt: new Date().toISOString(),
+          },
+          {
+            beforeSendMutation: async () => {
+              order.push('permit');
+            },
+          },
+        );
+        expect(order).toEqual(['quota', 'profile', 'permit', 'http']);
+        expect(f.http.request.mock.calls[0][0].data).not.toHaveProperty('attachments');
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(['quota', 'guard'] as const)(
+      'skips optional-only channel edit revoked at %s',
+      async (stage) => {
+        let enabled = true;
+        const f = fixture();
+        f.marketplace.resolvePublicationButton.mockImplementation(async () =>
+          enabled ? { url: marketplaceUrl, revision: 3 } : null,
+        );
+        const http = {
+          request: jest.fn().mockImplementation((request: { method: string }) =>
+            of({
+              status: 200,
+              data:
+                request.method === 'get'
+                  ? { messages: [{ body: { mid: 'source', text: 'Original', attachments: [] } }] }
+                  : { success: true },
+            }),
+          ),
+        };
+        const service = createService(http, {}, undefined, undefined, f.marketplace);
+        const internal = service as unknown as {
+          reserveRateLimitSlot: (...args: unknown[]) => Promise<string | undefined>;
+        };
+        jest.spyOn(internal, 'reserveRateLimitSlot').mockImplementation(async (...args) => {
+          if (
+            stage === 'quota' &&
+            (args[5] as { operation?: string } | undefined)?.operation === 'edit'
+          )
+            enabled = false;
+          return undefined;
+        });
+        try {
+          expect(
+            await service.editMessageInlineKeyboard('-100', 'source', null, {
+              preserveExistingInlineKeyboard: true,
+              requireAllAttachmentsPreserved: true,
+              marketplaceChannelPost: {
+                entityId: '-100',
+                sourceAt: '2026-10-28T09:00:00.000Z',
+                only: true,
+              },
+              beforeEditMutation: async () => {
+                if (stage === 'guard') enabled = false;
+              },
+            }),
+          ).toBe(false);
+          expect(http.request.mock.calls.map(([request]) => request.method)).toEqual(['get']);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
 
     it('records capacity omission without changing authored buttons', async () => {
       const f = fixture();
@@ -2826,6 +3029,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         chatId: '-100',
         botId: '777000_bot',
         revision: 3,
+        purpose: 'PUBLICATION',
         code: 'KEYBOARD_FULL',
       });
       expect(f.http.request.mock.calls[0][0].data.attachments[0].payload.buttons).toEqual(buttons);
@@ -14073,14 +14277,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
       'accepts explicit legacy %s role evidence on a complete self response',
       async (role) => {
         const httpService = {
-          request: jest
-            .fn()
-            .mockReturnValue(
-              of({
-                status: 200,
-                data: { user_id: complete.user_id, role, permissions: priorPermissions },
-              }),
-            ),
+          request: jest.fn().mockReturnValue(
+            of({
+              status: 200,
+              data: { user_id: complete.user_id, role, permissions: priorPermissions },
+            }),
+          ),
         };
         const service = createService(httpService);
         try {

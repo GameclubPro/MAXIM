@@ -25,6 +25,9 @@ import { CurrentUser, type AuthUser } from '../../common/decorators/current-user
 import { PrismaService } from '../../prisma/prisma.service';
 import { MarketplaceIntegrationGuard } from './marketplace-integration.guard';
 import { MarketplaceAccessService } from './marketplace-access.service';
+import { MarketplaceProfileAccessService } from './marketplace-profile-access.service';
+import { MarketplaceNavigationService } from './marketplace-navigation.service';
+import { MarketplaceButtonPolicyService } from './marketplace-button-policy.service';
 import { MarketplaceProfileService } from './marketplace-profile.service';
 import {
   MarketplaceStateService,
@@ -53,6 +56,7 @@ export class MarketplaceIntegrationController {
     private readonly state: MarketplaceStateService,
     private readonly statistics: MarketplaceStatisticsService,
     private readonly prisma: PrismaService,
+    private readonly profileAccess: MarketplaceProfileAccessService,
   ) {}
   @Post('bindings') async create(@Body() input: unknown) {
     return this.state.present(await this.access.attest(input));
@@ -62,10 +66,10 @@ export class MarketplaceIntegrationController {
     const cursor = query.cursor ?? '00000000-0000-0000-0000-000000000000';
     const rows = await this.prisma.$queryRaw<
       Array<MarketplaceBindingRow & { grant_valid: boolean }>
-    >`SELECT b.*,(${marketplaceLocalGrantSql('b')}) AS grant_valid FROM marketplace_bindings b WHERE b.id>${cursor}::uuid ORDER BY b.id LIMIT 101`;
+    >`SELECT b.*,(${marketplaceLocalGrantSql('b', false)}) AS grant_valid FROM marketplace_bindings b WHERE b.id>${cursor}::uuid ORDER BY b.id LIMIT 101`;
     return marketplaceBindingsPageSchema.parse({
       bindings: rows.slice(0, 100).map((row) => {
-        const denied = row.state === 'ACTIVE' && row.statistics_consent && !row.grant_valid;
+        const denied = row.state === 'ACTIVE' && !row.grant_valid;
         return this.state.present({
           ...row,
           state: denied ? 'UNKNOWN' : row.state,
@@ -78,15 +82,15 @@ export class MarketplaceIntegrationController {
   @Get('bindings/:id') async get(@Param('id') raw: string) {
     const row = await this.state.read(uuid.parse(raw));
     if (!row) throw new NotFoundException();
-    const denied =
-      row.state === 'ACTIVE' &&
-      row.statistics_consent &&
-      !(await this.state.hasActiveGrant(row.id));
+    const denied = row.state === 'ACTIVE' && !(await this.state.hasActiveAccess(row.id));
     return this.state.present({
       ...row,
       state: denied ? 'UNKNOWN' : row.state,
       valid_until: denied ? null : row.valid_until,
     });
+  }
+  @Get('bindings/:id/access') async getAccess(@Param('id') raw: string) {
+    return this.profileAccess.read(uuid.parse(raw));
   }
   @Post('bindings/:id/recheck') async recheck(@Param('id') raw: string) {
     const row = await this.state.read(uuid.parse(raw));
@@ -128,9 +132,9 @@ export class MarketplaceIntegrationController {
       }
       if (rows[0].revision !== input.expectedRevision)
         throw new ConflictException('Привязка изменилась');
-      await tx.$executeRaw`UPDATE marketplace_bindings SET state='REVOKED',statistics_consent=false,statistics_revoked_at=COALESCE(statistics_revoked_at,now()),statistics_v2_consent_only=false,append_enabled=false,
-        valid_until=NULL,public_verified_until=NULL,lease_id=NULL,lease_until=NULL,checked_at=now(),revision=revision+1,append_revision=append_revision+1,updated_at=now()
-        WHERE id=${id}::uuid AND (statistics_revoked_at IS NULL OR state<>'REVOKED' OR statistics_consent=true OR append_enabled=true OR lease_id IS NOT NULL OR valid_until IS NOT NULL OR public_verified_until IS NOT NULL)`;
+      await tx.$executeRaw`UPDATE marketplace_bindings SET statistics_consent=false,statistics_revoked_at=COALESCE(statistics_revoked_at,now()),statistics_v2_consent_only=false,append_enabled=false,
+        public_verified_until=NULL,lease_id=NULL,lease_until=NULL,revision=revision+1,append_revision=append_revision+1,updated_at=now()
+        WHERE id=${id}::uuid AND (statistics_revoked_at IS NULL OR statistics_consent=true OR append_enabled=true OR lease_id IS NOT NULL OR public_verified_until IS NOT NULL)`;
       const result = { revoked: true as const };
       await tx.$executeRaw`INSERT INTO marketplace_policy_requests(request_id,binding_id,payload_hash,result) VALUES(${input.requestId}::uuid,${id}::uuid,${hash},${JSON.stringify(result)}::jsonb)`;
       return result;
@@ -202,7 +206,53 @@ export class MarketplaceIntegrationController {
 @UseGuards(InitDataGuard)
 @MiniappProfiles('moderation', 'publisher')
 export class MarketplaceProfileController {
-  constructor(private readonly profiles: MarketplaceProfileService) {}
+  constructor(
+    private readonly profiles: MarketplaceProfileService,
+    private readonly buttons: MarketplaceButtonPolicyService,
+    private readonly navigation: MarketplaceNavigationService,
+  ) {}
+  @Post('launch') launch(
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+    @Req() request: { miniappProfile?: string },
+  ) {
+    return this.navigation.launch(user, this.profile(undefined, request), body);
+  }
+  @Get('entities/:kind/:entityId/entry') entry(
+    @CurrentUser() user: AuthUser,
+    @Param('kind') kind: string,
+    @Param('entityId') id: string,
+    @Query('profile') profile: unknown,
+    @Req() request: { miniappProfile?: string },
+  ) {
+    return this.buttons.entry(
+      this.buttons.identity(user.userId, kind, id, this.profile(profile, request)),
+    );
+  }
+  @Get('entities/:kind/:entityId/button-policy') buttonPolicy(
+    @CurrentUser() user: AuthUser,
+    @Param('kind') kind: string,
+    @Param('entityId') id: string,
+    @Query('profile') profile: unknown,
+    @Req() request: { miniappProfile?: string },
+  ) {
+    return this.buttons.get(
+      this.buttons.identity(user.userId, kind, id, this.profile(profile, request)),
+    );
+  }
+  @Post('entities/:kind/:entityId/button-policy') changeButtonPolicy(
+    @CurrentUser() user: AuthUser,
+    @Param('kind') kind: string,
+    @Param('entityId') id: string,
+    @Query('profile') profile: unknown,
+    @Body() body: unknown,
+    @Req() request: { miniappProfile?: string },
+  ) {
+    return this.buttons.mutate(
+      this.buttons.identity(user.userId, kind, id, this.profile(profile, request)),
+      body,
+    );
+  }
   @Get('capability') capability(@CurrentUser() user: AuthUser) {
     return this.profiles.capability(user.userId);
   }
@@ -246,5 +296,14 @@ export class MarketplaceProfileController {
     if (profile !== request.miniappProfile)
       throw new ConflictException('Профиль запуска не совпадает');
     return profile;
+  }
+}
+
+@Controller('v1/integrations/svyazka/v1')
+@UseGuards(MarketplaceIntegrationGuard)
+export class MarketplaceNavigationController {
+  constructor(private readonly navigation: MarketplaceNavigationService) {}
+  @Get('navigation') get(@Query() query: unknown) {
+    return this.navigation.reverse(query);
   }
 }

@@ -15,6 +15,8 @@ import {
 } from '@maxim/contracts/marketplace-integration';
 import { ManagedEntitiesService } from '../../admin/managed-entities.service';
 import { MaxClientService } from '../../max/max-client.service';
+import { isMajorManagedEntityActivationRequired } from '../../max/managed-entity-activation.util';
+import { isPublisherManagedEntityActivationRequired } from '../../publisher/publisher-entity-connection.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { getAppRole, roleRunsPublisher } from '../../runtime/app-role';
 import { PublisherIdentityAttestationService } from '../../publisher/publisher-identity-attestation.service';
@@ -24,7 +26,6 @@ import { statisticsExchangeActorAllowed } from './statistics-exchange.settings';
 import { MarketplacePublisherAccessQueueService } from './marketplace-publisher-access.queue';
 import {
   MARKETPLACE_GRANT_MS,
-  MARKETPLACE_PILOT_USER_ID,
   MarketplaceStateService,
   type MarketplaceBindingRow,
 } from './marketplace-state.service';
@@ -93,11 +94,11 @@ export class MarketplaceAccessService implements OnModuleDestroy {
     background: boolean,
   ): Promise<MarketplaceBindingRow> {
     const input = marketplaceBindingInputSchema.parse(raw);
-    if (!this.state.enabled()) throw new ServiceUnavailableException('Связка пока не подключена');
+    if (!this.state.enabled()) throw new ServiceUnavailableException('Биржик пока не подключён');
     if (
       exchangeV2
         ? !this.config || !statisticsExchangeActorAllowed(this.config, input.actorUserId)
-        : input.actorUserId !== MARKETPLACE_PILOT_USER_ID
+        : false
     )
       throw new ForbiddenException('Модуль пока недоступен');
     if (input.profile === 'publisher' && !roleRunsPublisher(getAppRole())) {
@@ -228,6 +229,9 @@ export class MarketplaceAccessService implements OnModuleDestroy {
         !connection ||
         actualBot !== resolvedBotId ||
         connection.status !== 'ACTIVE' ||
+        (input.profile === 'publisher'
+          ? isPublisherManagedEntityActivationRequired(connection)
+          : isMajorManagedEntityActivationRequired(connection, input.kind)) ||
         (connection.lifecycleEventAt && connection.lifecycleEventAt >= started) ||
         (connection.botAccessCheckedAt &&
           connection.botAccessCheckedAt >= started &&
@@ -262,7 +266,7 @@ export class MarketplaceAccessService implements OnModuleDestroy {
           kind: row.kind,
           profile: row.profile,
         },
-        exchangeV2 || row.actor_user_id !== MARKETPLACE_PILOT_USER_ID,
+        exchangeV2,
         true,
       );
     } catch (error) {

@@ -184,7 +184,7 @@ describe('AdminService group command reliability', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       expect.stringContaining('включён бан'),
-      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1', 'chat-1'),
       expect.anything(),
     );
     expect(maxClient.sendMessage).not.toHaveBeenCalledWith(
