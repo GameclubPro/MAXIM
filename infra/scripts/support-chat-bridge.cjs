@@ -440,7 +440,8 @@ async function runBridge(runtime, { preview = false } = {}) {
     pending = Buffer.alloc(0),
     lastPoll = 0,
     lastReport = 0,
-    lastSampleAt = null;
+    lastSampleAt = null,
+    receiveFailure = null;
   const history = new PilotHistory();
   const abort = () => controller.abort();
   const deadlineTimer = setTimeout(abort, 30 * 60_000);
@@ -461,8 +462,14 @@ async function runBridge(runtime, { preview = false } = {}) {
         if (pending.length > 32768) throw new Error('support_frame_limit');
         let n;
         while ((n = pending.indexOf(10)) >= 0) {
-          const value = JSON.parse(pending.subarray(0, n).toString('utf8'));
+          let value;
+          try {
+            value = JSON.parse(pending.subarray(0, n).toString('utf8'));
+          } catch {
+            throw new Error('support_frame_invalid');
+          }
           pending = pending.subarray(n + 1);
+          if (!value || typeof value !== 'object') throw new Error('support_frame_refused');
           if (
             value.type === 'hello' &&
             !hello &&
@@ -487,7 +494,11 @@ async function runBridge(runtime, { preview = false } = {}) {
         }
       }
     })();
-    void receive.then(abort, abort);
+    // FLAG: Protocol failures must exit unsuccessfully, not masquerade as normal rotation.
+    void receive.then(abort, (error) => {
+      receiveFailure = error;
+      abort();
+    });
     while (!controller.signal.aborted && Date.now() < endAt) {
       if (Date.now() - lastHeartbeat > 15000 || !(await fence.renew()))
         throw new Error('support_heartbeat_lost');
@@ -535,6 +546,7 @@ async function runBridge(runtime, { preview = false } = {}) {
             id: source.id,
             text: source.text,
             history: history.read(source.userId),
+            issuedAt: Date.now(),
             deadline: source.timestamp + SOURCE_AGE_MS,
           });
           history.push(source.userId, { role: 'user', text: source.text.slice(0, 300) });
@@ -543,6 +555,7 @@ async function runBridge(runtime, { preview = false } = {}) {
       }
       await pause(500, undefined, { signal: controller.signal }).catch(() => undefined);
     }
+    if (receiveFailure) throw receiveFailure;
   } finally {
     clearTimeout(deadlineTimer);
     controller.abort();

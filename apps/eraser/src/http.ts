@@ -274,11 +274,9 @@ export function createHttpServer(
           return send(response, 200, await review(store, chatId));
         if (route === 'retry' && request.method === 'POST') {
           const input = await body(request);
-          const policy = await store.policy(chatId);
           if (
-            !policy ||
-            input.expectedRevision !== policy.revision ||
-            input.activationId !== policy.activation_id ||
+            !integer(input.expectedRevision) ||
+            typeof input.activationId !== 'string' ||
             typeof input.messageId !== 'string' ||
             typeof input.intentId !== 'string' ||
             typeof input.expectedIntentUpdatedAt !== 'string' ||
@@ -286,18 +284,14 @@ export function createHttpServer(
           )
             fail(409, 'ERASER_RETRY_CONFLICT', 'Состояние удаления изменилось.');
           // FLAG: An uncertain/attempted DELETE cannot be replayed by the review endpoint.
-          const retried = await store.pool.query(
-            "UPDATE eraser_candidates SET state='pending',next_attempt_at=CURRENT_TIMESTAMP,outcome_code=NULL WHERE chat_id=$1 AND message_id=$2 AND state='review' AND attempt_count=0 AND dispatch_id IS NULL AND updated_at=$3::timestamptz AND message_id=$4 AND attempt_count=$5",
-            [
-              chatId,
-              input.messageId,
-              input.expectedIntentUpdatedAt,
-              input.intentId,
-              input.expectedAttemptCount,
-            ],
-          );
-          if (!retried.rowCount)
-            fail(409, 'ERASER_RETRY_UNSAFE', 'Удаление требует проверки результата.');
+          await store.retryReview(chatId, {
+            expectedRevision: input.expectedRevision,
+            activationId: input.activationId,
+            messageId: input.messageId,
+            intentId: input.intentId,
+            expectedIntentUpdatedAt: input.expectedIntentUpdatedAt,
+            expectedAttemptCount: input.expectedAttemptCount,
+          });
           return send(response, 200, await review(store, chatId));
         }
         return send(response, 405, { code: 'METHOD_NOT_ALLOWED' });
@@ -323,11 +317,14 @@ async function review(store: Store, chatId: string) {
       state: string;
       outcome_code: string | null;
       dispatch_id: string | null;
-      updated_at: Date;
+      intent_updated_at: string;
       attempt_count: number;
       next_attempt_at: Date;
     }>(
-      "SELECT * FROM eraser_candidates WHERE chat_id=$1 AND state IN ('review','uncertain','dispatching') ORDER BY message_id LIMIT 20",
+      // FLAG: Preserve the exact PostgreSQL version through the operator round trip; JS Date
+      // truncates microseconds and cannot safely represent this compare-and-swap token.
+      `SELECT *,to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS intent_updated_at
+       FROM eraser_candidates WHERE chat_id=$1 AND state IN ('review','uncertain','dispatching') ORDER BY message_id LIMIT 20`,
       [chatId],
     )
   ).rows;
@@ -349,10 +346,10 @@ async function review(store: Store, chatId: string) {
           : row.state === 'dispatching'
             ? 'IN_PROGRESS'
             : 'AMBIGUOUS',
-      intentUpdatedAt: row.updated_at.toISOString(),
+      intentUpdatedAt: row.intent_updated_at,
       intentAttemptCount: row.attempt_count,
       reconcileAfter: row.next_attempt_at.toISOString(),
-      retryAllowed: row.state === 'review' && row.attempt_count === 0,
+      retryAllowed: row.state === 'review' && row.attempt_count === 0 && row.dispatch_id === null,
     })),
   };
 }

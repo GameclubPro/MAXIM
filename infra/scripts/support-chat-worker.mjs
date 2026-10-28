@@ -40,6 +40,8 @@ const failureCodes = new Set([
   'support_frame_limit',
   'support_frame_refused',
   'support_frame_invalid',
+  'support_question_refused',
+  'support_question_overlap',
   'support_clock_skew',
 ]);
 export const supportChatFailureCode = (error) =>
@@ -73,20 +75,31 @@ export class SupportReconnectPolicy {
 }
 
 export function validateQuestion(value) {
+  const now = Date.now();
   return (
     value?.type === 'question' &&
     typeof value.id === 'string' &&
     value.id.length > 0 &&
     value.id.length <= 200 &&
     typeof value.text === 'string' &&
+    value.text.trim().length > 0 &&
     value.text.length <= 1200 &&
+    Number.isSafeInteger(value.issuedAt) &&
+    value.issuedAt >= 0 &&
+    value.issuedAt <= now + 5000 &&
     Number.isFinite(value.deadline) &&
-    value.deadline > Date.now() &&
-    value.deadline <= Date.now() + 180_000 &&
+    value.deadline > now &&
+    value.deadline > value.issuedAt &&
+    // FLAG: Source timestamps may lead bridge time by five seconds; bridge time may
+    // lead this host by five seconds. Keep the original source+180s absolute deadline.
+    value.deadline <= value.issuedAt + 180_000 + 5000 &&
     Array.isArray(value.history) &&
     value.history.length <= 6 &&
     value.history.every(
       (item) =>
+        item !== null &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
         ['user', 'assistant'].includes(item.role) &&
         typeof item.text === 'string' &&
         item.text.length <= 300,
@@ -165,9 +178,12 @@ export async function supportChatSession({
         if (!value || typeof value !== 'object') throw new Error('support_frame_refused');
         if (
           hello &&
-          value.type === 'heartbeat' &&
-          Number.isFinite(value.sampleAt) &&
-          value.sampleAt > Date.now() + 5000
+          ((value.type === 'heartbeat' &&
+            Number.isFinite(value.sampleAt) &&
+            value.sampleAt > Date.now() + 5000) ||
+            (value.type === 'question' &&
+              Number.isFinite(value.issuedAt) &&
+              value.issuedAt > Date.now() + 5000))
         )
           throw new Error('support_clock_skew');
         if (value.type === 'hello' && value.chatId === '-78271094414679' && !hello) {
@@ -184,35 +200,70 @@ export async function supportChatSession({
         ) {
           lastServerHeartbeat = Date.now();
           onStatus('observation', { sampleAt: value.sampleAt });
-        } else if (hello && validateQuestion(value) && !inference) {
-          onStatus('answering');
-          inference = (async () => {
+        } else if (hello && value.type === 'question') {
+          if (!validateQuestion(value)) throw new Error('support_question_refused');
+          const previous = inference;
+          if (previous) {
+            if (
+              previous.waiting ||
+              previous.id === value.id ||
+              (Date.now() < previous.deadline && value.issuedAt < previous.deadline)
+            )
+              throw new Error('support_question_overlap');
+            // FLAG: A server-expired question loses all output authority immediately.
+            // Admit one successor, but never start it before the prior invocation settles.
+            previous.superseded = true;
+            previous.controller.abort();
+          }
+          const current = {
+            id: value.id,
+            deadline: value.deadline,
+            controller: new AbortController(),
+            superseded: false,
+            waiting: Boolean(previous),
+            promise: null,
+          };
+          inference = current;
+          current.promise = (async () => {
             try {
+              if (previous) await previous.promise;
+              current.waiting = false;
+              if (combined.aborted) return;
+              if (Date.now() >= value.deadline) {
+                onStatus('inference_failed');
+                return;
+              }
+              onStatus('answering');
               const answer = await invoke({
                 text: value.text,
                 history: value.history,
                 key,
                 signal: AbortSignal.any([
                   combined,
+                  current.controller.signal,
                   AbortSignal.timeout(Math.min(120_000, value.deadline - Date.now())),
                 ]),
               });
-              if (!combined.aborted && Date.now() < value.deadline)
-                send({
-                  type: 'answer',
-                  id: value.id,
-                  reply: answer.action === 'reply',
-                  text: answer.text,
-                });
-              onStatus(answer.action === 'reply' ? 'answered' : 'skipped');
+              if (!combined.aborted && !current.superseded) {
+                if (Date.now() < value.deadline) {
+                  send({
+                    type: 'answer',
+                    id: value.id,
+                    reply: answer.action === 'reply',
+                    text: answer.text,
+                  });
+                  onStatus(answer.action === 'reply' ? 'answered' : 'skipped');
+                } else onStatus('inference_failed');
+              }
             } catch {
-              if (!combined.aborted) {
-                send({ type: 'answer', id: value.id, reply: false, text: '' });
+              if (!combined.aborted && !current.superseded) {
+                if (Date.now() < value.deadline)
+                  send({ type: 'answer', id: value.id, reply: false, text: '' });
                 onStatus('inference_failed');
               }
             }
           })().finally(() => {
-            inference = null;
+            if (inference === current) inference = null;
           });
         } else if (
           hello &&
@@ -230,7 +281,9 @@ export async function supportChatSession({
     clearTimeout(handshake);
     stop();
     signal.removeEventListener('abort', stop);
-    await inference?.catch(() => undefined);
+    // FLAG: Abort requests cancellation; only raw invocation settlement releases ownership.
+    // Reconnecting before cleanup settles can start a second inference in the same process.
+    await inference?.promise?.catch(() => undefined);
     await Promise.race([closed, pause(3000)]);
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }

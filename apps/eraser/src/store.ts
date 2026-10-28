@@ -13,11 +13,40 @@ import {
 } from './types.js';
 
 const HOUR = 3_600_000;
+const MINUTE = 60_000;
+const NO_WORK_AT = new Date('9999-01-01T00:00:00.000Z');
+const SAFETY_DELAYS = [15, 30, 60, 120, 240, 360].map((minutes) => minutes * MINUTE);
+export type ScanPurpose = 'due' | 'safety';
+
+function effectiveDueSql(hours: Hours): string {
+  const age = { 24: 86_400_000, 48: 172_800_000, 168: 604_800_000 }[hours];
+  if (!age) throw new Error('Invalid retention period');
+  return `GREATEST(source_ms + ${age},CEIL(EXTRACT(EPOCH FROM (next_attempt_at AT TIME ZONE 'UTC')) * 1000)::bigint)`;
+}
 export const CHAT_BUFFER = 200;
 export const HOUSEKEEPING_INTERVAL_MS = 60_000;
 export const TERMINAL_PURGE_BATCH = 2000;
 export const WEBHOOK_PURGE_BATCH = 20_000;
 export type PolicyRow = Policy & {
+  normal_next_at: Date;
+  live_due: boolean;
+  due_floor: string | null;
+  due_generation: string;
+  safety_floor: string | null;
+  safety_upper: string | null;
+  safety_cursor: string | null;
+  safety_signature: string | null;
+  safety_had_messages: boolean;
+  safety_gap: boolean;
+  safety_gap_at: string | null;
+  live_gap: boolean;
+  live_gap_at: string | null;
+  live_scan_purpose: ScanPurpose | null;
+  live_scan_had_messages: boolean;
+  lease_purpose: ScanPurpose;
+  safety_next_at: Date;
+  safety_empty_streak: number;
+  last_live_completed_at: Date | null;
   scan_generation: string;
   last_operation_id: string | null;
   live_signature: string | null;
@@ -61,7 +90,7 @@ export class Store {
   async transaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
+      await client.query("BEGIN; SET LOCAL eraser.native_schedule='1'");
       const result = await fn(client);
       await client.query('COMMIT');
       return result;
@@ -181,7 +210,7 @@ export class Store {
     // FLAG: Revisit deferred ranges only after a complete local protection snapshot exists.
     if (input.complete !== false && input.completeThrough !== null) {
       await client.query(
-        `UPDATE eraser_policies SET scan_generation=scan_generation+1,history_cursor=GREATEST(COALESCE(history_cursor,0),deferred_to),history_complete=false,history_gap=false,history_signature=NULL,deferred_from=NULL,deferred_to=NULL,next_run_at=CURRENT_TIMESTAMP WHERE chat_id=$1 AND deferred_to IS NOT NULL AND deferred_to <= $2`,
+        `UPDATE eraser_policies SET scan_generation=scan_generation+1,history_cursor=GREATEST(COALESCE(history_cursor,0),deferred_to),history_complete=false,history_gap=false,history_signature=NULL,deferred_from=NULL,deferred_to=NULL,normal_next_at=CURRENT_TIMESTAMP,next_run_at=LEAST(CURRENT_TIMESTAMP,safety_next_at) WHERE chat_id=$1 AND deferred_to IS NOT NULL AND deferred_to <= $2`,
         [chatId, Date.parse(input.completeThrough)],
       );
     }
@@ -193,7 +222,7 @@ export class Store {
       (!old?.bot_history_complete_from || floor < old.bot_history_complete_from.getTime())
     )
       await client.query(
-        `UPDATE eraser_policies SET scan_generation=scan_generation+1,history_cursor=GREATEST(COALESCE(history_cursor,0),historical_deferred_to),history_complete=false,history_signature=NULL,historical_deferred_from=NULL,historical_deferred_to=NULL,next_run_at=CURRENT_TIMESTAMP WHERE chat_id=$1 AND historical_deferred_to IS NOT NULL AND historical_deferred_to >= $2`,
+        `UPDATE eraser_policies SET scan_generation=scan_generation+1,history_cursor=GREATEST(COALESCE(history_cursor,0),historical_deferred_to),history_complete=false,history_signature=NULL,historical_deferred_from=NULL,historical_deferred_to=NULL,normal_next_at=CURRENT_TIMESTAMP,next_run_at=LEAST(CURRENT_TIMESTAMP,safety_next_at) WHERE chat_id=$1 AND historical_deferred_to IS NOT NULL AND historical_deferred_to >= $2`,
         [chatId, floor],
       );
   }
@@ -264,12 +293,16 @@ export class Store {
                 policy.last_error ||
                 policy.deferred_from ||
                 policy.historical_deferred_from ||
-                policy.history_gap
+                policy.history_gap ||
+                policy.live_gap_at !== null ||
+                policy.safety_gap_at !== null
               ? 'delayed'
               : 'running';
     const historyStatus = !policy.enabled
       ? 'off'
       : policy.history_gap ||
+          policy.live_gap_at !== null ||
+          policy.safety_gap_at !== null ||
           policy.deferred_from ||
           policy.historical_deferred_from ||
           policy.last_error ||
@@ -401,10 +434,19 @@ export class Store {
         activation_id=CASE WHEN enabled <> $2 THEN $5::uuid ELSE activation_id END,
         enabled_at=CASE WHEN NOT enabled AND $2 THEN CURRENT_TIMESTAMP ELSE enabled_at END,
         first_enabled_at=CASE WHEN $2 THEN COALESCE(first_enabled_at,CURRENT_TIMESTAMP) ELSE first_enabled_at END,
-        live_floor=CASE WHEN $6 THEN $7 ELSE live_floor END,live_upper=CASE WHEN $6 THEN NULL ELSE live_upper END,live_cursor=CASE WHEN $6 THEN NULL ELSE live_cursor END,
+        live_floor=CASE WHEN $6 THEN LEAST($7,live_gap_at,safety_gap_at) ELSE live_floor END,live_upper=CASE WHEN $6 THEN NULL ELSE live_upper END,live_cursor=CASE WHEN $6 THEN NULL ELSE live_cursor END,
         history_cursor=CASE WHEN $6 THEN GREATEST(COALESCE(history_cursor,0),$8) ELSE history_cursor END,
         history_complete=CASE WHEN $6 THEN false ELSE history_complete END,history_gap=CASE WHEN $6 THEN false ELSE history_gap END,
-        history_signature=CASE WHEN $6 THEN NULL ELSE history_signature END,live_signature=CASE WHEN $6 THEN NULL ELSE live_signature END,next_run_at=CURRENT_TIMESTAMP
+        history_signature=CASE WHEN $6 THEN NULL ELSE history_signature END,live_signature=CASE WHEN $6 THEN NULL ELSE live_signature END,
+        live_due=CASE WHEN $6 THEN false ELSE live_due END,live_gap=CASE WHEN $6 THEN false ELSE live_gap END,
+        due_floor=CASE WHEN $6 THEN NULL ELSE due_floor END,due_generation=due_generation+CASE WHEN $6 THEN 1 ELSE 0 END,
+        safety_floor=CASE WHEN $6 THEN LEAST($7,live_gap_at,safety_gap_at) ELSE safety_floor END,
+        safety_upper=CASE WHEN $6 THEN NULL ELSE safety_upper END,safety_cursor=CASE WHEN $6 THEN NULL ELSE safety_cursor END,
+        safety_signature=CASE WHEN $6 THEN NULL ELSE safety_signature END,
+        safety_had_messages=CASE WHEN $6 THEN false ELSE safety_had_messages END,safety_gap=CASE WHEN $6 THEN false ELSE safety_gap END,
+        live_scan_purpose=CASE WHEN $6 THEN NULL ELSE live_scan_purpose END,
+        live_scan_had_messages=CASE WHEN $6 THEN false ELSE live_scan_had_messages END,
+        safety_next_at=CASE WHEN $6 THEN CURRENT_TIMESTAMP ELSE safety_next_at END,normal_next_at=CURRENT_TIMESTAMP,next_run_at=CURRENT_TIMESTAMP
         WHERE chat_id=$1`,
         [
           chatId,
@@ -417,6 +459,8 @@ export class Store {
           cutoff,
         ],
       );
+      if (enabled && input.hours > policy.hours)
+        await this.parkYoungCandidates(client, chatId, input.hours, now);
       if (enabled && input.hours < policy.hours) {
         // FLAG: A shorter age may wake only never-issued age deferrals. Pin waits, rejected
         // rate limits and all effect journals keep their deadlines and dispatch identities.
@@ -563,10 +607,14 @@ export class Store {
       const result = await client.query(
         `UPDATE eraser_policies p SET enabled=true,revision=revision+1,connection_status='connected',
          activation_id=$3,enabled_at=clock_timestamp(),first_enabled_at=COALESCE(first_enabled_at,clock_timestamp()),
-         live_floor=(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint-hours*3600000::bigint+1,
+         live_floor=LEAST((EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint-hours*3600000::bigint+1,live_gap_at,safety_gap_at),
          live_upper=NULL,live_cursor=NULL,history_cursor=GREATEST(COALESCE(history_cursor,0),
            (EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint-hours*3600000::bigint),
-         history_complete=false,history_gap=false,history_signature=NULL,live_signature=NULL,
+         history_complete=false,history_gap=false,live_gap=false,history_signature=NULL,live_signature=NULL,
+         live_due=false,due_floor=NULL,due_generation=due_generation+1,
+         safety_floor=LEAST((EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint-hours*3600000::bigint+1,live_gap_at,safety_gap_at),
+         safety_upper=NULL,safety_cursor=NULL,safety_signature=NULL,safety_had_messages=false,safety_gap=false,
+         live_scan_purpose=NULL,live_scan_had_messages=false,safety_next_at=clock_timestamp(),normal_next_at=clock_timestamp(),
          lease_token=NULL,lease_until=NULL,last_error=NULL,next_run_at=clock_timestamp(),updated_at=clock_timestamp()
          WHERE chat_id=$1 AND NOT enabled AND revision=$4 AND $5::timestamptz>clock_timestamp() AND EXISTS(
            SELECT 1 FROM eraser_connection_requests r WHERE r.chat_id=p.chat_id AND r.lease_token=$2
@@ -583,11 +631,232 @@ export class Store {
       return true;
     });
   }
-  async reserve(limit: number): Promise<Array<{ chatId: string; leaseToken: string }>> {
+  private async putFutureMinute(
+    client: pg.PoolClient,
+    chatId: string,
+    sourceMs: number,
+  ): Promise<void> {
+    const hour = Math.floor(sourceMs / HOUR) * HOUR;
+    const minute = Math.floor((sourceMs - hour) / MINUTE);
+    await client.query(
+      `INSERT INTO eraser_future_hours(chat_id,hour_ms,minutes) VALUES($1,$2,set_bit(B'0'::bit(60),$3,1))
+       ON CONFLICT(chat_id,hour_ms) DO UPDATE SET minutes=eraser_future_hours.minutes | EXCLUDED.minutes
+       WHERE get_bit(eraser_future_hours.minutes,$3)=0`,
+      [chatId, hour, minute],
+    );
+  }
+
+  private async firstFutureMinute(
+    client: pg.Pool | pg.PoolClient,
+    chatId: string,
+    hours: Hours,
+    after?: number,
+  ) {
+    const buckets = (
+      await client.query<{ hour_ms: string; minutes: string }>(
+        `SELECT hour_ms,minutes::text FROM eraser_future_hours WHERE chat_id=$1 AND hour_ms >= $2
+       ORDER BY hour_ms LIMIT ${after === undefined ? 1 : 170}`,
+        [chatId, after === undefined ? 0 : Math.floor(after / HOUR) * HOUR],
+      )
+    ).rows;
+    for (const bucket of buckets) {
+      for (let minute = 0; minute < 60; minute++) {
+        const sourceMs = Number(bucket.hour_ms) + minute * MINUTE;
+        if (
+          bucket.minutes[minute] === '1' &&
+          (after === undefined || sourceMs + MINUTE - 1 > after)
+        )
+          return { sourceMs, dueMs: sourceMs + MINUTE + hours * HOUR };
+      }
+    }
+    return null;
+  }
+
+  private async compactExpiredHours(
+    client: pg.PoolClient,
+    policy: PolicyRow,
+    now: number,
+  ): Promise<void> {
+    // FLAG: Expired bitmap rows become one durable due continuation before deletion. The
+    // policy lock serializes ingestion, scan completion and period changes; no effect is replayed.
+    const expired = (
+      await client.query<{ hour_ms: string; minutes: string }>(
+        'SELECT hour_ms,minutes::text FROM eraser_future_hours WHERE chat_id=$1 AND hour_ms<=$2 ORDER BY hour_ms LIMIT 32',
+        [policy.chat_id, now - policy.hours * HOUR - HOUR],
+      )
+    ).rows;
+    if (!expired.length) return;
+    const first = expired[0]!;
+    const floor = Number(first.hour_ms) + first.minutes.indexOf('1') * MINUTE;
+    const wake =
+      !policy.live_gap ||
+      (policy.live_upper !== null &&
+        expired.some(
+          (bucket) =>
+            Number(bucket.hour_ms) + (bucket.minutes.lastIndexOf('1') + 1) * MINUTE - 1 >
+            Number(policy.live_upper),
+        ));
+    // FLAG: Transfer both the lower bound and its runnable wake before deleting bitmap rows.
+    // Only an interval extending past the blocked upper can reopen the retained gap window.
+    await client.query(
+      `UPDATE eraser_policies SET live_floor=LEAST(COALESCE(live_floor,$2),$2),live_due=true,
+       due_floor=LEAST(due_floor,$2),due_generation=due_generation+1,live_gap=CASE WHEN $3 THEN false ELSE live_gap END,
+       live_upper=CASE WHEN $3 THEN NULL ELSE live_upper END,
+       live_cursor=CASE WHEN $3 THEN NULL ELSE live_cursor END,
+       live_scan_purpose=CASE WHEN $3 THEN NULL ELSE live_scan_purpose END,live_scan_had_messages=false,
+       live_signature=CASE WHEN $3 THEN NULL ELSE live_signature END,
+       normal_next_at=CASE WHEN $3 THEN LEAST(normal_next_at,CURRENT_TIMESTAMP) ELSE normal_next_at END,
+       next_run_at=CASE WHEN $3 THEN LEAST(normal_next_at,safety_next_at,CURRENT_TIMESTAMP) ELSE next_run_at END
+       WHERE chat_id=$1`,
+      [policy.chat_id, floor, wake],
+    );
+    await client.query(
+      'DELETE FROM eraser_future_hours WHERE chat_id=$1 AND hour_ms=ANY($2::bigint[])',
+      [policy.chat_id, expired.map((row) => row.hour_ms)],
+    );
+  }
+
+  private async clearCoveredMinutes(
+    client: pg.PoolClient,
+    chatId: string,
+    lower: number,
+    upper: number,
+  ): Promise<void> {
+    const rows = (
+      await client.query<{ hour_ms: string; minutes: string }>(
+        'SELECT hour_ms,minutes::text FROM eraser_future_hours WHERE chat_id=$1 AND hour_ms BETWEEN $2 AND $3 ORDER BY hour_ms LIMIT 170',
+        [chatId, Math.floor(lower / HOUR) * HOUR, Math.floor(upper / HOUR) * HOUR],
+      )
+    ).rows;
+    const changed: { hour_ms: string; minutes: string }[] = [];
+    for (const row of rows) {
+      const bits = [...row.minutes];
+      for (let minute = 0; minute < 60; minute++) {
+        const start = Number(row.hour_ms) + minute * MINUTE;
+        if (start >= lower && start + MINUTE - 1 <= upper) bits[minute] = '0';
+      }
+      const minutes = bits.join('');
+      if (minutes !== row.minutes) changed.push({ hour_ms: row.hour_ms, minutes });
+    }
+    if (!changed.length) return;
+    await client.query(
+      `UPDATE eraser_future_hours bucket SET minutes=page.minutes::bit(60)
+       FROM jsonb_to_recordset($2::jsonb) AS page(hour_ms bigint,minutes text)
+       WHERE bucket.chat_id=$1 AND bucket.hour_ms=page.hour_ms`,
+      [chatId, JSON.stringify(changed)],
+    );
+    await client.query(
+      "DELETE FROM eraser_future_hours WHERE chat_id=$1 AND hour_ms=ANY($2::bigint[]) AND minutes=B'0'::bit(60)",
+      [chatId, changed.map((row) => row.hour_ms)],
+    );
+  }
+
+  private async parkYoungCandidates(
+    client: pg.PoolClient,
+    chatId: string,
+    hours: Hours,
+    now: number,
+  ): Promise<void> {
+    const rows = (
+      await client.query<{ message_id: string; source_ms: string }>(
+        `SELECT message_id,source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='pending'
+       AND dispatch_id IS NULL AND attempt_count=0 AND source_ms>$2
+       AND next_attempt_at<=to_timestamp((source_ms+$3::bigint)::double precision/1000)
+       ORDER BY source_ms,message_id LIMIT ${CHAT_BUFFER} FOR UPDATE`,
+        [chatId, now - hours * HOUR, hours * HOUR],
+      )
+    ).rows;
+    const buckets = new Map<number, string[]>();
+    for (const row of rows) {
+      const source = Number(row.source_ms);
+      const hour = Math.floor(source / HOUR) * HOUR;
+      const bits = buckets.get(hour) ?? Array<string>(60).fill('0');
+      bits[Math.floor((source - hour) / MINUTE)] = '1';
+      buckets.set(hour, bits);
+    }
+    if (buckets.size)
+      await client.query(
+        `INSERT INTO eraser_future_hours(chat_id,hour_ms,minutes)
+       SELECT $1,b.hour_ms,b.minutes::bit(60) FROM jsonb_to_recordset($2::jsonb) AS b(hour_ms bigint,minutes text)
+       ON CONFLICT(chat_id,hour_ms) DO UPDATE SET minutes=eraser_future_hours.minutes | EXCLUDED.minutes
+       WHERE eraser_future_hours.minutes <> (eraser_future_hours.minutes | EXCLUDED.minutes)`,
+        [
+          chatId,
+          JSON.stringify(
+            [...buckets].map(([hour_ms, bits]) => ({ hour_ms, minutes: bits.join('') })),
+          ),
+        ],
+      );
+    if (rows.length)
+      await client.query(
+        `DELETE FROM eraser_candidates WHERE chat_id=$1 AND message_id=ANY($2::text[])
+       AND state='pending' AND dispatch_id IS NULL AND attempt_count=0`,
+        [chatId, rows.map((row) => row.message_id)],
+      );
+  }
+
+  private async reschedule(
+    client: pg.PoolClient,
+    policy: PolicyRow,
+    error: string | null = null,
+    waitMs = 1000,
+  ): Promise<void> {
+    const now = Date.now();
+    const due = effectiveDueSql(policy.hours);
+    const heads = (
+      await client.query<{ due_ms: string }>(
+        `(SELECT ${due}::text AS due_ms FROM eraser_candidates WHERE chat_id=$1 AND state='pending' AND lane='live' ORDER BY ${due},source_ms,message_id LIMIT 1)
+       UNION ALL (SELECT ${due}::text AS due_ms FROM eraser_candidates WHERE chat_id=$1 AND state='pending' AND lane='history' ORDER BY ${due},source_ms,message_id LIMIT 1)`,
+        [policy.chat_id],
+      )
+    ).rows;
+    const future = await this.firstFutureMinute(
+      client,
+      policy.chat_id,
+      policy.hours,
+      policy.live_gap && policy.live_upper !== null ? Number(policy.live_upper) : undefined,
+    );
+    const capacity = (await this.bufferSize(policy.chat_id, client)) <= CHAT_BUFFER - 100;
+    const dueScan =
+      capacity &&
+      ((!policy.history_complete && !policy.history_gap) ||
+        (future !== null && future.dueMs <= now) ||
+        (!policy.live_gap &&
+          policy.due_floor !== null &&
+          (policy.live_due || policy.live_cursor !== null)));
+    const target = Math.min(
+      ...heads.map((row) => Number(row.due_ms)),
+      capacity && future ? future.dueMs : Infinity,
+      dueScan ? now : Infinity,
+    );
+    let normalAt = Number.isFinite(target) ? Math.max(now + 1000, target) : NO_WORK_AT.getTime();
+    let safetyAt = policy.safety_next_at.getTime();
+    if (!capacity) safetyAt = Math.max(safetyAt, now + SAFETY_DELAYS[0]!);
+    if (capacity && policy.safety_cursor !== null && !policy.safety_gap) safetyAt = now + 1000;
+    if (error) {
+      const retryAt = now + Math.max(1000, waitMs);
+      normalAt = Math.max(normalAt, retryAt);
+      safetyAt = Math.max(safetyAt, retryAt);
+    }
+    // FLAG: Repairing only the legacy projection is still a native write. The transaction
+    // marker prevents a completed safety window from acquiring ordinary network quota.
+    await client.query(
+      `UPDATE eraser_policies SET normal_next_at=$2::timestamptz,safety_next_at=$3::timestamptz,next_run_at=LEAST($2::timestamptz,$3::timestamptz) WHERE chat_id=$1`,
+      [policy.chat_id, new Date(normalAt), new Date(safetyAt)],
+    );
+  }
+
+  async reserve(
+    limit: number,
+    purpose: ScanPurpose = 'due',
+  ): Promise<Array<{ chatId: string; leaseToken: string; purpose: ScanPurpose }>> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > (purpose === 'safety' ? 2 : 64))
+      throw new Error('Invalid reservation limit');
+    const schedule = purpose === 'safety' ? 'safety_next_at' : 'normal_next_at';
     return this.transaction(async (client) => {
       const rows = (
         await client.query<{ chat_id: string }>(
-          `SELECT chat_id FROM eraser_policies WHERE enabled AND connection_status NOT IN ('missing','no_access') AND next_run_at<=CURRENT_TIMESTAMP AND (lease_until IS NULL OR lease_until<CURRENT_TIMESTAMP) ORDER BY next_run_at,chat_id LIMIT $1 FOR UPDATE SKIP LOCKED`,
+          `SELECT chat_id FROM eraser_policies WHERE enabled AND connection_status NOT IN ('missing','no_access') AND ${schedule}<=CURRENT_TIMESTAMP AND (lease_until IS NULL OR lease_until<CURRENT_TIMESTAMP) ORDER BY ${schedule},chat_id LIMIT $1 FOR UPDATE SKIP LOCKED`,
           [limit],
         )
       ).rows;
@@ -595,10 +864,10 @@ export class Store {
       for (const row of rows) {
         const leaseToken = randomUUID();
         await client.query(
-          "UPDATE eraser_policies SET lease_token=$2,lease_until=CURRENT_TIMESTAMP+INTERVAL '60 seconds' WHERE chat_id=$1",
-          [row.chat_id, leaseToken],
+          "UPDATE eraser_policies SET lease_token=$2,lease_until=CURRENT_TIMESTAMP+INTERVAL '60 seconds',lease_purpose=$3 WHERE chat_id=$1",
+          [row.chat_id, leaseToken, purpose],
         );
-        result.push({ chatId: row.chat_id, leaseToken });
+        result.push({ chatId: row.chat_id, leaseToken, purpose });
       }
       return result;
     });
@@ -609,10 +878,22 @@ export class Store {
     error: string | null = null,
     waitMs = 1000,
   ): Promise<void> {
-    await this.pool.query(
-      "UPDATE eraser_policies SET lease_token=NULL,lease_until=NULL,next_run_at=CURRENT_TIMESTAMP+($3 * INTERVAL '1 millisecond'),last_error=$4 WHERE chat_id=$1 AND lease_token=$2",
-      [chatId, token, waitMs, error],
-    );
+    await this.transaction(async (client) => {
+      const policy = (
+        await client.query<PolicyRow>(
+          'SELECT * FROM eraser_policies WHERE chat_id=$1 AND lease_token=$2 FOR UPDATE',
+          [chatId, token],
+        )
+      ).rows[0];
+      if (!policy) return;
+      // FLAG: Recompute from current durable inputs under the same lock used by ingress.
+      // A stale visit cannot replace a newer event's due wake with its idle polling delay.
+      await this.reschedule(client, policy, error, waitMs);
+      await client.query(
+        'UPDATE eraser_policies SET lease_token=NULL,lease_until=NULL,last_error=$3 WHERE chat_id=$1 AND lease_token=$2',
+        [chatId, token, error],
+      );
+    });
   }
   async connection(
     chatId: string,
@@ -635,11 +916,20 @@ export class Store {
       ).rows[0] ?? null
     );
   }
-  async nextCandidates(chatId: string): Promise<Candidate[]> {
+  async nextCandidates(chatId: string, hours?: Hours): Promise<Candidate[]> {
+    const selectedHours = hours ?? (await this.policy(chatId))?.hours;
+    if (!selectedHours) return [];
+    const due = effectiveDueSql(selectedHours);
     return (
       await this.pool.query<Candidate>(
-        `SELECT * FROM eraser_candidates WHERE chat_id=$1 AND state='pending' AND next_attempt_at<=CURRENT_TIMESTAMP ORDER BY CASE WHEN lane='live' THEN 0 ELSE 1 END,source_ms,message_id LIMIT 5`,
-        [chatId],
+        `SELECT * FROM (
+        (SELECT * FROM eraser_candidates WHERE chat_id=$1 AND state='pending' AND lane='live'
+         AND ${due}<=$2 ORDER BY ${due},source_ms,message_id LIMIT 5)
+        UNION ALL
+        (SELECT * FROM eraser_candidates WHERE chat_id=$1 AND state='pending' AND lane='history'
+         AND ${due}<=$2 ORDER BY ${due},source_ms,message_id LIMIT 5)
+       ) selected ORDER BY CASE WHEN lane='live' THEN 0 ELSE 1 END,${due},source_ms,message_id LIMIT 5`,
+        [chatId, Date.now()],
       )
     ).rows;
   }
@@ -653,18 +943,67 @@ export class Store {
       ).rows[0] ?? null
     );
   }
-  async openScan(policy: PolicyRow, lane: Lane): Promise<{ upper: number; lower?: number } | null> {
-    const cutoff = Date.now() - policy.hours * HOUR;
+  async openScan(
+    policy: PolicyRow,
+    lane: Lane,
+    purpose: ScanPurpose = 'due',
+  ): Promise<{ upper: number; lower?: number } | null> {
+    const now = Date.now();
+    const cutoff = now - policy.hours * HOUR;
     if (lane === 'history')
-      return policy.history_complete || policy.history_gap
+      return purpose === 'safety' || policy.history_complete || policy.history_gap
         ? null
         : { upper: Number(policy.history_cursor ?? cutoff) };
-    const floor = Number(policy.live_floor ?? cutoff + 1);
+    if (purpose === 'safety') {
+      const floor = Number(policy.safety_floor ?? policy.live_floor ?? cutoff + 1);
+      if (floor > cutoff) return null;
+      if (policy.safety_cursor !== null && !policy.safety_gap)
+        return { upper: Number(policy.safety_cursor), lower: floor };
+      const opened = await this.pool.query(
+        `UPDATE eraser_policies SET safety_floor=$6,safety_upper=$2,safety_cursor=$2,safety_signature=NULL,
+         safety_had_messages=false,safety_gap=false WHERE chat_id=$1 AND lease_token=$3
+         AND lease_until>clock_timestamp() AND enabled AND revision=$4 AND scan_generation=$5`,
+        [
+          policy.chat_id,
+          cutoff,
+          policy.lease_token,
+          policy.revision,
+          policy.scan_generation,
+          floor,
+        ],
+      );
+      return opened.rowCount ? { upper: cutoff, lower: floor } : null;
+    }
+    const future = await this.firstFutureMinute(
+      this.pool,
+      policy.chat_id,
+      policy.hours,
+      policy.live_gap && policy.live_upper !== null ? Number(policy.live_upper) : undefined,
+    );
+    if (policy.live_gap && (!future || future.dueMs > now)) return null;
+    const knownDue =
+      (policy.live_due && policy.due_floor !== null) || (future !== null && future.dueMs <= now);
+    if (!knownDue && (policy.live_cursor === null || policy.due_floor === null)) return null;
+    const floor = Math.min(
+      policy.due_floor === null ? Infinity : Number(policy.due_floor),
+      future?.sourceMs ?? Infinity,
+    );
     if (floor > cutoff) return null;
-    if (policy.live_cursor !== null) return { upper: Number(policy.live_cursor), lower: floor };
+    if (!policy.live_gap && policy.live_cursor !== null && policy.due_floor !== null)
+      return { upper: Number(policy.live_cursor), lower: floor };
     const opened = await this.pool.query(
-      'UPDATE eraser_policies SET live_upper=$2,live_cursor=$2,live_signature=NULL WHERE chat_id=$1 AND lease_token=$3 AND lease_until>clock_timestamp() AND enabled AND revision=$4 AND scan_generation=$5 AND live_cursor IS NULL',
-      [policy.chat_id, cutoff, policy.lease_token, policy.revision, policy.scan_generation],
+      `UPDATE eraser_policies SET due_floor=$6,live_floor=LEAST(live_floor,$6),live_upper=$2,live_cursor=$2,live_signature=NULL,
+       live_scan_purpose='due',live_scan_had_messages=false,live_gap=false WHERE chat_id=$1 AND lease_token=$3
+       AND lease_until>clock_timestamp() AND enabled AND revision=$4 AND scan_generation=$5 AND due_generation=$7`,
+      [
+        policy.chat_id,
+        cutoff,
+        policy.lease_token,
+        policy.revision,
+        policy.scan_generation,
+        floor,
+        policy.due_generation,
+      ],
     );
     return opened.rowCount ? { upper: cutoff, lower: floor } : null;
   }
@@ -679,7 +1018,12 @@ export class Store {
       )
     ).rows[0]!.count;
   }
-  async savePage(policy: PolicyRow, lane: Lane, messages: Message[]): Promise<void> {
+  async savePage(
+    policy: PolicyRow,
+    lane: Lane,
+    messages: Message[],
+    purpose: ScanPurpose = 'due',
+  ): Promise<void> {
     await this.transaction(async (client) => {
       const current = (
         await client.query<PolicyRow>(
@@ -692,7 +1036,8 @@ export class Store {
       if (
         !current ||
         current.revision !== policy.revision ||
-        current.scan_generation !== policy.scan_generation
+        current.scan_generation !== policy.scan_generation ||
+        (lane === 'live' && purpose === 'due' && current.due_generation !== policy.due_generation)
       )
         return;
       if ((await this.bufferSize(policy.chat_id, client)) > CHAT_BUFFER - 100) return;
@@ -705,7 +1050,12 @@ export class Store {
       const signature = createHash('sha256')
         .update(messages.map((m) => `${m.id}:${m.sourceMs}`).join('|'))
         .digest('hex');
-      const previous = lane === 'live' ? current.live_signature : current.history_signature;
+      const safety = lane === 'live' && purpose === 'safety';
+      const previous = safety
+        ? current.safety_signature
+        : lane === 'live'
+          ? current.live_signature
+          : current.history_signature;
       const repeated = messages.length === 100 && signature === previous;
       let deferredFrom: number | null = null,
         deferredTo: number | null = null,
@@ -771,19 +1121,69 @@ export class Store {
           'UPDATE eraser_policies SET history_cursor=COALESCE($2,history_cursor),history_complete=$3,history_gap=$4,history_signature=$5 WHERE chat_id=$1',
           [policy.chat_id, oldest ?? null, messages.length < 100, repeated, signature],
         );
-      } else if (messages.length < 100) {
+      } else if (safety && messages.length < 100 && current.safety_upper !== null) {
+        const empty = !current.safety_had_messages && messages.length === 0;
+        const streak = empty ? Math.min(current.safety_empty_streak + 1, SAFETY_DELAYS.length) : 0;
+        const delay = SAFETY_DELAYS[Math.max(0, streak - 1)]!;
+        // FLAG: Only a complete independent safety window certifies broad coverage. Preserve
+        // all known-due hints; ordinary work can continue even while this lane is unfinished.
         await client.query(
-          'UPDATE eraser_policies SET live_floor=live_upper+1,live_upper=NULL,live_cursor=NULL,live_signature=NULL WHERE chat_id=$1',
+          `UPDATE eraser_policies SET live_floor=LEAST(safety_upper+1,due_floor),safety_floor=safety_upper+1,
+           safety_gap_at=CASE WHEN safety_gap_at BETWEEN safety_floor AND safety_upper THEN NULL ELSE safety_gap_at END,
+           live_gap=CASE WHEN live_gap_at BETWEEN safety_floor AND safety_upper THEN false ELSE live_gap END,
+           live_gap_at=CASE WHEN live_gap_at BETWEEN safety_floor AND safety_upper THEN NULL ELSE live_gap_at END,
+           safety_upper=NULL,safety_cursor=NULL,safety_signature=NULL,safety_gap=false,
+           safety_had_messages=false,safety_empty_streak=$2,
+           safety_next_at=clock_timestamp()+($3*INTERVAL '1 millisecond'),last_live_completed_at=clock_timestamp(),
+           live_cursor=CASE WHEN due_floor IS NULL THEN NULL ELSE live_cursor END,
+           live_upper=CASE WHEN due_floor IS NULL THEN NULL ELSE live_upper END,
+           live_signature=CASE WHEN due_floor IS NULL THEN NULL ELSE live_signature END
+           WHERE chat_id=$1`,
+          [policy.chat_id, streak, delay],
+        );
+      } else if (safety) {
+        await client.query(
+          `UPDATE eraser_policies SET safety_cursor=$2,safety_signature=$3,safety_gap=safety_gap OR $4,
+           safety_gap_at=CASE WHEN $4 THEN COALESCE(safety_gap_at,$2) ELSE safety_gap_at END,
+           safety_had_messages=safety_had_messages OR $5,
+           safety_next_at=CASE WHEN $4 THEN clock_timestamp()+INTERVAL '6 hours' ELSE safety_next_at END
+           WHERE chat_id=$1`,
+          [
+            policy.chat_id,
+            oldest ?? current.safety_cursor,
+            signature,
+            repeated,
+            messages.length > 0,
+          ],
+        );
+      } else if (
+        messages.length < 100 &&
+        current.live_upper !== null &&
+        current.due_floor !== null
+      ) {
+        await this.clearCoveredMinutes(
+          client,
+          policy.chat_id,
+          Number(current.due_floor),
+          Number(current.live_upper),
+        );
+        await client.query(
+          `UPDATE eraser_policies SET live_floor=COALESCE(safety_floor,live_floor),
+           live_gap_at=CASE WHEN live_gap_at BETWEEN due_floor AND live_upper THEN NULL ELSE live_gap_at END,
+           due_floor=NULL,live_upper=NULL,live_cursor=NULL,live_signature=NULL,live_due=false,live_gap=false,
+           live_scan_purpose=NULL,live_scan_had_messages=false WHERE chat_id=$1`,
           [policy.chat_id],
         );
       } else {
         await client.query(
-          'UPDATE eraser_policies SET live_cursor=$2,live_signature=$3,history_gap=history_gap OR $4 WHERE chat_id=$1',
-          [policy.chat_id, oldest, signature, repeated],
+          `UPDATE eraser_policies SET live_cursor=$2,live_signature=$3,live_gap=live_gap OR $4,
+           live_gap_at=CASE WHEN $4 THEN COALESCE(live_gap_at,$2) ELSE live_gap_at END,
+           live_scan_purpose='due',live_scan_had_messages=live_scan_had_messages OR $5 WHERE chat_id=$1`,
+          [policy.chat_id, oldest ?? current.live_cursor, signature, repeated, messages.length > 0],
         );
       }
       await client.query(
-        'UPDATE eraser_policies SET scan_generation=scan_generation+1 WHERE chat_id=$1',
+        `UPDATE eraser_policies SET ${lane === 'live' && purpose === 'due' ? 'due_generation=due_generation+1' : 'scan_generation=scan_generation+1'} WHERE chat_id=$1`,
         [policy.chat_id],
       );
     });
@@ -911,6 +1311,20 @@ export class Store {
         "UPDATE eraser_candidates SET state=$3,outcome_code=$4,updated_at=CURRENT_TIMESTAMP,next_attempt_at=CURRENT_TIMESTAMP+($5 * INTERVAL '1 millisecond') WHERE chat_id=$1 AND message_id=$2",
         [candidate.chat_id, candidate.message_id, state, code, waitMs],
       );
+      if (state === 'pending') {
+        // FLAG: A proven rejection may arrive after its visit ended. Restore only this known
+        // retry's due wake; an unresolved DELETE never enters the ordinary schedule.
+        await client.query(
+          `UPDATE eraser_policies policy SET
+           normal_next_at=LEAST(normal_next_at,GREATEST(candidate.next_attempt_at,
+             to_timestamp((candidate.source_ms+policy.hours*3600000::bigint)::double precision/1000))),
+           next_run_at=LEAST(normal_next_at,safety_next_at,GREATEST(candidate.next_attempt_at,
+             to_timestamp((candidate.source_ms+policy.hours*3600000::bigint)::double precision/1000)))
+           FROM eraser_candidates candidate WHERE policy.chat_id=$1 AND candidate.chat_id=policy.chat_id
+             AND candidate.message_id=$2 AND candidate.state='pending'`,
+          [candidate.chat_id, candidate.message_id],
+        );
+      }
       if (state === 'deleted' || state === 'protected')
         await client.query(
           `UPDATE eraser_policies SET ${state === 'deleted' ? 'deleted_count=deleted_count+1' : 'skipped_count=skipped_count+1'} WHERE chat_id=$1`,
@@ -918,7 +1332,52 @@ export class Store {
         );
     });
   }
+  async retryReview(
+    chatId: string,
+    input: {
+      messageId: string;
+      expectedRevision: number;
+      activationId: string;
+      intentId: string;
+      expectedIntentUpdatedAt: string;
+      expectedAttemptCount: number;
+    },
+  ): Promise<void> {
+    await this.transaction(async (client) => {
+      const policy = (
+        await client.query<PolicyRow>('SELECT * FROM eraser_policies WHERE chat_id=$1 FOR UPDATE', [
+          chatId,
+        ])
+      ).rows[0];
+      if (
+        !policy ||
+        policy.revision !== input.expectedRevision ||
+        policy.activation_id !== input.activationId
+      )
+        throw new ServiceError(409, 'ERASER_RETRY_CONFLICT', 'Состояние удаления изменилось.');
+      // FLAG: Only the exact unissued review intent may return to ordinary work. Policy
+      // revision, activation and candidate identity are checked under the dispatch lock order.
+      const retried = await client.query(
+        `UPDATE eraser_candidates SET state='pending',next_attempt_at=clock_timestamp(),outcome_code=NULL,
+         updated_at=clock_timestamp() WHERE chat_id=$1 AND message_id=$2 AND state='review'
+         AND attempt_count=0 AND dispatch_id IS NULL AND updated_at=$3::timestamptz
+         AND message_id=$4 AND attempt_count=$5`,
+        [
+          chatId,
+          input.messageId,
+          input.expectedIntentUpdatedAt,
+          input.intentId,
+          input.expectedAttemptCount,
+        ],
+      );
+      if (!retried.rowCount)
+        throw new ServiceError(409, 'ERASER_RETRY_UNSAFE', 'Удаление требует проверки результата.');
+      await this.reschedule(client, policy);
+    });
+  }
   async defer(candidate: Candidate, code: string, waitMs: number): Promise<void> {
+    // FLAG: Age is derived from the current policy; it must never overwrite a retry or pin deadline.
+    if (code === 'not_due') return;
     await this.settle(candidate, 'pending', code, waitMs);
   }
   async deferProtection(candidate: Candidate): Promise<void> {
@@ -969,16 +1428,44 @@ export class Store {
       )
         return;
       if (message) {
-        // FLAG: Events schedule a bounded history window; they never accumulate one row per future message.
-        await client.query(
-          `UPDATE eraser_policies SET live_floor=LEAST(COALESCE(live_floor,$2),$2),next_run_at=CURRENT_TIMESTAMP,
-           scan_generation=scan_generation+CASE WHEN $2<live_floor OR $2<=live_upper THEN 1 ELSE 0 END,
-           live_cursor=CASE WHEN $2<live_floor OR $2<=live_upper THEN NULL ELSE live_cursor END,
-           live_upper=CASE WHEN $2<live_floor OR $2<=live_upper THEN NULL ELSE live_upper END,
-           live_signature=CASE WHEN $2<live_floor OR $2<=live_upper THEN NULL ELSE live_signature END
-           WHERE chat_id=$1 AND enabled`,
-          [message.chatId, message.sourceMs],
-        );
+        // FLAG: The policy lock orders bitmap writes and completed-window clearing. Future
+        // events do not invalidate an unrelated in-flight page or create message-sized journals.
+        const policy = (
+          await client.query<PolicyRow>(
+            'SELECT * FROM eraser_policies WHERE chat_id=$1 AND enabled FOR UPDATE',
+            [message.chatId],
+          )
+        ).rows[0];
+        if (policy) {
+          const now = Date.now();
+          await this.compactExpiredHours(client, policy, now);
+          if (message.sourceMs + policy.hours * HOUR > now) {
+            await this.putFutureMinute(client, message.chatId, message.sourceMs);
+            const dueAt = new Date(
+              (Math.floor(message.sourceMs / MINUTE) + 1) * MINUTE + policy.hours * HOUR,
+            );
+            await client.query(
+              `UPDATE eraser_policies SET normal_next_at=LEAST(normal_next_at,$2),
+               next_run_at=LEAST(normal_next_at,safety_next_at,$2)
+               WHERE chat_id=$1 AND normal_next_at>$2 AND (NOT live_gap OR $3>live_upper)`,
+              [message.chatId, dueAt, (Math.floor(message.sourceMs / MINUTE) + 1) * MINUTE - 1],
+            );
+          } else {
+            await client.query(
+              `UPDATE eraser_policies SET live_floor=LEAST(COALESCE(live_floor,$2),$2),live_due=true,
+               due_floor=LEAST(due_floor,$2),due_generation=due_generation+1,
+               normal_next_at=CURRENT_TIMESTAMP,next_run_at=CURRENT_TIMESTAMP,
+               scan_generation=scan_generation+CASE WHEN $2 BETWEEN safety_floor AND safety_upper THEN 1 ELSE 0 END,
+               safety_cursor=CASE WHEN $2 BETWEEN safety_floor AND safety_upper THEN safety_upper ELSE safety_cursor END,
+               safety_signature=CASE WHEN $2 BETWEEN safety_floor AND safety_upper THEN NULL ELSE safety_signature END,
+               safety_next_at=CASE WHEN $2 BETWEEN safety_floor AND safety_upper THEN CURRENT_TIMESTAMP ELSE safety_next_at END,
+               safety_gap=CASE WHEN $2 BETWEEN safety_floor AND safety_upper THEN false ELSE safety_gap END,
+               live_cursor=NULL,live_upper=NULL,live_signature=NULL,live_scan_purpose=NULL,
+               live_gap=false,live_scan_had_messages=false WHERE chat_id=$1`,
+              [message.chatId, message.sourceMs],
+            );
+          }
+        }
       }
       if (
         raw.update_type === 'message_removed' &&
@@ -990,8 +1477,12 @@ export class Store {
         await client.query('SELECT chat_id FROM eraser_policies WHERE chat_id=$1 FOR UPDATE', [
           chatId,
         ]);
-        const result = await client.query(
-          "UPDATE eraser_candidates SET state='deleted',outcome_code='removed_receipt',updated_at=CURRENT_TIMESTAMP WHERE chat_id=$1 AND message_id=$2 AND state NOT IN ('deleted','protected') RETURNING message_id",
+        const result = await client.query<{ previous_state: Candidate['state'] }>(
+          `WITH prior AS MATERIALIZED (
+             SELECT state FROM eraser_candidates WHERE chat_id=$1 AND message_id=$2 FOR UPDATE
+           ) UPDATE eraser_candidates candidate SET state='deleted',outcome_code='removed_receipt',updated_at=CURRENT_TIMESTAMP
+           FROM prior WHERE candidate.chat_id=$1 AND candidate.message_id=$2 AND prior.state NOT IN ('deleted','protected')
+           RETURNING prior.state AS previous_state`,
           [chatId, raw.message_id],
         );
         if (result.rowCount)
@@ -999,6 +1490,16 @@ export class Store {
             'UPDATE eraser_policies SET deleted_count=deleted_count+1 WHERE chat_id=$1',
             [chatId],
           );
+        // FLAG: Freeing ordinary page capacity may expose known due work after idle polling
+        // has stopped. Unrelated receipts and uncertain journals do not create an extra wake.
+        if (result.rows[0]?.previous_state === 'pending') {
+          const current = (
+            await client.query<PolicyRow>('SELECT * FROM eraser_policies WHERE chat_id=$1', [
+              chatId,
+            ])
+          ).rows[0];
+          if (current) await this.reschedule(client, current);
+        }
       }
       if (raw.update_type === 'bot_removed' && raw.chat_id !== undefined)
         await client.query(
