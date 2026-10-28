@@ -785,7 +785,21 @@ describe('PublisherBindingRefreshService', () => {
       await f.service.refresh(f.command);
       expect(f.tx.publisherEntityBinding.upsert).not.toHaveBeenCalled();
       expect(f.tx.managedBotChatCatalog.upsert).not.toHaveBeenCalled();
-      expect(f.tx.managedEntityAccessEdge.updateMany).not.toHaveBeenCalled();
+      expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledTimes(1);
+      expect(f.tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          chatId: f.command.chatId,
+          userId: f.command.candidateUserId,
+          botId: 'publik_bot',
+          sourceVersion: f.command.candidateVersion,
+          source: { startsWith: 'publisher_actor_candidate_' },
+          state: { not: ManagedEntityAccessState.GRANTED },
+        }),
+        data: expect.objectContaining({
+          state: ManagedEntityAccessState.USER_DENIED,
+          deniedReason: 'publisher_user_not_admin',
+        }),
+      });
       expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
     },
   );
@@ -2386,7 +2400,7 @@ describe('PublisherBindingRefreshService', () => {
   );
 
   it('records a forwarded non-admin as terminal USER_DENIED and never grants access', async () => {
-    const { service, prisma, tx, edgeState, maxClient } = createHarness({
+    const { service, tx, edgeState, maxClient } = createHarness({
       isAdmin: true,
       isOwner: false,
       permissions: ['write', 'read_all_messages'],
@@ -2410,7 +2424,7 @@ describe('PublisherBindingRefreshService', () => {
       reason: 'forwarded_private',
     });
 
-    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+    expect(tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           state: 'USER_DENIED',
@@ -2468,7 +2482,7 @@ describe('PublisherBindingRefreshService', () => {
       reason: 'forwarded_private',
     });
 
-    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+    expect(tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           deniedReason: 'publisher_bot_access_lost',
@@ -2516,7 +2530,7 @@ describe('PublisherBindingRefreshService', () => {
         reason: 'forwarded_private',
       });
 
-      expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+      expect(tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             deniedReason: 'publisher_bot_access_lost',
@@ -2848,7 +2862,7 @@ describe('PublisherBindingRefreshService', () => {
   });
 
   it('records proven bot denial against an exact restaged granted candidate', async () => {
-    const { service, prisma, edgeState } = createHarness({
+    const { service, tx, edgeState } = createHarness({
       isAdmin: true,
       isOwner: false,
       permissions: ['read_all_messages'],
@@ -2865,7 +2879,7 @@ describe('PublisherBindingRefreshService', () => {
       reason: 'forwarded_private',
     });
 
-    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+    expect(tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           sourceVersion: candidateVersion,
@@ -2881,7 +2895,7 @@ describe('PublisherBindingRefreshService', () => {
 
   it('does not overwrite or reply after a concurrent candidate grant wins a terminal race', async () => {
     const failure = Object.assign(new Error('missing'), { response: { status: 404 } });
-    const { service, prisma, edgeState, maxClient } = createHarness(failure);
+    const { service, prisma, tx, edgeState, maxClient } = createHarness(failure);
     const candidateVersion = 'forwarded:terminal-lost-race';
     edgeState.sourceVersion = candidateVersion;
     const stagedEdge = {
@@ -2898,7 +2912,7 @@ describe('PublisherBindingRefreshService', () => {
         source: 'publisher_targeted_user_access',
         sourceVersion: candidateVersion,
       });
-    prisma.managedEntityAccessEdge.updateMany.mockResolvedValueOnce({ count: 0 });
+    tx.managedEntityAccessEdge.updateMany.mockResolvedValueOnce({ count: 0 });
 
     await expect(
       service.refresh({
@@ -3008,7 +3022,7 @@ describe('PublisherBindingRefreshService', () => {
   });
 
   it('does not grant a Publisher access edge when the Publisher bot is not an admin', async () => {
-    const { service, tx, prisma, maxClient } = createHarness({
+    const { service, tx, maxClient } = createHarness({
       isAdmin: false,
       explicitNonPrivilegeEvidence: true,
       isOwner: false,
@@ -3018,7 +3032,7 @@ describe('PublisherBindingRefreshService', () => {
 
     await service.refresh({ ...job, reason: 'bot_added', candidateUserId: 'admin-1' });
 
-    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+    expect(tx.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           state: 'BOT_DENIED',
