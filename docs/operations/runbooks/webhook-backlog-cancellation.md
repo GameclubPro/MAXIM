@@ -45,8 +45,11 @@ controller and the nominated installed API source, checking once when they are i
 `sourceSha` remains the installed API source, not the current controller checkout. A static
 release or reviewed tooling synchronization can legitimately give these different identities.
 The host rechecks its clean exact controller after acquiring the shared deploy lock. Its
-bounded current manifest must be complete, with no unresolved `current.invalid-*` evidence,
-and the API component must match the nominated source, canonical image ref and image ID.
+bounded current manifest must be complete, with no unresolved `current.invalid-*` evidence.
+Exact `.json.recovered-<timestamp>-<pid>` and `.json.superseded-<timestamp>-<pid>` archives
+produced by the release writer remain retained history; active or unrecognized transition
+names still refuse. The API component must match the nominated source, canonical image ref
+and image ID.
 The manifest's overall target and retained static sources need not match the controller.
 The installed
 image's client performs read-only PostgreSQL and Redis inspection, without constructing
