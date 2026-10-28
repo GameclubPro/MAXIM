@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { safetyDeskCommercialAiPoolResponseSchema } from '@maxim/contracts/safety-desk';
+import { safetyDeskCommercialAiPoolResponseSchema } from '../packages/contracts/src/safety-desk-commercial-ai-pool.ts';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
