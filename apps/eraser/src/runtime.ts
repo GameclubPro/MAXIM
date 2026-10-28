@@ -8,7 +8,50 @@ import { ServiceError, type Lane } from './types.js';
 export const MAX_WAKEUPS = 64;
 export const ERASER_CONNECTION_REQUEST_VERSION = 1;
 export const MAX_CONNECTION_WAKEUPS = 16;
+const WORKER_PROGRESS_LIMIT_MS = 120_000;
+const DIAGNOSTIC_LOG_INTERVAL_MS = 30_000;
 export type Wakeup = { chatId: string; leaseToken: string };
+type WorkerErrorCode = 'worker_error' | 'job_failed' | 'job_stalled' | 'worker_closed';
+type WorkerObservation = {
+  ready: boolean;
+  sampledAt: number | null;
+  occupiedSlots: number;
+  oldestOccupiedAt: number | null;
+  lastCompletedAt: number | null;
+  lastErrorAt: number | null;
+  lastErrorCode: WorkerErrorCode | null;
+  errorPending: boolean;
+  lastLoggedAt: number | null;
+  activeJobs: number;
+  drained: boolean;
+};
+type WorkerHealth = {
+  healthy: boolean;
+  ready: boolean;
+  running: boolean;
+  sampledAt: string | null;
+  occupiedSlots: number;
+  oldestOccupiedAt: string | null;
+  lastCompletedAt: string | null;
+  lastErrorAt: string | null;
+  lastErrorCode: WorkerErrorCode | null;
+  progressOverdue: boolean;
+};
+function workerObservation(): WorkerObservation {
+  return {
+    ready: false,
+    sampledAt: null,
+    occupiedSlots: 0,
+    oldestOccupiedAt: null,
+    lastCompletedAt: null,
+    lastErrorAt: null,
+    lastErrorCode: null,
+    errorPending: false,
+    lastLoggedAt: null,
+    activeJobs: 0,
+    drained: false,
+  };
+}
 export class CleanupRuntime {
   private queue: Queue<Wakeup, void, 'visit'> | null = null;
   private worker: Worker<Wakeup, void, 'visit'> | null = null;
@@ -21,6 +64,8 @@ export class CleanupRuntime {
   private lastMaintenance = Date.now();
   private lastSchedulerAt: number | null = null;
   private lastConnectionSchedulerAt: number | null = null;
+  private readonly cleanupObservation = workerObservation();
+  private readonly connectionObservation = workerObservation();
   constructor(
     private readonly store: Store,
     private readonly max: MaxTransport,
@@ -28,12 +73,13 @@ export class CleanupRuntime {
     private readonly prefix = 'eraser',
   ) {}
   async start(): Promise<void> {
-    if (!this.config.enabled) return;
+    if (!this.config.enabled || this.stopping) return;
     this.queue = new Queue<Wakeup, void, 'visit'>('cleanup', {
       connection: { url: this.config.redisUrl, maxRetriesPerRequest: 1 },
       prefix: this.prefix,
     });
     await this.queue.setGlobalConcurrency(8);
+    if (this.stopping) return;
     this.worker = new Worker<Wakeup, void, 'visit'>(
       'cleanup',
       async (job: Job<Wakeup>) => this.visit(job.data),
@@ -44,14 +90,13 @@ export class CleanupRuntime {
         lockDuration: 60_000,
       },
     );
-    this.worker.on('error', () => {
-      /* FLAG: Health exposes the stale scheduler; no credentials or message bodies in logs. */
-    });
+    this.observeWorker(this.worker, this.cleanupObservation, 'cleanup');
     this.connectionQueue = new Queue<Wakeup, void, 'connect'>('connections', {
       connection: { url: this.config.redisUrl, maxRetriesPerRequest: 1 },
       prefix: this.prefix,
     });
     await this.connectionQueue.setGlobalConcurrency(2);
+    if (this.stopping) return;
     this.connectionWorker = new Worker<Wakeup, void, 'connect'>(
       'connections',
       async (job: Job<Wakeup>) => this.connect(job.data),
@@ -62,22 +107,93 @@ export class CleanupRuntime {
         lockDuration: 60_000,
       },
     );
-    this.connectionWorker.on('error', () => {});
+    this.observeWorker(this.connectionWorker, this.connectionObservation, 'connection');
     this.timer = setInterval(() => {
       void this.tick().catch(() => {});
       void this.tickConnections().catch(() => {});
     }, 1000);
+  }
+  private observeWorker<Name extends 'visit' | 'connect'>(
+    worker: Worker<Wakeup, void, Name>,
+    observation: WorkerObservation,
+    component: 'cleanup' | 'connection',
+  ): void {
+    const recoverIdle = () => {
+      // FLAG: Drained may precede the last job's failure. Combine actual consumer events;
+      // a fresh scheduler sample alone cannot certify recovery of an idle worker.
+      if (
+        observation.drained &&
+        observation.activeJobs === 0 &&
+        worker.isRunning() &&
+        !worker.isPaused() &&
+        !worker.closing
+      )
+        observation.errorPending = false;
+    };
+    const failure = (code: WorkerErrorCode) => {
+      observation.errorPending = true;
+      observation.lastErrorAt = Date.now();
+      observation.lastErrorCode = code;
+      // FLAG: Emit only bounded allowlisted diagnostics, never job IDs, payloads or Error text.
+      if (
+        !this.stopping &&
+        (observation.lastLoggedAt === null ||
+          Date.now() - observation.lastLoggedAt >= DIAGNOSTIC_LOG_INTERVAL_MS)
+      ) {
+        observation.lastLoggedAt = Date.now();
+        process.stderr.write(JSON.stringify({ service: 'eraser', component, code }) + '\n');
+      }
+    };
+    worker.on('ready', () => {
+      observation.ready = true;
+      if (observation.lastErrorCode === 'worker_error') observation.errorPending = false;
+    });
+    worker.on('completed', () => {
+      observation.activeJobs = Math.max(0, observation.activeJobs - 1);
+      observation.lastCompletedAt = Date.now();
+      observation.errorPending = false;
+    });
+    worker.on('active', () => {
+      observation.activeJobs++;
+      observation.drained = false;
+    });
+    worker.on('drained', () => {
+      observation.drained = true;
+      recoverIdle();
+    });
+    worker.on('error', () => failure('worker_error'));
+    worker.on('failed', (job) => {
+      if (job) observation.activeJobs = Math.max(0, observation.activeJobs - 1);
+      failure('job_failed');
+      recoverIdle();
+    });
+    worker.on('stalled', () => failure('job_stalled'));
+    worker.on('closed', () => {
+      observation.ready = false;
+      failure('worker_closed');
+    });
+  }
+  private sampleWorker(
+    observation: WorkerObservation,
+    slots: Array<{ occupied: boolean; timestamp: number | null }>,
+  ): void {
+    observation.sampledAt = Date.now();
+    observation.occupiedSlots = slots.filter((slot) => slot.occupied).length;
+    const timestamps = slots.flatMap((slot) => (slot.timestamp === null ? [] : [slot.timestamp]));
+    observation.oldestOccupiedAt = timestamps.length ? Math.min(...timestamps) : null;
   }
   async tickConnections(): Promise<void> {
     if (this.connectionRunning || this.stopping || !this.connectionQueue) return;
     this.connectionRunning = true;
     try {
       const slots = await Promise.all(
-        Array.from({ length: MAX_CONNECTION_WAKEUPS }, async (_, index) => ({
-          id: `slot-${index}`,
-          occupied: Boolean(await this.connectionQueue!.getJob(`slot-${index}`)),
-        })),
+        Array.from({ length: MAX_CONNECTION_WAKEUPS }, async (_, index) => {
+          const id = `slot-${index}`;
+          const job = await this.connectionQueue!.getJob(id);
+          return { id, occupied: Boolean(job), timestamp: job?.timestamp ?? null };
+        }),
       );
+      this.sampleWorker(this.connectionObservation, slots);
       const available = slots.filter((slot) => !slot.occupied);
       if (available.length) {
         const reserved = await this.store.reserveConnections(available.length);
@@ -185,11 +301,13 @@ export class CleanupRuntime {
     try {
       // FLAG: Fixed slot IDs bound queued work across scheduler replicas, not just one process.
       const slots = await Promise.all(
-        Array.from({ length: MAX_WAKEUPS }, async (_, index) => ({
-          id: `slot-${index}`,
-          occupied: Boolean(await this.queue!.getJob(`slot-${index}`)),
-        })),
+        Array.from({ length: MAX_WAKEUPS }, async (_, index) => {
+          const id = `slot-${index}`;
+          const job = await this.queue!.getJob(id);
+          return { id, occupied: Boolean(job), timestamp: job?.timestamp ?? null };
+        }),
       );
+      this.sampleWorker(this.cleanupObservation, slots);
       const available = slots.filter((slot) => !slot.occupied);
       if (available.length) {
         const reserved = await this.store.reserve(available.length);
@@ -300,6 +418,8 @@ export class CleanupRuntime {
         let issued = candidate;
         try {
           await this.max.remove(chatId, candidate.message_id, async () => {
+            if (this.stopping)
+              throw new ServiceError(409, 'ERASER_GUARD_CHANGED', 'Удаление отложено.');
             const dispatch = await this.store.assertAndMarkDispatch(
               candidate,
               leaseToken,
@@ -347,7 +467,45 @@ export class CleanupRuntime {
     schedulerHealthy: boolean;
     connectionSchedulerLastSuccessfulAt?: string | null;
     connectionSchedulerHealthy?: boolean;
+    workers?: { cleanup: WorkerHealth; connection: WorkerHealth };
   } {
+    const now = Date.now();
+    const iso = (value: number | null) => (value === null ? null : new Date(value).toISOString());
+    const workerHealth = <Name extends 'visit' | 'connect'>(
+      worker: Worker<Wakeup, void, Name> | null,
+      observation: WorkerObservation,
+    ): WorkerHealth => {
+      const running = Boolean(worker?.isRunning() && !worker.isPaused() && !worker.closing);
+      // FLAG: An idle ready worker needs no completion heartbeat. Occupied slots do: their
+      // age includes queue wait and exposes a stuck consumer even when scheduler ticks succeed.
+      const progressOverdue =
+        observation.oldestOccupiedAt !== null &&
+        now - observation.oldestOccupiedAt >= WORKER_PROGRESS_LIMIT_MS;
+      return {
+        healthy:
+          !this.config.enabled ||
+          (!this.stopping &&
+            running &&
+            observation.ready &&
+            !observation.errorPending &&
+            observation.sampledAt !== null &&
+            now - observation.sampledAt < 10_000 &&
+            !progressOverdue),
+        ready: observation.ready,
+        running,
+        sampledAt: iso(observation.sampledAt),
+        occupiedSlots: observation.occupiedSlots,
+        oldestOccupiedAt: iso(observation.oldestOccupiedAt),
+        lastCompletedAt: iso(observation.lastCompletedAt),
+        lastErrorAt: iso(observation.lastErrorAt),
+        lastErrorCode: observation.lastErrorCode,
+        progressOverdue,
+      };
+    };
+    const workers = {
+      cleanup: workerHealth(this.worker, this.cleanupObservation),
+      connection: workerHealth(this.connectionWorker, this.connectionObservation),
+    };
     const connectionHealthy =
       !this.config.enabled ||
       (this.lastConnectionSchedulerAt !== null &&
@@ -360,19 +518,30 @@ export class CleanupRuntime {
         !this.config.enabled ||
         (this.lastSchedulerAt !== null &&
           Date.now() - this.lastSchedulerAt < 10_000 &&
-          connectionHealthy),
+          connectionHealthy &&
+          workers.cleanup.healthy &&
+          workers.connection.healthy),
       connectionSchedulerLastSuccessfulAt: this.lastConnectionSchedulerAt
         ? new Date(this.lastConnectionSchedulerAt).toISOString()
         : null,
       connectionSchedulerHealthy: connectionHealthy,
+      workers,
     };
   }
-  async close(): Promise<void> {
+  stopAdmission(): void {
     this.stopping = true;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+  async close(): Promise<void> {
+    this.stopAdmission();
     while (this.running || this.connectionRunning) await delay(10);
-    await this.worker?.pause();
-    await this.connectionWorker?.pause();
+    // FLAG: BullMQ pause reconnects its blocking client. Never pause an already closing worker.
+    if (this.worker && !this.worker.closing) await this.worker.pause();
+    if (this.connectionWorker && !this.connectionWorker.closing)
+      await this.connectionWorker.pause();
     await this.worker?.close();
     await this.connectionWorker?.close();
     await this.queue?.close();

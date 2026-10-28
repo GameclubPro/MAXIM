@@ -929,6 +929,306 @@ describe('bounded history and same-chat progress', () => {
     await runtime.visit(await reserve());
     assert.deepEqual(removed, ['ordinary']);
   });
+  for (const unresolved of [101, 200]) {
+    test(`${unresolved} unresolved journals leave a separate bounded buffer for new history pages`, async () => {
+      await enable();
+      const wake = await reserve();
+      const at = source();
+      await pool.query(
+        `INSERT INTO eraser_candidates(chat_id,message_id,author_id,is_bot,source_ms,lane,state,dispatch_id,attempt_count,next_attempt_at)
+         SELECT '-1','unknown-'||id,'5',false,$2,'history','uncertain',gen_random_uuid(),1,CURRENT_TIMESTAMP+INTERVAL '1 hour'
+         FROM generate_series(1,$1::int) id`,
+        [unresolved, at - 1000],
+      );
+      await pool.query(
+        `INSERT INTO eraser_candidates(chat_id,message_id,author_id,is_bot,source_ms,lane,state,dispatch_id,attempt_count,next_attempt_at)
+         VALUES('-1','issued','5',false,$1,'history','dispatching',gen_random_uuid(),1,CURRENT_TIMESTAMP+INTERVAL '1 hour'),
+               ('-1','review','5',false,$1,'history','review',NULL,0,CURRENT_TIMESTAMP+INTERVAL '1 hour')`,
+        [at - 2000],
+      );
+      const journals = (
+        await pool.query<Candidate>(
+          "SELECT * FROM eraser_candidates WHERE chat_id='-1' ORDER BY message_id",
+        )
+      ).rows;
+      const page = (offset: number): Message[] =>
+        Array.from({ length: 100 }, (_, index) => ({
+          id: `fresh-${offset + index}`,
+          chatId: '-1',
+          authorId: '5',
+          isBot: false,
+          sourceMs: at - offset - index,
+        }));
+      const first = page(0);
+      first[0] = { ...first[0]!, id: 'unknown-1', sourceMs: at - 1000 };
+      await store.savePage((await store.active('-1', wake.leaseToken))!, 'history', first);
+      assert.equal(await store.bufferSize('-1'), 99);
+      await store.savePage((await store.active('-1', wake.leaseToken))!, 'history', page(100));
+      assert.equal(await store.bufferSize('-1'), 199);
+      await candidate('last-buffer-slot');
+      const full = (await store.active('-1', wake.leaseToken))!;
+      await store.savePage(full, 'history', page(200));
+      assert.equal(await store.bufferSize('-1'), 200);
+      assert.equal((await store.policy('-1'))!.history_cursor, full.history_cursor);
+      const snapshot = await store.snapshot('-1');
+      assert.equal(snapshot.pendingCount, 200, 'journals must not truncate pending diagnostics');
+      assert.equal(snapshot.status, 'error', 'review must remain visible after the buffer fills');
+      assert.equal(snapshot.oldestDueAt, new Date(at - 2000 + 24 * 3_600_000).toISOString());
+      const removed: string[] = [];
+      const runtime = new CleanupRuntime(
+        store,
+        transport({
+          remove: async (_chat, id, before) => {
+            await before();
+            removed.push(id);
+          },
+        }),
+        { enabled: true, redisUrl },
+      );
+      try {
+        await runtime.visit(wake);
+        assert.equal(removed.length, 5);
+        assert.ok(removed.every((id) => id.startsWith('fresh-')));
+        assert.equal(await store.bufferSize('-1'), 195);
+        assert.deepEqual(
+          (
+            await pool.query<Candidate>(
+              "SELECT * FROM eraser_candidates WHERE chat_id='-1' AND state IN ('uncertain','dispatching','review') ORDER BY message_id",
+            )
+          ).rows,
+          journals,
+          'admission, duplicate history and independent deletion must preserve every journal',
+        );
+      } finally {
+        await runtime.close();
+      }
+    });
+  }
+  test('a late rejected dispatch preserves its retry beyond the intake cap and blocks new pages', async () => {
+    await enable();
+    const wake = await reserve();
+    const pending = await candidate('late-rejection');
+    const issued = {
+      ...pending,
+      state: 'dispatching',
+      dispatch_id: await store.assertAndMarkDispatch(
+        pending,
+        wake.leaseToken,
+        Date.now(),
+        Date.now(),
+      ),
+    };
+    await candidate('unknown');
+    await pool.query(
+      "UPDATE eraser_candidates SET state='uncertain',dispatch_id=$1,attempt_count=1,next_attempt_at=CURRENT_TIMESTAMP+INTERVAL '1 hour' WHERE message_id='unknown'",
+      [randomUUID()],
+    );
+    const at = source();
+    const page = (offset: number): Message[] =>
+      Array.from({ length: 100 }, (_, index) => ({
+        id: `page-${offset + index}`,
+        chatId: '-1',
+        authorId: '5',
+        isBot: false,
+        sourceMs: at - offset - index,
+      }));
+    for (const offset of [0, 100])
+      await store.savePage((await store.active('-1', wake.leaseToken))!, 'history', page(offset));
+    assert.equal(await store.bufferSize('-1'), 200);
+    await store.settle(issued, 'pending', 'rate_limited', 60_000);
+    assert.equal(await store.bufferSize('-1'), 201);
+    const full = (await store.active('-1', wake.leaseToken))!;
+    const before = (
+      await pool.query<Candidate>('SELECT * FROM eraser_candidates ORDER BY message_id')
+    ).rows;
+    await store.savePage(full, 'history', page(200));
+    assert.deepEqual(
+      (await pool.query<Candidate>('SELECT * FROM eraser_candidates ORDER BY message_id')).rows,
+      before,
+    );
+    assert.equal((await store.policy('-1'))!.history_cursor, full.history_cursor);
+    const retry = before.find((row) => row.message_id === 'late-rejection')!;
+    assert.equal(retry.dispatch_id, issued.dispatch_id);
+    assert.equal(retry.outcome_code, 'rate_limited');
+    await assert.rejects(
+      store.assertAndMarkDispatch(retry, wake.leaseToken, Date.now(), Date.now()),
+      { code: 'ERASER_GUARD_CHANGED' },
+    );
+  });
+  test('shortening wakes the full age buffer after multiple late rejected dispatches overflow it', async () => {
+    await enable();
+    const wake = await reserve();
+    const issued: Candidate[] = [];
+    for (let index = 0; index < 8; index++) {
+      const row = await candidate(`a-late-${index}`);
+      issued.push({
+        ...row,
+        state: 'dispatching',
+        dispatch_id: await store.assertAndMarkDispatch(
+          row,
+          wake.leaseToken,
+          Date.now(),
+          Date.now(),
+        ),
+      });
+    }
+    const at = Date.now() - 72 * 3_600_000;
+    for (const offset of [0, 100]) {
+      const page: Message[] = Array.from({ length: 100 }, (_, index) => ({
+        id: `z-age-${offset + index}`,
+        chatId: '-1',
+        authorId: '5',
+        isBot: false,
+        sourceMs: at - offset - index,
+      }));
+      await store.savePage((await store.active('-1', wake.leaseToken))!, 'history', page);
+    }
+    await store.update('-1', {
+      enabled: true,
+      hours: 168,
+      expectedRevision: 1,
+      operationId: randomUUID(),
+      actorUserId: '5',
+    });
+    await pool.query(
+      "UPDATE eraser_candidates SET outcome_code='not_due',next_attempt_at=CURRENT_TIMESTAMP+INTERVAL '1 hour' WHERE state='pending'",
+    );
+    for (const row of issued) await store.settle(row, 'pending', 'rate_limited', 60_000);
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT COUNT(*)::int AS count FROM eraser_candidates WHERE state='pending'",
+        )
+      ).rows[0].count,
+      208,
+    );
+    // A worker-count limit is not a persisted bound on old rejected attempts.
+    await pool.query(
+      `INSERT INTO eraser_candidates(chat_id,message_id,author_id,is_bot,source_ms,lane,state,dispatch_id,attempt_count,outcome_code,next_attempt_at)
+       SELECT '-1','a-retained-'||id,'5',false,$1,'history','pending',gen_random_uuid(),1,'rate_limited',CURRENT_TIMESTAMP+INTERVAL '1 hour'
+       FROM generate_series(1,10000) id`,
+      [source()],
+    );
+    const preserved = (
+      await pool.query<Candidate>(
+        'SELECT * FROM eraser_candidates WHERE dispatch_id IS NOT NULL ORDER BY message_id',
+      )
+    ).rows;
+    await pool.query('ANALYZE eraser_candidates');
+    const explained = await pool.query<{ 'QUERY PLAN': Array<{ Plan: Record<string, unknown> }> }>(
+      `EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT message_id FROM eraser_candidates
+       WHERE chat_id='-1' AND state='pending' AND outcome_code='not_due'
+         AND dispatch_id IS NULL AND attempt_count=0 AND source_ms<=$1
+       ORDER BY source_ms,message_id LIMIT 200`,
+      [Date.now() - 48 * 3_600_000],
+    );
+    const plan = explained.rows[0]!['QUERY PLAN'][0]!.Plan;
+    const scans = (plan.Plans as Array<Record<string, unknown>>).filter(
+      (node) => node['Index Name'] === 'eraser_candidates_unissued_age_idx',
+    );
+    assert.equal(scans.length, 1, 'age nomination must bypass retained issued attempts by index');
+    assert.equal(scans[0]!['Actual Rows'], 200);
+    assert.equal(scans[0]!['Rows Removed by Filter'] ?? 0, 0);
+    await store.update('-1', {
+      enabled: true,
+      hours: 48,
+      expectedRevision: 2,
+      operationId: randomUUID(),
+      actorUserId: '5',
+    });
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT COUNT(*)::int AS count FROM eraser_candidates WHERE state='pending' AND dispatch_id IS NULL AND next_attempt_at<=clock_timestamp()",
+        )
+      ).rows[0].count,
+      200,
+      'issued retry overflow must not displace any newly due age candidate',
+    );
+    assert.deepEqual(
+      (
+        await pool.query<Candidate>(
+          'SELECT * FROM eraser_candidates WHERE dispatch_id IS NOT NULL ORDER BY message_id',
+        )
+      ).rows,
+      preserved,
+    );
+  });
+  for (const [oldHours, hours] of [
+    [168, 48],
+    [48, 24],
+  ] as const) {
+    test(`shortening ${oldHours} to ${hours} hours wakes only newly due unissued age deferrals`, async () => {
+      await enable('-1', oldHours);
+      const due = await candidate('age-deferred');
+      await pool.query(
+        "UPDATE eraser_candidates SET source_ms=$1 WHERE message_id='age-deferred'",
+        [Date.now() - (hours + 1) * 3_600_000],
+      );
+      await store.defer(due, 'not_due', 3_600_000);
+      const notDue = await candidate('still-young');
+      await pool.query("UPDATE eraser_candidates SET source_ms=$1 WHERE message_id='still-young'", [
+        Date.now() - (hours - 2) * 3_600_000,
+      ]);
+      await store.defer(notDue, 'not_due', 3_600_000);
+      for (const [id, state, code, dispatch] of [
+        ['pinned', 'pending', 'pinned', false],
+        ['rate-limited', 'pending', 'rate_limited', true],
+        ['issued-age', 'pending', 'not_due', true],
+        ['unknown', 'uncertain', 'reconciliation', true],
+        ['dispatching', 'dispatching', null, true],
+        ['review', 'review', 'review', false],
+      ] as const) {
+        await candidate(id);
+        await pool.query(
+          "UPDATE eraser_candidates SET state=$2,outcome_code=$3,dispatch_id=$4,attempt_count=$5,next_attempt_at=CURRENT_TIMESTAMP+INTERVAL '1 hour' WHERE message_id=$1",
+          [id, state, code, dispatch ? randomUUID() : null, dispatch ? 1 : 0],
+        );
+      }
+      const preserved = (
+        await pool.query<Candidate>(
+          "SELECT * FROM eraser_candidates WHERE message_id<>'age-deferred' ORDER BY message_id",
+        )
+      ).rows;
+      await store.update('-1', {
+        enabled: true,
+        hours,
+        expectedRevision: 1,
+        operationId: randomUUID(),
+        actorUserId: '5',
+      });
+      assert.deepEqual(
+        (await store.nextCandidates('-1')).map((row) => row.message_id),
+        ['age-deferred'],
+      );
+      assert.deepEqual(
+        (
+          await pool.query<Candidate>(
+            "SELECT * FROM eraser_candidates WHERE message_id<>'age-deferred' ORDER BY message_id",
+          )
+        ).rows,
+        preserved,
+        'shortening cannot erase cooldowns, pin waits, future age or issued evidence',
+      );
+      const removed: string[] = [];
+      const runtime = new CleanupRuntime(
+        store,
+        transport({
+          remove: async (_chat, id, before) => {
+            await before();
+            removed.push(id);
+          },
+        }),
+        { enabled: true, redisUrl },
+      );
+      try {
+        await runtime.visit(await reserve());
+        assert.deepEqual(removed, ['age-deferred']);
+      } finally {
+        await runtime.close();
+      }
+    });
+  }
   test('an empty MAX pin envelope permits a guarded ordinary deletion with a durable receipt', async () => {
     await enable();
     await candidate('ordinary');

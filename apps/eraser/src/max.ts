@@ -1,5 +1,5 @@
 import type { Config } from './config.js';
-import { HttpLimiter } from './limiter.js';
+import { HttpAdmissionDeferred, HttpLimiter } from './limiter.js';
 import { record, parseMessage, type Message } from './types.js';
 
 export class MaxError extends Error {
@@ -31,7 +31,13 @@ export class MaxClient implements MaxTransport {
     path: string,
     options: { chatDelete?: string; before?: () => Promise<void>; body?: unknown } = {},
   ): Promise<Record<string, unknown>> {
-    await this.limiter.acquire(options.chatDelete);
+    try {
+      await this.limiter.acquire(options.chatDelete);
+    } catch (error) {
+      if (error instanceof HttpAdmissionDeferred)
+        throw new MaxError(429, 'rate_limit_cooldown', false, error.retryAfterMs);
+      throw error;
+    }
     await options.before?.();
     let response: Response;
     try {
@@ -63,8 +69,14 @@ export class MaxClient implements MaxTransport {
           : retry
             ? Math.max(1000, Date.parse(retry) - Date.now())
             : 1000;
-      if (response.status === 429)
-        await this.limiter.cooldown(Number.isFinite(retryAfterMs) ? retryAfterMs : 1000);
+      if (response.status === 429) {
+        try {
+          await this.limiter.cooldown(Number.isFinite(retryAfterMs) ? retryAfterMs : 1000);
+        } catch {
+          // FLAG: A failed cooldown store cannot replace the known no-effect HTTP rejection.
+          // The limiter keeps admission closed until its observed deadline is persisted.
+        }
+      }
       throw new MaxError(
         response.status,
         code,
