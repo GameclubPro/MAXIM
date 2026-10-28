@@ -86,6 +86,8 @@ export type PreviewState = {
   stopWordsWriteError: 'network' | 'conflict' | null;
   advertisingPilot: boolean;
   marketplacePilot: boolean;
+  marketplaceOwner: boolean;
+  marketplacePublished: boolean;
   marketplaceReadiness: 'ready' | 'delayed' | 'unavailable';
   clock: PreviewClock;
   me: Me;
@@ -851,6 +853,10 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
           : null,
     advertisingPilot: !publisherProfile && searchParams.get('advertisingPilot') === '1',
     marketplacePilot: searchParams.get('marketplacePilot') === '1',
+    marketplaceOwner: searchParams.get('marketplaceOwner') !== '0',
+    marketplacePublished:
+      searchParams.get('marketplacePublished') === '1' ||
+      searchParams.get('marketplaceOwner') === '0',
     marketplaceReadiness:
       searchParams.get('marketplaceReady') === 'delayed'
         ? 'delayed'

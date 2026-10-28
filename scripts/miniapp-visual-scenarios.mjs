@@ -854,8 +854,8 @@ const baseScenarios = [
   ]),
   ...defineRouteScenarios('chat-settings', [
     'chat-settings',
-    'chat-settings-advertising-soon',
-    ['chat-settings-advertising-pilot', { searchParams: { advertisingPilot: '1' } }],
+    'chat-settings-birzhik',
+    ['chat-settings-birzhik-profile', { searchParams: { marketplacePublished: '1' } }],
     [
       'chat-settings-publisher-policy-setup',
       { searchParams: { publisherPolicyState: 'setup' }, features: ['publisher'] },
