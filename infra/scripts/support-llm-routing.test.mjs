@@ -8,6 +8,37 @@ import {
   validateSupportAnswer,
 } from './support-llm-client.mjs';
 
+test('Lastik exclusion questions without named exception keywords retain the complete source', () => {
+  for (const text of [
+    'Я администратор. Как подключить Ластик и какие сообщения он не удаляет?',
+    'Какие сообщения Ластик не трогает?',
+    'Ластик: что он не удаляет при очистке?',
+  ])
+    assert.ok(
+      selectKnowledge(text).some((entry) => entry.id === 'lastik-exclusions'),
+      text,
+    );
+  assert.equal(
+    selectKnowledge('Как создать пост в Публике?').some(
+      (entry) => entry.id === 'lastik-exclusions',
+    ),
+    false,
+  );
+});
+
+test('infinitive moderator changes and explicit AI observation reports retain their procedures', () => {
+  const moderator = selectKnowledge(
+    'Я администратор. Как поменять выбранного модератора на Рэкс 2 и чем он отличается от Рэкса?',
+  );
+  assert.ok(moderator.some((entry) => entry.id === 'choose-moderator'));
+  assert.ok(moderator.some((entry) => entry.id === 'bots'));
+  const observation = selectKnowledge(
+    'Я админ. Включил для ИИ режим наблюдения, а сообщения всё равно удаляются. Почему и что проверить?',
+  );
+  assert.ok(observation.some((entry) => entry.id === 'commercial-ai-observation'));
+  assert.ok(observation.some((entry) => entry.id === 'commercial-ai-evidence'));
+});
+
 test('manual close imperatives select the procedure while open and mixed requests stay distinct', () => {
   for (const text of [
     'Закройте, пожалуйста, мой чат сейчас без срока. Я администратор.',
