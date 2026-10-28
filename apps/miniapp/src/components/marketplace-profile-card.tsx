@@ -82,8 +82,8 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
             type="button"
             className="settings-section__toggle is-stateless"
             data-settings-navigation-entry="true"
-            data-settings-search="Биржик"
-            aria-label="Биржик"
+            data-settings-search="Рекламная биржа Биржик реклама взаимопиар"
+            aria-label="Рекламная биржа"
             aria-expanded={open}
             aria-controls={id}
             onClick={() => setOpen(true)}
@@ -92,7 +92,7 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
               <AppIcon icon="Shop" />
             </span>
             <span className="settings-section__toggle-main">
-              <span className="settings-section__title">Биржик</span>
+              <span className="settings-section__title">Рекламная биржа</span>
             </span>
             <span className="settings-section__chevron" aria-hidden>
               <AppIcon icon="NavArrowRight" />
@@ -102,13 +102,13 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
       ) : (
         <button
           className="marketplace-profile-card__open"
-          aria-label="Биржик"
+          aria-label="Рекламная биржа"
           aria-expanded={open}
           aria-controls={id}
           onClick={() => setOpen(true)}
         >
           <span>
-            <strong>Биржик</strong>
+            <strong>Рекламная биржа</strong>
             <small>
               {known?.data
                 ? marketplaceProfileTitle(known.data, known.status !== 'error')

@@ -20,7 +20,7 @@ test('Birzhik replaces both pilot advertising entries with one available module'
     new URL('../src/components/marketplace-profile-card.tsx', import.meta.url),
     'utf8',
   );
-  assert.match(card, /aria-label="Биржик"/u);
+  assert.match(card, /aria-label="Рекламная биржа"/u);
   assert.doesNotMatch(card, /marketplace\/capability|capability\.data|323459159/u);
   assert.match(card, /data-settings-navigation-entry="true"/u);
 });
