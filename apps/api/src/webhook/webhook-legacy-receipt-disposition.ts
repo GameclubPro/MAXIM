@@ -3,6 +3,7 @@ import { isPristinePostSealHeldJoin } from './webhook-legacy-held-membership';
 import {
   inspectHeldMessageDisposition,
   inspectHeldRemovalDisposition,
+  inspectHeldMembershipRemovalDisposition,
 } from './webhook-legacy-held-removal';
 import type { MaxUpdate } from '@maxim/contracts';
 import { buildGroupCommandKey } from '../common/group-command-key';
@@ -15,6 +16,7 @@ import {
   legacySnapshotDigest,
   type LegacyRecoverySourceRefusal,
 } from './webhook-legacy-source';
+import { backlogUpdateHeldSql } from './webhook-backlog-cancellation';
 
 export type LegacyReceiptDispositionResult =
   | 'NOT_HELD'
@@ -118,6 +120,60 @@ export function legacyReceiptSourceDigest(
     ),
   );
   return legacySnapshotDigest({ ...original, status: originalStatus });
+}
+
+// FLAG: Both passes lock and revalidate the exact pristine source and every claim
+// fence. Negative membership/cache work runs BETWEEN transactions; no Redis or MAX
+// call may hold these locks. A callback result alone never authorizes closure.
+export async function readHeldMembershipRemovalReceipt(
+  tx: Prisma.TransactionClient,
+  receiptId: string,
+): Promise<{ event: WebhookEvent; authorityId: string } | null> {
+  const rows = await tx.$queryRaw<LegacyReceiptScopeMetadata[]>(Prisma.sql`
+    SELECT ${legacyReceiptScopeMetadataSql}
+    FROM webhook_events WHERE id = ${receiptId} FOR UPDATE`);
+  const meta = rows[0];
+  if (
+    rows.length !== 1 ||
+    !meta ||
+    !knownScopeMetadata(meta) ||
+    meta.payloadBytes > 256 * 1024 ||
+    meta.updateType !== 'user_removed' ||
+    meta.legacyDispositionId ||
+    meta.legacyDispositionReceiptId
+  )
+    return null;
+  const event = await tx.webhookEvent.findUnique({ where: { id: receiptId } });
+  if (!event || event.sourceDispositionId || event.sourceDispositionReceiptId) return null;
+  const update = event.normalizedPayload as unknown as MaxUpdate;
+  const result = await inspectHeldMembershipRemovalDisposition(tx, event);
+  if (!result || result === 'NOT_HELD') return null;
+  // FLAG: A legacy certificate cannot consume an independent modern or exact
+  // cancellation hold. Those protocols retain their original settlement authority.
+  const conflicts = await tx.$queryRaw<Array<{ held: boolean }>>(Prisma.sql`
+    SELECT (${backlogUpdateHeldSql(update)} OR
+      EXISTS (SELECT 1 FROM webhook_backlog_receipts WHERE receipt_id = ${receiptId}) OR
+      EXISTS (SELECT 1 FROM webhook_source_abandonments
+        WHERE chat_id = ${update.message!.chatId} AND message_id = ${update.message!.messageId})) AS held`);
+  if (conflicts.length !== 1 || conflicts[0]!.held !== false) return null;
+  return { event, authorityId: result.authorityId };
+}
+
+export async function finishObservedHeldMembershipRemoval(
+  tx: Prisma.TransactionClient,
+  receiptId: string,
+  originalDigest: string,
+): Promise<boolean> {
+  const current = await readHeldMembershipRemovalReceipt(tx, receiptId);
+  if (!current || legacyReceiptSourceDigest(current.event) !== originalDigest) return false;
+  await writeLegacyReceiptDisposition(
+    tx,
+    current.event,
+    current.authorityId,
+    [],
+    'POST_SEAL_MEMBER',
+  );
+  return true;
 }
 
 // FLAG: Must run inside the receipt transaction. Positive abandonment never changes

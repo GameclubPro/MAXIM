@@ -4,6 +4,9 @@ import {
 } from './webhook-legacy-fresh-command';
 import {
   materializeLegacyReceiptDisposition,
+  readHeldMembershipRemovalReceipt,
+  finishObservedHeldMembershipRemoval,
+  legacyReceiptSourceDigest,
   type LegacyReceiptDispositionResult,
 } from './webhook-legacy-receipt-disposition';
 import { Injectable, Optional, type OnApplicationBootstrap } from '@nestjs/common';
@@ -284,6 +287,31 @@ export class WebhookLegacyHoldService implements OnApplicationBootstrap {
   ): Promise<boolean> {
     const result = await this.materializeReceipt(webhookEventId);
     return result === 'APPLIED_WITH_PROOF' || result === 'ALREADY_APPLIED_SAME_PROOF';
+  }
+
+  async readHeldMembershipRemoval(webhookEventId: string) {
+    const before = await this.prisma.$transaction(
+      (tx) => readHeldMembershipRemovalReceipt(tx, webhookEventId),
+      { timeout: 2_000, maxWait: 500 },
+    );
+    return before
+      ? {
+          sourceDigest: legacyReceiptSourceDigest(before.event),
+          update: before.event.normalizedPayload as unknown as MaxUpdate,
+        }
+      : null;
+  }
+
+  // FLAG: This facade stays Prisma-only. The preparation owner must complete the
+  // exact negative membership/cache observation before requesting the second pass.
+  async finishObservedMembershipRemoval(
+    webhookEventId: string,
+    sourceDigest: string,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(
+      (tx) => finishObservedHeldMembershipRemoval(tx, webhookEventId, sourceDigest),
+      { timeout: 2_000, maxWait: 500 },
+    );
   }
 }
 
