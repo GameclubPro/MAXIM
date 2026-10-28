@@ -65,6 +65,41 @@ export const karavanMarketplaceAuthorityEvidenceSchema =
 export type KaravanMarketplaceAuthorityEvidence = z.infer<
   typeof karavanMarketplaceAuthorityEvidenceSchema
 >;
+export const karavanMarketplaceActorAccessRequestSchema = z
+  .object({
+    actorMaxUserId: karavanMarketplaceActorIdSchema,
+    chatId: karavanMarketplaceChatIdSchema,
+    botId: z.string().min(1).max(128),
+    authorityEpoch: z.string().regex(/^[a-f0-9]{64}$/u),
+    verifiedAt: z.string().datetime(),
+    bindingGeneration: z.number().int().positive(),
+  })
+  .strict();
+export type KaravanMarketplaceActorAccessRequest = z.infer<
+  typeof karavanMarketplaceActorAccessRequestSchema
+>;
+export const karavanMarketplaceActorAccessResponseSchema =
+  karavanMarketplaceActorAccessRequestSchema
+    .extend({
+      allowed: z.boolean(),
+      reason: z.enum(['admin', 'not_admin', 'bot_unavailable', 'binding_changed']),
+      checkedAt: z.string().datetime(),
+      expiresAt: z.string().datetime(),
+    })
+    .superRefine((value, context) => {
+      const lifetime = Date.parse(value.expiresAt) - Date.parse(value.checkedAt);
+      if (lifetime <= 0 || lifetime > 15_000)
+        context.addIssue({
+          code: 'custom',
+          path: ['expiresAt'],
+          message: 'Проверка прав устарела.',
+        });
+      if (value.allowed !== (value.reason === 'admin'))
+        context.addIssue({ code: 'custom', path: ['allowed'], message: 'Несогласованный доступ.' });
+    });
+export type KaravanMarketplaceActorAccessResponse = z.infer<
+  typeof karavanMarketplaceActorAccessResponseSchema
+>;
 export const karavanMarketplaceHandoffDestinationSchema = z.enum([
   'manage',
   'applications',

@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { MaxClientService } from '../../max/max-client.service';
 import { MaxBotRegistryService } from '../../max/max-bot-registry.service';
 import { karavanHash } from './karavan-marketplace-authority.service';
+import type { Prisma } from '../../prisma/prisma-client';
 
 const requestSchema = z
   .object({
@@ -66,56 +67,60 @@ export class KaravanMarketplaceBindingStatusService {
     };
   }
   private async local(input: Request): Promise<string | null> {
+    return this.prisma.$transaction((tx) => this.localEpoch(tx, input));
+  }
+  async isCurrent(tx: Prisma.TransactionClient, input: Request): Promise<boolean> {
+    return (await this.localEpoch(tx, input)) !== null;
+  }
+  private async localEpoch(tx: Prisma.TransactionClient, input: Request): Promise<string | null> {
     if (!this.registry.getActionableBots().some((bot) => bot.id === input.botId)) return null;
-    return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM chats WHERE id=${input.chatId} FOR SHARE`;
-      const witness = await tx.karavanMarketplaceBindingWitness.findUnique({
-        where: {
-          authorityEpoch_checkedAt: {
-            authorityEpoch: input.authorityEpoch,
-            checkedAt: new Date(input.verifiedAt),
-          },
+    await tx.$queryRaw`SELECT id FROM chats WHERE id=${input.chatId} FOR SHARE`;
+    const witness = await tx.karavanMarketplaceBindingWitness.findUnique({
+      where: {
+        authorityEpoch_checkedAt: {
+          authorityEpoch: input.authorityEpoch,
+          checkedAt: new Date(input.verifiedAt),
         },
-      });
-      const chat = await tx.chat.findUnique({
-        where: { id: input.chatId },
-        select: {
-          entityType: true,
-          fixedModeratorBotId: true,
-          primaryBotId: true,
-          botId: true,
-          routingVersion: true,
-        },
-      });
-      const membership = await tx.chatBotMembership.findUnique({
-        where: { chatId_botId: { chatId: input.chatId, botId: input.botId } },
-        select: {
-          status: true,
-          commerceRevocationEpoch: true,
-          botAccessState: true,
-          botAccessCheckedAt: true,
-          lifecycleEventAt: true,
-        },
-      });
-      if (
-        !witness ||
-        witness.revokedAt ||
-        witness.chatId !== input.chatId ||
-        witness.botId !== input.botId ||
-        chat?.entityType !== 'CHAT' ||
-        (chat.fixedModeratorBotId ?? chat.primaryBotId ?? chat.botId) !== input.botId ||
-        witness.routingVersion !== chat.routingVersion ||
-        membership?.status !== 'ACTIVE' ||
-        witness.botRevocationEpoch !== membership.commerceRevocationEpoch ||
-        (witness.lifecycleEventAt?.getTime() ?? null) !==
-          (membership.lifecycleEventAt?.getTime() ?? null) ||
-        ['DENIED', 'LOST'].includes(membership.botAccessState)
-      )
-        return null;
-      return karavanHash({
-        routingVersion: chat.routingVersion,
-        membership: JSON.parse(JSON.stringify(membership)),
-      });
+      },
+    });
+    const chat = await tx.chat.findUnique({
+      where: { id: input.chatId },
+      select: {
+        entityType: true,
+        fixedModeratorBotId: true,
+        primaryBotId: true,
+        botId: true,
+        routingVersion: true,
+      },
+    });
+    const membership = await tx.chatBotMembership.findUnique({
+      where: { chatId_botId: { chatId: input.chatId, botId: input.botId } },
+      select: {
+        status: true,
+        commerceRevocationEpoch: true,
+        botAccessState: true,
+        botAccessCheckedAt: true,
+        lifecycleEventAt: true,
+      },
+    });
+    if (
+      !witness ||
+      witness.revokedAt ||
+      witness.chatId !== input.chatId ||
+      witness.botId !== input.botId ||
+      chat?.entityType !== 'CHAT' ||
+      (chat.fixedModeratorBotId ?? chat.primaryBotId ?? chat.botId) !== input.botId ||
+      witness.routingVersion !== chat.routingVersion ||
+      membership?.status !== 'ACTIVE' ||
+      witness.botRevocationEpoch !== membership.commerceRevocationEpoch ||
+      (witness.lifecycleEventAt?.getTime() ?? null) !==
+        (membership.lifecycleEventAt?.getTime() ?? null) ||
+      ['DENIED', 'LOST'].includes(membership.botAccessState)
+    )
+      return null;
+    return karavanHash({
+      routingVersion: chat.routingVersion,
+      membership: JSON.parse(JSON.stringify(membership)),
     });
   }
   private async probe(input: Request, local: string): Promise<Status> {
@@ -143,6 +148,14 @@ export class KaravanMarketplaceBindingStatusService {
       (bot.isAdmin || bot.isOwner) &&
       bot.explicitPrivilegeEvidence === true;
     if (!active) {
+      if (
+        snapshot.chatId !== input.chatId ||
+        snapshot.entityType !== 'chat' ||
+        bot.isAdmin ||
+        bot.isOwner ||
+        bot.explicitNonPrivilegeEvidence !== true
+      )
+        throw new ServiceUnavailableException('MAX не подтвердил доступность магазина.');
       await this.prisma.karavanMarketplaceBindingWitness.updateMany({
         where: {
           authorityEpoch: input.authorityEpoch,

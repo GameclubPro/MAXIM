@@ -4,6 +4,8 @@ import {
   KaravanMarketplaceProxyService,
 } from './karavan-marketplace-proxy.service';
 import { KaravanMarketplaceBindingStatusService } from './karavan-marketplace-binding-status.service';
+import { KaravanMarketplaceActorAccessService } from './karavan-marketplace-actor-access.service';
+import { ServiceUnavailableException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
@@ -118,6 +120,7 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
     sessions.isPrincipalActive.mockResolvedValue(true);
   });
   afterEach(async () => {
+    jest.restoreAllMocks();
     await db.karavanMarketplaceConnectionOperation.deleteMany({ where: { actorMaxUserId } });
     await db.karavanMarketplaceChatEnrollment.deleteMany({ where: { chatId } });
     await db.karavanMarketplaceBindingWitness.deleteMany({ where: { chatId } });
@@ -403,6 +406,7 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
       isAdmin: false,
       isOwner: false,
       explicitPrivilegeEvidence: false,
+      explicitNonPrivilegeEvidence: true,
     });
     expect(await status.status(input)).toMatchObject({ active: false, reason: 'bot_unavailable' });
     expect(await status.status(input)).toMatchObject({ active: false, reason: 'binding_changed' });
@@ -412,6 +416,223 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
         verifiedAt: new Date(Date.parse(input.verifiedAt) + 1).toISOString(),
       }),
     ).toMatchObject({ active: false });
+  });
+
+  function actorAccess(bindings = bindingStatus()) {
+    return new KaravanMarketplaceActorAccessService(db as PrismaService, service, bindings);
+  }
+  async function accessInput() {
+    return { ...(await bound()), actorMaxUserId, bindingGeneration: 7 };
+  }
+
+  it('rejects fabricated access privileges and missing binding generation before MAX calls', async () => {
+    const input = await accessInput();
+    max.getChatMemberAccess.mockClear();
+    await expect(actorAccess().check({ ...input, role: 'owner' })).rejects.toThrow();
+    await expect(actorAccess().check({ ...input, bindingGeneration: undefined })).rejects.toThrow();
+    expect(max.getChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('admits another current chat admin using the original binding witness without creating a command or owner grant', async () => {
+    await db.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        userId: actorMaxUserId,
+        botId,
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+        checkedAt: new Date(0),
+      },
+    });
+    const input = { ...(await accessInput()), actorMaxUserId: '9007199254740993' };
+    max.getChatMemberAccess.mockResolvedValue({
+      userId: input.actorMaxUserId,
+      isBot: false,
+      isAdmin: true,
+      isOwner: false,
+      explicitPrivilegeEvidence: true,
+    });
+    const actor = await service.collect(chatId, input.actorMaxUserId);
+    expect(actor.authorityEpoch).not.toBe(input.authorityEpoch);
+    const grants = await db.karavanMarketplaceAuthorityGrant.count({ where: { chatId } });
+    const result = await actorAccess().check(input);
+    expect(result).toMatchObject({ ...input, allowed: true, reason: 'admin' });
+    expect(Date.parse(result.expiresAt) - Date.parse(result.checkedAt)).toBe(15_000);
+    expect(max.getChatMemberAccess).toHaveBeenLastCalledWith(
+      chatId,
+      input.actorMaxUserId,
+      expect.objectContaining({ botId, bypassCache: true }),
+    );
+    expect(await db.karavanMarketplaceAuthorityGrant.count({ where: { chatId } })).toBe(grants);
+    expect(await db.karavanMarketplaceHandoff.count({ where: { chatId } })).toBe(0);
+    expect(
+      await db.managedEntityAccessEdge.findUnique({
+        where: { chatId_userId_botId: { chatId, userId: input.actorMaxUserId, botId } },
+      }),
+    ).toBeNull();
+  });
+
+  it('checks the human again after a successful access response and denies an ordinary member', async () => {
+    const input = await accessInput();
+    const access = actorAccess();
+    expect(await access.check(input)).toMatchObject({ allowed: true });
+    max.getChatMemberAccess.mockResolvedValueOnce({
+      userId: actorMaxUserId,
+      isBot: false,
+      isAdmin: false,
+      isOwner: false,
+      explicitNonPrivilegeEvidence: true,
+    });
+    expect(await access.check(input)).toMatchObject({
+      ...input,
+      allowed: false,
+      reason: 'not_admin',
+    });
+    expect(await access.check(input)).toMatchObject({ allowed: true });
+  });
+
+  it.each(['actor', 'bot', 'snapshot'] as const)(
+    'keeps incomplete %s evidence unavailable without revoking the binding',
+    async (source) => {
+      const input = await accessInput();
+      if (source === 'actor')
+        max.getChatMemberAccess.mockResolvedValueOnce({
+          userId: actorMaxUserId,
+          isBot: false,
+          isAdmin: false,
+          isOwner: false,
+        });
+      if (source === 'bot')
+        max.getCurrentChatMemberAccess.mockResolvedValueOnce({ isAdmin: false, isOwner: false });
+      if (source === 'snapshot')
+        max.getChatSnapshot.mockResolvedValueOnce({ chatId: '-999', entityType: 'chat' });
+      await expect(actorAccess().check(input)).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(
+        (await db.karavanMarketplaceBindingWitness.findFirstOrThrow({ where: { chatId } }))
+          .revokedAt,
+      ).toBeNull();
+    },
+  );
+
+  it('keeps MAX transport failures unavailable and denies definitive bot access loss', async () => {
+    const input = await accessInput();
+    max.getChatMemberAccess.mockRejectedValueOnce(new Error('Synthetic timeout'));
+    await expect(actorAccess().check(input)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    max.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      isAdmin: false,
+      isOwner: false,
+      explicitNonPrivilegeEvidence: true,
+    });
+    expect(await actorAccess().check(input)).toMatchObject({
+      allowed: false,
+      reason: 'bot_unavailable',
+    });
+    expect(
+      (await db.karavanMarketplaceBindingWitness.findFirstOrThrow({ where: { chatId } })).revokedAt,
+    ).not.toBeNull();
+  });
+
+  it.each(['chatId', 'botId', 'authorityEpoch', 'verifiedAt'] as const)(
+    'rejects a mismatched original binding %s before querying the actor',
+    async (field) => {
+      const input = await accessInput();
+      const changed = {
+        chatId: '-999',
+        botId: 'other_bot',
+        authorityEpoch: 'f'.repeat(64),
+        verifiedAt: new Date(Date.parse(input.verifiedAt) + 1).toISOString(),
+      };
+      max.getChatMemberAccess.mockClear();
+      expect(await actorAccess().check({ ...input, [field]: changed[field] })).toMatchObject({
+        allowed: false,
+        reason: 'binding_changed',
+      });
+      expect(max.getChatMemberAccess).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fences a current actor denial committed during the fresh human probe', async () => {
+    const input = await accessInput();
+    max.getChatMemberAccess.mockImplementationOnce(async () => {
+      await db.managedEntityAccessEdge.create({
+        data: {
+          chatId,
+          userId: actorMaxUserId,
+          botId,
+          state: 'USER_DENIED',
+          userRole: 'MEMBER',
+          botRole: 'ADMIN',
+          checkedAt: new Date(Date.now() + 5),
+        },
+      });
+      return {
+        userId: actorMaxUserId,
+        isBot: false,
+        isAdmin: true,
+        isOwner: false,
+        explicitPrivilegeEvidence: true,
+      };
+    });
+    expect(await actorAccess().check(input)).toMatchObject({
+      allowed: false,
+      reason: 'binding_changed',
+    });
+  });
+
+  it.each(['actor', 'binding'] as const)(
+    'fences a %s change after the final remote response',
+    async (source) => {
+      const input = await accessInput();
+      const bindings = bindingStatus();
+      const original = bindings.status.bind(bindings);
+      jest
+        .spyOn(bindings, 'status')
+        .mockImplementationOnce(original)
+        .mockImplementationOnce(async (raw) => {
+          const status = await original(raw);
+          if (source === 'actor')
+            await db.managedEntityAccessEdge.create({
+              data: {
+                chatId,
+                userId: actorMaxUserId,
+                botId,
+                state: 'USER_DENIED',
+                userRole: 'MEMBER',
+                botRole: 'ADMIN',
+                checkedAt: new Date(),
+              },
+            });
+          else
+            await db.karavanMarketplaceBindingWitness.updateMany({
+              where: { chatId },
+              data: { revokedAt: new Date() },
+            });
+          return status;
+        });
+      expect(await actorAccess(bindings).check(input)).toMatchObject({
+        allowed: false,
+        reason: 'binding_changed',
+      });
+    },
+  );
+
+  it('expires a slow access probe without extending its validity at response time', async () => {
+    const input = await accessInput();
+    const bindings = bindingStatus();
+    const original = bindings.status.bind(bindings);
+    jest
+      .spyOn(bindings, 'status')
+      .mockImplementationOnce(original)
+      .mockImplementationOnce(async (raw) => {
+        const status = await original(raw);
+        const now = Date.now();
+        jest.spyOn(Date, 'now').mockReturnValue(now + 15_001);
+        return status;
+      });
+    await expect(actorAccess(bindings).check(input)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
   });
 
   it('reconciles unknown create with the same command and durable create→bind checkpoints', async () => {

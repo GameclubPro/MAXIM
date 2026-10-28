@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   canonicalKaravanMarketplaceJson,
+  karavanMarketplaceActorAccessRequestSchema,
+  karavanMarketplaceActorAccessResponseSchema,
   karavanMarketplaceAuthorityRequestSchema,
   karavanMarketplaceCreateSchema,
   karavanMarketplaceHandoffIssueSchema,
@@ -80,5 +82,65 @@ describe('Karavan command boundary', () => {
         }).success,
       ).toBe(false);
     }
+  });
+});
+
+describe('Karavan current chat administrator access boundary', () => {
+  const request = {
+    actorMaxUserId: '9007199254740993',
+    chatId: '-9007199254740993',
+    botId: 'major_bot',
+    authorityEpoch: 'a'.repeat(64),
+    verifiedAt: '2026-01-01T00:00:00.000Z',
+    bindingGeneration: 7,
+  };
+  const response = {
+    ...request,
+    allowed: true,
+    reason: 'admin',
+    checkedAt: '2026-01-01T01:00:00.000Z',
+    expiresAt: '2026-01-01T01:00:15.000Z',
+  };
+
+  it('keeps exact actor/chat IDs and every original binding field', () => {
+    expect(karavanMarketplaceActorAccessRequestSchema.parse(request)).toEqual(request);
+    expect(karavanMarketplaceActorAccessResponseSchema.parse(response)).toEqual(response);
+    for (const field of Object.keys(request)) {
+      const incomplete = { ...request } as Record<string, unknown>;
+      delete incomplete[field];
+      expect(karavanMarketplaceActorAccessRequestSchema.safeParse(incomplete).success).toBe(false);
+    }
+    for (const invalid of [
+      { isAdmin: true },
+      { role: 'owner' },
+      { chatId: Number(request.chatId) },
+      { actorMaxUserId: Number(request.actorMaxUserId) },
+      { bindingGeneration: 0 },
+      { bindingGeneration: 1.5 },
+      { authorityEpoch: 'other' },
+    ])
+      expect(
+        karavanMarketplaceActorAccessRequestSchema.safeParse({ ...request, ...invalid }).success,
+      ).toBe(false);
+  });
+
+  it('rejects contradictory decisions, added privileges and extended validity', () => {
+    for (const invalid of [
+      { allowed: false },
+      { reason: 'not_admin' },
+      { role: 'owner' },
+      { expiresAt: response.checkedAt },
+      { expiresAt: '2026-01-01T01:00:15.001Z' },
+    ])
+      expect(
+        karavanMarketplaceActorAccessResponseSchema.safeParse({ ...response, ...invalid }).success,
+      ).toBe(false);
+    expect(
+      karavanMarketplaceActorAccessResponseSchema.parse({
+        ...response,
+        allowed: false,
+        reason: 'not_admin',
+      }).allowed,
+    ).toBe(false);
   });
 });

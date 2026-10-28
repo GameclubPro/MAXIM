@@ -1,10 +1,12 @@
 import { KaravanMarketplaceResolverService } from './karavan-marketplace-resolver.service';
 import { KaravanMarketplaceBindingStatusService } from './karavan-marketplace-binding-status.service';
+import { KaravanMarketplaceActorAccessService } from './karavan-marketplace-actor-access.service';
 import {
   Body,
   CanActivate,
   Controller,
   ExecutionContext,
+  HttpCode,
   Injectable,
   Post,
   UnauthorizedException,
@@ -43,6 +45,7 @@ export class KaravanMarketplaceIntegrationController {
     private readonly handoffs: KaravanMarketplaceHandoffService,
     private readonly resolver: KaravanMarketplaceResolverService,
     private readonly bindings: KaravanMarketplaceBindingStatusService,
+    private readonly actorAccess: KaravanMarketplaceActorAccessService,
   ) {}
   @Post('publication-choices/list')
   choices(@Body() body: unknown) {
@@ -62,6 +65,11 @@ export class KaravanMarketplaceIntegrationController {
   @Post('authority/introspect')
   introspect(@Body() body: unknown) {
     return this.authority.introspect(body);
+  }
+  @Post('authority/access-check')
+  @HttpCode(200)
+  accessCheck(@Body() body: unknown) {
+    return this.actorAccess.check(body);
   }
   @Post('handoffs/exchange')
   exchange(@Body() body: unknown) {

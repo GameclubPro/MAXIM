@@ -1,4 +1,5 @@
 import { KaravanMarketplaceBindingStatusService } from './karavan-marketplace-binding-status.service';
+import { KaravanMarketplaceActorAccessService } from './karavan-marketplace-actor-access.service';
 import { KaravanMarketplaceController } from './karavan-marketplace.controller';
 import { KaravanMarketplaceProxyService } from './karavan-marketplace-proxy.service';
 import { Module } from '@nestjs/common';
@@ -16,6 +17,7 @@ import {
   controllers: [KaravanMarketplaceIntegrationController, KaravanMarketplaceController],
   providers: [
     KaravanMarketplaceBindingStatusService,
+    KaravanMarketplaceActorAccessService,
     KaravanMarketplaceProxyService,
     KaravanMarketplaceHandoffService,
     KaravanMarketplaceIntegrationGuard,

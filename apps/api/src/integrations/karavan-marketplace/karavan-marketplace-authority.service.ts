@@ -54,6 +54,15 @@ export function karavanHash(value: unknown): string {
   return createHash('sha256').update(canonicalKaravanMarketplaceJson(value)).digest('hex');
 }
 
+export class KaravanMarketplaceAuthorityDenied extends ForbiddenException {
+  constructor(
+    message: string,
+    readonly accessReason: 'not_admin' | 'bot_unavailable' | 'unknown',
+  ) {
+    super(message);
+  }
+}
+
 @Injectable()
 export class KaravanMarketplaceAuthorityService {
   constructor(
@@ -126,7 +135,10 @@ export class KaravanMarketplaceAuthorityService {
       !botId ||
       !this.registry.getActionableBots().some((bot) => bot.id === botId)
     )
-      throw new ForbiddenException('Нужен подключённый чат с действующим ботом Майора.');
+      throw new KaravanMarketplaceAuthorityDenied(
+        'Нужен подключённый чат с действующим ботом Майора.',
+        'bot_unavailable',
+      );
     const options = {
       botId,
       bypassCache: true,
@@ -156,8 +168,21 @@ export class KaravanMarketplaceAuthorityService {
       actor.userId !== actorMaxUserId ||
       bot.explicitPrivilegeEvidence !== true ||
       actor.explicitPrivilegeEvidence !== true
-    )
-      throw new ForbiddenException('Нужны права администратора чата у вас и у бота.');
+    ) {
+      const exactActor = actor.userId === actorMaxUserId && actor.isBot === false;
+      const exactChat = snapshot.chatId === chatId && snapshot.entityType === 'chat';
+      const botDenied = !(bot.isAdmin || bot.isOwner) && bot.explicitNonPrivilegeEvidence === true;
+      const actorDenied =
+        !(actor.isAdmin || actor.isOwner) && actor.explicitNonPrivilegeEvidence === true;
+      throw new KaravanMarketplaceAuthorityDenied(
+        'Нужны права администратора чата у вас и у бота.',
+        exactChat && botDenied
+          ? 'bot_unavailable'
+          : exactChat && exactActor && bot.explicitPrivilegeEvidence === true && actorDenied
+            ? 'not_admin'
+            : 'unknown',
+      );
+    }
     if (Date.now() - checkedAt.getTime() >= KARAVAN_AUTHORITY_TTL_MS)
       throw new ConflictException('Проверка прав устарела.');
     return this.prisma.$transaction(async (tx) => {
