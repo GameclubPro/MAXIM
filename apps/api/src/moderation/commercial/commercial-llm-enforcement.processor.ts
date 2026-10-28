@@ -78,6 +78,12 @@ export class CommercialLlmEnforcementProcessor {
               nodeId: result.pool.nodeId,
               poolPolicy: result.pool.policy,
               attempts: result.pool.attempts,
+              ...(result.pool.primaryDurationMs !== undefined
+                ? { primaryDurationMs: result.pool.primaryDurationMs }
+                : {}),
+              ...(result.pool.consultationDurationMs !== undefined
+                ? { consultationDurationMs: result.pool.consultationDurationMs }
+                : {}),
               ...(result.pool.consultationOutcome
                 ? { consultationOutcome: result.pool.consultationOutcome }
                 : {}),

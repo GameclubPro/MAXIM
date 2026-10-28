@@ -5,6 +5,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { safetyDeskCommercialAiPoolResponseSchema } from '@maxim/contracts/safety-desk';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -147,6 +148,7 @@ async function smokeProfile(activeBrowser, profile) {
   let deliveryEvidenceMalformed = false;
   let deliveryEvidenceDenied = false;
   let commercialAiRequests = 0;
+  let commercialAiPoolRequests = 0;
   let commercialAiMalformed = false;
   let commercialAiGate;
   let retentionRequests = 0;
@@ -183,6 +185,41 @@ async function smokeProfile(activeBrowser, profile) {
     confirmedDeletes: null,
   };
   let expectedAccessCode = accessCode;
+  const commercialAiPool = safetyDeskCommercialAiPoolResponseSchema.parse({
+    schemaVersion: 1,
+    generatedAt: commercialAi.generatedAt,
+    observedAt: commercialAi.observedAt,
+    workersEnabled: true,
+    routingEnabled: true,
+    policy: 'confirm-positive',
+    availability: 'FRESH',
+    nodes: ['server-9b', 'pc-a-4b', 'pc-b-9b'].map((nodeId, index) => ({
+      nodeId,
+      state: ['SLOT_OCCUPIED', 'READY', 'OFFLINE'][index],
+      validUntil: index === 2 ? null : commercialAi.generatedAt,
+    })),
+    metrics: {
+      availability: 'FRESH',
+      observedAt: commercialAi.observedAt,
+      observationStartedAt: commercialAi.observationStartedAt,
+      observationProcessId: commercialAi.observationProcessId,
+      basis: 'PROCESS_MODEL_ATTEMPTS',
+      diagnostics: {
+        schemaVersion: 1,
+        nodes: ['server-9b', 'pc-a-4b', 'pc-b-9b'].map((nodeId) => ({
+          nodeId,
+          completedAttempts: 0,
+          failedAttempts: 0,
+          lastCompletedAt: null,
+          lastFailureAt: null,
+          ewmaDurationMs: null,
+        })),
+        consultations: { completed: 0, noCapacity: 5, budgetExhausted: 1 },
+      },
+    },
+    trafficCoverage: 'NOT_ESTABLISHED',
+    confirmedDeletes: null,
+  });
   let releaseDelayedDelivery;
   const delayedDelivery = new Promise((resolve) => {
     releaseDelayedDelivery = resolve;
@@ -466,6 +503,17 @@ async function smokeProfile(activeBrowser, profile) {
     }
     if (request.headers()['x-admin-access-code'] !== expectedAccessCode) {
       await route.fulfill({ status: 401, json: { message: 'missing access code' } });
+      return;
+    }
+    if (url.pathname.endsWith('/safety-desk/runtime/commercial-ai/pool')) {
+      if (request.method() !== 'GET' || request.postData())
+        throw new Error('Commercial AI pool observation attempted a mutation.');
+      commercialAiPoolRequests += 1;
+      if (commercialAiGate) await commercialAiGate;
+      await route.fulfill({
+        status: 200,
+        json: commercialAiMalformed ? { schemaVersion: 0 } : commercialAiPool,
+      });
       return;
     }
     if (url.pathname.endsWith('/safety-desk/runtime/commercial-ai')) {
@@ -835,7 +883,7 @@ async function smokeProfile(activeBrowser, profile) {
     throw new Error(`${profile.name} cohort view has horizontal overflow.`);
   }
 
-  if (commercialAiRequests !== 0)
+  if (commercialAiRequests !== 0 || commercialAiPoolRequests !== 0)
     throw new Error('Commercial AI loaded before its observation family was selected.');
   await observationSelector.getByRole('button', { name: 'Рекламный ИИ', exact: true }).click();
   const aiPanel = page.getByRole('region', { name: 'Рекламный ИИ', exact: true });
@@ -846,6 +894,11 @@ async function smokeProfile(activeBrowser, profile) {
     .getByText('Регистрация намерения не подтверждает удаление сообщения.', { exact: false })
     .waitFor();
   if (commercialAiRequests !== 1) throw new Error('Commercial AI request repeated.');
+  const poolPanel = page.getByRole('region', { name: 'Модели рекламного ИИ', exact: true });
+  await poolPanel.getByText('Слот занят', { exact: true }).waitFor();
+  await poolPanel.getByText('Нет свежей регистрации', { exact: true }).waitFor();
+  await poolPanel.getByText('Без свободной 9B для перепроверки', { exact: true }).waitFor();
+  if (commercialAiPoolRequests !== 1) throw new Error('Commercial AI pool request repeated.');
   await aiPanel.getByText('Отброшенные ожидания', { exact: true }).click();
   await aiPanel.getByText('включая предыдущие процессы', { exact: false }).waitFor();
   if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1))
@@ -863,6 +916,9 @@ async function smokeProfile(activeBrowser, profile) {
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await delayedAiRequest;
   await aiPanel.getByText('Читаю сохранённые наблюдения…', { exact: true }).waitFor();
+  await poolPanel.getByText('Читаю сохранённые наблюдения…', { exact: true }).waitFor();
+  if (await poolPanel.locator('.commercial-ai-snapshot').count())
+    throw new Error('Pool refresh retained observations from the previous snapshot.');
   if (await aiPanel.locator('.commercial-ai-metrics').count())
     throw new Error('Commercial AI refresh retained counters from the previous snapshot.');
   releaseCommercialAi();
@@ -894,6 +950,9 @@ async function smokeProfile(activeBrowser, profile) {
   commercialAiMalformed = true;
   await page.getByRole('button', { name: 'Обновить', exact: true }).click();
   await aiPanel.getByRole('alert').waitFor();
+  await poolPanel.getByRole('alert').waitFor();
+  if (await poolPanel.locator('.commercial-ai-snapshot').count())
+    throw new Error('Invalid pool response retained the previous snapshot.');
   if (await aiPanel.locator('.commercial-ai-snapshot').count())
     throw new Error('Invalid AI response retained the previous snapshot.');
   const previousAiReads = commercialAiRequests;
