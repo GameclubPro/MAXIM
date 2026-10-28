@@ -499,6 +499,14 @@ export function createSupportController({
               phase: last.phase,
               heartbeatAt: last.heartbeatAt,
               failureCode: last.failureCode ?? null,
+              ...(chat
+                ? {
+                    lastFailureCode: last.lastFailureCode ?? null,
+                    lastFailureAt: last.lastFailureAt ?? null,
+                    lastDisconnectCode: last.lastDisconnectCode ?? null,
+                    lastDisconnectAt: last.lastDisconnectAt ?? null,
+                  }
+                : {}),
             }
           : {}),
       };

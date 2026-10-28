@@ -161,6 +161,23 @@ not answer correctness or completed delivery. Check local question quality and l
 separately from a real user's fresh question and confirmed reply in the designated chat.
 There are no automatic public diagnostics or fallback error messages.
 
+The server intentionally closes each bridge session after 30 minutes. Lifetime `reconnects`
+therefore includes normal rotation and is not an error count. `lastDisconnectCode` distinguishes
+clean `support_session_closed` from an allowlisted transport failure; `lastFailureCode` and
+`lastFailureAt` retain the last error even after a later clean rotation or worker stop. Raw frames,
+stderr and error messages are never copied into these fields. `support_clock_skew` means a server
+poll clock exceeded the existing five-second future tolerance; repair clock synchronization rather
+than relaxing that boundary.
+Periodic heartbeat and polling status writes do not increment the previous error outcome again.
+
+Reconnect delay uses consecutive unsettled sessions, capped at 30 seconds. A session resets that
+backoff only after at least 30 seconds connected and a valid poll sample no more than 30 seconds
+old. Hello, null or stale polling alone cannot reset it. The next reconnect then waits two seconds;
+lifetime counters remain intact. Already-cancelled sessions start no child, and a nonzero child
+exit is checked after bounded cleanup so EOF cannot hide it. These local worker changes do not
+change the server bridge, model/prompt, source deadlines or reply fences. A workstation-only update
+needs the reviewed immutable local bundle; it does not require rebuilding or restarting the API.
+
 For a knowledge update, finish source review, focused retrieval/policy checks, actual CPU
 answer evaluation and exact-source CI first. Merge and synchronize the reviewed host source,
 then stop `chat-stop` followed by `stop`, run the installer from that reviewed source and

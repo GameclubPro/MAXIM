@@ -33,6 +33,45 @@ const sshArgs = [
   'cd /var/www/Chat_bot && exec node infra/scripts/support-chat-remote.mjs bridge',
 ];
 
+const failureCodes = new Set([
+  'support_ssh_unavailable',
+  'support_server_heartbeat_stale',
+  'support_handshake_deadline',
+  'support_frame_limit',
+  'support_frame_refused',
+  'support_frame_invalid',
+  'support_clock_skew',
+]);
+export const supportChatFailureCode = (error) =>
+  error instanceof Error && failureCodes.has(error.message)
+    ? error.message
+    : 'support_session_failed';
+
+export class SupportReconnectPolicy {
+  consecutive = 0;
+  connectedAt = null;
+  connected(now = Date.now()) {
+    this.connectedAt = now;
+  }
+  observed(sampleAt, now = Date.now()) {
+    // FLAG: Hello alone or stale polling cannot erase a failing reconnect history.
+    if (
+      this.connectedAt !== null &&
+      now - this.connectedAt >= 30_000 &&
+      Number.isSafeInteger(sampleAt) &&
+      sampleAt >= 0 &&
+      sampleAt <= now + 5000 &&
+      now - sampleAt <= 30_000
+    )
+      this.consecutive = 0;
+  }
+  disconnected() {
+    this.connectedAt = null;
+    this.consecutive = Math.min(15, this.consecutive + 1);
+    return 2000 * this.consecutive;
+  }
+}
+
 export function validateQuestion(value) {
   return (
     value?.type === 'question' &&
@@ -63,12 +102,13 @@ export async function supportChatSession({
   command = 'ssh',
   args = sshArgs,
 }) {
-  const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-  const controller = new AbortController(),
-    combined = AbortSignal.any([signal, controller.signal]);
+  signal.throwIfAborted();
   const knowledgeSha = createHash('sha256')
     .update(readFileSync(new URL('./support-llm-knowledge.json', import.meta.url)))
     .digest('hex');
+  const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  const controller = new AbortController(),
+    combined = AbortSignal.any([signal, controller.signal]);
   let hello = false,
     pending = Buffer.alloc(0),
     inference = null,
@@ -86,12 +126,12 @@ export async function supportChatSession({
   child.stderr.on('data', () => {});
   const closed = new Promise((resolve) => {
     child.once('error', () => {
-      failure = new Error('support_ssh_unavailable');
+      failure ??= new Error('support_ssh_unavailable');
       controller.abort();
       resolve();
     });
     child.once('close', (code) => {
-      if (code !== 0) failure = new Error('support_ssh_unavailable');
+      if (code !== 0) failure ??= new Error('support_ssh_unavailable');
       controller.abort();
       resolve();
     });
@@ -99,13 +139,13 @@ export async function supportChatSession({
   send({ type: 'hello', modelSha256: SUPPORT_MODEL.sha256, knowledgeSha256: knowledgeSha });
   const heartbeat = setInterval(() => {
     if (Date.now() - lastServerHeartbeat > 25000) {
-      failure = new Error('support_server_heartbeat_stale');
+      failure ??= new Error('support_server_heartbeat_stale');
       stop();
     } else if (hello) send({ type: 'heartbeat' });
   }, 5000);
   const handshake = setTimeout(() => {
     if (!hello) {
-      failure = new Error('support_handshake_deadline');
+      failure ??= new Error('support_handshake_deadline');
       stop();
     }
   }, 15_000);
@@ -115,8 +155,21 @@ export async function supportChatSession({
       if (pending.length > 32768) throw new Error('support_frame_limit');
       let n;
       while ((n = pending.indexOf(10)) >= 0) {
-        const value = JSON.parse(pending.subarray(0, n).toString('utf8'));
+        let value;
+        try {
+          value = JSON.parse(pending.subarray(0, n).toString('utf8'));
+        } catch {
+          throw new Error('support_frame_invalid');
+        }
         pending = pending.subarray(n + 1);
+        if (!value || typeof value !== 'object') throw new Error('support_frame_refused');
+        if (
+          hello &&
+          value.type === 'heartbeat' &&
+          Number.isFinite(value.sampleAt) &&
+          value.sampleAt > Date.now() + 5000
+        )
+          throw new Error('support_clock_skew');
         if (value.type === 'hello' && value.chatId === '-78271094414679' && !hello) {
           hello = true;
           lastServerHeartbeat = Date.now();
@@ -125,7 +178,9 @@ export async function supportChatSession({
           hello &&
           value.type === 'heartbeat' &&
           (value.sampleAt === null ||
-            (Number.isFinite(value.sampleAt) && value.sampleAt <= Date.now() + 5000))
+            (Number.isSafeInteger(value.sampleAt) &&
+              value.sampleAt >= 0 &&
+              value.sampleAt <= Date.now() + 5000))
         ) {
           lastServerHeartbeat = Date.now();
           onStatus('observation', { sampleAt: value.sampleAt });
@@ -168,7 +223,8 @@ export async function supportChatSession({
         else throw new Error('support_frame_refused');
       }
     }
-    if (failure) throw failure;
+  } catch (error) {
+    failure ??= error;
   } finally {
     clearInterval(heartbeat);
     clearTimeout(handshake);
@@ -178,6 +234,8 @@ export async function supportChatSession({
     await Promise.race([closed, pause(3000)]);
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
+  // FLAG: A nonzero exit may arrive after stdout EOF. Preserve the first cause through cleanup.
+  if (failure && !signal.aborted) throw failure;
 }
 
 async function run() {
@@ -192,28 +250,39 @@ async function run() {
   const startTicks = readFileSync(`/proc/${process.pid}/stat`, 'utf8')
     .split(') ')[1]
     .split(' ')[19];
+  const reconnectPolicy = new SupportReconnectPolicy();
   let phase = 'starting',
     lastSuccessAt = null,
     replies = 0,
     errors = 0,
     reconnects = 0,
     lastSampleAt = null,
-    remoteHeartbeatAt = null;
+    remoteHeartbeatAt = null,
+    lastFailureCode = null,
+    lastFailureAt = null,
+    lastDisconnectCode = null,
+    lastDisconnectAt = null,
+    reconnectDelayMs = 0;
   mkdirSync(state, { recursive: true, mode: 0o700 });
-  const status = (next = phase, details = {}) => {
+  const status = (next, details = {}) => {
+    const event = next;
+    if (next === 'connected') reconnectPolicy.connected();
+    next ??= phase;
     if (next === 'observation') {
       remoteHeartbeatAt = new Date().toISOString();
-      lastSampleAt = details.sampleAt ? new Date(details.sampleAt).toISOString() : null;
+      lastSampleAt = details.sampleAt === null ? null : new Date(details.sampleAt).toISOString();
+      reconnectPolicy.observed(details.sampleAt);
       next = phase;
     }
     phase = next;
-    if (next === 'sent') {
+    if (event === 'sent') {
       replies++;
       lastSuccessAt = new Date().toISOString();
       phase = 'connected';
     }
-    if (next === 'inference_failed' || next === 'unknown' || next === 'refused') errors++;
-    if (next === 'skipped' || next === 'answered') phase = 'connected';
+    // FLAG: Heartbeat/observation writes must not count the previous outcome a second time.
+    if (event === 'inference_failed' || event === 'unknown' || event === 'refused') errors++;
+    if (event === 'skipped' || event === 'answered') phase = 'connected';
     const value = {
       pid: process.pid,
       startTicks,
@@ -226,6 +295,12 @@ async function run() {
       replies,
       errors,
       reconnects,
+      consecutiveReconnects: reconnectPolicy.consecutive,
+      reconnectDelayMs,
+      lastFailureCode,
+      lastFailureAt,
+      lastDisconnectCode,
+      lastDisconnectAt,
       model: SUPPORT_MODEL.alias,
       chatId: '-78271094414679',
     };
@@ -236,16 +311,26 @@ async function run() {
   const heartbeat = setInterval(status, 5000);
   try {
     while (!controller.signal.aborted && existsSync(join(state, 'chat-enabled'))) {
+      let sessionFailure = null;
       try {
+        reconnectDelayMs = 0;
         status('connecting');
         await supportChatSession({ key, signal: controller.signal, onStatus: status });
-      } catch {
-        errors++;
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          errors++;
+          sessionFailure = supportChatFailureCode(error);
+          lastFailureCode = sessionFailure;
+          lastFailureAt = new Date().toISOString();
+        }
       }
       if (!controller.signal.aborted) {
         reconnects++;
+        lastDisconnectCode = sessionFailure ?? 'support_session_closed';
+        lastDisconnectAt = new Date().toISOString();
+        reconnectDelayMs = reconnectPolicy.disconnected();
         status('reconnecting');
-        await pause(Math.min(30_000, 2000 * reconnects), undefined, {
+        await pause(reconnectDelayMs, undefined, {
           signal: controller.signal,
         }).catch(() => undefined);
       }
