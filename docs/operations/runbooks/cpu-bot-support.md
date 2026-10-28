@@ -170,6 +170,27 @@ poll clock exceeded the existing five-second future tolerance; repair clock sync
 than relaxing that boundary.
 Periodic heartbeat and polling status writes do not increment the previous error outcome again.
 
+Each private question includes the bridge's `issuedAt`. The worker applies the same five-second
+future clock guard to it as to polling, then checks the source's existing five-second future
+tolerance relative to bridge time. These are separate comparisons, not a larger host clock
+tolerance. The absolute deadline remains source creation plus 180 seconds; inference remains
+bounded by 120 seconds and that deadline. Expiry sends neither a reply nor a late negative frame.
+Malformed history and overlapping inference have finite `support_question_refused` and
+`support_question_overlap` diagnostics. Bridge input failures exit unsuccessfully instead of
+looking like normal rotation; no frame contents enter status or public messages.
+When the bridge advances past an expired source, the worker cancels that source and suppresses
+all its subsequent frames and success status. It permits one waiting successor and starts it
+only after the prior invocation settles and the successor's deadline is checked again. The
+bridge's bounded `issuedAt` can prove expiry when the workstation clock is slightly behind.
+Unexpired overlap and a second waiting successor still fail closed. Session cancellation awaits
+the raw invocation's cleanup before reconnecting; abort alone does not release its ownership.
+The existing process supervisor owns hard termination if an invocation ignores cancellation.
+
+For this protocol update, synchronize the reviewed host bridge before installing the immutable
+workstation bundle: the previous worker ignores `issuedAt`, while the new worker requires it.
+The host script is injected by `support-chat-remote.mjs`; this change requires no API image rebuild.
+Verify a closed preview, installed bundle identity and a fresh worker polling sample after install.
+
 Reconnect delay uses consecutive unsettled sessions, capped at 30 seconds. A session resets that
 backoff only after at least 30 seconds connected and a valid poll sample no more than 30 seconds
 old. Hello, null or stale polling alone cannot reset it. The next reconnect then waits two seconds;
