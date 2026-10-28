@@ -8,6 +8,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readSync,
   renameSync,
   unlinkSync,
@@ -29,6 +30,7 @@ import {
   readBacklogCancellationForRequest,
   writeBacklogCancellation,
 } from './backlog-cancellation-journal.mjs';
+import { validateCompleteReleaseManifest } from './release-manifest.mjs';
 
 const ROOT = '/var/lib/maxim-deploy';
 const CLIENT = 'apps/api/dist/apps/api/src/scripts/cancel-webhook-backlog-v2.js';
@@ -158,7 +160,7 @@ function privateDirectory(root, id, create) {
   return path;
 }
 
-function readPrivate(path, max) {
+function readPrivate(path, max, modes = [0o600]) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
@@ -166,7 +168,7 @@ function readPrivate(path, max) {
       !stat.isFile() ||
       stat.uid !== process.getuid() ||
       stat.nlink !== 1 ||
-      (stat.mode & 0o777) !== 0o600 ||
+      !modes.includes(stat.mode & 0o777) ||
       stat.size > max
     )
       throw new Error('Unsafe bounded v2 evidence file');
@@ -690,14 +692,70 @@ export function createBacklogCancellationHelpersV2({
   };
 }
 
+function assertActiveRelease(directory, request) {
+  // FLAG: Tooling-only synchronization does not change the component manifest's
+  // targetSha. Bind the installed API component, retaining complete static evidence.
+  if (readdirSync(directory).some((name) => name.startsWith('current.invalid-')))
+    throw new Error('V2 release transition unfinished');
+  const manifest = JSON.parse(
+    readPrivate(join(directory, 'current.json'), 64 * 1024, [0o600, 0o640]),
+  );
+  validateCompleteReleaseManifest(manifest);
+  const api = manifest.components['api-shared'];
+  if (
+    api.sourceSha !== request.sourceSha ||
+    api.imageRef !== `maxim-api:${request.sourceSha}` ||
+    api.imageId !== request.imageId
+  )
+    throw new Error('V2 installed API manifest mismatch');
+}
+
+function bindController(op, nomination, controllerSha, create = false) {
+  const path = join(op, 'controller.json');
+  const raw = cancellationV2Bytes({
+    version: 1,
+    kind: 'BACKLOG_CANCELLATION_CONTROLLER_V1',
+    id: nomination.id,
+    controllerSha,
+    sourceSha: nomination.sourceSha,
+    imageId: nomination.imageId,
+    nominationSha256: digestValue(nomination),
+  });
+  if (create) immutable(path, raw, APPLY_BYTES);
+  if (present(path)) {
+    if (readPrivate(path, APPLY_BYTES) !== raw) throw new Error('V2 immutable controller mismatch');
+    return digest(raw);
+  }
+  // FLAG: Legacy evidence can resume only its original same-source controller.
+  // Never backfill a different controller onto an old or incomplete preview.
+  if (controllerSha !== nomination.sourceSha || present(join(op, 'controller-ready.json')))
+    throw new Error('V2 immutable controller missing');
+  return null;
+}
+
+function controllerReadyBytes(request, controllerSha256) {
+  return cancellationV2Bytes({
+    version: 1,
+    kind: 'BACKLOG_CANCELLATION_CONTROLLER_READY_V1',
+    id: request.id,
+    controllerSha256,
+    previewSha256: request.previewSha256,
+  });
+}
+
 function context(request, options) {
   const directory = options.directory ?? ROOT;
   (options.assertLock ?? assertInheritedDeployLock)();
-  if ((options.expectedSha ?? process.env.MAXIM_EXPECTED_DEPLOY_SHA) !== request.sourceSha)
+  const controllerSha = options.expectedSha ?? process.env.MAXIM_EXPECTED_DEPLOY_SHA;
+  const runtimeSha =
+    options.expectedRuntimeSha ?? process.env.MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA ?? controllerSha;
+  if (!/^[a-f0-9]{40}$/u.test(controllerSha ?? '') || runtimeSha !== request.sourceSha)
     throw new Error('V2 controller source mismatch');
   (options.assertMaintenance ?? assertNoActiveLegacyColdMaintenance)(directory, request.id);
+  assertActiveRelease(directory, request);
   return {
     directory,
+    controllerSha,
     report: options.report ?? ((value) => console.log(JSON.stringify(value))),
     runtime: (previous) =>
       (options.createRuntime ?? createLegacyColdRuntime)({
@@ -788,7 +846,12 @@ export async function runPreviewHostV2(request, options = {}) {
   // A preview cannot resume its own pending mutation under the own-ID exception.
   (options.assertMaintenance ?? assertNoActiveLegacyColdMaintenance)(ctx.directory);
   const op = privateDirectory(ctx.directory, request.id, true);
+  const newNomination = !present(join(op, 'nomination.json'));
+  // FLAG: Missing nomination bytes do not make retained READY evidence a new operation.
+  if (newNomination && readdirSync(op).length !== 0)
+    throw new Error('V2 incomplete retained evidence; use a new preview ID');
   immutable(join(op, 'nomination.json'), cancellationV2Bytes(request), NOMINATION_BYTES);
+  const controllerSha256 = bindController(op, request, ctx.controllerSha, newNomination);
   if (present(join(op, 'preview-failure.json')) || present(join(op, 'apply.json')))
     throw new Error('V2 operation already consumed; use a new preview ID');
   const runtime = ctx.runtime(null);
@@ -827,6 +890,12 @@ export async function runPreviewHostV2(request, options = {}) {
       previewSha256: digest(raw),
       exitCode: 0,
     };
+    if (controllerSha256 !== null)
+      immutable(
+        join(op, 'controller-ready.json'),
+        controllerReadyBytes({ ...request, previewSha256: result.previewSha256 }, controllerSha256),
+        APPLY_BYTES,
+      );
     ctx.report(result);
     return result;
   } catch {
@@ -864,9 +933,16 @@ export async function runApplyHostV2(request, options = {}) {
   const nomination = parseNominationV2(readPrivate(join(op, 'nomination.json'), NOMINATION_BYTES));
   if (['id', 'cutoff', 'sourceSha', 'imageId'].some((key) => nomination[key] !== request[key]))
     throw new Error('V2 nomination/apply identity mismatch');
+  const controllerSha256 = bindController(op, nomination, ctx.controllerSha);
   const previewRaw = readPrivate(join(op, 'preview.json'), PREVIEW_BYTES);
   if (digest(previewRaw) !== request.previewSha256)
     throw new Error('V2 immutable preview mismatch');
+  if (
+    controllerSha256 !== null &&
+    readPrivate(join(op, 'controller-ready.json'), APPLY_BYTES) !==
+      controllerReadyBytes(request, controllerSha256)
+  )
+    throw new Error('V2 controller READY receipt mismatch');
   const bindings = parseCanonical(readPrivate(join(op, 'bindings.json'), APPLY_BYTES), APPLY_BYTES);
   if (
     !keys(bindings, ['runtimeDigest', 'clientSha256']) ||
@@ -876,18 +952,19 @@ export async function runApplyHostV2(request, options = {}) {
     throw new Error('Invalid v2 immutable bindings');
   const preview = validatePreview(previewRaw, nomination, bindings);
   if (preview.decision !== 'READY' || !preview.complete) throw new Error('V2 preview is not READY');
-  immutable(join(op, 'apply.json'), cancellationV2Bytes(request), APPLY_BYTES);
   let state = ctx.readJournal(ctx.directory, request);
   if (state && cancellationV2Bytes(state.request) !== cancellationV2Bytes(request))
     throw new Error('V2 exact request changed');
   if (
     state &&
-    (state.previewSha256 !== request.previewSha256 ||
+    ((state.controllerSha256 ?? null) !== controllerSha256 ||
+      state.previewSha256 !== request.previewSha256 ||
       state.nominationSha256 !== digestValue(nomination) ||
       cancellationV2Bytes(state.bindings) !== cancellationV2Bytes(bindings) ||
       cancellationRuntimeDigestV2(state.baseline) !== bindings.runtimeDigest)
   )
     throw new Error('V2 journal evidence mismatch');
+  immutable(join(op, 'apply.json'), cancellationV2Bytes(request), APPLY_BYTES);
   if (state?.phase === 'COMPLETE') {
     if (!['APPLIED', 'ABORTED_UNWRITTEN'].includes(state.outcome))
       throw new Error('V2 completed outcome missing');
@@ -920,6 +997,7 @@ export async function runApplyHostV2(request, options = {}) {
       nominationSha256: digestValue(nomination),
       previewSha256: request.previewSha256,
       bindings,
+      ...(controllerSha256 === null ? {} : { controllerSha256 }),
       ...additions,
     };
     if (state.abortPending === false) delete state.abortPending;
