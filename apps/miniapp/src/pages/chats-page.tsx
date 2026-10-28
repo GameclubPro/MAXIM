@@ -260,8 +260,6 @@ function readHomeSnapshotFromRouteState(
   return workspace?.entityType === entityType ? (workspace.homeSnapshot ?? null) : null;
 }
 
-const LazyBirzhikHandoff = lazy(() => import('../components/birzhik-handoff'));
-
 export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -1819,14 +1817,6 @@ export function ChatsPage({ api }: { api: ApiTransport; botUrl: string | null })
           </div>
         ) : null}
       </GlassCard>
-
-      {!categoryEditMode ? (
-        <div className="chats-home__birzhik">
-          <Suspense fallback={null}>
-            <LazyBirzhikHandoff api={api} />
-          </Suspense>
-        </div>
-      ) : null}
 
       {showTransientEmptyState ? (
         <div className="chats-route-state chats-transient-state">
