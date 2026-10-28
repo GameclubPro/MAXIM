@@ -194,6 +194,12 @@ export function listRecoveryBaseManifestPaths(stateDir) {
     .map((name) => resolve(stateDir, name));
 }
 
+export function isArchivedReleaseTransitionName(name) {
+  if (typeof name !== 'string' || /[\r\n]/u.test(name)) return false;
+  const suffix = /\.(?:recovered|superseded)-\d{8}T\d{6}Z-\d+$/u.exec(name);
+  return suffix !== null && recoveryBaseNamePattern.test(name.slice(0, suffix.index));
+}
+
 export function findRecoveryBaseManifest(stateDir, { allowUnknown = false } = {}) {
   const candidates = listRecoveryBaseManifestPaths(stateDir);
   if (candidates.length === 0) {

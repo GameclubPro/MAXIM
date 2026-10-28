@@ -29,7 +29,11 @@ import {
 } from './backlog-cancellation-v2-host.mjs';
 import { readBacklogCancellation } from './backlog-cancellation-journal.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
-import { buildReleaseManifest } from './release-manifest.mjs';
+import {
+  archiveReleaseTransition,
+  beginReleaseTransition,
+  buildReleaseManifest,
+} from './release-manifest.mjs';
 
 const fixture = JSON.parse(
   readFileSync(new URL('../fixtures/backlog-cancellation-v2-contract.json', import.meta.url)),
@@ -299,6 +303,44 @@ test('mixed sources require independently admitted runtime identity before evide
   assert.equal(readdirSync(h.directory).includes(`backlog-cancellation-${nomination.id}`), false);
 });
 
+for (const disposition of ['recovered', 'superseded']) {
+  test(`completed ${disposition} release history permits exact recovery and remains intact`, async (t) => {
+    const h = harness(t);
+    const current = join(h.directory, 'current.json');
+    writeFileSync(
+      current,
+      JSON.stringify({
+        ...h.manifest,
+        releaseId: 'fixture-before-transition',
+        createdAt: '2026-10-26T00:00:00.000Z',
+      }),
+    );
+    const recoveryPath = beginReleaseTransition({
+      stateDir: h.directory,
+      kind: 'deploy',
+      now: new Date('2026-10-27T00:00:00.000Z'),
+      pid: 123,
+    });
+    writeFileSync(
+      current,
+      JSON.stringify({ ...h.manifest, createdAt: '2026-10-27T00:00:01.000Z' }),
+      { mode: 0o640 },
+    );
+    const archive = archiveReleaseTransition({
+      stateDir: h.directory,
+      recoveryPath,
+      disposition,
+      now: new Date('2026-10-27T00:00:02.000Z'),
+      pid: 123,
+    });
+    const retainedBytes = readFileSync(archive);
+    const request = await h.preview();
+    assert.equal(h.events.includes('stop'), false);
+    assert.equal((await runApplyHostV2(request, h.options)).outcome, 'APPLIED');
+    assert.deepEqual(readFileSync(archive), retainedBytes);
+  });
+}
+
 test('a bounded complete current manifest is required before preview helpers', async (t) => {
   const changes = {
     missing: (h, path) => unlinkSync(path),
@@ -327,6 +369,18 @@ test('a bounded complete current manifest is required before preview helpers', a
     },
     'malformed-transition': (h) => {
       writeFileSync(join(h.directory, 'current.invalid-unrecognized'), '{}');
+    },
+    'malformed-archive-base': (h) => {
+      writeFileSync(
+        join(h.directory, 'current.invalid-unrecognized.json.recovered-20261028T210000Z-1'),
+        '{}',
+      );
+    },
+    'malformed-archive-suffix': (h) => {
+      writeFileSync(
+        join(h.directory, 'current.invalid-deploy-20261028T210000Z-1.json.recovered'),
+        '{}',
+      );
     },
     mode: (h, path) => chmodSync(path, 0o666),
     hardlink: (h, path) => linkSync(path, join(h.directory, 'other.json')),
@@ -363,6 +417,20 @@ test('apply rechecks the installed component before preflight or journal creatio
   manifest.components['api-shared'].imageId = `sha256:${'f'.repeat(64)}`;
   writeFileSync(join(h.directory, 'current.json'), JSON.stringify(manifest));
   await assert.rejects(runApplyHostV2(request, h.options), /manifest mismatch/);
+  assert.deepEqual(h.events.slice(before.length), ['lock', `guard:${nomination.id}`]);
+  assert.equal(readdirSync(h.op).includes('apply.json'), false);
+  assert.equal(readBacklogCancellation(h.directory), null);
+});
+
+test('a new active release transition after READY refuses apply before preflight or stop', async (t) => {
+  const h = harness(t),
+    request = await h.preview();
+  const before = [...h.events];
+  writeFileSync(
+    join(h.directory, 'current.invalid-deploy-20261028T210000Z-1.json'),
+    JSON.stringify(h.manifest),
+  );
+  await assert.rejects(runApplyHostV2(request, h.options), /release transition unfinished/);
   assert.deepEqual(h.events.slice(before.length), ['lock', `guard:${nomination.id}`]);
   assert.equal(readdirSync(h.op).includes('apply.json'), false);
   assert.equal(readBacklogCancellation(h.directory), null);

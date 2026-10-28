@@ -311,3 +311,92 @@ test('legacy policy replies retain presentation but never revive revoked rights 
   assert.equal(marketplaceProfileView(merged).canEdit, false);
   assert.equal(marketplaceProfileView(merged).canAppend, false);
 });
+
+test('compact owner overview chooses one honest action before placement shortcuts', async () => {
+  const { marketplaceProfileOverview } = await import('../src/lib/marketplace-profile-view');
+  const api = createPreviewApiTransport({ search: '?marketplacePublished=1&profile=publisher' });
+  const state = marketplaceProfileStateSchema.parse(
+    await api.request('/marketplace/entities/CHANNEL/preview-channel/profile?profile=publisher'),
+  );
+  const caps = state.capabilities!;
+  caps.placementState = 'READY';
+  let overview = marketplaceProfileOverview(state);
+  assert.equal(overview.status, 'Опубликован');
+  assert.equal(overview.primary?.kind, 'listing');
+  assert.equal(overview.primary?.label, 'Посмотреть профиль');
+  assert.equal(overview.secondary?.kind, 'manage');
+  assert.equal(overview.placementNote, null, 'Readiness is not proof of commercial terms');
+
+  caps.placementState = 'SETUP_REQUIRED';
+  overview = marketplaceProfileOverview(state);
+  assert.equal(overview.primary?.kind, 'manage');
+  assert.equal(overview.placementNote, 'Нужно завершить настройку');
+  assert.equal(overview.secondary?.kind, 'listing');
+
+  caps.placementState = 'BOT_REQUIRED';
+  assert.equal(marketplaceProfileOverview(state).primary?.kind, 'connect');
+  caps.placementState = 'READY';
+  caps.publicState = 'HIDDEN';
+  state.listing!.status = 'PAUSED';
+  state.listing!.publicUrl = null;
+  overview = marketplaceProfileOverview(state);
+  assert.deepEqual(
+    overview.primary,
+    {
+      kind: 'profile',
+      label: 'Настройки профиля',
+      editor: false,
+    },
+    'A hidden profile opens settings without silently entering its editor',
+  );
+  assert.equal(overview.secondary, null);
+  assert.equal(overview.showProfileSettings, false, 'The main profile action is not duplicated');
+
+  caps.publicState = 'REVIEW';
+  assert.equal(marketplaceProfileOverview(state).primary, null);
+  const { marketplaceProfileView } = await import('../src/lib/marketplace-profile-view');
+  assert.equal(
+    marketplaceProfileView(state).canPublish,
+    false,
+    'Review blocks a stale positive publication capability',
+  );
+  caps.publicState = 'DRAFT';
+  state.listing!.status = 'DRAFT';
+  assert.equal(marketplaceProfileOverview(state).primary?.kind, 'publish');
+  state.listing!.topic = '';
+  assert.deepEqual(
+    marketplaceProfileOverview(state).primary,
+    {
+      kind: 'profile',
+      label: 'Продолжить настройку',
+      editor: true,
+    },
+    'An incomplete draft leads directly to editable fields',
+  );
+  state.listing = null;
+  assert.equal(marketplaceProfileOverview(state).primary?.label, 'Создать профиль');
+});
+
+test('expired owner access never presents current visibility or permits profile writes', async () => {
+  const { marketplaceProfileView, marketplaceProfileOverview } =
+    await import('../src/lib/marketplace-profile-view');
+  const api = createPreviewApiTransport({ search: '?marketplacePublished=1&profile=publisher' });
+  const state = marketplaceProfileStateSchema.parse(
+    await api.request('/marketplace/entities/CHANNEL/preview-channel/profile?profile=publisher'),
+  );
+  state.capabilities!.placementState = 'READY';
+  state.binding.validUntil = new Date(Date.now() - 1).toISOString();
+  const expired = marketplaceProfileView(state);
+  assert.equal(expired.active, false);
+  assert.equal(expired.publicNow, false);
+  assert.equal(expired.canEdit, false);
+  assert.equal(expired.canPublish, false);
+  assert.equal(expired.canPause, false);
+  assert.equal(marketplaceProfileOverview(state).primary?.kind, 'refresh');
+  assert.equal(marketplaceProfileOverview(state).secondary, null);
+
+  state.binding.validUntil = null;
+  assert.equal(marketplaceProfileView(state).active, true, 'Preserve missing-expiry compatibility');
+  assert.equal(marketplaceProfileOverview(state, false).primary?.kind, 'refresh');
+  assert.equal(marketplaceProfileOverview(state, false).secondary, null);
+});
