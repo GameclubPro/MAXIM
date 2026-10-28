@@ -446,13 +446,19 @@ test(
   },
 );
 
-for (const completion of ['reject', 'reply', 'skip'])
+for (const [completion, offset] of ['reject', 'reply', 'skip'].flatMap((completion) =>
+  [-1, 0, 1].map((offset) => [completion, offset]),
+))
   test(
-    `source expiry suppresses late ${completion} and success status`,
+    `source ${completion} completion respects absolute deadline offset ${offset}`,
     { timeout: 10000 },
-    async () => {
+    async (t) => {
       const statuses = [];
-      let expired = false;
+      const issuedAt = Date.now(),
+        deadline = issuedAt + 100;
+      let wallClock = issuedAt,
+        cancelled = false;
+      t.mock.method(Date, 'now', () => wallClock);
       await supportChatSession({
         key: 'closed-fixture',
         signal: AbortSignal.timeout(3000),
@@ -465,9 +471,14 @@ for (const completion of ['reject', 'reply', 'skip'])
         const value = JSON.parse(line);
         if (value.type === 'hello') {
           console.log(JSON.stringify({type:'hello',chatId:'-78271094414679'}));
-          console.log(JSON.stringify({type:'question',id:'expiring',text:'question',history:[],issuedAt:Date.now(),deadline:Date.now()+100}));
-          setTimeout(() => process.exit(0), 300);
-        } else if (value.type === 'answer') process.exit(7);
+          console.log(JSON.stringify({type:'question',id:'expiring',text:'question',history:[],issuedAt:${issuedAt},deadline:${deadline}}));
+          setTimeout(() => process.exit(${offset < 0 ? 8 : 0}), 300);
+        } else if (value.type === 'answer') {
+          const valid = ${offset < 0} && value.id === 'expiring'
+            && value.reply === ${completion === 'reply'}
+            && value.text === ${JSON.stringify(completion === 'reject' ? '' : 'expired fixture')};
+          process.exit(valid ? 0 : 7);
+        }
       });
     `,
         ],
@@ -477,7 +488,10 @@ for (const completion of ['reject', 'reply', 'skip'])
             signal.addEventListener(
               'abort',
               () => {
-                expired = true;
+                // A relative timer may fire before the next Date.now millisecond.
+                // Exercise both sides of the absolute boundary explicitly.
+                wallClock = deadline + offset;
+                cancelled = true;
                 if (completion === 'reject') reject(signal.reason);
                 else resolve({ action: completion, text: 'expired fixture' });
               },
@@ -486,10 +500,10 @@ for (const completion of ['reject', 'reply', 'skip'])
           );
         },
       });
-      assert.equal(expired, true);
-      assert.ok(statuses.includes('inference_failed'));
-      assert.equal(statuses.includes('answered'), false);
-      assert.equal(statuses.includes('skipped'), false);
+      assert.equal(cancelled, true);
+      assert.equal(statuses.includes('inference_failed'), offset >= 0 || completion === 'reject');
+      assert.equal(statuses.includes('answered'), offset < 0 && completion === 'reply');
+      assert.equal(statuses.includes('skipped'), offset < 0 && completion === 'skip');
     },
   );
 
