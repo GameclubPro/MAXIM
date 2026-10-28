@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import Redis from 'ioredis';
 import bridge from './support-chat-bridge.cjs';
 import { verifySupportContainer } from './support-chat-remote.mjs';
@@ -213,7 +214,7 @@ test('bridge refuses unhealthy, mismatched or foreign containers', () => {
 test(
   'real Redis fences duplicate workers, expired sources and uncertain SEND without replay',
   { timeout: 20000 },
-  async () => {
+  async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'maxim-support-redis-'));
     const socket = join(directory, 'redis.sock');
     const server = spawn(
@@ -310,6 +311,96 @@ test(
       assert.equal(await deliverAnswer(runtime, other, changed, 'Ответ', bounds), 'refused');
       assert.equal(sends, 1);
       await other.close();
+      const fixture = join(directory, 'bridge-fixture.cjs');
+      await writeFile(
+        fixture,
+        `
+        const Redis = require(${JSON.stringify(fileURLToPath(import.meta.resolve('ioredis')))});
+        const {runBridge,CHAT_ID} = require(${JSON.stringify(fileURLToPath(new URL('./support-chat-bridge.cjs', import.meta.url)))});
+        const redis = new Redis({path:process.argv[2],retryStrategy:null,maxRetriesPerRequest:0});
+        redis.on('error',()=>{});
+        const source = {recipient:{chat_id:CHAT_ID},sender:{user_id:42,is_bot:false},timestamp:Date.now()+1000,body:{mid:'clock-source',text:'Как подключить бота?'}};
+        runBridge({
+          redis,
+          assertAccess:async()=>({closedFixture:true,fixtureSourceAt:source.timestamp}),
+          options:()=>({}),
+          client:{listMessages:async()=>process.argv[3]==='question'?[source]:[]},
+          close:()=>redis.quit(),
+        }).catch(error=>{
+          process.stderr.write(error.message+'\\n');
+          process.exitCode=1;
+        });
+      `,
+      );
+      for (const [name, input, expectedCode] of [
+        ['invalid JSON', 'PRIVATE_INVALID_FRAME\n', 'support_frame_invalid'],
+        ['null frame', 'null\n', 'support_frame_refused'],
+        ['unsupported frame', '{"type":"unsupported"}\n', 'support_frame_refused'],
+        ['clean EOF', null, null],
+        ['question', null, null],
+      ]) {
+        await t.test(`bridge preserves ${name}`, { timeout: 7000 }, async () => {
+          const child = spawn(process.execPath, [fixture, socket, name], {
+            env: { ...process.env, SUPPORT_KNOWLEDGE_SHA256: 'closed-fixture' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          const closed = once(child, 'close');
+          const timeout = setTimeout(() => child.kill('SIGKILL'), 5000);
+          let pending = '',
+            stderr = '',
+            questionFrame = null,
+            helloFrame = null;
+          child.stderr.on('data', (chunk) => {
+            stderr += chunk;
+          });
+          child.stdout.on('data', (chunk) => {
+            pending += chunk;
+            let newline;
+            while ((newline = pending.indexOf('\n')) >= 0) {
+              const value = JSON.parse(pending.slice(0, newline));
+              pending = pending.slice(newline + 1);
+              if (value.type === 'hello') {
+                helloFrame = value;
+                if (name !== 'question') {
+                  if (input === null) child.stdin.end();
+                  else child.stdin.write(input);
+                }
+              } else if (value.type === 'question') {
+                questionFrame = value;
+                child.stdin.end();
+              }
+            }
+          });
+          child.stdin.write(
+            JSON.stringify({
+              type: 'hello',
+              modelSha256: bridge.MODEL_SHA,
+              knowledgeSha256: 'closed-fixture',
+            }) + '\n',
+          );
+          try {
+            const [code, signal] = await closed;
+            assert.equal(signal, null);
+            assert.equal(code, expectedCode === null ? 0 : 1);
+            assert.equal(stderr.trim(), expectedCode ?? '');
+            if (name === 'question') {
+              assert.ok(Number.isSafeInteger(questionFrame?.issuedAt));
+              assert.equal(
+                questionFrame.deadline,
+                helloFrame.fixtureSourceAt + bridge.SOURCE_AGE_MS,
+              );
+              assert.ok(
+                questionFrame.deadline <= questionFrame.issuedAt + bridge.SOURCE_AGE_MS + 5000,
+              );
+            }
+          } finally {
+            clearTimeout(timeout);
+            child.stdin.destroy();
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+            await closed;
+          }
+        });
+      }
     } finally {
       redis.disconnect();
       server.kill('SIGTERM');
