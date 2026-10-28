@@ -14,7 +14,7 @@ case "${1:-status}" in
   status|smoke|check-client|workstation-bridge|workstation-pool-bridge|check-workstation|check-workstation-offline)
     nice -n 10 ionice -c 2 -n 7 node infra/scripts/commercial-llm-runtime.mjs "$@"
     ;;
-  install|replace|stop|enable|disable)
+  install|replace|upgrade-slots|stop|enable|disable)
     acquire_deploy_lock
     trap release_deploy_lock EXIT
     maxim_require_ordinary_effect_authority "$ROOT_DIR"
@@ -22,7 +22,7 @@ case "${1:-status}" in
     nice -n 10 ionice -c 2 -n 7 node infra/scripts/commercial-llm-runtime.mjs "$@"
     ;;
   *)
-    echo 'Usage: commercial-llm install|replace|enable|disable|stop [--apply] | status | smoke | check-client' >&2
+    echo 'Usage: commercial-llm install|replace|upgrade-slots|enable|disable|stop [--apply] | status | smoke | check-client' >&2
     exit 2
     ;;
 esac
