@@ -5883,6 +5883,7 @@ describe('ModerationService', () => {
           url: 'https://max.ru/help/bots',
         },
         textFormat: 'html',
+        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
       },
     );
   });
@@ -6908,6 +6909,7 @@ describe('ModerationService', () => {
       expect(options).toEqual({
         button: { text: 'Правила', url: 'https://max.ru/chats/chat-1/message/999' },
         textFormat: 'html',
+        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
       });
       expect(sentText).toContain('https://max.ru/profanity-admin');
       expect(JSON.stringify(maxClient.sendMessage.mock.calls)).not.toContain('commercial-');
@@ -8293,6 +8295,7 @@ describe('ModerationService', () => {
             url: 'https://max.ru/channel/rules',
           },
           textFormat: 'html',
+          marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
         },
       );
       expect(sanctionService.resolveAction).not.toHaveBeenCalled();

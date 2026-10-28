@@ -77,8 +77,13 @@ export async function persistChannelPostDemand(
     WITH eligible AS MATERIALIZED (
       SELECT c.id FROM chats c JOIN channel_settings s ON s.chat_id = c.id
       WHERE c.id = ${input.chatId} AND c.entity_type = 'CHANNEL'
-        AND (s.post_signature_enabled OR s.quick_buttons_enabled OR s.comments_enabled OR s.post_suggestions_enabled)
-        AND s.updated_at <= ${input.sourceAt}
+        AND (((s.post_signature_enabled OR s.quick_buttons_enabled OR s.comments_enabled OR s.post_suggestions_enabled)
+          AND s.updated_at <= ${input.sourceAt}) OR EXISTS (
+            SELECT 1 FROM marketplace_button_policies p JOIN marketplace_button_contexts b ON b.policy_id=p.id
+            WHERE p.entity_id=c.id AND p.kind='CHANNEL' AND p.profile='moderation'
+              AND b.context='CHANNEL_POSTS' AND b.enabled=true AND b.suspended_reason IS NULL
+              AND b.confirmed_at<=${input.sourceAt}
+          ))
         AND ${input.expiresAt} > (SELECT clock_timestamp() AT TIME ZONE 'UTC')
     ), parent AS (
       INSERT INTO channel_post_demand_channels (chat_id, due_at)

@@ -3,7 +3,11 @@ import { of } from 'rxjs';
 import { UnrecoverableError } from 'bullmq';
 import { fingerprintModerationSettings } from '../moderation/moderation-settings-fingerprint';
 import { MaxBotContextService } from './max-bot-context.service';
-import { MaxClientService, type MaxActionJob } from './max-client.service';
+import {
+  MaxClientService,
+  type MaxActionJob,
+  type MaxSendMessageOptions,
+} from './max-client.service';
 import { MaxModerationRuleNoticeGuardService } from './max-moderation-rule-notice.guard';
 import { wasMaxPreDispatchGuardRejected } from './max-action-pre-dispatch-guard';
 import { wasMaxMessageSendAttempted } from './max-mutation-outcome.util';
@@ -469,9 +473,16 @@ function clientFixture(withGuard = true, routedMode = 'shadow') {
   const quota = jest.spyOn(client as any, 'reserveRateLimitSlot').mockImplementation(async () => {
     order.push('quota');
   });
-  jest
-    .spyOn(client as any, 'prepareMarketplacePublicationOptions')
-    .mockImplementation(async (_chat: any, options: any) => {
+  const preparation = client as unknown as {
+    prepareMarketplacePublicationOptions: (
+      chatId: string,
+      options: MaxSendMessageOptions | undefined,
+      botId: string,
+    ) => Promise<MaxSendMessageOptions | undefined>;
+  };
+  const prepare = jest
+    .spyOn(preparation, 'prepareMarketplacePublicationOptions')
+    .mockImplementation(async (_chat, options) => {
       order.push('prepare');
       return options;
     });
@@ -482,8 +493,8 @@ function clientFixture(withGuard = true, routedMode = 'shadow') {
     return { userId: 'user-1', isAdmin: false, isOwner: false } as never;
   });
   const authority = jest.spyOn(s.guard, 'assertAllowed');
-  const enqueue = async () => {
-    await client.sendMessage(s.proof.chatId, 'Synthetic warning', undefined, {
+  const enqueue = async (options?: MaxSendMessageOptions) => {
+    await client.sendMessage(s.proof.chatId, 'Synthetic warning', options, {
       botId: 'peer-2',
       idempotencyKey: 'ordinary-notice',
       ledgerContext: s.action.ledgerContext,
@@ -491,7 +502,7 @@ function clientFixture(withGuard = true, routedMode = 'shadow') {
     expect(queue.add).toHaveBeenCalledTimes(1);
     return serialized!;
   };
-  return { ...s, client, http, ledger, quota, authority, order, enqueue };
+  return { ...s, client, http, ledger, quota, authority, order, enqueue, prepare };
 }
 
 describe('ordinary moderation notice queued transport', () => {
@@ -588,14 +599,51 @@ describe('ordinary moderation notice queued transport', () => {
     },
   );
 
-  it('serializes the proof through enqueue and checks it after preparation and quota at the selected executor', async () => {
+  it.each([false, true])(
+    'serializes the proof and checks authority after quota with optional profile preparation: %s',
+    async (withProfile) => {
+      const s = clientFixture();
+      const options: MaxSendMessageOptions | undefined = withProfile
+        ? { marketplacePublication: { entityId: s.proof.chatId, purpose: 'MODERATION_NOTICE' } }
+        : undefined;
+      try {
+        const job = await s.enqueue(options);
+        expect(job.ledgerContext).toEqual(s.action.ledgerContext);
+        expect(job.options).toEqual(options);
+        await s.client.executeActionJob(job);
+        expect(s.order).toEqual(
+          withProfile
+            ? ['quota', 'prepare', 'member', 'prepare', 'http']
+            : ['quota', 'member', 'http'],
+        );
+        expect(s.prepare).toHaveBeenCalledTimes(withProfile ? 2 : 0);
+        if (withProfile) expect(s.prepare).toHaveBeenCalledWith(s.proof.chatId, options, 'peer-2');
+        expect(s.http.request).toHaveBeenCalledTimes(1);
+      } finally {
+        await s.client.onModuleDestroy();
+      }
+    },
+  );
+
+  it('rejects a queued warning revoked during final profile preparation before HTTP', async () => {
     const s = clientFixture();
+    s.prepare.mockImplementation(async (_chat, options) => {
+      if (s.prepare.mock.calls.length === 2) s.settings.messageLimitsWarnEnabled = false;
+      return options;
+    });
     try {
-      const job = await s.enqueue();
-      expect(job.ledgerContext).toEqual(s.action.ledgerContext);
-      await s.client.executeActionJob(job);
-      expect(s.order).toEqual(['prepare', 'quota', 'member', 'http']);
-      expect(s.http.request).toHaveBeenCalledTimes(1);
+      const job = await s.enqueue({
+        marketplacePublication: { entityId: s.proof.chatId, purpose: 'MODERATION_NOTICE' },
+      });
+      const error = await s.client.executeActionJob(job).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'moderation_rule_notice_no_longer_authorized' });
+      expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
+      expect(wasMaxMessageSendAttempted(error)).toBe(false);
+      expect(s.prepare).toHaveBeenCalledTimes(2);
+      expect(s.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(2);
+      expect(s.http.request).not.toHaveBeenCalled();
+      expect(s.ledger.releaseSendDispatch).toHaveBeenCalledTimes(1);
+      expect(s.ledger.completeSendDispatch).not.toHaveBeenCalled();
     } finally {
       await s.client.onModuleDestroy();
     }
@@ -754,8 +802,8 @@ describe('ephemeral commercial notice final transport authority', () => {
       deleted: true,
       commercialVerified: true,
     })!;
-    const send = (botId = 'peer-2') =>
-      s.client.sendMessage(s.proof.chatId, 'Synthetic commercial notice', undefined, {
+    const send = (botId = 'peer-2', options?: MaxSendMessageOptions) =>
+      s.client.sendMessage(s.proof.chatId, 'Synthetic commercial notice', options, {
         botId,
         candidateBotIds: ['peer-2', 'peer-3'],
         idempotencyKey: 'commercial-source:notice',
@@ -771,14 +819,51 @@ describe('ephemeral commercial notice final transport authority', () => {
     return { ...s, commercial, settings, permit, send };
   }
 
-  it('uses the original live permit at actual request with the selected executor', async () => {
+  it.each([false, true])(
+    'uses the original live permit at actual request with optional profile preparation: %s',
+    async (withProfile) => {
+      const s = commercialFixture();
+      const options: MaxSendMessageOptions | undefined = withProfile
+        ? { marketplacePublication: { entityId: s.proof.chatId, purpose: 'MODERATION_NOTICE' } }
+        : undefined;
+      try {
+        await s.send('peer-2', options);
+        expect(s.http.request).toHaveBeenCalledTimes(1);
+        expect(s.order).toEqual(
+          withProfile
+            ? ['quota', 'prepare', 'member', 'prepare', 'http']
+            : ['quota', 'member', 'http'],
+        );
+        expect(s.prepare).toHaveBeenCalledTimes(withProfile ? 2 : 0);
+        if (withProfile) expect(s.prepare).toHaveBeenCalledWith(s.proof.chatId, options, 'peer-2');
+        expect(s.ledger.recordStarted).toHaveBeenCalledTimes(1);
+        expect(s.ledger.completeSendDispatch).toHaveBeenCalledTimes(1);
+      } finally {
+        await s.client.onModuleDestroy();
+      }
+    },
+  );
+
+  it('rejects a commercial notice revoked during final profile preparation before HTTP', async () => {
     const s = commercialFixture();
+    const originalExpiry = s.permit.expiresAtMs;
+    s.prepare.mockImplementation(async (_chat, options) => {
+      if (s.prepare.mock.calls.length === 2) s.settings.commercialAdsFilterEnabled = false;
+      return options;
+    });
     try {
-      await s.send();
-      expect(s.http.request).toHaveBeenCalledTimes(1);
-      expect(s.order).toEqual(['prepare', 'quota', 'member', 'http']);
-      expect(s.ledger.recordStarted).toHaveBeenCalledTimes(1);
-      expect(s.ledger.completeSendDispatch).toHaveBeenCalledTimes(1);
+      const error = await s
+        .send('peer-2', {
+          marketplacePublication: { entityId: s.proof.chatId, purpose: 'MODERATION_NOTICE' },
+        })
+        .catch((caught: unknown) => caught);
+      expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
+      expect(wasMaxMessageSendAttempted(error)).toBe(false);
+      expect(s.prepare).toHaveBeenCalledTimes(2);
+      expect(s.http.request).not.toHaveBeenCalled();
+      expect(s.ledger.releaseSendDispatch).toHaveBeenCalledTimes(1);
+      expect(s.ledger.completeSendDispatch).not.toHaveBeenCalled();
+      expect(s.permit.expiresAtMs).toBe(originalExpiry);
     } finally {
       await s.client.onModuleDestroy();
     }

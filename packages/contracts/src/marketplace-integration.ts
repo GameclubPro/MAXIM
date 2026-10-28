@@ -183,3 +183,92 @@ export type MarketplaceStatisticRow = z.infer<typeof marketplaceStatisticRowSche
 export type MarketplaceStatisticsManifest = z.infer<typeof marketplaceStatisticsManifestSchema>;
 export type MarketplaceProfileRelayResponse = z.infer<typeof marketplaceProfileRelayResponseSchema>;
 export type MarketplaceProfileState = z.infer<typeof marketplaceProfileStateSchema>;
+
+/** A navigation/capability result; it never grants a session or listing ownership. */
+export const marketplaceEntryResponseSchema = z
+  .object({
+    entityId: marketplaceEntityIdSchema,
+    kind: marketplaceKindSchema,
+    profile: marketplaceProfileSchema,
+    publicState: z.enum(['ABSENT', 'DRAFT', 'PUBLIC', 'HIDDEN', 'ACCESS_REQUIRED', 'REVIEW']),
+    listing: z
+      .object({
+        id: z.string().uuid(),
+        ownershipKey: z.string().regex(/^[a-f0-9]{64}$/u),
+        title: utf16Max(z.string(), 300),
+        publicUrl: z.string().url().nullable(),
+        profileOnly: z.boolean(),
+      })
+      .strict()
+      .nullable(),
+    isOwner: z.boolean(),
+    canCreate: z.boolean(),
+    manageUrl: z.string().url().nullable(),
+    connectUrl: z.string().url(),
+    checkedAt: timestamp,
+    validUntil: timestamp.nullable(),
+  })
+  .strict();
+export const marketplaceButtonContextSchema = z.enum([
+  'GREETINGS',
+  'MODERATION_NOTICES',
+  'CHANNEL_POSTS',
+  'PUBLICATIONS',
+]);
+export const marketplaceButtonPolicyMutationSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    expectedRevision: count,
+    context: marketplaceButtonContextSchema,
+    enabled: z.boolean(),
+  })
+  .strict();
+export const marketplaceButtonPolicyStateSchema = z
+  .object({
+    entityId: marketplaceEntityIdSchema,
+    kind: marketplaceKindSchema,
+    profile: marketplaceProfileSchema,
+    revision: count,
+    contexts: z
+      .array(
+        z
+          .object({
+            context: marketplaceButtonContextSchema,
+            enabled: z.boolean(),
+            effective: z.boolean(),
+            status: z.enum([
+              'OFF',
+              'READY',
+              'CHECKING',
+              'PROFILE_UNAVAILABLE',
+              'ACCESS_REQUIRED',
+              'CONFIRM_REQUIRED',
+            ]),
+            enabledAt: timestamp.nullable(),
+          })
+          .strict(),
+      )
+      .max(4),
+    buttonDiagnostic: z.literal('KEYBOARD_FULL').nullable(),
+  })
+  .strict();
+export type MarketplaceEntryResponse = z.infer<typeof marketplaceEntryResponseSchema>;
+export type MarketplaceButtonContext = z.infer<typeof marketplaceButtonContextSchema>;
+export type MarketplaceButtonPolicyState = z.infer<typeof marketplaceButtonPolicyStateSchema>;
+export const marketplaceLaunchInputSchema = z
+  .object({
+    target: z.enum(['catalog', 'listing', 'manage', 'connect']),
+    kind: marketplaceKindSchema.optional(),
+    entityId: marketplaceEntityIdSchema.optional(),
+    listingId: z.string().uuid().optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      (value.kind === undefined) !== (value.entityId === undefined) ||
+      (value.target !== 'catalog' && (!value.kind || !value.entityId)) ||
+      (value.target === 'listing' || value.target === 'manage') !== (value.listingId !== undefined)
+    )
+      context.addIssue({ code: 'custom', message: 'Invalid marketplace destination' });
+  });
+export const marketplaceLaunchResponseSchema = z.object({ url: z.string().url() }).strict();

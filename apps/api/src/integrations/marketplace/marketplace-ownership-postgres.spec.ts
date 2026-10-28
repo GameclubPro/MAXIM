@@ -1,3 +1,4 @@
+import { MarketplaceProfileAccessService } from './marketplace-profile-access.service';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
@@ -112,6 +113,7 @@ postgres('shared native collection ownership', () => {
       state,
       statistics,
       db as PrismaService,
+      {} as MarketplaceProfileAccessService,
     );
     await controller.handoff(id, input);
     return { controller, input };
@@ -268,6 +270,7 @@ postgres('shared native collection ownership', () => {
         state,
         statistics,
         db as PrismaService,
+        {} as MarketplaceProfileAccessService,
       );
       expect(await controller.get(id)).toMatchObject({ state: 'UNKNOWN', validUntil: null });
       expect(

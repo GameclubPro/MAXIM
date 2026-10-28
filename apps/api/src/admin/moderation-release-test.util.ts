@@ -1,9 +1,11 @@
 import { buildModerationReleaseCallbackPayload } from '../moderation/moderation-release-callback.util';
+import type { MaxSendMessageOptions } from '../max/max-client.service';
 
 export function moderationReleaseMessageOptions(
   action: 'UNBAN' | 'UNMUTE',
   sanctionEventId: string,
-) {
+  entityId: string,
+): MaxSendMessageOptions {
   return {
     buttons: [
       [
@@ -16,5 +18,6 @@ export function moderationReleaseMessageOptions(
       ],
     ],
     textFormat: 'markdown',
+    marketplacePublication: { entityId, purpose: 'MODERATION_NOTICE' },
   };
 }

@@ -1,6 +1,7 @@
 import type { Logger } from '@nestjs/common';
 import { normalizeMaxUserDisplayName } from '../common/max-user-display-name.util';
 import type { MaxClientService } from '../max/max-client.service';
+import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
 import { withModerationReleaseButton } from '../moderation/moderation-release-callback.util';
 import type { AdminActionSource } from './admin.service.support';
 
@@ -46,12 +47,16 @@ export async function sendManualBanChatNotice(
     await maxClient.sendMessage(
       params.chatId,
       text,
-      withModerationReleaseButton(
-        { textFormat: 'markdown' },
-        {
-          action: 'UNBAN',
-          sanctionEventId: params.sanctionEventId,
-        },
+      withMarketplaceModerationMessage(
+        withModerationReleaseButton(
+          { textFormat: 'markdown' },
+          {
+            action: 'UNBAN',
+            sanctionEventId: params.sanctionEventId,
+          },
+        ),
+        params.chatId,
+        'MODERATION_NOTICE',
       ),
       {
         immediate: true,

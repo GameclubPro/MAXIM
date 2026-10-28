@@ -40,6 +40,7 @@ import {
   ModerationSanctionStateLockUnavailableError,
 } from '../moderation/moderation-sanction-state-lock.service';
 import { withModerationReleaseButton } from '../moderation/moderation-release-callback.util';
+import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
 import {
   ManualModerationFanoutLedgerStatus as PrismaManualModerationFanoutLedgerStatus,
   type Prisma,
@@ -1038,9 +1039,13 @@ export class AdminManualModerationRuntime {
       const sentMessage = await this.context.sendMessage(
         params.chatId,
         params.text,
-        params.release
-          ? withModerationReleaseButton({ textFormat: 'markdown' }, params.release)
-          : { textFormat: 'markdown' },
+        withMarketplaceModerationMessage(
+          params.release
+            ? withModerationReleaseButton({ textFormat: 'markdown' }, params.release)
+            : { textFormat: 'markdown' },
+          params.chatId,
+          'MODERATION_NOTICE',
+        ),
         dispatchOptions,
       );
       noticeSendConfirmed = true;

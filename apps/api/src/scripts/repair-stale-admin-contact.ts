@@ -897,8 +897,8 @@ export function createProductionDependencies(params: {
         timeoutMs: LIVE_CHECK_TIMEOUT_MS,
       });
     },
-    editPublishedRulesMessage({ chatId, messageId, botId, text }) {
-      return params.maxClient.editMessageInlineKeyboard(
+    async editPublishedRulesMessage({ chatId, messageId, botId, text }) {
+      await params.maxClient.editMessageInlineKeyboard(
         chatId,
         messageId,
         text,

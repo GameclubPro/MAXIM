@@ -1,4 +1,5 @@
 import { AdminManualModerationRuntime } from './admin-manual-moderation-runtime';
+import { buildModerationReleaseCallbackPayload } from '../moderation/moderation-release-callback.util';
 import { ManualGroupCommandNoticeAuthorityRejectedError } from './admin-manual-group-command-notice-authority';
 import {
   createAdminManualModerationRuntimeContext,
@@ -165,6 +166,51 @@ function noticeFixture() {
 }
 
 describe('manual moderation notice boundary', () => {
+  it.each(['UNMUTE', 'UNBAN', null] as const)(
+    'adds explicit profile intent without changing the %s release action or auto-delete',
+    async (action) => {
+      const f = noticeFixture();
+      await f.runtime.sendManualGroupCommandNotice({
+        ...notice,
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+        ...(action ? { release: { action, sanctionEventId: 'sanction-1' } } : {}),
+      });
+      expect(f.sendMessage).toHaveBeenCalledTimes(1);
+      expect(f.sendMessage).toHaveBeenCalledWith(
+        notice.chatId,
+        notice.text,
+        {
+          textFormat: 'markdown',
+          marketplacePublication: { entityId: notice.chatId, purpose: 'MODERATION_NOTICE' },
+          ...(action
+            ? {
+                buttons: [
+                  [
+                    {
+                      type: 'callback',
+                      text: action === 'UNMUTE' ? 'Снять мут' : 'Разбанить',
+                      payload: buildModerationReleaseCallbackPayload(action, 'sanction-1'),
+                      intent: 'positive',
+                    },
+                  ],
+                ],
+              }
+            : {}),
+        },
+        expect.objectContaining({
+          botId: notice.botId,
+          immediate: true,
+          autoDeleteDelayMs: 3 * 60_000,
+          ledgerContext: { moderationNoticeEnvelope: { version: 1 } },
+          beforeImmediateSendMutation: expect.any(Function),
+          idempotencyKey: expect.stringContaining('COMMAND_NOTICE_OUTCOME'),
+        }),
+      );
+      expect(f.order).toEqual(['claim', 'record-attempt', 'authority', 'send', 'complete']);
+    },
+  );
+
   it.each(['FAILURE', 'UNCERTAIN'] as const)(
     'records %s privately without a group send',
     async (outcome) => {

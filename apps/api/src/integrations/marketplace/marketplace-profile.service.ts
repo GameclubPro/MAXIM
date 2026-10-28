@@ -1,10 +1,10 @@
 import {
   ConflictException,
-  ForbiddenException,
   Injectable,
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { mirrorLegacyPublicationToggle } from './marketplace-button-policy-legacy';
 import { ConfigService } from '@nestjs/config';
 import {
   marketplaceBindingInputSchema,
@@ -18,18 +18,16 @@ import {
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
+import { Prisma, type PrismaClient } from '../../prisma/prisma-client';
 import { profileStatisticsSummary } from './marketplace-profile-statistics';
 import { centralEnabled } from '../../statistics/stats-common';
 import { StatsReadService } from '../../statistics/stats-read.service';
 import { MarketplaceAccessService } from './marketplace-access.service';
-import {
-  MarketplaceStateService,
-  MARKETPLACE_PILOT_USER_ID,
-  type MarketplaceBindingRow,
-} from './marketplace-state.service';
+import { MarketplaceStateService, type MarketplaceBindingRow } from './marketplace-state.service';
 
 const PROFILE_URL = 'https://major-maksimov.ru/market/api/integrations/maxim/v1/profile';
 const PUBLIC_BOT = 'https://max.ru/id613000037577_3_bot';
+type ProfileSql = Pick<PrismaClient, '$queryRaw'>;
 export async function readMarketplaceResponse(response: Response): Promise<unknown> {
   if (!response.ok || !response.body)
     throw new ServiceUnavailableException('Связка временно недоступна');
@@ -63,7 +61,7 @@ export class MarketplaceProfileService {
     @Optional() private readonly centralStats?: StatsReadService,
   ) {}
   capability(userId: string) {
-    return { available: userId === MARKETPLACE_PILOT_USER_ID && this.state.enabled() };
+    return { available: /^[1-9]\d{0,19}$/u.test(userId) && this.state.enabled() };
   }
   private input(
     userId: string,
@@ -71,8 +69,6 @@ export class MarketplaceProfileService {
     entityId: unknown,
     profile: unknown,
   ): MarketplaceBindingInput {
-    if (userId !== MARKETPLACE_PILOT_USER_ID)
-      throw new ForbiddenException('Модуль пока недоступен');
     return marketplaceBindingInputSchema.parse({ actorUserId: userId, kind, entityId, profile });
   }
   private statisticsAvailable(binding: MarketplaceBindingRow): boolean {
@@ -110,8 +106,20 @@ export class MarketplaceProfileService {
           throw new ConflictException('Идентификатор запроса уже использован');
         return marketplaceProfileStateSchema.parse(previous[0].result);
       }
-      if (input.expectedRevision !== binding.append_revision)
+      const policy = await this.publicationPolicy(binding);
+      if (input.expectedRevision !== policy.appendRevision) {
+        // FLAG: A duplicate may commit between the first receipt lookup and
+        // this policy read. Its exact committed reply still wins over a conflict.
+        const replay = await this.prisma.$queryRaw<
+          Array<{ binding_id: string; payload_hash: string; result: unknown }>
+        >`SELECT * FROM marketplace_policy_requests WHERE request_id=${input.requestId}::uuid`;
+        if (replay[0]) {
+          if (replay[0].binding_id !== binding.id || replay[0].payload_hash !== hash)
+            throw new ConflictException('Идентификатор запроса уже использован');
+          return marketplaceProfileStateSchema.parse(replay[0].result);
+        }
         throw new ConflictException('Настройки изменились. Обновите экран');
+      }
       if (input.action === 'toggle' && input.appendEnabled === undefined)
         throw new ConflictException('Не задано состояние кнопки');
       const current = restrictive ? this.cachedProfile(binding) : await this.relay(binding);
@@ -125,6 +133,7 @@ export class MarketplaceProfileService {
         throw new ConflictException('Сначала подтвердите и опубликуйте профиль');
       const result = current;
       return this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM chats WHERE id=${binding.entity_id} FOR UPDATE`;
         const locked = await tx.$queryRaw<
           MarketplaceBindingRow[]
         >`SELECT * FROM marketplace_bindings WHERE id=${binding.id}::uuid FOR UPDATE`;
@@ -137,9 +146,10 @@ export class MarketplaceProfileService {
           return marketplaceProfileStateSchema.parse(replay[0].result);
         }
         const currentBinding = locked[0];
+        if (!currentBinding) throw new ConflictException('Настройки изменились. Обновите экран');
+        const currentPolicy = await this.publicationPolicy(currentBinding, tx, true);
         if (
-          !currentBinding ||
-          currentBinding.append_revision !== input.expectedRevision ||
+          currentPolicy.appendRevision !== input.expectedRevision ||
           (!restrictive &&
             (currentBinding.state !== 'ACTIVE' ||
               !this.statisticsAvailable(currentBinding) ||
@@ -151,13 +161,19 @@ export class MarketplaceProfileService {
           input.action === 'revoke'
             ? await tx.$queryRaw<
                 MarketplaceBindingRow[]
-              >`UPDATE marketplace_bindings SET statistics_consent=false,statistics_revoked_at=COALESCE(statistics_revoked_at,now()),statistics_v2_consent_only=false,append_enabled=false,state='REVOKED',valid_until=NULL,lease_id=NULL,lease_until=NULL,
-            public_verified_until=NULL,append_revision=append_revision+1,revision=revision+1,checked_at=now(),updated_at=now() WHERE id=${binding.id}::uuid RETURNING *`
+              >`UPDATE marketplace_bindings SET statistics_consent=false,statistics_revoked_at=COALESCE(statistics_revoked_at,now()),statistics_v2_consent_only=false,append_enabled=false,lease_id=NULL,lease_until=NULL,
+            public_verified_until=NULL,append_revision=append_revision+1,revision=revision+1,updated_at=now() WHERE id=${binding.id}::uuid RETURNING *`
             : await tx.$queryRaw<
                 MarketplaceBindingRow[]
               >`UPDATE marketplace_bindings SET append_enabled=${input.appendEnabled!},button_diagnostic=NULL,
             append_revision=append_revision+1,revision=revision+1,updated_at=now() WHERE id=${binding.id}::uuid RETURNING *`;
-        const presented = this.present(changed[0]!, result);
+        if (input.action === 'toggle')
+          await mirrorLegacyPublicationToggle(
+            tx,
+            { ...changed[0]!, profile_snapshot: result },
+            input.appendEnabled!,
+          );
+        const presented = await this.present(changed[0]!, result, undefined, tx);
         // FLAG: Durable replies remain readable by the previous strict contract on rollback.
         delete presented.capabilities;
         delete presented.statistics;
@@ -266,18 +282,40 @@ export class MarketplaceProfileService {
       SELECT manifest,rows FROM marketplace_statistics_generations WHERE id=${binding.generation_id}::uuid AND binding_id=${binding.id}::uuid`;
     return profileStatisticsSummary(binding.statistics_consent, generations[0]);
   }
-  private present(
+  private async publicationPolicy(
+    binding: MarketplaceBindingRow,
+    db: ProfileSql = this.prisma,
+    lock = false,
+  ) {
+    const rows = await db.$queryRaw<
+      Array<{ revision: number; enabled: boolean | null; diagnostic: string | null }>
+    >(Prisma.sql`
+      SELECT p.revision,c.enabled,c.diagnostic FROM marketplace_button_policies p
+      LEFT JOIN marketplace_button_contexts c ON c.policy_id=p.id AND c.context='PUBLICATIONS'
+      WHERE p.entity_id=${binding.entity_id} AND p.kind=${binding.kind} AND p.profile=${binding.profile}
+      ${lock ? Prisma.sql`FOR UPDATE OF p` : Prisma.empty}
+    `);
+    const policy = rows[0];
+    return {
+      appendEnabled: policy?.enabled ?? binding.append_enabled,
+      // FLAG: Both counters are monotonic. Their sum fences old forms after a
+      // platform change without colliding with the actor's pre-policy revision.
+      appendRevision: binding.append_revision + (policy?.revision ?? 0),
+      buttonDiagnostic: policy?.enabled != null ? policy.diagnostic : binding.button_diagnostic,
+    };
+  }
+  private async present(
     binding: MarketplaceBindingRow,
     result: MarketplaceProfileRelayResponse,
     statistics = profileStatisticsSummary(this.statisticsAvailable(binding)),
+    db: ProfileSql = this.prisma,
   ) {
+    const policy = await this.publicationPolicy(binding, db);
     return marketplaceProfileStateSchema.parse({
       ...result,
       binding: this.state.present(binding),
-      appendEnabled: binding.append_enabled,
-      appendRevision: binding.append_revision,
+      ...policy,
       available: true,
-      buttonDiagnostic: binding.button_diagnostic,
       statistics,
     });
   }
