@@ -118,6 +118,13 @@ export default function KaravanMarketplacePanel({
       setSaved(state.request);
       if (storageKey) saveMirroredItem(storageKey, JSON.stringify(state.request));
       setNotice(null);
+      if (
+        state.state === 'partial' &&
+        state.checkpoints.bindings.some(
+          (binding) => binding.chatId === chatId && binding.state === 'connected',
+        )
+      )
+        void queryClient.invalidateQueries({ queryKey });
       if (state.state === 'complete' || state.state === 'cancelled') {
         if (storageKey) removeMirroredItem(storageKey);
         setSaved(null);
@@ -366,19 +373,9 @@ export default function KaravanMarketplacePanel({
               Остановить оставшиеся подключения
             </button>
           ) : null}
-          {operation?.checkpoints.marketplaceId ? (
-            <button
-              type="button"
-              onClick={() => {
-                const url = new URL(module.sellerBotUrl);
-                url.searchParams.set(
-                  'startapp',
-                  `community_${operation.checkpoints.marketplaceId}`,
-                );
-                if (!openMaxBotLinkAndClose(url.toString())) setNotice('Откройте магазин из MAX.');
-              }}
-            >
-              Настроить черновик
+          {canEnter && operation?.checkpoints.marketplaceId === marketplace?.id ? (
+            <button type="button" disabled={busy} onClick={() => handoff.mutate('manage')}>
+              {handoff.isPending ? 'Открываем…' : 'Настроить черновик'}
             </button>
           ) : null}
         </>

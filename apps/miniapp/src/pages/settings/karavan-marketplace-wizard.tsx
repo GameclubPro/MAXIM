@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import { z } from 'zod';
 import {
   karavanMarketplaceSetupSchema,
+  karavanMarketplaceCategories,
   type KaravanMarketplaceSetup,
 } from '@maxim/contracts/karavan-marketplace';
 import type { ApiTransport } from '../../lib/api/transport';
@@ -192,8 +193,16 @@ export default function KaravanMarketplaceWizard({
       return;
     }
     try {
-      await preview.mutateAsync();
+      const reviewedRevision = preview.data?.target?.marketplace.policyRevision;
+      const latest = await preview.mutateAsync();
       setAccepted(false);
+      if (
+        draft.mode === 'existing' &&
+        reviewedRevision !== latest.target?.marketplace.policyRevision
+      ) {
+        setNotice('Правила изменились. Проверьте их ещё раз.');
+        return;
+      }
       setStep(3);
     } catch (error) {
       setNotice(
@@ -538,10 +547,16 @@ export default function KaravanMarketplaceWizard({
                 {target.rules.allowedCategoryIds
                   .map(
                     (id) =>
-                      options.data?.categories.find((category) => category.id === id)?.label ?? id,
+                      options.data?.categories.find((category) => category.id === id)?.label ??
+                      karavanMarketplaceCategories.find(([categoryId]) => categoryId === id)?.[1],
                   )
                   .join(', ')}
               </p>
+              {options.isError ? (
+                <button type="button" onClick={() => void options.refetch()}>
+                  Повторить загрузку категорий
+                </button>
+              ) : null}
               <p className="karavan-module__rules">{target.rules.text}</p>
             </>
           ) : (

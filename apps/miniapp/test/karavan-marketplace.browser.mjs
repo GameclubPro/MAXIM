@@ -8,6 +8,34 @@ import {
   stopChildProcess,
 } from '../../../scripts/miniapp-local-server.mjs';
 
+const scenarios = [
+  'setup',
+  'draft',
+  'draft_empty',
+  'paused',
+  'preview_missing',
+  'public_view',
+  'switch_chat',
+  'active',
+  'error',
+  'unknown',
+  'existing',
+  'existing_unknown',
+  'existing_rules_changed',
+  'existing_options_error',
+  'recovery',
+  'disconnect',
+  'reviewer',
+  'partial',
+  'partial_bound',
+  'server_restore',
+  'choice',
+];
+const selectedScenarios = process.env.KARAVAN_BROWSER_SCENARIOS?.split(',') ?? scenarios;
+assert.ok(
+  selectedScenarios.length > 0 && selectedScenarios.every((item) => scenarios.includes(item)),
+  'Unknown Karavan browser scenario',
+);
 const root = resolve(import.meta.dirname, '..');
 const fixtures = resolve(root, 'build/karavan-browser-fixtures');
 await mkdir(fixtures, { recursive: true });
@@ -32,17 +60,18 @@ document.documentElement.dataset.maxTheme = new URLSearchParams(location.search)
 document.body.dataset.miniappProfile = 'moderation';
 Object.assign(document.body.style,{margin:'0',padding:'20px 16px',background:'var(--color-surface)',fontFamily:'var(--font-body)'});
 const uuid='a0d9b7ce-0040-4c85-a7ec-e3cf6da94c10';
-const marketplace={id:uuid,networkId:'c41eba17-407e-4e51-b23c-1dd3edca4e63',publicSlug:'synthetic-shop',name:'Магазин соседей — длинное название для проверки переноса',description:null,kind:'chat',status:scenario==='paused'?'paused':['active','existing','existing_unknown','choice','public_view','switch_chat'].includes(scenario)?'active':'draft',admissionPolicy:'applications',logoImageUrl:null,coverImageUrl:null,editRevision:1,policyRevision:1,orderRevision:1,visibilityRevision:1};
+const marketplace={id:uuid,networkId:'c41eba17-407e-4e51-b23c-1dd3edca4e63',publicSlug:'synthetic-shop',name:'Магазин соседей — длинное название для проверки переноса',description:null,kind:'chat',status:scenario==='paused'?'paused':['active','existing','existing_unknown','existing_rules_changed','existing_options_error','choice','public_view','switch_chat'].includes(scenario)?'active':'draft',admissionPolicy:'applications',logoImageUrl:null,coverImageUrl:null,editRevision:1,policyRevision:1,orderRevision:1,visibilityRevision:1};
 const binding={id:'9c9e1a8e-533f-49f8-9d5e-2bbad494bb74',chatId:'-123',chatTitle:'Соседи',state:scenario==='recovery'?'revoked':'verified',generation:1,revision:1,verifiedAt:new Date().toISOString()};
-let connected=['active','draft','draft_empty','paused','preview_missing','public_view','switch_chat','recovery','disconnect','reviewer','choice'].includes(scenario); let reads=0; let setups=Number(sessionStorage.getItem('setups')||0); let operation=JSON.parse(sessionStorage.getItem('operation')||'null'); let chosen=false;
+let connected=['active','draft','draft_empty','paused','preview_missing','public_view','switch_chat','recovery','disconnect','reviewer','choice'].includes(scenario); let reads=0; let setups=Number(sessionStorage.getItem('setups')||0); let operation=JSON.parse(sessionStorage.getItem('operation')||'null'); let chosen=false; let optionReads=0; let previewReads=0;
 if(scenario==='server_restore') { const request={operationId:uuid,chatIds:['-123','-456'],create:{name:'Сохранённый магазин',rules:{text:'Rules',allowedCategoryIds:['services'],allowedSubcategoryIds:[]}}}; operation={operationId:uuid,state:'partial',request,checkpoints:{marketplaceId:uuid,bindings:request.chatIds.map(chatId=>({chatId,state:'failed',bindingId:null,generation:null}))}}; }
 window.__karavanRequests=[]; window.__karavanOpened=[]; window.WebApp={openMaxLink:(url)=>window.__karavanOpened.push(url),close:()=>{}};
 const api={request:async(path,init={})=>{
   window.__karavanRequests.push({path,body:init.body?JSON.parse(init.body):null});
-  if(path.endsWith('/handoffs')) { const input=JSON.parse(init.body); const result={url:'https://max.ru/synthetic_buyer_bot?startapp=mh_'+('x'.repeat(43)),expiresAt:new Date(Date.now()+120000).toISOString()}; if(scenario==='switch_chat') return new Promise(resolve=>{window.__resolveKaravanHandoff=()=>resolve(result)}); return result; }
+  if(path.endsWith('/handoffs')) { const input=JSON.parse(init.body); const result={url:['view','preview'].includes(input.destination)?'https://max.ru/synthetic_buyer_bot?startapp=mh_'+('x'.repeat(43)):'https://max.ru/synthetic_seller_bot?startapp=community_h_'+('x'.repeat(43)),expiresAt:new Date(Date.now()+120000).toISOString()}; if(scenario==='switch_chat') return new Promise(resolve=>{window.__resolveKaravanHandoff=()=>resolve(result)}); return result; }
   if(path==='/chats') return [{id:'-123',title:'Соседи',createdAt:new Date().toISOString()},{id:'-456',title:'Ещё один очень длинный заголовок чата наших соседей',createdAt:new Date().toISOString()}];
+  if(path.endsWith('/setup-options')&&scenario==='existing_options_error'&&optionReads++===0) throw new Error('Категории недоступны');
   if(path.endsWith('/setup-options')) return {chatTitle:'Соседи',categories:[{id:'services',label:'Услуги',subcategories:[{id:'services.repair',label:'Ремонт'},{id:'services.cleaning',label:'Уборка'}]},{id:'grocery',label:'Продукты',subcategories:[{id:'grocery.fruit',label:'Фрукты'}]}]};
-  if(path.endsWith('/preview')) { const input=JSON.parse(init.body); return {target:input.marketplaceId?{marketplace,rules:{text:'Проверенные правила существующего магазина',allowedCategoryIds:['services'],allowedSubcategoryIds:['services.repair'],categoryOrder:['services'],version:1},permissions:['bind_chat','manage_network'],counts:{listings:12,pendingApplications:0,chats:2},bindings:[binding]}:null,chats:input.chatIds.map(chatId=>({chatId,title:chatId==='-123'?'Соседи':'Второй чат',binding:null,marketplace:null}))}; }
+  if(path.endsWith('/preview')) { const input=JSON.parse(init.body); previewReads++; const changed=scenario==='existing_rules_changed'&&previewReads>1; return {target:input.marketplaceId?{marketplace:{...marketplace,policyRevision:changed?2:1},rules:{text:changed?'Обновлённые правила существующего магазина':'Проверенные правила существующего магазина',allowedCategoryIds:['services'],allowedSubcategoryIds:['services.repair'],categoryOrder:['services'],version:changed?2:1},permissions:['bind_chat','manage_network'],counts:{listings:12,pendingApplications:0,chats:2},bindings:[binding]}:null,chats:input.chatIds.map(chatId=>({chatId,title:chatId==='-123'?'Соседи':'Второй чат',binding:null,marketplace:null}))}; }
   if(path.endsWith('/publication-choice')) {chosen=true;return {saved:true,storeId:JSON.parse(init.body).storeId};}
   if(path.endsWith('/available')) return {marketplaces:[{marketplace,permissions:['manage_network','bind_chat']}],nextCursor:null};
   if(path.includes('/bindings/')) {
@@ -53,7 +82,7 @@ const api={request:async(path,init={})=>{
   if(path.endsWith('/setup')) {
     const input=JSON.parse(init.body); setups++;sessionStorage.setItem('setups',String(setups));
     operation={operationId:input.operationId,state:setups===1?'pending':'complete',request:input,checkpoints:{marketplaceId:uuid,bindings:input.chatIds.map(chatId=>({chatId,state:setups===1?'pending':'connected',bindingId:binding.id,generation:1}))}};
-    if(scenario==='partial') { operation.state='partial'; operation.checkpoints.bindings.forEach(item=>item.state='failed'); return operation; }
+    if(['partial','partial_bound'].includes(scenario)) { operation.state='partial'; connected=scenario==='partial_bound'; operation.checkpoints.bindings.forEach(item=>item.state=connected&&item.chatId==='-123'?'connected':'failed'); return operation; }
     sessionStorage.setItem('operation',JSON.stringify(operation));
     if(['unknown','existing_unknown'].includes(scenario)&&setups===1) throw new Error('Сеть недоступна');
     if(setups>1) connected=true;
@@ -106,26 +135,7 @@ try {
   browser = await chromium.launch();
   for (const width of [320, 360, 390, 430])
     for (const theme of ['light', 'dark']) {
-      for (const scenario of [
-        'setup',
-        'draft',
-        'draft_empty',
-        'paused',
-        'preview_missing',
-        'public_view',
-        'switch_chat',
-        'active',
-        'error',
-        'unknown',
-        'existing',
-        'existing_unknown',
-        'recovery',
-        'disconnect',
-        'reviewer',
-        'partial',
-        'server_restore',
-        'choice',
-      ]) {
+      for (const scenario of selectedScenarios) {
         const context = await browser.newContext({
           viewport: { width, height: 740 },
           isMobile: true,
@@ -144,7 +154,8 @@ try {
           page.on('pageerror', (error) => errors.push(error.message));
           await page.goto(path + '?scenario=' + scenario + '&theme=' + theme);
           if (scenario === 'server_restore') {
-            await page.getByRole('button', { name: 'Настроить черновик' }).waitFor();
+            await page.getByRole('button', { name: 'Продолжить подключение' }).waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Настроить черновик' }).count(), 0);
             assert.equal(
               await page.getByRole('button', { name: 'Создать магазин', exact: true }).count(),
               0,
@@ -161,7 +172,7 @@ try {
             await page.getByText('Не удалось проверить магазин.').waitFor();
             await page.getByRole('button', { name: 'Повторить', exact: true }).click();
           }
-          if (['setup', 'unknown', 'partial'].includes(scenario)) {
+          if (['setup', 'unknown', 'partial', 'partial_bound'].includes(scenario)) {
             await page.getByRole('button', { name: 'Подключить магазин', exact: true }).click();
             await page.getByRole('button', { name: /Добавить мои чаты/u }).click();
             await page.getByLabel('Ещё один очень длинный заголовок чата наших соседей').check();
@@ -189,8 +200,27 @@ try {
             await page.getByRole('button', { name: 'Создать черновик', exact: true }).click();
             if (scenario === 'unknown')
               await page.getByRole('button', { name: 'Продолжить подключение' }).click();
-            if (scenario === 'partial') {
-              await page.getByRole('button', { name: 'Настроить черновик' }).waitFor();
+            if (['partial', 'partial_bound'].includes(scenario)) {
+              if (scenario === 'partial_bound') {
+                await page.getByRole('button', { name: 'Настроить черновик' }).click();
+                await page.waitForFunction(() => window.__karavanOpened.length === 1);
+                const handoff = await page.evaluate(() =>
+                  window.__karavanRequests.find((item) => item.path.endsWith('/handoffs')),
+                );
+                assert.ok(handoff, 'partial setup must preserve a verified Major return');
+                assert.equal(handoff.path, '/chats/-123/karavan-marketplace/handoffs');
+                assert.equal(handoff.body.destination, 'manage');
+                assert.equal(handoff.body.marketplaceId, 'a0d9b7ce-0040-4c85-a7ec-e3cf6da94c10');
+                assert.match(
+                  await page.evaluate(() => window.__karavanOpened[0]),
+                  /startapp=community_h_/u,
+                );
+              } else {
+                assert.equal(
+                  await page.getByRole('button', { name: 'Настроить черновик' }).count(),
+                  0,
+                );
+              }
               await page.getByRole('button', { name: 'Продолжить подключение' }).waitFor();
               page.once('dialog', (dialog) => dialog.accept());
               await page
@@ -206,7 +236,7 @@ try {
             const requests = await page.evaluate(() =>
               window.__karavanRequests.filter((item) => item.path.endsWith('/setup')),
             );
-            assert.ok(requests.length >= (scenario === 'partial' ? 1 : 2));
+            assert.ok(requests.length >= (['partial', 'partial_bound'].includes(scenario) ? 1 : 2));
             assert.equal(new Set(requests.map((item) => item.body.operationId)).size, 1);
             assert.deepEqual(requests[0].body.chatIds, ['-123', '-456']);
             assert.deepEqual(requests[0].body.create.rules.allowedSubcategoryIds, [
@@ -214,7 +244,14 @@ try {
             ]);
             assert.equal(requests[0].body.bindingExpectations.length, 2);
           }
-          if (['existing', 'existing_unknown'].includes(scenario)) {
+          if (
+            [
+              'existing',
+              'existing_unknown',
+              'existing_rules_changed',
+              'existing_options_error',
+            ].includes(scenario)
+          ) {
             await page.getByRole('button', { name: 'Подключить магазин', exact: true }).click();
             await page.getByRole('radio', { name: 'Выбрать существующий', exact: true }).check();
             await page.getByRole('radio', { name: marketplaceName(), exact: true }).check();
@@ -229,7 +266,45 @@ try {
             await page
               .getByText('Проверенные правила существующего магазина', { exact: true })
               .waitFor();
+            if (scenario === 'existing_options_error') {
+              assert.equal(await page.getByText('services', { exact: true }).count(), 0);
+              await page.getByText('Услуги', { exact: true }).waitFor();
+              await page.getByRole('button', { name: 'Повторить загрузку категорий' }).click();
+              await page.waitForFunction(
+                () =>
+                  window.__karavanRequests.filter((item) => item.path.endsWith('/setup-options'))
+                    .length === 2,
+              );
+              await page.getByRole('button', { name: 'Продолжить', exact: true }).waitFor();
+            }
             await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+            if (scenario === 'existing_rules_changed') {
+              await page
+                .getByText('Правила изменились. Проверьте их ещё раз.', { exact: true })
+                .waitFor();
+              await page
+                .getByText('Обновлённые правила существующего магазина', { exact: true })
+                .waitFor();
+              assert.equal(
+                await page
+                  .getByRole('checkbox', { name: 'Подтверждаю выбранные чаты и правила магазина' })
+                  .count(),
+                0,
+              );
+              assert.equal(
+                await page.evaluate(
+                  () =>
+                    window.__karavanRequests.filter((item) => item.path.endsWith('/setup')).length,
+                ),
+                0,
+              );
+              await geometry(page, `${width}-${theme}-updated-rules`);
+              await page.screenshot({
+                path: output + '/' + width + '-' + theme + '-updated-rules.png',
+                fullPage: true,
+              });
+              await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+            }
             await page
               .getByRole('checkbox', { name: 'Подтверждаю выбранные чаты и правила магазина' })
               .check();
@@ -250,7 +325,10 @@ try {
               () => window.__karavanRequests.find((item) => item.path.endsWith('/setup')).body,
             );
             assert.equal(request.create, undefined);
-            assert.equal(request.expectedPolicyRevision, 1);
+            assert.equal(
+              request.expectedPolicyRevision,
+              scenario === 'existing_rules_changed' ? 2 : 1,
+            );
           }
           if (scenario === 'choice') {
             await page.getByRole('button', { name: 'Вторая витрина', exact: true }).click();
@@ -379,7 +457,12 @@ try {
         }
       }
     }
-  console.log('Karavan browser: 144 scenarios passed. Screenshots: ' + output);
+  console.log(
+    'Karavan browser: ' +
+      selectedScenarios.length * 8 +
+      ' scenarios passed. Screenshots: ' +
+      output,
+  );
 } finally {
   await browser?.close();
   if (server) await stopChildProcess(server);
