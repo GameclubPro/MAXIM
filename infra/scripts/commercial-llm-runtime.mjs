@@ -27,11 +27,19 @@ import { poolProfile } from './commercial-llm-pool-profile.mjs';
 import {
   COMMERCIAL_LLM_RUNTIME,
   COMMERCIAL_LLM_LEGACY_RUNTIME,
+  COMMERCIAL_LLM_SLOTS_RUNTIME,
   COMMERCIAL_LLM_COMMAND,
   commercialLlmCommand,
+  commercialLlmCommandSha256,
 } from './commercial-llm-profiles.mjs';
-export { COMMERCIAL_LLM_RUNTIME, COMMERCIAL_LLM_LEGACY_RUNTIME, COMMERCIAL_LLM_COMMAND };
+export {
+  COMMERCIAL_LLM_RUNTIME,
+  COMMERCIAL_LLM_LEGACY_RUNTIME,
+  COMMERCIAL_LLM_SLOTS_RUNTIME,
+  COMMERCIAL_LLM_COMMAND,
+};
 const pin = COMMERCIAL_LLM_RUNTIME;
+const slotsPin = COMMERCIAL_LLM_SLOTS_RUNTIME;
 const { stateDir, modelDir } = pin;
 const composeArgs = [
   'compose',
@@ -125,7 +133,20 @@ export function patchCommercialLlmEnvironment(source, enabled) {
   return `${source}${source.endsWith('\n') || source.length === 0 ? '' : '\n'}${line}\n`;
 }
 
-export function assertCommercialLlmReceipt(receipt, profile = COMMERCIAL_LLM_RUNTIME) {
+export function commercialLlmReceiptProfile(receipt) {
+  if (receipt?.runtimeProfile === undefined && receipt?.commandSha256 === undefined) return pin;
+  if (
+    receipt?.runtimeProfile === slotsPin.runtimeProfile &&
+    receipt.commandSha256 === commercialLlmCommandSha256(slotsPin)
+  )
+    return slotsPin;
+  throw new Error('commercial_llm_receipt_refused');
+}
+
+export function assertCommercialLlmReceipt(
+  receipt,
+  profile = commercialLlmReceiptProfile(receipt),
+) {
   if (
     receipt?.schemaVersion !== 1 ||
     !safeSha.test(receipt.sourceSha ?? '') ||
@@ -147,11 +168,22 @@ export function assertCommercialLlmReceipt(receipt, profile = COMMERCIAL_LLM_RUN
     receipt.parallelRequests !== 1 ||
     receipt.generationThreads !== profile.cpuLimit ||
     receipt.reasoning !== false ||
-    receipt.smoke !== 'closed-synthetic-json-v1'
+    receipt.smoke !== 'closed-synthetic-json-v1' ||
+    (profile.slotInspection === true
+      ? receipt.runtimeProfile !== profile.runtimeProfile ||
+        receipt.commandSha256 !== commercialLlmCommandSha256(profile)
+      : receipt.runtimeProfile !== undefined || receipt.commandSha256 !== undefined)
   ) {
     throw new Error('commercial_llm_receipt_refused');
   }
   return receipt;
+}
+
+export function commercialLlmContainerProfile(container) {
+  const command = JSON.stringify(container?.Config?.Cmd);
+  for (const profile of [pin, slotsPin])
+    if (command === JSON.stringify(commercialLlmCommand(profile))) return profile;
+  throw new Error('commercial_llm_runtime_attestation_refused');
 }
 
 // FLAG: Production Docker 29 identifies this image by its OCI manifest, not its config blob.
@@ -174,7 +206,11 @@ export function assertCommercialLlmImage(image) {
 
 export function assertCommercialLlmContainer(
   container,
-  { requireHealthy = true, requireRunning = true, profile = COMMERCIAL_LLM_RUNTIME } = {},
+  {
+    requireHealthy = true,
+    requireRunning = true,
+    profile = commercialLlmContainerProfile(container),
+  } = {},
 ) {
   const config = container?.Config;
   const host = container?.HostConfig;
@@ -309,7 +345,7 @@ function capacity(needsDownload) {
   });
 }
 
-function inspectContainer({ requireHealthy = true, requireRunning = true, profile = pin } = {}) {
+function inspectContainer({ requireHealthy = true, requireRunning = true, profile } = {}) {
   const ids = run('docker', [...composeArgs, 'ps', '-a', '-q', pin.service]);
   if (!/^[0-9a-f]{64}$/u.test(ids)) throw new Error('commercial_llm_singleton_required');
   const rows = JSON.parse(run('docker', ['inspect', ids]));
@@ -526,13 +562,23 @@ export function validateCommercialLlmSyntheticResponse(response) {
   }
 }
 
+export function parseCommercialLlmModelJson(source) {
+  try {
+    return JSON.parse(source);
+  } catch {
+    // FLAG: JSON syntax errors can quote private slot fields; CLI errors must never retain them.
+    throw new Error('commercial_llm_model_json_refused');
+  }
+}
+
 function smoke(expectedContainerId) {
   const container = inspectContainer();
+  const profile = commercialLlmContainerProfile(container);
   if (expectedContainerId && container.Id !== expectedContainerId) {
     throw new Error('commercial_llm_generation_changed');
   }
-  assertCommercialLlmTemplate(
-    JSON.parse(
+  const readModelJson = (path) =>
+    parseCommercialLlmModelJson(
       run(
         'docker',
         [
@@ -545,12 +591,15 @@ function smoke(expectedContainerId) {
           '5',
           '--max-filesize',
           '65536',
-          'http://127.0.0.1:8080/props',
+          `http://127.0.0.1:8080${path}`,
         ],
         { maxBuffer: 65536 },
       ),
-    ),
-  );
+    );
+  const props = readModelJson('/props');
+  assertCommercialLlmTemplate(props);
+  if (profile.slotInspection === true && (props.endpoint_slots !== true || props.total_slots !== 1))
+    throw new Error('commercial_llm_slots_capability_refused');
   const response = run(
     'docker',
     [
@@ -573,7 +622,9 @@ function smoke(expectedContainerId) {
     { input: JSON.stringify(commercialLlmSyntheticRequest()), timeout: 125000, maxBuffer: 16384 },
   );
   validateCommercialLlmSyntheticResponse(JSON.parse(response));
-  if (inspectContainer().Id !== container.Id) throw new Error('commercial_llm_generation_changed');
+  if (profile.slotInspection === true) assertCommercialLlmIdleSlots(readModelJson('/slots'));
+  if (inspectContainer({ profile }).Id !== container.Id)
+    throw new Error('commercial_llm_generation_changed');
   emit('smoke', {
     result: 'closed-synthetic-json-v1',
     containerId: container.Id,
@@ -826,7 +877,7 @@ export function validateWorkstationSmokeResponse(response, expectPrimary) {
   };
 }
 
-function buildReceipt(sourceSha, containerId) {
+function buildReceipt(sourceSha, containerId, profile = pin) {
   const receipt = {
     schemaVersion: 1,
     sourceSha,
@@ -849,8 +900,14 @@ function buildReceipt(sourceSha, containerId) {
     generationThreads: pin.cpuLimit,
     reasoning: false,
     smoke: 'closed-synthetic-json-v1',
+    ...(profile.slotInspection === true
+      ? {
+          runtimeProfile: profile.runtimeProfile,
+          commandSha256: commercialLlmCommandSha256(profile),
+        }
+      : {}),
   };
-  assertCommercialLlmReceipt(receipt);
+  assertCommercialLlmReceipt(receipt, profile);
   return receipt;
 }
 
@@ -882,25 +939,16 @@ async function install(sourceSha) {
   }
   assertCommercialLlmImage(image[0]);
   emit('capacity', capacity(false));
-  run(
-    'docker',
-    [
-      ...composeArgs,
-      '--profile',
-      'commercial-llm',
-      'up',
-      '-d',
-      '--no-deps',
-      '--no-build',
-      '--pull',
-      'never',
-      pin.service,
-    ],
-    { timeout: 60000 },
-  );
-  await waitUntilReady();
-  const container = smoke();
-  const receipt = buildReceipt(sourceSha, container.Id);
+  createPinnedContainer(slotsPin);
+  const created = inspectContainer({
+    profile: slotsPin,
+    requireHealthy: false,
+    requireRunning: false,
+  });
+  await waitUntilReady(created.Id);
+  const container = smoke(created.Id);
+  assertCommercialLlmContainer(container, { profile: slotsPin });
+  const receipt = buildReceipt(sourceSha, container.Id, slotsPin);
   atomicWrite(pin.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   emit('install', { result: 'installed', ...receipt });
 }
@@ -965,6 +1013,18 @@ export function assertCommercialLlmTemplate(props) {
   }
 }
 
+export function assertCommercialLlmIdleSlots(value) {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 1 ||
+    value[0]?.id !== 0 ||
+    value[0]?.n_ctx !== 4096 ||
+    value[0]?.is_processing !== false
+  )
+    throw new Error('commercial_llm_idle_slots_unproved');
+  return value;
+}
+
 // FLAG: Recovery may adopt only a positively attested generation with all pinned artifacts.
 // A present invalid receipt must never be interpreted as an interrupted unrecorded install.
 export async function reconcileCommercialLlmGeneration({ operation, sourceSha, receipt, io }) {
@@ -973,14 +1033,21 @@ export async function reconcileCommercialLlmGeneration({ operation, sourceSha, r
   }
   if (receipt !== undefined) assertCommercialLlmReceipt(receipt);
   const before = await io.inspect();
-  assertCommercialLlmContainer(before, { requireHealthy: false, requireRunning: false });
+  const profile = receipt
+    ? commercialLlmReceiptProfile(receipt)
+    : commercialLlmContainerProfile(before);
+  assertCommercialLlmContainer(before, { profile, requireHealthy: false, requireRunning: false });
   if (receipt && receipt.containerId !== before.Id) {
     throw new Error('commercial_llm_existing_runtime_receipt_mismatch');
   }
   await io.verifyArtifacts();
   const inspectSameGeneration = async (requireHealthy = false) => {
     const current = await io.inspect();
-    assertCommercialLlmContainer(current, { requireHealthy, requireRunning: requireHealthy });
+    assertCommercialLlmContainer(current, {
+      profile,
+      requireHealthy,
+      requireRunning: requireHealthy,
+    });
     if (current.Id !== before.Id) throw new Error('commercial_llm_generation_changed');
     return current;
   };
@@ -1013,8 +1080,8 @@ export async function reconcileCommercialLlmGeneration({ operation, sourceSha, r
   await inspectSameGeneration(true);
   const nextReceipt = receipt
     ? { ...receipt, state: 'installed', validatedAt: new Date().toISOString() }
-    : buildReceipt(sourceSha, before.Id);
-  assertCommercialLlmReceipt(nextReceipt);
+    : buildReceipt(sourceSha, before.Id, profile);
+  assertCommercialLlmReceipt(nextReceipt, profile);
   await io.record(nextReceipt);
   const outcome = {
     result: receipt ? 'already_installed' : 'recovered_unrecorded_generation',
@@ -1037,6 +1104,37 @@ const runtimeIo = {
   record: (receipt) => atomicWrite(pin.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`),
   emit,
 };
+
+export function commercialLlmCreationOverride(profile) {
+  if (profile !== pin && profile !== slotsPin)
+    throw new Error('commercial_llm_creation_profile_refused');
+  return JSON.stringify({
+    services: { [pin.service]: { command: commercialLlmCommand(profile) } },
+  });
+}
+
+function createPinnedContainer(profile) {
+  // FLAG: Only named install/upgrade operations may enable slots. The historical Compose
+  // baseline and replacement retain no-slots; only fixed commands enter this private override.
+  run(
+    'docker',
+    [
+      ...composeArgs,
+      '-f',
+      '-',
+      '--profile',
+      'commercial-llm',
+      'up',
+      '-d',
+      '--no-deps',
+      '--no-build',
+      '--pull',
+      'never',
+      pin.service,
+    ],
+    { input: commercialLlmCreationOverride(profile), timeout: 60000 },
+  );
+}
 
 export function assertCommercialLlmTransition(value, sourceSha) {
   if (
@@ -1101,7 +1199,7 @@ export async function replaceCommercialLlmGeneration({ sourceSha, receipt, trans
   if (journal?.phase === 'complete') {
     if (!currentIsTarget || receipt.state !== 'installed')
       throw new Error('commercial_llm_transition_receipt_drift');
-    assertCommercialLlmContainer(observed);
+    assertCommercialLlmContainer(observed, { profile: pin });
     return { result: 'already_replaced', containerId: observed.Id };
   }
   await io.prepare();
@@ -1149,7 +1247,7 @@ export async function replaceCommercialLlmGeneration({ sourceSha, receipt, trans
   if (smoked?.Id !== targetId) throw new Error('commercial_llm_generation_changed');
   observed = await io.inspect();
   if (attest(observed) !== 'target') throw new Error('commercial_llm_target_missing');
-  assertCommercialLlmContainer(observed);
+  assertCommercialLlmContainer(observed, { profile: pin });
   const nextReceipt = currentIsTarget ? receipt : buildReceipt(sourceSha, targetId);
   await io.record(nextReceipt);
   await io.recordTransition({
@@ -1203,23 +1301,7 @@ async function replace(sourceSha) {
         assertCommercialLlmImage(images[0]);
       },
       remove: (id) => run('docker', ['rm', id]),
-      create: () =>
-        run(
-          'docker',
-          [
-            ...composeArgs,
-            '--profile',
-            'commercial-llm',
-            'up',
-            '-d',
-            '--no-deps',
-            '--no-build',
-            '--pull',
-            'never',
-            pin.service,
-          ],
-          { timeout: 60000 },
-        ),
+      create: () => createPinnedContainer(pin),
       recordTransition: (value) => {
         assertCommercialLlmTransition(value, sourceSha);
         atomicWrite(pin.transitionPath, `${JSON.stringify(value, null, 2)}\n`);
@@ -1227,6 +1309,211 @@ async function replace(sourceSha) {
     },
   });
   emit('replace', outcome);
+}
+
+export function assertCommercialLlmSlotsTransition(value, sourceSha) {
+  if (
+    value?.schemaVersion !== 1 ||
+    value.kind !== 'qwen35-9b-slots-v1' ||
+    !safeSha.test(sourceSha ?? '') ||
+    value.sourceSha !== sourceSha ||
+    value.previousCommandSha256 !== commercialLlmCommandSha256(pin) ||
+    value.targetCommandSha256 !== commercialLlmCommandSha256(slotsPin) ||
+    value.targetModelSha256 !== pin.modelSha256 ||
+    !['prepared', 'started', 'complete'].includes(value.phase) ||
+    !Number.isFinite(Date.parse(value.startedAt ?? '')) ||
+    (value.targetContainerId !== null && !/^[0-9a-f]{64}$/u.test(value.targetContainerId ?? '')) ||
+    (value.phase === 'prepared'
+      ? value.targetContainerId !== null
+      : value.targetContainerId === null) ||
+    (value.phase === 'complete' && !Number.isFinite(Date.parse(value.completedAt ?? '')))
+  )
+    throw new Error('commercial_llm_slots_transition_refused');
+  assertCommercialLlmReceipt(value.previousReceipt, pin);
+  if (value.previousReceipt.containerId === value.targetContainerId)
+    throw new Error('commercial_llm_slots_transition_refused');
+  return value;
+}
+
+// FLAG: The same model hash cannot distinguish these generations. Both commands, the original
+// receipt and the captured container IDs bind this separate journal; the Gemma journal is retained.
+export async function upgradeCommercialLlmSlots({
+  sourceSha,
+  receipt,
+  transition,
+  previousTransition,
+  io,
+  apply = false,
+}) {
+  if (!safeSha.test(sourceSha ?? '')) throw new Error('commercial_llm_exact_source_required');
+  let journal = transition;
+  if (journal !== undefined) assertCommercialLlmSlotsTransition(journal, sourceSha);
+  else assertCommercialLlmReceipt(receipt, pin);
+  const previous = journal?.previousReceipt ?? receipt;
+  const currentIsTarget = commercialLlmReceiptProfile(receipt) === slotsPin;
+  assertCommercialLlmReceipt(receipt, currentIsTarget ? slotsPin : pin);
+  if (
+    (!currentIsTarget && JSON.stringify(receipt) !== JSON.stringify(previous)) ||
+    (currentIsTarget &&
+      (!journal ||
+        journal.targetContainerId !== receipt.containerId ||
+        receipt.sourceSha !== sourceSha))
+  )
+    throw new Error('commercial_llm_transition_receipt_drift');
+  if (previousTransition !== undefined) {
+    assertCommercialLlmTransition(previousTransition, previousTransition.sourceSha);
+    if (
+      previousTransition.phase !== 'complete' ||
+      previousTransition.sourceSha !== previous.sourceSha ||
+      previousTransition.targetContainerId !== previous.containerId
+    )
+      throw new Error('commercial_llm_predecessor_transition_unsettled');
+  }
+  const attest = (container) => {
+    if (!container) return null;
+    const profile = commercialLlmContainerProfile(container);
+    assertCommercialLlmContainer(container, {
+      profile,
+      requireHealthy: false,
+      requireRunning: false,
+    });
+    if (
+      profile === pin &&
+      (container.Id !== previous.containerId || journal?.targetContainerId || currentIsTarget)
+    )
+      throw new Error('commercial_llm_generation_changed');
+    if (
+      profile === slotsPin &&
+      (!journal ||
+        container.Id === previous.containerId ||
+        (journal.targetContainerId && container.Id !== journal.targetContainerId))
+    )
+      throw new Error('commercial_llm_generation_changed');
+    return profile === pin ? 'previous' : 'target';
+  };
+  let observed = await io.inspect();
+  let kind = attest(observed);
+  if (!journal && kind !== 'previous')
+    throw new Error('commercial_llm_recorded_generation_missing');
+  if (journal?.targetContainerId && kind !== 'target')
+    throw new Error('commercial_llm_recorded_generation_missing');
+  if (journal?.phase === 'complete') {
+    if (!currentIsTarget || receipt.state !== 'installed')
+      throw new Error('commercial_llm_transition_receipt_drift');
+    assertCommercialLlmContainer(observed, { profile: slotsPin });
+    return {
+      result: 'already_upgraded',
+      containerId: observed.Id,
+      runtimeProfile: slotsPin.runtimeProfile,
+    };
+  }
+  if (!apply)
+    return {
+      result: 'preview',
+      operation: 'upgrade-slots',
+      sourceSha,
+      phase: journal?.phase ?? 'not_started',
+      previousContainerId: previous.containerId,
+      currentContainerId: observed?.Id ?? null,
+      previousCommandSha256: commercialLlmCommandSha256(pin),
+      targetCommandSha256: commercialLlmCommandSha256(slotsPin),
+      targetRuntimeProfile: slotsPin.runtimeProfile,
+    };
+  await io.prepare();
+  if (!journal) {
+    journal = {
+      schemaVersion: 1,
+      kind: 'qwen35-9b-slots-v1',
+      sourceSha,
+      previousCommandSha256: commercialLlmCommandSha256(pin),
+      targetCommandSha256: commercialLlmCommandSha256(slotsPin),
+      targetModelSha256: pin.modelSha256,
+      previousReceipt: previous,
+      phase: 'prepared',
+      startedAt: new Date().toISOString(),
+      targetContainerId: null,
+    };
+    await io.recordTransition(journal);
+  }
+  const capturedId = observed?.Id;
+  observed = await io.inspect();
+  kind = attest(observed);
+  if (observed?.Id !== capturedId) throw new Error('commercial_llm_generation_changed');
+  if (kind === 'previous') {
+    await io.stop(observed.Id);
+    observed = await io.inspect();
+    if (attest(observed) !== 'previous' || observed.State?.Running !== false)
+      throw new Error('commercial_llm_stop_readback_refused');
+    await io.remove(observed.Id);
+    observed = await io.inspect();
+    if (observed) throw new Error('commercial_llm_generation_changed');
+  }
+  if (!observed) {
+    await io.create();
+    observed = await io.inspect();
+    if (attest(observed) !== 'target') throw new Error('commercial_llm_target_missing');
+  }
+  if (!journal.targetContainerId) {
+    journal = { ...journal, phase: 'started', targetContainerId: observed.Id };
+    await io.recordTransition(journal);
+  }
+  const targetId = journal.targetContainerId;
+  observed = await io.inspect();
+  if (attest(observed) !== 'target') throw new Error('commercial_llm_target_missing');
+  if (!observed.State.Running) await io.start(targetId);
+  await io.waitReady(targetId);
+  const smoked = await io.smoke(targetId);
+  if (smoked?.Id !== targetId) throw new Error('commercial_llm_generation_changed');
+  observed = await io.inspect();
+  if (attest(observed) !== 'target') throw new Error('commercial_llm_target_missing');
+  assertCommercialLlmContainer(observed, { profile: slotsPin });
+  const nextReceipt = currentIsTarget ? receipt : buildReceipt(sourceSha, targetId, slotsPin);
+  await io.record(nextReceipt);
+  await io.recordTransition({
+    ...journal,
+    phase: 'complete',
+    completedAt: new Date().toISOString(),
+  });
+  return { result: 'upgraded', containerId: targetId, runtimeProfile: slotsPin.runtimeProfile };
+}
+
+async function upgradeSlots(sourceSha, apply) {
+  const readJournal = (path) => {
+    if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return undefined;
+    assertSafeFile(path, { maximumBytes: 32768 });
+    return JSON.parse(readFileSync(path, 'utf8'));
+  };
+  const outcome = await upgradeCommercialLlmSlots({
+    sourceSha,
+    receipt: readReceipt(),
+    transition: readJournal(slotsPin.transitionPath),
+    previousTransition: readJournal(pin.transitionPath),
+    apply,
+    io: {
+      ...runtimeIo,
+      inspect: () => {
+        const ids = run('docker', [...composeArgs, 'ps', '-a', '-q', pin.service]);
+        if (!ids) return null;
+        const observed = inspectContainer({ requireHealthy: false, requireRunning: false });
+        if (observed.Id !== ids) throw new Error('commercial_llm_generation_changed');
+        return observed;
+      },
+      prepare: async () => {
+        await verifyPinnedArtifacts();
+        emit('capacity', capacity(false));
+        const images = JSON.parse(run('docker', ['image', 'inspect', pin.imageRef]));
+        if (images.length !== 1) throw new Error('commercial_llm_image_pin_refused');
+        assertCommercialLlmImage(images[0]);
+      },
+      remove: (id) => run('docker', ['rm', id]),
+      create: () => createPinnedContainer(slotsPin),
+      recordTransition: (value) => {
+        assertCommercialLlmSlotsTransition(value, sourceSha);
+        atomicWrite(slotsPin.transitionPath, `${JSON.stringify(value, null, 2)}\n`);
+      },
+    },
+  });
+  emit('upgrade_slots', outcome);
 }
 
 function status() {
@@ -1237,14 +1524,18 @@ function status() {
     return;
   }
   const receipt = readReceipt();
+  const container = inspectContainer({
+    profile: commercialLlmReceiptProfile(receipt),
+    requireHealthy: receipt.state === 'installed',
+    requireRunning: receipt.state === 'installed',
+  });
+  if (container.Id !== receipt.containerId) throw new Error('commercial_llm_receipt_runtime_drift');
   if (receipt.state === 'stopped') {
-    const ids = run('docker', [...composeArgs, 'ps', '-q', pin.service]);
-    if (ids) throw new Error('commercial_llm_stopped_receipt_runtime_drift');
+    if (container.State?.Running !== false)
+      throw new Error('commercial_llm_stopped_receipt_runtime_drift');
     emit('status', receipt);
     return;
   }
-  const container = inspectContainer();
-  if (container.Id !== receipt.containerId) throw new Error('commercial_llm_receipt_runtime_drift');
   emit('status', {
     ...receipt,
     running: true,
@@ -1265,6 +1556,7 @@ async function cli(argv) {
     ![
       'install',
       'replace',
+      'upgrade-slots',
       'status',
       'stop',
       'enable',
@@ -1288,7 +1580,7 @@ async function cli(argv) {
       args.length)
   ) {
     throw new Error(
-      'Usage: commercial-llm install|replace|enable|disable|stop [--apply] | status | smoke | check-client',
+      'Usage: commercial-llm install|replace|upgrade-slots|enable|disable|stop [--apply] | status | smoke | check-client',
     );
   }
   if (operation === 'status') return status();
@@ -1299,6 +1591,7 @@ async function cli(argv) {
   if (operation === 'check-workstation-offline') return checkWorkstation(false);
   const sourceSha = process.env.MAXIM_EXPECTED_DEPLOY_SHA;
   sourceAdmission(sourceSha);
+  if (operation === 'upgrade-slots') return upgradeSlots(sourceSha, args.includes('--apply'));
   if (!args.includes('--apply')) {
     emit('preview', {
       operation,
@@ -1316,7 +1609,7 @@ async function cli(argv) {
   if (operation === 'enable' || operation === 'disable') {
     if (operation === 'enable') {
       const receipt = readReceipt();
-      const container = inspectContainer();
+      const container = inspectContainer({ profile: commercialLlmReceiptProfile(receipt) });
       if (receipt.state !== 'installed' || receipt.containerId !== container.Id)
         throw new Error('commercial_llm_enable_receipt_refused');
       smoke();
