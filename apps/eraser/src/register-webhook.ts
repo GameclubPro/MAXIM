@@ -1,7 +1,9 @@
 import { Redis } from 'ioredis';
+import pg from 'pg';
 import { config } from './config.js';
 import { HttpLimiter } from './limiter.js';
 import { MaxClient } from './max.js';
+import { DurableRateLimit } from './rate-limit.js';
 
 const settings = config();
 if (
@@ -13,10 +15,28 @@ if (
   throw new Error('Webhook registration requires the configured bot, secret and HTTPS URL');
 const redis = new Redis(settings.redisUrl, { maxRetriesPerRequest: 1 });
 redis.on('error', () => {});
+const pool = new pg.Pool({
+  connectionString: settings.databaseUrl,
+  max: 1,
+  connectionTimeoutMillis: 2000,
+  options: '-c timezone=UTC -c statement_timeout=5000 -c lock_timeout=2000',
+});
 try {
-  const client = new MaxClient(settings, new HttpLimiter(redis, settings.maxRps));
+  const client = new MaxClient(
+    settings,
+    new HttpLimiter(
+      redis,
+      settings.maxRps,
+      'eraser:http',
+      new DurableRateLimit(pool, settings.botId),
+    ),
+  );
   await client.subscribe();
   process.stdout.write('Eraser webhook registration confirmed.\n');
 } finally {
-  await redis.quit();
+  try {
+    await redis.quit();
+  } finally {
+    await pool.end();
+  }
 }

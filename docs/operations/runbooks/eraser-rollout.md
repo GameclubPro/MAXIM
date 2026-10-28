@@ -50,6 +50,12 @@ operation canonicalization and controller tooling. An Eraser-only immutable roll
 requires the exact target's pending-request, expiry and cancellation reader before startup.
 Static-only immutable rollback retains its component scope. Ref synchronization and
 rollback tooling bootstrap must preserve this floor before replacing the checkout.
+A separate permanent `/var/lib/maxim-deploy/eraser-rate-limit-reader-version` floor is
+`1`. A selected Lastik deploy installs it before `0005-durable-rate-limit.sql` and
+application startup. Both the worker and webhook-registration client read the exact
+bot's PostgreSQL cooldown before MAX admission. An immutable Lastik rollback requires
+that reader; API/static image-only rollback retains its scope, while checkout replacement
+must preserve the enforcing tooling. Disabling availability never lowers this floor.
 A partial installation preserves files and fails closed. `eraser-bootstrap --stores-only`
 may finish an interrupted store startup with those same secrets; it does not rotate them.
 Credential rotation needs a separately reviewed procedure.
@@ -134,6 +140,24 @@ attempt only after its deadline. Any failed DELETE ends that visit after recordi
 outcome, preventing a cascade of uncertain effects. Final dispatch checks the database
 clock after lock waits, and removal ingestion uses the same policy-before-candidate
 lock order as dispatch and settlement.
+
+A received 429 stays a known rejection even when Redis cooldown persistence fails.
+Its token-wide deadline is also stored in PostgreSQL and survives client restart; failed
+durable admission stops new requests. The 200-candidate cap applies to new pending
+intake, separately from issued, uncertain and review journals. A late exact rejected
+attempt keeps its retry even if it temporarily fills an extra pending slot; further
+intake waits for space. Shortening a period wakes only already-due, never-issued
+`not_due` rows, preserving pin, rate-limit and unknown-effect waits.
+
+Startup keeps authenticated webhook ingress available while a known 429 defers
+subscription verification. Workers remain stopped and health remains not ready until
+identity and subscription checks succeed. Shutdown cancels the wait; other prerequisite
+failures remain fatal. A deployment still requires the normal readiness deadline.
+
+`/health` also requires both workers to be ready and running and reports bounded worker
+progress diagnostics. Occupied slots older than 120 seconds or an unrecovered worker
+error close readiness even when scheduler ticks continue. Healthy idle workers require
+no completed job or MAX probe. These observations do not establish successful deletion.
 
 Migration `0004-scan-generation.sql` adds a cursor generation with a constant zero
 default; it does not change activation or existing effect journals. A late webhook or

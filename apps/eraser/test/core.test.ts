@@ -33,6 +33,33 @@ const raw = (time: number) => ({
   body: { mid: 'message' },
 });
 
+test('a received DELETE 429 remains a known rejection when cooldown persistence fails', async () => {
+  let issued = false;
+  const max = new MaxClient(
+    settings,
+    {
+      acquire: async () => {},
+      cooldown: async () => {
+        throw new Error('store unavailable');
+      },
+    },
+    async () =>
+      Response.json({ code: 'rate.limit' }, { status: 429, headers: { 'Retry-After': '3' } }),
+  );
+  await assert.rejects(
+    max.remove('-1', 'message', async () => {
+      issued = true;
+    }),
+    (error) =>
+      error instanceof MaxError &&
+      error.status === 429 &&
+      error.code === 'rate.limit' &&
+      error.attempted === false &&
+      error.retryAfterMs === 3000,
+  );
+  assert.equal(issued, true);
+});
+
 test('defaults are disabled and fail closed for malformed identity/retired API and excessive RPS', () => {
   assert.equal(config(baseEnv).enabled, false);
   assert.equal(config(baseEnv).maxRps, 20);

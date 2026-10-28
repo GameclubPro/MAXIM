@@ -6,6 +6,8 @@ import { HttpLimiter } from './limiter.js';
 import { MaxClient } from './max.js';
 import { CleanupRuntime } from './runtime.js';
 import { createHttpServer } from './http.js';
+import { DurableRateLimit } from './rate-limit.js';
+import { startService } from './startup.js';
 
 const settings = config();
 const pool = new pg.Pool({
@@ -18,24 +20,39 @@ const pool = new pg.Pool({
 const redis = new Redis(settings.redisUrl, { maxRetriesPerRequest: 1 });
 redis.on('error', () => {});
 const store = new Store(pool, settings.enabled);
-const max = new MaxClient(settings, new HttpLimiter(redis, settings.maxRps));
+const max = new MaxClient(
+  settings,
+  new HttpLimiter(
+    redis,
+    settings.maxRps,
+    'eraser:http',
+    new DurableRateLimit(pool, settings.botId),
+  ),
+);
 const runtime = new CleanupRuntime(store, max, settings);
 const server = createHttpServer(store, max, runtime, settings, () => redis.ping());
-let closing = false;
-async function close() {
-  if (closing) return;
-  closing = true;
-  const deadline = setTimeout(() => process.exit(1), 30_000);
-  deadline.unref();
-  try {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await runtime.close();
-    await redis.quit();
-    await pool.end();
-    clearTimeout(deadline);
-  } catch {
-    process.exitCode = 1;
-  }
+let closing: Promise<void> | undefined;
+const startupAbort = new AbortController();
+let startup: Promise<boolean> | undefined;
+function close(): Promise<void> {
+  if (closing) return closing;
+  startupAbort.abort();
+  runtime.stopAdmission();
+  closing = (async () => {
+    const deadline = setTimeout(() => process.exit(1), 30_000);
+    deadline.unref();
+    try {
+      await startup?.catch(() => {});
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await runtime.close();
+      await redis.quit();
+      await pool.end();
+      clearTimeout(deadline);
+    } catch {
+      process.exitCode = 1;
+    }
+  })();
+  return closing;
 }
 process.on('SIGTERM', () => {
   void close();
@@ -43,25 +60,39 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   void close();
 });
-await pool.query('SELECT 1 FROM eraser_migrations LIMIT 1');
-await redis.ping();
-await new Promise<void>((resolve, reject) => {
-  server.once('error', reject);
-  server.listen(settings.port, '0.0.0.0', resolve);
-});
 try {
-  if (settings.enabled) await max.subscribe();
-  await runtime.start();
+  startup = startService(
+    {
+      prepare: async () => {
+        await pool.query('SELECT 1 FROM eraser_migrations LIMIT 1');
+        await redis.ping();
+      },
+      listen: () =>
+        new Promise<void>((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(settings.port, '0.0.0.0', resolve);
+        }),
+      subscribe: async () => {
+        if (settings.enabled) await max.subscribe();
+      },
+      start: () => runtime.start(),
+    },
+    startupAbort.signal,
+  );
+  if (await startup)
+    process.stdout.write(
+      JSON.stringify({
+        service: 'eraser',
+        event: 'started',
+        commitSha: settings.commitSha,
+        enabled: settings.enabled,
+      }) + '\n',
+    );
 } catch {
+  const interrupted = startupAbort.signal.aborted;
   await close();
-  process.exitCode = 1;
-  throw new Error('Eraser startup prerequisites unavailable');
+  if (!interrupted) {
+    process.exitCode = 1;
+    throw new Error('Eraser startup prerequisites unavailable');
+  }
 }
-process.stdout.write(
-  JSON.stringify({
-    service: 'eraser',
-    event: 'started',
-    commitSha: settings.commitSha,
-    enabled: settings.enabled,
-  }) + '\n',
-);
