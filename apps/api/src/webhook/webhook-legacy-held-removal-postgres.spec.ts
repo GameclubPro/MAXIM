@@ -34,6 +34,7 @@ import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { tryLockWebhookSemanticClaimFences } from './webhook-semantic-claim-fence';
 import { WebhookParser } from './webhook.parser';
+import { WebhookService } from './webhook.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -276,6 +277,310 @@ native('native post-seal held message removal without replay', () => {
       { botId: state().bots[0]!.id },
     );
   }
+
+  function memberRemoval(source: LegacyRecoveryCandidate) {
+    return new WebhookParser().parse(
+      {
+        update_type: 'user_removed',
+        update_id: randomUUID(),
+        timestamp: Date.now(),
+        chat_id: source.source.chatId,
+        user: { user_id: source.source.userId, name: 'Removed member', is_bot: false },
+        admin_id: 'independent-removal-actor',
+      },
+      { botId: state().bots[0]!.id },
+    );
+  }
+
+  it('recovers a pristine held user_removed only after preserving membership denial', async () => {
+    const s = state();
+    const source = await owner();
+    await seal([source]);
+    Object.assign(s.ingress, { chatContextCache: s.cache, membershipLookupService: s.membership });
+    const checkedAt = new Date(Date.now() - 1_000);
+    await s.prisma.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        userId: source.source.userId,
+        botId: s.bots[0]!.id,
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+        checkedAt,
+      },
+    });
+    await s.prisma.chatAdminAllowlist.create({ data: { chatId, userId: source.source.userId } });
+    await s.prisma.managedEntityAdminMember.create({
+      data: { chatId, userId: source.source.userId, observedByBotId: s.bots[0]!.id, checkedAt },
+    });
+    const update = memberRemoval(source);
+    const before = await stage(update, { errorMessage: heldRetry });
+    const handler = jest.spyOn(s.moderation, 'handleUpdate');
+    const invalidate = jest.spyOn(s.membership, 'invalidateMemberships');
+    expect(await s.ingress.preparePersistedWebhookEvent(before.id)).toMatchObject({
+      canonical: false,
+      prepared: false,
+      enforced: true,
+    });
+    const after = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: before.id } });
+    expect(after).toMatchObject({
+      status: 'NO_REPLAY_HELD',
+      processedAt: null,
+      errorMessage: heldRetry,
+    });
+    expect(after.normalizedPayload).toEqual(before.normalizedPayload);
+    expect(after.rawPayload).toEqual(before.rawPayload);
+    expect(
+      await s.prisma.managedEntityAccessEdge.findFirstOrThrow({
+        where: { chatId, userId: source.source.userId },
+      }),
+    ).toMatchObject({ state: 'USER_DENIED', source: 'webhook_user_removed' });
+    expect(
+      await s.prisma.managedEntityAdminMember.count({
+        where: { chatId, userId: source.source.userId },
+      }),
+    ).toBe(0);
+    expect(
+      await s.prisma.chatAdminAllowlist.count({ where: { chatId, userId: source.source.userId } }),
+    ).toBe(0);
+    expect(
+      await s.prisma.chatMembershipActivityEvent.count({
+        where: { chatId, userId: source.source.userId, eventType: 'user_removed' },
+      }),
+    ).toBe(1);
+    expect(invalidate).toHaveBeenCalledWith(chatId, [source.source.userId]);
+    await s.ingress.preparePersistedWebhookEvent(before.id);
+    await s.moderation.processWebhookEvent(before.id);
+    expect(handler).not.toHaveBeenCalled();
+    expect(
+      await s.prisma.webhookExecutionClaim.count({ where: { webhookEventId: before.id } }),
+    ).toBe(0);
+    expect(await s.legacyHolds.isGlobalUserHeld(source.source.userId)).toBe(true);
+    expect(
+      await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: source.claim.id } }),
+    ).toEqual(source.claim);
+    expect(s.requests).toEqual([]);
+    expect(s.effects).toEqual([]);
+  });
+
+  it.each(['member cache', 'access epoch'] as const)(
+    'retries held user_removed after %s failure and a fresh preparation process',
+    async (failure) => {
+      const s = state();
+      const source = await owner();
+      await seal([source]);
+      Object.assign(s.ingress, {
+        chatContextCache: s.cache,
+        membershipLookupService: s.membership,
+      });
+      const update = memberRemoval(source);
+      const receipt = await stage(update, { errorMessage: heldRetry });
+      const failing =
+        failure === 'member cache'
+          ? jest
+              .spyOn(s.membership, 'invalidateMemberships')
+              .mockRejectedValueOnce(new Error('synthetic cache outage'))
+          : jest
+              .spyOn(s.cache, 'applyAdminAccessEpochMutation')
+              .mockRejectedValueOnce(new Error('synthetic epoch outage'));
+      await expect(s.ingress.preparePersistedWebhookEvent(receipt.id)).rejects.toThrow(
+        'Legacy scope installation is not sealed',
+      );
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(
+        receipt,
+      );
+      expect(
+        await s.prisma.webhookLegacyReceiptDisposition.count({ where: { receiptId: receipt.id } }),
+      ).toBe(0);
+      failing.mockRestore();
+      const restarted = new WebhookService(s.prisma as never, s.config, s.links);
+      Object.assign(restarted, {
+        legacyHolds: s.legacyHolds,
+        chatContextCache: s.cache,
+        membershipLookupService: s.membership,
+      });
+      try {
+        await expect(restarted.preparePersistedWebhookEvent(receipt.id)).resolves.toMatchObject({
+          canonical: false,
+          prepared: false,
+        });
+      } finally {
+        await restarted.onModuleDestroy();
+      }
+      expect(
+        await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } }),
+      ).toMatchObject({ status: 'NO_REPLAY_HELD' });
+      expect(
+        await s.prisma.chatMembershipActivityEvent.count({
+          where: { chatId, userId: source.source.userId, eventType: 'user_removed' },
+        }),
+      ).toBe(1);
+      expect(s.requests).toEqual([]);
+      expect(s.effects).toEqual([]);
+    },
+  );
+
+  it.each(['missing key', 'publisher key', 'nullable official fields', 'channel'] as const)(
+    'handles held membership removal with %s through real preparation',
+    async (variant) => {
+      const s = state();
+      const source = await owner();
+      await seal([source]);
+      Object.assign(s.ingress, {
+        chatContextCache: s.cache,
+        membershipLookupService: s.membership,
+      });
+      let update = memberRemoval(source);
+      if (variant === 'nullable official fields' || variant === 'channel') {
+        update = new WebhookParser().parse(
+          {
+            ...update.raw,
+            admin_id: null,
+            is_channel: variant === 'channel',
+            user: {
+              user_id: source.source.userId,
+              is_bot: false,
+              first_name: 'Member',
+              last_name: null,
+              username: null,
+              name: null,
+            },
+          },
+          { botId: update.botId },
+        );
+      }
+      const receipt =
+        variant === 'channel'
+          ? await store(update)
+          : await stage(update, {
+              rawPayload: {},
+              errorMessage: heldRetry,
+              ...(variant === 'missing key' ? { semanticKey: null } : {}),
+              ...(variant === 'publisher key'
+                ? { semanticKey: buildWebhookReceiptSemanticKey(update, update.botId!) }
+                : {}),
+            });
+      await expect(s.ingress.preparePersistedWebhookEvent(receipt.id)).resolves.toMatchObject({
+        canonical: false,
+        prepared: false,
+      });
+      expect(
+        await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } }),
+      ).toMatchObject({ status: 'NO_REPLAY_HELD', semanticKey: receipt.semanticKey });
+      expect(s.effects).toEqual([]);
+      expect(s.requests).toEqual([]);
+    },
+  );
+
+  it('preserves a newer grant when a held membership removal is observed late', async () => {
+    const s = state();
+    const source = await owner();
+    await seal([source]);
+    Object.assign(s.ingress, { chatContextCache: s.cache, membershipLookupService: s.membership });
+    const update = memberRemoval(source);
+    const receipt = await stage(update);
+    const edge = await s.prisma.managedEntityAccessEdge.create({
+      data: {
+        chatId,
+        userId: source.source.userId,
+        botId: s.bots[0]!.id,
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+        checkedAt: new Date(Date.now() + 1_000),
+      },
+    });
+    await s.ingress.preparePersistedWebhookEvent(receipt.id);
+    expect(
+      await s.prisma.managedEntityAccessEdge.findUniqueOrThrow({
+        where: { chatId_userId_botId: { chatId, userId: edge.userId, botId: edge.botId } },
+      }),
+    ).toEqual(edge);
+    expect(
+      await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } }),
+    ).toMatchObject({ status: 'NO_REPLAY_HELD' });
+  });
+
+  it.each([
+    'prepared claim',
+    'canonical alias',
+    'command alias',
+    'publisher journal',
+    'queued',
+    'unknown source',
+    'future clock',
+    'unsealed',
+  ] as const)('does not observe or close held user_removed with %s', async (variant) => {
+    const s = state();
+    const source = await owner();
+    await seal([source], variant !== 'unsealed');
+    let update = memberRemoval(source);
+    if (variant === 'unknown source' || variant === 'future clock')
+      update = new WebhookParser().parse(
+        {
+          ...update.raw,
+          ...(variant === 'unknown source'
+            ? { unknown: true }
+            : { timestamp: Date.now() + 60_000 }),
+        },
+        { botId: update.botId },
+      );
+    const receipt = await stage(update, {
+      semanticKey: null,
+      ...(variant === 'queued' ? { enqueueAttempts: 1, queueName: 'webhook' } : {}),
+    });
+    if (['prepared claim', 'canonical alias', 'command alias'].includes(variant)) {
+      const claim = await s.prisma.webhookExecutionClaim.create({
+        data: {
+          kind: variant === 'command alias' ? 'COMMAND' : 'EXECUTION',
+          semanticKey:
+            variant === 'command alias'
+              ? buildGroupCommandKey(chatId, update.message!.messageId)
+              : buildWebhookSemanticEventKey(update)!,
+          webhookEventId: variant === 'prepared claim' ? receipt.id : source.owner.id,
+          enforced: true,
+          ...(variant === 'prepared claim' ? { status: 'READY', preparedAt: new Date() } : {}),
+        },
+      });
+      extraClaims.push(claim.id);
+    }
+    if (variant === 'publisher journal') await publisherDelivery(update, source);
+    expect(await s.legacyHolds.readHeldMembershipRemoval(receipt.id)).toBeNull();
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(
+      receipt,
+    );
+    expect(
+      await s.prisma.webhookLegacyReceiptDisposition.count({ where: { receiptId: receipt.id } }),
+    ).toBe(0);
+  });
+
+  it('rechecks a claim admitted between membership observation and receipt closure', async () => {
+    const s = state();
+    const source = await owner();
+    await seal([source]);
+    const update = memberRemoval(source);
+    const receipt = await stage(update);
+    const observation = await s.legacyHolds.readHeldMembershipRemoval(receipt.id);
+    expect(observation).not.toBeNull();
+    const claim = await s.prisma.webhookExecutionClaim.create({
+      data: {
+        kind: 'EXECUTION',
+        semanticKey: buildWebhookSemanticEventKey(update)!,
+        webhookEventId: receipt.id,
+        enforced: true,
+      },
+    });
+    extraClaims.push(claim.id);
+    expect(
+      await s.legacyHolds.finishObservedMembershipRemoval(receipt.id, observation!.sourceDigest),
+    ).toBe(false);
+    expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: receipt.id } })).toEqual(
+      receipt,
+    );
+    expect(
+      await s.prisma.webhookLegacyReceiptDisposition.count({ where: { receiptId: receipt.id } }),
+    ).toBe(0);
+  });
 
   function heldFormattedForward(source: LegacyRecoveryCandidate, copied: boolean) {
     const at = Date.now();

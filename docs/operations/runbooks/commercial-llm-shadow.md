@@ -34,8 +34,10 @@ Russian advertisement-classification accuracy.
   before the installation smoke can succeed. Do not substitute a similar upstream template.
 - The runtime has a 6 CPU quota, 6 inference and prompt threads, low CPU shares,
   12 GiB memory including swap, 128 PIDs, one inference slot and a 4096-token
-  context. Generation is capped at 128 tokens. Thinking, context shifting, tools,
-  the web UI and slot inspection are disabled. Oversized prompts must fail as a
+  context. Generation is capped at 128 tokens. Thinking, context shifting, tools
+  and the web UI are disabled. New installations enable private slot inspection;
+  historical installations retain `--no-slots` until the guarded upgrade below.
+  Slot save/restore, metrics and slot debug output remain disabled. Oversized prompts must fail as a
   technical error rather than silently dropping message context. The shared Redis
   lease permits one inference at a time and one admission per 10 seconds; pressure
   shedding remains mandatory. This is at most 8,640 admissions/day, not a throughput SLA.
@@ -144,6 +146,71 @@ The runtime alias changes to `qwen35-9b-commercial-shadow`. Until the normal API
 release finishes, old clients reject that alias and may record bounded technical
 failures; they cannot misattribute a Qwen result to Gemma. Inference remains shadow
 only throughout. The API deploy preserves the already installed model container.
+
+## Enabling private slot observation on an existing Qwen generation
+
+The pinned llama.cpp b11804 `/health` route reports liveness and ignores
+`fail_on_no_slot`. Only `/slots` exposes current slot occupancy. An HTTP 200 from
+health cannot prove that a timed-out inference stopped. Keep pool routing disabled
+until the corrected API adapter, CPU capability and PC acceptance checks are ready.
+Docker health remains a liveness check; a busy model must not become unhealthy.
+
+After exact-SHA CI, synchronize the reviewed controller with `deploy main --plan`:
+
+```bash
+./infra/scripts/vps-connect.sh commercial-llm upgrade-slots
+./infra/scripts/vps-connect.sh commercial-llm upgrade-slots --apply
+./infra/scripts/vps-connect.sh commercial-llm status
+```
+
+Preview attests the installed receipt, exact command, containment and singleton
+container and reports the captured IDs and command digests. Apply holds the normal
+protected deploy lock and checks artifacts, image identity and existing capacity
+floors before stopping that captured generation. No model download, store change,
+API flag change or additional port is involved. The new generation differs only
+in enabling the private slot inspection endpoint.
+
+Confirm the deployed pool routing flag is false before applying. The deploy lock
+serializes host operations but does not stop ordinary legacy CPU consultations.
+Replacing the optional model can interrupt such a computation; its uncertain
+result cannot authorize a new action and its existing lease is preserved. A
+concurrent consultation can also make the closed smoke fail. Preserve that failure
+and resume the same journal after inspecting admission; do not restart blindly or
+claim that an absent lease readback reserved exclusive capacity.
+
+The separate `qwen35-9b-slots-transition-v1.json` binds the exact controller source,
+both pinned command digests, original receipt and captured container IDs. The
+existing `qwen35-9b-transition.json` is retained; when present it must be complete
+and identify the original Qwen generation. Its historical Gemma-to-Qwen `replace`
+operation and the base Compose service retain the original no-slots configuration.
+Only the named new-install and slots-upgrade operations supply the reviewed command
+override. Neither journal is reset or repurposed.
+
+A successful slots receipt includes `runtimeProfile=qwen35-9b-slots-v1` and the
+exact command digest. Success requires the same target container throughout
+readiness, template verification, `endpoint_slots=true`, the existing closed
+synthetic smoke and a bounded single-slot idle observation. Slot responses are
+never printed; default slot debug is off. Historical receipts without these new
+fields are accepted only with the frozen no-slots command. Unknown or incomplete
+capability fields fail closed. Ordinary `install`, `stop`, `status` and `smoke`
+understand both pinned configurations; `install` never implicitly upgrades an
+existing generation. Only a new installation defaults to slots.
+
+If interrupted, rerun `upgrade-slots --apply` from the same exact green source.
+The journal reconciles stopped, removed, created and recorded generations and
+refuses foreign IDs, command drift or receipt drift. Repeating a completed upgrade
+does not replace the model again. Before removal, the captured old generation and
+receipt remain available; after removal, never restore its old receipt because
+its container ID no longer exists. This controller has no reverse transition.
+Returning to no-slots after replacement requires a separately reviewed transition
+with a new receipt and retained journals. A successfully recorded slots generation
+can be stopped normally while preserving its evidence and artifacts.
+
+Slot occupancy is a current observation, not proof that an ambiguous HTTP request
+cannot still reach the model's task queue. A persistent CPU pool lease after an
+uncertain result must remain held. This upgrade does not inspect, expire or clear
+Redis leases and is not a pool quarantine recovery operation; recovery needs its
+own proved model drain/replacement and exact lease ownership protocol.
 
 ## Readback, stopping and rollback
 

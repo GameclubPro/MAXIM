@@ -34,6 +34,7 @@ export type MarketplaceBindingRow = {
   statistics_revoked_at: Date | null;
   collection_owner: 'SHADOW' | 'MAXIM';
   collection_metrics: unknown;
+  last_button_access_loss_at?: Date | null;
   append_enabled: boolean;
   append_revision: number;
   profile_revision: number;
@@ -120,19 +121,32 @@ export class MarketplaceStateService {
     return rows[0] ?? null;
   }
   present(row: MarketplaceBindingRow): MarketplaceBinding {
+    // FLAG: Statistics clients retain the explicit withdrawal even when an
+    // independent button/profile check refreshes the same exact access proof.
+    return this.presentBinding(row, 'statistics');
+  }
+  presentAccess(row: MarketplaceBindingRow): MarketplaceBinding {
+    return this.presentBinding(row, 'access');
+  }
+  private presentBinding(
+    row: MarketplaceBindingRow,
+    purpose: 'statistics' | 'access',
+  ): MarketplaceBinding {
+    const denied = purpose === 'statistics' && row.statistics_revoked_at != null;
     return marketplaceBindingSchema.parse({
       id: row.id,
       actorUserId: row.actor_user_id,
       entityId: row.entity_id,
       kind: row.kind,
       profile: row.profile,
-      state:
-        row.state === 'ACTIVE' && (!row.valid_until || row.valid_until.getTime() <= Date.now())
+      state: denied
+        ? 'REVOKED'
+        : row.state === 'ACTIVE' && (!row.valid_until || row.valid_until.getTime() <= Date.now())
           ? 'UNKNOWN'
           : row.state,
       revision: row.revision,
       checkedAt: row.checked_at?.toISOString() ?? null,
-      validUntil: row.valid_until?.toISOString() ?? null,
+      validUntil: denied ? null : (row.valid_until?.toISOString() ?? null),
       updatedAt: row.updated_at.toISOString(),
       generationId: row.generation_id,
       statisticsCheckedAt: row.statistics_checked_at?.toISOString() ?? null,
@@ -191,6 +205,79 @@ export class MarketplaceStateService {
     chatId: string;
     botId: string;
     now?: Date;
+    purpose?:
+      | 'PUBLICATION'
+      | 'VK_IMPORT'
+      | 'APPROVED_SUGGESTION'
+      | 'GREETING'
+      | 'MODERATION_NOTICE'
+      | 'CHANNEL_POST';
+    sourceAt?: Date;
+  }): Promise<{ url: string; revision: number } | null> {
+    if (!this.enabled()) return null;
+    const purpose = input.purpose ?? 'PUBLICATION';
+    const context =
+      purpose === 'GREETING'
+        ? 'GREETINGS'
+        : purpose === 'MODERATION_NOTICE'
+          ? 'MODERATION_NOTICES'
+          : purpose === 'CHANNEL_POST'
+            ? 'CHANNEL_POSTS'
+            : 'PUBLICATIONS';
+    const now = input.now ?? new Date();
+    // FLAG: Final proof is independent of statistics consent and belongs to the
+    // exact confirmer, platform and selected sender. A route hint grants nothing.
+    const rows = await this.prisma.$queryRaw<Array<{ public_url: string; revision: number }>>`
+      SELECT c.public_url,p.revision FROM marketplace_button_policies p
+      JOIN marketplace_button_contexts c ON c.policy_id=p.id
+      JOIN marketplace_bindings b ON b.id=c.binding_id AND b.actor_user_id=c.confirmed_by AND b.entity_id=p.entity_id AND b.kind=p.kind AND b.profile=p.profile
+      WHERE p.entity_id=${input.chatId} AND c.context=${context} AND c.enabled=true AND c.suspended_reason IS NULL
+        AND c.public_url IS NOT NULL AND c.verified_until>${now} AND b.valid_until>${now}
+        AND b.checked_at>${now}::timestamptz-interval '5 minutes'
+        AND ${marketplaceLocalGrantSql('b', false)}
+        AND (b.last_button_access_loss_at IS NULL OR b.last_button_access_loss_at<c.confirmed_at)
+        AND (${context !== 'CHANNEL_POSTS'} OR (${input.sourceAt ?? null}::timestamptz IS NOT NULL AND ${input.sourceAt ?? null}::timestamptz>=c.confirmed_at))
+        AND (${context === 'PUBLICATIONS'} OR p.profile='moderation')
+        AND NOT EXISTS(SELECT 1 FROM chat_membership_activity_events e WHERE e.chat_id=p.entity_id AND e.user_id=c.confirmed_by AND e.event_type='user_removed' AND e.event_at AT TIME ZONE 'UTC'>=c.confirmed_at)
+        AND NOT EXISTS(SELECT 1 FROM managed_entity_access_edges a WHERE a.chat_id=p.entity_id AND a.user_id=c.confirmed_by AND a.bot_id=b.bot_id AND a.checked_at AT TIME ZONE 'UTC'>=c.confirmed_at AND (a.state<>'GRANTED' OR a.user_role NOT IN ('OWNER','ADMIN')))
+        AND ((p.profile='moderation' AND EXISTS(SELECT 1 FROM chat_bot_memberships m WHERE m.chat_id=p.entity_id AND m.bot_id=${input.botId} AND m.status='ACTIVE'
+          AND (m.lifecycle_event_at IS NULL OR m.lifecycle_event_at AT TIME ZONE 'UTC'<b.checked_at)
+          AND ((m.bot_id=b.bot_id AND (m.bot_access_checked_at IS NULL OR m.bot_access_checked_at AT TIME ZONE 'UTC'<b.checked_at OR m.bot_access_state IN ('CONFIRMED_ADMIN','CONFIRMED_OWNER')))
+            OR (m.bot_access_state IN ('CONFIRMED_ADMIN','CONFIRMED_OWNER') AND m.bot_access_checked_at IS NOT NULL))))
+          OR (p.profile='publisher' AND b.bot_id=${input.botId} AND EXISTS(SELECT 1 FROM publisher_entity_bindings pb WHERE pb.chat_id=p.entity_id AND pb.publisher_bot_id=${input.botId} AND pb.status='ACTIVE'
+          AND (pb.lifecycle_event_at IS NULL OR pb.lifecycle_event_at AT TIME ZONE 'UTC'<b.checked_at)
+          AND (pb.bot_access_checked_at IS NULL OR pb.bot_access_checked_at AT TIME ZONE 'UTC'<b.checked_at OR pb.bot_access_state IN ('CONFIRMED_ADMIN','CONFIRMED_OWNER')))))
+      ORDER BY c.verified_until DESC,p.id LIMIT 1`;
+    if (rows[0]) return { url: rows[0].public_url, revision: rows[0].revision };
+    if (context !== 'PUBLICATIONS') return null;
+    // Compatibility only until the first canonical policy exists. It cannot
+    // restore a disabled setting or extend the old publication consent's scope.
+    const canonical = await this.prisma.$queryRaw<
+      Array<{ id: string }>
+    >`SELECT p.id FROM marketplace_button_policies p WHERE p.entity_id=${input.chatId}
+      AND ((p.profile='moderation' AND EXISTS(SELECT 1 FROM chat_bot_memberships m WHERE m.chat_id=p.entity_id AND m.bot_id=${input.botId}))
+        OR (p.profile='publisher' AND EXISTS(SELECT 1 FROM publisher_entity_bindings b WHERE b.chat_id=p.entity_id AND b.publisher_bot_id=${input.botId}))) LIMIT 1`;
+    return canonical.length ? null : this.resolveLegacyPublicationButton(input);
+  }
+  async channelPostActivation(chatId: string): Promise<Date | null> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ confirmed_at: Date }>
+    >`SELECT c.confirmed_at FROM marketplace_button_policies p JOIN marketplace_button_contexts c ON c.policy_id=p.id
+      WHERE p.entity_id=${chatId} AND p.kind='CHANNEL' AND p.profile='moderation' AND c.context='CHANNEL_POSTS' AND c.enabled=true AND c.suspended_reason IS NULL LIMIT 1`;
+    return rows[0]?.confirmed_at ?? null;
+  }
+  async listChannelPostTargets(limit: number, after = ''): Promise<Array<{ chatId: string }>> {
+    const bounded = Math.max(1, Math.min(100, Math.trunc(limit) || 1));
+    const rows = await this.prisma.$queryRaw<
+      Array<{ entity_id: string }>
+    >`SELECT p.entity_id FROM marketplace_button_policies p JOIN marketplace_button_contexts c ON c.policy_id=p.id
+      WHERE p.entity_id>${after} AND p.kind='CHANNEL' AND p.profile='moderation' AND c.context='CHANNEL_POSTS' AND c.enabled=true AND c.suspended_reason IS NULL ORDER BY p.entity_id LIMIT ${bounded}`;
+    return rows.map((row) => ({ chatId: row.entity_id }));
+  }
+  private async resolveLegacyPublicationButton(input: {
+    chatId: string;
+    botId: string;
+    now?: Date;
   }): Promise<{ url: string; revision: number } | null> {
     if (!this.enabled()) return null;
     const now = input.now ?? new Date();
@@ -224,7 +311,24 @@ export class MarketplaceStateService {
     botId: string;
     revision: number;
     code: 'KEYBOARD_FULL';
+    purpose?:
+      | 'PUBLICATION'
+      | 'VK_IMPORT'
+      | 'APPROVED_SUGGESTION'
+      | 'GREETING'
+      | 'MODERATION_NOTICE'
+      | 'CHANNEL_POST';
   }): Promise<void> {
+    const context =
+      input.purpose === 'GREETING'
+        ? 'GREETINGS'
+        : input.purpose === 'MODERATION_NOTICE'
+          ? 'MODERATION_NOTICES'
+          : input.purpose === 'CHANNEL_POST'
+            ? 'CHANNEL_POSTS'
+            : 'PUBLICATIONS';
+    await this.prisma
+      .$executeRaw`UPDATE marketplace_button_contexts c SET diagnostic='KEYBOARD_FULL' FROM marketplace_button_policies p WHERE p.id=c.policy_id AND p.entity_id=${input.chatId} AND p.revision=${input.revision} AND c.context=${context}`;
     await this.prisma
       .$executeRaw`UPDATE marketplace_bindings SET button_diagnostic='KEYBOARD_FULL' WHERE entity_id=${input.chatId} AND append_revision=${input.revision}`;
     this.logger.warn(

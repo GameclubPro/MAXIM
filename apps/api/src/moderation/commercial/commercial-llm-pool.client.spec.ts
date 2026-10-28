@@ -41,6 +41,31 @@ function envelope(nodeId: CommercialLlmPoolNodeId, classification: CommercialLlm
 }
 
 describe('independent commercial model pool classifier', () => {
+  it('reports actual model attempts without publishing a seeded latency as a measurement', () => {
+    const stats = new CommercialLlmPoolRoutingStats();
+    expect(
+      stats
+        .snapshot()
+        .every((node) => node.completedAttempts === 0 && node.ewmaDurationMs === null),
+    ).toBe(true);
+    stats.recordSuccess('pc-a-4b', 1000);
+    stats.recordSuccess('pc-a-4b', 5000);
+    stats.recordFailure('server-9b');
+    const snapshot = stats.snapshot();
+    expect(snapshot[1]).toMatchObject({
+      completedAttempts: 2,
+      failedAttempts: 0,
+      ewmaDurationMs: 2000,
+    });
+    expect(snapshot[0]).toMatchObject({
+      completedAttempts: 0,
+      failedAttempts: 1,
+      ewmaDurationMs: null,
+    });
+    expect(snapshot[1]!.lastCompletedAt).not.toBeNull();
+    snapshot[1]!.completedAttempts = 99;
+    expect(stats.snapshot()[1]!.completedAttempts).toBe(2);
+  });
   const mailbox = {
     available: jest.fn<ReturnType<CommercialLlmPoolMailbox['available']>, []>(),
     reserve: jest.fn<

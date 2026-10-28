@@ -6,6 +6,7 @@ const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
 const PUBLISHER_POST_IMPORT_START_PARAM_PATTERN = /^pi_([A-Za-z0-9_-]{16,256})$/u;
 
 const CHAT_SETTINGS_FOCUS = new Set([
+  'birzhik',
   'broadcast',
   'comments',
   'giveaway',
@@ -15,6 +16,7 @@ const CHAT_SETTINGS_FOCUS = new Set([
   'storefront',
 ]);
 const CHANNEL_SETTINGS_FOCUS = new Set([
+  'birzhik',
   'broadcast',
   'comments',
   'giveaway',
@@ -263,7 +265,11 @@ function normalizeRouteLaunchPath(value: string): string | null {
       return pathname;
     }
 
-    if (/^\/publisher\/channel\/[^/?#]+$/u.test(pathname) && parsed.search === '?focus=vk') {
+    if (
+      /^\/publisher\/(chat|channel)\/[^/?#]+$/u.test(pathname) &&
+      (parsed.search === '?focus=birzhik' ||
+        (pathname.startsWith('/publisher/channel/') && parsed.search === '?focus=vk'))
+    ) {
       return `${pathname}${parsed.search}`;
     }
 

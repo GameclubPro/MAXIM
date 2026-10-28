@@ -1,5 +1,7 @@
 import {
   marketplaceProfileMutationSchema,
+  marketplaceButtonPolicyMutationSchema,
+  type MarketplaceButtonPolicyState,
   type MarketplaceProfileState,
 } from '@maxim/contracts/marketplace-integration';
 import { PREVIEW_NOT_HANDLED, type PreviewRequestHandler } from './preview-transport-runtime';
@@ -7,7 +9,13 @@ import type { PreviewState } from './preview-transport-state';
 
 const profiles = new WeakMap<PreviewState, Map<string, MarketplaceProfileState>>();
 const requests = new WeakMap<PreviewState, Map<string, MarketplaceProfileState>>();
+const policies = new WeakMap<PreviewState, Map<string, MarketplaceButtonPolicyState>>();
+const policyRequests = new WeakMap<
+  PreviewState,
+  Map<string, { fingerprint: string; state: MarketplaceButtonPolicyState }>
+>();
 const pendingReadiness = new WeakSet<MarketplaceProfileState>();
+const observedProfileRead = new WeakSet<MarketplaceProfileState>();
 
 export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
   state,
@@ -17,10 +25,32 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
   init,
 }) => {
   if (segments[0] !== 'marketplace') return PREVIEW_NOT_HANDLED;
-  if (segments[1] === 'capability' && method === 'GET')
-    return { available: state.marketplacePilot };
-  if (!state.marketplacePilot) throw new Error('Модуль пока недоступен');
-  if (segments[1] !== 'entities' || segments[4] !== 'profile') return PREVIEW_NOT_HANDLED;
+  if (segments[1] === 'capability' && method === 'GET') return { available: true };
+  if (segments[1] === 'launch' && method === 'POST') {
+    const input: unknown = JSON.parse(String(init.body));
+    if (!input || typeof input !== 'object' || !('target' in input))
+      throw new Error('Неверный переход');
+    const target = input.target;
+    if (target === 'catalog')
+      return { url: 'https://max.ru/id613000037577_3_bot?startapp=catalog' };
+    if (!('kind' in input) || !['CHAT', 'CHANNEL'].includes(String(input.kind)))
+      throw new Error('Неверная площадка');
+    const id =
+      target === 'connect'
+        ? 'entityId' in input
+          ? String(input.entityId)
+          : ''
+        : 'listingId' in input
+          ? String(input.listingId)
+          : '';
+    if (!id || !['connect', 'manage', 'listing'].includes(String(target)))
+      throw new Error('Неверный переход');
+    return {
+      url: `https://max.ru/id613000037577_3_bot?startapp=${String(target)}_${String(input.kind).toLowerCase()}_${id}`,
+    };
+  }
+  if (segments[1] !== 'entities' || !['profile', 'entry', 'button-policy'].includes(segments[4]))
+    return PREVIEW_NOT_HANDLED;
   const kind = segments[2] === 'CHANNEL' ? 'CHANNEL' : 'CHAT';
   const entity = (kind === 'CHANNEL' ? state.channels : state.chats).find(
     (item) => item.id === decodeURIComponent(segments[3]),
@@ -31,7 +61,6 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
   const store = profiles.get(state) ?? new Map<string, MarketplaceProfileState>();
   profiles.set(state, store);
   let current = store.get(key);
-  const initialRead = !current;
   if (!current) {
     const now = state.clock.now().toISOString();
     const id =
@@ -43,7 +72,18 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
       entityId: '-100',
       kind,
       revision: 0,
-      listing: null,
+      listing: state.marketplacePublished
+        ? {
+            id,
+            status: 'PUBLISHED',
+            title: entity.title,
+            description: 'Новости и обсуждения нашей площадки',
+            topic: 'Новости и СМИ',
+            region: 'Россия',
+            publicUrl: null,
+            profileOnly: true,
+          }
+        : null,
       binding: {
         id,
         actorUserId: '100',
@@ -113,10 +153,101 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
     };
     return structuredClone(current);
   };
+  if (segments[4] === 'entry' && method === 'GET') {
+    const snapshot = present();
+    const publiclyVisible = snapshot.capabilities?.publicState === 'PUBLIC';
+    const visible = state.marketplaceOwner || publiclyVisible;
+    return {
+      entityId: current.entityId,
+      kind,
+      profile,
+      publicState: snapshot.listing ? snapshot.capabilities!.publicState : 'ABSENT',
+      listing:
+        visible && snapshot.listing
+          ? {
+              id: snapshot.listing.id,
+              ownershipKey: 'a'.repeat(64),
+              title: snapshot.listing.title,
+              publicUrl: snapshot.listing.publicUrl,
+              profileOnly: snapshot.listing.profileOnly,
+            }
+          : null,
+      isOwner: state.marketplaceOwner && !!snapshot.listing,
+      canCreate: state.marketplaceOwner && !snapshot.listing,
+      manageUrl: state.marketplaceOwner ? snapshot.capabilities!.manageUrl : null,
+      connectUrl: snapshot.capabilities!.connectUrl,
+      checkedAt: state.clock.now().toISOString(),
+      validUntil: new Date(state.clock.now().getTime() + 300_000).toISOString(),
+    };
+  }
+  if (segments[4] === 'button-policy') {
+    const byEntity = policies.get(state) ?? new Map<string, MarketplaceButtonPolicyState>();
+    policies.set(state, byEntity);
+    let policy = byEntity.get(key);
+    if (!policy) {
+      const contexts: MarketplaceButtonPolicyState['contexts'][number]['context'][] =
+        profile === 'publisher'
+          ? ['PUBLICATIONS']
+          : kind === 'CHANNEL'
+            ? ['CHANNEL_POSTS']
+            : ['GREETINGS', 'MODERATION_NOTICES'];
+      policy = {
+        entityId: current.entityId,
+        kind,
+        profile,
+        revision: 0,
+        contexts: contexts.map((context) => ({
+          context,
+          enabled: false,
+          effective: false,
+          status: 'OFF',
+          enabledAt: null,
+        })),
+        buttonDiagnostic: null,
+      };
+      byEntity.set(key, policy);
+    }
+    const visible = present().capabilities?.publicState === 'PUBLIC';
+    const policyView = () => {
+      for (const context of policy.contexts) {
+        context.effective = context.enabled && visible;
+        context.status = !context.enabled ? 'OFF' : visible ? 'READY' : 'PROFILE_UNAVAILABLE';
+      }
+      return structuredClone(policy);
+    };
+    if (method === 'GET') return policyView();
+    if (method !== 'POST') return PREVIEW_NOT_HANDLED;
+    const input = marketplaceButtonPolicyMutationSchema.parse(JSON.parse(String(init.body)));
+    const saved =
+      policyRequests.get(state) ??
+      new Map<string, { fingerprint: string; state: MarketplaceButtonPolicyState }>();
+    policyRequests.set(state, saved);
+    const requestKey = `${key}:${input.requestId}`;
+    const fingerprint = JSON.stringify(input);
+    const previous = saved.get(requestKey);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) throw new Error('Запрос уже использован');
+      return structuredClone(previous.state);
+    }
+    if (input.expectedRevision !== policy.revision)
+      throw new Error('Настройки изменились. Обновите данные.');
+    const context = policy.contexts.find((item) => item.context === input.context);
+    if (!context) throw new Error('Это место показа недоступно');
+    if (input.enabled && !visible) throw new Error('Сначала опубликуйте профиль');
+    context.enabled = input.enabled;
+    context.enabledAt = input.enabled ? state.clock.now().toISOString() : null;
+    policy.revision++;
+    const result = policyView();
+    saved.set(requestKey, { fingerprint, state: result });
+    return result;
+  }
+  if (!state.marketplaceOwner) throw new Error('Профиль изменяет владелец');
   if (method === 'GET') {
     // Preview models successful re-attestation, never consent restoration.
     current.binding.state = 'ACTIVE';
-    if (!initialRead && pendingReadiness.delete(current)) current.binding.statisticsConsent = true;
+    if (observedProfileRead.has(current) && pendingReadiness.delete(current))
+      current.binding.statisticsConsent = true;
+    observedProfileRead.add(current);
     return present();
   }
   if (method !== 'POST') return PREVIEW_NOT_HANDLED;

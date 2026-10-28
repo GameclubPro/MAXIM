@@ -103,7 +103,6 @@ import {
   SettingsSectionIcon,
   SettingsSectionToggle,
 } from '../components/ui/settings-section-toggle';
-import { SettingsAdvertisingSection } from './settings/settings-advertising-section';
 import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
@@ -6256,15 +6255,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   entityId={chatId ?? ''}
                   entityType="chat"
                   profile="moderation"
-                />
-              </SettingsOverviewEntry>
-
-              <SettingsOverviewEntry order={32}>
-                <SettingsAdvertisingSection
-                  key={`advertising:${meQuery.data?.userId ?? ''}:${chatId}`}
-                  api={api}
-                  chatId={chatId ?? ''}
-                  userId={meQuery.data?.userId ?? null}
                 />
               </SettingsOverviewEntry>
 

@@ -14,7 +14,10 @@ const client = new QueryClient({
 });
 const api: ApiTransport = {
   request: async (_path, init) => {
-    const response = await fetch('/app/__marketplace-fixture', init);
+    const response = await fetch(
+      `/app/__marketplace-fixture?path=${encodeURIComponent(_path)}`,
+      init,
+    );
     if (!response.ok)
       throw new ApiRequestError(response.status, await response.text(), 'Fixture request failed');
     return response.json();

@@ -167,6 +167,25 @@ export function guardedPoolChild(file, args, options) {
   return spawn('/usr/bin/python3', ['-c', childGuard, file, ...args], options);
 }
 
+export async function connectPoolTransport(
+  model,
+  { nodeId, key, signal, connect, attest = attestPoolModel },
+) {
+  // FLAG: An exit during backoff or attestation cannot advertise a new session for a dead model.
+  const running = () =>
+    Number.isSafeInteger(model?.pid) &&
+    model.pid > 1 &&
+    model.exitCode === null &&
+    model.signalCode === null &&
+    !model.killed;
+  if (!running()) throw new Error('pool_model_exit');
+  signal?.throwIfAborted();
+  await attest(nodeId, key, signal);
+  if (!running()) throw new Error('pool_model_exit');
+  signal?.throwIfAborted();
+  return connect();
+}
+
 async function stopChild(child) {
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
   let closed = false;
@@ -554,9 +573,15 @@ export function createPoolController(nodeId, { taskHome = homedir() } = {}) {
             await warmModel(nodeId, key, controller.signal);
           }
           update('connecting');
-          ssh = guardedPoolChild('/usr/bin/ssh', poolSshArgs(nodeId, sshAlias), {
-            stdio: ['pipe', 'pipe', 'ignore'],
-            env: { PATH: '/usr/bin:/bin', HOME: taskHome, LANG: 'C.UTF-8' },
+          ssh = await connectPoolTransport(model, {
+            nodeId,
+            key,
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(1500)]),
+            connect: () =>
+              guardedPoolChild('/usr/bin/ssh', poolSshArgs(nodeId, sshAlias), {
+                stdio: ['pipe', 'pipe', 'ignore'],
+                env: { PATH: '/usr/bin:/bin', HOME: taskHome, LANG: 'C.UTF-8' },
+              }),
           });
           const modelExit = () => ssh?.kill('SIGTERM');
           model.once('exit', modelExit);

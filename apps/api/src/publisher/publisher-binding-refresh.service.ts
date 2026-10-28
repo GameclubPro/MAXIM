@@ -1453,36 +1453,45 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
     }
     const checkedAt = new Date();
     const candidateVersion = job.candidateVersion?.trim() || null;
-    const updated = await this.prisma.managedEntityAccessEdge.updateMany({
-      where: {
-        chatId,
-        userId,
-        botId: this.publisherBotId,
-        ...(candidateVersion ? { sourceVersion: candidateVersion } : {}),
-        // FLAG: Candidate completion is not a revocation protocol. Preserve an existing
-        // grant; only exact actor/bot MAX evidence or lifecycle handlers may revoke it.
-        state: { not: ManagedEntityAccessState.GRANTED },
-        source: { startsWith: `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_` },
-      },
-      data: {
-        state: [
-          'publisher_user_not_admin',
-          'publisher_actor_is_bot',
-          'publisher_actor_type_unverified',
-        ].includes(outcome.reason)
-          ? ManagedEntityAccessState.USER_DENIED
-          : ManagedEntityAccessState.BOT_DENIED,
-        userRole: ManagedEntityAccessRole.UNKNOWN,
-        botRole: ManagedEntityAccessRole.UNKNOWN,
-        checkedAt,
-        expiresAt: new Date(checkedAt.getTime() + PUBLISHER_USER_ACCESS_DENIED_TTL_MS),
-        deniedReason: outcome.reason,
-        lastMaxStatusCode: outcome.statusCode ?? null,
-        lastMaxErrorCode: outcome.statusCode ? `HTTP_${outcome.statusCode}` : null,
-        lastMaxErrorMessage: null,
-        source: 'publisher_actor_verification_terminal',
-        sourceVersion: candidateVersion,
-      },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // FLAG: Membership transitions lock Chat before their binding-loss trigger and
+      // access edge. Keep the same order so a terminal denial cannot hold the edge
+      // while waiting for a binding held by that transition.
+      const chat = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT id FROM chats WHERE id = ${chatId} FOR UPDATE
+      `);
+      if (chat.length === 0) return { count: 0 };
+      return tx.managedEntityAccessEdge.updateMany({
+        where: {
+          chatId,
+          userId,
+          botId: this.publisherBotId,
+          ...(candidateVersion ? { sourceVersion: candidateVersion } : {}),
+          // FLAG: Candidate completion is not a revocation protocol. Preserve an existing
+          // grant; only exact actor/bot MAX evidence or lifecycle handlers may revoke it.
+          state: { not: ManagedEntityAccessState.GRANTED },
+          source: { startsWith: `${PUBLISHER_ACCESS_CANDIDATE_SOURCE}_` },
+        },
+        data: {
+          state: [
+            'publisher_user_not_admin',
+            'publisher_actor_is_bot',
+            'publisher_actor_type_unverified',
+          ].includes(outcome.reason)
+            ? ManagedEntityAccessState.USER_DENIED
+            : ManagedEntityAccessState.BOT_DENIED,
+          userRole: ManagedEntityAccessRole.UNKNOWN,
+          botRole: ManagedEntityAccessRole.UNKNOWN,
+          checkedAt,
+          expiresAt: new Date(checkedAt.getTime() + PUBLISHER_USER_ACCESS_DENIED_TTL_MS),
+          deniedReason: outcome.reason,
+          lastMaxStatusCode: outcome.statusCode ?? null,
+          lastMaxErrorCode: outcome.statusCode ? `HTTP_${outcome.statusCode}` : null,
+          lastMaxErrorMessage: null,
+          source: 'publisher_actor_verification_terminal',
+          sourceVersion: candidateVersion,
+        },
+      });
     });
     if (updated.count > 0) {
       return;

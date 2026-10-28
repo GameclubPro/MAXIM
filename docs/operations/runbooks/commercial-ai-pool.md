@@ -42,15 +42,63 @@ renewal. Disconnection prevents new reservations; generation/attempt fences reje
 late answers. An interrupted busy PC recycles its owned model process before
 advertising readiness again. An idle connection loss can retain its warm model.
 The supervisor retries SSH with bounded jitter and re-registers after the connection
-and model checks pass. A missing PC reduces total capacity without blocking the
-other workers. Reduced capacity can still produce admission skips; three machines
+and model checks pass. Pool workstation profiles enable the authenticated `/slots`
+endpoint on loopback. Before connecting, the supervisor checks its owned model
+process and requires one idle slot with `id=0`, `n_ctx=4096` and the exact boolean
+`is_processing=false`, alongside the pinned template, alias and slots capability.
+Unknown, malformed, oversized or timed-out observations do not establish readiness.
+The existing first-PC legacy launcher keeps its own unchanged profile and lifecycle.
+A missing PC reduces total capacity without blocking the other workers. Reduced capacity can still produce admission skips; three machines
 do not guarantee zero queues or complete traffic coverage under arbitrary load.
+
+The CPU node uses the same physical lease as the legacy CPU classifier. The pinned
+llama.cpp b11804 `/health` handler ignores `fail_on_no_slot`; health is liveness only.
+Readiness uses the bounded `/slots` contract and `/props.endpoint_slots=true`.
+The separate guarded CPU capability upgrade is described in the
+[local model runbook](commercial-llm-shadow.md); ordinary API deployment alone does
+not establish that the existing CPU container supports slots.
+
+An idle slot observation does not acknowledge cancellation of a pending HTTP request.
+Immediately before a CPU pool handoff, an owner-checked operation removes the lease's
+expiry. A complete validated response releases its own lease. An ambiguous failure
+retains the lease and withdraws CPU capacity, including across an API restart while
+Redis retains the key. Neither a later idle observation nor the former 120-second
+TTL may release that hold. Other nodes remain independently schedulable. Recovery
+requires quiescing the CPU dispatcher and proving the captured model generation
+stopped before any exact-token release; never manually delete the key to restore
+readiness. Redis data loss and independently initiated legacy requests retain their
+existing limitations; this lease is not durable across loss of Redis state.
 
 The VPS and its Redis admission service remain the coordination point. A VPS or
 Redis outage prevents AI admission; adding PCs does not make that control plane
 highly available. Busy, uncertain, stale and failed work cannot delete a message.
 The [commercial AI deletion guards](commercial-ai-deletion.md#durable-effects)
 and independently enabled moderation rules keep their existing authority.
+
+## Observations in Safety Desk
+
+The owner-only `GET /api/v1/safety-desk/runtime/commercial-ai/pool` reads the three
+fixed node registrations independently of the enforcement process. It distinguishes
+ready, occupied slot, connected-but-not-ready, missing registration, invalid data
+and expired cached observations. An occupied slot does not establish that inference
+is progressing; a missing registration does not establish why a PC disconnected.
+The atomic bounded reader checks types, byte limits, exact model/session identity
+and TTLs before projecting states. It never reads a slot body or returns ownership
+tokens, model inputs, responses or source identities. The two-second cache cannot
+extend a node's observed TTL. There are no MAX calls or runtime mutations.
+
+The process publishes three bounded attempt summaries and completed/no-capacity/
+budget-exhausted consultation counters in its existing status. Attempts include
+primaries, consultations and retries; they are not unique message counts or final
+moderation decisions. Smoothed response duration is the existing routing EWMA,
+shown only after a real completed attempt. Old producers without metrics show
+unknown, not zero. Process generation and observation clocks bound the counters;
+cached or expired status is explicitly stale. Neither these metrics nor READY
+prove advertisement accuracy, traffic coverage or confirmed remote deletion.
+
+The original process-status endpoint is unchanged, so old open clients remain
+compatible during the API/static rollout. `confirm-positive`, immediate consultation
+admission, source deadlines and all deletion guards remain unchanged.
 
 ## Flags and first host rollout
 

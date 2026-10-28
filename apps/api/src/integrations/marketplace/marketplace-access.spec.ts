@@ -105,12 +105,22 @@ describe('marketplace fresh access checks', () => {
       ),
     };
   };
-  it('rejects non-pilot identities before any remote lookup', async () => {
+  it('admits a non-pilot administrator only after exact remote rights checks', async () => {
     const { service, max } = make();
-    await expect(service.attest({ ...input, actorUserId: '999' })).rejects.toThrow(
-      ForbiddenException,
+    max.getChatMemberAccess.mockResolvedValue({
+      userId: '999',
+      isBot: false,
+      isAdmin: true,
+      isOwner: false,
+    });
+    await expect(service.attest({ ...input, actorUserId: '999' })).resolves.toEqual({
+      id: 'test-binding',
+    });
+    expect(max.getChatMemberAccess).toHaveBeenCalledWith(
+      '-100',
+      '999',
+      expect.objectContaining({ botId: 'publisher-test', bypassCache: true }),
     );
-    expect(max.getChatSnapshot).not.toHaveBeenCalled();
   });
   it('does not treat a cached Publisher edge as fresh admin authority', async () => {
     const { service, max, database } = make();

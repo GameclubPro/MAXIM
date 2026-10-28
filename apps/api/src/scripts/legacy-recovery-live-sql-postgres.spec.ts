@@ -968,17 +968,48 @@ native('native bounded live SQL inventory and actual plans', () => {
 
   it('exhausts skewed audit metadata pages and refuses unknown future source ancestry', async () => {
     const { request, raw } = await input();
-    await db.auditLog.createMany({
-      data: Array.from({ length: 400 }, (_, index) => ({
-        id: `${prefix}:audit:${String(index).padStart(5, '0')}`,
+    const auditRows = Array.from({ length: 400 }, (_, index) => ({
+      id: `${prefix}:audit:${String(index).padStart(5, '0')}`,
+      chatId: raw.message.recipient.chat_id,
+      actorUserId: 'unrelated',
+      action: 'FUTURE_UNKNOWN_SOURCE',
+      payload: { text: 'Metadata must not export this body' },
+      createdAt: new Date('2099-01-01'),
+    }));
+    await db.auditLog.createMany({ data: auditRows });
+    const foreignId = `${prefix}:audit:00272-foreign`;
+    await db.auditLog.create({
+      data: {
+        id: foreignId,
         chatId: raw.message.recipient.chat_id,
-        actorUserId: 'unrelated',
+        actorUserId: 'unrelated'.repeat(65),
         action: 'FUTURE_UNKNOWN_SOURCE',
-        payload: { text: 'Metadata must not export this body' },
+        payload: {},
         createdAt: new Date('2099-01-01'),
-      })),
+      },
     });
-    const result = await read(request);
+    const readAuditFixture = async (limits = allowance(), includeForeign = false) =>
+      db.$transaction(
+        async (tx) => {
+          // FLAG: A sibling native fixture's invalid metadata can correctly stop the
+          // global inventory before our 400 rows are exhausted. Freeze only this
+          // fixture in a disposable exact-schema table; keep production refusal intact.
+          await tx.$executeRaw`CREATE TEMP TABLE audit_logs (LIKE public.audit_logs INCLUDING ALL) ON COMMIT DROP`;
+          const ids = auditRows.map((row) => row.id);
+          if (includeForeign) ids.push(foreignId);
+          await tx.$executeRaw(Prisma.sql`INSERT INTO audit_logs
+            SELECT * FROM public.audit_logs WHERE id IN (${Prisma.join(ids)})`);
+          await tx.$executeRaw`ANALYZE audit_logs`;
+          await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+          return inventoryLegacyRecoveryLiveSql(tx, request, limits);
+        },
+        { isolationLevel: 'RepeatableRead', timeout: 65_000 },
+      );
+    expect((await readAuditFixture(allowance(), true)).issues).toContainEqual({
+      code: 'sql_metadata_reply_unproved',
+      descriptor: 'sql:audit_logs',
+    });
+    const result = await readAuditFixture();
     expect(result.issues).toContainEqual({
       code: 'sql_source_unresolved',
       descriptor: 'sql:audit_logs',
@@ -991,8 +1022,9 @@ native('native bounded live SQL inventory and actual plans', () => {
       Object.entries(result).filter(([key]) => key !== 'candidates'),
     );
     expect(JSON.stringify(publicProjection)).not.toContain('Metadata must not export this body');
-    const exhausted = await read(request, allowance({ rows: 1500 }));
+    const exhausted = await readAuditFixture(allowance({ rows: 1500 }));
     expect(exhausted.issues.some((issue) => issue.code === 'sql_budget_exceeded')).toBe(true);
+    expect(await db.auditLog.count({ where: { id: foreignId } })).toBe(1);
   });
 
   it('preserves an independent retention source and refuses a different-chat source of the held author', async () => {

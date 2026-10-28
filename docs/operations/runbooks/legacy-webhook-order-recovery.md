@@ -26,9 +26,25 @@ MAX timestamp must fall after the seal and at most one second ahead of receipt t
 and normalized identities, a supported direct shape and the stored semantic key must agree.
 Only an unqueued RECEIVED row with zero attempts and no claims qualifies. The exact old
 `Legacy scope installation is not sealed` preparation deferral may remain in the immutable
-snapshot; other errors, prior effects, unknown shapes and other event types stay fenced. This
+snapshot; other errors, prior effects, unknown shapes and other event types cannot use this join-only path. This
 does not install new holds, settle an old execution, update membership, send a welcome or count
 as successful moderation. Existing permanent protections and administrator-command checks remain.
+
+A pristine post-seal official `user_removed` has a separate observation-first recovery.
+It must preserve the original removed subject (`user.user_id`, never `admin_id`), exact
+parser result, event time and every matching sealed scope. Before receipt closure,
+normal monotonic SQL membership-denial logic persists the leave observation, removes
+only superseded administrator grants, publishes the access epoch to Redis and invalidates
+the exact membership cache. Newer grants survive. This work runs outside receipt-lock
+transactions; failure keeps the receipt retryable with the finite original hold deferral.
+After observation, the reader locks and revalidates the same original receipt digest,
+all semantic aliases, claim absence, Publisher journals and independent hold families.
+Only then may it write the existing `POST_SEAL_MEMBER` / `NO_REPLAY_HELD` proof.
+Ingress alone never closes this type. No ordinary handler, sanction, welcome, binding
+activation, suggestion wake, MAX call or historical execution is admitted. Restart and
+duplicate preparation repeat only idempotent negative observations. Queued, prepared,
+started, malformed, unsealed and concurrently claimed sources remain held. The native
+held-removal and membership/full-path regressions cover this boundary.
 The join may retain either its exact ordinary semantic key or the exact same-bot/source
 `publisher-observation:v1` key. Foreign bot/source keys and unknown namespace versions remain
 blocked. This recognizes receipt identity only: it grants no Publisher or moderation authority,

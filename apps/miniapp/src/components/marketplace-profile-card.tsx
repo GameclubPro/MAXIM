@@ -1,5 +1,14 @@
-import { lazy, Suspense, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
-import { notifyManager, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import { notifyManager, useQueryClient } from '@tanstack/react-query';
+import { useLocation, useSearchParams } from 'react-router';
 import type { MarketplaceProfileState } from '@maxim/contracts/marketplace-integration';
 import { marketplaceProfileTitle, marketplaceQueryKey } from '../lib/marketplace-profile-summary';
 import type { ApiTransport } from '../lib/api/transport';
@@ -19,7 +28,21 @@ export type MarketplaceProfileCardProps = {
 
 export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
   const smartphone = useSmartphoneLayout();
-  const [open, setOpen] = useState(false);
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const requested = params.get('focus') === 'birzhik';
+  const [open, setOpen] = useState(requested);
+  useEffect(() => {
+    if (requested) setOpen(true);
+  }, [requested, location.key]);
+  const close = () => {
+    setOpen(false);
+    if (requested) {
+      const next = new URLSearchParams(params);
+      next.delete('focus');
+      setParams(next, { replace: true });
+    }
+  };
   const cache = useQueryClient();
   const profileKey = useMemo(
     () => marketplaceQueryKey(props.profile, props.entityType, props.entityId),
@@ -44,18 +67,6 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
       [cache, profileKey],
     ),
   );
-  const capability = useQuery({
-    queryKey: ['marketplace-profile-capability', props.profile],
-    queryFn: async () => {
-      const result = await props.api.request('/marketplace/capability');
-      return (
-        !!result && typeof result === 'object' && 'available' in result && result.available === true
-      );
-    },
-    staleTime: 30_000,
-    retry: false,
-  });
-  if (!capability.data || capability.isError) return null;
   const id = `marketplace-profile-${props.profile}-${props.entityType}`;
   return (
     <section
@@ -71,8 +82,8 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
             type="button"
             className="settings-section__toggle is-stateless"
             data-settings-navigation-entry="true"
-            data-settings-search="Профиль на бирже"
-            aria-label="Профиль на бирже"
+            data-settings-search="Биржик"
+            aria-label="Биржик"
             aria-expanded={open}
             aria-controls={id}
             onClick={() => setOpen(true)}
@@ -81,7 +92,7 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
               <AppIcon icon="Shop" />
             </span>
             <span className="settings-section__toggle-main">
-              <span className="settings-section__title">Профиль на бирже</span>
+              <span className="settings-section__title">Биржик</span>
             </span>
             <span className="settings-section__chevron" aria-hidden>
               <AppIcon icon="NavArrowRight" />
@@ -91,13 +102,13 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
       ) : (
         <button
           className="marketplace-profile-card__open"
-          aria-label="Профиль на бирже"
+          aria-label="Биржик"
           aria-expanded={open}
           aria-controls={id}
           onClick={() => setOpen(true)}
         >
           <span>
-            <strong>Профиль на бирже</strong>
+            <strong>Биржик</strong>
             <small>
               {known?.data
                 ? marketplaceProfileTitle(known.data, known.status !== 'error')
@@ -109,7 +120,7 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
       )}
       {open && (
         <Suspense fallback={<SkeletonCard lines={5} />}>
-          <Panel {...props} id={id} onClose={() => setOpen(false)} />
+          <Panel {...props} id={id} onClose={close} />
         </Suspense>
       )}
     </section>

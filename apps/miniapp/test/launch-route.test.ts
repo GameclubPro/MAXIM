@@ -131,6 +131,30 @@ test('opens only the exact Publisher channel VK review workspace', () => {
   }
 });
 
+test('Birzhik return opens only the exact entity module in either bot profile', () => {
+  for (const route of [
+    '/chat/-100/settings?focus=birzhik',
+    '/channel/-100/settings?focus=birzhik',
+    '/publisher/chat/-100?focus=birzhik',
+    '/publisher/channel/-100?focus=birzhik',
+  ]) {
+    assignWindow(
+      `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(encodeRouteStartParam(route))}`,
+    );
+    assert.equal(resolveLaunchRoute(''), route);
+  }
+  for (const route of [
+    '/publisher/chat/-100?focus=birzhik&admin=1',
+    '/chat/-100/settings?focus=birzhik&returnUrl=https://example.com',
+    '/publisher/chat/-100?focus=birzhik&focus=vk',
+  ]) {
+    assignWindow(
+      `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(encodeRouteStartParam(route))}`,
+    );
+    assert.equal(resolveLaunchRoute(''), null);
+  }
+});
+
 test('rejects widened Publisher auto-reply route payloads', () => {
   assignWindow(
     `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(

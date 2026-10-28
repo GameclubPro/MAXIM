@@ -1,5 +1,11 @@
 import { z } from 'zod';
 export {
+  commercialAiPoolDiagnosticsSchema,
+  safetyDeskCommercialAiPoolResponseSchema,
+  type CommercialAiPoolDiagnostics,
+  type SafetyDeskCommercialAiPoolResponse,
+} from './safety-desk-commercial-ai-pool.js';
+export {
   safetyDeskCommercialAiResponseSchema,
   type SafetyDeskCommercialAiResponse,
 } from './safety-desk-commercial-ai.js';

@@ -1,3 +1,4 @@
+import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
 import type { BotSpeechStyle } from '@maxim/contracts/bot-speech';
 import type { MaxActionLedgerContext, MaxSendMessageOptions } from '../max/max-client.service';
 import { withModerationReleaseButton } from './moderation-release-callback.util';
@@ -55,12 +56,16 @@ export async function deliverSanctionNotice(params: {
       chatId: input.chatId,
       botId: input.botId,
       text: params.text,
-      messageOptions: input.sanctionEventId
-        ? withModerationReleaseButton(input.botMessageOptions, {
-            action: params.action,
-            sanctionEventId: input.sanctionEventId,
-          })
-        : input.botMessageOptions,
+      messageOptions: withMarketplaceModerationMessage(
+        input.sanctionEventId
+          ? withModerationReleaseButton(input.botMessageOptions, {
+              action: params.action,
+              sanctionEventId: input.sanctionEventId,
+            })
+          : input.botMessageOptions,
+        input.chatId,
+        'MODERATION_NOTICE',
+      ),
       deleteBotMessagesEnabled: input.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: input.deleteBotMessagesDelayMinutes,
       userFacing: true,

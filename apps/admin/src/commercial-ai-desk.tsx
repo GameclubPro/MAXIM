@@ -1,6 +1,7 @@
 import type { SafetyDeskCommercialAiResponse } from '@maxim/contracts/safety-desk';
 import { safetyDeskApiClient } from './safety-desk-api-client';
 import { ObservationPanel, observationTime, useObservationSnapshot } from './observation-view';
+import { CommercialAiPoolDesk } from './commercial-ai-pool-desk';
 
 const load = (code: string) => safetyDeskApiClient.fetchCommercialAiRuntime(code);
 const modes: Record<SafetyDeskCommercialAiResponse['mode'], string> = {
@@ -202,8 +203,11 @@ export function CommercialAiSnapshot({ snapshot }: { snapshot: SafetyDeskCommerc
 export function CommercialAiDesk(props: { accessCode: string; refreshToken: number }) {
   const view = useObservationSnapshot(load, props.accessCode, props.refreshToken);
   return (
-    <ObservationPanel title="Рекламный ИИ" {...view}>
-      {view.snapshot && <CommercialAiSnapshot snapshot={view.snapshot} />}
-    </ObservationPanel>
+    <>
+      <ObservationPanel title="Рекламный ИИ" {...view}>
+        {view.snapshot && <CommercialAiSnapshot snapshot={view.snapshot} />}
+      </ObservationPanel>
+      <CommercialAiPoolDesk {...props} />
+    </>
   );
 }

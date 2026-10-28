@@ -83,7 +83,7 @@ Commands:
   eraser-nginx [--apply]       Preview or apply only Lastik routes in the existing nginx site
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
-  commercial-llm install|replace|enable|disable|stop [--apply]
+  commercial-llm install|replace|upgrade-slots|enable|disable|stop [--apply]
   commercial-llm status|smoke|check-client|check-workstation|check-workstation-offline
   commercial-llm workstation-bridge
   commercial-llm workstation-pool-bridge pc-a-4b|pc-b-9b
@@ -565,9 +565,9 @@ commercial_llm() {
       [[ $# -le 1 ]] || { echo 'Unexpected commercial-llm arguments.' >&2; return 2; }
       remote_exec "$(shell_quote_args bash ./infra/scripts/vps-commercial-llm.sh "$operation")"
       ;;
-    install|replace|stop|enable|disable)
+    install|replace|upgrade-slots|stop|enable|disable)
       [[ $# -le 2 && ( $# -eq 1 || "${2:-}" == --apply ) ]] || {
-        echo 'Usage: commercial-llm install|replace|enable|disable|stop [--apply]' >&2
+        echo 'Usage: commercial-llm install|replace|upgrade-slots|enable|disable|stop [--apply]' >&2
         return 2
       }
       target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"

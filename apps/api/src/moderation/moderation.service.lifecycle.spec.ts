@@ -4384,6 +4384,11 @@ describe('ModerationService', () => {
     await service.handleUpdate(createServiceUserJoinedUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({
+        marketplacePublication: { entityId: 'chat-1', purpose: 'GREETING' },
+      }),
+    );
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       `Добро пожаловать, ${userMentionHtml('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
@@ -4623,6 +4628,7 @@ describe('ModerationService', () => {
           url: 'https://max.ru/chats/chat-1/message/999',
         },
         textFormat: 'html',
+        marketplacePublication: { entityId: 'chat-1', purpose: 'GREETING' },
       },
     );
   });

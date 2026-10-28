@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
   "baselineThrough": "20261028231000_karavan_setup_cancellation",
-  "baselineNamesSha256": "adf5a61a700d6384a2ebbe05bdd80a80e09990c963e89455f1789ca865d45ce5",
-  "baselineContentsSha256": "456eec2ad31fe15937f20962b52cd37088957cabb8bf47446d95379d0b801ac5",
+  "baselineNamesSha256": "70522e533084ad37fd0eec61b7ea27f7442dfc8c856ae440a8a931b98237023d",
+  "baselineContentsSha256": "4bbf3c4ba11a1c76e54a7b110799befa74d69b0aa8c9086acf61c8dc02f11a1d",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -151,6 +151,11 @@
       "reason": "Reviewed static additive trigger preserves a monotonic commerce revocation epoch on exact bot removal or proven permission denial. No DROP, DELETE, dynamic SQL or data backfill. Indexes are on new empty tables.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Default-disabled protocol and constant-zero additive column remain readable by older API roles. Existing membership writers automatically fence revoke-restore races. Before activation all action roles must understand the persisted v2 publication guard; rollback to older readers is forbidden while v2 queued jobs remain."
+    },
+    "20261028010000_add_marketplace_button_policies": {
+      "reason": "Reviewed static additive triggers remember exact binding/administrator access loss, clear the previous publication flag on known loss, and mirror only a proven legacy toggle-off receipt into PUBLICATIONS. A current-binding seed clears known REVOKED/USER_DENIED/member demotions before lazy import. No dynamic SQL, DROP, DELETE, retained history rewrite or dispatch mutation exists.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Release prerequisite: deploy and verify the compatible Publisher terminal-writer Chat-before-edge source change on every API role before applying this migration. This avoids introducing the new edge-to-binding trigger while an old binding-before-edge webhook can meet an old edge-first terminal writer. New policy tables start empty. Bounded import preserves only the previous publication scope; every other context starts off. Exact legacy toggle-off receipts fence canonical PUBLICATIONS during the rolling release, with binding-before-policy lock order. Canonical PUBLICATIONS changes clear superseded legacy flags; known denial clears those flags before a later access regrant. The applied-migration rollback guard rejects pre-feature sources. Old statistics-revoke writers conservatively invalidate authority during mixed versions; only the updated writers preserve independent button access, and no automatic consent restoration is promised for an old revoke. New statistics presentation retains REVOKED after explicit withdrawal even when independent access refresh succeeds. One transaction first acquires binding ACCESS EXCLUSIVE and source edge/activity/receipt SHARE ROW EXCLUSIVE locks with NOWAIT; any occupied relation aborts before DDL without lock upgrades or waiting cycles. The current-binding seed records persisted REVOKED timestamps and current explicit denied/member edges and clears append/public proof before later attestation can rewrite updated_at. Unknown/transient evidence, statistics consent, history and receipts remain unchanged; no historical membership events are inferred."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -267,6 +272,9 @@
     },
     "20261028230000_karavan_private_publication_choice": {
       "reason": "Every ordinary index belongs only to the new empty private choice table created in this additive migration. Existing tables are not indexed, rewritten or backfilled."
+    },
+    "20261028010000_add_marketplace_button_policies": {
+      "reason": "The refresh index is created only on a new empty button-context table. The seed enumerates current bindings and indexed exact actor/platform access edges; retained event, statistics and receipt history is neither scanned nor backfilled. No existing history is indexed. Legacy publication opt-ins without known loss are reconciled in bounded runtime batches."
     }
   }
 }

@@ -2844,7 +2844,7 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Пользователь](max://user/user-3) включён бан.',
-      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1', 'chat-1'),
       { immediate: true },
     );
     expect(result).toEqual({
@@ -5976,7 +5976,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Нарушитель](max://user/user-2) включён бан.',
-      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1', 'chat-1'),
       {
         immediate: true,
         trafficClass: 'interactive',
@@ -6302,7 +6302,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Нарушитель](max://user/user-2) включён бан.',
-      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1', 'chat-1'),
       expect.objectContaining({
         immediate: true,
         botId: 'bot-5',
@@ -6362,7 +6362,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Участник [Нарушитель](max://user/user-2) удалён из чата.',
-      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1', 'chat-1'),
       expect.objectContaining({
         immediate: true,
         trafficClass: 'interactive',
@@ -6580,7 +6580,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Мут включён без срока.\nУчастник: [Нарушитель](max://user/user-2)',
-      moderationReleaseMessageOptions('UNMUTE', 'moderation-event-1'),
+      moderationReleaseMessageOptions('UNMUTE', 'moderation-event-1', 'chat-1'),
       {
         immediate: true,
         trafficClass: 'interactive',
@@ -7426,7 +7426,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Для участника [Пользователь](max://user/user-3) включён бан.',
-      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1'),
+      moderationReleaseMessageOptions('UNBAN', 'moderation-event-1', 'chat-1'),
       { immediate: true },
     );
   });

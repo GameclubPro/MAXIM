@@ -20,6 +20,10 @@ import {
 import { MarketplacePublisherAccessProcessor } from '../integrations/marketplace/marketplace-publisher-access.processor';
 import { MarketplaceAccessService } from '../integrations/marketplace/marketplace-access.service';
 import { StatisticsAccessDemandService } from '../integrations/marketplace/statistics-access-demand.service';
+import { MarketplaceNavigationService } from '../integrations/marketplace/marketplace-navigation.service';
+import { MarketplaceNavigationController } from '../integrations/marketplace/marketplace.controller';
+import { MarketplaceProfileAccessService } from '../integrations/marketplace/marketplace-profile-access.service';
+import { MarketplaceButtonPolicyService } from '../integrations/marketplace/marketplace-button-policy.service';
 import { MarketplaceProfileService } from '../integrations/marketplace/marketplace-profile.service';
 import { MarketplaceStatisticsService } from '../integrations/marketplace/marketplace-statistics.service';
 import { MarketplaceNativeProjectionService } from '../integrations/marketplace/marketplace-native-projection.service';
@@ -161,6 +165,7 @@ import { SafetyDeskController } from './safety-desk.controller';
 import { SafetyDeskService } from './safety-desk.service';
 import { SafetyDeskObservabilityController } from './safety-desk-observability.controller';
 import { SafetyDeskCommercialAiService } from './safety-desk-commercial-ai.service';
+import { SafetyDeskCommercialAiPoolService } from './safety-desk-commercial-ai-pool.service';
 import { SafetyDeskWebhookCohortService } from './safety-desk-webhook-cohort.service';
 import { SafetyDeskDeleteEvidenceService } from './safety-desk-delete-evidence.service';
 import { SafetyDeskPublicationCohortService } from './safety-desk-publication-cohort.service';
@@ -223,6 +228,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     StatisticsExchangeV3Controller,
     StatisticsExchangeOwnerController,
     MarketplaceProfileController,
+    MarketplaceNavigationController,
     AdminManagedEntitiesController,
     ManagedEntityPresentationController,
     ManagedEntityNetworksController,
@@ -262,6 +268,9 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     MarketplacePublisherAccessQueueService,
     ...(roleRunsPublisher(getAppRole()) ? [MarketplacePublisherAccessProcessor] : []),
     MarketplaceProfileService,
+    MarketplaceNavigationService,
+    MarketplaceButtonPolicyService,
+    MarketplaceProfileAccessService,
     MarketplaceStatisticsService,
     MarketplaceCollectorService,
     MarketplaceNativeProjectionService,
@@ -373,6 +382,7 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     SafetyDeskService,
     SafetyDeskRetentionService,
     SafetyDeskCommercialAiService,
+    SafetyDeskCommercialAiPoolService,
     SafetyDeskWebhookCohortService,
     SafetyDeskDeleteEvidenceService,
     SafetyDeskPublicationCohortService,

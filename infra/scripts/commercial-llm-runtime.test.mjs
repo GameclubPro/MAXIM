@@ -4,15 +4,23 @@ import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import { commercialLlmCommand } from './commercial-llm-profiles.mjs';
+import { commercialLlmCommand, commercialLlmCommandSha256 } from './commercial-llm-profiles.mjs';
 import {
   assertCommercialLlmContainer,
   assertCommercialLlmTemplate,
   assertCommercialLlmTransition,
   replaceCommercialLlmGeneration,
   COMMERCIAL_LLM_LEGACY_RUNTIME as legacyPin,
+  COMMERCIAL_LLM_SLOTS_RUNTIME as slotsPin,
   assertCommercialLlmImage,
   assertCommercialLlmReceipt,
+  assertCommercialLlmIdleSlots,
+  parseCommercialLlmModelJson,
+  assertCommercialLlmSlotsTransition,
+  commercialLlmReceiptProfile,
+  commercialLlmContainerProfile,
+  commercialLlmCreationOverride,
+  upgradeCommercialLlmSlots,
   checkCommercialLlmCapacity,
   COMMERCIAL_LLM_RUNTIME as pin,
   commercialLlmSyntheticRequest,
@@ -102,7 +110,7 @@ test('attests the actual Docker 29 manifest identity and rejects its distinct OC
   }
 });
 
-function container() {
+function container(profile = pin) {
   return {
     Id: 'a'.repeat(64),
     Image: pin.imageId,
@@ -120,7 +128,7 @@ function container() {
         'LLAMA_ARG_HOST=0.0.0.0',
         'LLAMA_ARG_PORT=8080',
       ],
-      Cmd: service.command,
+      Cmd: commercialLlmCommand(profile),
     },
     State: { Running: true, Health: { Status: 'healthy' } },
     HostConfig: {
@@ -173,6 +181,8 @@ test('production inference stays optional, private and limited to its single bac
     'http://gemma-commercial-shadow:8080',
   );
   assert.equal(assertCommercialLlmContainer(container()), 'a'.repeat(64));
+  assert.deepEqual(service.command, commercialLlmCommand(pin));
+  assert.equal(assertCommercialLlmContainer(container(slotsPin)), 'a'.repeat(64));
 });
 
 test('runtime attestation refuses wrong source, public exposure, secret inheritance and relaxed containment', () => {
@@ -368,6 +378,114 @@ test('receipts retain exact model and upstream image provenance', () => {
   );
 });
 
+test('historical and slots generations require their exact command and receipt capability', () => {
+  const historical = recoveryReceipt();
+  const capable = {
+    ...historical,
+    runtimeProfile: slotsPin.runtimeProfile,
+    commandSha256: commercialLlmCommandSha256(slotsPin),
+  };
+  assert.equal(commercialLlmReceiptProfile(historical), pin);
+  assert.equal(commercialLlmReceiptProfile(capable), slotsPin);
+  assertCommercialLlmReceipt(capable);
+  assert.equal(commercialLlmContainerProfile(container()), pin);
+  assert.equal(commercialLlmContainerProfile(container(slotsPin)), slotsPin);
+  assert.throws(() => assertCommercialLlmReceipt(historical, slotsPin), /receipt_refused/u);
+  assert.throws(() => assertCommercialLlmReceipt(capable, pin), /receipt_refused/u);
+  assert.throws(() => assertCommercialLlmContainer(container(), { profile: slotsPin }));
+  assert.throws(() => assertCommercialLlmContainer(container(slotsPin), { profile: pin }));
+  for (const receipt of [
+    { ...historical, runtimeProfile: slotsPin.runtimeProfile },
+    { ...historical, commandSha256: commercialLlmCommandSha256(slotsPin) },
+    { ...capable, runtimeProfile: 'unknown' },
+    { ...capable, commandSha256: commercialLlmCommandSha256(pin) },
+  ])
+    assert.throws(() => assertCommercialLlmReceipt(receipt), /receipt_refused/u);
+  assert.notEqual(commercialLlmCommandSha256(pin), commercialLlmCommandSha256(slotsPin));
+  assert.equal(commercialLlmCommand(pin).includes('--no-slots'), true);
+  assert.equal(commercialLlmCommand(legacyPin).includes('--no-slots'), true);
+  assert.equal(commercialLlmCommand(slotsPin).includes('--slots'), true);
+});
+
+test('creation overrides contain only a fixed reviewed command and preserve old replacement semantics', () => {
+  for (const profile of [pin, slotsPin]) {
+    assert.deepEqual(JSON.parse(commercialLlmCreationOverride(profile)), {
+      services: { [pin.service]: { command: commercialLlmCommand(profile) } },
+    });
+  }
+  assert.throws(() => commercialLlmCreationOverride({ ...pin }), /creation_profile_refused/u);
+  assert.throws(() => commercialLlmCreationOverride(legacyPin), /creation_profile_refused/u);
+  for (const profile of [pin, slotsPin]) {
+    const rendered = JSON.parse(
+      execFileSync(
+        'docker',
+        [
+          'compose',
+          '--env-file',
+          '.env.example',
+          '-p',
+          'infra',
+          '-f',
+          'infra/docker-compose.yml',
+          '-f',
+          '-',
+          '--profile',
+          'commercial-llm',
+          'config',
+          '--format',
+          'json',
+        ],
+        {
+          cwd: root,
+          encoding: 'utf8',
+          input: commercialLlmCreationOverride(profile),
+          env: { ...process.env, MAXIM_COMPOSE_SERVICE_ENV_FILE: '../.env.example' },
+        },
+      ),
+    );
+    assert.deepEqual(rendered.services[pin.service], {
+      ...service,
+      command: commercialLlmCommand(profile),
+    });
+  }
+});
+
+test('model JSON parser never exposes malformed private slot text in errors or causes', () => {
+  const marker = 'PRIVATE_SLOT_MARKER';
+  assert.deepEqual(parseCommercialLlmModelJson('[{"id":0,"is_processing":false}]'), [
+    { id: 0, is_processing: false },
+  ]);
+  for (const malformed of [marker, `[{"private":"${marker}"`, '{']) {
+    assert.throws(
+      () => parseCommercialLlmModelJson(malformed),
+      (error) => {
+        assert.equal(error.message, 'commercial_llm_model_json_refused');
+        assert.equal(Object.hasOwn(error, 'cause'), false);
+        assert.equal(`${error.message}\n${error.stack}`.includes(marker), false);
+        return true;
+      },
+    );
+  }
+});
+
+test('idle observation rejects health-shaped, busy, missing, malformed and multiple slots', () => {
+  const idle = [{ id: 0, n_ctx: 4096, is_processing: false }];
+  assert.equal(assertCommercialLlmIdleSlots(idle), idle);
+  for (const value of [
+    { status: 'ok' },
+    null,
+    [],
+    [...idle, ...idle],
+    [{}],
+    [{ id: 0, n_ctx: 4096, is_processing: true }],
+    [{ id: 0, n_ctx: 4096, is_processing: 'false' }],
+    [{ id: 0, n_ctx: 4096 }],
+    [{ id: 1, n_ctx: 4096, is_processing: false }],
+    [{ id: 0, n_ctx: 2048, is_processing: false }],
+  ])
+    assert.throws(() => assertCommercialLlmIdleSlots(value), /idle_slots_unproved/u);
+});
+
 test('production mutators keep exact-green admission and the persistent protected lock', () => {
   const wrapper = readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8');
   const host = readFileSync(resolve(root, 'infra/scripts/vps-commercial-llm.sh'), 'utf8');
@@ -380,7 +498,7 @@ test('production mutators keep exact-green admission and the persistent protecte
   assert.doesNotMatch(host, /FLUSH|prune|remove-orphans|force-recreate/u);
 });
 
-function recoveryReceipt() {
+function recoveryReceipt(profile = pin) {
   return {
     schemaVersion: 1,
     sourceSha: 'f'.repeat(40),
@@ -403,6 +521,12 @@ function recoveryReceipt() {
     generationThreads: pin.cpuLimit,
     reasoning: false,
     smoke: 'closed-synthetic-json-v1',
+    ...(profile === slotsPin
+      ? {
+          runtimeProfile: slotsPin.runtimeProfile,
+          commandSha256: commercialLlmCommandSha256(slotsPin),
+        }
+      : {}),
   };
 }
 
@@ -528,6 +652,15 @@ test('replacement journals the exact old receipt, stops it before target creatio
   assert.equal(h.calls.filter((x) => x === 'create_target').length, 1);
 });
 
+test('a completed historical replacement refuses the slots command even with its old receipt and ID', async () => {
+  const h = replacementHarness();
+  await h.run();
+  h.current.Config.Cmd = commercialLlmCommand(slotsPin);
+  const calls = [...h.calls];
+  await assert.rejects(h.run(), /runtime_attestation_refused/u);
+  assert.deepEqual(h.calls, calls);
+});
+
 for (const boundary of [
   'prepare',
   'prepared',
@@ -589,6 +722,263 @@ test('replacement refuses foreign receipts, generations, containment and prepare
   );
 });
 
+function slotsUpgradeHarness(failure) {
+  let current = container();
+  let receipt = recoveryReceipt();
+  let transition;
+  let previousTransition;
+  let failed = false;
+  const calls = [];
+  const fail = (point) => {
+    if (failure === point && !failed) {
+      failed = true;
+      throw new Error(`interrupted_${point}`);
+    }
+  };
+  const io = {
+    inspect: () => structuredClone(current),
+    prepare: () => {
+      calls.push('prepare');
+      fail('prepare');
+    },
+    stop: (id) => {
+      assert.equal(id, 'a'.repeat(64));
+      calls.push('stop_old');
+      current.State.Running = false;
+      fail('stop');
+    },
+    remove: (id) => {
+      assert.equal(id, 'a'.repeat(64));
+      assert.equal(current.State.Running, false);
+      calls.push('remove_old');
+      current = null;
+      fail('remove');
+    },
+    create: () => {
+      assert.equal(current, null);
+      calls.push('create_target');
+      current = container(slotsPin);
+      current.Id = 'b'.repeat(64);
+      fail('create');
+    },
+    start: (id) => {
+      assert.equal(id, current.Id);
+      current.State.Running = true;
+    },
+    waitReady: (id) => {
+      assert.equal(id, current.Id);
+      fail('ready');
+    },
+    smoke: (id) => {
+      assert.equal(id, current.Id);
+      fail('smoke');
+      calls.push('smoke_target');
+      return structuredClone(current);
+    },
+    record: (value) => {
+      calls.push('receipt');
+      receipt = structuredClone(value);
+      fail('receipt');
+    },
+    recordTransition: (value) => {
+      assertCommercialLlmSlotsTransition(value, 'f'.repeat(40));
+      calls.push(`journal_${value.phase}`);
+      transition = structuredClone(value);
+      fail(value.phase);
+    },
+  };
+  return {
+    io,
+    calls,
+    run: (options = {}) =>
+      upgradeCommercialLlmSlots({
+        sourceSha: 'f'.repeat(40),
+        receipt,
+        transition,
+        previousTransition,
+        io,
+        apply: true,
+        ...options,
+      }),
+    set previousTransition(value) {
+      previousTransition = value;
+    },
+    get receipt() {
+      return receipt;
+    },
+    get transition() {
+      return transition;
+    },
+    get current() {
+      return current;
+    },
+  };
+}
+
+test('slots preview attests the current generation without preparing, journaling or stopping it', async () => {
+  const h = slotsUpgradeHarness();
+  const preview = await h.run({ apply: false });
+  assert.equal(preview.result, 'preview');
+  assert.equal(preview.previousContainerId, h.current.Id);
+  assert.equal(preview.targetRuntimeProfile, slotsPin.runtimeProfile);
+  assert.notEqual(preview.previousCommandSha256, preview.targetCommandSha256);
+  assert.deepEqual(h.calls, []);
+  h.current.Config.Cmd = [...h.current.Config.Cmd, '--metrics'];
+  await assert.rejects(h.run({ apply: false }), /runtime_attestation_refused/u);
+  assert.deepEqual(h.calls, []);
+});
+
+test('same-model slots upgrade records capability after smoke and retains its original receipt', async () => {
+  const h = slotsUpgradeHarness();
+  const before = structuredClone(h.receipt);
+  assert.equal((await h.run()).result, 'upgraded');
+  assert.deepEqual(h.transition.previousReceipt, before);
+  assert.equal(h.receipt.modelSha256, before.modelSha256);
+  assert.notEqual(h.receipt.containerId, before.containerId);
+  assert.equal(h.receipt.runtimeProfile, slotsPin.runtimeProfile);
+  assert.equal(h.receipt.commandSha256, commercialLlmCommandSha256(slotsPin));
+  assert.deepEqual(h.calls, [
+    'prepare',
+    'journal_prepared',
+    'stop_old',
+    'remove_old',
+    'create_target',
+    'journal_started',
+    'smoke_target',
+    'receipt',
+    'journal_complete',
+  ]);
+  const calls = [...h.calls];
+  assert.equal((await h.run()).result, 'already_upgraded');
+  assert.deepEqual(h.calls, calls);
+});
+
+for (const boundary of [
+  'prepare',
+  'prepared',
+  'stop',
+  'remove',
+  'create',
+  'started',
+  'ready',
+  'smoke',
+  'receipt',
+  'complete',
+]) {
+  test(`slots upgrade resumes interruption after ${boundary} without repeating container replacement`, async () => {
+    const h = slotsUpgradeHarness(boundary);
+    await assert.rejects(h.run(), /interrupted_/u);
+    if (['prepare', 'prepared'].includes(boundary)) assert.equal(h.current.State.Running, true);
+    if (['ready', 'smoke'].includes(boundary)) assert.equal(h.receipt.runtimeProfile, undefined);
+    await h.run();
+    assert.equal(h.transition.phase, 'complete');
+    assert.equal(h.current.Id, h.receipt.containerId);
+    assert.equal(h.calls.filter((value) => value === 'remove_old').length, 1);
+    assert.equal(h.calls.filter((value) => value === 'create_target').length, 1);
+  });
+}
+
+test('slots upgrade refuses source, receipt, profile and captured-generation drift before mutation', async () => {
+  for (const mutate of [
+    (h) => {
+      h.receipt.containerId = 'e'.repeat(64);
+    },
+    (h) => {
+      h.receipt.commandSha256 = commercialLlmCommandSha256(slotsPin);
+    },
+    (h) => {
+      h.current.HostConfig.PortBindings = { '8080/tcp': [] };
+    },
+    (h) => {
+      h.current.Config.Cmd = commercialLlmCommand(slotsPin);
+    },
+    (h) => {
+      h.io.prepare = () => {
+        h.current.Id = 'e'.repeat(64);
+      };
+    },
+  ]) {
+    const h = slotsUpgradeHarness();
+    mutate(h);
+    await assert.rejects(h.run());
+    assert.equal(h.calls.includes('stop_old'), false);
+    assert.equal(h.calls.includes('create_target'), false);
+  }
+  for (const mutate of [
+    (h) => {
+      h.current.Id = 'c'.repeat(64);
+    },
+    (h) => {
+      h.current.Config.Cmd = commercialLlmCommand(pin);
+    },
+    (h) => {
+      h.transition.targetCommandSha256 = commercialLlmCommandSha256(pin);
+    },
+    (h) => {
+      h.transition.previousReceipt.containerId = 'c'.repeat(64);
+    },
+    (h) => {
+      h.transition.sourceSha = 'e'.repeat(40);
+    },
+    (h) => {
+      h.transition.kind = 'gemma4-to-qwen35-9b-v1';
+    },
+  ]) {
+    const h = slotsUpgradeHarness('smoke');
+    await assert.rejects(h.run(), /interrupted_smoke/u);
+    const calls = [...h.calls];
+    mutate(h);
+    await assert.rejects(h.run());
+    assert.deepEqual(h.calls, calls);
+  }
+});
+
+test('slots upgrade preserves a completed predecessor journal and refuses an unsettled predecessor', async () => {
+  const prior = replacementHarness();
+  await prior.run();
+  const predecessor = { ...prior.transition, targetContainerId: 'a'.repeat(64) };
+  const before = JSON.stringify(predecessor);
+  const h = slotsUpgradeHarness();
+  h.previousTransition = predecessor;
+  await h.run();
+  assert.equal(JSON.stringify(predecessor), before);
+  assert.notEqual(h.transition.kind, predecessor.kind);
+  for (const previousTransition of [
+    { ...predecessor, phase: 'started' },
+    { ...predecessor, targetContainerId: 'c'.repeat(64) },
+  ]) {
+    const failed = slotsUpgradeHarness();
+    failed.previousTransition = previousTransition;
+    await assert.rejects(failed.run(), /predecessor_transition_unsettled/u);
+    assert.deepEqual(failed.calls, []);
+  }
+});
+
+test('a completed slots transition cannot adopt a foreign target receipt or a replacement generation', async () => {
+  for (const mutate of [
+    (h) => {
+      h.receipt.sourceSha = 'e'.repeat(40);
+    },
+    (h) => {
+      h.receipt.commandSha256 = commercialLlmCommandSha256(pin);
+    },
+    (h) => {
+      h.current.Id = 'c'.repeat(64);
+    },
+    (h) => {
+      h.receipt.state = 'stopped';
+      h.current.State.Running = false;
+    },
+  ]) {
+    const h = slotsUpgradeHarness();
+    await h.run();
+    const calls = [...h.calls];
+    mutate(h);
+    await assert.rejects(h.run());
+    assert.deepEqual(h.calls, calls);
+  }
+});
+
 test('embedded template and application model provenance cannot silently drift', () => {
   for (const props of [{}, { chat_template: 'different' }, { chat_template: null }])
     assert.throws(() => assertCommercialLlmTemplate(props), /template_identity_refused/u);
@@ -604,12 +994,13 @@ test('embedded template and application model provenance cannot silently drift',
 });
 
 function recoveryIo({
+  profile = pin,
   running = true,
   failSmoke = false,
   failArtifacts = false,
   replaceAfterArtifacts = false,
 } = {}) {
-  const state = container();
+  const state = container(profile);
   state.State.Running = running;
   state.State.Health.Status = running ? 'healthy' : 'unhealthy';
   const calls = [];
@@ -683,6 +1074,53 @@ test('interrupted unrecorded install succeeds only after exact artifacts, readin
     observed.calls.filter((call) => order.includes(call)),
     order,
   );
+});
+
+test('ordinary recovery and stop preserve both pinned configurations without upgrading an existing generation', async () => {
+  for (const profile of [pin, slotsPin]) {
+    const observed = recoveryIo({ profile, running: false });
+    const receipt = { ...recoveryReceipt(profile), state: 'stopped' };
+    await reconcileCommercialLlmGeneration({
+      operation: 'install',
+      sourceSha: 'e'.repeat(40),
+      receipt,
+      io: observed.io,
+    });
+    assert.equal(observed.receipts[0].containerId, receipt.containerId);
+    assert.equal(observed.receipts[0].sourceSha, receipt.sourceSha);
+    assert.equal(commercialLlmReceiptProfile(observed.receipts[0]), profile);
+    assert.deepEqual(observed.state.Config.Cmd, commercialLlmCommand(profile));
+    await reconcileCommercialLlmGeneration({
+      operation: 'stop',
+      sourceSha: 'e'.repeat(40),
+      receipt: observed.receipts[0],
+      io: observed.io,
+    });
+    assert.equal(observed.receipts[1].state, 'stopped');
+    assert.equal(commercialLlmReceiptProfile(observed.receipts[1]), profile);
+  }
+  const unrecorded = recoveryIo({ profile: slotsPin });
+  await reconcileCommercialLlmGeneration({
+    operation: 'install',
+    sourceSha: 'e'.repeat(40),
+    io: unrecorded.io,
+  });
+  assert.equal(unrecorded.receipts[0].runtimeProfile, slotsPin.runtimeProfile);
+  assert.equal(unrecorded.receipts[0].commandSha256, commercialLlmCommandSha256(slotsPin));
+});
+
+test('ordinary management refuses a historical receipt paired with a slots container before stopping it', async () => {
+  const observed = recoveryIo({ profile: slotsPin });
+  await assert.rejects(
+    reconcileCommercialLlmGeneration({
+      operation: 'stop',
+      sourceSha: 'e'.repeat(40),
+      receipt: recoveryReceipt(),
+      io: observed.io,
+    }),
+    /runtime_attestation_refused/u,
+  );
+  assert.deepEqual(observed.calls, ['inspect']);
 });
 
 test('failed recovery smoke leaves success absent and permits stopping that exact unrecorded generation', async () => {

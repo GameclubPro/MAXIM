@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import ts from 'typescript';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import { advertisingStateSchema } from '@maxim/contracts/advertising-placement';
 import { applySettingsSectionSchema, chatSettingsSchema } from '@maxim/contracts/settings';
@@ -10,70 +9,23 @@ import {
   MINIAPP_VISUAL_SCENARIOS,
 } from '../../../scripts/miniapp-visual-scenarios.mjs';
 
-const sectionSource = readFileSync(
-  new URL('../src/pages/settings/settings-advertising-soon-section.tsx', import.meta.url),
-  'utf8',
-);
 const pageSource = readFileSync(
   new URL('../src/pages/settings-page.legacy.tsx', import.meta.url),
   'utf8',
 );
-const parsed = ts.createSourceFile(
-  'advertising.tsx',
-  sectionSource,
-  ts.ScriptTarget.Latest,
-  true,
-  ts.ScriptKind.TSX,
-);
-
-test('advertising announcement is a disabled chat module, never a navigation or publishing control', () => {
-  const buttons: ts.JsxOpeningElement[] = [];
-  const visit = (node: ts.Node) => {
-    if (ts.isJsxOpeningElement(node) && node.tagName.getText(parsed) === 'button')
-      buttons.push(node);
-    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
-      assert.ok(
-        !['a', 'input', 'form', 'SettingsDrilldownPanel'].includes(node.tagName.getText(parsed)),
-      );
-      for (const attribute of node.attributes.properties) {
-        assert.ok(
-          ts.isJsxAttribute(attribute),
-          'Unavailable modules cannot spread interactive props',
-        );
-        assert.doesNotMatch(
-          attribute.name.getText(parsed),
-          /^on|^href$|^aria-controls$|^aria-expanded$/u,
-        );
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(parsed);
-  assert.equal(buttons.length, 1);
-  const disabled = buttons[0].attributes.properties.find(
-    (attribute) => ts.isJsxAttribute(attribute) && attribute.name.getText(parsed) === 'disabled',
+test('Birzhik replaces both pilot advertising entries with one available module', () => {
+  assert.doesNotMatch(pageSource, /<SettingsAdvertisingSection\s/u);
+  assert.equal((pageSource.match(/<MarketplaceProfileCard\s/gu) ?? []).length, 1);
+  const card = readFileSync(
+    new URL('../src/components/marketplace-profile-card.tsx', import.meta.url),
+    'utf8',
   );
-  assert.ok(disabled && ts.isJsxAttribute(disabled));
-  assert.equal(disabled.initializer, undefined);
-  assert.match(sectionSource, /Рекламная площадка/u);
-  assert.match(sectionSource, /const smartphone = useSmartphoneLayout\(\);/u);
-  assert.match(
-    sectionSource,
-    /data-settings-navigation-entry=\{smartphone \? 'true' : undefined\}/u,
-  );
-  assert.match(
-    sectionSource,
-    /aria-describedby=\{smartphone \? undefined : 'settings-advertising-soon-status'\}/u,
-  );
-  assert.match(
-    sectionSource,
-    /\{smartphone \? \([\s\S]*?settings-section__chevron[\s\S]*?\) : \([\s\S]*?settings-advertising-soon__badge/u,
-  );
-  assert.match(sectionSource, /data-settings-search="[^"]*Связка[^"]*взаимопиар/u);
-  assert.match(pageSource, /<SettingsAdvertisingSection\s/u);
+  assert.match(card, /aria-label="Биржик"/u);
+  assert.doesNotMatch(card, /marketplace\/capability|capability\.data|323459159/u);
+  assert.match(card, /data-settings-navigation-entry="true"/u);
 });
 
-test('the announcement introduces no writable setting or bulk-apply section', () => {
+test('the shared button policy does not enter chat settings bulk apply', () => {
   for (const name of [
     'advertising',
     'advertisingEnabled',
@@ -81,44 +33,23 @@ test('the announcement introduces no writable setting or bulk-apply section', ()
     'svyazkaAdvertisingEnabled',
   ]) {
     assert.equal(applySettingsSectionSchema.safeParse(name).success, false);
-    const parsedSettings = chatSettingsSchema.parse({ [name]: true });
-    assert.equal(Object.hasOwn(parsedSettings, name), false);
+    assert.equal(Object.hasOwn(chatSettingsSchema.parse({ [name]: true }), name), false);
   }
-  const imports = parsed.statements
-    .filter(ts.isImportDeclaration)
-    .map((node) => node.moduleSpecifier.getText(parsed));
-  assert.ok(
-    imports.every(
-      (value) => value.includes('/components/ui/') || value.includes('/lib/use-smartphone-layout'),
-    ),
-  );
-  assert.doesNotMatch(sectionSource, /api\.request|useQuery|useMutation/u);
 });
 
-test('the unavailable module has a dedicated real-browser scenario and stays chat-only', () => {
-  const scenario = MINIAPP_VISUAL_SCENARIOS.find(
-    (item) => item.name === 'chat-settings-advertising-soon',
-  );
-  assert.equal(scenario?.routeId, 'chat-settings');
+test('Birzhik has entry and opened-profile browser captures', () => {
+  for (const name of ['chat-settings-birzhik', 'chat-settings-birzhik-profile']) {
+    assert.equal(
+      MINIAPP_VISUAL_SCENARIOS.find((item) => item.name === name)?.routeId,
+      'chat-settings',
+    );
+  }
   assert.ok(MINIAPP_VISUAL_PRESETS.smoke.scenarioNames.includes('chat-settings'));
   const captureSource = readFileSync(
     new URL('../../../scripts/capture-miniapp-preview.mjs', import.meta.url),
     'utf8',
   );
-  assert.match(
-    captureSource,
-    /name: 'chat-settings',[\s\S]*?await assertAdvertisingSoonModule\(page\)/u,
-  );
-  const channelSource = readFileSync(
-    new URL('../src/pages/channel-settings-page.tsx', import.meta.url),
-    'utf8',
-  );
-  const publisherSource = readFileSync(
-    new URL('../src/pages/publisher-entity-modules-page.tsx', import.meta.url),
-    'utf8',
-  );
-  assert.doesNotMatch(channelSource, /SettingsAdvertisingSoonSection/u);
-  assert.doesNotMatch(publisherSource, /SettingsAdvertisingSoonSection/u);
+  assert.match(captureSource, /name: 'chat-settings',[\s\S]*?await assertBirzhikModule\(page\)/u);
 });
 
 test('pilot availability comes from the authenticated server capability, not a client identity constant', () => {

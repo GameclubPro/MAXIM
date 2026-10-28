@@ -4397,6 +4397,7 @@ model MarketplaceBinding {
   statisticsV2ConsentOnly Boolean                        @default(false) @map("statistics_v2_consent_only")
   collectionOwner     String                            @default("SHADOW") @map("collection_owner")
   collectionMetrics   Json                              @default("[]") @map("collection_metrics")
+  lastButtonAccessLossAt DateTime? @map("last_button_access_loss_at") @db.Timestamptz(6)
   appendEnabled       Boolean                           @default(false) @map("append_enabled")
   appendRevision      Int                               @default(0) @map("append_revision")
   profileRevision     Int                               @default(0) @map("profile_revision")
@@ -5059,4 +5060,51 @@ model KaravanMarketplacePublicationChoice {
   @@unique([actorMaxUserId, chatId], map: "karavan_marketplace_choice_actor_chat_key")
   @@index([expiresAt], map: "karavan_marketplace_choice_expiry_idx")
   @@map("karavan_marketplace_publication_choices")
+}
+
+model MarketplaceButtonPolicy {
+  id String @id @db.Uuid
+  entityId String @map("entity_id")
+  kind String
+  profile String
+  revision Int @default(0)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  contexts MarketplaceButtonContext[]
+  requests MarketplaceButtonRequest[]
+  @@unique([entityId, kind, profile], map: "marketplace_button_policies_entity_key")
+  @@map("marketplace_button_policies")
+}
+
+model MarketplaceButtonContext {
+  profile String @default("moderation")
+  policyId String @map("policy_id") @db.Uuid
+  context String
+  enabled Boolean @default(false)
+  confirmedBy String? @map("confirmed_by")
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  listingId String? @map("listing_id") @db.Uuid
+  ownershipKey String? @map("ownership_key")
+  bindingId String? @map("binding_id") @db.Uuid
+  verifiedUntil DateTime? @map("verified_until") @db.Timestamptz(6)
+  publicUrl String? @map("public_url")
+  refreshAt DateTime @default(now()) @map("refresh_at") @db.Timestamptz(6)
+  leaseId String? @map("lease_id") @db.Uuid
+  leaseUntil DateTime? @map("lease_until") @db.Timestamptz(6)
+  suspendedReason String? @map("suspended_reason")
+  diagnostic String?
+  policy MarketplaceButtonPolicy @relation(fields: [policyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  @@id([policyId, context])
+  @@index([profile, enabled, suspendedReason, refreshAt, policyId, context], map: "marketplace_button_contexts_refresh_idx")
+  @@map("marketplace_button_contexts")
+}
+
+model MarketplaceButtonRequest {
+  requestId String @id @map("request_id") @db.Uuid
+  policyId String @map("policy_id") @db.Uuid
+  actorUserId String @map("actor_user_id")
+  payloadHash String @map("payload_hash")
+  result Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  policy MarketplaceButtonPolicy @relation(fields: [policyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  @@map("marketplace_button_requests")
 }

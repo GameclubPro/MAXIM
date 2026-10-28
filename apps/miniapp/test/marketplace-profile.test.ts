@@ -6,7 +6,7 @@ import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
 test('automatic marketplace readiness preserves separate publication and append policy in both profiles', async () => {
   const closed = createPreviewApiTransport();
-  assert.deepEqual(await closed.request('/marketplace/capability'), { available: false });
+  assert.deepEqual(await closed.request('/marketplace/capability'), { available: true });
   for (const profile of ['moderation', 'publisher']) {
     const api = createPreviewApiTransport({ search: `?marketplacePilot=1&profile=${profile}` });
     for (const kind of ['CHAT', 'CHANNEL']) {
