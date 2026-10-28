@@ -372,7 +372,7 @@ import { pathToFileURL } from 'node:url';
 const [root, path, sha, mode] = process.argv.slice(2);
 let fd;
 try {
-  if (!['preview', 'apply'].includes(mode)) throw new Error('Invalid mode');
+  if (!['preview', 'apply'].includes(mode) || !/^[a-f0-9]{40}$/u.test(sha)) throw new Error('Invalid mode or controller source');
   const limit = mode === 'preview' ? 16384 : 4096;
   fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   const stat = fstatSync(fd);
@@ -399,8 +399,8 @@ try {
     const { parseBacklogCancellationRequest } = await import(pathToFileURL(`${root}/infra/scripts/backlog-cancellation-host.mjs`));
     request = parseBacklogCancellationRequest(raw);
   }
-  if (request.sourceSha !== sha)
-    throw new Error('Cancellation request must match local source');
+  if (request.version !== 2 && request.sourceSha !== sha)
+    throw new Error('Legacy cancellation request must match local source');
   // The caller retains these validated bounded bytes across the CI/network wait.
   process.stdout.write(raw);
 } catch {
@@ -410,16 +410,33 @@ try {
 NODE
 }
 
+assert_backlog_controller_source() {
+  local expected_sha="$1" observed_sha tree_status
+  observed_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)" || return 2
+  tree_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal)" || return 2
+  if [[ ! "$expected_sha" =~ ^[0-9a-f]{40}$ || "$observed_sha" != "$expected_sha" || -n "$tree_status" ]]; then
+    echo 'Cancellation requires clean exact local controller source.' >&2
+    return 2
+  fi
+}
+
 cancel_webhook_backlog() {
   if [[ $# != 1 || ! -f "$1" ]]; then
     echo 'Usage: cancel-webhook-backlog <private-request.json>' >&2
     return 2
   fi
-  local request_file="$1" target_sha validated_request
+  local request_file="$1" target_sha runtime_sha validated_request
   target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   validated_request="$(validate_backlog_request "$request_file" "$target_sha" apply)"
+  assert_backlog_controller_source "$target_sha"
+  # FLAG: Derive runtime identity from the frozen validated bytes, never a second file read.
+  runtime_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0).toString("utf8")).sourceSha)' <<<"$validated_request")"
   node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
-  printf '%s\n' "$validated_request" | remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-backlog-cancellation.sh)"
+  if [[ "$runtime_sha" != "$target_sha" ]]; then
+    node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$runtime_sha"
+  fi
+  assert_backlog_controller_source "$target_sha"
+  printf '%s\n' "$validated_request" | remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" "MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA=$runtime_sha" bash ./infra/scripts/vps-backlog-cancellation.sh)"
 }
 
 preview_webhook_backlog() {
@@ -427,11 +444,18 @@ preview_webhook_backlog() {
     echo 'Usage: preview-webhook-backlog <private-nomination.json>' >&2
     return 2
   fi
-  local request_file="$1" target_sha validated_request
+  local request_file="$1" target_sha runtime_sha validated_request
   target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   validated_request="$(validate_backlog_request "$request_file" "$target_sha" preview)"
+  assert_backlog_controller_source "$target_sha"
+  # FLAG: Derive runtime identity from the frozen validated bytes, never a second file read.
+  runtime_sha="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0).toString("utf8")).sourceSha)' <<<"$validated_request")"
   node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
-  printf '%s\n' "$validated_request" | remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-backlog-cancellation.sh --preview)"
+  if [[ "$runtime_sha" != "$target_sha" ]]; then
+    node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$runtime_sha"
+  fi
+  assert_backlog_controller_source "$target_sha"
+  printf '%s\n' "$validated_request" | remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" "MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA=$runtime_sha" bash ./infra/scripts/vps-backlog-cancellation.sh --preview)"
 }
 
 legacy_cold_recovery() {
