@@ -30,7 +30,10 @@ import {
   readBacklogCancellationForRequest,
   writeBacklogCancellation,
 } from './backlog-cancellation-journal.mjs';
-import { validateCompleteReleaseManifest } from './release-manifest.mjs';
+import {
+  isArchivedReleaseTransitionName,
+  validateCompleteReleaseManifest,
+} from './release-manifest.mjs';
 
 const ROOT = '/var/lib/maxim-deploy';
 const CLIENT = 'apps/api/dist/apps/api/src/scripts/cancel-webhook-backlog-v2.js';
@@ -695,7 +698,13 @@ export function createBacklogCancellationHelpersV2({
 function assertActiveRelease(directory, request) {
   // FLAG: Tooling-only synchronization does not change the component manifest's
   // targetSha. Bind the installed API component, retaining complete static evidence.
-  if (readdirSync(directory).some((name) => name.startsWith('current.invalid-')))
+  // FLAG: Completed transitions retain their original prefix as immutable history.
+  // Only the release writer's exact archive names are exempt; active/unknown evidence refuses.
+  if (
+    readdirSync(directory).some(
+      (name) => name.startsWith('current.invalid-') && !isArchivedReleaseTransitionName(name),
+    )
+  )
     throw new Error('V2 release transition unfinished');
   const manifest = JSON.parse(
     readPrivate(join(directory, 'current.json'), 64 * 1024, [0o600, 0o640]),
