@@ -7,6 +7,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as pause } from 'node:timers/promises';
 import { answerSupport } from './support-llm-client.mjs';
 import { SUPPORT_MODEL } from './support-llm-profile.mjs';
+import {
+  SUPPORT_API_PROFILE,
+  readSupportProvider,
+  readSupportProviderKey,
+} from './support-llm-provider.mjs';
 
 const root = join(homedir(), '.local/share/maxim-support-llm');
 const state = join(root, 'service');
@@ -109,6 +114,7 @@ export function validateQuestion(value) {
 
 export async function supportChatSession({
   key,
+  api = false,
   signal,
   onStatus = () => {},
   invoke = answerSupport,
@@ -149,7 +155,13 @@ export async function supportChatSession({
       resolve();
     });
   });
-  send({ type: 'hello', modelSha256: SUPPORT_MODEL.sha256, knowledgeSha256: knowledgeSha });
+  send({
+    type: 'hello',
+    knowledgeSha256: knowledgeSha,
+    ...(api
+      ? { apiProfileSha256: SUPPORT_API_PROFILE.sha256 }
+      : { modelSha256: SUPPORT_MODEL.sha256 }),
+  });
   const heartbeat = setInterval(() => {
     if (Date.now() - lastServerHeartbeat > 25000) {
       failure ??= new Error('support_server_heartbeat_stale');
@@ -238,6 +250,7 @@ export async function supportChatSession({
                 text: value.text,
                 history: value.history,
                 key,
+                api,
                 signal: AbortSignal.any([
                   combined,
                   current.controller.signal,
@@ -295,7 +308,9 @@ async function run() {
   if (!existsSync(join(state, 'chat-enabled'))) return;
   const install = JSON.parse(readFileSync(join(state, 'installation.json'), 'utf8'));
   if (install.bundle !== bundle) throw new Error('support_installed_source_required');
-  const key = readFileSync(join(state, 'api-key'), 'utf8').trim();
+  const provider = readSupportProvider(root);
+  const api = provider.backend === 'api';
+  const key = readSupportProviderKey(provider);
   const controller = new AbortController(),
     stop = () => controller.abort();
   process.once('SIGTERM', stop);
@@ -354,7 +369,14 @@ async function run() {
       lastFailureAt,
       lastDisconnectCode,
       lastDisconnectAt,
-      model: SUPPORT_MODEL.alias,
+      model: provider.model,
+      backend: provider.backend,
+      ...(api
+        ? {
+            apiProfileSha256: SUPPORT_API_PROFILE.sha256,
+            reasoningEffort: SUPPORT_API_PROFILE.reasoningEffort,
+          }
+        : {}),
       chatId: '-78271094414679',
     };
     const temporary = join(state, `chat-status.${process.pid}.tmp`);
@@ -368,7 +390,7 @@ async function run() {
       try {
         reconnectDelayMs = 0;
         status('connecting');
-        await supportChatSession({ key, signal: controller.signal, onStatus: status });
+        await supportChatSession({ key, api, signal: controller.signal, onStatus: status });
       } catch (error) {
         if (!controller.signal.aborted) {
           errors++;

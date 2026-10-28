@@ -117,6 +117,7 @@ async function tinyController(source, root, gpuRoot, bin, modelText, filename) {
   for (const name of [
     'support-llm-workstation.mjs',
     'support-llm-client.mjs',
+    'support-llm-provider.mjs',
     'support-llm-routing.mjs',
     'support-llm-knowledge.json',
     'support-chat-worker.mjs',
@@ -676,4 +677,58 @@ test('the current installer upgrades and rolls back tiny verified models without
   for (const lock of ['supervisor.lock', 'chat.lock'])
     assert.equal(readFileSync(join(state, lock), 'utf8'), 'preserved lock');
   assert.equal(readFileSync(join(gpuRoot, 'sentinel'), 'utf8'), 'existing GPU state');
+});
+
+test('installed API inference works with the CPU stopped and still rejects bundle drift', async (t) => {
+  const base = fixture(t),
+    root = join(base, 'support'),
+    gpuRoot = join(base, 'gpu');
+  mkdirSync(root);
+  mkdirSync(gpuRoot);
+  const { controller, model } = await tinyController(
+    join(base, 'source'),
+    root,
+    gpuRoot,
+    join(base, 'bin'),
+    'model',
+    'tiny.gguf',
+  );
+  writeFileSync(join(root, model.filename), 'model');
+  await controller.install();
+  const question = 'Я администратор. Как создать пост через Публик и добавить фото?';
+  await assert.rejects(controller.ask(question), /support_model_not_ready/u);
+  const state = join(root, 'service');
+  writeFileSync(join(state, 'provider.json'), '{"version":1,"backend":"api"}', { mode: 0o600 });
+  writeFileSync(join(state, 'provider-api-key'), 'sk-private-fixture-key-123456789', {
+    mode: 0o600,
+  });
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(url.href, 'https://5x2.gptclaudegemini.xyz/v1/chat/completions');
+    assert.equal(options.headers.Authorization, 'Bearer sk-private-fixture-key-123456789');
+    assert.equal(JSON.parse(options.body).reasoning_effort, 'medium');
+    return Response.json({
+      model: 'gpt-6.1-sol',
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              action: 'reply',
+              text: 'Выберите получателей.\n\nПроверьте пост перед публикацией.',
+              sourceIds: ['publisher-post-create'],
+            }),
+          },
+        },
+      ],
+    });
+  });
+  assert.equal((await controller.ask(question)).responseRoute, 'model-inference');
+  assert.equal(calls, 1);
+  assert.equal((await controller.status()).running, false);
+  const installed = JSON.parse(readFileSync(join(state, 'installation.json'), 'utf8'));
+  writeFileSync(join(installed.bundle, 'support-llm-client.mjs'), '// changed');
+  await assert.rejects(controller.ask(question), /support_bundle_file_changed/u);
+  assert.equal(calls, 1);
 });

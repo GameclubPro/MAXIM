@@ -4,6 +4,45 @@ The selected CPU support profile is Gemma 4 26B-A4B UD-Q5_K_M through an indepen
 llama.cpp b11804 installation. This is retrieval from reviewed customer instructions, not fine-tuning.
 The existing GPU commercial classifier and server moderation remain separate.
 
+An optional owner-selected API profile uses `gpt-6.1-sol` with `reasoning_effort: medium`
+through the pinned third-party HTTPS gateway in `infra/scripts/support-llm-provider.mjs`.
+The gateway's model label and acceptance of a parameter do not independently establish its
+underlying implementation or pricing. Reviewed support facts and bounded question/history are
+sent to that provider; MAX application credentials remain on the VPS.
+
+## API support mode
+
+The default remains CPU when `service/provider.json` is absent. For the authorized API pilot,
+stop the installed chat worker and CPU supervisor, install the reviewed immutable bundle, then
+place `{"version":1,"backend":"api"}` in `~/.local/share/maxim-support-llm/service/provider.json`
+and the provider key in the sibling `provider-api-key` file. Both files must be owned by the
+current user, nonsymlinks and mode `0600`; keep them outside Git. Never change provider selection
+or credentials while its worker is running. Preserve the existing CPU key, weights and bundles.
+
+`maxim-support ask` uses this selection. In API mode `maxim-support chat-start` attests the exact
+model in the provider catalog and starts the existing fenced worker without starting Gemma or
+requiring a CPU tokenizer. `chat-status` reports the actual model, backend, reasoning effort,
+connection heartbeat and delivery counts. `start`, `stop` and `status` still control the CPU model;
+they do not prove API availability. API mode does not require that CPU supervisor to run.
+
+API inference uses the same retrieval, mandatory policies, structured JSON/source validation,
+presentation and final canonical bot links. A conservative 24000-byte application input budget
+trims oldest history and lower-ranked facts while retaining both mandatory facts and the best
+topic. This is an application budget, not a statement about the provider's model context. The
+completion budget is 4096 tokens including any provider reasoning; final text retains its existing
+1800-character boundary. Requests keep the original 120-second deadline, pin HTTPS origin, refuse
+redirects, bound JSON response bytes and never automatically retry inference or fall back to a
+different model. Provider errors stay private and produce no diagnostic reply in MAX.
+Questions asking which messages Lastik does not delete or touch retain its complete exclusion
+fact even when the question does not name pins, rules or giveaways explicitly.
+
+The bridge accepts the exact reviewed API configuration digest in a distinct `apiProfileSha256`
+field, or the existing CPU weight digest. Frames carrying both identities are rejected. The API
+key never crosses SSH or enters a MAX message. After exact-source CI and guarded tooling sync,
+check local grounded answers, run the read-only preview, start the worker and take one fresh
+identity/availability readback. To return to CPU, stop the worker, remove only the private provider
+selection file, start the verified CPU model, then start the worker again; preserve source fences.
+
 ## Identity and scope
 
 - The pinned repository, revision, byte count and SHA-256 live in

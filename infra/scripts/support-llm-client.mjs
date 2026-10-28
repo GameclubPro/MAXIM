@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { SUPPORT_MODEL } from './support-llm-profile.mjs';
+import { SUPPORT_API_PROFILE, supportApiJson } from './support-llm-provider.mjs';
 import { createSupportRouter } from './support-llm-routing.mjs';
 
 export const knowledge = JSON.parse(
@@ -427,6 +428,7 @@ export async function answerSupport({
   key,
   signal,
   endpoint = SUPPORT_MODEL.endpoint,
+  api = false,
 }) {
   const request = classifySupportRequest(text, history);
   if (!request.eligible) return { action: 'skip', text: '', sourceIds: [] };
@@ -861,8 +863,8 @@ export async function answerSupport({
   const requestSignal = signal ?? AbortSignal.timeout(120_000);
   const system = SUPPORT_SYSTEM_PROMPT;
   let content;
-  // FLAG: Keep mandatory support policy in every prompt; trim history and lower-ranked facts
-  // against the installed tokenizer before the bounded CPU context can overflow.
+  // FLAG: Keep mandatory policy while trimming history and lower-ranked facts. CPU uses its
+  // exact tokenizer; the API uses a conservative application byte budget without CPU inference.
   for (;;) {
     content = JSON.stringify({
       verifiedKnowledge: selected
@@ -873,25 +875,31 @@ export async function answerSupport({
       role: request.role,
       answerRequirements: answerRequirements(selected, request),
     });
-    const tokenResponse = await fetch(`${endpoint}/tokenize`, {
-      method: 'POST',
-      signal: requestSignal,
-      headers: { Authorization: `Bearer ${key.trim()}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: `${system}\n${content}`,
-        add_special: false,
-        parse_special: false,
-      }),
-    });
-    if (!tokenResponse.ok) throw new Error(`support_tokenizer_http_${tokenResponse.status}`);
-    const tokenBody = await tokenResponse.json();
-    if (
-      !Array.isArray(tokenBody.tokens) ||
-      !tokenBody.tokens.length ||
-      tokenBody.tokens.some((token) => !Number.isInteger(token))
-    )
-      throw new Error('support_tokenizer_schema');
-    if (tokenBody.tokens.length <= SUPPORT_MODEL.context - SUPPORT_MODEL.outputTokens - 256) break;
+    if (api) {
+      if (Buffer.byteLength(`${system}\n${content}`, 'utf8') <= SUPPORT_API_PROFILE.inputBytes)
+        break;
+    } else {
+      const tokenResponse = await fetch(`${endpoint}/tokenize`, {
+        method: 'POST',
+        signal: requestSignal,
+        headers: { Authorization: `Bearer ${key.trim()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: `${system}\n${content}`,
+          add_special: false,
+          parse_special: false,
+        }),
+      });
+      if (!tokenResponse.ok) throw new Error(`support_tokenizer_http_${tokenResponse.status}`);
+      const tokenBody = await tokenResponse.json();
+      if (
+        !Array.isArray(tokenBody.tokens) ||
+        !tokenBody.tokens.length ||
+        tokenBody.tokens.some((token) => !Number.isInteger(token))
+      )
+        throw new Error('support_tokenizer_schema');
+      if (tokenBody.tokens.length <= SUPPORT_MODEL.context - SUPPORT_MODEL.outputTokens - 256)
+        break;
+    }
     if (prior.length) prior.shift();
     else if (selected.filter((entry) => !mandatoryIds.has(entry.id)).length > 1)
       selected.splice(
@@ -901,52 +909,65 @@ export async function answerSupport({
     else throw new Error('support_prompt_budget');
   }
   const started = performance.now();
-  const response = await fetch(`${endpoint}/v1/chat/completions`, {
-    method: 'POST',
-    signal: requestSignal,
-    headers: { Authorization: `Bearer ${key.trim()}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: SUPPORT_MODEL.alias,
-      temperature: 0,
-      max_tokens: SUPPORT_MODEL.outputTokens,
-      stream: false,
-      cache_prompt: true,
-      chat_template_kwargs: { enable_thinking: false },
-      messages: [
-        { role: 'system', content: system },
-        {
-          role: 'user',
-          content,
-        },
-      ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'support',
-          strict: true,
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['action', 'text', 'sourceIds'],
-            properties: {
-              action: { type: 'string', enum: requiresReply ? ['reply'] : ['reply', 'skip'] },
-              text: { type: 'string' },
-              sourceIds: {
-                type: 'array',
-                minItems: requiresReply ? 1 : 0,
-                items: { type: 'string', enum: selected.map((entry) => entry.id) },
-              },
+  const payload = {
+    model: api ? SUPPORT_API_PROFILE.model : SUPPORT_MODEL.alias,
+    ...(api
+      ? {
+          reasoning_effort: SUPPORT_API_PROFILE.reasoningEffort,
+          max_completion_tokens: SUPPORT_API_PROFILE.outputTokens,
+        }
+      : {
+          temperature: 0,
+          max_tokens: SUPPORT_MODEL.outputTokens,
+          cache_prompt: true,
+          chat_template_kwargs: { enable_thinking: false },
+        }),
+    stream: false,
+    messages: [
+      { role: 'system', content: system },
+      {
+        role: 'user',
+        content,
+      },
+    ],
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'support',
+        strict: true,
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['action', 'text', 'sourceIds'],
+          properties: {
+            action: { type: 'string', enum: requiresReply ? ['reply'] : ['reply', 'skip'] },
+            text: { type: 'string' },
+            sourceIds: {
+              type: 'array',
+              minItems: requiresReply ? 1 : 0,
+              items: { type: 'string', enum: selected.map((entry) => entry.id) },
             },
           },
         },
       },
-    }),
-  });
-  if (!response.ok) throw new Error(`support_http_${response.status}`);
-  const body = await response.json();
+    },
+  };
+  let body;
+  if (api)
+    body = await supportApiJson('/v1/chat/completions', key.trim(), requestSignal, fetch, payload);
+  else {
+    const response = await fetch(`${endpoint}/v1/chat/completions`, {
+      method: 'POST',
+      signal: requestSignal,
+      headers: { Authorization: `Bearer ${key.trim()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error(`support_http_${response.status}`);
+    body = await response.json();
+  }
   const choice = body.choices?.[0];
   if (
-    body.model !== SUPPORT_MODEL.alias ||
+    body.model !== (api ? SUPPORT_API_PROFILE.model : SUPPORT_MODEL.alias) ||
     choice?.finish_reason !== 'stop' ||
     typeof choice.message?.content !== 'string' ||
     choice.message.content.length > 8000
