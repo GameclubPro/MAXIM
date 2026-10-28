@@ -2,7 +2,7 @@ import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, type ReactNode } from 'react';
+import { lazy, Suspense, useState, type ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import type {
   KaravanStorefrontAllowlistEntry,
@@ -28,6 +28,8 @@ import { cn } from '../../lib/cn';
 import { maxNotify, openMaxBotLinkAndClose } from '../../lib/max-bridge';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import '../../styles/settings-storefront.css';
+
+const KaravanMarketplacePanel = lazy(() => import('./karavan-marketplace-panel'));
 
 type SettingsStorefrontSectionProps = {
   sharedContent?: ReactNode;
@@ -196,6 +198,11 @@ export function SettingsStorefrontSection({
           >
             {expanded ? (
               <div className="settings-section__collapse-inner">
+                {!sharedContent && chatId ? (
+                  <Suspense fallback={<Spinner size="sm" label="Проверяем магазин" />}>
+                    <KaravanMarketplacePanel key={chatId} api={api} chatId={chatId} />
+                  </Suspense>
+                ) : null}
                 {sharedContent ?? (
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">

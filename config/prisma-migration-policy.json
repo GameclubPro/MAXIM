@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261026010300_index_eraser_rules_audit",
-  "baselineNamesSha256": "abf41b121463b2da80f01e81a678ab6ec2fe0329d9153ba353b94bec45087085",
-  "baselineContentsSha256": "baf3175e81ecd322af783e19d5c99cce44007650f390ab66f7fd559400e4bb62",
+  "baselineThrough": "20261028010100_karavan_candidate_audit_views",
+  "baselineNamesSha256": "32ea98544803d88ae3f7c23af31b14d978c05d43c5c249d73eee1d1704529ed8",
+  "baselineContentsSha256": "39cb47beed01aa686ebc27935ae382f170464f238bd44c8a9f88e4ef098f659c",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -146,6 +146,11 @@
       "reason": "Reviewed additive independent-retention ownership, operation journal, protection outbox and static source/publication triggers. Function EXECUTE is static. The sole DELETE removes an obsolete transient publication fence after the producer settles; immutable protected IDs, source holds and legacy action evidence are never removed. No historical business table is rewritten or backfilled.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "New tables start empty and old policy readers remain compatible before ownership. Transfer first revokes legacy execution and preserves all uncertain journals. Persisted ownership forbids moderator fallback even when the feature flag is off; both rollback paths require ownership-aware readers. New protection is bootstrapped and acknowledged before independent cleanup enables. Cold source writers must confirm additive Lastik holds before committing source dispositions."
+    },
+    "20261028010000_karavan_chat_marketplace_authority": {
+      "reason": "Reviewed static additive trigger preserves a monotonic commerce revocation epoch on exact bot removal or proven permission denial. No DROP, DELETE, dynamic SQL or data backfill. Indexes are on new empty tables.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Default-disabled protocol and constant-zero additive column remain readable by older API roles. Existing membership writers automatically fence revoke-restore races. Before activation all action roles must understand the persisted v2 publication guard; rollback to older readers is forbidden while v2 queued jobs remain."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -256,6 +261,9 @@
     },
     "20261026010000_add_eraser_bridge": {
       "reason": "Every ordinary index belongs to a new empty bridge table. Existing giveaway and retention-intent history indexes are isolated in separate concurrent migrations; this migration scans no retained source history."
+    },
+    "20261028010000_karavan_chat_marketplace_authority": {
+      "reason": "Indexes are created only on the five new empty Karavan protocol tables in the same additive migration; no existing data or table is scanned."
     }
   }
 }

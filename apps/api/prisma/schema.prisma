@@ -561,6 +561,7 @@ model ManagedModeratorAssignment {
 }
 
 model ChatBotMembership {
+  commerceRevocationEpoch   Int                     @default(0) @map("commerce_revocation_epoch")
   id                        String                  @id @default(cuid())
   chatId                    String                  @map("chat_id")
   botId                     String                  @map("bot_id")
@@ -4943,4 +4944,96 @@ model StatsChange {
   entity StatsEntity @relation(fields:[entityId],references:[id],onDelete:Cascade)
   @@index([createdAt,id],map:"stats_changes_retention_idx")
   @@map("stats_changes")
+}
+
+// Short-lived, command-bound attestations; independent from Svyazka and publication allowlists.
+model KaravanMarketplaceAuthorityGrant {
+  id                    String   @id @default(uuid()) @db.Uuid
+  actorMaxUserId        String   @map("actor_max_user_id")
+  commandId             String   @map("command_id")
+  chatId                String   @map("chat_id")
+  botId                 String   @map("bot_id")
+  proofHash             String   @unique @map("proof_hash")
+  scopeHash             String   @map("scope_hash")
+  scope                 Json
+  authorityEpoch        String   @map("authority_epoch")
+  chatTitle             String?  @map("chat_title")
+  principal             Json
+  checkedAt             DateTime @map("checked_at") @db.Timestamptz(3)
+  expiresAt             DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([actorMaxUserId, commandId], map: "karavan_marketplace_authority_actor_command_key")
+  @@index([expiresAt], map: "karavan_marketplace_authority_expiry_idx")
+  @@map("karavan_marketplace_authority_grants")
+}
+
+model KaravanMarketplaceHandoff {
+  id                    String    @id @default(uuid()) @db.Uuid
+  actorMaxUserId        String    @map("actor_max_user_id")
+  commandId             String    @map("command_id")
+  chatId                String    @map("chat_id")
+  botId                 String    @map("bot_id")
+  marketplaceId         String    @map("marketplace_id") @db.Uuid
+  destination           String
+  codeHash              String    @unique @map("code_hash")
+  authorityEpoch        String    @map("authority_epoch")
+  principal             Json
+  checkedAt             DateTime  @map("checked_at") @db.Timestamptz(3)
+  expiresAt             DateTime  @map("expires_at") @db.Timestamptz(3)
+  exchangeId            String?   @map("exchange_id") @db.Uuid
+  exchangedAt           DateTime? @map("exchanged_at") @db.Timestamptz(3)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([actorMaxUserId, commandId], map: "karavan_marketplace_handoff_actor_command_key")
+  @@index([expiresAt], map: "karavan_marketplace_handoff_expiry_idx")
+  @@map("karavan_marketplace_handoffs")
+}
+
+model KaravanMarketplaceConnectionOperation {
+  anchorChatId          String    @map("anchor_chat_id")
+  activeScopeKey        String?   @unique(map: "karavan_marketplace_operation_active_scope_key") @map("active_scope_key")
+  id                    String    @id @db.Uuid
+  actorMaxUserId        String    @map("actor_max_user_id")
+  requestHash           String    @map("request_hash")
+  request               Json
+  checkpoints           Json
+  state                 String    @default("pending")
+  leaseId               String?   @map("lease_id") @db.Uuid
+  leaseUntil            DateTime? @map("lease_until") @db.Timestamptz(3)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([actorMaxUserId, createdAt], map: "karavan_marketplace_operation_actor_idx")
+  @@map("karavan_marketplace_connection_operations")
+}
+
+// Binding provenance outlives short grants; public reads never reuse human permissions.
+model KaravanMarketplaceBindingWitness {
+  authorityEpoch       String   @map("authority_epoch")
+  checkedAt            DateTime @map("checked_at") @db.Timestamptz(3)
+  chatId               String   @map("chat_id")
+  botId                String   @map("bot_id")
+  routingVersion       Int      @map("routing_version")
+  botRevocationEpoch   Int      @map("bot_revocation_epoch")
+  revokedAt            DateTime? @map("revoked_at") @db.Timestamptz(3)
+  lifecycleEventAt     DateTime? @map("lifecycle_event_at") @db.Timestamptz(3)
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  @@id([authorityEpoch, checkedAt])
+  @@index([chatId, botId], map: "karavan_marketplace_binding_witness_chat_bot_idx")
+  @@map("karavan_marketplace_binding_witnesses")
+}
+
+// Opt-in is monotonic for routing, including an unknown cross-service commit outcome.
+model KaravanMarketplaceChatEnrollment {
+  chatId             String   @id @map("chat_id")
+  phase              String   @default("pending")
+  actorMaxUserId      String   @map("actor_max_user_id")
+  requestedCommandId String   @map("requested_command_id")
+  marketplaceId      String   @map("marketplace_id") @db.Uuid
+  confirmedAt        DateTime? @map("confirmed_at") @db.Timestamptz(3)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  @@map("karavan_marketplace_chat_enrollments")
 }

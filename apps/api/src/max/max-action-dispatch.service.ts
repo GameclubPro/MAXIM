@@ -1,3 +1,4 @@
+import { KaravanMarketplaceResolverService } from '../integrations/karavan-marketplace/karavan-marketplace-resolver.service';
 import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -109,6 +110,7 @@ export class MaxActionDispatchService {
     private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() configService?: ConfigService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
+    @Optional() private readonly karavanMarketplaces?: KaravanMarketplaceResolverService,
   ) {
     this.routedMutationsMode = normalizeMaxRoutedMutationMode(
       configService?.get('MAX_ROUTED_MUTATIONS_MODE'),
@@ -357,13 +359,20 @@ export class MaxActionDispatchService {
           };
         } else if (
           attemptJob.actionType === 'SEND_MESSAGE' &&
-          (this.legacyHolds || options.beforeSendMutation)
+          (this.legacyHolds ||
+            options.beforeSendMutation ||
+            attemptJob.ledgerContext?.karavanMarketplacePublication !== undefined)
         ) {
           executionOptions = {
             beforeSendMutation: async () => {
               // FLAG: Shared holds precede the feature's final deadline/authority guard.
               // An unchanged route or prepared body cannot waive a permanent disposition.
               await this.assertLegacyEffectsAllowed(attemptJob);
+              if (attemptJob.ledgerContext?.karavanMarketplacePublication !== undefined) {
+                if (!this.karavanMarketplaces)
+                  throw new UnrecoverableError('Karavan marketplace dispatch guard unavailable');
+                await this.karavanMarketplaces.assertDispatch(attemptJob, candidateBotId ?? null);
+              }
               await options.beforeSendMutation?.({
                 botId: candidateBotId ?? null,
                 job: attemptJob,

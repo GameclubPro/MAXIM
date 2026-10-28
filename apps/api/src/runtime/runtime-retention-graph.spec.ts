@@ -95,6 +95,8 @@ describe('retention root dependency graph', () => {
           await import('../moderation/message-duplicate/message-duplicate-guard.contract');
         const { MessageDuplicateDeleteGuardService } =
           await import('../moderation/message-duplicate/message-duplicate-delete-guard.service');
+        const { KaravanMarketplaceAuthorityService } =
+          await import('../integrations/karavan-marketplace/karavan-marketplace-authority.service');
         const builder = Test.createTestingModule({ imports: [root] })
           .overrideProvider(PrismaService)
           .useValue({});
@@ -104,6 +106,16 @@ describe('retention root dependency graph', () => {
         expect(() => legacyHolds.onApplicationBootstrap()).not.toThrow();
         expect(WebhookLegacyHoldService.forPrisma(context.get(PrismaService))).toBe(legacyHolds);
         try {
+          await expect(
+            context.get(KaravanMarketplaceAuthorityService).assertPrincipal(
+              {
+                source: 'session',
+                principalKey: 'a'.repeat(64),
+                launchBotId: 'test-bot',
+              },
+              '123456789',
+            ),
+          ).rejects.toThrow('Сессия завершена');
           expect(context.get(MESSAGE_DUPLICATE_NOTICE_AUTHORITY)).toBe(
             context.get(MessageDuplicateDeleteGuardService),
           );

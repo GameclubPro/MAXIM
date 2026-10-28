@@ -2493,3 +2493,8 @@ maxim_topology_require_eraser_connection_requests() {
   node infra/scripts/assert-eraser-source.mjs "$source_sha" --validate-connection-request-floor || return
   node infra/scripts/assert-eraser-source.mjs "$source_sha" --connection-requests "$component"
 }
+
+# FLAG: The scoped SEND reader floor persists after flags are disabled or chats unbound.
+maxim_topology_require_karavan_marketplaces() {
+  node infra/scripts/assert-karavan-marketplace-source.mjs "$1"
+}

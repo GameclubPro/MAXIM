@@ -1,3 +1,4 @@
+import { KaravanMarketplaceModule } from './integrations/karavan-marketplace/karavan-marketplace.module';
 import { Module } from '@nestjs/common';
 import { AdminModule } from './admin/admin.module';
 import { HealthModule } from './health/health.module';
@@ -12,6 +13,7 @@ import { RuntimeCoreModule } from './runtime/runtime-core.module';
 @Module({
   imports: [
     RuntimeCoreModule,
+    KaravanMarketplaceModule,
     MaxModule,
     ModerationModule,
     WebhookModule,
