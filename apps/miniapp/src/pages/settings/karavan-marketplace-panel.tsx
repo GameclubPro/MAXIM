@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  karavanMarketplaceCategories,
   karavanMarketplaceSetupSchema,
   type KaravanMarketplaceSetup,
   type KaravanMarketplaceOperation,
@@ -9,11 +8,12 @@ import {
 } from '@maxim/contracts/karavan-marketplace';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
-  getAvailableKaravanMarketplaces,
   getKaravanMarketplace,
   getKaravanMarketplaceOperation,
   setupKaravanMarketplace,
   openKaravanMarketplace,
+  saveKaravanPublicationChoice,
+  cancelKaravanMarketplaceSetup,
 } from '../../lib/api/karavan-marketplace-client';
 import {
   hydrateMirroredItem,
@@ -23,7 +23,7 @@ import {
 import { openMaxBotLinkAndClose } from '../../lib/max-bridge';
 import { ApiRequestError } from '../../lib/api-request-error';
 import { describeUserFacingError } from '../../lib/user-facing-error';
-import { useNativeBackHandler } from '../../lib/native-back';
+import KaravanMarketplaceWizard from './karavan-marketplace-wizard';
 import { useKaravanMarketplaceBinding } from './use-karavan-marketplace-binding';
 import { Spinner } from '../../components/ui/spinner';
 import '../../styles/karavan-marketplace.css';
@@ -34,9 +34,6 @@ function countLabel(count: number, one: string, few: string, many: string) {
   return form === 'one' ? one : form === 'few' ? few : many;
 }
 
-const marketplaceSafe = (value: { marketplace: unknown } | null) => !!value?.marketplace;
-const defaultRules =
-  'Продавец отвечает за описание, актуальность товаров и выполнение договорённостей. Размещение витрин — после проверки администратора. Запрещены товары и услуги, нарушающие закон и правила MAX.';
 
 export default function KaravanMarketplacePanel({
   api,
@@ -53,14 +50,7 @@ export default function KaravanMarketplacePanel({
     staleTime: 15_000,
     retry: false,
   });
-  const [step, setStep] = useState<'intro' | 'name' | 'confirm' | 'existing'>('intro');
-  const [name, setName] = useState('');
-  const [rules, setRules] = useState(defaultRules);
-  const [categories, setCategories] = useState<string[]>(
-    karavanMarketplaceCategories.map(([id]) => id),
-  );
-  const [selectedChats, setSelectedChats] = useState([chatId]);
-  const [showChats, setShowChats] = useState(false);
+  const [step, setStep] = useState<'intro' | 'wizard' | 'existing'>('intro');
   const [saved, setSaved] = useState<KaravanMarketplaceSetup | null>(null);
   const [operation, setOperation] = useState<KaravanMarketplaceOperation | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -69,17 +59,9 @@ export default function KaravanMarketplacePanel({
   const storageKey = module ? `karavan-setup:v1:${module.actorMaxUserId}:${chatId}` : null;
   const bind = useKaravanMarketplaceBinding(api, chatId, module?.actorMaxUserId);
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
-  const available = useInfiniteQuery({
-    queryKey: ['karavan-available', chatId],
-    enabled: step === 'existing',
-    initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => getAvailableKaravanMarketplaces(api, chatId, pageParam),
-    getNextPageParam: (page) => page.nextCursor,
-    retry: false,
-  });
   const chats = useQuery({
     queryKey: ['karavan-setup-chats'],
-    enabled: showChats || !!saved,
+    enabled: !!saved,
     queryFn: async () => (await import('../../lib/api/root-client')).getChats(api),
     staleTime: 30_000,
     retry: false,
@@ -97,7 +79,7 @@ export default function KaravanMarketplacePanel({
           setSaved(restored.request);
           setOperation(restored);
           saveMirroredItem(storageKey, JSON.stringify(restored.request));
-          if (restored.state === 'complete') {
+          if (restored.state === 'complete' || restored.state === 'cancelled') {
             removeMirroredItem(storageKey);
             setSaved(null);
           }
@@ -109,7 +91,7 @@ export default function KaravanMarketplacePanel({
             const state = await getKaravanMarketplaceOperation(api, chatId, input.operationId);
             if (!active) return;
             setOperation(state);
-            if (state.state === 'complete') {
+            if (state.state === 'complete' || state.state === 'cancelled') {
               removeMirroredItem(storageKey);
               setSaved(null);
               void queryClient.invalidateQueries({ queryKey });
@@ -136,7 +118,7 @@ export default function KaravanMarketplacePanel({
       setSaved(state.request);
       if (storageKey) saveMirroredItem(storageKey, JSON.stringify(state.request));
       setNotice(null);
-      if (state.state === 'complete') {
+      if (state.state === 'complete' || state.state === 'cancelled') {
         if (storageKey) removeMirroredItem(storageKey);
         setSaved(null);
         setStep('intro');
@@ -159,17 +141,6 @@ export default function KaravanMarketplacePanel({
     const timer = window.setTimeout(() => setup.mutate(saved), 1200);
     return () => window.clearTimeout(timer);
   }, [operation, saved, setup.isPending]);
-  useNativeBackHandler(
-    () => {
-      if (saved || setup.isPending || bind.isPending || bind.request) return false;
-      setStep(step === 'confirm' ? 'name' : 'intro');
-      return true;
-    },
-    {
-      enabled: step === 'existing' || (step !== 'intro' && !marketplaceSafe(module)),
-      priority: 620,
-    },
-  );
   const handoff = useMutation({
     mutationFn: (destination: KaravanMarketplaceHandoffDestination) =>
       openKaravanMarketplace(api, chatId, module!.marketplace!.id, destination),
@@ -179,33 +150,39 @@ export default function KaravanMarketplacePanel({
     onError: (error) =>
       setNotice(describeUserFacingError(error, 'Не удалось открыть магазин. Повторите попытку.')),
   });
-  function start() {
+  const cancelSetup = useMutation({
+    mutationFn: () => cancelKaravanMarketplaceSetup(api, chatId, saved!.operationId),
+    onSuccess: () => {
+      if (storageKey) removeMirroredItem(storageKey);
+      setSaved(null);
+      setOperation(null);
+      setStep('intro');
+      setNotice('Подключение остановлено. Созданный магазин и уже подключённые чаты сохранены.');
+      void queryClient.invalidateQueries({ queryKey });
+    },
+    onError: (error) =>
+      setNotice(
+        describeUserFacingError(error, 'Не удалось остановить подключение. Повторите проверку.'),
+      ),
+  });
+  const publicationChoice = useMutation({
+    mutationFn: (input: { choiceId: string; storeId: string }) =>
+      saveKaravanPublicationChoice(api, chatId, input),
+    onSuccess: () => {
+      setNotice('Выбор сохранён. Повторите $ в чате, когда захотите опубликовать ссылку.');
+      void queryClient.invalidateQueries({ queryKey });
+    },
+    onError: (error) =>
+      setNotice(describeUserFacingError(error, 'Не удалось сохранить выбор. Повторите попытку.')),
+  });
+  function start(input?: KaravanMarketplaceSetup) {
     if (!storageKey) return;
-    if (saved) {
-      setup.mutate(saved);
-      return;
-    }
-    const parsed = karavanMarketplaceSetupSchema.safeParse({
-      operationId: crypto.randomUUID(),
-      chatIds: selectedChats,
-      create: {
-        name,
-        rules: {
-          text: rules,
-          allowedCategoryIds: categories,
-          allowedSubcategoryIds: [],
-          categoryOrder: categories,
-        },
-      },
-    });
-    if (!parsed.success) {
-      setNotice('Проверьте название, правила и выберите хотя бы одну категорию.');
-      return;
-    }
-    saveMirroredItem(storageKey, JSON.stringify(parsed.data));
-    setSaved(parsed.data);
+    const request = input ?? saved;
+    if (!request) return;
+    saveMirroredItem(storageKey, JSON.stringify(request));
+    setSaved(request);
     setNotice(null);
-    setup.mutate(parsed.data);
+    setup.mutate(request);
   }
   if (query.data?.enabled === false) return null;
   if (query.isPending)
@@ -248,6 +225,25 @@ export default function KaravanMarketplacePanel({
           {notice || bind.error}
         </p>
       ) : null}
+      {module.publicationChoices.map((choice) => (
+        <div key={choice.id} className="karavan-module__actions">
+          <p>Выберите витрину для публикации по $ в этом чате.</p>
+          {choice.stores.map((store) => (
+            <button
+              type="button"
+              key={store.id}
+              disabled={publicationChoice.isPending}
+              onClick={() => publicationChoice.mutate({ choiceId: choice.id, storeId: store.id })}
+            >
+              {store.name}
+            </button>
+          ))}
+          <p>
+            Другую свою витрину можно выбрать в её кабинете Каравана. Сохранение ничего не
+            отправляет в чат.
+          </p>
+        </div>
+      ))}
       {bind.request ? (
         <>
           <h3>
@@ -317,7 +313,7 @@ export default function KaravanMarketplacePanel({
               type="button"
               className="karavan-module__primary"
               disabled={setup.isPending || !ready}
-              onClick={start}
+              onClick={() => start()}
             >
               {setup.isPending ? 'Подключаем…' : 'Продолжить подключение'}
             </button>
@@ -326,18 +322,31 @@ export default function KaravanMarketplacePanel({
             <button
               type="button"
               onClick={() => {
-                setName(saved.create.name);
-                setRules(saved.create.rules.text);
-                setCategories(saved.create.rules.allowedCategoryIds);
-                setSelectedChats(saved.chatIds);
                 if (storageKey) removeMirroredItem(storageKey);
                 setSaved(null);
                 setOperation(null);
                 setNotice(null);
-                setStep('confirm');
+                setStep('wizard');
               }}
             >
               Изменить настройки
+            </button>
+          ) : null}
+          {operation?.state === 'partial' &&
+          !operation.checkpoints.bindings.some((item) => item.state === 'unknown') ? (
+            <button
+              type="button"
+              disabled={setup.isPending || cancelSetup.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    'Остановить оставшиеся подключения? Созданный магазин и уже подключённые чаты сохранятся.',
+                  )
+                )
+                  cancelSetup.mutate();
+              }}
+            >
+              Остановить оставшиеся подключения
             </button>
           ) : null}
           {operation?.checkpoints.marketplaceId ? (
@@ -356,7 +365,7 @@ export default function KaravanMarketplacePanel({
             </button>
           ) : null}
         </>
-      ) : marketplace && step !== 'existing' ? (
+      ) : marketplace && step === 'intro' ? (
         <>
           <div className="karavan-module__identity">
             <span className="karavan-module__eyebrow">Магазин чата</span>
@@ -375,12 +384,6 @@ export default function KaravanMarketplacePanel({
             <span>
               <strong>{module.counts.listings}</strong>
               <span>{countLabel(module.counts.listings, 'витрина', 'витрины', 'витрин')}</span>
-            </span>
-            <span>
-              <strong>{module.counts.pendingApplications}</strong>
-              <span>
-                {countLabel(module.counts.pendingApplications, 'заявка', 'заявки', 'заявок')}
-              </span>
             </span>
             <span>
               <strong>{module.counts.chats}</strong>
@@ -462,13 +465,15 @@ export default function KaravanMarketplacePanel({
                     Открыть магазин
                   </button>
                 ) : null}
-                {canManage ? (
+                {active && module.buyerUrl ? (
                   <button
                     type="button"
-                    disabled={handoff.isPending}
-                    onClick={() => handoff.mutate('categories')}
+                    onClick={() => {
+                      if (!openMaxBotLinkAndClose(module.buyerUrl!))
+                        setNotice('Откройте магазин из MAX.');
+                    }}
                   >
-                    Категории и правила
+                    Посмотреть магазин
                   </button>
                 ) : null}
               </div>
@@ -476,9 +481,31 @@ export default function KaravanMarketplacePanel({
           ) : !canOpen ? (
             <p>Попросите владельца магазина предоставить доступ к управлению.</p>
           ) : null}
+          {module.bindings?.length ? (
+            <details>
+              <summary>Подключённые чаты · {module.counts.chats}</summary>
+              <ul className="karavan-module__progress">
+                {module.bindings.map((binding) => (
+                  <li key={binding.id}>
+                    <span>{binding.chatTitle || 'Чат'}</span>
+                    <strong>
+                      {binding.state === 'verified'
+                        ? 'Подключён'
+                        : binding.state === 'disconnected'
+                          ? 'Отключён'
+                          : 'Нужна проверка'}
+                    </strong>
+                  </li>
+                ))}
+              </ul>
+              {module.counts.chats > module.bindings.length ? (
+                <p>Все подключения доступны в настройках магазина.</p>
+              ) : null}
+            </details>
+          ) : null}
           {canBind ? (
             <details>
-              <summary>Подключение чата</summary>
+              <summary>Настройки подключения</summary>
               <div className="karavan-module__actions">
                 {disconnectConfirm ? (
                   <>
@@ -523,206 +550,27 @@ export default function KaravanMarketplacePanel({
         </>
       ) : step === 'intro' ? (
         <>
-          <h3>Магазин вашего чата</h3>
-          <p>Продавцы подают заявки. Вы проверяете витрины и выбираете их порядок.</p>
+          <h3>{module.currentChatTitle || 'Магазин вашего чата'}</h3>
+          <p>Магазин с витринами продавцов вашего чата.</p>
           <button
             type="button"
             className="karavan-module__primary"
             disabled={!ready}
-            onClick={() => setStep('name')}
+            onClick={() => setStep('wizard')}
           >
-            Создать магазин
-          </button>
-          <button type="button" disabled={!ready} onClick={() => setStep('existing')}>
-            Подключить существующий
-          </button>
-        </>
-      ) : step === 'existing' ? (
-        <>
-          <h3>Выберите магазин</h3>
-          {module.binding ? (
-            <p>Чат откроет выбранный магазин. Продавцы из прежнего магазина не переносятся.</p>
-          ) : null}
-          {available.isPending ? (
-            <p>Загружаем магазины…</p>
-          ) : available.isError ? (
-            <>
-              <p>Не удалось загрузить магазины.</p>
-              <button type="button" onClick={() => void available.refetch()}>
-                Повторить
-              </button>
-            </>
-          ) : (
-            available.data?.pages
-              .flatMap((page) => page.marketplaces)
-              .filter(
-                (item) =>
-                  item.permissions.includes('bind_chat') ||
-                  item.permissions.includes('manage_network'),
-              )
-              .map((item) => (
-                <button
-                  type="button"
-                  key={item.marketplace.id}
-                  disabled={bind.isPending || !ready || item.marketplace.status === 'archived'}
-                  onClick={() => {
-                    bind.start({
-                      marketplaceId: item.marketplace.id,
-                      expectedBindingGeneration: module.binding?.generation ?? null,
-                      action: module.binding
-                        ? module.marketplace?.id === item.marketplace.id
-                          ? 'recover_chat'
-                          : 'transfer_chat'
-                        : 'bind_chat',
-                    });
-                    setStep('intro');
-                  }}
-                >
-                  {item.marketplace.name}
-                </button>
-              ))
-          )}
-          {available.data?.pages.every((page) =>
-            page.marketplaces.every(
-              (item) =>
-                !item.permissions.includes('bind_chat') &&
-                !item.permissions.includes('manage_network'),
-            ),
-          ) ? (
-            <p>У вас пока нет доступных магазинов.</p>
-          ) : null}
-          {available.hasNextPage ? (
-            <button
-              type="button"
-              disabled={available.isFetchingNextPage}
-              onClick={() => void available.fetchNextPage()}
-            >
-              Показать ещё
-            </button>
-          ) : null}
-          <button
-            type="button"
-            disabled={bind.isPending || !!bind.request}
-            onClick={() => setStep('intro')}
-          >
-            Назад
-          </button>
-        </>
-      ) : step === 'name' ? (
-        <>
-          <h3>Название магазина</h3>
-          <label className="karavan-module__field">
-            <span>Название</span>
-            <input
-              value={name}
-              maxLength={120}
-              placeholder="Например, Магазин нашего района"
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <button
-            type="button"
-            className="karavan-module__primary"
-            disabled={!name.trim()}
-            onClick={() => setStep('confirm')}
-          >
-            Продолжить
-          </button>
-          <button type="button" onClick={() => setStep('intro')}>
-            Отмена
+            Подключить магазин
           </button>
         </>
       ) : (
-        <>
-          <h3>{name}</h3>
-          <p>Создадим черновик. Покупатели увидят магазин после его открытия.</p>
-          <div className="karavan-module__selected-chat">Этот чат подключится к магазину</div>
-          <button type="button" aria-expanded={showChats} onClick={() => setShowChats(!showChats)}>
-            Добавить другие мои чаты
-          </button>
-          {showChats ? (
-            <fieldset className="karavan-module__choices">
-              <legend>Чаты одного магазина</legend>
-              {chats.isPending ? (
-                <p>Загружаем чаты…</p>
-              ) : chats.isError ? (
-                <>
-                  <p>Не удалось загрузить чаты.</p>
-                  <button type="button" onClick={() => void chats.refetch()}>
-                    Повторить
-                  </button>
-                </>
-              ) : (
-                chats.data
-                  ?.filter((chat) => chat.id !== chatId)
-                  .map((chat) => (
-                    <label key={chat.id}>
-                      <input
-                        type="checkbox"
-                        checked={selectedChats.includes(chat.id)}
-                        disabled={!selectedChats.includes(chat.id) && selectedChats.length >= 20}
-                        onChange={(event) =>
-                          setSelectedChats(
-                            event.target.checked
-                              ? [...selectedChats, chat.id]
-                              : selectedChats.filter((id) => id !== chat.id),
-                          )
-                        }
-                      />
-                      <span>{chat.title}</span>
-                    </label>
-                  ))
-              )}
-            </fieldset>
-          ) : null}
-          <details>
-            <summary>Категории · {categories.length}</summary>
-            <div className="karavan-module__choices">
-              {karavanMarketplaceCategories.map(([id, label]) => (
-                <label key={id}>
-                  <input
-                    type="checkbox"
-                    checked={categories.includes(id)}
-                    onChange={(event) =>
-                      setCategories(
-                        event.target.checked
-                          ? [...categories, id]
-                          : categories.filter((item) => item !== id),
-                      )
-                    }
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-          </details>
-          <details>
-            <summary>Правила размещения</summary>
-            <label className="karavan-module__field">
-              <span>Правила для продавцов</span>
-              <textarea
-                value={rules}
-                maxLength={12000}
-                rows={5}
-                onChange={(event) => setRules(event.target.value)}
-              />
-            </label>
-          </details>
-          <button
-            type="button"
-            className="karavan-module__primary"
-            disabled={!categories.length || !rules.trim()}
-            onClick={start}
-          >
-            Создать и подключить
-            {selectedChats.length > 1
-              ? ` · ${selectedChats.length} ${countLabel(selectedChats.length, 'чат', 'чата', 'чатов')}`
-              : ''}
-          </button>
-          <button type="button" onClick={() => setStep('name')}>
-            Изменить название
-          </button>
-        </>
+        <KaravanMarketplaceWizard
+          api={api}
+          chatId={chatId}
+          chatTitle={module.currentChatTitle ?? ''}
+          actorId={module.actorMaxUserId}
+          existing={step === 'existing'}
+          onCancel={() => setStep('intro')}
+          onSubmit={start}
+        />
       )}
     </section>
   );

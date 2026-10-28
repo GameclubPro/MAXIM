@@ -128,6 +128,23 @@ function createLegacyHoldFixture(
 }
 
 describe('MaxActionDispatchService', () => {
+  it.each(['metadata', 'source-tag'])(
+    'rechecks retirement for an old queued relay identified by %s',
+    async (kind) => {
+      const guard = { assertDispatch: jest.fn().mockRejectedValue(new Error('Legacy retired')) };
+      const f = createLegacyHoldFixture(guard);
+      await expect(
+        f.service.execute({
+          ...f.job,
+          ...(kind === 'metadata'
+            ? { ledgerContext: { karavanStorefrontRelay: { variant: 'directory' } } }
+            : { sourceTag: 'karavan_storefront_relay' }),
+        }),
+      ).rejects.toThrow('Legacy retired');
+      expect(guard.assertDispatch).toHaveBeenCalled();
+      expect(f.effect).not.toHaveBeenCalled();
+    },
+  );
   it('runs persisted Karavan scope validation at the final queued SEND_MESSAGE boundary', async () => {
     const guard = {
       assertDispatch: jest.fn().mockRejectedValue(new Error('Synthetic listing revoked')),

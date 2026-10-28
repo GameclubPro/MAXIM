@@ -1,9 +1,14 @@
 import { z } from 'zod';
 import {
+  karavanPublicationChoiceSchema,
+  karavanPublicationChoiceSavedSchema,
   karavanMarketplaceAvailableSchema,
   karavanMarketplaceBindingResultSchema,
   karavanMarketplaceModuleSchema,
   karavanMarketplaceOperationSchema,
+  karavanMarketplaceSetupOptionsSchema,
+  karavanMarketplacePreviewSchema,
+  karavanMarketplacePreviewInputSchema,
   type KaravanMarketplaceSetup,
   type KaravanMarketplaceHandoffDestination,
 } from '@maxim/contracts/karavan-marketplace';
@@ -15,6 +20,7 @@ const moduleSchema = z.union([
     actorMaxUserId: z.string(),
     sellerBotUrl: z.string().url(),
     setupOperation: karavanMarketplaceOperationSchema.nullable(),
+    publicationChoices: z.array(karavanPublicationChoiceSchema).max(20).optional().default([]),
   }),
 ]);
 const path = (chatId: string) => `/chats/${encodeURIComponent(chatId)}/karavan-marketplace`;
@@ -36,6 +42,29 @@ export async function setupKaravanMarketplace(
       body: JSON.stringify(input),
       timeoutMs: 180_000,
       retryMutationOnTransportError: false,
+    }),
+  );
+}
+export async function getKaravanMarketplaceSetupOptions(
+  api: ApiTransport,
+  chatId: string,
+  signal?: AbortSignal,
+) {
+  return karavanMarketplaceSetupOptionsSchema.parse(
+    await api.request(`${path(chatId)}/setup-options`, { signal }),
+  );
+}
+export async function previewKaravanMarketplace(
+  api: ApiTransport,
+  chatId: string,
+  input: z.infer<typeof karavanMarketplacePreviewInputSchema>,
+) {
+  return karavanMarketplacePreviewSchema.parse(
+    await api.request(`${path(chatId)}/preview`, {
+      method: 'POST',
+      body: JSON.stringify(karavanMarketplacePreviewInputSchema.parse(input)),
+      retryMutationOnTransportError: false,
+      timeoutMs: 180_000,
     }),
   );
 }
@@ -93,6 +122,34 @@ export async function changeKaravanChatBinding(
     await api.request(`${path(chatId)}/bindings/${encodeURIComponent(marketplaceId)}`, {
       method: 'POST',
       body: JSON.stringify(payload),
+      retryMutationOnTransportError: false,
+    }),
+  );
+}
+
+export async function saveKaravanPublicationChoice(
+  api: ApiTransport,
+  chatId: string,
+  input: { choiceId: string; storeId: string },
+) {
+  return karavanPublicationChoiceSavedSchema.parse(
+    await api.request(`${path(chatId)}/publication-choice`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+      retryMutationOnTransportError: false,
+    }),
+  );
+}
+
+export async function cancelKaravanMarketplaceSetup(
+  api: ApiTransport,
+  chatId: string,
+  operationId: string,
+) {
+  return karavanMarketplaceOperationSchema.parse(
+    await api.request(`${path(chatId)}/operations/${encodeURIComponent(operationId)}/cancel`, {
+      method: 'POST',
+      body: '{}',
       retryMutationOnTransportError: false,
     }),
   );

@@ -361,14 +361,20 @@ export class MaxActionDispatchService {
           attemptJob.actionType === 'SEND_MESSAGE' &&
           (this.legacyHolds ||
             options.beforeSendMutation ||
-            attemptJob.ledgerContext?.karavanMarketplacePublication !== undefined)
+            attemptJob.ledgerContext?.karavanMarketplacePublication !== undefined ||
+            attemptJob.ledgerContext?.karavanStorefrontRelay !== undefined ||
+            attemptJob.sourceTag === 'karavan_storefront_relay')
         ) {
           executionOptions = {
             beforeSendMutation: async () => {
               // FLAG: Shared holds precede the feature's final deadline/authority guard.
               // An unchanged route or prepared body cannot waive a permanent disposition.
               await this.assertLegacyEffectsAllowed(attemptJob);
-              if (attemptJob.ledgerContext?.karavanMarketplacePublication !== undefined) {
+              if (
+                attemptJob.ledgerContext?.karavanMarketplacePublication !== undefined ||
+                attemptJob.ledgerContext?.karavanStorefrontRelay !== undefined ||
+                attemptJob.sourceTag === 'karavan_storefront_relay'
+              ) {
                 if (!this.karavanMarketplaces)
                   throw new UnrecoverableError('Karavan marketplace dispatch guard unavailable');
                 await this.karavanMarketplaces.assertDispatch(attemptJob, candidateBotId ?? null);

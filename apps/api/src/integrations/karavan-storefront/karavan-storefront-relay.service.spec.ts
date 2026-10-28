@@ -146,12 +146,10 @@ describe('KaravanStorefrontRelayService', () => {
   it('does not publish a global catalog for an enrolled disconnected chat', async () => {
     const resolver = {
       shouldUseScopedRelay: jest.fn().mockResolvedValue(true),
-      resolve: jest
-        .fn()
-        .mockResolvedValue({
-          result: { status: 'unbound', stores: [], marketplace: null, binding: null },
-          publication: null,
-        }),
+      resolve: jest.fn().mockResolvedValue({
+        result: { status: 'unbound', stores: [], marketplace: null, binding: null },
+        publication: null,
+      }),
     };
     const f = createService({ config: { KARAVAN_MARKETPLACE_ENABLED: true }, resolver });
     try {
@@ -168,6 +166,22 @@ describe('KaravanStorefrontRelayService', () => {
       f.restore();
     }
   });
+  it('keeps an ambiguous storefront choice private without sending a generic fallback', async () => {
+    const resolver = {
+      shouldUseScopedRelay: jest.fn().mockResolvedValue(true),
+      resolve: jest
+        .fn()
+        .mockResolvedValue({ result: { status: 'choose_store', stores: [] }, publication: null }),
+    };
+    const f = createService({ config: { KARAVAN_MARKETPLACE_ENABLED: true }, resolver });
+    try {
+      expect(await f.service.handleMessageCreated(baseContext)).toBe('noop');
+      expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(f.fetchMock).not.toHaveBeenCalled();
+    } finally {
+      f.restore();
+    }
+  });
   it('persists scoped target and exact bot so final queued dispatch can revalidate', async () => {
     const publication = {
       chatId: baseContext.chatId,
@@ -177,15 +191,27 @@ describe('KaravanStorefrontRelayService', () => {
       botId: baseContext.botId,
       marketplaceId: '7d6aac8f-060b-4758-bc51-a63e07ae29a2',
       bindingGeneration: 3,
-      storeId: null,
-      url: 'https://max.ru/synthetic_bot?startapp=m_synthetic',
+      storeId: 'b20c5040-e501-4221-84d6-b52778ce56a8',
+      url: 'https://max.ru/synthetic_bot?startapp=m_synthetic__s_test',
       sourceFingerprint: 'a'.repeat(64),
     };
     const resolver = {
       shouldUseScopedRelay: jest.fn().mockResolvedValue(true),
-      resolve: jest
-        .fn()
-        .mockResolvedValue({ result: { status: 'choose_store', stores: [] }, publication }),
+      resolve: jest.fn().mockResolvedValue({
+        result: {
+          status: 'published',
+          stores: [
+            {
+              id: publication.storeId,
+              slug: 'test',
+              name: 'Test',
+              url: publication.url,
+              inviteUrl: publication.url,
+            },
+          ],
+        },
+        publication,
+      }),
     };
     const f = createService({ config: { KARAVAN_MARKETPLACE_ENABLED: true }, resolver });
     try {

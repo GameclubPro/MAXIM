@@ -49,7 +49,7 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   {
     method: 'POST',
     pattern: new RegExp(
-      `^/chats/${ENTITY_ID_SEGMENT}/karavan-marketplace/(setup|handoffs|bindings/${ENTITY_ID_SEGMENT})$`,
+      `^/chats/${ENTITY_ID_SEGMENT}/karavan-marketplace/(setup|preview|publication-choice|handoffs|bindings/${ENTITY_ID_SEGMENT}|operations/${ENTITY_ID_SEGMENT}/cancel)$`,
     ),
   },
   {

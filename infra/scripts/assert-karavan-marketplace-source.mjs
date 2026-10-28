@@ -10,6 +10,17 @@ export const KARAVAN_MARKETPLACE_SOURCE_CHECKS = Object.freeze([
       'attemptJob.ledgerContext?.karavanMarketplacePublication !== undefined',
       'Karavan marketplace dispatch guard unavailable',
       'await this.karavanMarketplaces.assertDispatch(attemptJob, candidateBotId ?? null)',
+      "attemptJob.sourceTag === 'karavan_storefront_relay'",
+      'attemptJob.ledgerContext?.karavanStorefrontRelay !== undefined',
+    ],
+  ],
+  [
+    'apps/api/src/integrations/karavan-marketplace/karavan-legacy-publication.guard.ts',
+    [
+      'prisma.karavanMarketplaceChatEnrollment.findUnique(',
+      '/v1/integrations/maxim/storefronts/by-max-user/',
+      'if (!response.ok)',
+      'store.id !== context.data.storeId',
     ],
   ],
   [
@@ -24,11 +35,22 @@ export const KARAVAN_MARKETPLACE_SOURCE_CHECKS = Object.freeze([
       'await this.resolve(publication, publication)',
       'expected.bindingGeneration !== publication.bindingGeneration',
       'expected.sourceFingerprint !== issued.sourceFingerprint',
+      "if (result.status === 'choose_store')",
+      'previous.bindingGeneration === binding.generation',
+      'choice.bindingGeneration',
     ],
   ],
   [
     'apps/api/src/integrations/karavan-storefront/karavan-storefront-relay.service.ts',
     ['shouldUseScopedRelay(', 'karavanMarketplacePublication: params.scopedPublication'],
+  ],
+  [
+    'packages/contracts/src/karavan-marketplace.ts',
+    ["'cancelled'", 'karavanPublicationChoiceSaveSchema'],
+  ],
+  [
+    'apps/api/src/integrations/karavan-marketplace/karavan-marketplace-proxy.service.ts',
+    ['async cancelSetup(', "row.state === 'cancelled'", 'checkpoints.bindings.some'],
   ],
   [
     'apps/api/prisma/schema.prisma',

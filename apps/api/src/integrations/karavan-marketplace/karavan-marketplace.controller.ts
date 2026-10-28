@@ -1,3 +1,4 @@
+import { KaravanMarketplaceResolverService } from './karavan-marketplace-resolver.service';
 import {
   Body,
   Controller,
@@ -17,6 +18,7 @@ import {
   karavanMarketplaceChatIdSchema,
   karavanMarketplaceHandoffIssueSchema,
   karavanMarketplaceSetupSchema,
+  karavanMarketplacePreviewInputSchema,
 } from '@maxim/contracts/karavan-marketplace';
 import { InitDataGuard } from '../../auth/init-data.guard';
 import type { MiniappAuthContext } from '../../auth/miniapp-session.types';
@@ -36,6 +38,7 @@ export class KaravanMarketplaceController {
     private readonly config: ConfigService,
     private readonly authority: KaravanMarketplaceAuthorityService,
     private readonly proxy: KaravanMarketplaceProxyService,
+    private readonly resolver: KaravanMarketplaceResolverService,
     private readonly handoffs: KaravanMarketplaceHandoffService,
   ) {}
 
@@ -58,8 +61,30 @@ export class KaravanMarketplaceController {
       actorMaxUserId: user.userId,
       sellerBotUrl: `https://max.ru/${this.config.getOrThrow<string>('KARAVAN_SELLER_BOT_USERNAME')}`,
       ...module,
+      publicationChoices: (await this.resolver.listChoices({ actorMaxUserId: user.userId, chatId }))
+        .choices,
       setupOperation: await this.proxy.activeSetup(user.userId, chatId),
     };
+  }
+
+  @Post('chats/:chatId/karavan-marketplace/publication-choice')
+  async savePublicationChoice(
+    @Param('chatId') rawChatId: string,
+    @Body() body: unknown,
+    @CurrentUser() user: AuthUser,
+    @Req() request: Request,
+  ) {
+    const chatId = karavanMarketplaceChatIdSchema.parse(rawChatId);
+    const input = z
+      .object({ choiceId: z.string().uuid(), storeId: z.string().uuid() })
+      .strict()
+      .parse(body);
+    await this.proxy.module(
+      chatId,
+      user.userId,
+      this.authority.principal(user, request.miniappAuth),
+    );
+    return this.resolver.saveChoice({ ...input, actorMaxUserId: user.userId, chatId });
   }
 
   @Get('chats/:chatId/karavan-marketplace/available')
@@ -99,6 +124,37 @@ export class KaravanMarketplaceController {
     );
   }
 
+  @Get('chats/:chatId/karavan-marketplace/setup-options')
+  setupOptions(
+    @Param('chatId') rawChatId: string,
+    @CurrentUser() user: AuthUser,
+    @Req() request: Request,
+  ) {
+    return this.proxy.setupOptions(
+      karavanMarketplaceChatIdSchema.parse(rawChatId),
+      user.userId,
+      this.authority.principal(user, request.miniappAuth),
+    );
+  }
+
+  @Post('chats/:chatId/karavan-marketplace/preview')
+  preview(
+    @Param('chatId') rawChatId: string,
+    @Body() body: unknown,
+    @CurrentUser() user: AuthUser,
+    @Req() request: Request,
+  ) {
+    const chatId = karavanMarketplaceChatIdSchema.parse(rawChatId);
+    const input = karavanMarketplacePreviewInputSchema.parse(body);
+    if (input.chatIds[0] !== chatId)
+      throw new ForbiddenException('Текущий чат должен быть выбран.');
+    return this.proxy.preview(
+      user.userId,
+      input,
+      this.authority.principal(user, request.miniappAuth),
+    );
+  }
+
   @Post('chats/:chatId/karavan-marketplace/bindings/:marketplaceId')
   bind(
     @Param('chatId') rawChatId: string,
@@ -124,6 +180,19 @@ export class KaravanMarketplaceController {
       { ...payload, chatId, ...(action === 'bind_chat' ? {} : { action }) },
       this.authority.principal(user, request.miniappAuth),
       action !== 'bind_chat',
+    );
+  }
+
+  @Post('chats/:chatId/karavan-marketplace/operations/:operationId/cancel')
+  cancelSetup(
+    @Param('chatId') rawChatId: string,
+    @Param('operationId') operationId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.proxy.cancelSetup(
+      z.string().uuid().parse(operationId),
+      user.userId,
+      karavanMarketplaceChatIdSchema.parse(rawChatId),
     );
   }
 

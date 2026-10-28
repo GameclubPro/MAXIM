@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261028010100_karavan_candidate_audit_views",
-  "baselineNamesSha256": "32ea98544803d88ae3f7c23af31b14d978c05d43c5c249d73eee1d1704529ed8",
-  "baselineContentsSha256": "39cb47beed01aa686ebc27935ae382f170464f238bd44c8a9f88e4ef098f659c",
+  "baselineThrough": "20261028231000_karavan_setup_cancellation",
+  "baselineNamesSha256": "adf5a61a700d6384a2ebbe05bdd80a80e09990c963e89455f1789ca865d45ce5",
+  "baselineContentsSha256": "456eec2ad31fe15937f20962b52cd37088957cabb8bf47446d95379d0b801ac5",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -264,6 +264,9 @@
     },
     "20261028010000_karavan_chat_marketplace_authority": {
       "reason": "Indexes are created only on the five new empty Karavan protocol tables in the same additive migration; no existing data or table is scanned."
+    },
+    "20261028230000_karavan_private_publication_choice": {
+      "reason": "Every ordinary index belongs only to the new empty private choice table created in this additive migration. Existing tables are not indexed, rewritten or backfilled."
     }
   }
 }

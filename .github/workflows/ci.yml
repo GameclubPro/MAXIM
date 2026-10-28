@@ -203,7 +203,7 @@ jobs:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: |
-          npm test --workspace @maxim/api -- 'integrations/marketplace/.*postgres|statistics/.*postgres'
+          npm test --workspace @maxim/api -- 'integrations/(marketplace|karavan-marketplace)/.*postgres|statistics/.*postgres'
           node --test --test-concurrency=1 infra/scripts/statistics-exchange-audit.test.mjs infra/scripts/central-statistics-audit.test.mjs
       - name: Native race shard
         if: matrix.shard != 'compatibility'

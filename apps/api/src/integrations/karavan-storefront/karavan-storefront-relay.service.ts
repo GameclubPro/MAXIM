@@ -209,8 +209,7 @@ export class KaravanStorefrontRelayService {
         const scopedStore =
           resolved.result.status === 'published' ? resolved.result.stores[0] : null;
         store = scopedStore ? { ...scopedStore, sellerAccountId: null } : null;
-        if (!store && trigger !== 'bare' && resolved.result.status !== 'choose_store')
-          return 'noop';
+        if (!store && trigger !== 'bare') return 'noop';
       } else {
         store = await this.lookupStorefront(storefrontOwnerUserId, { fresh: true });
         if (store === undefined) return 'failed';

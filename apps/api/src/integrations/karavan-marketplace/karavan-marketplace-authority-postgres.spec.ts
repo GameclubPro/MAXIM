@@ -1,5 +1,8 @@
 import { karavanMarketplaceSetupSchema } from '@maxim/contracts/karavan-marketplace';
-import { KaravanMarketplaceProxyService } from './karavan-marketplace-proxy.service';
+import {
+  KaravanCommandUnavailable,
+  KaravanMarketplaceProxyService,
+} from './karavan-marketplace-proxy.service';
 import { KaravanMarketplaceBindingStatusService } from './karavan-marketplace-binding-status.service';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
@@ -624,6 +627,143 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
     });
     expect(result.state).toBe('partial');
     expect(result.checkpoints.bindings.map((item) => item.state)).toEqual(['failed', 'connected']);
+  });
+
+  it('connects multiple chats to an existing reviewed marketplace without creating a second store', async () => {
+    const input = karavanMarketplaceSetupSchema.parse({
+      operationId: randomUUID(),
+      chatIds: [chatId, '-9923456790'],
+      existingMarketplaceId: randomUUID(),
+      expectedPolicyRevision: 7,
+      bindingExpectations: [
+        { chatId, generation: null, action: 'bind_chat' },
+        { chatId: '-9923456790', generation: 4, action: 'transfer_chat' },
+      ],
+    });
+    const proxy = new KaravanMarketplaceProxyService(
+      db as PrismaService,
+      service,
+      new ConfigService(),
+    );
+    const command = jest
+      .spyOn(proxy, 'command')
+      .mockRejectedValue(new Error('Creation must not run'));
+    const binding = jest.spyOn(proxy, 'binding').mockResolvedValue({
+      marketplace: { id: input.existingMarketplaceId } as never,
+      bindingId: randomUUID(),
+      generation: 5,
+    });
+    const first = await proxy.setup(actorMaxUserId, input, principal);
+    expect(first.state).toBe('pending');
+    const second = await proxy.setup(actorMaxUserId, input, principal);
+    expect(second.state).toBe('complete');
+    expect(command).not.toHaveBeenCalled();
+    expect(binding).toHaveBeenCalledTimes(2);
+    expect(binding.mock.calls[0]![0]).toBe(input.existingMarketplaceId);
+    expect(binding.mock.calls[1]![2]).toMatchObject({
+      chatId: '-9923456790',
+      expectedBindingGeneration: 4,
+      expectedPolicyRevision: 7,
+      action: 'transfer_chat',
+      commandId: `${input.operationId}:bind:1`,
+    });
+    expect((await proxy.setup(actorMaxUserId, input, principal)).state).toBe('complete');
+    expect(binding).toHaveBeenCalledTimes(2);
+  });
+
+  it('cannot reinterpret an unknown remote binding as rejected after later rights loss', async () => {
+    const input = karavanMarketplaceSetupSchema.parse({
+      operationId: randomUUID(),
+      chatIds: [chatId],
+      existingMarketplaceId: randomUUID(),
+      expectedPolicyRevision: 1,
+    });
+    const proxy = new KaravanMarketplaceProxyService(
+      db as PrismaService,
+      service,
+      new ConfigService(),
+    );
+    jest
+      .spyOn(proxy, 'binding')
+      .mockImplementationOnce(async () => {
+        const persisted = await proxy.status(input.operationId, actorMaxUserId);
+        expect(persisted.checkpoints.bindings[0]?.state).toBe('unknown');
+        throw new KaravanCommandUnavailable('unknown');
+      })
+      .mockRejectedValueOnce(new KaravanCommandUnavailable('rejected'));
+    expect(
+      (await proxy.setup(actorMaxUserId, input, principal)).checkpoints.bindings[0]?.state,
+    ).toBe('unknown');
+    expect(
+      (await proxy.setup(actorMaxUserId, input, principal)).checkpoints.bindings[0]?.state,
+    ).toBe('unknown');
+    await expect(proxy.cancelSetup(input.operationId, actorMaxUserId, chatId)).rejects.toThrow(
+      'Сначала проверьте',
+    );
+  });
+
+  it('cancels only known idle setup and preserves successful remote checkpoints', async () => {
+    const input = karavanMarketplaceSetupSchema.parse({
+      operationId: randomUUID(),
+      chatIds: [chatId, '-9923456789'],
+      existingMarketplaceId: randomUUID(),
+      expectedPolicyRevision: 4,
+      bindingExpectations: [
+        { chatId, generation: null, action: 'bind_chat' },
+        { chatId: '-9923456789', generation: 1, action: 'transfer_chat' },
+      ],
+    });
+    const checkpoints = {
+      marketplaceId: input.existingMarketplaceId!,
+      bindings: [
+        { chatId, state: 'connected', bindingId: randomUUID(), generation: 1 },
+        { chatId: '-9923456789', state: 'failed', bindingId: null, generation: null },
+      ],
+    };
+    await db.karavanMarketplaceConnectionOperation.create({
+      data: {
+        id: input.operationId,
+        actorMaxUserId,
+        anchorChatId: chatId,
+        activeScopeKey: `${actorMaxUserId}:${chatId}`,
+        requestHash: karavanHash(input),
+        request: input,
+        checkpoints,
+        state: 'partial',
+      },
+    });
+    const proxy = new KaravanMarketplaceProxyService(
+      db as PrismaService,
+      service,
+      new ConfigService(),
+    );
+    await expect(proxy.cancelSetup(input.operationId, 'other', chatId)).rejects.toThrow();
+    await db.karavanMarketplaceConnectionOperation.update({
+      where: { id: input.operationId },
+      data: { leaseId: randomUUID(), leaseUntil: new Date(Date.now() - 1000) },
+    });
+    await expect(proxy.cancelSetup(input.operationId, actorMaxUserId, chatId)).rejects.toThrow(
+      'Сначала проверьте',
+    );
+    await db.karavanMarketplaceConnectionOperation.update({
+      where: { id: input.operationId },
+      data: { leaseId: null, leaseUntil: null, state: 'unknown' },
+    });
+    await expect(proxy.cancelSetup(input.operationId, actorMaxUserId, chatId)).rejects.toThrow(
+      'Сначала проверьте',
+    );
+    await db.karavanMarketplaceConnectionOperation.update({
+      where: { id: input.operationId },
+      data: { state: 'partial' },
+    });
+    const cancelled = await proxy.cancelSetup(input.operationId, actorMaxUserId, chatId);
+    expect(cancelled.state).toBe('cancelled');
+    expect(cancelled.checkpoints).toEqual(checkpoints);
+    expect(await proxy.activeSetup(actorMaxUserId, chatId)).toBeNull();
+    expect((await proxy.cancelSetup(input.operationId, actorMaxUserId, chatId)).state).toBe(
+      'cancelled',
+    );
+    expect((await proxy.setup(actorMaxUserId, input, principal)).state).toBe('cancelled');
   });
 
   it('exchanges once for the same actor, permits exact retry, and never transfers Major credentials', async () => {

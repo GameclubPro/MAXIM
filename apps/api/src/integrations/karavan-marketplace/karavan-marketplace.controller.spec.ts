@@ -1,3 +1,4 @@
+import type { KaravanMarketplaceResolverService } from './karavan-marketplace-resolver.service';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import type { FastifyRequest } from 'fastify';
@@ -45,26 +46,25 @@ describe('Karavan module destination permissions', () => {
       'module'
     >;
     const authority = {
-      principal: jest
-        .fn()
-        .mockReturnValue({
-          source: 'session',
-          principalKey: 'a'.repeat(64),
-          launchBotId: 'synthetic',
-        }),
+      principal: jest.fn().mockReturnValue({
+        source: 'session',
+        principalKey: 'a'.repeat(64),
+        launchBotId: 'synthetic',
+      }),
     } satisfies Pick<KaravanMarketplaceAuthorityService, 'principal'>;
     const handoffs = {
-      issue: jest
-        .fn()
-        .mockResolvedValue({
-          url: 'https://max.ru/synthetic?startapp=example',
-          expiresAt: new Date().toISOString(),
-        }),
+      issue: jest.fn().mockResolvedValue({
+        url: 'https://max.ru/synthetic?startapp=example',
+        expiresAt: new Date().toISOString(),
+      }),
     } satisfies Pick<KaravanMarketplaceHandoffService, 'issue'>;
     const controller = new KaravanMarketplaceController(
       new ConfigService(),
       authority as unknown as KaravanMarketplaceAuthorityService,
       proxy as unknown as KaravanMarketplaceProxyService,
+      {
+        listChoices: jest.fn().mockResolvedValue({ choices: [] }),
+      } as unknown as KaravanMarketplaceResolverService,
       handoffs as unknown as KaravanMarketplaceHandoffService,
     );
     const invoke = (destination: string) =>

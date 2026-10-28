@@ -5037,3 +5037,26 @@ model KaravanMarketplaceChatEnrollment {
   updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
   @@map("karavan_marketplace_chat_enrollments")
 }
+
+// At most one private publication preference per actor/chat; source IDs expire, text is never copied.
+model KaravanMarketplacePublicationChoice {
+  id                  String   @id @default(uuid()) @db.Uuid
+  promptId            String   @unique @map("prompt_id") @db.Uuid
+  actorMaxUserId      String   @map("actor_max_user_id")
+  chatId              String   @map("chat_id")
+  botId               String   @map("bot_id")
+  subjectMaxUserId    String   @map("subject_max_user_id")
+  sourceMessageId     String   @map("source_message_id")
+  sourceFingerprint   String   @map("source_fingerprint")
+  marketplaceId       String   @map("marketplace_id") @db.Uuid
+  marketplaceName     String   @map("marketplace_name")
+  bindingGeneration  Int      @map("binding_generation")
+  stores              Json
+  selectedStoreId     String?  @map("selected_store_id") @db.Uuid
+  expiresAt           DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  @@unique([actorMaxUserId, chatId], map: "karavan_marketplace_choice_actor_chat_key")
+  @@index([expiresAt], map: "karavan_marketplace_choice_expiry_idx")
+  @@map("karavan_marketplace_publication_choices")
+}

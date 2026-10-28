@@ -1,3 +1,4 @@
+import { KaravanMarketplaceResolverService } from './karavan-marketplace-resolver.service';
 import { KaravanMarketplaceBindingStatusService } from './karavan-marketplace-binding-status.service';
 import {
   Body,
@@ -40,8 +41,19 @@ export class KaravanMarketplaceIntegrationController {
   constructor(
     private readonly authority: KaravanMarketplaceAuthorityService,
     private readonly handoffs: KaravanMarketplaceHandoffService,
+    private readonly resolver: KaravanMarketplaceResolverService,
     private readonly bindings: KaravanMarketplaceBindingStatusService,
   ) {}
+  @Post('publication-choices/list')
+  choices(@Body() body: unknown) {
+    return this.resolver.listChoices(body);
+  }
+
+  @Post('publication-choices/save')
+  saveChoice(@Body() body: unknown) {
+    return this.resolver.saveChoice(body);
+  }
+
   @Post('bindings/status')
   status(@Body() body: unknown) {
     return this.bindings.status(body);

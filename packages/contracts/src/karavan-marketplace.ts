@@ -177,6 +177,9 @@ export const karavanMarketplaceModuleSchema = z.object({
     chats: z.number().int().nonnegative(),
   }),
   canManage: z.boolean(),
+  currentChatTitle: z.string().max(300).optional(),
+  buyerUrl: z.string().url().nullable().optional(),
+  bindings: z.array(karavanMarketplaceBindingSchema).max(48).optional(),
 });
 export type KaravanMarketplaceModule = z.infer<typeof karavanMarketplaceModuleSchema>;
 export const karavanMarketplaceCategories = [
@@ -229,15 +232,90 @@ export const karavanMarketplaceSetupSchema = z
       .min(1)
       .max(20)
       .refine((ids) => new Set(ids).size === ids.length, 'Выберите каждый чат один раз.'),
-    create: karavanMarketplaceCreateSchema.omit({ commandId: true }),
+    create: karavanMarketplaceCreateSchema.omit({ commandId: true }).optional(),
+    existingMarketplaceId: karavanMarketplaceIdSchema.optional(),
+    expectedPolicyRevision: z.number().int().positive().optional(),
+    bindingExpectations: z
+      .array(
+        z
+          .object({
+            chatId: karavanMarketplaceChatIdSchema,
+            generation: z.number().int().positive().nullable(),
+            action: z.enum(['bind_chat', 'recover_chat', 'transfer_chat']),
+          })
+          .strict(),
+      )
+      .max(20)
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (Boolean(value.create) === Boolean(value.existingMarketplaceId))
+      context.addIssue({ code: 'custom', message: 'Выберите новый или существующий магазин.' });
+    if (value.existingMarketplaceId && value.expectedPolicyRevision === undefined)
+      context.addIssue({ code: 'custom', message: 'Проверьте правила выбранного магазина.' });
+    if (
+      value.bindingExpectations &&
+      (value.bindingExpectations.length !== value.chatIds.length ||
+        new Set(value.bindingExpectations.map((item) => item.chatId)).size !==
+          value.chatIds.length ||
+        value.bindingExpectations.some((item) => !value.chatIds.includes(item.chatId)))
+    )
+      context.addIssue({ code: 'custom', message: 'Проверьте подключения выбранных чатов.' });
+  });
+export type KaravanMarketplaceSetup = z.infer<typeof karavanMarketplaceSetupSchema>;
+export const karavanMarketplaceSetupOptionsSchema = z.object({
+  chatTitle: z.string().max(300),
+  categories: z
+    .array(
+      z.object({
+        id: categoryIdSchema,
+        label: z.string().max(300),
+        subcategories: z
+          .array(z.object({ id: z.string().max(100), label: z.string().max(300) }))
+          .max(1000),
+      }),
+    )
+    .max(40),
+});
+export const karavanMarketplaceReviewSchema = z.object({
+  marketplace: karavanMarketplaceSummarySchema,
+  rules: karavanMarketplaceCreateSchema.shape.rules.extend({
+    version: z.number().int().positive(),
+  }),
+  permissions: karavanMarketplaceModuleSchema.shape.permissions,
+  counts: karavanMarketplaceModuleSchema.shape.counts,
+  bindings: z.array(karavanMarketplaceBindingSchema).max(48),
+});
+export const karavanMarketplacePreviewInputSchema = z
+  .object({
+    chatIds: z
+      .array(karavanMarketplaceChatIdSchema)
+      .min(1)
+      .max(20)
+      .refine((ids) => new Set(ids).size === ids.length),
+    marketplaceId: karavanMarketplaceIdSchema.nullable(),
   })
   .strict();
-export type KaravanMarketplaceSetup = z.infer<typeof karavanMarketplaceSetupSchema>;
+export const karavanMarketplacePreviewSchema = z.object({
+  target: karavanMarketplaceReviewSchema.nullable(),
+  chats: z
+    .array(
+      z.object({
+        chatId: karavanMarketplaceChatIdSchema,
+        title: z.string().max(300),
+        binding: karavanMarketplaceBindingSchema.nullable(),
+        marketplace: karavanMarketplaceSummarySchema.nullable(),
+      }),
+    )
+    .max(20),
+});
 export const karavanMarketplaceBindingCommandSchema = z
   .object({
     commandId: karavanMarketplaceCommandIdSchema,
     chatId: karavanMarketplaceChatIdSchema,
     expectedBindingGeneration: z.number().int().positive().nullable(),
+    expectedPolicyRevision: z.number().int().positive().optional(),
   })
   .strict();
 export const karavanMarketplaceBindingActionSchema = karavanMarketplaceBindingCommandSchema
@@ -270,7 +348,7 @@ export const karavanMarketplaceCheckpointSchema = z
 export const karavanMarketplaceOperationSchema = z
   .object({
     operationId: z.string().uuid(),
-    state: z.enum(['pending', 'partial', 'complete', 'unknown', 'rejected']),
+    state: z.enum(['pending', 'partial', 'complete', 'unknown', 'rejected', 'cancelled']),
     request: karavanMarketplaceSetupSchema,
     checkpoints: karavanMarketplaceCheckpointSchema,
   })
@@ -318,3 +396,35 @@ export const karavanMarketplaceAvailableSchema = z.object({
     .max(48),
   nextCursor: z.string().nullable(),
 });
+
+// Private actor-scoped prompts contain no message text or MAX credentials.
+export const karavanPublicationChoiceListRequestSchema = z
+  .object({
+    actorMaxUserId: karavanMarketplaceActorIdSchema,
+    chatId: karavanMarketplaceChatIdSchema.optional(),
+  })
+  .strict();
+export const karavanPublicationChoiceSchema = z
+  .object({
+    id: z.string().uuid(),
+    marketplaceId: z.string().uuid(),
+    marketplaceName: z.string().max(120),
+    chatId: karavanMarketplaceChatIdSchema,
+    expiresAt: z.string().datetime(),
+    stores: z.array(z.object({ id: z.string().uuid(), name: z.string().max(300) })).max(5),
+  })
+  .strict();
+export const karavanPublicationChoicesSchema = z
+  .object({ choices: z.array(karavanPublicationChoiceSchema).max(20) })
+  .strict();
+export const karavanPublicationChoiceSaveSchema = z
+  .object({
+    actorMaxUserId: karavanMarketplaceActorIdSchema,
+    choiceId: z.string().uuid(),
+    storeId: z.string().uuid(),
+    chatId: karavanMarketplaceChatIdSchema.optional(),
+  })
+  .strict();
+export const karavanPublicationChoiceSavedSchema = z
+  .object({ saved: z.literal(true), storeId: z.string().uuid() })
+  .strict();

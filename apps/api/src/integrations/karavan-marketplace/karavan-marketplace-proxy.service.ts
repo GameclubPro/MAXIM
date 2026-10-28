@@ -18,6 +18,10 @@ import {
   karavanMarketplaceSetupSchema,
   karavanMarketplaceCheckpointSchema,
   karavanMarketplaceOperationSchema,
+  karavanMarketplaceSetupOptionsSchema,
+  karavanMarketplaceReviewSchema,
+  karavanMarketplacePreviewInputSchema,
+  karavanMarketplacePreviewSchema,
   type KaravanMarketplaceAuthorityScope,
   type KaravanMarketplaceModule,
   type KaravanMarketplaceOperation,
@@ -146,6 +150,55 @@ export class KaravanMarketplaceProxyService {
     );
   }
 
+  async setupOptions(chatId: string, actorMaxUserId: string, principal: KaravanPrincipal) {
+    const payload = moduleInput.parse({ commandId: randomUUID(), chatId });
+    return this.command(
+      '/setup-options',
+      {
+        ...payload,
+        actorMaxUserId,
+        action: 'read_chat_module',
+        marketplaceId: null,
+        expectedBindingGeneration: null,
+      },
+      payload,
+      principal,
+      karavanMarketplaceSetupOptionsSchema,
+    );
+  }
+
+  async preview(actorMaxUserId: string, raw: unknown, principal: KaravanPrincipal) {
+    const input = karavanMarketplacePreviewInputSchema.parse(raw);
+    let target: z.infer<typeof karavanMarketplaceReviewSchema> | null = null;
+    if (input.marketplaceId) {
+      const payload = {
+        commandId: randomUUID(),
+        chatId: input.chatIds[0]!,
+        marketplaceId: input.marketplaceId,
+      };
+      target = await this.command(
+        '/review',
+        { ...payload, actorMaxUserId, action: 'read_chat_module', expectedBindingGeneration: null },
+        payload,
+        principal,
+        karavanMarketplaceReviewSchema,
+      );
+      if (!target.permissions.includes('bind_chat') || target.marketplace.status === 'archived')
+        throw new ForbiddenException('Этот магазин нельзя подключить.');
+    }
+    const chats = [];
+    for (const chatId of input.chatIds) {
+      const module = await this.module(chatId, actorMaxUserId, principal);
+      chats.push({
+        chatId,
+        title: module.currentChatTitle ?? module.binding?.chatTitle ?? 'Чат MAX',
+        binding: module.binding,
+        marketplace: module.marketplace,
+      });
+    }
+    return karavanMarketplacePreviewSchema.parse({ target, chats });
+  }
+
   async binding(
     marketplaceId: string,
     actorMaxUserId: string,
@@ -190,6 +243,33 @@ export class KaravanMarketplaceProxyService {
       checkpoints: row.checkpoints,
       request: row.request,
     });
+  }
+
+  async cancelSetup(operationId: string, actorMaxUserId: string, anchorChatId: string) {
+    this.authority.assertEnabled();
+    await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<
+        Array<{ id: string }>
+      >`SELECT id FROM karavan_marketplace_connection_operations WHERE id=${operationId}::uuid AND actor_max_user_id=${actorMaxUserId} AND anchor_chat_id=${anchorChatId} FOR UPDATE`;
+      if (!rows.length) throw new ForbiddenException('Подключение недоступно.');
+      const row = await tx.karavanMarketplaceConnectionOperation.findUniqueOrThrow({
+        where: { id: operationId },
+      });
+      if (['cancelled', 'complete', 'rejected'].includes(row.state)) return;
+      const checkpoints = karavanMarketplaceCheckpointSchema.parse(row.checkpoints);
+      // Never release an intent while a remote effect may still be running or unknown.
+      if (
+        row.leaseId ||
+        row.state === 'unknown' ||
+        checkpoints.bindings.some((item) => item.state === 'unknown')
+      )
+        throw new ConflictException('Сначала проверьте результат незавершённого подключения.');
+      await tx.karavanMarketplaceConnectionOperation.update({
+        where: { id: operationId },
+        data: { state: 'cancelled', activeScopeKey: null },
+      });
+    });
+    return this.status(operationId, actorMaxUserId);
   }
 
   async activeSetup(actorMaxUserId: string, anchorChatId: string) {
@@ -244,7 +324,7 @@ export class KaravanMarketplaceProxyService {
           request: input,
           state: 'pending',
           checkpoints: {
-            marketplaceId: null,
+            marketplaceId: input.existingMarketplaceId ?? null,
             bindings: input.chatIds.map((chatId) => ({
               chatId,
               state: 'pending',
@@ -256,7 +336,7 @@ export class KaravanMarketplaceProxyService {
       });
     });
     input = karavanMarketplaceSetupSchema.parse(row.request);
-    if (row.state === 'complete' || row.state === 'rejected')
+    if (row.state === 'complete' || row.state === 'rejected' || row.state === 'cancelled')
       return this.status(input.operationId, actorMaxUserId);
     const lease = await this.prisma.karavanMarketplaceConnectionOperation.updateMany({
       where: {
@@ -288,6 +368,7 @@ export class KaravanMarketplaceProxyService {
     };
     try {
       if (!checkpoints.marketplaceId) {
+        if (!input.create) throw new ConflictException('Выберите магазин повторно.');
         // FLAG: Persist uncertainty before the remote call so a process crash cannot release its intent.
         await checkpoint('unknown');
         const payload = karavanMarketplaceCreateSchema.parse({
@@ -332,24 +413,37 @@ export class KaravanMarketplaceProxyService {
       if (nextIndex >= 0) {
         const index = nextIndex;
         const binding = checkpoints.bindings[index]!;
+        const bindingWasUnknown = binding.state === 'unknown';
+        // Persist uncertainty before crossing the service boundary so process loss cannot make a committed binding cancellable.
+        binding.state = 'unknown';
         await checkpoint('pending');
         try {
+          const expected = input.bindingExpectations?.find(
+            (item) => item.chatId === binding.chatId,
+          );
+          const bindingAction = expected?.action ?? 'bind_chat';
           const result = await this.binding(
             checkpoints.marketplaceId,
             actorMaxUserId,
             {
               commandId: `${input.operationId}:bind:${index}`,
               chatId: binding.chatId,
-              expectedBindingGeneration: null,
+              expectedBindingGeneration: expected?.generation ?? null,
+              ...(input.expectedPolicyRevision === undefined
+                ? {}
+                : { expectedPolicyRevision: input.expectedPolicyRevision }),
+              ...(bindingAction === 'bind_chat' ? {} : { action: bindingAction }),
             },
             principal,
+            bindingAction !== 'bind_chat',
           );
           binding.state = 'connected';
           binding.bindingId = result.bindingId;
           binding.generation = result.generation;
         } catch (error) {
           binding.state =
-            error instanceof KaravanCommandUnavailable && error.outcome === 'unknown'
+            bindingWasUnknown ||
+            (error instanceof KaravanCommandUnavailable && error.outcome === 'unknown')
               ? 'unknown'
               : 'failed';
         }
