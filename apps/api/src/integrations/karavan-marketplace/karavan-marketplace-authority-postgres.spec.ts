@@ -287,9 +287,10 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
   });
 
   it('invalidates an outstanding proof after real Redis session logout', async () => {
-    const realSessions = new MiniappSessionService(
-      new ConfigService({ REDIS_URL: process.env.REDIS_URL }),
-    );
+    const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(redisUrl).hostname))
+      throw new Error('Disposable local Redis required');
+    const realSessions = new MiniappSessionService(new ConfigService({ REDIS_URL: redisUrl }));
     try {
       const user = {
         userId: actorMaxUserId,
