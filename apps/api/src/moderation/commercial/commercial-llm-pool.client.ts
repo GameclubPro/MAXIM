@@ -39,6 +39,10 @@ type RoutingSample = {
   sampled: boolean;
   failurePenaltyMs: number;
   penaltyAtMs: number;
+  completedAttempts: number;
+  failedAttempts: number;
+  lastCompletedAt: string | null;
+  lastFailureAt: string | null;
 };
 
 // FLAG: Process-local, bounded to the three trusted profiles. These measurements choose only
@@ -64,16 +68,43 @@ export class CommercialLlmPoolRoutingStats {
     sample.latencyMs = sample.sampled ? sample.latencyMs * 0.75 + observed * 0.25 : observed;
     sample.sampled = true;
     sample.failurePenaltyMs = 0;
+    sample.completedAttempts = Math.min(Number.MAX_SAFE_INTEGER, sample.completedAttempts + 1);
+    sample.lastCompletedAt = new Date().toISOString();
   }
 
   recordFailure(nodeId: CommercialLlmPoolNodeId, nowMs = Date.now()): void {
     const sample = this.samples[nodeId];
     sample.failurePenaltyMs = Math.min(20_000, this.penalty(sample, nowMs) + 5000);
     sample.penaltyAtMs = nowMs;
+    sample.failedAttempts = Math.min(Number.MAX_SAFE_INTEGER, sample.failedAttempts + 1);
+    sample.lastFailureAt = new Date(nowMs).toISOString();
+  }
+
+  snapshot() {
+    return POOL_NODE_IDS.map((nodeId) => {
+      const sample = this.samples[nodeId];
+      return {
+        nodeId,
+        completedAttempts: sample.completedAttempts,
+        failedAttempts: sample.failedAttempts,
+        lastCompletedAt: sample.lastCompletedAt,
+        lastFailureAt: sample.lastFailureAt,
+        ewmaDurationMs: sample.sampled ? Math.round(sample.latencyMs) : null,
+      };
+    });
   }
 
   private seed(): RoutingSample {
-    return { latencyMs: 4000, sampled: false, failurePenaltyMs: 0, penaltyAtMs: 0 };
+    return {
+      latencyMs: 4000,
+      sampled: false,
+      failurePenaltyMs: 0,
+      penaltyAtMs: 0,
+      completedAttempts: 0,
+      failedAttempts: 0,
+      lastCompletedAt: null,
+      lastFailureAt: null,
+    };
   }
 
   private cost(nodeId: CommercialLlmPoolNodeId, nowMs: number): number {

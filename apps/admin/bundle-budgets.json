@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "javascript": {
-    "rawBytes": 450560,
-    "gzipBytes": 125952
+    "rawBytes": 452608,
+    "gzipBytes": 128000
   },
   "css": {
     "rawBytes": 24576,

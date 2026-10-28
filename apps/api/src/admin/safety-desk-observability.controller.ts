@@ -1,5 +1,6 @@
 import { Controller, Get, Inject, Param, UseGuards } from '@nestjs/common';
 import { SafetyDeskCommercialAiService } from './safety-desk-commercial-ai.service';
+import { SafetyDeskCommercialAiPoolService } from './safety-desk-commercial-ai-pool.service';
 import { SafetyDeskAdminGuard } from './safety-desk-admin.guard';
 import { SafetyDeskDeleteEvidenceService } from './safety-desk-delete-evidence.service';
 import { SafetyDeskWebhookCohortService } from './safety-desk-webhook-cohort.service';
@@ -32,11 +33,18 @@ export class SafetyDeskObservabilityController {
     >,
     @Inject(SafetyDeskCommercialAiService)
     private readonly commercialAi: Pick<SafetyDeskCommercialAiService, 'getSnapshot'>,
+    @Inject(SafetyDeskCommercialAiPoolService)
+    private readonly commercialAiPool: Pick<SafetyDeskCommercialAiPoolService, 'getSnapshot'>,
   ) {}
 
   @Get('commercial-ai')
   getCommercialAi() {
     return this.commercialAi.getSnapshot();
+  }
+
+  @Get('commercial-ai/pool')
+  getCommercialAiPool() {
+    return this.commercialAiPool.getSnapshot();
   }
 
   @Get('webhook-cohort')

@@ -1,6 +1,7 @@
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { RequestMethod } from '@nestjs/common';
 import type { SafetyDeskCommercialAiService } from './safety-desk-commercial-ai.service';
+import type { SafetyDeskCommercialAiPoolService } from './safety-desk-commercial-ai-pool.service';
 import { SafetyDeskAdminGuard } from './safety-desk-admin.guard';
 import { SafetyDeskObservabilityController } from './safety-desk-observability.controller';
 import type { SafetyDeskWebhookCohortService } from './safety-desk-webhook-cohort.service';
@@ -48,6 +49,9 @@ describe('closed observation routes', () => {
     const commercialAi = {
       getSnapshot: jest.fn<ReturnType<SafetyDeskCommercialAiService['getSnapshot']>, []>(),
     } satisfies Pick<SafetyDeskCommercialAiService, 'getSnapshot'>;
+    const pool = {
+      getSnapshot: jest.fn<ReturnType<SafetyDeskCommercialAiPoolService['getSnapshot']>, []>(),
+    } satisfies Pick<SafetyDeskCommercialAiPoolService, 'getSnapshot'>;
     const controller = new SafetyDeskObservabilityController(
       cohort,
       evidence,
@@ -56,6 +60,7 @@ describe('closed observation routes', () => {
       deliveries,
       deliveryEvidence,
       commercialAi,
+      pool,
     );
     expect(Reflect.getMetadata(GUARDS_METADATA, SafetyDeskObservabilityController)).toContain(
       SafetyDeskAdminGuard,
@@ -87,6 +92,7 @@ describe('closed observation routes', () => {
     expect(getEvidence).toHaveBeenCalledWith('exact-intent');
     for (const [method, path] of [
       [controller.getCommercialAi, 'commercial-ai'],
+      [controller.getCommercialAiPool, 'commercial-ai/pool'],
       [controller.getDeleteCohort, 'delete-cohort'],
       [controller.getPublicationDeliveryCohort, 'publication-delivery-cohort'],
       [controller.getPublicationDeliveryEvidence, 'publication-deliveries/:deliveryId/evidence'],
@@ -96,6 +102,8 @@ describe('closed observation routes', () => {
     }
     controller.getCommercialAi();
     expect(commercialAi.getSnapshot).toHaveBeenCalledTimes(1);
+    controller.getCommercialAiPool();
+    expect(pool.getSnapshot).toHaveBeenCalledTimes(1);
     controller.getDeleteCohort();
     controller.getPublicationDeliveryCohort();
     controller.getPublicationDeliveryEvidence('exact-delivery');

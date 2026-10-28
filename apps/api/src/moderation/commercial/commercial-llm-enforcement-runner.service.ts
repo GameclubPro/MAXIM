@@ -41,6 +41,7 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
   private poolServer: CommercialLlmPoolServer | null = null;
   private readonly retiredPoolServers = new Set<Promise<void>>();
   private readonly poolRoutingStats = new CommercialLlmPoolRoutingStats();
+  private readonly poolConsultations = { completed: 0, noCapacity: 0, budgetExhausted: 0 };
   private lastSuccessAt: string | null = null;
   private lastStatusAt = 0;
   private lastFailureAt = 0;
@@ -141,6 +142,15 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       outcomes: { ...this.outcomes },
       pendingDiscardBasis: 'redis_namespace_cumulative',
       pendingDiscards,
+      ...(this.admission.poolPolicy()
+        ? {
+            poolDiagnostics: {
+              schemaVersion: 1,
+              nodes: this.poolRoutingStats.snapshot(),
+              consultations: { ...this.poolConsultations },
+            },
+          }
+        : {}),
     };
     await this.redis.set(
       (this.admission.poolPolicy()
@@ -326,6 +336,20 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
         if (outcome === 'kept' || outcome === 'unsure' || outcome === 'delete_registered')
           this.lastSuccessAt = new Date().toISOString();
         this.outcomes[outcome] = (this.outcomes[outcome] ?? 0) + 1;
+        const consultation = result.consultationOutcome;
+        const key =
+          consultation === 'completed'
+            ? 'completed'
+            : consultation === 'no_capacity'
+              ? 'noCapacity'
+              : consultation === 'budget_exhausted'
+                ? 'budgetExhausted'
+                : null;
+        if (key)
+          this.poolConsultations[key] = Math.min(
+            Number.MAX_SAFE_INTEGER,
+            this.poolConsultations[key] + 1,
+          );
         this.logger.log(
           {
             stage: 'commercial-ai',
