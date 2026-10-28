@@ -1,5 +1,12 @@
 # Local commercial-ad model in shadow mode
 
+For the optional three-node enforcement pool, its separate worker registration,
+PC migration and unattended startup, see the
+[commercial AI pool runbook](commercial-ai-pool.md). The existing first-PC 4B
+launcher and key are preserved; its bridge adapts on the server when both pool
+flags are enabled. The shadow installation commands below retain their existing
+behavior. Pool routing uses its guarded all-API rollout.
+
 The optional `gemma-commercial-shadow` service (a retained internal DNS name) runs the text-only Qwen3.5-9B
 Q5_K_M model alongside MAXIM, Svyazka and Karavan. It supplies observations only.
 The model never owns a MAX token, database, Redis connection, message deletion or

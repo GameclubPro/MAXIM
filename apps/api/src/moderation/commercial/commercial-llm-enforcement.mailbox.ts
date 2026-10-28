@@ -114,7 +114,12 @@ end
 
 export class CommercialLlmEnforcementMailbox {
   private readonly logger = new Logger(CommercialLlmEnforcementMailbox.name);
-  constructor(private readonly redis: Redis) {}
+  constructor(
+    protected readonly redis: Redis,
+    protected readonly keys: {
+      [Key in keyof typeof COMMERCIAL_LLM_ENFORCEMENT_KEYS]: string;
+    } = COMMERCIAL_LLM_ENFORCEMENT_KEYS,
+  ) {}
 
   async heartbeat(worker: string): Promise<boolean> {
     return (
@@ -123,14 +128,14 @@ export class CommercialLlmEnforcementMailbox {
       if owner and owner ~= ARGV[1] then return 0 end
       redis.call('SET', KEYS[1], ARGV[1], 'PX', 5000); return 1`,
         1,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
+        this.keys.worker,
         worker,
       )) === 1
     );
   }
 
   async ownsWorker(worker: string): Promise<boolean> {
-    return (await this.redis.get(COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker)) === worker;
+    return (await this.redis.get(this.keys.worker)) === worker;
   }
 
   async advertise(worker: string): Promise<boolean> {
@@ -144,11 +149,11 @@ export class CommercialLlmEnforcementMailbox {
       if redis.call('HLEN', KEYS[4]) >= tonumber(ARGV[2]) then return 0 end
       redis.call('SET', KEYS[1], ARGV[1], 'PX', 2500); return 1`,
         5,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
+        this.keys.ready,
+        this.keys.slot,
+        this.keys.worker,
+        this.keys.active,
+        this.keys.slotNext,
         worker,
         COMMERCIAL_LLM_ACTIVE_LIMIT,
       )) === 1
@@ -156,7 +161,7 @@ export class CommercialLlmEnforcementMailbox {
   }
 
   async withdraw(worker: string): Promise<void> {
-    await this.redis.eval(release, 1, COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready, worker);
+    await this.redis.eval(release, 1, this.keys.ready, worker);
   }
 
   async offer(offer: { source: CommercialLlmSource; excerpt: string }): Promise<boolean> {
@@ -168,10 +173,7 @@ export class CommercialLlmEnforcementMailbox {
     excerpt: string;
   }): Promise<CommercialLlmAdmissionResult> {
     if (!commercialLlmSourceCurrent(offer.source)) return 'source_expired';
-    const [worker, pendingRaw] = await this.redis.mget(
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
-    );
+    const [worker, pendingRaw] = await this.redis.mget(this.keys.ready, this.keys.slot);
     const pending = pendingRaw ? parseRequest(pendingRaw) : null;
     const validatedPendingRaw =
       pending && pending.worker === worker && commercialLlmSourceCurrent(pending.source)
@@ -227,13 +229,13 @@ export class CommercialLlmEnforcementMailbox {
       redis.call('SET', target, ARGV[2], 'PXAT', ARGV[3])
       return 'accepted'`,
       7,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.ready,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.primary,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.cooldown,
+      this.keys.ready,
+      this.keys.slot,
+      this.keys.worker,
+      this.keys.active,
+      this.keys.primary,
+      this.keys.slotNext,
+      this.keys.cooldown,
       worker ?? '',
       JSON.stringify(request),
       offer.source.deadlineAtMs,
@@ -261,10 +263,10 @@ export class CommercialLlmEnforcementMailbox {
       redis.call('DEL', KEYS[1]); promotePending(KEYS[1], KEYS[4]); redis.call('HINCRBY', KEYS[3], ARGV[3], 1)
       redis.call('EXPIRE', KEYS[3], 86400); return 1`,
       4,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.metrics,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
+      this.keys.slot,
+      this.keys.worker,
+      this.keys.metrics,
+      this.keys.slotNext,
       raw,
       worker,
       reason,
@@ -300,10 +302,7 @@ export class CommercialLlmEnforcementMailbox {
   }
 
   async readObservations(): Promise<Partial<Record<CommercialLlmPendingDiscardReason, number>>> {
-    const counts = await this.redis.hmget(
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.metrics,
-      ...pendingDiscardReasons,
-    );
+    const counts = await this.redis.hmget(this.keys.metrics, ...pendingDiscardReasons);
     return Object.fromEntries(
       pendingDiscardReasons.flatMap((reason, index) => {
         const count = Number(counts[index]);
@@ -319,9 +318,9 @@ export class CommercialLlmEnforcementMailbox {
       if redis.call('EXISTS', KEYS[1]) == 0 then promotePending(KEYS[1], KEYS[2]) end
       return redis.call('GET', KEYS[1])`,
       3,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
+      this.keys.slot,
+      this.keys.slotNext,
+      this.keys.worker,
       worker,
     );
     if (typeof raw !== 'string') return null;
@@ -360,13 +359,13 @@ export class CommercialLlmEnforcementMailbox {
       redis.call('SET', KEYS[4], ARGV[1], 'PX', tonumber(ARGV[5]) - now)
       redis.call('SET', KEYS[5], '1', 'PX', ARGV[7]); redis.call('DEL', KEYS[1]); promotePending(KEYS[1], KEYS[7]); return 1`,
       7,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slot,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.primary,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.cooldown,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.metrics,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.slotNext,
+      this.keys.slot,
+      this.keys.worker,
+      this.keys.active,
+      this.keys.primary,
+      this.keys.cooldown,
+      this.keys.metrics,
+      this.keys.slotNext,
       raw,
       worker,
       rawKey(raw),
@@ -389,9 +388,9 @@ export class CommercialLlmEnforcementMailbox {
         `if redis.call('GET', KEYS[2]) ~= ARGV[2] or redis.call('HGET', KEYS[3], ARGV[3]) ~= ARGV[1] then return 0 end
       if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end; return 0`,
         3,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.primary,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
+        this.keys.primary,
+        this.keys.worker,
+        this.keys.active,
         raw,
         worker,
         rawKey(raw),
@@ -421,10 +420,10 @@ export class CommercialLlmEnforcementMailbox {
       if expire < tonumber(ARGV[5]) then redis.call('PEXPIREAT', KEYS[3], ARGV[5]) end
       return 1`,
         4,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.secondary,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.primary,
+        this.keys.active,
+        this.keys.worker,
+        this.keys.secondary,
+        this.keys.primary,
         raw,
         worker,
         rawKey(raw),
@@ -446,9 +445,9 @@ export class CommercialLlmEnforcementMailbox {
       if tonumber(ARGV[5]) <= now or redis.call('HGET', KEYS[3], ARGV[4]) ~= ARGV[1] then return 0 end
       return redis.call('HDEL', KEYS[3], ARGV[4])`,
         3,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.secondary,
+        this.keys.active,
+        this.keys.worker,
+        this.keys.secondary,
         raw,
         worker,
         rawKey(raw),
@@ -465,8 +464,8 @@ export class CommercialLlmEnforcementMailbox {
       (await this.redis.eval(
         `if redis.call('GET', KEYS[2]) == ARGV[2] and redis.call('HGET', KEYS[1], ARGV[3]) == ARGV[1] then return 1 end; return 0`,
         2,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
+        this.keys.active,
+        this.keys.worker,
         raw,
         request.worker,
         rawKey(raw),
@@ -491,9 +490,9 @@ export class CommercialLlmEnforcementMailbox {
       if tonumber(ARGV[3]) <= now then return 0 end
       redis.call('SET', KEYS[2], ARGV[2], 'PX', tonumber(ARGV[3]) - now, 'NX'); return 1`,
         3,
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
+        this.keys.active,
         commercialLlmProofKey(source),
-        COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
+        this.keys.worker,
         raw,
         JSON.stringify(source),
         source.deadlineAtMs,
@@ -521,10 +520,10 @@ export class CommercialLlmEnforcementMailbox {
       if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
       if redis.call('HGET', KEYS[4], ARGV[4]) == ARGV[1] then redis.call('HDEL', KEYS[4], ARGV[4]) end; return 1`,
       4,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.active,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.primary,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.worker,
-      COMMERCIAL_LLM_ENFORCEMENT_KEYS.secondary,
+      this.keys.active,
+      this.keys.primary,
+      this.keys.worker,
+      this.keys.secondary,
       raw,
       request.worker,
       rawKey(raw),

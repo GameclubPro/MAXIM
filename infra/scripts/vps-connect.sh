@@ -27,6 +27,9 @@ DEPLOY_DISK_MIN_FREE_BYTES_FROM_CALLER="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-}"
 DEPLOY_API_READY_TIMEOUT_SEC_FROM_CALLER="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-}"
 readonly MESSAGE_RETENTION_MODE_FROM_CALLER="${MAXIM_MESSAGE_RETENTION_MODE:-}"
 readonly COMMERCIAL_AI_FROM_CALLER="${MAXIM_COMMERCIAL_LLM_ENFORCEMENT:-}"
+readonly COMMERCIAL_AI_POOL_WORKERS_FROM_CALLER="${MAXIM_COMMERCIAL_LLM_POOL_WORKERS_ENABLED:-}"
+readonly COMMERCIAL_AI_POOL_FROM_CALLER="${MAXIM_COMMERCIAL_LLM_POOL_ENABLED:-}"
+readonly COMMERCIAL_AI_POOL_4B_POLICY_FROM_CALLER="${MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY:-}"
 readonly COMMERCIAL_OCR_OFF_FROM_CALLER="${MAXIM_COMMERCIAL_OCR_OFF:-0}"
 readonly STATISTICS_EXCHANGE_V3_FROM_CALLER="${STATISTICS_EXCHANGE_V3_ENABLED:-}"
 readonly STATISTICS_CENTRAL_EPOCH_FROM_CALLER="${MAXIM_STATISTICS_CENTRAL_EPOCH:-}"
@@ -40,6 +43,9 @@ fi
 
 MAXIM_COMMERCIAL_OCR_OFF="$COMMERCIAL_OCR_OFF_FROM_CALLER"
 MAXIM_COMMERCIAL_LLM_ENFORCEMENT="$COMMERCIAL_AI_FROM_CALLER"
+MAXIM_COMMERCIAL_LLM_POOL_WORKERS_ENABLED="$COMMERCIAL_AI_POOL_WORKERS_FROM_CALLER"
+MAXIM_COMMERCIAL_LLM_POOL_ENABLED="$COMMERCIAL_AI_POOL_FROM_CALLER"
+MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY="$COMMERCIAL_AI_POOL_4B_POLICY_FROM_CALLER"
 MAXIM_MESSAGE_RETENTION_MODE="$MESSAGE_RETENTION_MODE_FROM_CALLER"
 STATISTICS_EXCHANGE_V3_ENABLED="$STATISTICS_EXCHANGE_V3_FROM_CALLER"
 MAXIM_STATISTICS_CENTRAL_EPOCH="$STATISTICS_CENTRAL_EPOCH_FROM_CALLER"
@@ -80,6 +86,7 @@ Commands:
   commercial-llm install|replace|enable|disable|stop [--apply]
   commercial-llm status|smoke|check-client|check-workstation|check-workstation-offline
   commercial-llm workstation-bridge
+  commercial-llm workstation-pool-bridge pc-a-4b|pc-b-9b
                               Inspect the model or run closed transport/client probes
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS.
                               Requires MAXIM_ALLOW_SCALE_DEPLOY=1.
@@ -546,6 +553,13 @@ NODE
 commercial_llm() {
   local operation="${1:-status}" target_sha
   case "$operation" in
+    workstation-pool-bridge)
+      if [[ $# -ne 2 || ( "${2:-}" != pc-a-4b && "${2:-}" != pc-b-9b ) ]]; then
+        echo 'Usage: commercial-llm workstation-pool-bridge pc-a-4b|pc-b-9b' >&2
+        return 2
+      fi
+      remote_exec "$(shell_quote_args bash ./infra/scripts/vps-commercial-llm.sh "$operation" "$2")"
+      ;;
     status|smoke|check-client|workstation-bridge|check-workstation|check-workstation-offline)
       [[ $# -le 1 ]] || { echo 'Unexpected commercial-llm arguments.' >&2; return 2; }
       remote_exec "$(shell_quote_args bash ./infra/scripts/vps-commercial-llm.sh "$operation")"
@@ -1267,6 +1281,7 @@ deploy_main() {
   local branch="${1:-main}"
   local expected_sha
   local remote_command
+  local pool_flag
   shift || true
 
   case "${MAXIM_MESSAGE_RETENTION_MODE:-}" in
@@ -1276,6 +1291,16 @@ deploy_main() {
   case "${MAXIM_COMMERCIAL_LLM_ENFORCEMENT:-}" in
     ''|true|false) ;;
     *) echo 'MAXIM_COMMERCIAL_LLM_ENFORCEMENT must be true or false when supplied.' >&2; return 2 ;;
+  esac
+  for pool_flag in "${MAXIM_COMMERCIAL_LLM_POOL_WORKERS_ENABLED:-}" "${MAXIM_COMMERCIAL_LLM_POOL_ENABLED:-}"; do
+    case "$pool_flag" in
+      ''|true|false) ;;
+      *) echo 'Commercial AI pool deploy flags must be true or false when supplied.' >&2; return 2 ;;
+    esac
+  done
+  case "${MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY:-}" in
+    ''|confirm-positive|direct-4b) ;;
+    *) echo 'MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY must be confirm-positive or direct-4b.' >&2; return 2 ;;
   esac
   case "${STATISTICS_EXCHANGE_V3_ENABLED:-}" in
     ''|true|false) ;;
@@ -1311,6 +1336,15 @@ deploy_main() {
   fi
   if [[ -n "${MAXIM_COMMERCIAL_LLM_ENFORCEMENT:-}" ]]; then
     remote_command="MAXIM_COMMERCIAL_LLM_ENFORCEMENT=$(printf '%q' "$MAXIM_COMMERCIAL_LLM_ENFORCEMENT") $remote_command"
+  fi
+  if [[ -n "${MAXIM_COMMERCIAL_LLM_POOL_WORKERS_ENABLED:-}" ]]; then
+    remote_command="MAXIM_COMMERCIAL_LLM_POOL_WORKERS_ENABLED=$(printf '%q' "$MAXIM_COMMERCIAL_LLM_POOL_WORKERS_ENABLED") $remote_command"
+  fi
+  if [[ -n "${MAXIM_COMMERCIAL_LLM_POOL_ENABLED:-}" ]]; then
+    remote_command="MAXIM_COMMERCIAL_LLM_POOL_ENABLED=$(printf '%q' "$MAXIM_COMMERCIAL_LLM_POOL_ENABLED") $remote_command"
+  fi
+  if [[ -n "${MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY:-}" ]]; then
+    remote_command="MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY=$(printf '%q' "$MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY") $remote_command"
   fi
   if [[ -n "${STATISTICS_EXCHANGE_V3_ENABLED:-}" ]]; then
     remote_command="STATISTICS_EXCHANGE_V3_ENABLED=$(printf '%q' "$STATISTICS_EXCHANGE_V3_ENABLED") $remote_command"
@@ -1693,7 +1727,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_commercial_ai_delete_guard \
+    maxim_topology_require_commercial_ai_pool_delete_reader \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1708,15 +1742,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback retains guarded AI deletion and the preceding statistics,
+  # FLAG: API rollback retains both v1/v2 guarded AI readers and the preceding statistics,
   # network intent, assignment, activation and permanent-hold reader floors.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_commercial_ai_delete_guard
+    capability_marker=maxim_topology_require_commercial_ai_pool_delete_reader
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_commercial_ai_delete_guard
+        capability_marker=maxim_topology_require_commercial_ai_pool_delete_reader
         break
       fi
     done

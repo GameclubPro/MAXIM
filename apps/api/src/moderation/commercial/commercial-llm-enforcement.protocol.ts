@@ -22,6 +22,10 @@ import {
   COMMERCIAL_LLM_CASCADE_VERSION,
   COMMERCIAL_LLM_WORKSTATION_IDENTITY,
 } from './commercial-llm-workstation.protocol';
+import {
+  COMMERCIAL_LLM_POOL_PROFILES,
+  isCommercialLlmPoolNodeId,
+} from './commercial-llm-pool.protocol';
 
 export const COMMERCIAL_LLM_DELETE_RULE_CODE = 'COMMERCIAL_LLM_DELETE';
 export const COMMERCIAL_LLM_ENFORCEMENT_VERSION = 1;
@@ -50,7 +54,7 @@ const originSchema = z
     sourceEvidenceVersion: z.literal(1),
   })
   .strict();
-export const commercialLlmSourceSchema = z
+const legacyCommercialLlmSourceSchema = z
   .object({
     version: z.literal(COMMERCIAL_LLM_ENFORCEMENT_VERSION),
     classifierSha256: z.literal(COMMERCIAL_LLM_ENFORCEMENT_IDENTITY_SHA256),
@@ -66,6 +70,27 @@ export const commercialLlmSourceSchema = z
     settingsSha256: sha,
   })
   .strict();
+export type CommercialLlmPoolPolicy = 'confirm-positive' | 'direct-4b';
+export function commercialLlmPoolEnforcementIdentity(policy: CommercialLlmPoolPolicy): string {
+  return createHash('sha256')
+    .update(JSON.stringify(['commercial-pool-v2', COMMERCIAL_LLM_POOL_PROFILES, policy]))
+    .digest('hex');
+}
+// FLAG: Existing v1 serialization and proofs are retained. New routing/4B authority
+// has a distinct source identity, and disabling its policy revokes execution separately.
+export const commercialLlmSourceSchema = z.union([
+  legacyCommercialLlmSourceSchema,
+  legacyCommercialLlmSourceSchema.extend({
+    version: z.literal(2),
+    classifierSha256: z.literal(commercialLlmPoolEnforcementIdentity('confirm-positive')),
+    poolPolicy: z.literal('confirm-positive'),
+  }),
+  legacyCommercialLlmSourceSchema.extend({
+    version: z.literal(2),
+    classifierSha256: z.literal(commercialLlmPoolEnforcementIdentity('direct-4b')),
+    poolPolicy: z.literal('direct-4b'),
+  }),
+]);
 export type CommercialLlmSource = z.infer<typeof commercialLlmSourceSchema>;
 export const commercialLlmRequestSchema = z
   .object({
@@ -108,6 +133,7 @@ export function prepareCommercialLlmOffer(
     origin?: z.infer<typeof originSchema>;
   },
   now = Date.now(),
+  poolPolicy?: CommercialLlmPoolPolicy,
 ):
   | { offer: { source: CommercialLlmSource; excerpt: string }; reason?: never }
   | { offer?: never; reason: CommercialLlmOfferRejection } {
@@ -124,8 +150,10 @@ export function prepareCommercialLlmOffer(
   if (!excerpt.trim() || excerpt.length > 2500 || hasResidualCommercialContactCandidate(excerpt))
     return { reason: 'unsanitized_contact' };
   const source = commercialLlmSourceSchema.safeParse({
-    version: COMMERCIAL_LLM_ENFORCEMENT_VERSION,
-    classifierSha256: COMMERCIAL_LLM_ENFORCEMENT_IDENTITY_SHA256,
+    version: poolPolicy ? 2 : COMMERCIAL_LLM_ENFORCEMENT_VERSION,
+    classifierSha256: poolPolicy
+      ? commercialLlmPoolEnforcementIdentity(poolPolicy)
+      : COMMERCIAL_LLM_ENFORCEMENT_IDENTITY_SHA256,
     nonce: randomUUID(),
     origin: input.origin,
     chatId: input.chatId,
@@ -136,6 +164,7 @@ export function prepareCommercialLlmOffer(
     deadlineAtMs: eventAtMs + COMMERCIAL_LLM_EFFECT_MAX_AGE_MS,
     sourceSha256: fingerprintCommercialDeleteText(input.text),
     settingsSha256: fingerprintCommercialDeleteSettings(input.settings),
+    ...(poolPolicy ? { poolPolicy } : {}),
   });
   return source.success && commercialLlmSourceCurrent(source.data, now)
     ? { offer: { source: source.data, excerpt } }
@@ -145,8 +174,9 @@ export function prepareCommercialLlmOffer(
 export function buildCommercialLlmOffer(
   input: Parameters<typeof prepareCommercialLlmOffer>[0],
   now = Date.now(),
+  poolPolicy?: CommercialLlmPoolPolicy,
 ): { source: CommercialLlmSource; excerpt: string } | null {
-  return prepareCommercialLlmOffer(input, now).offer ?? null;
+  return prepareCommercialLlmOffer(input, now, poolPolicy).offer ?? null;
 }
 
 export function commercialLlmSourceKey(source: CommercialLlmSource): string {
@@ -155,7 +185,11 @@ export function commercialLlmSourceKey(source: CommercialLlmSource): string {
 
 // FLAG: Historical SHADOW rows never enter this boundary. A newly admitted source needs
 // a successful, pinned server answer; audited disagreement with a local negative is a KEEP.
-export function commercialLlmMayDelete(result: CommercialLlmObservationResult): boolean {
+export function commercialLlmMayDelete(
+  result: CommercialLlmObservationResult,
+  source?: CommercialLlmSource,
+): boolean {
+  if (source?.version === 2 || result.pool) return poolMayDelete(result, source);
   return (
     parseCommercialLlmDecision({
       classification: result.classification,
@@ -170,5 +204,56 @@ export function commercialLlmMayDelete(result: CommercialLlmObservationResult): 
     result.cascade.primaryModelSha256 === COMMERCIAL_LLM_WORKSTATION_IDENTITY.modelSha256 &&
     result.cascade.route.startsWith('secondary_') &&
     result.cascade.primaryClassification !== 'NOT_COMMERCIAL'
+  );
+}
+
+function poolMayDelete(
+  result: CommercialLlmObservationResult,
+  source?: CommercialLlmSource,
+): boolean {
+  const pool = result.pool;
+  if (
+    source?.version !== 2 ||
+    !pool ||
+    pool.version !== 'commercial-pool-v2' ||
+    pool.policy !== source.poolPolicy ||
+    !isCommercialLlmPoolNodeId(pool.nodeId) ||
+    (pool.attempts !== 1 && pool.attempts !== 2) ||
+    source.classifierSha256 !== commercialLlmPoolEnforcementIdentity(source.poolPolicy) ||
+    parseCommercialLlmDecision({
+      classification: result.classification,
+      reasonCodes: result.reasonCodes,
+    })?.classification !== 'COMMERCIAL'
+  )
+    return false;
+  const profile = COMMERCIAL_LLM_POOL_PROFILES[pool.nodeId];
+  const identity = profile.identity;
+  if (
+    result.modelAlias !== identity.modelAlias ||
+    result.modelSha256 !== identity.modelSha256 ||
+    result.promptSha256 !== identity.promptSha256 ||
+    result.chatTemplateSha256 !== identity.chatTemplateSha256 ||
+    result.runtimeVersion !== identity.runtimeVersion ||
+    result.runtimeImageSha256 !== identity.runtimeImageSha256 ||
+    result.runtimeArtifactSha256 !== identity.runtimeArtifactSha256 ||
+    result.runtimeSupportSha256 !== identity.runtimeSupportSha256 ||
+    result.policyVersion !== COMMERCIAL_LLM_POLICY_VERSION
+  )
+    return false;
+  if (pool.route === 'direct') {
+    return (
+      pool.primaryNodeId === undefined &&
+      pool.primaryClassification === undefined &&
+      pool.consultationOutcome === undefined &&
+      (profile.model === '9b' || source.poolPolicy === 'direct-4b')
+    );
+  }
+  return (
+    pool.route === 'consulted' &&
+    profile.model === '9b' &&
+    pool.primaryNodeId === 'pc-a-4b' &&
+    pool.consultationOutcome === 'completed' &&
+    (pool.primaryClassification === 'UNSURE' ||
+      (source.poolPolicy === 'confirm-positive' && pool.primaryClassification === 'COMMERCIAL'))
   );
 }

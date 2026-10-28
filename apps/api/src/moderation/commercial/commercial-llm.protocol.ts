@@ -50,6 +50,18 @@ export type CommercialLlmObservationResult = CommercialLlmDecision & {
   chatTemplateSha256: string;
   policyVersion: string;
   durationMs: number;
+  pool?: {
+    version: 'commercial-pool-v2';
+    nodeId: 'server-9b' | 'pc-a-4b' | 'pc-b-9b';
+    route: 'direct' | 'consulted';
+    policy: 'confirm-positive' | 'direct-4b';
+    attempts: 1 | 2;
+    primaryNodeId?: 'pc-a-4b';
+    primaryClassification?: CommercialLlmClassification;
+    primaryDurationMs?: number;
+    consultationDurationMs?: number;
+    consultationOutcome?: 'completed' | 'no_capacity' | 'budget_exhausted';
+  };
   cascade?: {
     version: string;
     route: string;

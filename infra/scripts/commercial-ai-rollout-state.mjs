@@ -22,6 +22,17 @@ const KEY = 'COMMERCIAL_LLM_ENFORCEMENT_ENABLED';
 const MODES = new Set(['false', 'true']);
 const MAX_BYTES = 1024 * 1024;
 const exchangeFields = { [KEY]: (value) => MODES.has(value) };
+export const COMMERCIAL_AI_POOL_ENV_KEYS = Object.freeze({
+  workersEnabled: 'COMMERCIAL_LLM_POOL_WORKERS_ENABLED',
+  enabled: 'COMMERCIAL_LLM_POOL_ENABLED',
+  policy: 'COMMERCIAL_LLM_POOL_4B_POLICY',
+});
+const poolPolicies = new Set(['confirm-positive', 'direct-4b']);
+const poolFields = {
+  [COMMERCIAL_AI_POOL_ENV_KEYS.workersEnabled]: (value) => MODES.has(value),
+  [COMMERCIAL_AI_POOL_ENV_KEYS.enabled]: (value) => MODES.has(value),
+  [COMMERCIAL_AI_POOL_ENV_KEYS.policy]: (value) => poolPolicies.has(value),
+};
 
 function targetMode(mode) {
   if (mode !== 'false' && mode !== 'true') {
@@ -104,6 +115,51 @@ export function patchCommercialAiEnv(contents, mode) {
   return patchSettings(inspect(contents), { [KEY]: mode });
 }
 
+function targetPoolSettings(settings) {
+  if (
+    !settings ||
+    Object.keys(settings).length !== 3 ||
+    !MODES.has(settings.workersEnabled) ||
+    !MODES.has(settings.enabled) ||
+    !poolPolicies.has(settings.policy) ||
+    (settings.enabled === 'true' && settings.workersEnabled !== 'true')
+  )
+    throw new Error('Commercial AI pool settings are invalid or routing has no enabled workers.');
+  return settings;
+}
+
+export function readCommercialAiPoolEnv(contents) {
+  const state = inspect(contents, poolFields);
+  return targetPoolSettings({
+    workersEnabled:
+      state.assignments.get(COMMERCIAL_AI_POOL_ENV_KEYS.workersEnabled)?.mode ?? 'false',
+    enabled: state.assignments.get(COMMERCIAL_AI_POOL_ENV_KEYS.enabled)?.mode ?? 'false',
+    policy: state.assignments.get(COMMERCIAL_AI_POOL_ENV_KEYS.policy)?.mode ?? 'confirm-positive',
+  });
+}
+
+export function resolveCommercialAiPoolEnv(contents, overrides) {
+  const settings = readCommercialAiPoolEnv(contents);
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!Object.hasOwn(COMMERCIAL_AI_POOL_ENV_KEYS, key))
+      throw new Error('Unknown commercial AI pool deploy setting.');
+    if (value !== '') settings[key] = value;
+  }
+  return targetPoolSettings(settings);
+}
+
+export function patchCommercialAiPoolEnv(contents, settings) {
+  targetPoolSettings(settings);
+  // FLAG: Registration can be enabled while routing stays off. The explicit direct-4b policy
+  // is a separate quality-gated operator choice, never an implicit consequence of adding capacity.
+  return patchSettings(
+    inspect(contents, poolFields),
+    Object.fromEntries(
+      Object.entries(COMMERCIAL_AI_POOL_ENV_KEYS).map(([name, key]) => [key, settings[name]]),
+    ),
+  );
+}
+
 function privateRegularFile(stat) {
   if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o022) !== 0) {
     throw new Error('Commercial AI dotenv must be a regular, singly linked protected file.');
@@ -169,6 +225,33 @@ export function patchCommercialAiEnvFile(path, mode) {
   patchEnvFile(path, (contents) => patchCommercialAiEnv(contents, mode));
 }
 
+export function patchCommercialAiPoolEnvFile(path, settings) {
+  targetPoolSettings(settings);
+  patchEnvFile(path, (contents) => patchCommercialAiPoolEnv(contents, settings));
+}
+
+export function verifyCommercialAiPoolRuntimeEnv(value, settings) {
+  targetPoolSettings(settings);
+  if (!Array.isArray(value)) throw new Error('Commercial AI runtime environment is unavailable.');
+  for (const [name, key] of Object.entries(COMMERCIAL_AI_POOL_ENV_KEYS)) {
+    const matches = value.filter(
+      (entry) => typeof entry === 'string' && entry.startsWith(`${key}=`),
+    );
+    if (matches.length !== 1 || matches[0] !== `${key}=${settings[name]}`)
+      throw new Error('Commercial AI pool runtime differs from the requested deploy settings.');
+  }
+}
+
+export function verifyCommercialAiPoolCompose(config, settings, services) {
+  targetPoolSettings(settings);
+  if (services.length !== 14 || new Set(services).size !== 14)
+    throw new Error('Commercial AI pool verification requires the complete API topology.');
+  for (const service of services)
+    for (const [name, key] of Object.entries(COMMERCIAL_AI_POOL_ENV_KEYS))
+      if (config?.services?.[service]?.environment?.[key] !== settings[name])
+        throw new Error('Commercial AI pool Compose differs from the requested deploy settings.');
+}
+
 export function verifyCommercialAiRuntimeEnv(value, mode) {
   targetMode(mode);
   if (!Array.isArray(value)) throw new Error('Commercial AI runtime environment is unavailable.');
@@ -192,6 +275,11 @@ export function verifyCommercialAiCompose(config, mode, services) {
 
 function main(argv) {
   const [command, ...args] = argv;
+  const poolSettings = (values) => ({
+    workersEnabled: values[0],
+    enabled: values[1],
+    policy: values[2],
+  });
   if (command === 'read-env' && args.length === 1) {
     process.stdout.write(`${readCommercialAiEnv(readFileSync(args[0]))}\n`);
   } else if (command === 'patch-env' && args.length === 2) {
@@ -200,6 +288,24 @@ function main(argv) {
     verifyCommercialAiRuntimeEnv(JSON.parse(readFileSync(0).toString('utf8')), args[0]);
   } else if (command === 'verify-compose' && args.length === 15) {
     verifyCommercialAiCompose(JSON.parse(readFileSync(0).toString('utf8')), args[0], args.slice(1));
+  } else if (command === 'read-pool-env' && args.length === 1) {
+    process.stdout.write(`${JSON.stringify(readCommercialAiPoolEnv(readFileSync(args[0])))}\n`);
+  } else if (command === 'resolve-pool-env' && args.length === 4) {
+    const settings = resolveCommercialAiPoolEnv(readFileSync(args[0]), poolSettings(args.slice(1)));
+    process.stdout.write(`${settings.workersEnabled} ${settings.enabled} ${settings.policy}\n`);
+  } else if (command === 'patch-pool-env' && args.length === 4) {
+    patchCommercialAiPoolEnvFile(args[0], poolSettings(args.slice(1)));
+  } else if (command === 'verify-pool-runtime-env' && args.length === 3) {
+    verifyCommercialAiPoolRuntimeEnv(
+      JSON.parse(readFileSync(0).toString('utf8')),
+      poolSettings(args),
+    );
+  } else if (command === 'verify-pool-compose' && args.length === 17) {
+    verifyCommercialAiPoolCompose(
+      JSON.parse(readFileSync(0).toString('utf8')),
+      poolSettings(args),
+      args.slice(3),
+    );
   } else throw new Error('Invalid commercial-ai deploy state command.');
 }
 

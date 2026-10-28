@@ -17,6 +17,13 @@ import {
   COMMERCIAL_LLM_POLL_INTERVAL_MS,
 } from './commercial-llm-enforcement.mailbox';
 import { CommercialLlmSecondaryScheduler } from './commercial-llm-secondary-scheduler';
+import { CommercialLlmPoolMailbox } from './commercial-llm-pool.mailbox';
+import {
+  CommercialLlmPoolClient,
+  CommercialLlmPoolRoutingStats,
+} from './commercial-llm-pool.client';
+import { CommercialLlmPoolServer } from './commercial-llm-pool-server';
+import { COMMERCIAL_LLM_POOL_ADMISSION_KEYS } from './commercial-llm-pool-admission.mailbox';
 
 @Injectable()
 export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnModuleDestroy {
@@ -30,6 +37,10 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
   private polling: Promise<void> | null = null;
   private readonly active = new Set<Promise<void>>();
   private secondary: CommercialLlmSecondaryScheduler | null = null;
+  private pool: CommercialLlmPoolMailbox | null = null;
+  private poolServer: CommercialLlmPoolServer | null = null;
+  private readonly retiredPoolServers = new Set<Promise<void>>();
+  private readonly poolRoutingStats = new CommercialLlmPoolRoutingStats();
   private lastSuccessAt: string | null = null;
   private lastStatusAt = 0;
   private lastFailureAt = 0;
@@ -46,7 +57,7 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
 
   onModuleInit(): void {
     if (
-      !this.admission.enabled() ||
+      (!this.admission.enabled() && !this.poolWorkersEnabled()) ||
       this.config.get<string>('APP_SERVICE_NAME') !== 'api-moderation-background'
     )
       return;
@@ -82,6 +93,8 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
     await this.polling;
     // FLAG: Drain actual work before closing Redis; a stopped poll never releases an unfinished model lease.
     await Promise.allSettled([...this.active]);
+    await this.poolServer?.close();
+    await Promise.allSettled([...this.retiredPoolServers]);
     await this.admission
       .mailbox()
       .then((mailbox) => mailbox.withdraw(this.worker))
@@ -94,13 +107,19 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       component: 'commercial-llm-shadow',
       sourceTag: 'commercial-llm-shadow',
     });
-    const headroom = decision.action === 'run' && (await commercialLlmHostHasHeadroom());
+    const headroom =
+      decision.action === 'run' &&
+      (!!this.admission.poolPolicy() || (await commercialLlmHostHasHeadroom()));
     // FLAG: Observe the existing gate only. This is its last completed check, not model
     // readiness or authority to start another request; the status retains that observation clock.
     this.availabilityState =
       decision.action !== 'run' ? 'governor_paused' : headroom ? 'ready' : 'headroom_paused';
     this.availabilityObservedAt = new Date().toISOString();
     return headroom;
+  }
+
+  private poolWorkersEnabled(): boolean {
+    return this.config.get<boolean>('COMMERCIAL_LLM_POOL_WORKERS_ENABLED', false) === true;
   }
 
   private async writeStatus(outcome = 'idle'): Promise<void> {
@@ -123,7 +142,15 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
       pendingDiscardBasis: 'redis_namespace_cumulative',
       pendingDiscards,
     };
-    await this.redis.set(COMMERCIAL_LLM_ENFORCEMENT_KEYS.status, JSON.stringify(status), 'EX', 30);
+    await this.redis.set(
+      (this.admission.poolPolicy()
+        ? COMMERCIAL_LLM_POOL_ADMISSION_KEYS
+        : COMMERCIAL_LLM_ENFORCEMENT_KEYS
+      ).status,
+      JSON.stringify(status),
+      'EX',
+      30,
+    );
     this.logger.log(
       { ...status, stage: 'commercial-ai-cumulative' },
       'Commercial AI cumulative results',
@@ -138,9 +165,17 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
   }
 
   private async poll(): Promise<void> {
-    const mailbox = await this.admission.mailbox();
-    if (!(await mailbox.heartbeat(this.worker)) || this.controller.signal.aborted) return;
+    if (this.controller.signal.aborted) return;
+    const mailbox = this.admission.enabled() ? await this.admission.mailbox() : null;
+    if (mailbox && !(await mailbox.heartbeat(this.worker))) return;
     if (!this.redis || this.redis.status !== 'ready') {
+      if (this.poolServer) {
+        // FLAG: A Redis replacement never abandons an older adapter's actual HTTP drain.
+        const closing = this.poolServer
+          .close()
+          .finally(() => this.retiredPoolServers.delete(closing));
+        this.retiredPoolServers.add(closing);
+      }
       this.redis?.disconnect();
       this.redis = createCommercialLlmRedis(this.config.getOrThrow<string>('REDIS_URL'));
       await this.redis.connect();
@@ -161,21 +196,64 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
             'Commercial AI confirmation admission',
           ),
       );
+      if (this.poolWorkersEnabled()) {
+        this.pool = new CommercialLlmPoolMailbox(this.redis);
+        this.poolServer = new CommercialLlmPoolServer(
+          this.redis,
+          this.pool,
+          this.config.getOrThrow<string>('COMMERCIAL_LLM_ENDPOINT'),
+          commercialLlmHostHasHeadroom,
+        );
+      }
     }
+    await this.poolServer?.tick();
+    if (!mailbox || this.controller.signal.aborted) return;
     if (Date.now() - this.lastStatusAt >= 10_000) await this.writeStatus();
     if (!(await this.mayRun())) {
+      await mailbox.withdraw(this.worker);
+      return;
+    }
+    const poolHasNoCapacity =
+      !!this.admission.poolPolicy() && !(await this.pool!.available()).length;
+    if (poolHasNoCapacity && this.active.size === 0) {
       await mailbox.withdraw(this.worker);
       return;
     }
     await mailbox.advertise(this.worker);
     // FLAG: At most primary running + secondary running + one waiting confirmation.
     // The mailbox admits a second pending input only when both starts fit their original budget.
-    if (this.active.size >= 3) return;
+    if (this.active.size >= 3 || poolHasNoCapacity) return;
     const redis = this.redis;
     const secondary = this.secondary!;
     const processor = new CommercialLlmEnforcementProcessor(
       mailbox,
       ({ raw, request, deadlineAtMs }) => {
+        const policy = this.admission.poolPolicy();
+        if (policy) {
+          if (request.source.version !== 2 || request.source.poolPolicy !== policy)
+            throw new CommercialLlmError('INVALID_INPUT');
+          const server = this.poolServer!;
+          return new CommercialLlmPoolClient(
+            this.pool!,
+            (reservation, signal) => server.dispatch(reservation, signal),
+            {
+              jobId: request.source.nonce,
+              routingStats: this.poolRoutingStats,
+              deadlineAtMs,
+              policy,
+              primaryFinished: async () => {
+                await mailbox.releasePrimary(raw, this.worker);
+                this.wake();
+              },
+              canStartConsultation: async () =>
+                (await this.mayRun()) && mailbox.claimSecondary(raw, this.worker),
+              consultationFinished: async () => {
+                await mailbox.releaseSecondary(raw, this.worker);
+              },
+            },
+          );
+        }
+        if (request.source.version !== 1) throw new CommercialLlmError('INVALID_INPUT');
         const trace = {
           ...this.observationIdentity(),
           traceId: request.source.nonce,

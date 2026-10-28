@@ -13,7 +13,7 @@ const paths = {
   keys: 'apps/api/src/max/max-api-metrics-key.util.ts',
 };
 const minuteReaderMarker = 'maxim_topology_require_max_api_metrics_minute_reader';
-const apiAuthorityMarker = 'maxim_topology_require_commercial_ai_delete_guard';
+const apiAuthorityMarker = 'maxim_topology_require_commercial_ai_pool_delete_reader';
 const previousReleaseMarker = 'select_release_recovery_base';
 const connect = readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8');
 
@@ -346,6 +346,18 @@ for (const [name, args] of [
 
   test(`${name} upgrades minute-reader tooling before API rollback with pending multibot journals`, (t) => {
     const probe = bootstrapProbe(t, { name, args, previousMarker: minuteReaderMarker });
+    assert.equal(probe.result.status, 0, probe.result.stderr);
+    assert.equal(probe.result.stdout, 'current\n');
+    assert.deepEqual(probe.arguments, args);
+    assert.ok(probe.gitCalls.includes('checkout main'));
+  });
+
+  test(`${name} upgrades legacy AI tooling before rollback with retained pool sources`, (t) => {
+    const probe = bootstrapProbe(t, {
+      name,
+      args,
+      previousMarker: 'maxim_topology_require_commercial_ai_delete_guard',
+    });
     assert.equal(probe.result.status, 0, probe.result.stderr);
     assert.equal(probe.result.stdout, 'current\n');
     assert.deepEqual(probe.arguments, args);
