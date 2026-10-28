@@ -21,7 +21,22 @@ const server = await ensureMiniappDevServer(baseUrl, {
   reuseServer: process.env.MINIAPP_MARKETPLACE_TEST_REUSE_SERVER === '1',
 });
 const output = await mkdtemp(path.join(tmpdir(), 'maxim-marketplace-profile-'));
+console.log(`Marketplace browser screenshots: ${output}`);
 let browser;
+async function returnToApp(page) {
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+async function nativeBack(page) {
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.marketplace-profile-overlay .settings-drilldown__close')
+        ?.disabled === false,
+  );
+  await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+}
 async function assertInternalExchangeHidden(workspace) {
   assert.doesNotMatch(
     await workspace.innerText(),
@@ -69,7 +84,7 @@ try {
             errors.push(message.text());
         });
         await page.goto(
-          `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=delayed`,
+          `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=ready`,
         );
         const entry = page.getByRole('button', { name: 'Рекламная биржа', exact: true });
         await entry.waitFor();
@@ -84,76 +99,87 @@ try {
         await entry.click();
         assert.equal(await entry.getAttribute('aria-expanded'), 'true');
         const workspace = page.locator('.marketplace-entry');
-        await workspace.getByLabel('Название', { exact: true }).waitFor();
+        const panel = page.locator('.marketplace-profile-overlay .settings-drilldown__panel');
+        const openProfile = () =>
+          workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).click();
+        const openButtons = () =>
+          workspace.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).click();
+        const toggleName =
+          profile === 'publisher'
+            ? 'В публикациях Публика'
+            : kind === 'channel'
+              ? 'В новых постах канала'
+              : 'В уведомлениях модерации';
+        const toggle = workspace.getByRole('checkbox', { name: toggleName, exact: true });
+        await workspace.getByRole('button', { name: 'Создать профиль', exact: true }).waitFor();
+        assert.equal(await workspace.getByLabel('Название', { exact: true }).count(), 0);
+        assert.equal(await workspace.getByRole('checkbox').count(), 0);
+        assert.doesNotMatch(await workspace.innerText(), /Дней со статистикой|Период:/u);
         await assertInternalExchangeHidden(workspace);
+        await workspace.getByRole('button', { name: 'Создать профиль', exact: true }).click();
         await workspace.getByLabel('Название', { exact: true }).fill('Мой несохранённый профиль');
-        await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
-        await page
-          .getByRole('button', { name: 'Продолжить настройку', exact: true })
-          .waitFor({ timeout: 3000 });
-        await page.getByRole('button', { name: 'Продолжить настройку', exact: true }).click();
-        assert.equal(
-          await workspace.getByLabel('Название', { exact: true }).inputValue(),
-          'Мой несохранённый профиль',
-        );
-        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+        const create = workspace.getByRole('button', { name: 'Создать черновик', exact: true });
+        await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
+        await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
+        assert.equal(await create.isEnabled(), true);
+        // Unavailable-profile fencing is exercised with explicit server state in
+        // marketplace-profile-states.browser.mjs, independent of request count.
+        await panel.locator('.settings-drilldown__close').click();
         await page.getByRole('button', { name: 'Продолжить настройку', exact: true }).waitFor();
         await page.getByRole('button', { name: 'Продолжить настройку', exact: true }).click();
         assert.equal(
           await workspace.getByLabel('Название', { exact: true }).inputValue(),
           'Мой несохранённый профиль',
         );
-        assert.match(await workspace.textContent(), /Новый профиль · не сохранён/u);
+        await nativeBack(page);
+        await page.getByRole('button', { name: 'Продолжить настройку', exact: true }).click();
+        assert.equal(
+          await workspace.getByLabel('Название', { exact: true }).inputValue(),
+          'Мой несохранённый профиль',
+          'Native Back preserves the draft when discard is cancelled',
+        );
         await applyNativeVisualMode(page, {
           safeTop: deviceName === 'iphone' ? 20 : 24,
           safeBottom: 0,
         });
-        const create = workspace.getByRole('button', { name: 'Создать черновик', exact: true });
-        assert.equal(await create.isDisabled(), true);
-        await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
-        await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
-        assert.equal(
-          await create.isDisabled(),
-          true,
-          'A complete form cannot grant its own access',
-        );
-        await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
+        await returnToApp(page);
         await page.waitForFunction(
           () =>
             document.querySelector('.marketplace-profile__form button[type="submit"]')?.disabled ===
             false,
         );
-        await assertInternalExchangeHidden(workspace);
-        await create.click();
-        await workspace
-          .getByRole('button', { name: 'Опубликовать на бирже', exact: true })
-          .waitFor();
-        assert.equal(
-          await workspace.getByLabel('Название', { exact: true }).count(),
-          0,
-          'Saved profile opens a summary',
-        );
-        assert.match(
-          await workspace.textContent(),
-          /Для рекламы и взаимопиара подключите бота «Биржика»/u,
-        );
-        const toggle = workspace.getByRole('checkbox', {
-          name:
-            profile === 'publisher'
-              ? 'В публикациях'
-              : kind === 'channel'
-                ? 'В новых постах канала'
-                : 'В уведомлениях модерации',
-          exact: true,
+        await page.screenshot({
+          path: path.join(output, `${deviceName}-${colorScheme}-${profile}-${kind}-editor.png`),
+          fullPage: false,
         });
+        await create.click();
+        await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).waitFor();
+        assert.equal(await workspace.getByLabel('Название', { exact: true }).count(), 0);
+        await nativeBack(page);
+        await workspace
+          .getByRole('button', { name: 'Опубликовать профиль', exact: true })
+          .waitFor();
+        await openButtons();
         assert.equal(await toggle.isChecked(), false);
-        assert.equal(await toggle.isDisabled(), true);
-        await assertInternalExchangeHidden(workspace);
-        await workspace.getByRole('button', { name: 'Опубликовать на бирже', exact: true }).click();
-        await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
-        const connect = workspace.getByRole('button', {
-          name: 'Подключить бота «Биржика»',
-          exact: true,
+        assert.equal(
+          await toggle.isDisabled(),
+          true,
+          'Draft profile cannot enable a public button',
+        );
+        await nativeBack(page);
+        await workspace.getByRole('button', { name: 'Опубликовать профиль', exact: true }).click();
+        const connect = workspace.getByRole('button', { name: 'Подключить бота', exact: true });
+        await connect.waitFor();
+        await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
+        assert.equal(await workspace.getByRole('checkbox').count(), 0);
+        assert.doesNotMatch(await workspace.innerText(), /Дней со статистикой|Период:/u);
+        assert.equal(
+          await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).count(),
+          0,
+        );
+        await page.screenshot({
+          path: path.join(output, `${deviceName}-${colorScheme}-${profile}-${kind}-overview.png`),
+          fullPage: false,
         });
         await connect.click();
         await page.waitForFunction(
@@ -163,96 +189,107 @@ try {
             ),
           `connect_${kind}_-100`,
         );
-        assert.match(
-          await workspace.textContent(),
-          new RegExp(
-            profile === 'publisher'
-              ? 'В публикациях'
-              : kind === 'channel'
-                ? 'В новых постах канала'
-                : 'В уведомлениях модерации',
-            'u',
-          ),
-        );
+        await returnToApp(page);
+        await openButtons();
         await toggle.click();
         await page.waitForFunction(() =>
           [...document.querySelectorAll('.marketplace-profile__switch input')].some(
             (input) => input.checked,
           ),
         );
-        await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
+        await returnToApp(page);
         assert.equal(await toggle.isChecked(), true);
+        const preview = workspace.getByRole('button', { name: 'Как выглядит кнопка', exact: true });
+        assert.equal(await preview.getAttribute('aria-expanded'), 'false');
+        await preview.click();
+        assert.equal(await preview.getAttribute('aria-expanded'), 'true');
+        await workspace.getByText('Профиль в Биржике', { exact: true }).waitFor();
         await toggle.scrollIntoViewIfNeeded();
         assert.equal(
-          await page
-            .locator('.marketplace-profile-overlay .settings-drilldown__panel')
-            .evaluate((element) => {
-              const rect = element.getBoundingClientRect();
-              return (
-                rect.top >= 0 &&
-                rect.bottom <= innerHeight + 1 &&
-                rect.left >= 0 &&
-                rect.right <= innerWidth + 1
-              );
-            }),
+          await panel.evaluate((element) => {
+            const rect = element.getBoundingClientRect();
+            return (
+              rect.top >= 0 &&
+              rect.bottom <= innerHeight + 1 &&
+              rect.left >= 0 &&
+              rect.right <= innerWidth + 1
+            );
+          }),
           true,
-          'Profile panel must fit the real mobile viewport',
+          'Nested settings fit the real mobile viewport',
         );
         assert.equal(
           await workspace.evaluate((element) => element.scrollWidth <= element.clientWidth),
           true,
         );
         await page.screenshot({
-          path: path.join(output, `${deviceName}-${colorScheme}-${profile}-${kind}.png`),
+          path: path.join(output, `${deviceName}-${colorScheme}-${profile}-${kind}-buttons.png`),
           fullPage: false,
         });
         await assertInternalExchangeHidden(workspace);
+        await nativeBack(page);
+        await workspace.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).waitFor();
+        await page.waitForFunction(
+          () => document.activeElement?.textContent?.trim() === 'Кнопка в сообщениях',
+        );
+        await openProfile();
+        await page.screenshot({
+          path: path.join(output, `${deviceName}-${colorScheme}-${profile}-${kind}-profile.png`),
+          fullPage: false,
+        });
         await workspace.getByRole('button', { name: 'Скрыть профиль', exact: true }).click();
         await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
-        assert.equal(
-          await toggle.isChecked(),
-          true,
-          'Pausing suppresses the button without removing the explicit policy',
-        );
+        await nativeBack(page);
+        await openButtons();
+        assert.equal(await toggle.isChecked(), true, 'Hiding preserves the saved consent');
         await workspace.getByText('Профиль недоступен посетителям.', { exact: true }).waitFor();
-        await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).click();
-        await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
-        const hide = workspace.getByRole('button', { name: 'Скрыть профиль', exact: true });
-        await hide.click();
-        await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
         assert.equal(
-          await toggle.isChecked(),
-          true,
-          'Refreshing preserves the explicit policy while the paused profile suppresses its effect',
+          await toggle.isDisabled(),
+          false,
+          'Unavailable public profile still allows consent withdrawal',
         );
+        await toggle.click();
+        await page.waitForFunction(() =>
+          [...document.querySelectorAll('.marketplace-profile__switch input')].every(
+            (input) => !input.checked,
+          ),
+        );
+        assert.equal(
+          await toggle.isDisabled(),
+          true,
+          'Hidden profile cannot re-enable the withdrawn consent',
+        );
+        await nativeBack(page);
+        await openProfile();
+        await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).click();
+        await workspace.getByRole('button', { name: 'Скрыть профиль', exact: true }).waitFor();
         await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
         const save = workspace.getByRole('button', { name: 'Сохранить изменения', exact: true });
         assert.equal(await save.isDisabled(), true, 'Unchanged profile has no save action');
         await workspace.getByLabel('Описание', { exact: true }).fill('Моё новое описание');
-        await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
+        await returnToApp(page);
         assert.equal(
           await workspace.getByLabel('Описание', { exact: true }).inputValue(),
           'Моё новое описание',
         );
         await save.click();
         await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).waitFor();
-        await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
+        await nativeBack(page);
+        await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).waitFor();
+        await nativeBack(page);
+        await workspace.waitFor({ state: 'hidden' });
         assert.equal((await entry.textContent()).trim(), 'Рекламная биржа');
         assert.equal(await entry.getAttribute('aria-expanded'), 'false');
         await page.goto(
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=0`,
         );
         await page.getByRole('button', { name: 'Рекламная биржа', exact: true }).click();
-        await workspace.getByLabel('Название', { exact: true }).waitFor();
+        await workspace.getByRole('button', { name: 'Создать профиль', exact: true }).click();
         await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
         await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
-        await workspace.getByRole('button', { name: 'Проверить состояние', exact: true }).click();
+        await returnToApp(page);
         await workspace.getByText('Профиль пока недоступен.', { exact: true }).waitFor();
-        assert.equal(
-          await create.isDisabled(),
-          true,
-          'A refresh cannot override unavailable access',
-        );
+        assert.equal(await create.isDisabled(), true, 'Refresh cannot override unavailable access');
         await assertInternalExchangeHidden(workspace);
         await page.screenshot({
           path: path.join(
@@ -264,12 +301,15 @@ try {
         await page.goto(
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplaceOwner=0&focus=birzhik`,
         );
-        await workspace.getByRole('button', { name: 'Открыть профиль', exact: true }).waitFor();
+        await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
         assert.equal(
-          await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).count(),
+          await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).count(),
           0,
         );
         assert.equal(await workspace.getByLabel('Название', { exact: true }).count(), 0);
+        assert.equal(await workspace.getByRole('checkbox').count(), 0);
+        await openButtons();
+        await toggle.waitFor();
         const expectedCount = profile === 'moderation' && kind === 'chat' ? 2 : 1;
         assert.equal(await workspace.getByRole('checkbox').count(), expectedCount);
         await toggle.click();
@@ -293,7 +333,9 @@ try {
           ),
           fullPage: false,
         });
-        await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+        await nativeBack(page);
+        await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
+        await nativeBack(page);
         await workspace.waitFor({ state: 'hidden' });
         assert.equal(new URL(page.url()).searchParams.has('focus'), false);
         if (profile === 'moderation' && kind === 'chat') {
