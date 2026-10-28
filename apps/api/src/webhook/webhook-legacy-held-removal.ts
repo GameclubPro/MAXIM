@@ -20,6 +20,27 @@ const RAW_KEYS = new Set([
   'post_id',
   'is_channel',
 ]);
+const MEMBER_REMOVAL_KEYS = new Set([
+  'update_type',
+  'update_id',
+  'timestamp',
+  'chat_id',
+  'user',
+  'admin_id',
+  'is_channel',
+]);
+const USER_KEYS = new Set([
+  'user_id',
+  'is_bot',
+  'first_name',
+  'last_name',
+  'name',
+  'username',
+  'last_activity_time',
+  'description',
+  'avatar_url',
+  'full_avatar_url',
+]);
 function object(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -60,10 +81,20 @@ export async function inspectHeldMessageDisposition(
   return inspectPristineHeldDisposition(tx, event, 'message');
 }
 
+// FLAG: This validates a new membership observation, not authority to omit denial.
+// The separate recovery boundary must persist the negative membership observation and
+// publish its caches before revalidating this proof and closing the exact receipt.
+export async function inspectHeldMembershipRemovalDisposition(
+  tx: Prisma.TransactionClient,
+  event: WebhookEvent,
+): Promise<{ authorityId: string } | 'NOT_HELD' | null> {
+  return inspectPristineHeldDisposition(tx, event, 'membership-removal');
+}
+
 async function inspectPristineHeldDisposition(
   tx: Prisma.TransactionClient,
   event: WebhookEvent,
-  kind: 'removal' | 'message',
+  kind: 'removal' | 'message' | 'membership-removal',
 ): Promise<{ authorityId: string } | 'NOT_HELD' | null> {
   const update = object(event.normalizedPayload);
   const message = object(update?.message);
@@ -71,13 +102,27 @@ async function inspectPristineHeldDisposition(
   const sampled = object(event.rawPayload);
   const originalMessage = object(raw?.message);
   const sampledMessage = object(sampled?.message);
-  const rawChat = kind === 'removal' ? raw?.chat_id : object(originalMessage?.recipient)?.chat_id;
-  const rawActor = kind === 'removal' ? raw?.user_id : object(originalMessage?.sender)?.user_id;
-  const rawMessageId = kind === 'removal' ? raw?.message_id : object(originalMessage?.body)?.mid;
+  const membershipRemoval = kind === 'membership-removal';
+  const rawUser = object(raw?.user);
+  const sampledUser = object(sampled?.user);
+  const rawChat = kind !== 'message' ? raw?.chat_id : object(originalMessage?.recipient)?.chat_id;
+  const rawActor = membershipRemoval
+    ? rawUser?.user_id
+    : kind === 'removal'
+      ? raw?.user_id
+      : object(originalMessage?.sender)?.user_id;
+  const rawMessageId = membershipRemoval
+    ? message?.messageId
+    : kind === 'removal'
+      ? raw?.message_id
+      : object(originalMessage?.body)?.mid;
   const sampledChat =
-    kind === 'removal' ? sampled?.chat_id : object(sampledMessage?.recipient)?.chat_id;
-  const sampledActor =
-    kind === 'removal' ? sampled?.user_id : object(sampledMessage?.sender)?.user_id;
+    kind !== 'message' ? sampled?.chat_id : object(sampledMessage?.recipient)?.chat_id;
+  const sampledActor = membershipRemoval
+    ? sampledUser?.user_id
+    : kind === 'removal'
+      ? sampled?.user_id
+      : object(sampledMessage?.sender)?.user_id;
   const sampledMessageId =
     kind === 'removal' ? sampled?.message_id : object(sampledMessage?.body)?.mid;
   // FLAG: Both original and normalized bindings nominate possible holds only. A
@@ -137,14 +182,32 @@ async function inspectPristineHeldDisposition(
     (event.executionDeadlineAt !== null && !finite(event.executionDeadlineAt)) ||
     !identity(event.botId) ||
     update.botId !== event.botId ||
-    (kind === 'removal'
-      ? update.type !== 'message_removed' ||
-        raw.update_type !== 'message_removed' ||
-        Object.keys(raw).some((key) => !RAW_KEYS.has(key)) ||
-        (raw.is_channel !== undefined && raw.is_channel !== false)
-      : !['message_created', 'message_edited'].includes(String(update.type)) ||
-        raw.update_type !== update.type) ||
-    (message.entityType !== undefined && message.entityType !== 'chat') ||
+    (membershipRemoval
+      ? update.type !== 'user_removed' ||
+        raw.update_type !== 'user_removed' ||
+        Object.keys(raw).some((key) => !MEMBER_REMOVAL_KEYS.has(key)) ||
+        !rawUser ||
+        rawUser.is_bot !== false ||
+        Object.keys(rawUser).some((key) => !USER_KEYS.has(key)) ||
+        Object.entries(rawUser).some(([key, value]) =>
+          key === 'user_id' || key === 'is_bot'
+            ? false
+            : key === 'last_activity_time'
+              ? typeof value !== 'number' || !Number.isFinite(value)
+              : value !== null && typeof value !== 'string',
+        ) ||
+        (raw.admin_id !== undefined && raw.admin_id !== null && !identity(raw.admin_id)) ||
+        (raw.is_channel !== undefined && typeof raw.is_channel !== 'boolean') ||
+        message.text !== '' ||
+        message.messageId !== `user_removed:${update.updateId}`
+      : kind === 'removal'
+        ? update.type !== 'message_removed' ||
+          raw.update_type !== 'message_removed' ||
+          Object.keys(raw).some((key) => !RAW_KEYS.has(key)) ||
+          (raw.is_channel !== undefined && raw.is_channel !== false)
+        : !['message_created', 'message_edited'].includes(String(update.type)) ||
+          raw.update_type !== update.type) ||
+    (!membershipRemoval && message.entityType !== undefined && message.entityType !== 'chat') ||
     !identity(rawChat) ||
     identity(rawChat) !== message.chatId ||
     !identity(rawMessageId) ||

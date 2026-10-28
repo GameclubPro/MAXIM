@@ -624,7 +624,37 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
       ? await this.legacyHolds!.readFreshCommandReceipt(event.id, update)
       : null;
     if (legacyHeld && !freshHeldCommand) {
-      if (!(await this.legacyHolds!.settleHeldReceipt(event.id, update)))
+      let settled = false;
+      if (update.type === 'user_removed') {
+        try {
+          const observation = await this.legacyHolds!.readHeldMembershipRemoval(event.id);
+          if (observation) {
+            const source = observation.update;
+            // FLAG: Preserve removal's negative access observation before closing a
+            // pristine held notification. No binding activation, ordinary handler,
+            // suggestion wake or MAX effect is admitted by this recovery boundary.
+            if (!this.chatContextCache || !this.membershipLookupService)
+              throw new Error('Membership observation dependencies unavailable');
+            await this.persistMembershipTransition(source);
+            await this.membershipLookupService.invalidateMemberships(
+              source.message!.chatId,
+              source.membership!.memberUserIds,
+            );
+            settled = await this.legacyHolds!.finishObservedMembershipRemoval(
+              event.id,
+              observation.sourceDigest,
+            );
+          }
+        } catch {
+          // FLAG: Keep the finite original preparation marker across SQL/cache
+          // failures so a restart can retry observation without relaxing source guards.
+          throw new WebhookPreparationDeferredError(
+            'Legacy scope installation is not sealed',
+            1_000,
+          );
+        }
+      }
+      if (!settled && !(await this.legacyHolds!.settleHeldReceipt(event.id, update)))
         throw new WebhookPreparationDeferredError('Legacy scope installation is not sealed', 1_000);
       return {
         canonical: false,
