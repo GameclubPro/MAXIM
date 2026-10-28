@@ -1,5 +1,7 @@
 import {
   appendMarketplacePublicationButton,
+  appendMarketplaceEditableAttachments,
+  withMarketplaceModerationMessage,
   isMarketplacePublicationTarget,
 } from './marketplace-publication-button';
 import type { MaxSendMessageOptions } from './max-client.service';
@@ -8,15 +10,18 @@ const url =
   'https://max.ru/svyazka_bot?startapp=listing_channel_10000000-0000-4000-8000-000000000001';
 
 describe('optional marketplace publication button', () => {
-  it.each(['PUBLICATION', 'VK_IMPORT', 'APPROVED_SUGGESTION'] as const)(
-    'permits only the actual public target for %s',
-    (purpose) => {
-      expect(isMarketplacePublicationTarget('-10', { entityId: '-10', purpose })).toBe(true);
-      expect(isMarketplacePublicationTarget('10', { entityId: '-10', purpose })).toBe(false);
-      expect(isMarketplacePublicationTarget('-11', { entityId: '-10', purpose })).toBe(false);
-      expect(isMarketplacePublicationTarget('-10', undefined)).toBe(false);
-    },
-  );
+  it.each([
+    'PUBLICATION',
+    'VK_IMPORT',
+    'APPROVED_SUGGESTION',
+    'GREETING',
+    'MODERATION_NOTICE',
+  ] as const)('permits only the actual public target for %s', (purpose) => {
+    expect(isMarketplacePublicationTarget('-10', { entityId: '-10', purpose })).toBe(true);
+    expect(isMarketplacePublicationTarget('10', { entityId: '-10', purpose })).toBe(false);
+    expect(isMarketplacePublicationTarget('-11', { entityId: '-10', purpose })).toBe(false);
+    expect(isMarketplacePublicationTarget('-10', undefined)).toBe(false);
+  });
 
   it('preserves media, rich text and all authored rows, adds exactly one final row without mutating input', () => {
     const original: MaxSendMessageOptions = {
@@ -33,7 +38,7 @@ describe('optional marketplace publication button', () => {
     expect(result.outcome).toBe('ADDED');
     expect(result.options).toEqual({
       ...snapshot,
-      buttons: [...snapshot.buttons!, [{ type: 'link', text: 'Профиль на бирже', url }]],
+      buttons: [...snapshot.buttons!, [{ type: 'link', text: 'Профиль в Биржике', url }]],
     });
     expect(original).toEqual(snapshot);
     expect(appendMarketplacePublicationButton(result.options, `${url}#preview`).outcome).toBe(
@@ -66,6 +71,7 @@ describe('optional marketplace publication button', () => {
     'https://evil.test/profile',
     'http://max.ru/bot',
     'https://secret@max.ru/bot',
+    'https://max.ru:9443/bot',
     'javascript:alert(1)',
   ])('rejects noncanonical profile target %s', (badUrl) => {
     const options = {};
@@ -73,5 +79,72 @@ describe('optional marketplace publication button', () => {
       options,
       outcome: 'INVALID_LINK',
     });
+  });
+});
+
+describe('locked channel keyboard decoration', () => {
+  const media = { type: 'image', payload: { token: 'image', extra: 'preserve' } };
+  const custom = {
+    type: 'callback',
+    text: 'Release',
+    payload: 'release-proof',
+    intent: 'positive',
+  };
+  it('keeps attachments, unknown payload fields and authored buttons byte-for-byte', () => {
+    const source = [
+      media,
+      { type: 'inline_keyboard', payload: { buttons: [[custom]], marker: 'preserve' } },
+    ];
+    const snapshot = structuredClone(source);
+    const result = appendMarketplaceEditableAttachments(source, url);
+    expect(source).toEqual(snapshot);
+    expect(result.outcome).toBe('ADDED');
+    expect(result.attachments).toEqual([
+      media,
+      {
+        type: 'inline_keyboard',
+        payload: {
+          marker: 'preserve',
+          buttons: [[custom], [{ type: 'link', text: 'Профиль в Биржике', url }]],
+        },
+      },
+    ]);
+    expect(appendMarketplaceEditableAttachments(result.attachments, url)).toEqual({
+      attachments: result.attachments,
+      outcome: 'DUPLICATE',
+    });
+  });
+  it('preserves a full existing keyboard and malformed/multiple envelopes without an edit', () => {
+    for (const source of [
+      [
+        media,
+        {
+          type: 'inline_keyboard',
+          payload: { buttons: Array.from({ length: 30 }, () => [custom]) },
+        },
+      ],
+      [{ type: 'inline_keyboard', payload: null }],
+      [
+        { type: 'inline_keyboard', payload: { buttons: [] } },
+        { type: 'inline_keyboard', payload: { buttons: [] } },
+      ],
+    ])
+      expect(appendMarketplaceEditableAttachments(source, url)).toEqual({
+        attachments: source,
+        outcome: 'KEYBOARD_FULL',
+      });
+  });
+  it('marks only explicit greeting/notice callers without enabling any notice', () => {
+    const source: MaxSendMessageOptions = {
+      textFormat: 'html',
+      buttons: [[{ type: 'callback', text: 'Rules', payload: 'rules' }]],
+    };
+    for (const purpose of ['GREETING', 'MODERATION_NOTICE'] as const) {
+      expect(withMarketplaceModerationMessage(source, '-10', purpose)).toEqual({
+        ...source,
+        marketplacePublication: { entityId: '-10', purpose },
+      });
+    }
+    expect(source).not.toHaveProperty('marketplacePublication');
   });
 });

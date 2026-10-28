@@ -64,7 +64,7 @@ function fixture(central = true, summary?: StatsSummaryResult) {
       isPublic: false,
     },
   };
-  const prisma = { $queryRaw: jest.fn(), $executeRaw: jest.fn() };
+  const prisma = { $queryRaw: jest.fn().mockResolvedValue([]), $executeRaw: jest.fn() };
   const access: Pick<MarketplaceAccessService, 'attest'> = {
     attest: jest
       .fn<
@@ -160,7 +160,12 @@ describe('central statistics and ordinary marketplace profile policy', () => {
     expect(result.binding.statisticsConsent).toBe(false);
     expect(result.statistics?.state).toBe('PENDING');
     expect(f.binding.statistics_consent).toBe(false);
-    expect(f.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(f.prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(f.prisma.$queryRaw).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sql: expect.not.stringContaining('marketplace_statistics_generations'),
+      }),
+    );
     expect(f.prisma.$executeRaw).not.toHaveBeenCalled();
   });
 
@@ -186,7 +191,12 @@ describe('central statistics and ordinary marketplace profile policy', () => {
     expect(JSON.stringify(result.statistics)).not.toMatch(
       /MAXIM|EXCHANGE|producer|authority|consent/i,
     );
-    expect(f.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(f.prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(f.prisma.$queryRaw).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sql: expect.not.stringContaining('marketplace_statistics_generations'),
+      }),
+    );
   });
 
   it('distinguishes an authorized empty history from a failed ordinary statistics read', async () => {

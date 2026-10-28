@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261026010300_index_eraser_rules_audit",
-  "baselineNamesSha256": "abf41b121463b2da80f01e81a678ab6ec2fe0329d9153ba353b94bec45087085",
-  "baselineContentsSha256": "baf3175e81ecd322af783e19d5c99cce44007650f390ab66f7fd559400e4bb62",
+  "baselineThrough": "20261028010000_add_marketplace_button_policies",
+  "baselineNamesSha256": "cea0c0965add204386157a0b8bf184675e494bbeca5e74784eeaa15a7394f3d3",
+  "baselineContentsSha256": "1eb10c61bc8398a250c91cde9b435e6f216d62f5a25aa1e1a2f22a8474124e84",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -146,6 +146,11 @@
       "reason": "Reviewed additive independent-retention ownership, operation journal, protection outbox and static source/publication triggers. Function EXECUTE is static. The sole DELETE removes an obsolete transient publication fence after the producer settles; immutable protected IDs, source holds and legacy action evidence are never removed. No historical business table is rewritten or backfilled.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "New tables start empty and old policy readers remain compatible before ownership. Transfer first revokes legacy execution and preserves all uncertain journals. Persisted ownership forbids moderator fallback even when the feature flag is off; both rollback paths require ownership-aware readers. New protection is bootstrapped and acknowledged before independent cleanup enables. Cold source writers must confirm additive Lastik holds before committing source dispositions."
+    },
+    "20261028010000_add_marketplace_button_policies": {
+      "reason": "Reviewed static additive triggers remember exact binding/administrator access loss, clear the previous publication flag on known loss, and mirror only a proven legacy toggle-off receipt into PUBLICATIONS. A current-binding seed clears known REVOKED/USER_DENIED/member demotions before lazy import. No dynamic SQL, DROP, DELETE, retained history rewrite or dispatch mutation exists.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Release prerequisite: deploy and verify the compatible Publisher terminal-writer Chat-before-edge source change on every API role before applying this migration. This avoids introducing the new edge-to-binding trigger while an old binding-before-edge webhook can meet an old edge-first terminal writer. New policy tables start empty. Bounded import preserves only the previous publication scope; every other context starts off. Exact legacy toggle-off receipts fence canonical PUBLICATIONS during the rolling release, with binding-before-policy lock order. Canonical PUBLICATIONS changes clear superseded legacy flags; known denial clears those flags before a later access regrant. The applied-migration rollback guard rejects pre-feature sources. Old statistics-revoke writers conservatively invalidate authority during mixed versions; only the updated writers preserve independent button access, and no automatic consent restoration is promised for an old revoke. New statistics presentation retains REVOKED after explicit withdrawal even when independent access refresh succeeds. One transaction first acquires binding ACCESS EXCLUSIVE and source edge/activity/receipt SHARE ROW EXCLUSIVE locks with NOWAIT; any occupied relation aborts before DDL without lock upgrades or waiting cycles. The current-binding seed records persisted REVOKED timestamps and current explicit denied/member edges and clears append/public proof before later attestation can rewrite updated_at. Unknown/transient evidence, statistics consent, history and receipts remain unchanged; no historical membership events are inferred."
     }
   },
   "nonConcurrentIndexExceptions": {
@@ -256,6 +261,9 @@
     },
     "20261026010000_add_eraser_bridge": {
       "reason": "Every ordinary index belongs to a new empty bridge table. Existing giveaway and retention-intent history indexes are isolated in separate concurrent migrations; this migration scans no retained source history."
+    },
+    "20261028010000_add_marketplace_button_policies": {
+      "reason": "The refresh index is created only on a new empty button-context table. The seed enumerates current bindings and indexed exact actor/platform access edges; retained event, statistics and receipt history is neither scanned nor backfilled. No existing history is indexed. Legacy publication opt-ins without known loss are reconciled in bounded runtime batches."
     }
   }
 }

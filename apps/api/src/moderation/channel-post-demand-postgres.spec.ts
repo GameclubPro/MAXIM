@@ -23,6 +23,7 @@ native('durable channel post demand in PostgreSQL', () => {
   let db: PrismaClient;
   const channels: string[] = [];
   const receipts: string[] = [];
+  const policies: string[] = [];
   beforeAll(async () => {
     const url = new URL(databaseUrl);
     if (
@@ -38,6 +39,11 @@ native('durable channel post demand in PostgreSQL', () => {
     expect(process.env.TZ).toBe('UTC');
   });
   afterEach(async () => {
+    const ids = policies.splice(0);
+    if (ids.length) {
+      await db.$executeRaw`DELETE FROM marketplace_button_contexts WHERE policy_id = ANY(${ids}::uuid[])`;
+      await db.$executeRaw`DELETE FROM marketplace_button_policies WHERE id = ANY(${ids}::uuid[])`;
+    }
     await db.webhookEvent.deleteMany({ where: { id: { in: receipts.splice(0) } } });
     await db.chat.deleteMany({ where: { id: { in: channels.splice(0) } } });
   });
@@ -78,6 +84,36 @@ native('durable channel post demand in PostgreSQL', () => {
       SELECT id FROM chats WHERE id = ANY(${extra}::text[])`);
     await db.$executeRawUnsafe('ANALYZE channel_post_demand_channels');
   }
+  it('admits only new moderation channel-button posts even when every legacy decorator is off', async () => {
+    const chatId = await channel();
+    await db.channelSettings.update({
+      where: { chatId },
+      data: {
+        postSignatureEnabled: false,
+        quickButtonsEnabled: false,
+        commentsEnabled: false,
+        postSuggestionsEnabled: false,
+      },
+    });
+    const id = randomUUID();
+    policies.push(id);
+    const enabledAt = new Date(Date.now() - 10_000);
+    await db.$executeRaw`INSERT INTO marketplace_button_policies(id,entity_id,kind,profile) VALUES(${id}::uuid,${chatId},'CHANNEL','moderation')`;
+    await db.$executeRaw`INSERT INTO marketplace_button_contexts(policy_id,context,enabled,confirmed_by,confirmed_at) VALUES(${id}::uuid,'CHANNEL_POSTS',true,'fixture-admin',${enabledAt})`;
+    const old = { ...input(chatId), sourceAt: new Date(enabledAt.getTime() - 1) };
+    const fresh = input(chatId);
+    await persist(old);
+    await persist(fresh);
+    expect(
+      (await db.channelPostDemand.findMany({ where: { chatId } })).map((row) => row.messageId),
+    ).toEqual([fresh.messageId]);
+    await db.$executeRaw`UPDATE marketplace_button_contexts SET suspended_reason='ACCESS_LOST' WHERE policy_id=${id}::uuid`;
+    await persist(input(chatId));
+    expect(await db.channelPostDemand.count({ where: { chatId } })).toBe(1);
+    await db.$executeRaw`UPDATE marketplace_button_contexts SET suspended_reason=NULL,enabled=false WHERE policy_id=${id}::uuid`;
+    await persist(input(chatId));
+    expect(await db.channelPostDemand.count({ where: { chatId } })).toBe(1);
+  });
   it('coalesces mirrors and preserves item and channel retry waits across a new client', async () => {
     const first = input(await channel());
     await Promise.all(Array.from({ length: 4 }, () => persist(first)));

@@ -1,5 +1,14 @@
-import { lazy, Suspense, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { notifyManager, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocation, useSearchParams } from 'react-router';
 import type { MarketplaceProfileState } from '@maxim/contracts/marketplace-integration';
 import { marketplaceProfileTitle, marketplaceQueryKey } from '../lib/marketplace-profile-summary';
 import type { ApiTransport } from '../lib/api/transport';
@@ -19,7 +28,21 @@ export type MarketplaceProfileCardProps = {
 
 export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
   const smartphone = useSmartphoneLayout();
-  const [open, setOpen] = useState(false);
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const requested = params.get('focus') === 'birzhik';
+  const [open, setOpen] = useState(requested);
+  useEffect(() => {
+    if (requested) setOpen(true);
+  }, [requested, location.key]);
+  const close = () => {
+    setOpen(false);
+    if (requested) {
+      const next = new URLSearchParams(params);
+      next.delete('focus');
+      setParams(next, { replace: true });
+    }
+  };
   const cache = useQueryClient();
   const profileKey = useMemo(
     () => marketplaceQueryKey(props.profile, props.entityType, props.entityId),
@@ -109,7 +132,7 @@ export function MarketplaceProfileCard(props: MarketplaceProfileCardProps) {
       )}
       {open && (
         <Suspense fallback={<SkeletonCard lines={5} />}>
-          <Panel {...props} id={id} onClose={() => setOpen(false)} />
+          <Panel {...props} id={id} onClose={close} />
         </Suspense>
       )}
     </section>

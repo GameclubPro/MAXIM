@@ -1,4 +1,5 @@
 import { buildModerationReleaseCallbackPayload } from '../moderation/moderation-release-callback.util';
+import type { MaxClientService } from '../max/max-client.service';
 import { AdminService } from './admin.service';
 import {
   createChatContextCacheMock,
@@ -10,7 +11,12 @@ describe('AdminService global mute group command', () => {
   it('durably queues fanout after the source mute and before the terminal notice', async () => {
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest
+        .fn<
+          ReturnType<MaxClientService['sendMessage']>,
+          Parameters<MaxClientService['sendMessage']>
+        >()
+        .mockResolvedValue(undefined),
     };
     const adminManualFanoutQueue = { add: jest.fn().mockResolvedValue(undefined) };
     const service = new AdminService(
@@ -82,6 +88,7 @@ describe('AdminService global mute group command', () => {
           ],
         ],
         textFormat: 'markdown',
+        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
       },
       expect.objectContaining({ immediate: true, trafficClass: 'interactive' }),
     );

@@ -7,7 +7,13 @@ import type { ActionHealthService } from '../system/action-health.service';
 import { fingerprintModerationSettings } from '../moderation/moderation-settings-fingerprint';
 import type { RequiredSubscriptionNoticeAuthority } from '../moderation/required-subscription-notice-authority';
 import { MaxBotContextService } from './max-bot-context.service';
-import { MaxClientService, type MaxActionJob } from './max-client.service';
+import {
+  MaxClientService,
+  type MaxActionJob,
+  type MaxSendMessageOptions,
+} from './max-client.service';
+import { wasMaxPreDispatchGuardRejected } from './max-action-pre-dispatch-guard';
+import { wasMaxMessageSendAttempted } from './max-mutation-outcome.util';
 import { MaxRequiredSubscriptionNoticeGuardService } from './max-required-subscription-notice.guard';
 
 jest.mock('ioredis', () =>
@@ -314,9 +320,16 @@ function transportFixture() {
   const quota = jest.spyOn(client as any, 'reserveRateLimitSlot').mockImplementation(async () => {
     order.push('quota');
   });
-  jest
-    .spyOn(client as any, 'prepareMarketplacePublicationOptions')
-    .mockImplementation(async (_chat: any, options: any) => {
+  const preparation = client as unknown as {
+    prepareMarketplacePublicationOptions: (
+      chatId: string,
+      options: MaxSendMessageOptions | undefined,
+      botId: string,
+    ) => Promise<MaxSendMessageOptions | undefined>;
+  };
+  const prepare = jest
+    .spyOn(preparation, 'prepareMarketplacePublicationOptions')
+    .mockImplementation(async (_chat, options) => {
       order.push('prepare');
       return options;
     });
@@ -340,7 +353,19 @@ function transportFixture() {
       return new Map();
     });
   const authority = jest.spyOn(s.guard, 'assertAllowed');
-  return { ...s, client, http, quota, ledger, authority, order, links, health, sourceLookup };
+  return {
+    ...s,
+    client,
+    http,
+    quota,
+    ledger,
+    authority,
+    order,
+    links,
+    health,
+    sourceLookup,
+    prepare,
+  };
 }
 
 describe('required-subscription queued SEND boundary', () => {
@@ -376,21 +401,61 @@ describe('required-subscription queued SEND boundary', () => {
     },
   );
 
-  it('checks after preparation and quota through selected author/source bot and each current target read route', async () => {
+  it.each([false, true])(
+    'checks selected author/source and target read routes after quota with optional profile preparation: %s',
+    async (withProfile) => {
+      const s = transportFixture();
+      const action: MaxActionJob = {
+        ...s.action,
+        options: withProfile
+          ? { marketplacePublication: { entityId: s.proof.chatId, purpose: 'MODERATION_NOTICE' } }
+          : undefined,
+      };
+      try {
+        await s.client.executeActionJob(JSON.parse(JSON.stringify(action)));
+        expect(s.order).toEqual([
+          'quota',
+          ...(withProfile ? ['prepare'] : []),
+          'author',
+          'source',
+          'membership',
+          'membership',
+          ...(withProfile ? ['prepare'] : []),
+          'http',
+        ]);
+        expect(s.prepare).toHaveBeenCalledTimes(withProfile ? 2 : 0);
+        if (withProfile)
+          expect(s.prepare).toHaveBeenCalledWith(s.proof.chatId, action.options, 'peer-2');
+        expect(s.http.request).toHaveBeenCalledTimes(1);
+        expect(s.links.resolveBotIdForRead).toHaveBeenCalledTimes(2);
+      } finally {
+        await s.client.onModuleDestroy();
+      }
+    },
+  );
+
+  it('rejects a subscription notice revoked during final profile preparation before HTTP', async () => {
     const s = transportFixture();
+    const action: MaxActionJob = {
+      ...s.action,
+      options: {
+        marketplacePublication: { entityId: s.proof.chatId, purpose: 'MODERATION_NOTICE' },
+      },
+    };
+    s.prepare.mockImplementation(async (_chat, options) => {
+      if (s.prepare.mock.calls.length === 2) s.settings.requiredSubscriptionEnabled = false;
+      return options;
+    });
     try {
-      await s.client.executeActionJob(JSON.parse(JSON.stringify(s.action)));
-      expect(s.order).toEqual([
-        'prepare',
-        'quota',
-        'author',
-        'source',
-        'membership',
-        'membership',
-        'http',
-      ]);
-      expect(s.http.request).toHaveBeenCalledTimes(1);
-      expect(s.links.resolveBotIdForRead).toHaveBeenCalledTimes(2);
+      const error = await s.client.executeActionJob(action).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'required_subscription_notice_no_longer_authorized' });
+      expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
+      expect(wasMaxMessageSendAttempted(error)).toBe(false);
+      expect(s.prepare).toHaveBeenCalledTimes(2);
+      expect(s.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(2);
+      expect(s.http.request).not.toHaveBeenCalled();
+      expect(s.ledger.releaseSendDispatch).toHaveBeenCalledTimes(1);
+      expect(s.ledger.completeSendDispatch).not.toHaveBeenCalled();
     } finally {
       await s.client.onModuleDestroy();
     }

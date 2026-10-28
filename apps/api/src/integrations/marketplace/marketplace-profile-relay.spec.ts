@@ -117,6 +117,8 @@ describe('marketplace mini-app response compatibility', () => {
     };
     const controller = new MarketplaceProfileController(
       service as unknown as MarketplaceProfileService,
+      {} as import('./marketplace-button-policy.service').MarketplaceButtonPolicyService,
+      {} as import('./marketplace-navigation.service').MarketplaceNavigationService,
     );
     const user = { userId: '323459159', username: null, displayName: null };
     const read = (view?: string) =>

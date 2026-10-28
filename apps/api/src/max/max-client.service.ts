@@ -63,6 +63,7 @@ import { hasIncompleteManagedEntityPermissionEvidence } from './managed-entity-p
 import { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
 import {
   appendMarketplacePublicationButton,
+  appendMarketplaceEditableAttachments,
   isMarketplacePublicationTarget,
   type MarketplacePublicationIntent,
 } from './marketplace-publication-button';
@@ -531,7 +532,7 @@ export type MaxMessageButton =
   | MaxChatButton;
 
 export type MaxSendMessageOptions = {
-  /** Trusted public-post intent; never accepted from HTTP input or applied to edits/DMs. */
+  /** Trusted message purpose; never accepted from HTTP input or applied to edits/DMs. */
   marketplacePublication?: MarketplacePublicationIntent;
   button?: MaxLinkButton;
   buttons?: MaxMessageButton[][];
@@ -549,6 +550,8 @@ type MaxEditableMessageOptions = Pick<
   MaxSendMessageOptions,
   'button' | 'buttons' | 'debugContext' | 'textFormat'
 > & {
+  /** Trusted channel decoration only. This is not an HTTP request field. */
+  marketplaceChannelPost?: { entityId: string; sourceAt: string; only: boolean };
   appendNewInlineKeyboardRows?: boolean;
   mergeExistingInlineKeyboard?: boolean;
   preserveExistingChannelDialogButtons?: boolean;
@@ -1086,6 +1089,7 @@ export class MaxClientService implements OnModuleDestroy {
     quotaState: { error?: unknown };
     messageMutation?: MaxMessageMutationRateLimitScope;
     finalGuard?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
+    preparePayload?: (config: Record<string, unknown>) => Promise<void>;
     onDispatchAttempt?: () => void;
   }>();
 
@@ -1369,17 +1373,8 @@ export class MaxClientService implements OnModuleDestroy {
     const sendResponse = await this.executeMessageMutation(
       'send',
       chatId,
-      async () => {
-        const publicationOptions = await this.prepareMarketplacePublicationOptions(
-          chatId,
-          options,
-          requestOptions.botId ?? this.getCurrentBot().id,
-        );
-        const currentAttachments =
-          publicationOptions === options
-            ? attachments
-            : this.buildMessageAttachments(publicationOptions);
-        return this.request<Record<string, unknown>>('post', '/messages', {
+      () =>
+        this.request<Record<string, unknown>>('post', '/messages', {
           params: {
             chat_id: chatId,
           },
@@ -1387,16 +1382,32 @@ export class MaxClientService implements OnModuleDestroy {
             text: hasText ? normalizedText : null,
             ...(hasText && options?.textFormat ? { format: options.textFormat } : {}),
             ...(messageLink ? { link: messageLink } : {}),
-            ...(currentAttachments.length > 0 ? { attachments: currentAttachments } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
           },
           ...(timeoutMs ? { timeout: timeoutMs } : {}),
-        });
-      },
+        }),
       requestOptions,
-      async () => {
+      async (revalidateRoute) => {
         await this.assertLegacyMessageLinkAllowed(chatId, options?.messageLink);
         await options?.beforeSend?.();
+        if (options?.marketplacePublication) await revalidateRoute?.();
       },
+      options?.marketplacePublication
+        ? async (config) => {
+            const publicationOptions = await this.prepareMarketplacePublicationOptions(
+              chatId,
+              options,
+              this.getCurrentBot().id,
+            );
+            const currentAttachments =
+              publicationOptions === options
+                ? attachments
+                : this.buildMessageAttachments(publicationOptions);
+            const data = config.data as Record<string, unknown>;
+            if (currentAttachments.length) data.attachments = currentAttachments;
+            else delete data.attachments;
+          }
+        : undefined,
     );
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
@@ -1827,8 +1838,9 @@ export class MaxClientService implements OnModuleDestroy {
             : null;
 
         await assertOwnership();
+        const marketplaceSkip = new Error('Optional marketplace edit is no longer needed');
 
-        await this.executeMessageMutation(
+        return this.executeMessageMutation(
           'edit',
           chatId,
           async () => {
@@ -1851,15 +1863,63 @@ export class MaxClientService implements OnModuleDestroy {
             if (options?.requireAllAttachmentsPreserved && response.success !== true) {
               throw new BadRequestException('MAX did not confirm the post update.');
             }
+            return true;
           },
           requestOptions,
-          async () => {
+          async (revalidateRoute) => {
             await assertOwnership();
             await this.assertLegacyMessageMutationAllowed(chatId, messageId);
             await options?.beforeEditMutation?.();
+            if (options?.marketplaceChannelPost) await revalidateRoute?.();
             assertCurrentOwnership();
           },
-        );
+          options?.marketplaceChannelPost
+            ? async (config) => {
+                const marketplace = options?.marketplaceChannelPost;
+                let currentAttachments: readonly Record<string, unknown>[] = attachments;
+                if (marketplace) {
+                  let added = false;
+                  if (
+                    marketplace.entityId === chatId &&
+                    Number.isFinite(Date.parse(marketplace.sourceAt))
+                  ) {
+                    try {
+                      const botId = this.getCurrentBot().id;
+                      const binding = await this.marketplaceState?.resolvePublicationButton({
+                        chatId,
+                        botId,
+                        purpose: 'CHANNEL_POST',
+                        sourceAt: new Date(marketplace.sourceAt),
+                      });
+                      if (binding) {
+                        const prepared = appendMarketplaceEditableAttachments(
+                          attachments,
+                          binding.url,
+                        );
+                        currentAttachments = prepared.attachments;
+                        added = prepared.outcome === 'ADDED';
+                        if (prepared.outcome === 'KEYBOARD_FULL')
+                          await this.marketplaceState?.recordButtonDiagnostic({
+                            chatId,
+                            botId,
+                            revision: binding.revision,
+                            purpose: 'CHANNEL_POST',
+                            code: 'KEYBOARD_FULL',
+                          });
+                      }
+                    } catch {
+                      this.logger.warn('Optional marketplace channel button is unavailable');
+                    }
+                  }
+                  if (marketplace.only && !added) throw marketplaceSkip;
+                }
+                (config.data as Record<string, unknown>).attachments = currentAttachments;
+              }
+            : undefined,
+        ).catch((error: unknown) => {
+          if (error === marketplaceSkip) return false;
+          throw error;
+        });
       },
     );
   }
@@ -6356,6 +6416,25 @@ export class MaxClientService implements OnModuleDestroy {
     return Math.min(normalized, MAX_ACTION_DELAY_MS);
   }
 
+  async getMarketplaceChannelPostActivation(chatId: string): Promise<Date | null> {
+    try {
+      return (await this.marketplaceState?.channelPostActivation(chatId)) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async listMarketplaceChannelPostTargets(
+    limit: number,
+    after?: string,
+  ): Promise<{ chatId: string }[]> {
+    try {
+      return (await this.marketplaceState?.listChannelPostTargets(limit, after)) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   private async prepareMarketplacePublicationOptions(
     chatId: string,
     options: MaxSendMessageOptions | undefined,
@@ -6368,7 +6447,11 @@ export class MaxClientService implements OnModuleDestroy {
     )
       return options;
     try {
-      const binding = await this.marketplaceState.resolvePublicationButton({ chatId, botId });
+      const binding = await this.marketplaceState.resolvePublicationButton({
+        chatId,
+        botId,
+        purpose: options.marketplacePublication!.purpose,
+      });
       if (!binding) return options;
       const result = appendMarketplacePublicationButton(options, binding.url);
       if (result.outcome === 'KEYBOARD_FULL') {
@@ -6376,6 +6459,7 @@ export class MaxClientService implements OnModuleDestroy {
           chatId,
           botId,
           revision: binding.revision,
+          purpose: options.marketplacePublication!.purpose,
           code: 'KEYBOARD_FULL',
         });
       }
@@ -7327,6 +7411,7 @@ export class MaxClientService implements OnModuleDestroy {
     operation: MaxHttpOperation<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
     finalGuard?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
+    preparePayload?: (config: Record<string, unknown>) => Promise<void>,
   ): Promise<T> {
     const quotaState: { error?: unknown } = {};
     const scopedOperation =
@@ -7354,6 +7439,7 @@ export class MaxClientService implements OnModuleDestroy {
                 quotaState,
                 messageMutation: { operation: operationType, entityId },
                 finalGuard,
+                preparePayload,
               },
               run,
             ),
@@ -7772,17 +7858,20 @@ export class MaxClientService implements OnModuleDestroy {
             }
           }
         : beforeMutation;
-    let currentAttachments = attachments;
-    const preparePublication = async () => {
-      const options = await this.prepareMarketplacePublicationOptions(
-        action.chatId,
-        action.options,
-        this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id,
-      );
-      currentAttachments =
-        options === action.options ? attachments : this.buildMessageAttachments(options);
-      return options === action.options ? action : { ...action, options };
-    };
+    const preparePublication = action.options?.marketplacePublication
+      ? async (config: Record<string, unknown>) => {
+          const options = await this.prepareMarketplacePublicationOptions(
+            action.chatId,
+            action.options,
+            this.getCurrentBot().id,
+          );
+          const currentAttachments =
+            options === action.options ? attachments : this.buildMessageAttachments(options);
+          const data = config.data as Record<string, unknown>;
+          if (currentAttachments.length) data.attachments = currentAttachments;
+          else delete data.attachments;
+        }
+      : undefined;
     const messageLink = this.buildMessageLinkData(action.options?.messageLink);
     const hasText = typeof action.text === 'string' && action.text.trim().length > 0;
     if (!hasText && attachments.length === 0 && !messageLink) {
@@ -7798,7 +7887,7 @@ export class MaxClientService implements OnModuleDestroy {
             text: hasText ? action.text : null,
             ...(hasText && action.options?.textFormat ? { format: action.options.textFormat } : {}),
             ...(messageLink ? { link: messageLink } : {}),
-            ...(currentAttachments.length > 0 ? { attachments: currentAttachments } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
           },
           ...(mutationOptions.timeoutMs ? { timeout: mutationOptions.timeoutMs } : {}),
         }),
@@ -7809,12 +7898,10 @@ export class MaxClientService implements OnModuleDestroy {
         return await this.executeMessageMutation(
           'send',
           action.chatId,
-          async () => {
-            await preparePublication();
-            return sendRequest();
-          },
+          sendRequest,
           mutationOptions,
           finalNoticeGuard,
+          preparePublication,
         );
       } catch (error: unknown) {
         if (isAmbiguousMaxSendError(error)) {
@@ -7834,10 +7921,9 @@ export class MaxClientService implements OnModuleDestroy {
         action.chatId,
         async () => {
           const botId = this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id;
-          // FLAG: Resolve after throttle waits but before the durable send fence. A recovered or
-          // ambiguous send is never republished, including when the optional profile policy changed.
-          const publicationAction = await preparePublication();
-          const claim = await this.actionLedgerService!.claimSendDispatch(publicationAction, botId);
+          // FLAG: This fence stores dispatch identity, not message payload. Resolve optional
+          // presentation after the later quota wait; a recovered fence never enters HTTP preparation.
+          const claim = await this.actionLedgerService!.claimSendDispatch(action, botId);
           if (claim.kind === 'recovered') {
             const dispatchBotId = this.assertRecoveredSendDispatchBot(action, claim.dispatchBotId);
             const completedSendDispatch: MaxCompletedSendDispatch = {
@@ -7878,6 +7964,7 @@ export class MaxClientService implements OnModuleDestroy {
         },
         mutationOptions,
         finalNoticeGuard,
+        preparePublication,
       );
     } catch (error: unknown) {
       // FLAG: An exact SEND receipt can arrive after the initial read. Recover only
@@ -9266,9 +9353,13 @@ export class MaxClientService implements OnModuleDestroy {
             }
           };
           await verifyExecutionProof('quota wait');
+          await scope.preparePayload?.(config);
           // FLAG: The feature owns its last authority await. Queued notice qualification calls
           // this route recheck before its final policy/Redis permit; never await after that permit.
-          await scope.finalGuard?.(() => verifyExecutionProof('feature qualification'));
+          await scope.finalGuard?.(async () => {
+            await verifyExecutionProof('feature qualification');
+            await scope.preparePayload?.(config);
+          });
         }, scope.guardCode);
         scope.onDispatchAttempt?.();
       }

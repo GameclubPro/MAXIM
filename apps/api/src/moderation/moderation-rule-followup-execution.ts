@@ -1,3 +1,4 @@
+import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
 import { EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import type { MaxSendMessageOptions } from '../max/max-client.service';
 import type { BotSpeechMediaFieldKey } from '@maxim/contracts/bot-speech';
@@ -153,7 +154,11 @@ export async function executeModerationRuleFollowUp(
           chatId,
           text: textValue,
           media: host.resolveBotSpeechMedia(settings, mediaFieldKey),
-          messageOptions,
+          messageOptions: withMarketplaceModerationMessage(
+            messageOptions,
+            chatId,
+            'MODERATION_NOTICE',
+          ),
           deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           userFacing: action === SanctionAction.WARN,

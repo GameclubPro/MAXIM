@@ -94,12 +94,11 @@ describe('marketplace Publisher runtime boundary', () => {
       await expect(f.service.attest(input)).rejects.toThrow(ServiceUnavailableException);
     },
   );
-  it('does not route a non-pilot identity into Publisher work', async () => {
+  it('routes a non-pilot administrator through the same exact Publisher proof', async () => {
     const f = fixture();
-    await expect(f.service.attest({ ...input, actorUserId: '999' })).rejects.toThrow(
-      ForbiddenException,
-    );
-    expect(f.queue.attest).not.toHaveBeenCalled();
+    f.binding.actor_user_id = '999';
+    await expect(f.service.attest({ ...input, actorUserId: '999' })).resolves.toBe(f.binding);
+    expect(f.queue.attest).toHaveBeenCalledWith({ ...input, actorUserId: '999' });
   });
   it('requires Publisher identity attestation before direct remote probes', async () => {
     process.env.APP_ROLE = 'publisher';

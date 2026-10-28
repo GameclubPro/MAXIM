@@ -1,3 +1,4 @@
+import { MarketplaceButtonPolicyService } from './marketplace-button-policy.service';
 import { centralEnabled } from '../../statistics/stats-common';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -24,6 +25,7 @@ export class MarketplaceRuntimeService implements OnModuleInit, OnModuleDestroy 
     private readonly profile: MarketplaceProfileService,
     @Optional() private readonly publisherIdentity?: PublisherIdentityAttestationService,
     @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly buttons?: MarketplaceButtonPolicyService,
   ) {}
   onModuleInit() {
     if (
@@ -59,11 +61,13 @@ export class MarketplaceRuntimeService implements OnModuleInit, OnModuleDestroy 
         if (!this.publisherIdentity || process.env.APP_SERVICE_NAME !== 'api-publisher') return;
         await this.publisherIdentity.assertAttested();
       }
-      const accessRows = this.config && centralEnabled(this.config)
-        ? []
-        : await this.prisma.$queryRaw<
-            MarketplaceBindingRow[]
-          >`UPDATE marketplace_bindings SET next_access_at=now()+interval '1 minute' WHERE id IN (SELECT id FROM marketplace_bindings WHERE profile=${profile} AND statistics_consent=true AND state<>'REVOKED' AND next_access_at<=now() ORDER BY next_access_at,id FOR UPDATE SKIP LOCKED LIMIT 5) RETURNING *`;
+      if (!this.stopping) await this.buttons?.refresh(profile, () => this.stopping);
+      const accessRows =
+        this.config && centralEnabled(this.config)
+          ? []
+          : await this.prisma.$queryRaw<
+              MarketplaceBindingRow[]
+            >`UPDATE marketplace_bindings SET next_access_at=now()+interval '1 minute' WHERE id IN (SELECT id FROM marketplace_bindings WHERE profile=${profile} AND statistics_consent=true AND state<>'REVOKED' AND next_access_at<=now() ORDER BY next_access_at,id FOR UPDATE SKIP LOCKED LIMIT 5) RETURNING *`;
       for (const row of accessRows) {
         if (this.stopping) return;
         await this.access.refresh(row);

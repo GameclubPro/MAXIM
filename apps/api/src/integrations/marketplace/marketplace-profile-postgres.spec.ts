@@ -1,3 +1,4 @@
+import { MarketplaceProfileAccessService } from './marketplace-profile-access.service';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
@@ -6,8 +7,12 @@ import { MarketplaceStateService } from './marketplace-state.service';
 import { MarketplaceIntegrationController } from './marketplace.controller';
 import type { MarketplaceStatisticsService } from './marketplace-statistics.service';
 import { MarketplaceProfileService } from './marketplace-profile.service';
+import { MarketplaceButtonPolicyService } from './marketplace-button-policy.service';
 import type { MarketplaceAccessService } from './marketplace-access.service';
-import type { MarketplaceProfileRelayResponse } from '@maxim/contracts/marketplace-integration';
+import type {
+  MarketplaceBindingInput,
+  MarketplaceProfileRelayResponse,
+} from '@maxim/contracts/marketplace-integration';
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const postgres = databaseUrl ? describe : describe.skip;
 jest.setTimeout(30_000);
@@ -66,20 +71,151 @@ postgres('marketplace durable owner policy changes', () => {
   });
   afterEach(async () => {
     jest.restoreAllMocks();
-    await db.$executeRaw`DELETE FROM marketplace_policy_requests WHERE binding_id=${id}::uuid`;
-    await db.$executeRaw`DELETE FROM marketplace_bindings WHERE id=${id}::uuid`;
+    await db.$executeRaw`DELETE FROM marketplace_policy_requests WHERE binding_id IN(SELECT id FROM marketplace_bindings WHERE entity_id=${entityId})`;
+    await db.$executeRaw`DELETE FROM marketplace_button_requests WHERE policy_id IN(SELECT id FROM marketplace_button_policies WHERE entity_id=${entityId})`;
+    await db.$executeRaw`DELETE FROM marketplace_button_contexts WHERE policy_id IN(SELECT id FROM marketplace_button_policies WHERE entity_id=${entityId})`;
+    await db.$executeRaw`DELETE FROM marketplace_button_policies WHERE entity_id=${entityId}`;
+    await db.$executeRaw`DELETE FROM marketplace_bindings WHERE entity_id=${entityId}`;
+    await db.chat.deleteMany({ where: { id: entityId } });
   });
   afterAll(async () => {
     await db?.$disconnect();
   });
   const mutate = (body: unknown) =>
     service.mutate('323459159', 'CHANNEL', entityId, 'publisher', body);
+  const readLegacy = () => service.get('323459159', 'CHANNEL', entityId, 'publisher');
+  const canonicalFixture = async () => {
+    await db.chat.create({ data: { id: entityId, title: 'Synthetic profile compatibility' } });
+    await db.publisherEntityBinding.create({
+      data: { chatId: entityId, publisherBotId: 'test', status: 'ACTIVE' },
+    });
+    const secondBinding = randomUUID();
+    const actor: MarketplaceBindingInput = {
+      actorUserId: '323459160',
+      kind: 'CHANNEL',
+      entityId,
+      profile: 'publisher',
+    };
+    await db.$executeRaw`INSERT INTO marketplace_bindings(id,actor_user_id,entity_id,kind,profile,bot_id,state,checked_at,valid_until,metadata,statistics_consent)
+      SELECT ${secondBinding}::uuid,${actor.actorUserId},entity_id,kind,profile,bot_id,state,checked_at,valid_until,metadata,false FROM marketplace_bindings WHERE id=${id}::uuid`;
+    const policy = new MarketplaceButtonPolicyService(
+      db as PrismaService,
+      new ConfigService({
+        SVYAZKA_ANALYTICS_TOKEN: 'a'.repeat(64),
+        SVYAZKA_PROFILE_TOKEN: 'b'.repeat(64),
+      }),
+      state,
+      { attest: () => state.read(secondBinding) } as unknown as MarketplaceAccessService,
+    );
+    jest.spyOn(policy, 'readEntry').mockImplementation(async () => ({
+      ...actor,
+      publicState: 'PUBLIC',
+      listing: {
+        id: remote.listing!.id,
+        ownershipKey: 'a'.repeat(64),
+        title: 'Synthetic profile compatibility',
+        publicUrl: remote.listing!.publicUrl,
+        profileOnly: true,
+      },
+      isOwner: false,
+      canCreate: false,
+      manageUrl: null,
+      connectUrl: `https://max.ru/id613000037577_3_bot?startapp=connect_channel_${entityId}`,
+      checkedAt: new Date().toISOString(),
+      validUntil: new Date(Date.now() + 300_000).toISOString(),
+    }));
+    return {
+      get: () => policy.get(actor),
+      set: (enabled: boolean, expectedRevision: number) =>
+        policy.mutate(actor, {
+          requestId: randomUUID(),
+          expectedRevision,
+          context: 'PUBLICATIONS',
+          enabled,
+        }),
+    };
+  };
+  it('reads another administrator canonical PUBLICATIONS choice with a monotonic legacy token', async () => {
+    const policy = await canonicalFixture();
+    const before = await readLegacy();
+    await policy.set(true, 0);
+    const enabled = await readLegacy();
+    expect(enabled.appendEnabled).toBe(true);
+    expect(enabled.appendRevision).toBeGreaterThan(before.appendRevision);
+    expect((await state.read(id))!.append_enabled).toBe(false);
+    await policy.set(false, 1);
+    await policy.set(true, 2);
+    const current = await readLegacy();
+    expect(current.appendEnabled).toBe(true);
+    expect(current.appendRevision).toBeGreaterThan(enabled.appendRevision);
+    await expect(
+      mutate({
+        action: 'toggle',
+        requestId: randomUUID(),
+        expectedRevision: enabled.appendRevision,
+        appendEnabled: false,
+      }),
+    ).rejects.toThrow('Настройки изменились');
+    expect((await policy.get()).contexts[0]!.enabled).toBe(true);
+  });
+  it('rejects a canonical change after the early legacy check and before its transaction lock', async () => {
+    const policy = await canonicalFixture();
+    await policy.set(true, 0);
+    const before = await readLegacy();
+    jest.spyOn(service, 'relay').mockImplementationOnce(async () => {
+      await policy.set(false, 1);
+      return remote;
+    });
+    await expect(
+      mutate({
+        action: 'toggle',
+        requestId: randomUUID(),
+        expectedRevision: before.appendRevision,
+        appendEnabled: true,
+      }),
+    ).rejects.toThrow('Настройки изменились');
+    expect((await policy.get()).contexts[0]!.enabled).toBe(false);
+  });
+  it('lets a current legacy off switch change canonical policy and replays its exact old receipt', async () => {
+    const policy = await canonicalFixture();
+    await policy.set(true, 0);
+    const enabled = await readLegacy();
+    const command = {
+      action: 'toggle',
+      requestId: randomUUID(),
+      expectedRevision: enabled.appendRevision,
+      appendEnabled: false,
+    };
+    const result = await mutate(command);
+    expect(result.appendEnabled).toBe(false);
+    expect(result.appendRevision).toBeGreaterThan(enabled.appendRevision);
+    const disabled = await policy.get();
+    expect(disabled.contexts[0]!.enabled).toBe(false);
+    await policy.set(true, disabled.revision);
+    expect(await mutate(command)).toEqual(result);
+    expect((await policy.get()).contexts[0]!.enabled).toBe(true);
+    expect((await readLegacy()).appendEnabled).toBe(true);
+  });
+  it('keeps canonical PUBLICATIONS visible after independent statistics withdrawal', async () => {
+    const policy = await canonicalFixture();
+    await policy.set(true, 0);
+    const before = await readLegacy();
+    const result = await mutate({
+      action: 'revoke',
+      requestId: randomUUID(),
+      expectedRevision: before.appendRevision,
+    });
+    expect(result.binding.statisticsConsent).toBe(false);
+    expect(result.appendEnabled).toBe(true);
+    expect((await policy.get()).contexts[0]!.enabled).toBe(true);
+  });
   it('replays integration DELETE without revoking a later consent and rejects stale new requests', async () => {
     const controller = new MarketplaceIntegrationController(
       {} as MarketplaceAccessService,
       state,
       {} as MarketplaceStatisticsService,
       db as PrismaService,
+      {} as MarketplaceProfileAccessService,
     );
     const request = { requestId: randomUUID(), expectedRevision: 0 };
     expect(await controller.revoke(id, request)).toEqual({ revoked: true });
@@ -147,7 +283,7 @@ postgres('marketplace durable owner policy changes', () => {
       statistics_revoked_at: expect.any(Date),
       append_enabled: false,
       append_revision: 1,
-      state: 'REVOKED',
+      state: 'ACTIVE',
       lease_id: null,
       lease_until: null,
     });

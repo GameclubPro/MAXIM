@@ -1,3 +1,8 @@
+import {
+  channelSettingsForSource,
+  marketplacePostIsEligible,
+} from './channel-marketplace-decoration';
+import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
 import { needsAutomaticMuteCleanup, persistAutomaticMuteCleanup } from './automatic-mute-cleanup';
 import { runCanonicalWebhookHandler } from './canonical-webhook-handler';
 import { verifyFreshHeldCommandAccess } from '../webhook/webhook-legacy-fresh-command';
@@ -424,18 +429,18 @@ import {
   resolveChannelAutoPostEventTimestampMs,
   resolveChannelAutoPostMessageText,
   type ChannelAutoPostAttachOutcome,
-  type ChannelAutoPostMessageText,
   type ChannelAutoPostScanState,
 } from './channel-auto-post-runtime';
-import { runChannelAutoPostScanBatch } from './channel-auto-post-scan-batch';
+import {
+  ChannelAutoPostScanRuntime,
+  processChannelAutoPostListedMessages,
+  type ChannelAutoPostAttachParams,
+} from './channel-auto-post-scan-runtime';
 import {
   ChannelAutoPostMutationGuard,
   resolveInitialChannelMutationRoute,
 } from './channel-auto-post-mutation-guard';
-import {
-  loadManagedChannelAutoPostContext,
-  loadChannelAutoPostScanContexts,
-} from './channel-auto-post-context';
+import { loadManagedChannelAutoPostContext } from './channel-auto-post-context';
 import { ChannelAutoPostLegacyRecovery } from './channel-auto-post-legacy-recovery';
 import { ChannelPostDemandRuntime } from './channel-post-demand-runtime';
 import {
@@ -756,6 +761,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly replacementAttachMarkerStore: ReplacementAttachMarkerStore;
   private readonly channelAutoPostLegacyRecovery: ChannelAutoPostLegacyRecovery;
   private readonly channelPostDemand: ChannelPostDemandRuntime;
+  private readonly channelAutoPostScanRuntime = new ChannelAutoPostScanRuntime();
   private readonly channelAutoPostMutationGuard: ChannelAutoPostMutationGuard;
   private readonly destructiveAdminRosterRefreshScheduledAtMs = new Map<string, number>();
   private readonly requiredSubscriptionMembershipCache = new Map<
@@ -951,6 +957,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           managedChannel,
           source: 'poll',
           schedulingOrigin: 'durable_demand',
+          sourceMessageAt: new Date(message.timestampMs).toISOString(),
           senderAdminVerified:
             message.senderId !== null && managedChannel.adminUserIds.includes(message.senderId),
           allowSenderlessEngagement: true,
@@ -3547,7 +3554,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.sendBotMessageWithOptionalAutoDelete({
           chatId,
           text: explanationWithContact,
-          messageOptions: duplicateMessageOptions ?? undefined,
+          messageOptions: withMarketplaceModerationMessage(
+            duplicateMessageOptions,
+            chatId,
+            'MODERATION_NOTICE',
+          ),
           media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
           deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes,
@@ -3793,7 +3804,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await this.sendBotMessageWithOptionalAutoDelete({
             chatId,
             text: explanationText,
-            messageOptions: duplicateMessageOptions ?? undefined,
+            messageOptions: withMarketplaceModerationMessage(
+              duplicateMessageOptions,
+              chatId,
+              'MODERATION_NOTICE',
+            ),
             media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
             deleteBotMessagesEnabled,
             deleteBotMessagesDelayMinutes,
@@ -8219,7 +8234,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.sendBotMessageWithOptionalAutoDelete({
           chatId,
           text: greetingMessage,
-          messageOptions: greetingMessageOptions ?? undefined,
+          messageOptions: withMarketplaceModerationMessage(
+            greetingMessageOptions,
+            chatId,
+            'GREETING',
+          ),
           media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'greetingBotMessageText'),
           deleteBotMessagesEnabled: shouldDeleteGreetingMessage,
           deleteBotMessagesDelayMinutes: greetingDeleteDelayMinutes,
@@ -10266,6 +10285,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         async ({ mediaFieldKey, ...notice }) =>
           this.sendBotMessageWithOptionalAutoDelete({
             ...notice,
+            messageOptions: withMarketplaceModerationMessage(
+              notice.messageOptions,
+              params.chatId,
+              'MODERATION_NOTICE',
+            ),
             media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey ?? undefined),
           }),
       ),
@@ -10768,7 +10792,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.sendBotMessageWithOptionalAutoDelete({
         chatId: params.chatId,
         text: textValue,
-        messageOptions: invitationAccessMessageOptions,
+        messageOptions: withMarketplaceModerationMessage(
+          invitationAccessMessageOptions,
+          params.chatId,
+          'MODERATION_NOTICE',
+        ),
         media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey),
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
@@ -14899,6 +14927,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const eventTimestampMs = resolveChannelAutoPostEventTimestampMs(update);
+    const marketplaceAt =
+      (await this.maxClient.getMarketplaceChannelPostActivation?.(chatId)) ?? null;
+    const sourceChannelSettings = marketplacePostIsEligible(createdAt, marketplaceAt)
+      ? channelSettingsForSource(managedChannel.channelSettings, createdAt)
+      : managedChannel.channelSettings;
     const linkType = extractChannelAutoPostMessageLinkType(update);
     const raw = this.asRecord(update.raw);
     const rawMessage = raw ? (extractRawMessageNode(raw) ?? raw) : null;
@@ -14910,7 +14943,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     const requiresForwardReplacement =
       linkType === 'forward' &&
-      !isChannelAutoPostKeyboardOnly(managedChannel.channelSettings, messageText.quickButtons);
+      !isChannelAutoPostKeyboardOnly(sourceChannelSettings, messageText.quickButtons);
     let senderAdminVerified = false;
 
     if (requiresForwardReplacement && senderIsOwnBot) {
@@ -14951,6 +14984,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       senderAdminVerified,
       allowSenderlessEngagement: true,
       sourceMessageAt: createdAt,
+      marketplaceAt,
     });
     if (outcome !== 'in_progress') {
       this.channelAutoPostScanManager.markWebhookSeen(chatId, messageId, eventTimestampMs);
@@ -14978,64 +15012,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     this.channelAutoPostInFlight = true;
     try {
-      const channelCandidates = await this.prisma.channelSettings.findMany({
-        where: {
-          chat: {
-            entityType: ChatEntityType.CHANNEL,
-          },
-          OR: [
-            {
-              quickButtonsEnabled: true,
-            },
-            {
-              postSignatureEnabled: true,
-            },
-            {
-              commentsEnabled: true,
-            },
-            {
-              postSuggestionsEnabled: true,
-            },
-          ],
-        },
-        select: {
-          chatId: true,
-        },
-        orderBy: {
-          updatedAt: 'desc',
-        },
-      });
-      const demandRefs = await this.channelPostDemand.selectChannels(
-        executionPlan.batchSize,
-        this.channelAutoPostScanIntervalMs,
-      );
-      const demandedIds = new Set(demandRefs.map((item) => item.chatId));
-      const fallbackBudget = Math.max(0, executionPlan.batchSize - demandRefs.length);
-      const scanBatchRefs = [
-        ...demandRefs.filter((item) => this.channelAutoPostScanManager.isDemandDue(item.chatId)),
-        ...(fallbackBudget > 0
-          ? this.channelAutoPostScanManager.selectBatch(
-              channelCandidates.filter((item) => !demandedIds.has(item.chatId)),
-              fallbackBudget,
-            )
-          : []),
-      ];
-      const scanBatch = await this.loadChannelAutoPostScanContexts(
-        scanBatchRefs.map((item) => item.chatId),
-      );
-
-      const encounteredTransientThrottle = await runChannelAutoPostScanBatch({
-        channels: scanBatch,
+      await this.channelAutoPostScanRuntime.run({
+        prisma: this.prisma,
+        maxClient: this.maxClient,
         plan: executionPlan,
         manager: this.channelAutoPostScanManager,
+        demand: this.channelPostDemand,
+        recovery: this.channelAutoPostLegacyRecovery,
+        scanIntervalMs: this.channelAutoPostScanIntervalMs,
+        rateLimitBackoffMs: CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
         processChannel: (channel, options) =>
-          demandedIds.has(channel.channelSettings.chatId)
-            ? this.channelPostDemand.process(
-                channel,
-                options.maxNewMessagesPerScan,
-                this.channelAutoPostScanIntervalMs,
-              )
-            : this.processManagedChannelAutoPostButtons(channel, options),
+          this.processManagedChannelAutoPostButtons(channel, options),
         sleep: (ms) => this.sleep(ms),
         isTransientLookupError: (error) => this.isTransientMaxApiLookupError(error),
         onGlobalBackoff: (ms) => {
@@ -15047,23 +15034,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             'Failed channel auto post buttons scan',
           ),
       });
-
-      if (!encounteredTransientThrottle) {
-        const recovery = await this.channelAutoPostLegacyRecovery.runIfDue();
-        if (recovery.stopCurrentTick) {
-          this.channelAutoPostBackoffUntilMs = Date.now() + CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS;
-        }
-        this.channelAutoPostScanManager.resetThrottle();
-      }
     } finally {
       this.channelAutoPostInFlight = false;
     }
-  }
-
-  private async loadChannelAutoPostScanContexts(
-    chatIds: readonly string[],
-  ): Promise<ManagedChannelContext[]> {
-    return loadChannelAutoPostScanContexts(this.prisma, chatIds);
   }
 
   private async processManagedChannelAutoPostButtons(
@@ -15119,32 +15092,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       throw error;
     }
-    await this.channelAutoPostScanManager.processListedMessages({
-      chatId,
+    await processChannelAutoPostListedMessages({
+      managedChannel,
       messages,
-      adminUserIds: managedChannel.adminUserIds,
-      settingsUpdatedAtMs: managedChannel.channelSettings.updatedAt.getTime(),
       maxNewMessagesPerScan,
-      quickButtonsEnabled: managedChannel.channelSettings.quickButtonsEnabled === true,
-      attach: (normalized) =>
-        this.tryAutoAttachChannelMessageButtons({
-          chatId,
-          messageId: normalized.messageId,
-          text: normalized.text,
-          textFormat: normalized.textFormat,
-          quickButtons: normalized.quickButtons,
-          linkType: normalized.linkType,
-          existingDialogButtonKinds: normalized.existingDialogButtonKinds,
-          existingDialogThreadId: normalized.existingDialogThreadId,
-          managedChannel,
-          source: 'poll',
-          schedulingOrigin: 'periodic_scan',
-          senderId: normalized.senderId,
-          senderAdminVerified:
-            normalized.senderId !== null &&
-            managedChannel.adminUserIds.includes(normalized.senderId),
-          allowSenderlessEngagement: true,
-        }),
+      maxClient: this.maxClient,
+      manager: this.channelAutoPostScanManager,
+      attach: (params) => this.tryAutoAttachChannelMessageButtons(params),
     });
   }
 
@@ -15283,23 +15237,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async tryAutoAttachChannelMessageButtons(params: {
-    chatId: string;
-    messageId: string;
-    text: string | null;
-    textFormat?: MaxSendMessageOptions['textFormat'] | null;
-    quickButtons?: ChannelAutoPostMessageText['quickButtons'];
-    linkType: string | null;
-    existingDialogButtonKinds?: readonly ('comments' | 'suggest')[];
-    existingDialogThreadId?: string | null;
-    managedChannel: ManagedChannelContext;
-    source: 'webhook' | 'poll';
-    schedulingOrigin?: 'durable_demand' | 'periodic_scan';
-    senderId: string | null;
-    senderAdminVerified: boolean;
-    allowSenderlessEngagement: boolean;
-    sourceMessageAt?: string | null;
-  }): Promise<ChannelAutoPostAttachOutcome> {
+  private async tryAutoAttachChannelMessageButtons(
+    params: ChannelAutoPostAttachParams,
+  ): Promise<ChannelAutoPostAttachOutcome> {
     const {
       chatId,
       messageId,
@@ -15315,11 +15255,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     // FLAG: Polling and legacy recovery bypass webhook admission. Check the exact
     // source before claiming or changing any persistent channel marker.
     if (await this.legacyHolds?.isMessageHeld(chatId, messageId)) return 'skipped';
+    const marketplaceAt =
+      params.marketplaceAt !== undefined
+        ? params.marketplaceAt
+        : ((await this.maxClient.getMarketplaceChannelPostActivation?.(chatId)) ?? null);
+    const includeMarketplaceButton = marketplacePostIsEligible(sourceMessageAt, marketplaceAt);
+    const channelSettings = includeMarketplaceButton
+      ? channelSettingsForSource(managedChannel.channelSettings, sourceMessageAt)
+      : managedChannel.channelSettings;
+    const quickButtons = includeMarketplaceButton
+      ? channelSettings.quickButtonsEnabled
+        ? params.quickButtons
+        : undefined
+      : params.quickButtons;
     const normalizedSenderId = senderId?.trim() || null;
     const editForwardInPlace =
       linkType === 'forward' &&
       params.allowSenderlessEngagement === true &&
-      isChannelAutoPostKeyboardOnly(managedChannel.channelSettings, params.quickButtons);
+      isChannelAutoPostKeyboardOnly(channelSettings, quickButtons);
     const replaceForward = linkType === 'forward' && !editForwardInPlace;
     // FLAG: Only fresh webhook/poll callers opt anonymous forwards into keyboard-only edits.
     // Text replacement and legacy recovery still require a verified admin before send/delete.
@@ -15329,9 +15282,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (linkType === 'forward' && !(await this.isCurrentChannelEntity(chatId))) {
       return 'skipped';
     }
-    const configuredButtonVisibility = resolveChannelAutoPostButtonVisibility(
-      managedChannel.channelSettings,
-    );
+    const configuredButtonVisibility = resolveChannelAutoPostButtonVisibility(channelSettings);
     const senderlessEngagementAllowed =
       !normalizedSenderId && !replaceForward && params.allowSenderlessEngagement;
     const buttonVisibility =
@@ -15343,12 +15294,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       buttonVisibility.includeCommentsButton && !existingButtonKinds.has('comments');
     const includeSuggestButton =
       buttonVisibility.includeSuggestButton && !existingButtonKinds.has('suggest');
-    const postSignatureEnabled = managedChannel.channelSettings.postSignatureEnabled === true;
-    const quickButtons = params.quickButtons;
+    const postSignatureEnabled = channelSettings.postSignatureEnabled === true;
     if (!normalizedSenderId && !senderlessEngagementAllowed && !postSignatureEnabled) {
       return 'skipped';
     }
-    if (!includeCommentsButton && !includeSuggestButton && !postSignatureEnabled && !quickButtons) {
+    if (
+      !includeCommentsButton &&
+      !includeSuggestButton &&
+      !postSignatureEnabled &&
+      !quickButtons &&
+      !includeMarketplaceButton
+    ) {
       return 'noop';
     }
     if (postSignatureEnabled && !this.channelPostSignatureService) {
@@ -15424,6 +15380,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let signatureApplied = false;
     let maxMutationAttemptStartedAt: Date | null = null;
     let editAttempts = 0;
+    let mutationApplied = true;
 
     try {
       ctaButton =
@@ -15467,7 +15424,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (
         buttons.length === 0 &&
         !preparedText.signatureApplied &&
-        (replaceForward || !postSignatureEnabled)
+        (replaceForward || !postSignatureEnabled) &&
+        !includeMarketplaceButton
       ) {
         await this.replacementAttachMarkerStore.completeChannelAutoPost({
           chatId,
@@ -15493,6 +15451,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           signatureApplied = applied;
         },
       });
+      const marketplaceChannelPost =
+        includeMarketplaceButton && sourceMessageAt && !replaceForward
+          ? {
+              entityId: chatId,
+              sourceAt: sourceMessageAt,
+              only:
+                !includeCommentsButton &&
+                !includeSuggestButton &&
+                !postSignatureEnabled &&
+                !quickButtons,
+            }
+          : undefined;
       const beforeEditMutation = async () => {
         if (quickButtons) await this.assertChannelQuickButtonsEnabled(chatId);
         await this.channelAutoPostMutationGuard.assertEditAuthorized(chatId, autoAttachBotId);
@@ -15616,26 +15586,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         try {
           maxMutationAttemptStartedAt = new Date();
           editAttempts += 1;
-          await this.maxClient.editMessageInlineKeyboard(
-            chatId,
-            messageId,
-            editForwardInPlace ? null : preparedText.text,
-            {
-              buttons,
-              ...mutationTextOptions,
-              mergeExistingInlineKeyboard: true,
-              preserveExistingChannelDialogButtons: true,
-              requireAllAttachmentsPreserved: true,
-              ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
-              ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
-              beforeEditMutation,
-              debugContext: {
-                screen: 'channel-auto-post',
-                action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
+          mutationApplied =
+            (await this.maxClient.editMessageInlineKeyboard(
+              chatId,
+              messageId,
+              editForwardInPlace ? null : preparedText.text,
+              {
+                buttons,
+                ...mutationTextOptions,
+                mergeExistingInlineKeyboard: true,
+                preserveExistingChannelDialogButtons: true,
+                requireAllAttachmentsPreserved: true,
+                ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
+                ...(preserveExistingInlineKeyboard ? { preserveExistingInlineKeyboard: true } : {}),
+                beforeEditMutation,
+                marketplaceChannelPost,
+                debugContext: {
+                  screen: 'channel-auto-post',
+                  action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
+                },
               },
-            },
-            mutationRequestOptions,
-          );
+              mutationRequestOptions,
+            )) !== false;
         } catch (mergedEditError: unknown) {
           const mergedEditStatus = this.extractStatusCode(mergedEditError);
           const mergedEditFailure = classifyMaxTerminalChatActionError(mergedEditError);
@@ -15663,31 +15635,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
           maxMutationAttemptStartedAt = new Date();
           editAttempts += 1;
-          await this.maxClient.editMessageInlineKeyboard(
-            chatId,
-            messageId,
-            editForwardInPlace ? null : preparedText.text,
-            {
-              // FLAG: A rejected merge never authorizes dropping Publisher discussions,
-              // custom links, or media. Re-read and preserve the source under the edit lock.
-              buttons,
-              ...mutationTextOptions,
-              mergeExistingInlineKeyboard: true,
-              appendNewInlineKeyboardRows: true,
-              preserveExistingChannelDialogButtons: true,
-              requireAllAttachmentsPreserved: true,
-              ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
-              beforeEditMutation,
-              debugContext: {
-                screen: 'channel-auto-post',
-                action:
-                  source === 'poll'
-                    ? 'scan-attach-buttons-preserve-keyboard'
-                    : 'attach-buttons-preserve-keyboard',
+          mutationApplied =
+            (await this.maxClient.editMessageInlineKeyboard(
+              chatId,
+              messageId,
+              editForwardInPlace ? null : preparedText.text,
+              {
+                // FLAG: A rejected merge never authorizes dropping Publisher discussions,
+                // custom links, or media. Re-read and preserve the source under the edit lock.
+                buttons,
+                ...mutationTextOptions,
+                mergeExistingInlineKeyboard: true,
+                appendNewInlineKeyboardRows: true,
+                preserveExistingChannelDialogButtons: true,
+                requireAllAttachmentsPreserved: true,
+                ...(preparedText.textFormat ? { textFormat: preparedText.textFormat } : {}),
+                beforeEditMutation,
+                marketplaceChannelPost,
+                debugContext: {
+                  screen: 'channel-auto-post',
+                  action:
+                    source === 'poll'
+                      ? 'scan-attach-buttons-preserve-keyboard'
+                      : 'attach-buttons-preserve-keyboard',
+                },
               },
-            },
-            mutationRequestOptions,
-          );
+              mutationRequestOptions,
+            )) !== false;
         }
       }
     } catch (error: unknown) {
@@ -15840,6 +15814,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       throw error;
     }
 
+    if (!mutationApplied) {
+      await this.replacementAttachMarkerStore.completeChannelAutoPost({
+        chatId,
+        messageId,
+        lockToken: claim.lockToken,
+        status: CHANNEL_AUTO_POST_ATTACH_STATUS.SKIPPED,
+        source,
+        botId: autoAttachBotId,
+        linkType,
+        deliveryMode: null,
+        lastError: 'Optional profile button is unavailable or already present.',
+        lastStatusCode: null,
+      });
+      return 'noop';
+    }
     await this.replacementAttachMarkerStore.completeChannelAutoPost({
       chatId,
       messageId,

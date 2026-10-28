@@ -14,7 +14,11 @@ import {
 import { MESSAGE_DUPLICATE_MEDIA_VERSION } from '../moderation/message-duplicate/message-duplicate-state';
 import { duplicateSettings } from '../moderation/message-duplicate/message-duplicate-test-fixtures';
 import { MaxBotContextService } from './max-bot-context.service';
-import { MaxClientService, type MaxActionJob } from './max-client.service';
+import {
+  MaxClientService,
+  type MaxActionJob,
+  type MaxSendMessageOptions,
+} from './max-client.service';
 import {
   MaxDuplicateNoticeGuardService,
   isMaxDuplicateNoticeAction,
@@ -241,9 +245,16 @@ function transportFixture() {
   const quota = jest.spyOn(client as any, 'reserveRateLimitSlot').mockImplementation(async () => {
     order.push('quota');
   });
-  jest
-    .spyOn(client as any, 'prepareMarketplacePublicationOptions')
-    .mockImplementation(async (_chat: any, options: any) => {
+  const preparation = client as unknown as {
+    prepareMarketplacePublicationOptions: (
+      chatId: string,
+      options: MaxSendMessageOptions | undefined,
+      botId: string,
+    ) => Promise<MaxSendMessageOptions | undefined>;
+  };
+  const prepare = jest
+    .spyOn(preparation, 'prepareMarketplacePublicationOptions')
+    .mockImplementation(async (_chat, options) => {
       order.push('prepare');
       return options;
     });
@@ -251,22 +262,43 @@ function transportFixture() {
     order.push('authority');
     expect(context.getActiveBotId()).toBe('peer-2');
     await input.beforeFinalAuthority?.();
+    order.push('final-permit');
     return 'allowed';
   });
-  return { ...s, order, http, ledger, client, route, quota };
+  return { ...s, order, http, ledger, client, route, quota, prepare };
 }
 
 describe('duplicate queued SEND transport boundary', () => {
-  it('runs current authority after preparation/claim/quota before the final HTTP dispatch', async () => {
-    const s = transportFixture();
-    try {
-      await s.client.executeActionJob(s.action);
-      expect(s.order).toEqual(['prepare', 'claim', 'quota', 'authority', 'http']);
-      expect(s.http.request).toHaveBeenCalledTimes(1);
-    } finally {
-      await s.client.onModuleDestroy();
-    }
-  });
+  it.each([false, true])(
+    'keeps claim/quota before authority and the final permit after optional profile preparation: %s',
+    async (withProfile) => {
+      const s = transportFixture();
+      const action: MaxActionJob = {
+        ...s.action,
+        options: withProfile
+          ? { marketplacePublication: { entityId: s.action.chatId, purpose: 'MODERATION_NOTICE' } }
+          : undefined,
+      };
+      try {
+        await s.client.executeActionJob(action);
+        expect(s.order).toEqual([
+          'claim',
+          'quota',
+          ...(withProfile ? ['prepare'] : []),
+          'authority',
+          ...(withProfile ? ['prepare'] : []),
+          'final-permit',
+          'http',
+        ]);
+        expect(s.prepare).toHaveBeenCalledTimes(withProfile ? 2 : 0);
+        if (withProfile)
+          expect(s.prepare).toHaveBeenCalledWith(action.chatId, action.options, 'peer-2');
+        expect(s.http.request).toHaveBeenCalledTimes(1);
+      } finally {
+        await s.client.onModuleDestroy();
+      }
+    },
+  );
 
   it('rejects a quota-delayed history reset and releases only the untouched SEND fence', async () => {
     const s = transportFixture();
