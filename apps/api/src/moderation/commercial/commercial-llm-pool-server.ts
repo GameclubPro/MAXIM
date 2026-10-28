@@ -56,16 +56,17 @@ export class CommercialLlmPoolServer {
         return;
       }
       const idle = await this.idle();
-      if (idle && this.quarantinedLease) {
-        await this.lease.release(this.quarantinedLease);
-        this.quarantinedLease = null;
-      }
       const [busy, cooldown] = await this.redis.mget(
         COMMERCIAL_LLM_LEASE_KEY,
         COMMERCIAL_LLM_COOLDOWN_KEY,
       );
       const ready =
-        idle && !busy && !cooldown && (await this.hasHeadroom()) && (await this.identityMatches());
+        !this.quarantinedLease &&
+        idle &&
+        !busy &&
+        !cooldown &&
+        (await this.hasHeadroom()) &&
+        (await this.identityMatches());
       await this.mailbox.refreshWorker('server-9b', this.session, ready);
     } catch {
       this.registered = false;
@@ -78,6 +79,7 @@ export class CommercialLlmPoolServer {
     if (
       this.closed ||
       this.active ||
+      this.quarantinedLease ||
       !this.registered ||
       reservation.session !== this.session ||
       signal?.aborted
@@ -103,11 +105,16 @@ export class CommercialLlmPoolServer {
       )
         throw new CommercialLlmError('BUSY');
       await this.mailbox.refreshWorker('server-9b', this.session, false);
-      if (!(await this.lease.owns(token))) throw new CommercialLlmError('BUSY');
       const workSignal = AbortSignal.any([
         ...(signal ? [signal] : []),
         AbortSignal.timeout(Math.max(1, reservation.deadlineAtMs - Date.now())),
       ]);
+      if (
+        !(await this.lease.retainUntilReleased(token)) ||
+        workSignal.aborted ||
+        Date.now() >= reservation.deadlineAtMs
+      )
+        throw new CommercialLlmError('BUSY');
       dispatched = true;
       const response = await this.fetchImpl(this.url, {
         method: 'POST',
@@ -143,7 +150,8 @@ export class CommercialLlmPoolServer {
       throw new CommercialLlmError(signal?.aborted ? 'ABORTED' : 'UNAVAILABLE');
     } finally {
       // FLAG: An aborted HTTP request is not evidence that llama.cpp stopped computing.
-      // Retain its physical lease until a no-slot-aware health probe positively proves idle.
+      // /slots can overtake queued inference. Keep the pinned lease until managed recovery;
+      // only a complete validated response or a definite non-dispatch may release it here.
       if (!dispatched) await this.mailbox.releaseUndispatched(reservation).catch(() => false);
       if (token) {
         if (!dispatched || completed) await this.lease.release(token).catch(() => undefined);
@@ -164,14 +172,31 @@ export class CommercialLlmPoolServer {
 
   private async idle(): Promise<boolean> {
     try {
-      const response = await this.fetchImpl(new URL('/health?fail_on_no_slot=1', this.url), {
-        signal: AbortSignal.timeout(750),
+      const signal = AbortSignal.timeout(750);
+      const response = await this.fetchImpl(new URL('/slots', this.url), {
+        signal,
         redirect: 'error',
         credentials: 'omit',
         cache: 'no-store',
       });
-      await response.body?.cancel();
-      return response.ok;
+      if (
+        !response.ok ||
+        !/^application\/json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? '')
+      ) {
+        await response.body?.cancel();
+        return false;
+      }
+      const slots: unknown = JSON.parse(
+        new TextDecoder('utf-8', { fatal: true }).decode(
+          await readBoundedResponseBuffer(response, 65_536, signal),
+        ),
+      );
+      // FLAG: b11804 /health ignores fail_on_no_slot. This observes occupancy, not cancellation.
+      if (!Array.isArray(slots) || slots.length !== 1) return false;
+      const slot: unknown = slots[0];
+      if (!slot || typeof slot !== 'object' || Array.isArray(slot)) return false;
+      const state = slot as Record<string, unknown>;
+      return state.id === 0 && state.n_ctx === 4096 && state.is_processing === false;
     } catch {
       return false;
     }
@@ -202,6 +227,7 @@ export class CommercialLlmPoolServer {
       const identity = COMMERCIAL_LLM_POOL_PROFILES['server-9b'].identity;
       return (
         props.total_slots === 1 &&
+        props.endpoint_slots === true &&
         typeof props.chat_template === 'string' &&
         createHash('sha256').update(props.chat_template).digest('hex') ===
           identity.chatTemplateSha256 &&
