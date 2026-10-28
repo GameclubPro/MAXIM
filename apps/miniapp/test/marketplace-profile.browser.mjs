@@ -71,10 +71,10 @@ try {
         await page.goto(
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=delayed`,
         );
-        const entry = page.getByRole('button', { name: 'Биржик', exact: true });
+        const entry = page.getByRole('button', { name: 'Рекламная биржа', exact: true });
         await entry.waitFor();
         assert.equal(await entry.getAttribute('data-settings-navigation-entry'), 'true');
-        assert.equal((await entry.textContent()).trim(), 'Биржик');
+        assert.equal((await entry.textContent()).trim(), 'Рекламная биржа');
         assert.equal(
           await entry
             .locator('small, .settings-section__summary, .settings-section__state')
@@ -237,12 +237,12 @@ try {
         await save.click();
         await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).waitFor();
         await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
-        assert.equal((await entry.textContent()).trim(), 'Биржик');
+        assert.equal((await entry.textContent()).trim(), 'Рекламная биржа');
         assert.equal(await entry.getAttribute('aria-expanded'), 'false');
         await page.goto(
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=0`,
         );
-        await page.getByRole('button', { name: 'Биржик', exact: true }).click();
+        await page.getByRole('button', { name: 'Рекламная биржа', exact: true }).click();
         await workspace.getByLabel('Название', { exact: true }).waitFor();
         await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
         await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
@@ -298,25 +298,15 @@ try {
         assert.equal(new URL(page.url()).searchParams.has('focus'), false);
         if (profile === 'moderation' && kind === 'chat') {
           await page.goto(`${baseUrl}?preview=1`);
-          const catalog = page.getByRole('link', { name: 'Биржик', exact: true });
-          await catalog.waitFor();
-          await applyNativeVisualMode(page, {
-            safeTop: deviceName === 'iphone' ? 20 : 24,
-            safeBottom: 0,
-          });
-          const bounds = await catalog.boundingBox();
-          assert.ok(
-            bounds && bounds.y >= 0 && bounds.y + bounds.height <= device.viewport.height,
-            'Birzhik entry is visible without scrolling the platform list',
-          );
-          await catalog.click();
-          await page.waitForFunction(() =>
-            window.__MAXIM_VISUAL_BRIDGE_EVENTS__.some((event) =>
-              JSON.stringify(event).includes('startapp=catalog'),
-            ),
+          await page.locator('#chat-search').waitFor();
+          assert.equal(await page.locator('.chats-home__birzhik, .birzhik-handoff').count(), 0);
+          assert.equal(
+            await page.getByRole('link', { name: /^(Биржик|Рекламная биржа)$/u }).count(),
+            0,
+            'The platform list must not show a separate marketplace button',
           );
           await page.screenshot({
-            path: path.join(output, `${deviceName}-${colorScheme}-home-birzhik.png`),
+            path: path.join(output, `${deviceName}-${colorScheme}-home-without-marketplace.png`),
             fullPage: false,
           });
         }

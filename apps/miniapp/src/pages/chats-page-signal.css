@@ -672,12 +672,6 @@
     background: var(--steel-panel);
   }
 
-  body[data-miniapp-profile='moderation'].chats-home-page-open .chats-home__birzhik {
-    width: min(calc(100% - 24px), 760px);
-    min-height: 48px;
-    margin: 12px auto;
-  }
-
   body[data-miniapp-profile='moderation'].chats-home-page-open .chats-home__publik {
     width: min(calc(100% - 44px), 740px);
     min-height: 52px;
