@@ -12,6 +12,7 @@ import {
 } from './backlog-cancellation-v2-host.mjs';
 import { createLegacyColdRuntime } from './legacy-cold-runtime.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
+import { buildReleaseManifest } from './release-manifest.mjs';
 
 const nativeNames = ['ocr-native-sandbox', 'photo-native-sandbox'];
 const services = [...LEGACY_COLD_API_SERVICES, ...nativeNames];
@@ -374,12 +375,33 @@ export async function runBacklogCancellationCiFixture(imageId, image, directory,
           return child;
         },
       });
+    const controllerSha = sourceSha === 'f'.repeat(40) ? 'e'.repeat(40) : 'f'.repeat(40);
+    const manifest = buildReleaseManifest({
+      releaseId: 'backlog-v2-ci-retained-components',
+      targetSha: 'd'.repeat(40),
+      components: [
+        { id: 'api-shared', sourceSha, imageRef: `maxim-api:${sourceSha}`, imageId },
+        ...['miniapp-major-static', 'admin-static'].map((id) => ({
+          id,
+          sourceSha: 'c'.repeat(40),
+          imageRef: `${id}:${'c'.repeat(40)}`,
+          imageId: `sha256:${'b'.repeat(64)}`,
+        })),
+      ],
+    });
+    writeFileSync(join(directory, 'current.json'), JSON.stringify(manifest), {
+      mode: 0o640,
+      flag: 'wx',
+    });
     const options = {
       directory,
-      expectedSha: sourceSha,
+      expectedSha: controllerSha,
+      expectedRuntimeSha: sourceSha,
       createHelpers,
       // FLAG: This is an isolated CI fixture lock and idle API fleet. Real Docker,
       // native isolation/startup, compiled clients, stores and identities stay real.
+      // Controller and retained static metadata are distinct fixture identities;
+      // only the API component claims the actual installed image under test.
       assertLock() {
         assert.equal(process.env.GITHUB_ACTIONS, 'true');
       },
