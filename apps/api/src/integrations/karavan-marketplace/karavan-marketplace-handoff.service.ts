@@ -1,4 +1,9 @@
-import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import {
@@ -8,6 +13,7 @@ import {
   type KaravanMarketplaceHandoffEvidence,
 } from '@maxim/contracts/karavan-marketplace';
 import { PrismaService } from '../../prisma/prisma.service';
+import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import {
   KaravanMarketplaceAuthorityService,
   karavanHash,
@@ -22,6 +28,7 @@ export class KaravanMarketplaceHandoffService {
     private readonly prisma: PrismaService,
     private readonly authority: KaravanMarketplaceAuthorityService,
     private readonly config: ConfigService,
+    private readonly botLinks: MaxBotLinkService,
   ) {}
 
   /** FLAG: Caller verifies a live binding and the permission required for this destination. */
@@ -33,6 +40,19 @@ export class KaravanMarketplaceHandoffService {
   ): Promise<{ url: string; expiresAt: string }> {
     this.authority.assertEnabled();
     const input = karavanMarketplaceHandoffIssueSchema.parse(raw);
+    const buyer = input.destination === 'view' || input.destination === 'preview';
+    const entryUrl = buyer
+      ? new URL(this.config.getOrThrow<string>('KARAVAN_STOREFRONT_CATALOG_URL'))
+      : new URL(`https://max.ru/${this.config.getOrThrow<string>('KARAVAN_SELLER_BOT_USERNAME')}`);
+    if (
+      entryUrl.origin !== 'https://max.ru' ||
+      entryUrl.username ||
+      entryUrl.password ||
+      !/^\/[A-Za-z0-9_]{3,64}\/?$/u.test(entryUrl.pathname)
+    )
+      throw new ServiceUnavailableException('Ссылка магазина не настроена.');
+    entryUrl.search = '';
+    entryUrl.hash = '';
     await this.authority.assertPrincipal(principal, actorMaxUserId);
     const witness = await this.authority.collect(chatId, actorMaxUserId);
     const scopeHash = karavanHash({ chatId, actorMaxUserId, ...input });
@@ -73,9 +93,9 @@ export class KaravanMarketplaceHandoffService {
             expiresAt,
           },
         });
-      const username = this.config.getOrThrow<string>('KARAVAN_SELLER_BOT_USERNAME');
+      entryUrl.searchParams.set('startapp', `${buyer ? 'mh_' : 'community_h_'}${code}`);
       return {
-        url: `https://max.ru/${username}?startapp=community_h_${code}`,
+        url: entryUrl.toString(),
         expiresAt: expiresAt.toISOString(),
       };
     });
@@ -93,6 +113,9 @@ export class KaravanMarketplaceHandoffService {
       record.expiresAt.getTime() <= Date.now()
     )
       throw new ForbiddenException('Переход устарел или принадлежит другому пользователю.');
+    const buyer = record.destination === 'view' || record.destination === 'preview';
+    if (buyer !== (input.audience === 'client'))
+      throw new ForbiddenException('Откройте переход в нужном приложении Каравана.');
     await this.authority.assertPrincipal(
       karavanPrincipalSchema.parse(record.principal),
       input.actorMaxUserId,
@@ -123,6 +146,16 @@ export class KaravanMarketplaceHandoffService {
         expiresAt: current.expiresAt.toISOString(),
         authorityEpoch: current.authorityEpoch,
         exchangeId: input.exchangeId,
+        returnUrl: this.botLinks.buildEntryMiniappStartUrlSync(
+          `mr-${Buffer.from(
+            JSON.stringify({
+              v: 1,
+              k: 'route',
+              r: `/chat/${encodeURIComponent(current.chatId)}/settings?focus=storefront`,
+            }),
+            'utf8',
+          ).toString('base64url')}`,
+        ),
       });
     });
   }

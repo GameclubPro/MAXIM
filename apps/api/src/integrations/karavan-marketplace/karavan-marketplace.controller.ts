@@ -232,7 +232,7 @@ export class KaravanMarketplaceController {
     const requiredPermission =
       input.destination === 'applications'
         ? 'review_listing'
-        : input.destination === 'manage'
+        : ['manage', 'view', 'preview'].includes(input.destination)
           ? null
           : 'manage_marketplace';
     if (
@@ -242,6 +242,11 @@ export class KaravanMarketplaceController {
       module.binding?.state !== 'verified'
     )
       throw new ForbiddenException('Управление этим магазином недоступно.');
+    if (
+      (input.destination === 'view' && module.marketplace.status !== 'active') ||
+      (input.destination === 'preview' && !['draft', 'paused'].includes(module.marketplace.status))
+    )
+      throw new ForbiddenException('Просмотр этого магазина недоступен.');
     return this.handoffs.issue(chatId, user.userId, input, principal);
   }
 }

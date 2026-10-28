@@ -356,7 +356,7 @@ export default function KaravanMarketplaceWizard({
             {showChats ? (
               <fieldset className="karavan-module__choices">
                 <legend>Чаты общего магазина</legend>
-                <p>В этих чатах будет один состав продавцов и один порядок витрин.</p>
+                <p>Общие продавцы, правила и порядок витрин.</p>
                 <label className="karavan-module__field">
                   <span>Найти чат</span>
                   <input
@@ -431,7 +431,6 @@ export default function KaravanMarketplaceWizard({
             ) : (
               <fieldset className="karavan-module__choices">
                 <legend>Разрешённые категории</legend>
-                <p>Выбраны направления, доступные сейчас. Новые не добавятся автоматически.</p>
                 {options.data?.categories.map((category) => (
                   <div key={category.id}>
                     <label>
@@ -544,7 +543,6 @@ export default function KaravanMarketplaceWizard({
                   .join(', ')}
               </p>
               <p className="karavan-module__rules">{target.rules.text}</p>
-              <p>Правила сохранятся. Изменить их можно в настройках магазина.</p>
             </>
           ) : (
             <p role="alert">Вернитесь к выбору магазина и повторите проверку.</p>
@@ -568,13 +566,9 @@ export default function KaravanMarketplaceWizard({
                       </small>
                     ) : null}
                   </span>
-                  <strong>{target?.marketplace.name ?? draft.name}</strong>
                 </li>
               ))}
             </ul>
-            <p>
-              Магазин доступен покупателям по ссылке. Подключение не публикует сообщения в чаты.
-            </p>
             <fieldset className="karavan-module__choices">
               <legend>Подтверждение</legend>
               <label>
@@ -603,7 +597,7 @@ export default function KaravanMarketplaceWizard({
               ? 'Проверяем…'
               : step === 3
                 ? draft.mode === 'new'
-                  ? 'Создать и подключить'
+                  ? 'Создать черновик'
                   : 'Подключить'
                 : 'Продолжить'}
           </button>

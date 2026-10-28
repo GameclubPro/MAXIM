@@ -12,6 +12,7 @@ const CHAT_SETTINGS_FOCUS = new Set([
   'polls',
   'requiredSubscription',
   'rules',
+  'storefront',
 ]);
 const CHANNEL_SETTINGS_FOCUS = new Set([
   'broadcast',

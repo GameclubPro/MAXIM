@@ -10,6 +10,7 @@ import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { MaxClientService } from '../../max/max-client.service';
 import type { MaxBotRegistryService } from '../../max/max-bot-registry.service';
+import type { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MiniappSessionService } from '../../auth/miniapp-session.service';
 import {
   KaravanMarketplaceAuthorityService,
@@ -60,6 +61,7 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
       KARAVAN_MARKETPLACE_ENABLED: true,
       KARAVAN_MARKETPLACE_AUTHORITY_TOKEN: 'test-authority-secret-'.repeat(3),
       KARAVAN_SELLER_BOT_USERNAME: 'synthetic_seller_bot',
+      KARAVAN_STOREFRONT_CATALOG_URL: 'https://max.ru/synthetic_buyer_bot?startapp=',
     });
     service = new KaravanMarketplaceAuthorityService(
       db as PrismaService,
@@ -73,7 +75,16 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
         registry as unknown as MaxBotRegistryService,
       ),
     );
-    handoffs = new KaravanMarketplaceHandoffService(db as PrismaService, service, config);
+    const botLinks = {
+      buildEntryMiniappStartUrlSync: (payload: string) =>
+        `https://max.ru/synthetic_major_bot?startapp=${payload}`,
+    } satisfies Pick<MaxBotLinkService, 'buildEntryMiniappStartUrlSync'>;
+    handoffs = new KaravanMarketplaceHandoffService(
+      db as PrismaService,
+      service,
+      config,
+      botLinks as MaxBotLinkService,
+    );
   });
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -806,4 +817,51 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
     });
     await expect(service.introspect(proof)).rejects.toThrow('устарело');
   });
+
+  it.each(['view', 'preview'])(
+    'binds buyer %s to its actor and returns only the exact Major chat route',
+    async (destination) => {
+      const input = { commandId: randomUUID(), marketplaceId: randomUUID(), destination };
+      const { url } = await handoffs.issue(chatId, actorMaxUserId, input, principal);
+      const entry = new URL(url);
+      expect(entry.pathname).toBe('/synthetic_buyer_bot');
+      const payload = entry.searchParams.get('startapp')!;
+      expect(payload).toMatch(/^mh_[A-Za-z0-9_-]{43}$/u);
+      const exchangeId = randomUUID();
+      const code = payload.slice(3);
+      await expect(
+        handoffs.exchange({ code, actorMaxUserId: '987', exchangeId, audience: 'client' }),
+      ).rejects.toThrow();
+      await expect(handoffs.exchange({ code, actorMaxUserId, exchangeId })).rejects.toThrow(
+        'нужном приложении',
+      );
+      expect(
+        (await db.karavanMarketplaceHandoff.findFirstOrThrow({ where: { chatId } })).exchangeId,
+      ).toBeNull();
+      const evidence = await handoffs.exchange({
+        code,
+        actorMaxUserId,
+        exchangeId,
+        audience: 'client',
+      });
+      expect(evidence.destination).toBe(destination);
+      const back = new URL(evidence.returnUrl!);
+      expect(back.origin + back.pathname).toBe('https://max.ru/synthetic_major_bot');
+      expect(
+        JSON.parse(
+          Buffer.from(back.searchParams.get('startapp')!.slice(3), 'base64url').toString('utf8'),
+        ),
+      ).toEqual({
+        v: 1,
+        k: 'route',
+        r: `/chat/${encodeURIComponent(chatId)}/settings?focus=storefront`,
+      });
+      expect(
+        await handoffs.exchange({ code, actorMaxUserId, exchangeId, audience: 'client' }),
+      ).toEqual(evidence);
+      await expect(
+        handoffs.issue(chatId, actorMaxUserId, { ...input, destination: 'manage' }, principal),
+      ).rejects.toThrow();
+    },
+  );
 });

@@ -3,6 +3,7 @@ import {
   canonicalKaravanMarketplaceJson,
   karavanMarketplaceAuthorityRequestSchema,
   karavanMarketplaceCreateSchema,
+  karavanMarketplaceHandoffIssueSchema,
   karavanMarketplaceSetupSchema,
 } from '../src/karavan-marketplace.js';
 
@@ -60,5 +61,24 @@ describe('Karavan command boundary', () => {
         create,
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts explicit buyer destinations without allowing a caller-supplied return URL', () => {
+    const input = {
+      commandId: 'operation:preview',
+      marketplaceId: 'f07ca391-24bb-4f3b-b64e-e49ed0fdbed6',
+    };
+    for (const destination of ['view', 'preview']) {
+      expect(
+        karavanMarketplaceHandoffIssueSchema.parse({ ...input, destination }).destination,
+      ).toBe(destination);
+      expect(
+        karavanMarketplaceHandoffIssueSchema.safeParse({
+          ...input,
+          destination,
+          returnUrl: 'https://max.ru/other_bot',
+        }).success,
+      ).toBe(false);
+    }
   });
 });

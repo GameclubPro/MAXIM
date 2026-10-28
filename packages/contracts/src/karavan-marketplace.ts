@@ -71,6 +71,8 @@ export const karavanMarketplaceHandoffDestinationSchema = z.enum([
   'invite_sellers',
   'open_marketplace',
   'categories',
+  'view',
+  'preview',
 ]);
 export type KaravanMarketplaceHandoffDestination = z.infer<
   typeof karavanMarketplaceHandoffDestinationSchema
@@ -87,6 +89,7 @@ export const karavanMarketplaceHandoffExchangeSchema = z
     code: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
     actorMaxUserId: karavanMarketplaceActorIdSchema,
     exchangeId: z.string().uuid(),
+    audience: z.enum(['client', 'seller']).optional().default('seller'),
   })
   .strict();
 export const karavanMarketplaceHandoffEvidenceSchema = z
@@ -102,6 +105,7 @@ export const karavanMarketplaceHandoffEvidenceSchema = z
     expiresAt: z.string().datetime(),
     authorityEpoch: z.string().regex(/^[a-f0-9]{64}$/u),
     exchangeId: z.string().uuid(),
+    returnUrl: z.string().url().nullable().optional(),
   })
   .strict();
 export type KaravanMarketplaceHandoffEvidence = z.infer<
@@ -179,6 +183,7 @@ export const karavanMarketplaceModuleSchema = z.object({
   canManage: z.boolean(),
   currentChatTitle: z.string().max(300).optional(),
   buyerUrl: z.string().url().nullable().optional(),
+  previewUrl: z.string().url().nullable().optional(),
   bindings: z.array(karavanMarketplaceBindingSchema).max(48).optional(),
 });
 export type KaravanMarketplaceModule = z.infer<typeof karavanMarketplaceModuleSchema>;
