@@ -17,12 +17,23 @@ import {
   poolSshArgs,
   poolReconnectDelay,
 } from './commercial-llm-pool-profile.mjs';
-import { WORKSTATION_IDENTITY } from './commercial-llm-workstation-profile.mjs';
-import { PoolFrames, poolSession, validatePoolRequest } from './commercial-llm-pool-worker.mjs';
+import {
+  WORKSTATION_IDENTITY,
+  workstationModelArgs,
+} from './commercial-llm-workstation-profile.mjs';
+import {
+  PoolFrames,
+  poolSession,
+  validatePoolRequest,
+  poolJson,
+  poolModelIsIdle,
+  attestPoolModel,
+} from './commercial-llm-pool-worker.mjs';
 import {
   createPoolController,
   readPoolProcess,
   poolResumeEnabled,
+  connectPoolTransport,
 } from './commercial-llm-pool-workstation.mjs';
 
 const root = new URL('../../', import.meta.url);
@@ -113,7 +124,250 @@ test('model profile stays loopback/private with one GPU slot and bounded generat
     assert.equal(args[args.indexOf('--alias') + 1], poolProfile(nodeId).identity.modelAlias);
     assert.ok(args.includes('--no-agent'));
     assert.ok(args.includes('--log-disable'));
+    assert.equal(args.filter((value) => value === '--slots').length, 1);
+    assert.equal(args.includes('--no-slots'), false);
   }
+  const legacyArgs = workstationModelArgs('/models', '/private/key');
+  assert.ok(legacyArgs.includes('--no-slots'));
+  assert.equal(legacyArgs.includes('--slots'), false);
+});
+
+test('an exited model cannot reconnect or advertise another ready session', async () => {
+  const model = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+  await once(model, 'exit');
+  let probes = 0;
+  let connections = 0;
+  await assert.rejects(
+    connectPoolTransport(model, {
+      nodeId: 'pc-b-9b',
+      key: 'synthetic',
+      attest: async () => {
+        probes++;
+      },
+      connect: () => {
+        connections++;
+      },
+    }),
+    /pool_model_exit/,
+  );
+  assert.equal(probes, 0);
+  assert.equal(connections, 0);
+});
+
+test('a model exiting during the awaited readiness probe cannot reconnect', async () => {
+  const model = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+  });
+  await once(model, 'spawn');
+  let exitedDuringProbe = false;
+  let connections = 0;
+  try {
+    await assert.rejects(
+      connectPoolTransport(model, {
+        nodeId: 'pc-b-9b',
+        key: 'synthetic',
+        attest: async () => {
+          const exited = once(model, 'exit');
+          model.kill('SIGTERM');
+          await exited;
+          exitedDuringProbe = true;
+        },
+        connect: () => {
+          connections++;
+        },
+      }),
+      /pool_model_exit/,
+    );
+    assert.equal(exitedDuringProbe, true);
+    assert.equal(connections, 0);
+  } finally {
+    model.kill('SIGKILL');
+  }
+});
+
+test('a proved idle reconnect retains its live model and does not connect on failed readiness', async () => {
+  const model = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+  });
+  await once(model, 'spawn');
+  const signal = new AbortController().signal;
+  const transport = {};
+  let connections = 0;
+  try {
+    const options = {
+      nodeId: 'pc-b-9b',
+      key: 'synthetic',
+      signal,
+      attest: async (nodeId, key, actualSignal) => {
+        assert.equal(nodeId, 'pc-b-9b');
+        assert.equal(key, 'synthetic');
+        assert.equal(actualSignal, signal);
+      },
+      connect: () => {
+        connections++;
+        return transport;
+      },
+    };
+    assert.equal(await connectPoolTransport(model, options), transport);
+    assert.equal(connections, 1);
+    assert.equal(model.exitCode, null);
+    assert.equal(model.signalCode, null);
+    assert.equal(model.killed, false);
+    await assert.rejects(
+      connectPoolTransport(model, {
+        ...options,
+        attest: async () => {
+          throw new Error('pool_model_busy');
+        },
+      }),
+      /pool_model_busy/,
+    );
+    assert.equal(connections, 1);
+  } finally {
+    const closed = once(model, 'close');
+    model.kill('SIGTERM');
+    await closed;
+  }
+});
+
+test('a cancelled readiness probe cannot open a transport', async () => {
+  const model = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+  });
+  await once(model, 'spawn');
+  const controller = new AbortController();
+  let connections = 0;
+  try {
+    await assert.rejects(
+      connectPoolTransport(model, {
+        nodeId: 'pc-b-9b',
+        key: 'synthetic',
+        signal: controller.signal,
+        attest: async () => {
+          controller.abort();
+        },
+        connect: () => {
+          connections++;
+        },
+      }),
+      { name: 'AbortError' },
+    );
+    assert.equal(connections, 0);
+  } finally {
+    const closed = once(model, 'close');
+    model.kill('SIGTERM');
+    await closed;
+  }
+});
+
+test('pool occupancy uses authenticated bounded slots and returns only a boolean', async () => {
+  const signal = new AbortController().signal;
+  for (const isProcessing of [false, true]) {
+    const value = await poolModelIsIdle('private-fixture-key', signal, {
+      readJson: (path, key, options) =>
+        poolJson(path, key, {
+          ...options,
+          fetchImpl: async (url, init) => {
+            assert.equal(String(url), 'http://127.0.0.1:18084/slots');
+            assert.equal(init.method, 'GET');
+            assert.equal(init.headers.Authorization, 'Bearer private-fixture-key');
+            assert.equal(init.signal, signal);
+            assert.equal(init.redirect, 'error');
+            assert.equal(options.maximumBytes, 65536);
+            return Response.json([
+              {
+                id: 0,
+                n_ctx: 4096,
+                is_processing: isProcessing,
+                prompt: 'private-marker'.repeat(2000),
+                generated: 'private-output',
+                params: {},
+              },
+            ]);
+          },
+        }),
+    });
+    assert.equal(value, !isProcessing);
+  }
+});
+
+test('pool occupancy rejects missing, multiple, mismatched and untyped slot records', async () => {
+  const slot = { id: 0, n_ctx: 4096, is_processing: false };
+  const invalid = [
+    undefined,
+    null,
+    {},
+    { status: 'ok' },
+    [],
+    [null],
+    [[]],
+    [slot, slot],
+    [{ ...slot, id: 1 }],
+    [{ ...slot, id: '0' }],
+    [{ ...slot, n_ctx: 2048 }],
+    [{ ...slot, n_ctx: '4096' }],
+    [{ id: 0, n_ctx: 4096 }],
+    ...[0, 1, null, 'true', 'false', []].map((value) => [{ ...slot, is_processing: value }]),
+  ];
+  for (const value of invalid)
+    await assert.rejects(poolModelIsIdle('synthetic', undefined, { readJson: async () => value }), {
+      message: 'pool_model_slots',
+    });
+});
+
+test('pool slot HTTP failures and oversized responses never become idle', async () => {
+  const body = [{ id: 0, n_ctx: 4096, is_processing: false }];
+  for (const response of [
+    Response.json(body, { status: 401 }),
+    Response.json(body, { status: 403 }),
+    Response.json(body, { status: 404 }),
+    Response.json(body, { status: 503 }),
+    new Response(JSON.stringify(body), { headers: { 'content-type': 'text/plain' } }),
+    Response.json([{ ...body[0], prompt: 'private-marker'.repeat(65536) }]),
+    new Response('{', { headers: { 'content-type': 'application/json' } }),
+  ])
+    await assert.rejects(
+      poolModelIsIdle('synthetic', undefined, {
+        readJson: (path, key, options) =>
+          poolJson(path, key, { ...options, fetchImpl: async () => response }),
+      }),
+    );
+  await assert.rejects(
+    poolModelIsIdle('synthetic', undefined, {
+      readJson: async () => {
+        throw new Error('model_http');
+      },
+    }),
+    /model_http/,
+  );
+});
+
+test('model attestation refuses disabled or untyped slot capability before other model reads', async () => {
+  for (const props of [
+    null,
+    {},
+    { endpoint_slots: false },
+    { endpoint_slots: 'true' },
+    { endpoint_slots: 1 },
+  ]) {
+    const reads = [];
+    await assert.rejects(
+      attestPoolModel('pc-b-9b', 'synthetic', undefined, {
+        readJson: async (path) => {
+          reads.push(path);
+          return props;
+        },
+      }),
+      { message: 'pool_model_slots_disabled' },
+    );
+    assert.deepEqual(reads, ['/props']);
+  }
+  await assert.rejects(
+    attestPoolModel('pc-b-9b', 'synthetic', undefined, {
+      readJson: async () => ({ endpoint_slots: true, total_slots: 1, chat_template: 'foreign' }),
+    }),
+    { message: 'pool_model_identity' },
+  );
 });
 
 test('outbound SSH pins node argument and refuses shell syntax or relaxed host trust', () => {

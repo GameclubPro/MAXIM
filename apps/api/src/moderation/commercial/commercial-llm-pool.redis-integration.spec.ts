@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { createServer, type Server } from 'node:http';
 import { setTimeout as pause } from 'node:timers/promises';
 import type Redis from 'ioredis';
-import { createCommercialLlmRedis } from './commercial-llm-shadow.lease';
+import {
+  COMMERCIAL_LLM_COOLDOWN_KEY,
+  COMMERCIAL_LLM_LEASE_KEY,
+  CommercialLlmShadowLease,
+  createCommercialLlmRedis,
+} from './commercial-llm-shadow.lease';
+import { CommercialLlmPoolServer } from './commercial-llm-pool-server';
 import { buildCommercialLlmRequest } from './commercial-llm.protocol';
 import {
   CommercialLlmPoolMailbox,
@@ -379,5 +386,289 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
     await mailbox.respond(replied.nodeId, replied.session, replied.id, response(replied.nodeId));
     expect(await mailbox.releaseUndispatched(replied)).toBe(false);
     expect(await mailbox.wait(replied)).toMatchObject({ outcome: 'COMPLETE' });
+  });
+});
+
+(url ? describe : describe.skip)('pool CPU quarantine with real HTTP and Redis', () => {
+  let redis: Redis;
+  let mailbox: CommercialLlmPoolMailbox;
+  let server: CommercialLlmPoolServer;
+  let http: Server;
+  let endpoint: string;
+  let now: number;
+  let processing: boolean;
+  let completionMode: 'disconnect' | 'complete';
+  let leaseTtlAtPost: number | undefined;
+  let slotsMode: 'valid' | 'missing' | 'malformed' | 'timeout';
+  let jobKey: string;
+  const requests: { path: string; authorization: string | undefined }[] = [];
+  const keys = commercialLlmPoolNodeKeys('server-9b');
+  const peerKeys = commercialLlmPoolNodeKeys('pc-b-9b');
+
+  const reserve = async () => {
+    const reservation = await mailbox.reserve('server-9b', {
+      jobId: jobKey.slice(jobKey.lastIndexOf(':') + 1),
+      attempt: 1,
+      deadlineAtMs: now + 20_000,
+      body: JSON.stringify(buildCommercialLlmRequest('Обсуждаем погоду')),
+    });
+    expect(reservation).not.toBeNull();
+    return reservation!;
+  };
+
+  const adapter = () => {
+    const value = new CommercialLlmPoolServer(redis, mailbox, endpoint, async () => true);
+    // FLAG: Isolate capacity observation; unit cases independently verify model capability/identity.
+    jest
+      .spyOn(value as unknown as { identityMatches(): Promise<boolean> }, 'identityMatches')
+      .mockResolvedValue(true);
+    return value;
+  };
+
+  beforeAll(async () => {
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname))
+      throw new Error('disposable loopback Redis required');
+    redis = createCommercialLlmRedis(url);
+    await redis.connect();
+  });
+  beforeEach(async () => {
+    now = Date.now();
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    processing = false;
+    completionMode = 'disconnect';
+    leaseTtlAtPost = undefined;
+    slotsMode = 'valid';
+    requests.length = 0;
+    jobKey = commercialLlmPoolJobKey(randomUUID());
+    await redis.del(
+      ...Object.values(keys),
+      ...Object.values(peerKeys),
+      COMMERCIAL_LLM_LEASE_KEY,
+      COMMERCIAL_LLM_COOLDOWN_KEY,
+    );
+    http = createServer((request, response) => {
+      const path = new URL(request.url!, 'http://fixture').pathname;
+      requests.push({ path, authorization: request.headers.authorization });
+      response.setHeader('content-type', 'application/json');
+      if (path === '/health') {
+        // FLAG: b11804 ignores fail_on_no_slot on /health, including while computing.
+        response.end('{"status":"ok"}');
+      } else if (path === '/slots') {
+        if (slotsMode === 'missing') {
+          response.statusCode = 501;
+          response.end('{"error":"slots disabled"}');
+        } else if (slotsMode === 'malformed') {
+          response.end('[{"id":0,"n_ctx":4096}]');
+        } else if (slotsMode === 'timeout') {
+          response.write('[');
+        } else {
+          response.end(JSON.stringify([{ id: 0, n_ctx: 4096, is_processing: processing }]));
+        }
+      } else if (path === '/v1/chat/completions' && request.method === 'POST') {
+        processing = true;
+        request.resume();
+        request.on('end', () => {
+          void redis.pttl(COMMERCIAL_LLM_LEASE_KEY).then(
+            (ttl) => {
+              leaseTtlAtPost = ttl;
+              if (completionMode === 'disconnect') response.destroy();
+              else {
+                processing = false;
+                response.end(
+                  JSON.stringify({
+                    model: COMMERCIAL_LLM_POOL_PROFILES['server-9b'].identity.modelAlias,
+                    choices: [
+                      {
+                        finish_reason: 'stop',
+                        message: {
+                          role: 'assistant',
+                          content:
+                            '{"classification":"NOT_COMMERCIAL","reasonCodes":["ORDINARY_DISCUSSION"]}',
+                        },
+                      },
+                    ],
+                  }),
+                );
+              }
+            },
+            () => response.destroy(),
+          );
+        });
+      } else {
+        response.statusCode = 404;
+        response.end('{}');
+      }
+    });
+    await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
+    const address = http.address();
+    if (!address || typeof address === 'string') throw new Error('HTTP fixture address missing');
+    endpoint = `http://127.0.0.1:${address.port}`;
+    mailbox = new CommercialLlmPoolMailbox(redis);
+    server = adapter();
+    await server.tick();
+  });
+  afterEach(async () => {
+    await server.close();
+    http.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      http.close((error) => (error ? reject(error) : resolve())),
+    );
+    await redis.del(
+      ...Object.values(keys),
+      ...Object.values(peerKeys),
+      COMMERCIAL_LLM_LEASE_KEY,
+      COMMERCIAL_LLM_COOLDOWN_KEY,
+      jobKey,
+    );
+    jest.restoreAllMocks();
+  });
+  afterAll(() => redis.disconnect());
+
+  it('retains uncertain capacity across idle observations and adapter restart while GPUs remain usable', async () => {
+    await expect(server.dispatch(await reserve())).rejects.toMatchObject({ kind: 'UNAVAILABLE' });
+    const token = await redis.get(COMMERCIAL_LLM_LEASE_KEY);
+    expect(token).not.toBeNull();
+    expect(leaseTtlAtPost).toBe(-1);
+    expect(await redis.pttl(COMMERCIAL_LLM_LEASE_KEY)).toBe(-1);
+    const health = await fetch(`${endpoint}/health?fail_on_no_slot=1`);
+    expect(health.ok).toBe(true);
+    await health.body?.cancel();
+    now += 1_001;
+    await server.tick();
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(token);
+    expect(await new CommercialLlmShadowLease(redis).acquire()).toBeNull();
+    expect(await mailbox.available()).not.toContain('server-9b');
+
+    for (const mode of ['missing', 'malformed', 'timeout'] as const) {
+      slotsMode = mode;
+      now += 1_001;
+      await server.tick();
+      expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(token);
+      expect(JSON.parse((await redis.get(keys.heartbeat))!).ready).toBe(false);
+    }
+    slotsMode = 'valid';
+    processing = false;
+    now += 1_001;
+    await server.tick();
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(token);
+    expect(await redis.pttl(COMMERCIAL_LLM_LEASE_KEY)).toBe(-1);
+    expect(JSON.parse((await redis.get(keys.heartbeat))!).ready).toBe(false);
+    expect(await redis.exists(COMMERCIAL_LLM_COOLDOWN_KEY)).toBe(1);
+    await server.close();
+    server = adapter();
+    await server.tick();
+    expect(JSON.parse((await redis.get(keys.heartbeat))!).ready).toBe(false);
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(token);
+    expect(await new CommercialLlmShadowLease(redis).acquire()).toBeNull();
+    const peerSession = randomUUID();
+    expect(await mailbox.acquireWorker('pc-b-9b', peerSession)).toBe(true);
+    await mailbox.refreshWorker('pc-b-9b', peerSession, true);
+    expect(await mailbox.available()).toEqual(['pc-b-9b']);
+    expect(requests.filter(({ path }) => path === '/health')).toHaveLength(1);
+    expect(requests.some(({ path }) => path === '/slots')).toBe(true);
+    expect(requests.every(({ authorization }) => authorization === undefined)).toBe(true);
+  });
+
+  it('pins before HTTP and releases the exact lease after a complete response', async () => {
+    completionMode = 'complete';
+    const reservation = await reserve();
+    await server.dispatch(reservation);
+    expect(leaseTtlAtPost).toBe(-1);
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBeNull();
+    expect(await redis.exists(COMMERCIAL_LLM_COOLDOWN_KEY)).toBe(1);
+    expect(await mailbox.wait(reservation)).toMatchObject({ outcome: 'COMPLETE' });
+  });
+
+  it('cannot retain or release a replacement owner and never posts after losing ownership', async () => {
+    const replacement = randomUUID();
+    const retain = CommercialLlmShadowLease.prototype.retainUntilReleased;
+    jest
+      .spyOn(CommercialLlmShadowLease.prototype, 'retainUntilReleased')
+      .mockImplementation(async function (this: CommercialLlmShadowLease, token) {
+        await redis.set(COMMERCIAL_LLM_LEASE_KEY, replacement, 'PX', 30_000);
+        return retain.call(this, token);
+      });
+    await expect(server.dispatch(await reserve())).rejects.toMatchObject({ kind: 'BUSY' });
+    expect(requests.some(({ path }) => path === '/v1/chat/completions')).toBe(false);
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(replacement);
+    expect(await redis.pttl(COMMERCIAL_LLM_LEASE_KEY)).toBeGreaterThan(0);
+  });
+
+  it('releases pinned capacity after an abort before HTTP handoff', async () => {
+    const controller = new AbortController();
+    const retain = CommercialLlmShadowLease.prototype.retainUntilReleased;
+    jest
+      .spyOn(CommercialLlmShadowLease.prototype, 'retainUntilReleased')
+      .mockImplementation(async function (this: CommercialLlmShadowLease, token) {
+        const held = await retain.call(this, token);
+        expect(await redis.pttl(COMMERCIAL_LLM_LEASE_KEY)).toBe(-1);
+        controller.abort();
+        return held;
+      });
+    await expect(server.dispatch(await reserve(), controller.signal)).rejects.toMatchObject({
+      kind: 'BUSY',
+    });
+    expect(requests.some(({ path }) => path === '/v1/chat/completions')).toBe(false);
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBeNull();
+  });
+
+  it('does not post after a lost retention acknowledgement and releases only its pinned lease', async () => {
+    const retain = CommercialLlmShadowLease.prototype.retainUntilReleased;
+    let pinnedToken: string | undefined;
+    jest
+      .spyOn(CommercialLlmShadowLease.prototype, 'retainUntilReleased')
+      .mockImplementation(async function (this: CommercialLlmShadowLease, token) {
+        expect(await retain.call(this, token)).toBe(true);
+        pinnedToken = token;
+        expect(await redis.pttl(COMMERCIAL_LLM_LEASE_KEY)).toBe(-1);
+        throw new Error('synthetic lost retention acknowledgement');
+      });
+    const release = jest.spyOn(CommercialLlmShadowLease.prototype, 'release');
+    await expect(server.dispatch(await reserve())).rejects.toMatchObject({ kind: 'UNAVAILABLE' });
+    expect(pinnedToken).toBeDefined();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith(pinnedToken);
+    expect(requests.some(({ path }) => path === '/v1/chat/completions')).toBe(false);
+    expect(leaseTtlAtPost).toBeUndefined();
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBeNull();
+    expect(await redis.exists(keys.slot)).toBe(0);
+    expect(await redis.exists(COMMERCIAL_LLM_COOLDOWN_KEY)).toBe(1);
+  });
+
+  it('retains a persistent fence after lost retention acknowledgement and failed release', async () => {
+    const retain = CommercialLlmShadowLease.prototype.retainUntilReleased;
+    let pinnedToken: string | undefined;
+    jest
+      .spyOn(CommercialLlmShadowLease.prototype, 'retainUntilReleased')
+      .mockImplementation(async function (this: CommercialLlmShadowLease, token) {
+        expect(await retain.call(this, token)).toBe(true);
+        pinnedToken = token;
+        expect(await redis.pttl(COMMERCIAL_LLM_LEASE_KEY)).toBe(-1);
+        throw new Error('synthetic lost retention acknowledgement');
+      });
+    const release = jest
+      .spyOn(CommercialLlmShadowLease.prototype, 'release')
+      .mockRejectedValue(new Error('synthetic release unavailable'));
+    await expect(server.dispatch(await reserve())).rejects.toMatchObject({ kind: 'UNAVAILABLE' });
+    expect(pinnedToken).toBeDefined();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith(pinnedToken);
+    expect(requests.some(({ path }) => path === '/v1/chat/completions')).toBe(false);
+    expect(leaseTtlAtPost).toBeUndefined();
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(pinnedToken);
+    expect(await redis.pttl(COMMERCIAL_LLM_LEASE_KEY)).toBe(-1);
+    expect(await redis.exists(keys.slot)).toBe(0);
+    await server.close();
+    server = adapter();
+    await server.tick();
+    expect(JSON.parse((await redis.get(keys.heartbeat))!).ready).toBe(false);
+    expect(await new CommercialLlmShadowLease(redis).acquire()).toBeNull();
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBe(pinnedToken);
+    expect(await redis.pttl(COMMERCIAL_LLM_LEASE_KEY)).toBe(-1);
+  });
+
+  it('does not recreate an absent lease when retaining an obsolete token', async () => {
+    expect(await new CommercialLlmShadowLease(redis).retainUntilReleased(randomUUID())).toBe(false);
+    expect(await redis.exists(COMMERCIAL_LLM_LEASE_KEY)).toBe(0);
   });
 });
