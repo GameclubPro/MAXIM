@@ -12,6 +12,13 @@ maxim_eraser_install_connection_request_floor() {
   node infra/scripts/assert-eraser-source.mjs "$source_sha" --install-connection-request-floor
 }
 
+# FLAG: Only Lastik writes token cooldowns; install its permanent floor before migration/start.
+maxim_eraser_install_rate_limit_reader_floor() {
+  local source_sha="$1"
+  maxim_eraser_configured || return 0
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" --install-rate-limit-reader-floor
+}
+
 maxim_eraser_require_secrets() {
   local path mode
   for path in "${MAXIM_ERASER_ENV_FILE:-/var/lib/maxim-secrets/eraser.env}" \

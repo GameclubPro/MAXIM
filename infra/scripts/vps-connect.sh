@@ -939,6 +939,19 @@ if [[ "$connection_floor_required" -eq 1 && ( -e /var/lib/maxim-deploy/eraser-co
   maxim_topology_require_eraser_connection_requests "$(git rev-parse HEAD)" tooling || exit 1
 fi
 
+# FLAG: Image-only API/static rollback leaves Lastik and controller files unchanged.
+rate_limit_floor_required=1
+if [[ "$entrypoint" == ./infra/scripts/vps-release-rollback.sh && $# -gt 1 ]]; then
+  rate_limit_floor_required=0
+  for component in "${@:2}"; do
+    if [[ "$component" == eraser ]]; then rate_limit_floor_required=1; fi
+  done
+fi
+if [[ "$rate_limit_floor_required" -eq 1 && ( -e /var/lib/maxim-deploy/eraser-rate-limit-reader-version || -L /var/lib/maxim-deploy/eraser-rate-limit-reader-version ) ]]; then
+  source infra/scripts/lib/deploy-topology.sh
+  maxim_topology_require_eraser_rate_limit_reader "$(git rev-parse HEAD)" tooling || exit 1
+fi
+
 # Routine immutable rollback stays image-only and offline when the checked-out entrypoint is current.
 if [[ -x "$entrypoint" ]] && grep -Fq -- "$capability_marker" "$entrypoint"; then
   source "$entrypoint" "$@"
@@ -958,6 +971,10 @@ if [[ "$(git rev-parse --verify refs/heads/main 2>/dev/null || true)" != "$expec
   exit 1
 fi
 require_market_statistics_lock_dispatch "$expected_tooling_sha" || exit 1
+if [[ -e /var/lib/maxim-deploy/eraser-rate-limit-reader-version || -L /var/lib/maxim-deploy/eraser-rate-limit-reader-version ]]; then
+  source infra/scripts/lib/deploy-topology.sh
+  maxim_topology_require_eraser_rate_limit_reader "$expected_tooling_sha" tooling || exit 1
+fi
 if [[ -e /var/lib/maxim-deploy/eraser-reader-version || -L /var/lib/maxim-deploy/eraser-reader-version || \
       -e /var/lib/maxim-deploy/eraser-connection-request-version || -L /var/lib/maxim-deploy/eraser-connection-request-version ]]; then
   source infra/scripts/lib/deploy-topology.sh
