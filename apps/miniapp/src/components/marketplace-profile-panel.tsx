@@ -16,7 +16,7 @@ export default function MarketplaceProfilePanel({
       id={id}
       icon={props.profile === 'moderation' ? <SettingsSectionIcon name="ads" /> : undefined}
       open
-      title="Биржик"
+      title="Рекламная биржа"
       tone={props.profile === 'moderation' ? 'amber' : undefined}
       variant="screen"
       overlayClassName="marketplace-profile-overlay"

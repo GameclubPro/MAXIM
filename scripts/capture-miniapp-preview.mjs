@@ -174,7 +174,7 @@ async function openSettingsSection(page, name, panelSelector) {
 }
 
 async function assertBirzhikModule(page) {
-  const entry = page.getByRole('button', { name: 'Биржик', exact: true });
+  const entry = page.getByRole('button', { name: 'Рекламная биржа', exact: true });
   await entry.waitFor({ state: 'visible' });
   await page.getByRole('searchbox', { name: 'Найти настройку', exact: true }).fill('Биржик');
   await page.waitForFunction(
@@ -192,7 +192,7 @@ async function assertBirzhikModule(page) {
 
 async function assertBirzhikProfileModule(page) {
   await assertBirzhikModule(page);
-  await page.getByRole('button', { name: 'Биржик', exact: true }).click();
+  await page.getByRole('button', { name: 'Рекламная биржа', exact: true }).click();
   await page.locator('.marketplace-entry').waitFor({ state: 'visible' });
   await page.getByRole('heading', { name: 'Кнопка «Профиль в Биржике»', exact: true }).waitFor();
 }

@@ -32,7 +32,7 @@ export default function BirzhikHandoff({ api }: { api: ApiTransport }) {
         }}
       >
         <AppIcon icon="Shop" aria-hidden />
-        <span>Биржик</span>
+        <span>Рекламная биржа</span>
         <AppIcon icon="ArrowUpRight" aria-hidden />
       </a>
       {failed && (
