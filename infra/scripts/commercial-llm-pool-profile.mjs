@@ -61,7 +61,7 @@ export function poolModelArgs(nodeId, root, keyFile) {
   const args = workstationModelArgs(root, keyFile);
   args[args.indexOf('--model') + 1] = `${root}/${profile.artifacts[0].name}`;
   args[args.indexOf('--alias') + 1] = profile.identity.modelAlias;
-  return args;
+  return args.map((value) => (value === '--no-slots' ? '--slots' : value));
 }
 
 export function poolSshArgs(nodeId, alias = 'maxim-vps') {

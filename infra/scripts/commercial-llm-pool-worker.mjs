@@ -23,9 +23,27 @@ export class PoolSessionError extends Error {
   }
 }
 
-export async function attestPoolModel(nodeId, key, signal) {
+// FLAG: Slot payloads can include private prompts; return only validated occupancy, never raw data.
+export async function poolModelIsIdle(key, signal, { readJson = poolJson } = {}) {
+  const slots = await readJson('/slots', key, { signal, maximumBytes: 65536 });
+  if (
+    !Array.isArray(slots) ||
+    slots.length !== 1 ||
+    !slots[0] ||
+    typeof slots[0] !== 'object' ||
+    Array.isArray(slots[0]) ||
+    slots[0].id !== 0 ||
+    slots[0].n_ctx !== 4096 ||
+    typeof slots[0].is_processing !== 'boolean'
+  )
+    throw new Error('pool_model_slots');
+  return !slots[0].is_processing;
+}
+
+export async function attestPoolModel(nodeId, key, signal, { readJson = poolJson } = {}) {
   const profile = poolProfile(nodeId);
-  const props = await poolJson('/props', key, { signal, maximumBytes: 65536 });
+  const props = await readJson('/props', key, { signal, maximumBytes: 65536 });
+  if (props?.endpoint_slots !== true) throw new Error('pool_model_slots_disabled');
   if (
     typeof props.chat_template !== 'string' ||
     createHash('sha256').update(props.chat_template).digest('hex') !==
@@ -33,13 +51,14 @@ export async function attestPoolModel(nodeId, key, signal) {
     props.total_slots !== 1
   )
     throw new Error('pool_model_identity');
-  const models = await poolJson('/v1/models', key, { signal });
+  const models = await readJson('/v1/models', key, { signal });
   if (
     !Array.isArray(models.data) ||
     models.data.length !== 1 ||
     models.data[0]?.id !== profile.identity.modelAlias
   )
     throw new Error('pool_model_alias');
+  if (!(await poolModelIsIdle(key, signal, { readJson }))) throw new Error('pool_model_busy');
 }
 
 export function validatePoolRequest(nodeId, value) {

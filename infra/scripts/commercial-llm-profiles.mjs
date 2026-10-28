@@ -68,6 +68,14 @@ export const COMMERCIAL_LLM_RUNTIME = Object.freeze({
   memoryLimitBytes: 12 * 1024 ** 3,
   transitionPath: `${stateDir}/qwen35-9b-transition.json`,
 });
+// FLAG: Historical Gemma/Qwen commands and their completed transition retain no-slots semantics.
+// Slot observation is a separate, command-bound generation of the same pinned Qwen model.
+export const COMMERCIAL_LLM_SLOTS_RUNTIME = Object.freeze({
+  ...COMMERCIAL_LLM_RUNTIME,
+  runtimeProfile: 'qwen35-9b-slots-v1',
+  slotInspection: true,
+  transitionPath: `${stateDir}/qwen35-9b-slots-transition-v1.json`,
+});
 export function commercialLlmCommand(profile) {
   const command = [
     '--model',
@@ -107,7 +115,7 @@ export function commercialLlmCommand(profile) {
     '--reasoning-budget',
     '0',
     '--no-webui',
-    '--no-slots',
+    profile.slotInspection === true ? '--slots' : '--no-slots',
     '--no-agent',
     '--no-context-shift',
   ];
@@ -116,6 +124,12 @@ export function commercialLlmCommand(profile) {
     command.push('--jinja');
   }
   return Object.freeze(command);
+}
+
+export function commercialLlmCommandSha256(profile) {
+  return createHash('sha256')
+    .update(JSON.stringify(commercialLlmCommand(profile)))
+    .digest('hex');
 }
 
 export const COMMERCIAL_LLM_COMMAND = commercialLlmCommand(COMMERCIAL_LLM_RUNTIME);
