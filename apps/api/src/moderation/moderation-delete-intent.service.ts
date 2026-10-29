@@ -4610,6 +4610,17 @@ export class ModerationDeleteIntentService {
         'Night mode close notice cleanup became stale after disable or reschedule',
       );
     }
+    // FLAG: A manual closure can begin after the opening worker hands off cleanup. Check
+    // its current lifetime at DELETE dispatch without changing existing binding fingerprints.
+    if (
+      settings.nightModeForceCloseEnabled &&
+      (settings.nightModeForceCloseForever ||
+        Date.parse(settings.nightModeForceCloseUntil) > Date.now())
+    ) {
+      throw new NightModeCloseNoticeCleanupGuardRejectedError(
+        'Night mode close notice cleanup is blocked while manual closure remains active',
+      );
+    }
 
     if (!binding) {
       binding = await this.reconstructLegacyNightModeCloseNoticeCleanupBinding(

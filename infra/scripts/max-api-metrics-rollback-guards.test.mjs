@@ -13,7 +13,7 @@ const paths = {
   keys: 'apps/api/src/max/max-api-metrics-key.util.ts',
 };
 const minuteReaderMarker = 'maxim_topology_require_max_api_metrics_minute_reader';
-const apiAuthorityMarker = 'maxim_topology_require_commercial_ai_pool_delete_reader';
+const apiAuthorityMarker = 'maxim_topology_require_night_mode_recovery_reader';
 const previousReleaseMarker = 'select_release_recovery_base';
 const connect = readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8');
 

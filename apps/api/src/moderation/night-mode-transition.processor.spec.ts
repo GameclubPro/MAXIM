@@ -254,6 +254,7 @@ describe('NightModeTransitionProcessor', () => {
       inspectTransitionExecution: jest.fn(),
       isTransitionManuallyFenced: jest.fn().mockResolvedValue(true),
       enqueueNextTransitionsForChat: jest.fn(),
+      retireTransition: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
       moderationExecutionService as never,
@@ -263,6 +264,7 @@ describe('NightModeTransitionProcessor', () => {
     await expect(processor.process(job)).resolves.toBeUndefined();
 
     expect(scheduler.isTransitionManuallyFenced).toHaveBeenCalledWith(job.data, 'night-job-1');
+    expect(scheduler.retireTransition).toHaveBeenCalledWith(job.data);
     expect(scheduler.inspectTransitionExecution).not.toHaveBeenCalled();
     expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
@@ -625,7 +627,7 @@ describe('NightModeTransitionProcessor', () => {
     });
   });
 
-  it('retires a stale transition without entering runtime', async () => {
+  it('durably hands off the next cycle before retiring a stale transition without runtime', async () => {
     const job = buildJob();
     const moderationExecutionService = {
       processNightModeTransitionJob: jest.fn(),
@@ -633,6 +635,7 @@ describe('NightModeTransitionProcessor', () => {
     const scheduler = {
       inspectTransitionExecution: jest.fn().mockResolvedValue('retire'),
       enqueueNextTransitionsForChat: jest.fn(),
+      retireTransition: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
       moderationExecutionService as never,
@@ -644,6 +647,27 @@ describe('NightModeTransitionProcessor', () => {
     expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
     expect(job.moveToDelayed).not.toHaveBeenCalled();
     expect(scheduler.enqueueNextTransitionsForChat).not.toHaveBeenCalled();
+    expect(scheduler.retireTransition).toHaveBeenCalledWith(job.data);
+  });
+
+  it('keeps a stale occurrence failed when the durable next-cycle handoff cannot be saved', async () => {
+    const job = buildJob();
+    const failure = new Error('reconcile store unavailable');
+    const scheduler = {
+      inspectTransitionExecution: jest.fn().mockResolvedValue('retire'),
+      retireTransition: jest.fn().mockRejectedValue(failure),
+    } satisfies Pick<
+      NightModeTransitionSchedulerService,
+      'inspectTransitionExecution' | 'retireTransition'
+    >;
+    const moderationExecutionService = { processNightModeTransitionJob: jest.fn() };
+    const processor = new NightModeTransitionProcessor(
+      moderationExecutionService as never,
+      scheduler as never,
+    );
+
+    await expect(processor.process(job, 'lock-token')).rejects.toBe(failure);
+    expect(moderationExecutionService.processNightModeTransitionJob).not.toHaveBeenCalled();
   });
 
   it('keeps an unsafe v4 envelope on the failed reconciliation path', async () => {
@@ -695,6 +719,7 @@ describe('NightModeTransitionProcessor', () => {
         .mockResolvedValueOnce('execute')
         .mockResolvedValueOnce('retire'),
       enqueueNextTransitionsForChat: jest.fn(),
+      retireTransition: jest.fn().mockResolvedValue(undefined),
     };
     const processor = new NightModeTransitionProcessor(
       moderationExecutionService as never,
@@ -706,6 +731,7 @@ describe('NightModeTransitionProcessor', () => {
     expect(moderationExecutionService.processNightModeTransitionJob).toHaveBeenCalledTimes(1);
     expect(scheduler.inspectTransitionExecution).toHaveBeenCalledTimes(2);
     expect(job.moveToDelayed).not.toHaveBeenCalled();
+    expect(scheduler.retireTransition).toHaveBeenCalledWith(job.data);
   });
 
   it('keeps recovery-only work SQL-only and reconciles before Bull completion cleanup', async () => {
