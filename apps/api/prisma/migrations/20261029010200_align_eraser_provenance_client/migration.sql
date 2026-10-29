@@ -1,0 +1,4 @@
+-- FLAG: Client-schema alignment only. The preceding immutable
+-- 20261029010000_add_eraser_protection_provenance migration already creates these
+-- outbox columns and the legacy retirement table. Match their Prisma models
+-- without reapplying DDL, rewriting retained rows, or adding known schema drift.

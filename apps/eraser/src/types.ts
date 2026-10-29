@@ -57,6 +57,7 @@ export type Protection = {
   completeThrough: string | null;
   botHistoryCompleteFrom?: string | null;
   complete?: boolean;
+  evidence?: import('./protection-evidence.js').ProtectionEvidence;
 };
 export type UpdatePolicy = {
   enabled: boolean;

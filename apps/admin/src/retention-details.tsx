@@ -1,12 +1,84 @@
 import type {
   SafetyDeskRetentionRuntimeItem,
   SafetyDeskRetentionRuntimeResponse,
+  SafetyDeskRetentionPreviewResponse,
 } from '@maxim/contracts/safety-desk';
 import { formatDateTime } from './safety-desk-model';
 import { retentionConnectionErrorLabel, retentionConnectionLabel } from './retention-diagnostics';
 
 const date = (value: string | null) =>
   value ? formatDateTime(new Date(value)) : 'не подтверждено';
+
+export function RetentionProtectionDetails({
+  preview,
+}: {
+  preview: SafetyDeskRetentionPreviewResponse;
+}) {
+  if (preview.source !== 'eraser') return null;
+  const report = preview.protection;
+  if (!report || report.status === 'unavailable')
+    return <p className="retention-alert">Отчёт о защите истории недоступен.</p>;
+  const evidence = preview.protectionEvidence;
+  const synchronized =
+    evidence &&
+    report.deliveredEvidence &&
+    evidence.checksum === report.deliveredEvidence.checksum &&
+    evidence.sourceRevision === report.sourceRevision;
+  const phases = [
+    ['Розыгрыши', report.imports.giveawayEntities],
+    ['Журнал правил', report.imports.rulesAudit],
+    ['Журнал публикаций розыгрышей', report.imports.giveawayAudit],
+    ['Старые удаления', report.imports.legacyHolds],
+    ['Исключённые источники', report.imports.sourceHolds],
+  ] as const;
+  return (
+    <details className="retention-operational-details">
+      <summary>
+        Защита истории: {synchronized ? 'версия подтверждена' : 'синхронизация не подтверждена'}
+      </summary>
+      <p>
+        Версия источника: {report.sourceRevision} · передана:{' '}
+        {report.deliveredRevision < 0 ? 'нет' : report.deliveredRevision}
+      </p>
+      <p>
+        История до {date(report.historicalGapBefore)} полностью не подтверждена. Старые сообщения
+        модулей сохраняют защиту.
+      </p>
+      <ul>
+        {phases.map(([name, complete]) => (
+          <li key={name}>
+            {name}: {complete ? 'импорт завершён' : 'ожидает продолжения'}
+          </li>
+        ))}
+      </ul>
+      <p>
+        Каталог: {report.catalog.ready ? 'проверен' : 'проверяется'} · записей в контрольной сумме:{' '}
+        {report.catalog.referencesHashed}
+      </p>
+      {evidence && (
+        <>
+          <p>
+            Подтверждённый интервал: {date(evidence.completeFrom)} —{' '}
+            {date(evidence.completeThrough)}. Источник: непрерывная защита после передачи чата.
+          </p>
+          <p>
+            Контрольная сумма: <code>{evidence.checksum}</code>
+          </p>
+        </>
+      )}
+      {report.legacyRetirement && (
+        <p>
+          Старый механизм:{' '}
+          {report.legacyRetirement.scanComplete ? 'проход завершён' : 'проход продолжается'}. Без
+          отправки завершено: {report.legacyRetirement.retiredCount}; подтверждения переданы на
+          учёт: {report.legacyRetirement.reconciliationCount}; сохранено при проходе:{' '}
+          {report.legacyRetirement.retainedAtScan}. Это снимок прохода, а не текущее число
+          неизвестных результатов.
+        </p>
+      )}
+    </details>
+  );
+}
 
 export function RetentionConnectionDetails({ item }: { item: SafetyDeskRetentionRuntimeItem }) {
   const request = item.connectionRequest;
