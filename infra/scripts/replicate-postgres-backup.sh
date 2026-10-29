@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=infra/scripts/lib/postgres-backup-profile.sh
+source "$ROOT_DIR/infra/scripts/lib/postgres-backup-profile.sh"
 
 # FLAG: Only ciphertext leaves the backup volume. An upload/HEAD is not verification:
 # the receipt is published only after a complete independent object readback matches.
@@ -13,13 +16,14 @@ TIMEOUT_SEC="${MAXIM_BACKUP_REPLICATION_TIMEOUT_SEC:-21600}"
 BW_LIMIT="${MAXIM_BACKUP_REPLICATION_BYTES_PER_SEC:-16777216}"
 
 [[ "$DUMP_PATH" == /* && -f "$DUMP_PATH" && ! -L "$DUMP_PATH" && -s "$DUMP_PATH" ]]
-[[ "$(basename "$DUMP_PATH")" =~ ^maxim_[0-9]{8}T[0-9]{6}Z\.dump$ ]]
+[[ "$(basename "$DUMP_PATH")" =~ ^${MAXIM_BACKUP_PREFIX}_[0-9]{8}T[0-9]{6}Z\.dump$ ]]
 [[ "$REMOTE_PREFIX" =~ ^[a-zA-Z0-9_-]+:[a-zA-Z0-9_/-]+$ ]]
 [[ -r "$RECIPIENTS" && -r "$RCLONE_CONFIG" ]]
 [[ "$MIN_FREE_BYTES" =~ ^[0-9]+$ && "$TIMEOUT_SEC" =~ ^[0-9]+$ && "$BW_LIMIT" =~ ^[0-9]+$ ]]
 (( MIN_FREE_BYTES >= 1048576 && TIMEOUT_SEC >= 1 && TIMEOUT_SEC <= 21600 && BW_LIMIT >= 1 && BW_LIMIT <= 33554432 ))
 for command in age rclone sha256sum timeout flock node; do command -v "$command" >/dev/null; done
 
+if [[ "$MAXIM_BACKUP_PROFILE" == eraser ]]; then REMOTE_PREFIX="${REMOTE_PREFIX%/}/eraser"; fi
 DEADLINE=$((SECONDS + TIMEOUT_SEC))
 run_bounded() {
   local remaining=$((DEADLINE - SECONDS))
@@ -27,7 +31,7 @@ run_bounded() {
   timeout --signal=TERM --kill-after=30s "${remaining}s" "$@"
 }
 BACKUP_DIR="$(dirname "$DUMP_PATH")"
-exec {REPLICATION_LOCK_FD}>>"$BACKUP_DIR/.maxim-independent-backup.lock"
+exec {REPLICATION_LOCK_FD}>>"$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}-independent-backup.lock"
 flock -n "$REPLICATION_LOCK_FD" || exit 75
 # FLAG: Check only this exact archive; a sidecar naming another file proves nothing.
 [[ -f "$DUMP_PATH.sha256" && ! -L "$DUMP_PATH.sha256" ]]
@@ -40,9 +44,9 @@ DUMP_BYTES="$(stat -c %s "$DUMP_PATH")"
 FREE_BYTES="$(df -PB1 "$BACKUP_DIR" | awk 'NR==2 {print $4}')"
 (( FREE_BYTES > DUMP_BYTES + DUMP_BYTES / 100 + MIN_FREE_BYTES ))
 
-CIPHER="$(mktemp "$BACKUP_DIR/.maxim-independent.XXXXXX.age")"
-READBACK_HASH="$(mktemp "$BACKUP_DIR/.maxim-independent.XXXXXX.hash")"
-RECEIPT="$(mktemp "$BACKUP_DIR/.maxim-independent.XXXXXX.json")"
+CIPHER="$(mktemp "$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}-independent.XXXXXX.age")"
+READBACK_HASH="$(mktemp "$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}-independent.XXXXXX.hash")"
+RECEIPT="$(mktemp "$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}-independent.XXXXXX.json")"
 cleanup() { rm -f -- "$CIPHER" "$READBACK_HASH" "$RECEIPT"; }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -55,12 +59,12 @@ RCLONE_ARGS=(--config "$RCLONE_CONFIG" --bwlimit "${BW_LIMIT}b" --retries 1 --lo
 run_bounded rclone copyto "$CIPHER" "$REMOTE_OBJECT" --immutable "${RCLONE_ARGS[@]}"
 run_bounded rclone cat "$REMOTE_OBJECT" "${RCLONE_ARGS[@]}" | sha256sum >"$READBACK_HASH"
 [[ "$(cut -d' ' -f1 "$READBACK_HASH")" == "$CIPHER_SHA" ]]
-node - "$DUMP_PATH" "$CIPHER_SHA" "$CIPHER_BYTES" "$REMOTE_OBJECT" >"$RECEIPT" <<'JS'
+node - "$DUMP_PATH" "$CIPHER_SHA" "$CIPHER_BYTES" "$REMOTE_OBJECT" "$MAXIM_BACKUP_PROFILE" >"$RECEIPT" <<'JS'
 const fs = require('node:fs');
-const [dump, cipherSha256, cipherBytes, remoteObject] = process.argv.slice(2);
+const [dump, cipherSha256, cipherBytes, remoteObject, profile] = process.argv.slice(2);
 const dumpSha256 = fs.readFileSync(`${dump}.sha256`, 'utf8').split(/\s+/)[0];
 if (!/^[a-f0-9]{64}$/.test(dumpSha256)) throw new Error('Invalid dump checksum');
-process.stdout.write(JSON.stringify({ schemaVersion: 1, verifiedAt: new Date().toISOString(),
+process.stdout.write(JSON.stringify({ schemaVersion: 1, profile, verifiedAt: new Date().toISOString(),
   dump: require('node:path').basename(dump), dumpSha256, cipherSha256,
   cipherBytes: Number(cipherBytes), remoteObject, verification: 'full_ciphertext_readback' }) + '\n');
 JS

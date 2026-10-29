@@ -2291,6 +2291,10 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
         >`SELECT id FROM statistics_exchange_downloads WHERE expires_at<=now() ORDER BY expires_at,id LIMIT 100`,
       ).toHaveLength(100);
     } finally {
+      // FLAG: Retire this fixture's 10,000 downloads in one set operation before their
+      // parents. Per-entity cascading deletes can exhaust the unchanged statement budget
+      // and leave retained fixture history affecting later native suites.
+      await db.$executeRaw`DELETE FROM statistics_exchange_downloads WHERE grant_id IN(SELECT id FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'})`;
       await db.$executeRaw`DELETE FROM statistics_exchange_entities WHERE grant_id IN(SELECT id FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'})`;
       await db.$executeRaw`DELETE FROM statistics_exchange_grants WHERE actor_user_id LIKE ${prefix + '%'}`;
     }

@@ -1,3 +1,4 @@
+import type { HousekeepingHealth } from './housekeeping.js';
 import { HTTP_PURPOSES, type TransportMetrics } from './telemetry.js';
 
 type WorkerSample = {
@@ -7,9 +8,13 @@ type WorkerSample = {
 };
 type ProgressSample = {
   schedulerHealthy: boolean;
+  housekeeping?: HousekeepingHealth;
   workers?: { cleanup: WorkerSample; connection: WorkerSample };
 };
-type SchedulerCode = 'cleanup_scheduler_failed' | 'connection_scheduler_failed';
+type SchedulerCode =
+  | 'cleanup_scheduler_failed'
+  | 'connection_scheduler_failed'
+  | 'housekeeping_failed';
 
 // FLAG: One bounded progress event and one scheduler-error event per 30 seconds. Build
 // records from scalar allowlists; queue payloads, error text and MAX paths never enter logs.
@@ -51,6 +56,21 @@ export class ProgressLog {
     const event = {
       event: 'runtime_progress',
       schedulerHealthy: health.schedulerHealthy,
+      ...(health.housekeeping
+        ? {
+            housekeeping: {
+              lastSuccessfulAt: health.housekeeping.lastSuccessfulAt,
+              lastErrorCode: health.housekeeping.lastErrorCode,
+              lastDurationMs: health.housekeeping.lastDurationMs,
+              candidatesDeleted: health.housekeeping.rows.candidates,
+              receiptsDeleted: health.housekeeping.rows.receipts,
+              budgetExhausted: health.housekeeping.budgetExhausted,
+              backlogObservedAt: health.housekeeping.backlogObservedAt,
+              oldestExpiredCandidateAt: health.housekeeping.oldestExpiredCandidateAt,
+              oldestExpiredReceiptAt: health.housekeeping.oldestExpiredReceiptAt,
+            },
+          }
+        : {}),
       ...(health.workers
         ? {
             workers: {
