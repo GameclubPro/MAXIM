@@ -117,6 +117,7 @@ export async function supportChatSession({
   api = false,
   signal,
   onStatus = () => {},
+  onUsage = () => {},
   invoke = answerSupport,
   command = 'ssh',
   args = sshArgs,
@@ -246,17 +247,29 @@ export async function supportChatSession({
                 return;
               }
               onStatus('answering');
+              let observed = false;
+              const observeUsage = (kind, usage) => {
+                observed = true;
+                onUsage({
+                  sourceDigest: createHash('sha256').update(value.id).digest('hex'),
+                  observedAt: new Date().toISOString(),
+                  kind,
+                  usage,
+                });
+              };
               const answer = await invoke({
                 text: value.text,
                 history: value.history,
                 key,
                 api,
+                onUsage: (usage) => observeUsage('provider-reported', usage),
                 signal: AbortSignal.any([
                   combined,
                   current.controller.signal,
                   AbortSignal.timeout(Math.min(120_000, value.deadline - Date.now())),
                 ]),
               });
+              if (api && !observed) observeUsage('no-api-request', null);
               if (!combined.aborted && !current.superseded) {
                 if (Date.now() < value.deadline) {
                   send({
@@ -283,7 +296,12 @@ export async function supportChatSession({
           value.type === 'settled' &&
           ['sent', 'unknown', 'refused'].includes(value.outcome)
         )
-          onStatus(value.outcome);
+          onStatus(value.outcome, {
+            sourceDigest:
+              typeof value.id === 'string'
+                ? createHash('sha256').update(value.id).digest('hex')
+                : null,
+          });
         else throw new Error('support_frame_refused');
       }
     }
@@ -330,7 +348,9 @@ async function run() {
     lastFailureAt = null,
     lastDisconnectCode = null,
     lastDisconnectAt = null,
-    reconnectDelayMs = 0;
+    reconnectDelayMs = 0,
+    lastInference = null,
+    lastReplyUsage = null;
   mkdirSync(state, { recursive: true, mode: 0o700 });
   const status = (next, details = {}) => {
     const event = next;
@@ -347,6 +367,7 @@ async function run() {
       replies++;
       lastSuccessAt = new Date().toISOString();
       phase = 'connected';
+      lastReplyUsage = lastInference?.sourceDigest === details.sourceDigest ? lastInference : null;
     }
     // FLAG: Heartbeat/observation writes must not count the previous outcome a second time.
     if (event === 'inference_failed' || event === 'unknown' || event === 'refused') errors++;
@@ -371,6 +392,8 @@ async function run() {
       lastDisconnectAt,
       model: provider.model,
       backend: provider.backend,
+      lastInference,
+      lastReplyUsage,
       ...(api
         ? {
             apiProfileSha256: SUPPORT_API_PROFILE.sha256,
@@ -390,7 +413,16 @@ async function run() {
       try {
         reconnectDelayMs = 0;
         status('connecting');
-        await supportChatSession({ key, api, signal: controller.signal, onStatus: status });
+        await supportChatSession({
+          key,
+          api,
+          signal: controller.signal,
+          onStatus: status,
+          onUsage: (observation) => {
+            lastInference = observation;
+            status();
+          },
+        });
       } catch (error) {
         if (!controller.signal.aborted) {
           errors++;

@@ -16,6 +16,38 @@ import {
 } from './support-llm-client.mjs';
 import { supportModelArgs, SUPPORT_MODEL } from './support-llm-profile.mjs';
 
+test('ordinary administrator instructions translate known permission codes without developer details', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Добавьте бота администратором с правами `read_all_messages` и write.',
+    sourceIds: ['connect'],
+  });
+  const result = await answerSupport({ ...fixture.input, text: 'Как подключить бота в группу?' });
+  assert.doesNotMatch(result.text, /read_all_messages|\bwrite\b/u);
+  assert.match(result.text, /чтение всех сообщений.*отправка сообщений/u);
+  const fact = fixture.inputs
+    .at(-1)
+    .verifiedKnowledge.find((entry) => entry.id === 'max-add-existing-bot-group');
+  assert.ok(fact);
+  assert.doesNotMatch(fact.answer, /владелец|по умолчанию|токен|read_all_messages|\bwrite\b/iu);
+  fixture.answer.text = 'В API имена прав: read_all_messages и write.';
+  fixture.answer.sourceIds = ['max-add-existing-bot-group'];
+  const technical = await answerSupport({
+    ...fixture.input,
+    text: 'Я разработчик. Какие API права нужны боту для добавления в группу?',
+  });
+  assert.match(technical.text, /read_all_messages.*write/u);
+  await answerSupport({
+    ...fixture.input,
+    text: 'Я администратор. Не могу добавить бота в группу: MAX запрещает добавление.',
+  });
+  const troubleshooting = fixture.inputs
+    .at(-1)
+    .verifiedKnowledge.find((entry) => entry.id === 'max-add-existing-bot-group');
+  assert.match(troubleshooting.answer, /владелец/iu);
+  assert.doesNotMatch(troubleshooting.answer, /read_all_messages|\bwrite\b/u);
+});
+
 test('reviewed manual closing accepts imperative requests and preserves the no-tools boundary', async () => {
   for (const text of [
     'Закройте, пожалуйста, мой чат сейчас без срока. Я администратор, коллегам надо продолжать писать.',
