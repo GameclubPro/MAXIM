@@ -33,6 +33,14 @@ separate ingress identity/deadline projection and moves positive history to v4 w
 v3 removal/reset evidence. The [rollout contract](../runbooks/message-duplicate-rollout.md#source-selection-and-publication-clocks)
 describes this transition and its temporary history warm-up.
 
+An additional regression reproduced a removed photo candidate retrying unavailable MAX reads
+before checking its already-revoked history. Initial qualification now rejects that obsolete
+binding before external reads. Real Redis ordering coverage verifies exact unused-claim cleanup,
+no deletion or sanction for the removed candidate, and progress of the next same-chat duplicate.
+Unavailable Redis remains retryable and history revoked during MAX reads is still checked at
+the final boundary. This demonstrates a preventable wait, not attribution of every production
+media delay to this cause.
+
 ## Validation and remaining evidence
 
 Focused coverage includes source extraction, publication clocks, full text/photo Redis flows,

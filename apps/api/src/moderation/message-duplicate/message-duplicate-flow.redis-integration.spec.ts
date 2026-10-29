@@ -1203,6 +1203,35 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.sanctions.map((entry) => entry.action)).toEqual(['WARN']);
     });
 
+    it('releases a removed photo candidate without MAX retries and lets the next duplicate progress', async () => {
+      flow = await createFlow({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 1 });
+      await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);
+      const repeat = flow.prepare({ photo: 'png' });
+      const job = (await flow.ingest(repeat))!;
+      jest.spyOn(flow.history, 'qualified').mockImplementationOnce(async () => {
+        await flow.history.remove(flow.chatId, repeat.id);
+        flow.max.getChatMemberAccess.mockClear();
+        flow.max.getChatMemberAccess.mockRejectedValue(new Error('MAX unavailable'));
+        return null;
+      });
+      await flow.processor.process(job);
+      expect(flow.max.getChatMemberAccess).not.toHaveBeenCalled();
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      expect(flow.intents.releaseUnmaterializedMessageAction).toHaveBeenCalledTimes(1);
+      expect(flow.claimedMessages.has(repeat.id)).toBe(false);
+      expect(flow.intents.ensureIntentWithMessageActionClaim).not.toHaveBeenCalled();
+      flow.max.getChatMemberAccess.mockImplementation(async (_chatId, userId) => ({
+        userId,
+        isAdmin: false,
+        isOwner: false,
+      }));
+      const next = flow.prepare({ photo: 'png' });
+      await flow.processor.process((await flow.ingest(next))!);
+      expect(flow.deleted).toEqual([next.id]);
+      expect(flow.sanctions.map((entry) => entry.action)).toEqual(['WARN']);
+    });
+
     it('blocks a denial after qualification and before persisting the delete intent', async () => {
       flow = await createFlow({ duplicateWarnEnabled: true, duplicateWarnMaxCount: 1 });
       await flow.processor.process((await flow.ingest(flow.prepare({ photo: 'png' })))!);

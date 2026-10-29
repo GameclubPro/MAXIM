@@ -209,6 +209,12 @@ the exact authorization events are revoked atomically, so another rule can claim
 the interrupted old duplicate owner cannot reacquire it. Temporary infrastructure failures preserve
 the resumable owner. Cleanup never blindly decrements a reserved reaction stage.
 
+Initial unqualified decisions check retained history before external MAX reads. A proven removal,
+edit or reset rejects the obsolete binding immediately, even while MAX is unavailable, so it cannot
+hold the photo ordering head through needless source retries. An unreadable history still retries;
+the final source/history/policy checks and qualified own-delete continuation remain unchanged.
+The existing `guard.message_duplicate_history_changed` counter records this early rejection.
+
 `cleanupOnly` jobs reconcile ownership without analysis or actions. SQL failures retry every
 30 seconds even after the final analysis attempt, until the original deadline plus 24 hours.
 Completed cleanup preserves the positive permit of a materialized intent; terminated cleanup
