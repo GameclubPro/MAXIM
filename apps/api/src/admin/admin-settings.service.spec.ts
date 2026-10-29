@@ -2683,6 +2683,95 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
+  it.each([
+    { stopWordsPolicy: { version: 999, enabled: true } },
+    { stopWordsPolicy: stopWordsPolicySchema.parse({ enabled: true }), stopWordsMedia: [] },
+  ])(
+    'refuses a stop-list copy from invalid source storage before target writes',
+    async (stored) => {
+      const persisted = createPersistedChatSettings({ ...stored, stopWordsRevision: 4 });
+      const { prisma, service, legacyAdminService } = createService({
+        persistedSettings: persisted,
+        applyTargetChats: [createChatSummary({ id: 'chat-2' })],
+      });
+      await expect(
+        service.applySettingsSectionToAllChats('chat-1', user as never, {
+          section: 'stopWords',
+          expectedSourceRevision: 4,
+          target: { mode: 'selectedChats', chatIds: ['chat-2'] },
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { code: 'STOP_WORDS_POLICY_REVIEW_REQUIRED', revision: 4 },
+      });
+      expect(legacyAdminService.resolveSettingsApplyTargetChatsForSettings).not.toHaveBeenCalled();
+      expect(legacyAdminService.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+      for (const [request] of prisma.chatSettings.updateMany.mock.calls) {
+        expect(request.data).not.toHaveProperty('stopWordsPolicy');
+        expect(request.data).not.toHaveProperty('stopWordsMedia');
+        expect(request.data).not.toHaveProperty('stopWordsRevision');
+      }
+      expect(persisted.stopWordsPolicy).toEqual(stored.stopWordsPolicy);
+    },
+  );
+
+  it('copies a valid complete stop-list onto an explicitly selected invalid target', async () => {
+    const policy = stopWordsPolicySchema.parse({
+      enabled: true,
+      rules: [{ id: 'source-rule', kind: 'WORD', value: 'casino' }],
+    });
+    const invalidTarget = createPersistedChatSettings({
+      chatId: 'chat-2',
+      stopWordsPolicy: { version: 999, enabled: true },
+      stopWordsMedia: [],
+      stopWordsRevision: 9,
+    });
+    const { prisma, service } = createService({
+      persistedSettings: createPersistedChatSettings({
+        stopWordsPolicy: policy,
+        stopWordsRevision: 4,
+      }),
+      currentSettings: invalidTarget,
+      applyTargetChats: [createChatSummary({ id: 'chat-2' })],
+    });
+    prisma.chatSettings.findMany.mockResolvedValue([invalidTarget]);
+    const result = await service.applySettingsSectionToAllChats('chat-1', user as never, {
+      section: 'stopWords',
+      expectedSourceRevision: 4,
+      target: { mode: 'selectedChats', chatIds: ['chat-2'] },
+    });
+    expect(result.appliedChatIds).toEqual(['chat-2']);
+    expect(prisma.chatSettings.updateMany).toHaveBeenCalledWith({
+      where: { chatId: 'chat-2', updatedAt: invalidTarget.updatedAt },
+      data: expect.objectContaining({
+        stopWordsPolicy: policy,
+        stopWordsMedia: {},
+        stopWordsRevision: { increment: 1 },
+      }),
+    });
+    expect(prisma.chatSettings.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps invalid stop-list storage when a generic bulk request omits the policy', async () => {
+    const invalid = createPersistedChatSettings({
+      stopWordsPolicy: { version: 999, enabled: true },
+      stopWordsMedia: [],
+      stopWordsRevision: 4,
+    });
+    const { prisma, service } = createService({
+      persistedSettings: invalid,
+      currentSettings: { ...invalid, chatId: 'chat-2' },
+      applyTargetChats: [createChatSummary({ id: 'chat-2' })],
+    });
+    await service.applySettingsToAllChats('chat-1', user as never, { antiSpamEnabled: false });
+    const payload = findChatSettingsWritePayload(prisma, 'chat-2');
+    expect(payload).toBeDefined();
+    expect(payload).not.toHaveProperty('stopWordsPolicy');
+    expect(payload).not.toHaveProperty('stopWordsMedia');
+    expect(payload).not.toHaveProperty('stopWordsRevision');
+  });
+
   it('applies required subscription section without copying duration or expiry fields', async () => {
     const { legacyAdminService, prisma, service } = createService({
       applyTargetChats: [createChatSummary({ id: 'chat-2', title: 'Второй чат' })],

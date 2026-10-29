@@ -3,6 +3,9 @@ import { BadRequestException } from '@nestjs/common';
 import { applySettingsSectionToAllChats } from './admin-settings-apply';
 import { SETTINGS_SECTION_KEYS } from './admin.service.support';
 import { chatSettingsSchema, stopWordsPolicySchema } from '@maxim/contracts/settings';
+import type { ChatSettingsReadSnapshot } from './admin-chat-settings';
+
+type SectionApplyParams = Parameters<typeof applySettingsSectionToAllChats>[0];
 
 describe('admin settings section apply', () => {
   it('rejects an intervening administrator edit before copying a report policy', async () => {
@@ -62,22 +65,114 @@ describe('admin settings section apply', () => {
 
   it('rejects a changed source revision before copying a stop-list', async () => {
     const applySettings = jest.fn();
+    const settings = chatSettingsSchema.parse({
+      stopWordsPolicy: stopWordsPolicySchema.parse({}),
+      stopWordsRevision: 2,
+    });
     await expect(
       applySettingsSectionToAllChats({
         sourceChatId: 'source',
         source: 'miniapp',
         body: { section: 'stopWords', expectedSourceRevision: 1 },
-        getSourceSettings: async () =>
-          chatSettingsSchema.parse({
-            stopWordsPolicy: stopWordsPolicySchema.parse({}),
-            stopWordsRevision: 2,
-          }),
+        getSourceSettings: async () => settings,
+        getSourceStopWordsSettings: async () => ({ settings, stopWordsStorageStatus: 'valid' }),
         applySettings,
         syncDomainAllowlistToChats: jest.fn(),
       }),
     ).rejects.toMatchObject({ status: 409 });
     expect(applySettings).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['missing snapshot', undefined],
+    [
+      'invalid storage',
+      {
+        settings: chatSettingsSchema.parse({
+          stopWordsPolicy: stopWordsPolicySchema.parse({}),
+          stopWordsRevision: 4,
+        }),
+        stopWordsStorageStatus: 'invalid',
+      },
+    ],
+    [
+      'unconvertible legacy storage',
+      {
+        settings: chatSettingsSchema.parse({ stopWordsRevision: 4 }),
+        stopWordsStorageStatus: 'legacy',
+      },
+    ],
+  ] satisfies ReadonlyArray<readonly [string, ChatSettingsReadSnapshot | undefined]>)(
+    'refuses to copy a disabled fallback from %s',
+    async (_kind, snapshot) => {
+      const getSourceSettings: jest.MockedFunction<SectionApplyParams['getSourceSettings']> = jest
+        .fn()
+        .mockResolvedValue(
+          chatSettingsSchema.parse({ stopWordsPolicy: stopWordsPolicySchema.parse({}) }),
+        );
+      const applySettings: jest.MockedFunction<SectionApplyParams['applySettings']> = jest.fn();
+      await expect(
+        applySettingsSectionToAllChats({
+          sourceChatId: 'source',
+          source: 'miniapp',
+          body: { section: 'stopWords', expectedSourceRevision: 4 },
+          getSourceSettings,
+          ...(snapshot ? { getSourceStopWordsSettings: async () => snapshot } : {}),
+          applySettings,
+          syncDomainAllowlistToChats: jest.fn(),
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { code: 'STOP_WORDS_POLICY_REVIEW_REQUIRED', revision: 4, fieldPaths: [] },
+      });
+      expect(getSourceSettings).not.toHaveBeenCalled();
+      expect(applySettings).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['valid', 'legacy'] as const)(
+    'copies one complete %s stop-list snapshot without reading a second settings presentation',
+    async (stopWordsStorageStatus) => {
+      const settings = chatSettingsSchema.parse({
+        stopWordsPolicy: stopWordsPolicySchema.parse({
+          enabled: true,
+          rules: [{ id: 'source-rule', kind: 'WORD', value: 'casino' }],
+        }),
+        stopWordsRevision: 4,
+      });
+      const getSourceSettings: jest.MockedFunction<SectionApplyParams['getSourceSettings']> =
+        jest.fn();
+      const applySettings: jest.MockedFunction<SectionApplyParams['applySettings']> = jest
+        .fn()
+        .mockResolvedValue({
+          sourceChatId: 'source',
+          updatedChats: 1,
+          appliedChatIds: ['target'],
+        });
+      await applySettingsSectionToAllChats({
+        sourceChatId: 'source',
+        source: 'miniapp',
+        body: {
+          section: 'stopWords',
+          expectedSourceRevision: 4,
+          target: { mode: 'selectedChats', chatIds: ['target'] },
+        },
+        getSourceSettings,
+        getSourceStopWordsSettings: async () => ({ settings, stopWordsStorageStatus }),
+        applySettings,
+        syncDomainAllowlistToChats: jest.fn(),
+      });
+      expect(getSourceSettings).not.toHaveBeenCalled();
+      expect(applySettings).toHaveBeenCalledWith(
+        settings,
+        { mode: 'selectedChats', favoriteTypes: [], chatIds: ['target'] },
+        ['stopWordsPolicy'],
+        [],
+        undefined,
+        undefined,
+      );
+    },
+  );
   it('does not expose the retired thematic section in the server mapping', () => {
     expect(SETTINGS_SECTION_KEYS).not.toHaveProperty('thematicFilters');
   });

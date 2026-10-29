@@ -34,6 +34,7 @@ import type { StopWordsPolicy } from '@maxim/contracts/settings';
 import { readStopWordsStorageStatus } from '../moderation/stop-words/stop-words-storage-status';
 import { readEditableStopWordsPolicy } from './stop-words-editable-policy';
 import { OcrReadinessStateService } from '../health/ocr-readiness-state.service';
+import { assertStopWordsStorageEditable } from './stop-words-storage-boundary';
 
 @Injectable()
 export class AdminStopWordsService {
@@ -79,8 +80,18 @@ export class AdminStopWordsService {
     await this.admin.assertChatAdminAccess(chatId, user);
     const parsed = updateStopWordsRequestSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    const { policy, expectedRevision } = parsed.data;
+    const { policy, expectedRevision, replaceInvalidStorage } = parsed.data;
     const current = await this.load(chatId, user);
+    const storageStatus = readStopWordsStorageStatus(current);
+    // FLAG: Older clients submit full disabled fallbacks. Only an explicit standalone
+    // replacement intent, fenced by this row's revision, may replace invalid storage.
+    if (networkWrite || (storageStatus === 'invalid' && replaceInvalidStorage !== true)) {
+      assertStopWordsStorageEditable({
+        revision: current.stopWordsRevision,
+        storageStatus,
+      });
+    }
+    if (networkWrite) readEditableStopWordsPolicy(current);
     if (current.stopWordsRevision !== expectedRevision) {
       // FLAG: Recover only the exact already-committed standalone request. Network writes
       // retain their operation receipts; a different policy or media remains a conflict.

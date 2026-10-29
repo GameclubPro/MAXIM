@@ -194,6 +194,7 @@ export const stopWordsStatusSchema = stopWordsStateSchema.pick({
 export const updateStopWordsRequestSchema = z.object({
   policy: stopWordsPolicySchema,
   expectedRevision: z.number().int().nonnegative(),
+  replaceInvalidStorage: z.boolean().optional(),
 });
 export const stopWordsPreviewRequestSchema = z.object({
   policy: stopWordsPolicySchema,
