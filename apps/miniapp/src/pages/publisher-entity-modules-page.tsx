@@ -36,6 +36,7 @@ import './publisher-entity-modules-page.css';
 import '../styles/publisher-modules-workspace.css';
 import { PublisherPolicyCard } from '../components/publisher-policy-card';
 import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
+const MarketplaceModuleToggle = lazy(() => import('../components/marketplace-module-toggle'));
 import { PublisherCommentsModule } from '../components/publisher-comments-module';
 
 const PUBLISHER_ENTITY_QUERY_ROOT = ['publisher-entity'] as const;
@@ -551,6 +552,17 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
           </article>
         ) : null}
 
+        {entity.entityType === 'channel' && !smartphoneLayout && (
+          <Suspense fallback={null}>
+            <MarketplaceModuleToggle
+              api={api}
+              entityId={entity.id}
+              entityType={entity.entityType}
+              profile="publisher"
+              module="APPROVED_SUGGESTION"
+            />
+          </Suspense>
+        )}
         {entity.entityType === 'channel' &&
         !smartphoneLayout &&
         entity.moduleSettings.channelSuggestionsEnabled ? (
@@ -673,14 +685,23 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
                       </div>
                     }
                   >
-                    <LazyVkParsingCard
-                      key={`${entity.entityType}:${entity.id}`}
-                      api={api}
-                      chatId={entity.id}
-                      entityType={entity.entityType}
-                      active
-                      channelLinkUrl={entity.entityUrl ?? undefined}
-                    />
+                    <>
+                      <MarketplaceModuleToggle
+                        api={api}
+                        entityId={entity.id}
+                        entityType={entity.entityType}
+                        profile="publisher"
+                        module="VK_IMPORT"
+                      />
+                      <LazyVkParsingCard
+                        key={`${entity.entityType}:${entity.id}`}
+                        api={api}
+                        chatId={entity.id}
+                        entityType={entity.entityType}
+                        active
+                        channelLinkUrl={entity.entityUrl ?? undefined}
+                      />
+                    </>
                   </Suspense>
                 )}
               </LazyVkWorkspaceShell>
@@ -700,6 +721,15 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       {smartphoneLayout && suggestionsOpen && entity.entityType === 'channel' ? (
         <Suspense fallback={null}>
           <LazyPublisherSuggestionsPanel
+            advertising={
+              <MarketplaceModuleToggle
+                api={api}
+                entityId={entity.id}
+                entityType={entity.entityType}
+                profile="publisher"
+                module="APPROVED_SUGGESTION"
+              />
+            }
             entityTitle={entity.title}
             enabled={entity.moduleSettings.channelSuggestionsEnabled === true}
             requireSubscription={

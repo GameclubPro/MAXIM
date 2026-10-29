@@ -7,7 +7,7 @@ import type {
 } from '@maxim/contracts/marketplace-integration';
 import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
 import type { PrismaService } from '../../prisma/prisma.service';
-import { MarketplaceIntegrationController } from './marketplace.controller';
+import { MarketplaceIntegrationController, buttonPolicyResponse } from './marketplace.controller';
 import { MarketplaceProfileService } from './marketplace-profile.service';
 import type { MarketplaceStatisticsService } from './marketplace-statistics.service';
 import { MarketplaceStateService } from './marketplace-state.service';
@@ -105,6 +105,7 @@ postgres('platform-scoped Birzhik button policy on PostgreSQL', () => {
     await db.$executeRaw`DELETE FROM marketplace_button_policies WHERE entity_id=${input.entityId}`;
     await db.$executeRaw`DELETE FROM marketplace_policy_requests WHERE binding_id IN(SELECT id FROM marketplace_bindings WHERE entity_id=${input.entityId})`;
     await db.$executeRaw`DELETE FROM marketplace_bindings WHERE entity_id=${input.entityId}`;
+    await db.$executeRaw`DELETE FROM marketplace_button_captions WHERE entity_id=${input.entityId}`;
     await db.chat.delete({ where: { id: input.entityId } });
   });
   afterAll(async () => {
@@ -130,7 +131,14 @@ postgres('platform-scoped Birzhik button policy on PostgreSQL', () => {
       effective: true,
     });
     expect(await service.get({ ...input, actorUserId: secondActor })).toEqual(result);
-    expect(await resolve()).toEqual({ url: entry.listing!.publicUrl, revision: 1 });
+    expect(buttonPolicyResponse(result, '2')).toBe(result);
+    expect(buttonPolicyResponse(result)).not.toHaveProperty('caption');
+    expect(buttonPolicyResponse(result).contexts[0]).not.toHaveProperty('modules');
+    expect(await resolve()).toEqual({
+      url: entry.listing!.publicUrl,
+      revision: 1,
+      caption: 'Заказать рекламу',
+    });
     expect(
       await state.resolvePublicationButton({ chatId: input.entityId, botId, purpose: 'GREETING' }),
     ).toBeNull();
@@ -326,6 +334,31 @@ postgres('platform-scoped Birzhik button policy on PostgreSQL', () => {
         purpose: 'PUBLICATION',
       }),
     ).toBeNull();
+    await service.mutate(input, {
+      requestId: randomUUID(),
+      expectedCaptionRevision: 0,
+      caption: 'Реклама на площадке',
+    });
+    expect(await service.get(publisher)).toMatchObject({
+      caption: 'Реклама на площадке',
+      captionRevision: 1,
+    });
+    await expect(
+      service.mutate(publisher, {
+        requestId: randomUUID(),
+        expectedCaptionRevision: 0,
+        caption: 'Устаревшая правка',
+      }),
+    ).rejects.toThrow('Текст изменил');
+    await service.mutate(publisher, {
+      requestId: randomUUID(),
+      expectedCaptionRevision: 1,
+      caption: 'Заказать рекламу',
+    });
+    expect(await service.get(input)).toMatchObject({
+      caption: 'Заказать рекламу',
+      captionRevision: 2,
+    });
     entry = { ...entry, profile: 'publisher' };
     await service.mutate(publisher, { ...command(), context: 'PUBLICATIONS' });
     expect(
@@ -375,7 +408,8 @@ postgres('platform-scoped Birzhik button policy on PostgreSQL', () => {
     const rows = await db.$queryRaw<
       Array<{ valid: boolean }>
     >`SELECT c.verified_until<=b.checked_at+interval '5 minutes' valid FROM marketplace_button_contexts c JOIN marketplace_bindings b ON b.id=c.binding_id WHERE b.id=${firstBinding}::uuid`;
-    expect(rows).toEqual([{ valid: true }]);
+    expect(rows).toHaveLength(12);
+    expect(rows.every((row) => row.valid)).toBe(true);
   });
   it('refuses an enable when the returned actor proof is already older than five minutes', async () => {
     await db.$executeRaw`UPDATE marketplace_bindings SET checked_at=now()-interval '10 minutes',valid_until=now()+interval '5 minutes' WHERE id=${firstBinding}::uuid`;
@@ -544,6 +578,30 @@ postgres('platform-scoped Birzhik button policy on PostgreSQL', () => {
     expect(result.contexts.find((row) => row.context === 'PUBLICATIONS')?.enabled).toBe(false);
     expect(result.contexts.find((row) => row.context === 'GREETINGS')?.enabled).toBe(true);
   });
+  it('honors an old publication withdrawal after individual module settings retire the aggregate', async () => {
+    await legacyOptIn();
+    await service.mutate(input, {
+      ...command(false),
+      context: 'PUBLICATIONS',
+      module: 'VK_IMPORT',
+    });
+    expect(
+      (await service.get(input)).contexts.find((row) => row.context === 'PUBLICATIONS'),
+    ).toMatchObject({ enabled: true, partial: true });
+    const fake = legacyOffReceipt();
+    await db.$executeRaw`INSERT INTO marketplace_policy_requests(request_id,binding_id,payload_hash,result) VALUES(${fake.requestId}::uuid,${firstBinding}::uuid,${'0'.repeat(64)},${fake.result}::jsonb)`;
+    expect(
+      (await service.get(input)).contexts.find((row) => row.context === 'PUBLICATIONS')?.enabled,
+    ).toBe(true);
+    const valid = legacyOffReceipt();
+    await db.$executeRaw`INSERT INTO marketplace_policy_requests(request_id,binding_id,payload_hash,result) VALUES(${valid.requestId}::uuid,${firstBinding}::uuid,${valid.hash},${valid.result}::jsonb)`;
+    const result = await service.get(input);
+    expect(result.revision).toBe(2);
+    expect(result.contexts.find((row) => row.context === 'PUBLICATIONS')).toMatchObject({
+      enabled: false,
+      partial: false,
+    });
+  });
   it('serializes an old binding-first off receipt with a new platform toggle without deadlock', async () => {
     await legacyOptIn();
     let releaseRead!: (value: MarketplaceEntryResponse) => void;
@@ -677,5 +735,96 @@ postgres('platform-scoped Birzhik button policy on PostgreSQL', () => {
     const result = await service.mutate(input, command());
     expect(result.contexts.find((row) => row.context === 'PUBLICATIONS')?.enabled).toBe(true);
     expect(result.contexts.find((row) => row.context === 'MODERATION_NOTICES')?.enabled).toBe(true);
+  });
+  it('changes one module, aggregates mixed groups, and atomically enables/disables the group', async () => {
+    await service.mutate(input, command());
+    const mixed = await service.mutate(input, { ...command(false, 1), module: 'DUPLICATES' });
+    expect(mixed.contexts[1]).toMatchObject({ enabled: true, partial: true });
+    expect(
+      await state.resolvePublicationButton({
+        chatId: input.entityId,
+        botId,
+        purpose: 'MODERATION_NOTICE',
+        module: 'DUPLICATES',
+      }),
+    ).toBeNull();
+    expect(
+      await state.resolvePublicationButton({
+        chatId: input.entityId,
+        botId,
+        purpose: 'MODERATION_NOTICE',
+        module: 'LINKS',
+      }),
+    ).not.toBeNull();
+    await service.mutate(input, command(false, 2));
+    expect((await service.get(input)).contexts[1].modules.every((item) => !item.enabled)).toBe(
+      true,
+    );
+    await service.mutate(input, { ...command(true, 3), module: 'DUPLICATES' });
+    expect(
+      (await service.get(input)).contexts[1].modules
+        .filter((item) => item.enabled)
+        .map((item) => item.module),
+    ).toEqual(['DUPLICATES']);
+    await service.mutate(input, command(true, 4));
+    expect((await service.get(input)).contexts[1]).toMatchObject({ enabled: true, partial: false });
+    expect(
+      (
+        await db.$queryRaw<
+          Array<{ enabled: boolean }>
+        >`SELECT enabled FROM marketplace_button_contexts WHERE policy_id IN (SELECT id FROM marketplace_button_policies WHERE entity_id=${input.entityId}) AND context='MODERATION_NOTICES'`
+      ).every((row) => !row.enabled),
+    ).toBe(true);
+  });
+  it('old group-off writers revoke all children even if the aggregate already reads false', async () => {
+    await service.mutate(input, command());
+    // An old screen can INSERT its first false aggregate after children were configured.
+    await db.$executeRaw`INSERT INTO marketplace_button_contexts(policy_id,profile,context,enabled)
+      SELECT id,profile,'MODERATION_NOTICES',false FROM marketplace_button_policies WHERE entity_id=${input.entityId}
+      ON CONFLICT(policy_id,context) DO UPDATE SET enabled=false`;
+    expect(await resolve()).toBeNull();
+    expect((await service.get(input)).contexts[1].enabled).toBe(false);
+  });
+  it('caption changes have independent concurrency, replay safely and never require peer availability', async () => {
+    await service.mutate(input, command());
+    read.mockRejectedValue(new Error('peer unavailable'));
+    const change = {
+      requestId: randomUUID(),
+      expectedCaptionRevision: 0,
+      caption: 'Разместить рекламу',
+    };
+    const saved = await service.mutate(input, change);
+    expect(saved).toMatchObject({ revision: 1, captionRevision: 1, caption: 'Разместить рекламу' });
+    expect(await service.mutate(input, change)).toEqual(saved);
+    await expect(
+      service.mutate(
+        { ...input, actorUserId: secondActor },
+        { ...change, requestId: randomUUID(), caption: 'Иной текст' },
+      ),
+    ).rejects.toThrow('Текст изменил');
+    expect(await resolve()).toMatchObject({ caption: 'Разместить рекламу' });
+    await service.mutate(input, { ...command(false, 1), module: 'LINKS' });
+    expect(await service.get(input)).toMatchObject({ revision: 2, captionRevision: 1 });
+  });
+  it('copies only historical message scope when specializing an existing aggregate', async () => {
+    await service.mutate(input, { ...command(), context: 'GREETINGS' });
+    await db.$executeRaw`INSERT INTO marketplace_button_contexts(policy_id,profile,context,enabled,confirmed_by,confirmed_at,listing_id,ownership_key,binding_id,verified_until,public_url,refresh_at)
+      SELECT policy_id,profile,'MODERATION_NOTICES',enabled,confirmed_by,confirmed_at,listing_id,ownership_key,binding_id,verified_until,public_url,refresh_at FROM marketplace_button_contexts WHERE binding_id=${firstBinding}::uuid AND context='GREETINGS'`;
+    await service.mutate(input, { ...command(false, 1), module: 'DUPLICATES' });
+    const modules = (await service.get(input)).contexts[1].modules;
+    expect(modules.find((item) => item.module === 'LINKS')?.enabled).toBe(true);
+    expect(
+      modules
+        .filter((item) => ['NIGHT_MODE', 'RULES', 'DUPLICATES'].includes(item.module))
+        .every((item) => !item.enabled),
+    ).toBe(true);
+    expect(
+      await state.resolvePublicationButton({
+        chatId: input.entityId,
+        botId,
+        purpose: 'MODERATION_NOTICE',
+        module: 'NIGHT_MODE',
+      }),
+    ).toBeNull();
   });
 });

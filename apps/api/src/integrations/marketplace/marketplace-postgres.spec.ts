@@ -81,6 +81,7 @@ postgres('marketplace SQL generations and collection', () => {
     await db.$executeRaw`DELETE FROM marketplace_post_samples WHERE binding_id=${id}::uuid`;
     await db.$executeRaw`DELETE FROM marketplace_audience_observations WHERE binding_id=${id}::uuid`;
     await db.$executeRaw`DELETE FROM marketplace_bindings WHERE id=${id}::uuid`;
+    await db.$executeRaw`DELETE FROM marketplace_button_captions WHERE entity_id=${entityId}`;
     await db.chat.delete({ where: { id: entityId } });
   });
   afterAll(async () => {
@@ -196,6 +197,19 @@ postgres('marketplace SQL generations and collection', () => {
       await state.resolvePublicationButton({ chatId: entityId, botId: 'test-bot' }),
     ).toBeNull();
     await db.chatMembershipActivityEvent.deleteMany({ where: { chatId: entityId } });
+  });
+  it('uses the shared platform caption before a legacy publication policy is imported', async () => {
+    await db.$executeRaw`UPDATE marketplace_bindings SET append_enabled=true,public_url='https://max.ru/id613000037577_3_bot',public_verified_until=now()+interval '5 minutes' WHERE id=${id}::uuid`;
+    expect(
+      await state.resolvePublicationButton({ chatId: entityId, botId: 'test-bot' }),
+    ).toMatchObject({ caption: 'Заказать рекламу' });
+    await db.$executeRaw`INSERT INTO marketplace_button_captions(entity_id,kind,caption,revision) VALUES(${entityId},'CHANNEL','Разместить рекламу',1)`;
+    expect(
+      await state.resolvePublicationButton({ chatId: entityId, botId: 'test-bot' }),
+    ).toMatchObject({ caption: 'Разместить рекламу' });
+    expect(
+      await state.resolvePublicationButton({ chatId: entityId, botId: 'another-bot' }),
+    ).toBeNull();
   });
   it('invalidates a cached statistics generation and publication-button proof when explicit denial is recorded', async () => {
     await db.$executeRaw`UPDATE marketplace_bindings SET append_enabled=true,public_url='https://max.ru/id613000037577_3_bot',public_verified_until=now()+interval '5 minutes' WHERE id=${id}::uuid`;

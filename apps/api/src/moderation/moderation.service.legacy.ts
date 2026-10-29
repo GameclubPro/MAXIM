@@ -3494,7 +3494,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       muteDurationHours,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
-      botMessageOptions: duplicateMessageOptions ?? undefined,
+      botMessageOptions: withMarketplaceModerationMessage(
+        duplicateMessageOptions,
+        chatId,
+        'MODERATION_NOTICE',
+        'DUPLICATES',
+      ),
       botSpeechStyle,
       persistModerationEvent,
       assertActiveLease,
@@ -3558,6 +3563,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             duplicateMessageOptions,
             chatId,
             'MODERATION_NOTICE',
+            'DUPLICATES',
           ),
           media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
           deleteBotMessagesEnabled,
@@ -3808,6 +3814,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               duplicateMessageOptions,
               chatId,
               'MODERATION_NOTICE',
+              'DUPLICATES',
             ),
             media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
             deleteBotMessagesEnabled,
@@ -10289,6 +10296,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               notice.messageOptions,
               params.chatId,
               'MODERATION_NOTICE',
+              'REQUIRED_SUBSCRIPTION',
             ),
             media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey ?? undefined),
           }),
@@ -10491,8 +10499,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               muteDurationHours: params.settings.requiredSubscriptionMuteDurationHours,
               deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
               deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-              botMessageOptions: withRequiredSubscriptionHtmlMessageOptions(
-                requiredSubscriptionMessageOptions,
+              botMessageOptions: withMarketplaceModerationMessage(
+                withRequiredSubscriptionHtmlMessageOptions(requiredSubscriptionMessageOptions),
+                params.chatId,
+                'MODERATION_NOTICE',
+                'REQUIRED_SUBSCRIPTION',
               ),
               bypassNoticeBucket: true,
               noticeIdempotencyKey,
@@ -10796,6 +10807,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           invitationAccessMessageOptions,
           params.chatId,
           'MODERATION_NOTICE',
+          'INVITATION_ACCESS',
         ),
         media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey),
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
@@ -10932,7 +10944,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         muteDurationHours: params.settings.invitationAccessMuteDurationHours,
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-        botMessageOptions: invitationAccessMessageOptions,
+        botMessageOptions: withMarketplaceModerationMessage(
+          invitationAccessMessageOptions,
+          params.chatId,
+          'MODERATION_NOTICE',
+          'INVITATION_ACCESS',
+        ),
         sanctionNoticeText:
           action === SanctionAction.BAN
             ? this.buildInvitationAccessBanExplanation(
