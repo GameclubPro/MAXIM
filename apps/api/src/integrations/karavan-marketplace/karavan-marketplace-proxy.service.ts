@@ -7,6 +7,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -56,6 +57,22 @@ export class KaravanCommandUnavailable extends ServiceUnavailableException {
 
 @Injectable()
 export class KaravanMarketplaceProxyService {
+  private readonly logger = new Logger(KaravanMarketplaceProxyService.name);
+  private readonly accessLogTimes = new Map<string, number>();
+
+  private logAccessIssue(chatId: string, reason: string, detail: Record<string, unknown> = {}) {
+    const chatRef = karavanHash({ chatId }).slice(0, 16);
+    const key = `${chatRef}:${reason}`;
+    const now = Date.now();
+    if (now - (this.accessLogTimes.get(key) ?? 0) < 60_000) return;
+    if (this.accessLogTimes.size >= 256) {
+      const oldest = this.accessLogTimes.keys().next().value;
+      if (oldest) this.accessLogTimes.delete(oldest);
+    }
+    this.accessLogTimes.set(key, now);
+    this.logger.warn({ event: 'karavan_marketplace_access', chatRef, reason, ...detail });
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly authority: KaravanMarketplaceAuthorityService,
@@ -89,13 +106,17 @@ export class KaravanMarketplaceProxyService {
         },
       );
     } catch {
+      if (path === '/module') this.logAccessIssue(scope.chatId, 'unavailable');
       throw new KaravanCommandUnavailable('unknown');
     }
     if (!result.ok && path === '/manage') await throwKnownKaravanManagementError(result);
-    if (!result.ok)
+    if (!result.ok) {
+      if (path === '/module')
+        this.logAccessIssue(scope.chatId, 'upstream_error', { status: result.status });
       throw new KaravanCommandUnavailable(
         result.status >= 500 || result.status === 408 ? 'unknown' : 'rejected',
       );
+    }
     try {
       return response.parse(await result.json());
     } catch {
@@ -143,6 +164,13 @@ export class KaravanMarketplaceProxyService {
     );
     if (result.binding && result.binding.chatId !== chatId)
       throw new KaravanCommandUnavailable('unknown');
+    if (result.access && !['allowed', 'unbound'].includes(result.access.reason)) {
+      this.logAccessIssue(chatId, result.access.reason, {
+        bindingState: result.binding?.state ?? null,
+        generation: result.binding?.generation ?? null,
+        canRecover: result.access.canRecover,
+      });
+    }
     if (result.binding?.state === 'verified' && result.marketplace)
       await this.prisma.karavanMarketplaceChatEnrollment.updateMany({
         where: { chatId, phase: 'pending' },

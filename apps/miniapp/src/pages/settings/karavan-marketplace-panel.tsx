@@ -23,7 +23,8 @@ import {
   saveMirroredItem,
   removeMirroredItem,
 } from '../../lib/native-storage';
-import { openMaxBotLinkAndClose } from '../../lib/max-bridge';
+import { openKaravanStorefront } from '../../lib/karavan-storefront-navigation';
+import { karavanAccessMessage } from '../../lib/karavan-storefront-access';
 import { ApiRequestError } from '../../lib/api-request-error';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import KaravanMarketplaceWizard from './karavan-marketplace-wizard';
@@ -65,6 +66,9 @@ export default function KaravanMarketplacePanel({
   const [saved, setSaved] = useState<KaravanMarketplaceSetup | null>(null);
   const [operation, setOperation] = useState<KaravanMarketplaceOperation | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [retryDestination, setRetryDestination] =
+    useState<KaravanMarketplaceHandoffDestination | null>(null);
+  const returningFromShop = useRef(false);
   const [hydrated, setHydrated] = useState(false);
   const module = query.data?.enabled ? query.data : null;
   const storageKey = module ? `karavan-setup:v1:${module.actorMaxUserId}:${chatId}` : null;
@@ -176,13 +180,41 @@ export default function KaravanMarketplacePanel({
     }),
     onSuccess: (result) => {
       if (currentChat.current !== result.sourceChatId) return;
-      if (!openMaxBotLinkAndClose(result.url)) setNotice('Откройте магазин из MAX.');
+      if (!openKaravanStorefront(result.url)) {
+        setNotice('Не удалось открыть магазин. Повторите переход.');
+        return;
+      }
+      returningFromShop.current = true;
+      setNotice(null);
     },
     onError: (error) => {
       if (currentChat.current !== chatId) return;
       setNotice(describeUserFacingError(error, 'Не удалось открыть магазин. Повторите попытку.'));
     },
   });
+  useEffect(() => {
+    const refresh = () => {
+      if (!returningFromShop.current || document.visibilityState === 'hidden') return;
+      returningFromShop.current = false;
+      setRetryDestination(null);
+      setNotice(null);
+      void queryClient.invalidateQueries({ queryKey: ['karavan-marketplace', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['karavan-shop', { chatId }] });
+    };
+    window.addEventListener('focus', refresh);
+    window.addEventListener('pageshow', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('pageshow', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [chatId, queryClient]);
+  const openShop = (destination: KaravanMarketplaceHandoffDestination) => {
+    setRetryDestination(destination);
+    setNotice(null);
+    handoff.mutate(destination);
+  };
   const cancelSetup = useMutation({
     mutationFn: () => cancelKaravanMarketplaceSetup(api, chatId, saved!.operationId),
     onSuccess: () => {
@@ -244,10 +276,12 @@ export default function KaravanMarketplacePanel({
   const marketplace = module.marketplace;
   const active = marketplace?.status === 'active';
   const canOpen = module.permissions.length > 0;
-  const canBind = module.permissions.includes('bind_chat');
   const busy = handoff.isPending || bind.isPending;
   const ready = hydrated && bind.hydrated;
-  const canEnter = canOpen && module.binding?.state === 'verified';
+  const canEnter =
+    canOpen &&
+    module.binding?.state === 'verified' &&
+    (!module.access || module.access.reason === 'allowed');
   const startBinding = (action: 'unbind_chat' | 'recover_chat') => {
     if (!marketplace || !module.binding) return;
     setDisconnectConfirm(false);
@@ -263,6 +297,11 @@ export default function KaravanMarketplacePanel({
         <p className="karavan-module__notice" role="alert">
           {notice || bind.error}
         </p>
+      ) : null}
+      {retryDestination && !handoff.isPending ? (
+        <button type="button" onClick={() => openShop(retryDestination)}>
+          Повторить переход
+        </button>
       ) : null}
       {module.publicationChoices.map((choice) => (
         <div key={choice.id} className="karavan-module__actions">
@@ -401,7 +440,7 @@ export default function KaravanMarketplacePanel({
             chatId={chatId}
             module={module}
             busy={busy}
-            open={(destination) => handoff.mutate(destination)}
+            open={openShop}
             publications={publications}
             publicationsFooter={publicationsFooter}
             publicationsDirty={publicationsDirty}
@@ -464,14 +503,8 @@ export default function KaravanMarketplacePanel({
         ) : (
           <>
             <h3>{marketplace.name}</h3>
-            <p role="status">
-              {module.binding?.state === 'disconnected'
-                ? 'Чат отключён от магазина.'
-                : module.binding?.state !== 'verified'
-                  ? 'Подключение чата требует восстановления.'
-                  : 'Не удалось подтвердить права администратора.'}
-            </p>
-            {canBind && marketplace.status !== 'archived' ? (
+            <p role="status">{karavanAccessMessage(module)}</p>
+            {module.access?.canRecover === true && marketplace.status !== 'archived' ? (
               <button
                 type="button"
                 className="karavan-module__primary"
@@ -485,7 +518,7 @@ export default function KaravanMarketplacePanel({
               <button
                 type="button"
                 onClick={() => {
-                  if (!openMaxBotLinkAndClose(module.buyerUrl!))
+                  if (!openKaravanStorefront(module.buyerUrl!))
                     setNotice('Откройте магазин из MAX.');
                 }}
               >
@@ -538,7 +571,7 @@ export default function KaravanMarketplacePanel({
               chatId={chatId}
               module={module}
               busy={busy}
-              open={(destination) => handoff.mutate(destination)}
+              open={openShop}
               chats={
                 <button type="button" onClick={() => setPendingManagerOpen(false)}>
                   Вернуться к подключению
