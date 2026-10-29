@@ -51,6 +51,9 @@ prove every possible question or every implementation field has been evaluated.
   post before recommending another send. Preserve independent tasks in a combined question.
 - Network settings results, network audience coverage, moderation actions and join/leave events
   are separate views. Missing observations do not prove zero activity or successful actions.
+- Lastik's partial counts are lower bounds. Unknown deletion outcomes and a last completed scan
+  do not establish successful deletion or complete history coverage. Its optional newer diagnostic
+  labels are reviewed separately against their recorded source revision.
 
 ## Updating and validating
 

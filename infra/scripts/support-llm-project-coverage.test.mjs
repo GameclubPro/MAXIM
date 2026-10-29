@@ -71,6 +71,15 @@ test('poll and giveaway limits and controls are grounded in the product contract
 
 const missingModuleCases = [
   ['Что вообще умеет Майор, какие есть модули?', 'project-modules'],
+  ['Ластик: «Ожидают, не менее 1000» — это точное число?', 'lastik-diagnostics'],
+  [
+    'У Ластика «Результат не подтверждён». Значит, сообщение точно не удалено?',
+    'lastik-diagnostics',
+  ],
+  [
+    'Ластик пишет «Часть истории ещё не проверена», хотя последний полный обход был. Это нормально?',
+    'lastik-diagnostics',
+  ],
   ['Как запретить номера телефонов в моём чате?', 'phone-numbers'],
   ['Как включить доступ за приглашения?', 'invitation-access'],
   ['Бот может убирать свои сообщения через время?', 'service-messages-and-bots'],
@@ -187,4 +196,10 @@ test('module context does not replace an independent question or the support rol
   assert.equal(router.classify('Как приготовить борщ?').eligible, false);
   assert.ok(!ids('В Публике хочу автоответ, но чтобы не спамил.').includes('spammer-review'));
   assert.ok(!ids('Ластик сохраняет объявления розыгрышей?').includes('giveaway-create'));
+  for (const text of [
+    'Ластик: сохранение пока не подтверждено. Где нажать проверить сохранение?',
+    'Ластик: результат сохранения не подтверждён. Нужно нажать проверить сохранение?',
+    'Ластик должен хранить сообщения не менее 48 часов. Как это настроить?',
+  ])
+    assert.ok(!ids(text).includes('lastik-diagnostics'), text);
 });
