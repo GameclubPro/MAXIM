@@ -352,6 +352,9 @@ export class PublicationPresenterService {
     preloadedDispatchIssue?: InternalPublicationDispatchIssue | null,
   ): Promise<PublicationSummary> {
     const canManageAllTargets = (row._count?.targets ?? row.targets.length) === row.targets.length;
+    const targetsCanceled =
+      row.targets.length > 0 &&
+      row.targets.every((target: { canceledAt?: Date | null }) => Boolean(target.canceledAt));
     const issue =
       row.dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
         ? preloadedDispatchIssue !== undefined
@@ -385,8 +388,9 @@ export class PublicationPresenterService {
       postPublish: publicationPostPublishSchema.parse(content?.postPublish ?? {}),
       id: row.id,
       title: row.title,
-      lifecycle:
-        !canManageAllTargets && row.lifecycle === PublicationLifecycle.ERROR
+      lifecycle: targetsCanceled
+        ? PublicationLifecycle.CANCELED
+        : !canManageAllTargets && row.lifecycle === PublicationLifecycle.ERROR
           ? PublicationLifecycle.ACTIVE
           : row.lifecycle,
       access: { canManageAllTargets },
@@ -413,12 +417,20 @@ export class PublicationPresenterService {
           !publicationScheduleInputSchema.safeParse(row.schedule.rule).success
         )
           ? this.mapSchedule(
-              canManageAllTargets ? row.schedule : { ...row.schedule, lastError: null },
-              nextOccurrenceAt,
+              targetsCanceled
+                ? { ...row.schedule, status: PublicationScheduleStatus.CANCELED, lastError: null }
+                : canManageAllTargets
+                  ? row.schedule
+                  : { ...row.schedule, lastError: null },
+              targetsCanceled ? null : nextOccurrenceAt,
             )
           : null,
-      dispatchIssue: issue === 'decision_required' ? 'target_setup_required' : issue,
-      requiresScheduleDecision: issue === 'decision_required',
+      dispatchIssue: targetsCanceled
+        ? null
+        : issue === 'decision_required'
+          ? 'target_setup_required'
+          : issue,
+      requiresScheduleDecision: !targetsCanceled && issue === 'decision_required',
       delivery,
       actionableDelivery:
         preloadedActionableDeliveryStats ?? row.actionableDeliveryStats ?? delivery,
@@ -716,6 +728,10 @@ export class PublicationPresenterService {
           )
           AND occurrence."status" <> 'CANCELED'::"PublicationOccurrenceStatus"
           AND broadcast."status" <> 'CANCELED'::"ManagedBroadcastStatus"
+          AND NOT EXISTS (SELECT 1 FROM "publication_targets" AS stopped_target
+            WHERE stopped_target."publication_id" = occurrence."publication_id"
+              AND stopped_target."target_chat_id" = delivery."target_chat_id"
+              AND stopped_target."canceled_at" IS NOT NULL)
         )::bigint AS "dispatchPending"
       FROM "managed_broadcast_deliveries" AS delivery
       INNER JOIN "publication_occurrences" AS occurrence

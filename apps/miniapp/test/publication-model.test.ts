@@ -548,7 +548,7 @@ test('keeps publication actions aligned with lifecycle and actual future sends',
       actionableDelivery: { ...emptyDelivery, total: 1, failed: 1 },
     }),
     {
-      canCancel: false,
+      canCancel: true,
       canEdit: false,
       canPause: false,
       canResume: false,
