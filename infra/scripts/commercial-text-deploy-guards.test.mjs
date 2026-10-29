@@ -75,11 +75,15 @@ test('AI rollback floor retains fresh proof, original source and final dispatch 
 });
 
 test('both rollback paths and tooling bootstrap retain v1/v2 pool readers with routing disabled', () => {
-  for (const file of ['vps-release-rollback.sh', 'vps-runtime-rollback.sh', 'vps-connect.sh'])
+  for (const file of ['vps-release-rollback.sh', 'vps-runtime-rollback.sh'])
     assert.match(
       readFileSync(resolve(root, 'infra/scripts', file), 'utf8'),
       /maxim_topology_require_commercial_ai_pool_delete_reader/u,
     );
+  assert.match(
+    readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8'),
+    /maxim_topology_require_night_mode_recovery_reader/u,
+  );
   const current = probe('current', true, true);
   assert.equal(current.status, 0, current.stderr);
   for (const mode of ['pool-no-v2', 'pool-no-v1', 'ai-no-proof', 'ai-unwired'])

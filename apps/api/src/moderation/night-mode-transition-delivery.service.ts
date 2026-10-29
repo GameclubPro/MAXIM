@@ -27,8 +27,10 @@ import {
 import {
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
   NIGHT_MODE_TRANSITION_PROCESS_STOP,
+  NightModeRecoveryUnsafeError,
   type NightModeStickyRouteProbe,
   type NightModeTransitionProcessResult,
+  type NightModeTransitionRecoveryObligation,
 } from './night-mode-transition.queue';
 import type {
   NightModeRecoveredCloseNoticeEvent,
@@ -47,6 +49,7 @@ import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-tra
 import { NightModeTransitionStaleStateError } from './night-mode-transition-stale-state-error';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { NightModeRouteVerificationService } from './night-mode-route-verification.service';
+import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 import {
   NIGHT_MODE_CLOSE_NOTICE_CLEANUP_RULE_CODE,
   type NightModeCloseNoticeCleanupBinding,
@@ -91,6 +94,8 @@ export class NightModeTransitionDeliveryService {
     private readonly maxActionLedgerService?: MaxActionLedgerService,
     @Optional()
     private readonly nightModeRouteVerificationService?: NightModeRouteVerificationService,
+    @Optional()
+    private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
   ) {}
 
   createHooks(adapters: NightModeTransitionDeliveryAdapters): NightModeTransitionRuntimeHooks {
@@ -98,6 +103,11 @@ export class NightModeTransitionDeliveryService {
       recoverClosedNoticeEvent: (params) => this.recoverClosedNoticeEvent(params),
       recoverClosedNoticeEventFromLedger: (params) =>
         this.recoverClosedNoticeEventFromLedger(params),
+      recoverOpenedNoticeEvent: (params) => this.recoverOpenedNoticeEvent(params),
+      recoverOpenedNoticeEventFromLedger: (params) =>
+        this.recoverOpenedNoticeEventFromLedger(params),
+      scheduleRecoveryObligation: (chatId, recovery) =>
+        this.scheduleRecoveryObligation(chatId, recovery),
       sendClosedNotice: (settings, snapshot, validateBeforeDispatch) =>
         this.sendClosedNotice(settings, snapshot, adapters, validateBeforeDispatch),
       sendOpenedNotice: (settings, snapshot, validateBeforeDispatch) =>
@@ -111,6 +121,75 @@ export class NightModeTransitionDeliveryService {
           adapters,
           validateBeforeDispatch,
         ),
+    };
+  }
+
+  async scheduleRecoveryObligation(
+    chatId: string,
+    recovery: NightModeTransitionRecoveryObligation,
+  ): Promise<void> {
+    if (!this.nightModeTransitionScheduler) {
+      throw new ServiceUnavailableException('Night mode durable recovery scheduler is unavailable');
+    }
+    await this.nightModeTransitionScheduler.scheduleRecoveryObligation(chatId, recovery);
+  }
+
+  async recoverOpenedNoticeEvent(
+    params: NightModeRecoverCloseNoticeEventParams,
+  ): Promise<NightModeRecoveredCloseNoticeEvent> {
+    return this.recoverOpenedNoticeEventFromLedger(params, params);
+  }
+
+  async recoverOpenedNoticeEventFromLedger(
+    params: NightModeRecoverCloseNoticeEventFromLedgerParams,
+    exactReceipt: Pick<NightModeRecoverCloseNoticeEventParams, 'messageId' | 'botId'>,
+  ): Promise<NightModeRecoveredCloseNoticeEvent>;
+  async recoverOpenedNoticeEventFromLedger(
+    params: NightModeRecoverCloseNoticeEventFromLedgerParams,
+  ): Promise<NightModeRecoveredCloseNoticeEvent | null>;
+  async recoverOpenedNoticeEventFromLedger(
+    params: NightModeRecoverCloseNoticeEventFromLedgerParams,
+    exactReceipt?: Pick<NightModeRecoverCloseNoticeEventParams, 'messageId' | 'botId'>,
+  ): Promise<NightModeRecoveredCloseNoticeEvent | null> {
+    const expectedJobId = buildNightModeNoticeIdempotencyKey(
+      'open',
+      params.chatId,
+      params.sessionKey,
+    );
+    if (!this.maxActionLedgerService) {
+      throw new ServiceUnavailableException(
+        `Night mode open-event recovery ledger is unavailable (${expectedJobId})`,
+      );
+    }
+    const proof =
+      await this.maxActionLedgerService.inspectCompletedNightModeOpenNoticeDispatch(params);
+    if (proof.kind === 'missing' && !exactReceipt) {
+      return null;
+    }
+    // FLAG: Event recovery settles only this accepted opening receipt. It never dispatches SEND,
+    // and neither a CLOSE receipt nor a mismatched bot/message can authorize the event.
+    if (
+      proof.kind !== 'completed' ||
+      proof.jobId !== expectedJobId ||
+      (exactReceipt &&
+        (proof.remoteMessageId !== exactReceipt.messageId ||
+          proof.dispatchBotId !== exactReceipt.botId))
+    ) {
+      throw new ServiceUnavailableException(
+        `Exact completed night mode open send is not proven (${expectedJobId})`,
+      );
+    }
+    const event = await this.nightModeTransitionEventService.ensureTransitionEvent({
+      ...params,
+      ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
+      messageId: proof.remoteMessageId,
+      botId: proof.dispatchBotId,
+    });
+    return {
+      eventId: event.id,
+      sessionKey: params.sessionKey,
+      messageId: proof.remoteMessageId,
+      botId: proof.dispatchBotId,
     };
   }
 
@@ -170,7 +249,7 @@ export class NightModeTransitionDeliveryService {
       return null;
     }
     if (lookup.kind !== 'completed' || lookup.jobId !== expectedJobId) {
-      throw new ServiceUnavailableException(
+      throw new NightModeRecoveryUnsafeError(
         `Night mode close send ledger provenance is unsafe (${expectedJobId})`,
       );
     }
@@ -438,6 +517,7 @@ export class NightModeTransitionDeliveryService {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
+        hydrateMessageUrl: false,
         ignoreFailureMetricStatuses: [403, 404],
         ...(params.allowHalfOpenProbe
           ? { sendRouteHalfOpenProbe: 'publication_exact_verification' as const }

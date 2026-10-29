@@ -195,8 +195,9 @@ test('age deferral never replaces a rejected retry or pin deadline across 24 to 
 });
 
 test('future ingestion during a live page preserves its generation and only whole covered minutes clear', async (t) => {
-  // FLAG: Keep the partial minute stable across database reads and visit finalization.
-  const now = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+  // FLAG: Keep both old minutes in one hour so ingestion cannot trigger unrelated
+  // hourly compaction and invalidate this page before its minute-coverage check.
+  const now = Math.floor(Date.now() / HOUR) * HOUR + 30 * 60_000 + 30_000;
   t.mock.method(Date, 'now', () => now);
   await enable();
   const reserved = await wake();
@@ -215,7 +216,9 @@ test('future ingestion during a live page preserves its generation and only whol
   assert.ok(await store.openScan(policy, 'live'));
   const futureAt = Date.now();
   await store.ingest({}, randomUUID(), message('future-during-page', futureAt));
-  assert.equal((await store.policy('-1'))!.scan_generation, policy.scan_generation);
+  const afterIngest = (await store.policy('-1'))!;
+  assert.equal(afterIngest.scan_generation, policy.scan_generation);
+  assert.equal(afterIngest.due_generation, policy.due_generation);
   await store.savePage(policy, 'live', []);
   const complete = (await store.policy('-1'))!;
   assert.equal(

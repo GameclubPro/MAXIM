@@ -339,6 +339,7 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   maxim_topology_require_managed_network_foundation "$API_SOURCE_SHA"
   maxim_topology_require_network_settings_v2 "$API_SOURCE_SHA"
   maxim_topology_require_exact_statistics_rollup_reader "$API_SOURCE_SHA"
+  maxim_topology_require_night_mode_recovery_reader "$API_SOURCE_SHA"
   if maxim_topology_git_compose_has_service "$API_SOURCE_SHA" "$MAXIM_PUBLISHER_SERVICE"; then
     TARGET_HAS_PUBLISHER=1
   else

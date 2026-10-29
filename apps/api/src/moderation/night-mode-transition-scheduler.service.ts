@@ -38,6 +38,9 @@ import {
   NIGHT_MODE_ROUTE_VERIFICATION_KIND,
   NIGHT_MODE_STICKY_ROUTE_PROBE_KIND,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+  NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
+  NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY,
+  NIGHT_MODE_RECOVERY_UNSAFE_PREFIX,
   NIGHT_MODE_TRANSITION_JOB_NAME,
   NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
@@ -45,17 +48,21 @@ import {
   parseNightModeRouteVerification,
   parseNightModeStickyRouteProbe,
   parseNightModeTransitionRecoveryOnly,
+  parseNightModeTransitionRecoveryObligation,
   type NightModeRouteVerification,
   type NightModeRouteVerificationProof,
   type NightModeStickyRouteProbe,
   type NightModeTransitionJob,
   type NightModeTransitionRecoveryOnly,
+  type NightModeTransitionRecoveryObligation,
+  type NightModeTransitionOpenEventRecovery,
 } from './night-mode-transition.queue';
 import {
   parseNightModeTransitionSessionKey,
   resolveCurrentNightModeCloseOccurrence,
   resolveCurrentNightModeOpenOccurrence,
   resolveNightModeTransitionSessionCloseAt,
+  resolveNightModeTransitionSessionOpenAt,
   resolveNextNightModeTransitionOccurrences,
   type NightModeTransitionOccurrence,
   type NightModeTransitionScheduleSettings,
@@ -159,6 +166,7 @@ type NightModeScheduledJobRegistryRow = {
   schedule_fingerprint: string;
   runtime_version?: number;
   created_at?: Date;
+  recovery_payload?: unknown;
 };
 
 type NightModeCloseLedgerRow = {
@@ -498,6 +506,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
 
     const normalizedChatId = normalizedChatIds[0]!;
     return this.runChatQueueMutationSerialized(normalizedChatId, async () => {
+      const obligationReview = await this.restoreRecoveryObligations(normalizedChatId);
       let snapshot = await this.readReconcileSnapshot(normalizedChatId);
       // FLAG: Settings and membership writes durably request this repair in PostgreSQL. Eligible
       // schedules only fill missing deterministic jobs so routine refreshes do not churn the queue.
@@ -525,8 +534,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             queueAvailable: true,
             scheduleEnabled: verified.settings !== null,
             passes: pass,
-            ...(recovery.manualReview || expectation?.manualReview
-              ? { manualReview: recovery.manualReview ?? expectation!.manualReview! }
+            ...(obligationReview || recovery.manualReview || expectation?.manualReview
+              ? {
+                  manualReview:
+                    obligationReview ?? recovery.manualReview ?? expectation!.manualReview!,
+                }
               : {}),
           };
         }
@@ -676,11 +688,275 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     if (job.stickyRouteProbe !== undefined) {
       return 'unsafe';
     }
-    const recovery = parseNightModeTransitionRecoveryOnly(job.recoveryOnly);
+    const recovery = parseNightModeTransitionRecoveryObligation(job.recoveryOnly);
     if (!recovery || job.chatId.trim().length === 0) {
       return 'unsafe';
     }
+    if (recovery.kind !== NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY) {
+      const jobId = buildNightModeTransitionRecoveryJobId(job.chatId, recovery);
+      const registry = await this.findScheduledJobRegistryRow(job.chatId, jobId);
+      const stored = parseNightModeTransitionRecoveryObligation(registry?.recovery_payload);
+      if (
+        !registry ||
+        !stored ||
+        JSON.stringify(stored) !== JSON.stringify(recovery) ||
+        !this.registryRowMatchesTransitionJob(registry, job, jobId)
+      )
+        return 'unsafe';
+      if (recovery.kind === NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY) {
+        const ledger = await this.readCloseLedger(job.chatId, recovery.sessionKey);
+        if (!ledger) return 'needed'; // Runtime may recover an exact persisted CLOSE event.
+        if (
+          this.hasNoAcceptedCloseDispatch(ledger, job.chatId) &&
+          ledger.terminal &&
+          ledger.status === MaxActionLedgerStatus.FAILED_TERMINAL
+        )
+          return 'already_complete';
+        return this.isExactCompletedCloseLedger(ledger, job.chatId) &&
+          ledger.remoteMessageId?.trim() &&
+          ledger.dispatchBotId?.trim()
+          ? 'needed'
+          : 'unsafe';
+      }
+    }
     return this.inspectRecoveryEnvelope(job.chatId.trim(), recovery);
+  }
+
+  async scheduleRecoveryObligation(
+    chatId: string,
+    input: NightModeTransitionRecoveryObligation,
+  ): Promise<void> {
+    const recovery = parseNightModeTransitionRecoveryObligation(input);
+    const normalizedChatId = chatId.trim();
+    if (!recovery || !normalizedChatId) throw new Error('Invalid night mode recovery obligation');
+    if (typeof this.prisma.$executeRaw !== 'function') {
+      throw new Error('Durable night mode recovery storage is unavailable');
+    }
+    await this.runChatQueueMutationSerialized(normalizedChatId, () =>
+      this.persistRecoveryObligation(normalizedChatId, recovery),
+    );
+  }
+
+  private async persistRecoveryObligation(
+    chatId: string,
+    recovery: NightModeTransitionRecoveryObligation,
+    reconcileFence?: NightModeTransitionReconcileFence,
+  ): Promise<void> {
+    const job = this.buildRecoveryObligationJob(chatId, recovery);
+    await this.upsertScheduledJobRegistryIntent(
+      {
+        chat_id: chatId,
+        job_id: buildNightModeTransitionRecoveryJobId(chatId, recovery),
+        transition: job.transition,
+        session_key: job.sessionKey,
+        scheduled_for: new Date(job.scheduledFor),
+        schedule_fingerprint: job.scheduleFingerprint!,
+        runtime_version: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
+        recovery_payload: recovery,
+      },
+      reconcileFence,
+    );
+    // FLAG: A committed payload is the recovery handoff. Queue unavailability must not
+    // make independent OPEN delivery depend on CLOSE cleanup; SQL rematerializes it.
+    try {
+      await this.enqueueRecoveryObligationJob(job);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          recoveryKind: recovery.kind,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Night mode recovery remains durable while queue materialization is unavailable',
+      );
+    }
+  }
+
+  async retireTransition(job: NightModeTransitionJob): Promise<void> {
+    await this.retainAcceptedOpenEventRecovery(job);
+    await this.requestJobReconcile(job);
+  }
+
+  private async retainAcceptedOpenEventRecovery(
+    job: NightModeTransitionJob,
+    options: {
+      queueMutationLocked?: boolean;
+      reconcileFence?: NightModeTransitionReconcileFence;
+    } = {},
+  ): Promise<boolean> {
+    // FLAG: Every retirement path, including scheduler cleanup, preserves an accepted OPEN
+    // event beyond the send deadline. This receipt-only handoff never authorizes another SEND.
+    if (job.transition !== 'open' || job.recoveryOnly) return false;
+    const session = parseNightModeTransitionSessionKey(job.sessionKey);
+    const openAt = resolveNightModeTransitionSessionOpenAt(job.sessionKey);
+    if (!session || openAt?.toISOString() !== job.scheduledFor) return false;
+    const ledger = await this.readNoticeLedger(job.chatId, job.sessionKey, 'open');
+    if (
+      !ledger ||
+      !this.isExactCompletedCloseLedger(ledger, job.chatId) ||
+      !ledger.remoteMessageId?.trim() ||
+      !ledger.dispatchBotId?.trim()
+    )
+      return false;
+    const recovery: NightModeTransitionOpenEventRecovery = {
+      kind: NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
+      version: 1,
+      sessionKey: job.sessionKey,
+      messageId: ledger.remoteMessageId.trim(),
+      botId: ledger.dispatchBotId.trim(),
+      timezone: session.timezone,
+      startMinutes: session.startMinutes,
+      endMinutes: session.endMinutes,
+    };
+    const proof = await this.inspectRecoveryEnvelope(job.chatId, recovery, ledger);
+    if (proof === 'unsafe') throw new Error('Accepted night mode OPEN event proof is unavailable');
+    if (proof === 'needed') {
+      if (options.queueMutationLocked) {
+        await this.persistRecoveryObligation(job.chatId, recovery, options.reconcileFence);
+      } else {
+        await this.scheduleRecoveryObligation(job.chatId, recovery);
+      }
+    }
+    return true;
+  }
+
+  private buildRecoveryObligationJob(
+    chatId: string,
+    recovery: NightModeTransitionRecoveryObligation,
+  ): NightModeTransitionJob {
+    const transition =
+      recovery.kind === NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY ? 'close' : 'open';
+    const dueAt =
+      transition === 'close'
+        ? resolveNightModeTransitionSessionCloseAt(recovery.sessionKey)
+        : resolveNightModeTransitionSessionOpenAt(recovery.sessionKey);
+    const fingerprint = this.buildRecoveryScheduleFingerprint(
+      recovery.timezone,
+      recovery.startMinutes,
+      recovery.endMinutes,
+    );
+    if (
+      !dueAt ||
+      (recovery.kind === NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY &&
+        recovery.scheduleFingerprint !== fingerprint)
+    ) {
+      throw new Error('Night mode recovery obligation has an inconsistent schedule');
+    }
+    return {
+      chatId,
+      transition,
+      scheduledFor: dueAt.toISOString(),
+      sessionKey: recovery.sessionKey,
+      scheduleFingerprint: fingerprint,
+      transitionRuntimeVersion: NIGHT_MODE_TRANSITION_RUNTIME_VERSION,
+      retryPolicyName: 'night-mode-transition',
+      recoveryOnly: recovery,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private async enqueueRecoveryObligationJob(job: NightModeTransitionJob): Promise<void> {
+    if (!this.queue || !job.recoveryOnly)
+      throw new Error('Night mode recovery queue is unavailable');
+    const jobId = buildNightModeTransitionRecoveryJobId(job.chatId, job.recoveryOnly);
+    const existing = await this.queue.getJob(jobId);
+    if (existing) {
+      const stored = parseNightModeTransitionRecoveryObligation(existing.data.recoveryOnly);
+      if (!stored || JSON.stringify(stored) !== JSON.stringify(job.recoveryOnly)) {
+        throw new Error('Night mode recovery queue identity is inconsistent');
+      }
+      if (
+        (await existing.getState()) === 'failed' &&
+        !this.isUnsafeRecoveryFailure(existing.failedReason)
+      ) {
+        await this.retryFailedTransitionJob(existing, jobId);
+      }
+      return;
+    }
+    await this.queue.add(NIGHT_MODE_TRANSITION_JOB_NAME, job, {
+      jobId,
+      attempts: NIGHT_MODE_TRANSITION_JOB_ATTEMPTS,
+      backoff: { type: 'fixed', delay: NIGHT_MODE_TRANSITION_JOB_BACKOFF_MS },
+      removeOnComplete: true,
+      removeOnFail: 1_000,
+    });
+  }
+
+  private async restoreRecoveryObligations(
+    chatId: string,
+  ): Promise<NightModeTransitionManualReview | null> {
+    let review: NightModeTransitionManualReview | null = null;
+    for (const row of await this.listScheduledJobRegistryRows([chatId])) {
+      if (row.recovery_payload == null) continue;
+      const recovery = parseNightModeTransitionRecoveryObligation(row.recovery_payload);
+      if (!recovery || buildNightModeTransitionRecoveryJobId(chatId, recovery) !== row.job_id) {
+        review ??= this.recoveryObligationManualReview(
+          row,
+          'Night mode recovery registry payload is unsafe',
+        );
+        continue;
+      }
+      let job: NightModeTransitionJob;
+      try {
+        job = this.buildRecoveryObligationJob(chatId, recovery);
+      } catch {
+        review ??= this.recoveryObligationManualReview(
+          row,
+          'Night mode recovery schedule is unsafe',
+        );
+        continue;
+      }
+      if (!this.registryRowMatchesTransitionJob(row, job, row.job_id)) {
+        review ??= this.recoveryObligationManualReview(
+          row,
+          'Night mode recovery registry identity is unsafe',
+        );
+        continue;
+      }
+      const disposition = await this.findExactManualReviewDisposition({
+        chatId,
+        jobId: row.job_id,
+        sessionKey: row.session_key,
+        fingerprint: row.schedule_fingerprint,
+      });
+      if (disposition.kind === 'acknowledged') continue;
+      if (disposition.kind === 'blocked') {
+        review ??= disposition.manualReview;
+        continue;
+      }
+      const existing = await this.queue?.getJob(row.job_id);
+      if (
+        existing &&
+        (await existing.getState()) === 'failed' &&
+        this.isUnsafeRecoveryFailure(existing.failedReason)
+      ) {
+        review ??= this.recoveryObligationManualReview(row, existing.failedReason);
+        continue;
+      }
+      await this.enqueueRecoveryObligationJob(job);
+    }
+    return review;
+  }
+
+  private recoveryObligationManualReview(
+    row: NightModeScheduledJobRegistryRow,
+    reason: string,
+  ): NightModeTransitionManualReview {
+    return {
+      category: 'unsafe_prior_provenance',
+      reason,
+      jobId: row.job_id,
+      ledgerJobId: null,
+      sessionKey: row.session_key,
+      fingerprint: row.schedule_fingerprint,
+    };
+  }
+
+  private isUnsafeRecoveryFailure(reason: string | undefined): boolean {
+    return (
+      reason?.startsWith(NIGHT_MODE_RECOVERY_UNSAFE_PREFIX) === true ||
+      reason?.startsWith('Night mode recovery-only proof is no longer valid') === true
+    );
   }
 
   async isTransitionManuallyFenced(
@@ -760,7 +1036,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     }
     const chatId = normalizedChatIds[0]!;
     const recovery = job.recoveryOnly
-      ? parseNightModeTransitionRecoveryOnly(job.recoveryOnly)
+      ? parseNightModeTransitionRecoveryObligation(job.recoveryOnly)
       : null;
     const expectedJobId = job.recoveryOnly
       ? recovery
@@ -963,7 +1239,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         });
         await this.enqueueChatSettingsOccurrences(currentSettings.chatId, currentSettings, {
           ...options,
-          skipCurrentCatchUp: recovery.blocksCurrentCatchUp,
+          skipCurrentCloseCatchUp: recovery.blocksCurrentCatchUp,
         });
         const verified = await this.readReconcileSnapshot(initialSettings.chatId);
         if (verified.signature === snapshot.signature) {
@@ -1024,7 +1300,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             includeCurrentClose: options.includeCurrentClose,
             includeCurrentOpen: options.includeCurrentOpen,
             strict: options.strictCatchUp ?? true,
-            skipCurrentCatchUp: recovery.blocksCurrentCatchUp,
+            skipCurrentCloseCatchUp: recovery.blocksCurrentCatchUp,
           },
         );
       } else {
@@ -1274,7 +1550,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       includeFuture?: boolean;
       strict?: boolean;
       reconcileFence?: NightModeTransitionReconcileFence;
-      skipCurrentCatchUp?: boolean;
+      skipCurrentCloseCatchUp?: boolean;
     } = {},
   ): Promise<NightModeEnqueueOccurrencesResult> {
     if (!this.queue) {
@@ -1302,7 +1578,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         occurrence.dueAt.getTime() <= nowMs &&
         ((options.includeCurrentOpen === true && occurrence.transition === 'open') ||
           (options.includeCurrentClose === true && occurrence.transition === 'close'));
-      if (isCurrentCatchUp && options.skipCurrentCatchUp) {
+      if (
+        isCurrentCatchUp &&
+        occurrence.transition === 'close' &&
+        options.skipCurrentCloseCatchUp
+      ) {
         continue;
       }
       const catchUpResolution = isCurrentCatchUp
@@ -1359,7 +1639,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           },
           {
             jobId,
-            delay: Math.max(0, occurrence.dueAt.getTime() - nowMs),
+            delay: Math.max(0, occurrence.dueAt.getTime() - Date.now()),
             attempts: NIGHT_MODE_TRANSITION_JOB_ATTEMPTS,
             backoff: {
               type: 'fixed',
@@ -1443,10 +1723,15 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     const currentCatchUpRequired =
       recovery.blocksCurrentCatchUp ||
       ((await this.isCurrentCatchUpRequired(settings)) ?? !futureSchedulePresent);
+    const currentCandidate =
+      resolveCurrentNightModeCloseOccurrence(settings) ??
+      resolveCurrentNightModeOpenOccurrence(settings);
+    // FLAG: Unsafe CLOSE provenance fences that close effect only. A separately proven
+    // current OPEN retains its own ledger, occurrence and durable retry authority.
     const currentOccurrence =
-      currentCatchUpRequired && !recovery.blocksCurrentCatchUp
-        ? (resolveCurrentNightModeCloseOccurrence(settings) ??
-          resolveCurrentNightModeOpenOccurrence(settings))
+      currentCatchUpRequired &&
+      !(recovery.blocksCurrentCatchUp && currentCandidate?.transition === 'close')
+        ? currentCandidate
         : null;
     const currentCatchUp = currentOccurrence
       ? {
@@ -1484,7 +1769,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       includeFuture: !futureScheduleComplete,
       strict: true,
       reconcileFence,
-      skipCurrentCatchUp: recovery.blocksCurrentCatchUp,
+      skipCurrentCloseCatchUp: recovery.blocksCurrentCatchUp,
     });
     return {
       futureJobIds,
@@ -1957,7 +2242,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     }
 
     const rows = (await this.listScheduledJobRegistryRows([chatId])).filter(
-      (row) => row.scheduled_for.getTime() <= Date.now(),
+      (row) => row.recovery_payload == null && row.scheduled_for.getTime() <= Date.now(),
     );
     for (const row of rows) {
       if (seenSessions.has(row.session_key)) {
@@ -2229,10 +2514,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
 
   private async inspectRecoveryEnvelope(
     chatId: string,
-    recovery: NightModeTransitionRecoveryOnly,
+    recovery: NightModeTransitionRecoveryOnly | NightModeTransitionOpenEventRecovery,
     knownLedger?: NightModeCloseLedgerRow,
   ): Promise<NightModeRecoveryOnlyPreflight> {
-    const ledger = knownLedger ?? (await this.readCloseLedger(chatId, recovery.sessionKey));
+    const transition =
+      recovery.kind === NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY ? 'open' : 'close';
+    const ledger =
+      knownLedger ?? (await this.readNoticeLedger(chatId, recovery.sessionKey, transition));
     if (
       !ledger ||
       !this.isExactCompletedCloseLedger(ledger, chatId) ||
@@ -2247,7 +2535,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         chatId,
         messageId: recovery.messageId,
         botId: recovery.botId,
-        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        ruleCode: transition === 'open' ? 'NIGHT_MODE_OPEN_NOTICE' : 'NIGHT_MODE_CLOSE_NOTICE',
         metadata: {
           path: ['sessionKey'],
           equals: recovery.sessionKey,
@@ -2263,11 +2551,19 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     chatId: string,
     sessionKey: string,
   ): Promise<NightModeCloseLedgerRow | null> {
+    return this.readNoticeLedger(chatId, sessionKey, 'close');
+  }
+
+  private async readNoticeLedger(
+    chatId: string,
+    sessionKey: string,
+    transition: 'close' | 'open',
+  ): Promise<NightModeCloseLedgerRow | null> {
     if (typeof this.prisma.maxActionLedgerEntry?.findUnique !== 'function') {
       return null;
     }
     return this.prisma.maxActionLedgerEntry.findUnique({
-      where: { jobId: buildNightModeNoticeIdempotencyKey('close', chatId, sessionKey) },
+      where: { jobId: buildNightModeNoticeIdempotencyKey(transition, chatId, sessionKey) },
       select: {
         actionType: true,
         chatId: true,
@@ -2597,6 +2893,22 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         throw new NightModeTransitionFailedJobSnapshotUnstableError(
           `Night mode transition failed job did not stabilize before durable inspection (${params.jobId})`,
         );
+      }
+      if (
+        params.transition === 'open' &&
+        (await this.retainAcceptedOpenEventRecovery(
+          {
+            chatId: params.chatId,
+            transition: 'open',
+            sessionKey: params.sessionKey,
+            scheduledFor: params.scheduledFor,
+          },
+          { queueMutationLocked: true, reconcileFence: options.reconcileFence },
+        ))
+      ) {
+        await this.removeJob(failedJob, { strict: true });
+        await this.deleteScheduledJobRegistryRow(params.chatId, params.jobId);
+        return { kind: 'skip' };
       }
       transitionRuntimeVersion = failedJob.data?.transitionRuntimeVersion;
       currentRuntimeJob =
@@ -3092,9 +3404,21 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     const rows = await this.listScheduledJobRegistryRows(normalizedChatIds);
     const activeJobIds: string[] = [];
     for (const row of rows) {
+      // FLAG: Independent receipt/cleanup obligations outlive ordinary schedule replacement.
+      // Only their own exact completion may remove their durable payload.
+      if (row.recovery_payload != null) continue;
       if (options.keepJobIds?.has(row.job_id)) {
         continue;
       }
+      await this.retainAcceptedOpenEventRecovery(
+        {
+          chatId: row.chat_id,
+          transition: row.transition,
+          sessionKey: row.session_key,
+          scheduledFor: row.scheduled_for.toISOString(),
+        },
+        { queueMutationLocked: true, reconcileFence: options.reconcileFence },
+      );
       const job = await this.queue.getJob(row.job_id);
       if (!job) {
         await this.deleteScheduledJobRegistryRow(row.chat_id, row.job_id);
@@ -3133,6 +3457,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
           "scheduled_for",
           "schedule_fingerprint",
           "runtime_version",
+          "recovery_payload",
           "created_at"
         FROM "night_mode_transition_scheduled_jobs"
         WHERE "chat_id" IN (${Prisma.join(chatIds)})
@@ -3198,6 +3523,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             "scheduled_for",
             "schedule_fingerprint",
             "runtime_version",
+            "recovery_payload",
             "created_at",
             "updated_at"
           )
@@ -3209,6 +3535,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             ${row.scheduled_for},
             ${row.schedule_fingerprint},
             ${row.runtime_version ?? 3},
+            ${row.recovery_payload == null ? null : JSON.stringify(row.recovery_payload)}::JSONB,
             CURRENT_TIMESTAMP,
             CURRENT_TIMESTAMP
           )
@@ -3219,19 +3546,22 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             "scheduled_for" = EXCLUDED."scheduled_for",
             "schedule_fingerprint" = EXCLUDED."schedule_fingerprint",
             "runtime_version" = EXCLUDED."runtime_version",
+            "recovery_payload" = EXCLUDED."recovery_payload",
             "updated_at" = CURRENT_TIMESTAMP
           WHERE ROW(
             "night_mode_transition_scheduled_jobs"."transition",
             "night_mode_transition_scheduled_jobs"."session_key",
             "night_mode_transition_scheduled_jobs"."scheduled_for",
             "night_mode_transition_scheduled_jobs"."schedule_fingerprint",
-            "night_mode_transition_scheduled_jobs"."runtime_version"
+            "night_mode_transition_scheduled_jobs"."runtime_version",
+            "night_mode_transition_scheduled_jobs"."recovery_payload"
           ) IS DISTINCT FROM ROW(
             EXCLUDED."transition",
             EXCLUDED."session_key",
             EXCLUDED."scheduled_for",
             EXCLUDED."schedule_fingerprint",
-            EXCLUDED."runtime_version"
+            EXCLUDED."runtime_version",
+            EXCLUDED."recovery_payload"
           )
           RETURNING "chat_id"
         )

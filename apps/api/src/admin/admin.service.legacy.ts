@@ -1,4 +1,5 @@
 import { resolveModerationSanctionExpiry } from '../moderation/moderation-sanction-expiry.util';
+import { resolveNightModeTransitionSnapshot } from '../moderation/night-mode-transition-time.util';
 import { resolveAdminBotUserId } from './admin-bot-identity';
 import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
 import { assertPublisherSuggestionDeliveryReady } from './publisher-suggestion-setup-block';
@@ -10790,6 +10791,10 @@ export class AdminService implements OnModuleDestroy {
       source,
       action: 'OPEN_CHAT',
       message,
+      resolveMessage: (settings) =>
+        resolveNightModeTransitionSnapshot(settings)?.status === 'closed'
+          ? 'Ручное закрытие снято. Чат остаётся закрыт по ночному расписанию.'
+          : message,
       settings: {
         nightModeForceCloseEnabled: false,
         nightModeForceCloseForever: false,
@@ -10798,7 +10803,11 @@ export class AdminService implements OnModuleDestroy {
     });
     command.result = result;
     if (result.applied) await this.chatContextCache.invalidate(chatId);
-    return { ok: true, message, ...(!result.applied ? { skipped: true } : {}) };
+    return {
+      ok: true,
+      message: result.noticeText ?? message,
+      ...(!result.applied ? { skipped: true } : {}),
+    };
   }
 
   isSuperBanDeveloperUserId(userId: string | null | undefined): boolean {

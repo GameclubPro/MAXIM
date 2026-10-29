@@ -363,6 +363,16 @@ export function resolveNightModeTransitionSessionCloseAt(sessionKey: string): Da
     : null;
 }
 
+export function resolveNightModeTransitionSessionOpenAt(sessionKey: string): Date | null {
+  const parsed = parseNightModeTransitionSessionKey(sessionKey);
+  if (!parsed || parsed.startMinutes === parsed.endMinutes) return null;
+  const openDateKey =
+    parsed.startMinutes < parsed.endMinutes
+      ? parsed.sessionDateKey
+      : addDaysToDateKey(parsed.sessionDateKey, 1);
+  return zonedDateTimeToUtc(openDateKey, parsed.endMinutes, parsed.timezone);
+}
+
 function resolveNightModeTransitionSessionDateKey(params: {
   currentDateKey: string;
   previousDateKey: string;

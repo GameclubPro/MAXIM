@@ -4,12 +4,18 @@ import { MaxActionNoExecutableRouteError } from '../max/max-action-dispatch-erro
 import {
   buildNightModeTransitionJobId,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+  NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY,
+  NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
   NIGHT_MODE_TRANSITION_LOCK_BUSY_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
   NIGHT_MODE_TRANSITION_PROCESS_STOP,
   type NightModeTransitionJob,
 } from './night-mode-transition.queue';
-import { buildNightModeTransitionScheduleFingerprint } from './night-mode-transition-generation.util';
+import {
+  buildNightModeTransitionScheduleFingerprint,
+  buildNightModeTransitionSideEffectFingerprint,
+} from './night-mode-transition-generation.util';
+import { NightModeTransitionNoticeEventPersistenceError } from './night-mode-transition-notice-persistence-error';
 import {
   NightModeTransitionRuntimeService,
   type NightModeTransitionRuntimeHooks,
@@ -77,6 +83,9 @@ function createSettings(
     nightModeCommentsEnabled: false,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: '',
+    nightModeForceCloseEnabled: false,
+    nightModeForceCloseForever: false,
+    nightModeForceCloseUntil: '',
     nightModeBotButtons: null,
     nightModeBotButtonEnabled: false,
     nightModeBotButtonUrl: '',
@@ -102,10 +111,47 @@ function createVersionedJob(job: NightModeTransitionJob = OPEN_JOB): NightModeTr
   };
 }
 
+function createCleanupJob(settings = createSettings()): NightModeTransitionJob {
+  return {
+    ...OPEN_JOB,
+    recoveryOnly: {
+      kind: NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY,
+      version: 1,
+      sessionKey: OPEN_JOB.sessionKey,
+      timezone: settings.nightModeTimezone,
+      startMinutes: settings.nightModeStartTimeMinutes,
+      endMinutes: settings.nightModeEndTimeMinutes,
+      openScheduledFor: OPEN_JOB.scheduledFor,
+      scheduleFingerprint: buildNightModeTransitionScheduleFingerprint(settings),
+      sideEffectFingerprint: buildNightModeTransitionSideEffectFingerprint(settings),
+    },
+  };
+}
+
+function createCloseEventLookup(openEvent: object | null = null) {
+  return jest.fn(async ({ where }: { where: { ruleCode: string } }) =>
+    where.ruleCode === 'NIGHT_MODE_OPEN_NOTICE'
+      ? openEvent
+      : {
+          id: 'night-close-event-1',
+          messageId: 'night-close-1',
+          botId: 'bot-1',
+        },
+  );
+}
+
 function createHooks(
   overrides: Partial<NightModeTransitionRuntimeHooks> = {},
 ): NightModeTransitionRuntimeHooks {
   return {
+    scheduleRecoveryObligation: jest.fn().mockResolvedValue(undefined),
+    recoverOpenedNoticeEvent: jest.fn().mockResolvedValue({
+      eventId: 'open-event',
+      sessionKey: OPEN_JOB.sessionKey,
+      messageId: 'open-message',
+      botId: 'bot-1',
+    }),
+    recoverOpenedNoticeEventFromLedger: jest.fn().mockResolvedValue(null),
     recoverClosedNoticeEvent: jest.fn().mockResolvedValue({
       eventId: 'night-close-event-recovered-default',
       sessionKey: CLOSE_JOB.sessionKey,
@@ -167,6 +213,168 @@ describe('NightModeTransitionRuntimeService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('retains the normal occurrence when the durable cleanup handoff fails before opening', async () => {
+    const redisCounter = createRedisCounterMock();
+    const error = new Error('durable registry unavailable');
+    const hooks = createHooks({ scheduleRecoveryObligation: jest.fn().mockRejectedValue(error) });
+    const service = new NightModeTransitionRuntimeService(
+      createPrisma() as never,
+      redisCounter as never,
+    );
+    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).rejects.toBe(error);
+    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
+    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+  });
+
+  it('retains exact opening event repair after an accepted send and never sends again on retry', async () => {
+    const prisma = createPrisma();
+    const error = new NightModeTransitionNoticeEventPersistenceError(
+      {
+        chatId: 'chat-1',
+        ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
+        messageId: 'accepted-open',
+        botId: 'bot-1',
+        sessionKey: OPEN_JOB.sessionKey,
+        timezone: 'Europe/Moscow',
+        startMinutes: 1380,
+        endMinutes: 480,
+      },
+      new Error('event write failed'),
+    );
+    const hooks = createHooks({ sendOpenedNotice: jest.fn().mockRejectedValue(error) });
+    const service = new NightModeTransitionRuntimeService(prisma as never);
+    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).rejects.toBe(error);
+    const recovery = {
+      kind: NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
+      version: 1 as const,
+      sessionKey: OPEN_JOB.sessionKey,
+      messageId: 'accepted-open',
+      botId: 'bot-1',
+      timezone: 'Europe/Moscow',
+      startMinutes: 1380,
+      endMinutes: 480,
+    };
+    expect(hooks.scheduleRecoveryObligation).toHaveBeenCalledWith('chat-1', recovery);
+    await service.processNightModeTransitionJob(OPEN_JOB, hooks);
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    expect(hooks.recoverOpenedNoticeEventFromLedger).toHaveBeenCalledTimes(1);
+    jest.mocked(hooks.recoverOpenedNoticeEvent).mockResolvedValue({
+      eventId: 'repaired-open-event',
+      sessionKey: OPEN_JOB.sessionKey,
+      messageId: 'accepted-open',
+      botId: 'bot-1',
+    });
+    prisma.chatSettings.findUnique.mockResolvedValue(createSettings({ nightModeEnabled: false }));
+    await service.processNightModeTransitionJob({ ...OPEN_JOB, recoveryOnly: recovery }, hooks);
+    expect(hooks.recoverOpenedNoticeEvent).toHaveBeenCalledTimes(1);
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { nightModeForceCloseForever: true, nightModeForceCloseUntil: '' },
+    { nightModeForceCloseForever: false, nightModeForceCloseUntil: '2026-05-31T07:00:00.000Z' },
+  ])(
+    'does not announce opening or remove its close notice during manual closure: %j',
+    async (manual) => {
+      const settings = createSettings({ nightModeForceCloseEnabled: true, ...manual });
+      const prisma = createPrisma();
+      prisma.chatSettings.findUnique.mockResolvedValue(settings);
+      const hooks = createHooks();
+      const service = new NightModeTransitionRuntimeService(prisma as never);
+      await service.processNightModeTransitionJob(OPEN_JOB, hooks);
+      await service.processNightModeTransitionJob(createCleanupJob(), hooks);
+      expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
+      expect(hooks.scheduleRecoveryObligation).not.toHaveBeenCalled();
+      expect(hooks.recoverClosedNoticeEventFromLedger).not.toHaveBeenCalled();
+      expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows opening after timed manual closure expired', async () => {
+    const prisma = createPrisma();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      createSettings({
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseUntil: '2026-05-31T06:11:00.000Z',
+      }),
+    );
+    const hooks = createHooks();
+    await new NightModeTransitionRuntimeService(prisma as never).processNightModeTransitionJob(
+      OPEN_JOB,
+      hooks,
+    );
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks manual closure at final OPEN dispatch and at deferred cleanup execution', async () => {
+    const prisma = createPrisma();
+    const maxSend = jest.fn();
+    const hooks = createHooks({
+      sendOpenedNotice: jest.fn(async (_settings, _snapshot, guard) => {
+        prisma.chatSettings.findUnique.mockResolvedValue(
+          createSettings({
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+          }),
+        );
+        if (!guard || !(await guard())) throw new NightModeTransitionStaleStateError('chat-1');
+        maxSend();
+        return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
+      }),
+    });
+    const service = new NightModeTransitionRuntimeService(prisma as never);
+    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).rejects.toBeInstanceOf(
+      NightModeTransitionStaleStateError,
+    );
+    await service.processNightModeTransitionJob(createCleanupJob(), hooks);
+    expect(maxSend).not.toHaveBeenCalled();
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+  });
+
+  it('observes no proven cleanup target without treating an open-only schedule as a failure', async () => {
+    const settings = createSettings({ nightModeBotMessageEnabled: false });
+    const prisma = createPrisma();
+    prisma.chatSettings.findUnique.mockResolvedValue(settings);
+    const hooks = createHooks();
+    const service = new NightModeTransitionRuntimeService(prisma as never);
+    await service.processNightModeTransitionJob(OPEN_JOB, hooks);
+    await expect(
+      service.processNightModeTransitionJob(createCleanupJob(settings), hooks),
+    ).resolves.toEqual(NIGHT_MODE_TRANSITION_PROCESS_CONTINUE);
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+  });
+
+  it('rejects cleanup evidence bound to a different session without deleting or sending', async () => {
+    const hooks = createHooks({
+      recoverClosedNoticeEventFromLedger: jest.fn().mockResolvedValue({
+        eventId: 'foreign-event',
+        sessionKey: 'foreign-session',
+        messageId: 'foreign-message',
+        botId: 'bot-1',
+      }),
+    });
+    await expect(
+      new NightModeTransitionRuntimeService(createPrisma() as never).processNightModeTransitionJob(
+        createCleanupJob(),
+        hooks,
+      ),
+    ).rejects.toThrow('cleanup receipt identity does not match');
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
+  });
+
+  it('does not execute an older cleanup obligation in the next night session', async () => {
+    jest.setSystemTime(new Date('2026-06-01T06:00:00.000Z'));
+    const hooks = createHooks();
+    await new NightModeTransitionRuntimeService(
+      createPrisma() as never,
+    ).processNightModeTransitionJob(createCleanupJob(), hooks);
+    expect(hooks.recoverClosedNoticeEventFromLedger).not.toHaveBeenCalled();
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
   });
 
   it('parses exact v2 close-event recovery details and preserves pending legacy markers', () => {
@@ -508,9 +716,22 @@ describe('NightModeTransitionRuntimeService', () => {
     expect(persistedState).not.toContain('closeNoticeEventRecovery');
 
     jest.setSystemTime(new Date('2026-05-31T05:00:00.000Z'));
+    prisma.moderationEvent.findFirst
+      .mockReset()
+      .mockImplementation(async ({ where }) =>
+        where.ruleCode === 'NIGHT_MODE_OPEN_NOTICE'
+          ? null
+          : {
+              id: 'night-close-event-recovered-1',
+              messageId: 'night-close-recovered-1',
+              botId: 'bot-1',
+            },
+      );
     await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).resolves.toEqual(
       NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
     );
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+    await service.processNightModeTransitionJob(createCleanupJob(), hooks);
     expect(hooks.deleteClosedNotice).toHaveBeenCalledWith(
       'chat-1',
       'night-close-recovered-1',
@@ -572,43 +793,52 @@ describe('NightModeTransitionRuntimeService', () => {
     );
   });
 
-  it('retains a pending marker and never writes open when strict recovery proof fails', async () => {
-    jest.setSystemTime(new Date('2026-05-31T05:00:00.000Z'));
+  it('sends opening independently of an unproven close and retains its separate cleanup failure', async () => {
     const redisCounter = createRedisCounterMock();
-    const pendingState = JSON.stringify({
-      status: 'closed',
-      sessionKey: OPEN_JOB.sessionKey,
-      closeNoticeMessageId: 'night-close-unproven-1',
-      closeNoticeBotId: 'bot-1',
-      closeNoticeEventRecovery: {
-        version: 2,
-        pending: true,
-        timezone: 'Europe/Moscow',
-        startMinutes: 23 * 60,
-        endMinutes: 8 * 60,
-      },
-    });
-    redisCounter.stringCache.set('night-mode-transition-state:v1:chat-1', pendingState);
+    redisCounter.stringCache.set(
+      'night-mode-transition-state:v1:chat-1',
+      JSON.stringify({
+        status: 'closed',
+        sessionKey: OPEN_JOB.sessionKey,
+        closeNoticeMessageId: 'unproven-close',
+        closeNoticeBotId: 'bot-1',
+        closeNoticeEventRecovery: {
+          version: 2,
+          pending: true,
+          timezone: 'Europe/Moscow',
+          startMinutes: 1380,
+          endMinutes: 480,
+        },
+      }),
+    );
     const proofError = new Error('exact completed ledger proof is missing');
     const hooks = createHooks({
-      recoverClosedNoticeEvent: jest.fn().mockRejectedValue(proofError),
+      recoverClosedNoticeEventFromLedger: jest.fn().mockRejectedValue(proofError),
     });
     const service = new NightModeTransitionRuntimeService(
-      createPrisma() as unknown as PrismaService,
+      createPrisma() as never,
       redisCounter as never,
     );
-
-    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).rejects.toBe(proofError);
-
-    expect(redisCounter.stringCache.get('night-mode-transition-state:v1:chat-1')).toBe(
-      pendingState,
+    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).resolves.toEqual(
+      NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
     );
-    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+    expect(hooks.recoverClosedNoticeEventFromLedger).not.toHaveBeenCalled();
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    expect(hooks.scheduleRecoveryObligation).toHaveBeenCalledWith(
+      'chat-1',
+      createCleanupJob().recoveryOnly,
+    );
+    await expect(service.processNightModeTransitionJob(createCleanupJob(), hooks)).rejects.toBe(
+      proofError,
+    );
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
     expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
-    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(redisCounter.stringCache.get('night-mode-transition-state:v1:chat-1')!),
+    ).toMatchObject({ status: 'open' });
   });
 
-  it('silently advances open state past a pending marker from another session', async () => {
+  it('announces the current opening past a pending marker from another session', async () => {
     jest.setSystemTime(new Date('2026-05-31T05:00:00.000Z'));
     const redisCounter = createRedisCounterMock();
     const stateKey = 'night-mode-transition-state:v1:chat-1';
@@ -644,18 +874,12 @@ describe('NightModeTransitionRuntimeService', () => {
       updatedAt: new Date().toISOString(),
     });
     expect(hooks.recoverClosedNoticeEvent).not.toHaveBeenCalled();
-    expect(hooks.recoverClosedNoticeEventFromLedger).toHaveBeenCalledWith({
-      chatId: 'chat-1',
-      sessionKey: OPEN_JOB.sessionKey,
-      timezone: 'Europe/Moscow',
-      startMinutes: 23 * 60,
-      endMinutes: 8 * 60,
-    });
+    expect(hooks.recoverClosedNoticeEventFromLedger).not.toHaveBeenCalled();
     expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
-    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
   });
 
-  it('cleans exact current-session ledger proof without touching stale state or announcing open', async () => {
+  it('cleans exact current-session ledger proof after an independent opening without touching the stale notice', async () => {
     jest.setSystemTime(new Date('2026-05-31T05:00:00.000Z'));
     const redisCounter = createRedisCounterMock();
     const stateKey = 'night-mode-transition-state:v1:chat-1';
@@ -692,6 +916,9 @@ describe('NightModeTransitionRuntimeService', () => {
       NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
     );
 
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+    await service.processNightModeTransitionJob(createCleanupJob(), hooks);
     expect(hooks.recoverClosedNoticeEvent).not.toHaveBeenCalled();
     expect(hooks.recoverClosedNoticeEventFromLedger).toHaveBeenCalledWith({
       chatId: 'chat-1',
@@ -722,7 +949,7 @@ describe('NightModeTransitionRuntimeService', () => {
       expect.anything(),
       expect.anything(),
     );
-    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
     expect(JSON.parse(redisCounter.stringCache.get(stateKey)!)).toEqual({
       status: 'open',
       sessionKey: OPEN_JOB.sessionKey,
@@ -801,7 +1028,7 @@ describe('NightModeTransitionRuntimeService', () => {
     ['legacy v1', { version: 1, pending: true }],
     ['malformed v2', { version: 2, pending: true, timezone: 'Europe/Moscow' }],
   ])('fails closed for a %s pending marker without sending again', async (_label, marker) => {
-    jest.setSystemTime(new Date('2026-05-31T05:00:00.000Z'));
+    jest.setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
     const redisCounter = createRedisCounterMock();
     const pendingState = JSON.stringify({
       status: 'closed',
@@ -817,7 +1044,7 @@ describe('NightModeTransitionRuntimeService', () => {
       redisCounter as never,
     );
 
-    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).rejects.toThrow(
+    await expect(service.processNightModeTransitionJob(CLOSE_JOB, hooks)).rejects.toThrow(
       'Night mode close-event recovery marker is unsupported (chat-1)',
     );
 
@@ -855,63 +1082,26 @@ describe('NightModeTransitionRuntimeService', () => {
     expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
   });
 
-  it('repairs a missed opening from the persisted close notice after Redis state loss', async () => {
-    const findFirst = jest
-      .fn()
-      .mockResolvedValueOnce({
-        id: 'night-close-event-1',
-        messageId: 'night-close-persisted-1',
-        botId: 'origin-bot-1',
-      })
-      .mockResolvedValueOnce(null);
-    const prisma = createPrisma({ findFirst });
+  it('sends opening after Redis loss and cleans the persisted close only in its own task', async () => {
+    const findFirst = createCloseEventLookup();
     const redisCounter = createRedisCounterMock();
     const hooks = createHooks();
     const service = new NightModeTransitionRuntimeService(
-      prisma as unknown as PrismaService,
+      createPrisma({ findFirst }) as never,
       redisCounter as never,
     );
-
-    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).resolves.toEqual(
-      NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
-    );
-
+    await service.processNightModeTransitionJob(OPEN_JOB, hooks);
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+    await service.processNightModeTransitionJob(createCleanupJob(), hooks);
     expect(hooks.deleteClosedNotice).toHaveBeenCalledWith(
       'chat-1',
-      'night-close-persisted-1',
-      'origin-bot-1',
-      expect.objectContaining({
-        sessionKey: OPEN_JOB.sessionKey,
-        event: expect.objectContaining({ id: 'night-close-event-1' }),
-      }),
+      'night-close-1',
+      'bot-1',
+      expect.objectContaining({ event: expect.objectContaining({ id: 'night-close-event-1' }) }),
       expect.any(Function),
     );
-    expect(hooks.sendOpenedNotice).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId: 'chat-1' }),
-      expect.objectContaining({
-        sessionKey: OPEN_JOB.sessionKey,
-        startMinutes: 23 * 60,
-        endMinutes: 8 * 60,
-      }),
-      expect.any(Function),
-    );
-    expect(findFirst).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        where: expect.objectContaining({ ruleCode: 'NIGHT_MODE_CLOSE_NOTICE' }),
-      }),
-    );
-    expect(findFirst).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        where: expect.objectContaining({ ruleCode: 'NIGHT_MODE_OPEN_NOTICE' }),
-      }),
-    );
-    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
-      'night-mode-transition-state:v1:chat-1',
-      expect.stringContaining('"status":"open"'),
-      expect.any(Number),
-    );
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -952,6 +1142,11 @@ describe('NightModeTransitionRuntimeService', () => {
       NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
     );
 
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+    await service.processNightModeTransitionJob(
+      createCleanupJob(createSettings({ nightModeOpenMessageEnabled: false })),
+      hooks,
+    );
     expect(hooks.recoverClosedNoticeEventFromLedger).toHaveBeenCalledWith({
       chatId: 'chat-1',
       sessionKey: OPEN_JOB.sessionKey,
@@ -1140,7 +1335,7 @@ describe('NightModeTransitionRuntimeService', () => {
   });
 
   it('rejects a completed close ledger result that mismatches markerless runtime state', async () => {
-    jest.setSystemTime(new Date('2026-05-31T05:00:00.000Z'));
+    jest.setSystemTime(new Date('2026-05-30T20:12:00.000Z'));
     const redisCounter = createRedisCounterMock();
     const stateKey = 'night-mode-transition-state:v1:chat-1';
     const closedState = JSON.stringify({
@@ -1163,7 +1358,7 @@ describe('NightModeTransitionRuntimeService', () => {
       redisCounter as never,
     );
 
-    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).rejects.toThrow(
+    await expect(service.processNightModeTransitionJob(CLOSE_JOB, hooks)).rejects.toThrow(
       'Night mode close ledger recovery mismatched runtime state (chat-1)',
     );
 
@@ -1172,7 +1367,7 @@ describe('NightModeTransitionRuntimeService', () => {
     expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
   });
 
-  it('silently advances open state past markerless closed state from another session', async () => {
+  it('announces the current opening past markerless closed state from another session', async () => {
     jest.setSystemTime(new Date('2026-05-31T05:00:00.000Z'));
     const redisCounter = createRedisCounterMock();
     const stateKey = 'night-mode-transition-state:v1:chat-1';
@@ -1200,9 +1395,9 @@ describe('NightModeTransitionRuntimeService', () => {
       closeNoticeBotId: null,
       updatedAt: new Date().toISOString(),
     });
-    expect(hooks.recoverClosedNoticeEventFromLedger).toHaveBeenCalledTimes(1);
+    expect(hooks.recoverClosedNoticeEventFromLedger).not.toHaveBeenCalled();
     expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
-    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
   });
 
   it('skips runtime before settings lookup when the exact normal occurrence is acknowledged', async () => {
@@ -1403,7 +1598,7 @@ describe('NightModeTransitionRuntimeService', () => {
       redisCounter as never,
     );
 
-    await expect(service.processNightModeTransitionJob(job, hooks)).rejects.toThrow(
+    await expect(service.processNightModeTransitionJob(createCleanupJob(), hooks)).rejects.toThrow(
       'Night mode transition state changed before dispatch (chat-1)',
     );
 
@@ -1531,170 +1726,74 @@ describe('NightModeTransitionRuntimeService', () => {
   });
 
   it('does not resend a persisted opening when Redis state is missing', async () => {
-    const findFirst = jest
-      .fn()
-      .mockResolvedValueOnce({
-        id: 'night-close-event-1',
-        messageId: 'night-close-persisted-1',
-        botId: 'origin-bot-1',
-      })
-      .mockResolvedValueOnce({ id: 'night-open-event-1' });
-    const prisma = createPrisma({ findFirst });
-    const redisCounter = createRedisCounterMock();
     const hooks = createHooks();
     const service = new NightModeTransitionRuntimeService(
-      prisma as unknown as PrismaService,
-      redisCounter as never,
+      createPrisma({ findFirst: createCloseEventLookup({ id: 'open-event' }) }) as never,
     );
-
     await service.processNightModeTransitionJob(OPEN_JOB, hooks);
-
-    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith(
-      'chat-1',
-      'night-close-persisted-1',
-      'origin-bot-1',
-      expect.objectContaining({
-        sessionKey: OPEN_JOB.sessionKey,
-        event: expect.objectContaining({ id: 'night-close-event-1' }),
-      }),
-      expect.any(Function),
-    );
     expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
-    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
-      'night-mode-transition-state:v1:chat-1',
-      expect.stringContaining('"status":"open"'),
-      expect.any(Number),
-    );
-  });
-
-  it('rethrows a generic close cleanup failure and retains closed state for retry', async () => {
-    const prisma = createPrisma({
-      findFirst: jest
-        .fn()
-        .mockResolvedValueOnce({
-          id: 'night-close-event-1',
-          messageId: 'night-close-1',
-          botId: null,
-        })
-        .mockResolvedValue(null),
-    });
-    const redisCounter = createRedisCounterMock();
-    const stateKey = 'night-mode-transition-state:v1:chat-1';
-    const closedState = JSON.stringify({
-      status: 'closed',
-      sessionKey: OPEN_JOB.sessionKey,
-      closeNoticeMessageId: 'night-close-1',
-    });
-    redisCounter.stringCache.set(stateKey, closedState);
-    const cleanupError = new Error('transient delete database failure');
-    const hooks = createHooks({
-      deleteClosedNotice: jest.fn().mockRejectedValue(cleanupError),
-    });
-    const service = new NightModeTransitionRuntimeService(
-      prisma as unknown as PrismaService,
-      redisCounter as never,
-    );
-
-    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).rejects.toBe(cleanupError);
-
+    expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
+    await service.processNightModeTransitionJob(createCleanupJob(), hooks);
     expect(hooks.deleteClosedNotice).toHaveBeenCalledWith(
       'chat-1',
       'night-close-1',
-      null,
-      expect.objectContaining({ event: expect.objectContaining({ id: 'night-close-event-1' }) }),
+      'bot-1',
+      expect.any(Object),
       expect.any(Function),
     );
-    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
-    expect(redisCounter.stringCache.get(stateKey)).toBe(closedState);
-    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
   });
 
-  it('keeps an access-loss stop when no fresh opening can be sent', async () => {
-    const prisma = createPrisma({
-      findFirst: jest
-        .fn()
-        .mockResolvedValueOnce({
-          id: 'night-close-event-1',
-          messageId: 'night-close-1',
-          botId: null,
-        })
-        .mockResolvedValue(null),
-    });
-    prisma.chatSettings.findUnique.mockResolvedValue(
-      createSettings({ nightModeOpenMessageEnabled: false }),
-    );
+  it('retries cleanup independently after the opening is delivered', async () => {
     const redisCounter = createRedisCounterMock();
-    redisCounter.stringCache.set(
-      'night-mode-transition-state:v1:chat-1',
-      JSON.stringify({
-        status: 'closed',
-        sessionKey: OPEN_JOB.sessionKey,
-        closeNoticeMessageId: 'night-close-1',
-      }),
+    const cleanupError = new Error('transient delete database failure');
+    const hooks = createHooks({ deleteClosedNotice: jest.fn().mockRejectedValue(cleanupError) });
+    const service = new NightModeTransitionRuntimeService(
+      createPrisma({ findFirst: createCloseEventLookup() }) as never,
+      redisCounter as never,
     );
+    await service.processNightModeTransitionJob(OPEN_JOB, hooks);
+    const openState = redisCounter.stringCache.get('night-mode-transition-state:v1:chat-1');
+    await expect(service.processNightModeTransitionJob(createCleanupJob(), hooks)).rejects.toBe(
+      cleanupError,
+    );
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    expect(redisCounter.stringCache.get('night-mode-transition-state:v1:chat-1')).toBe(openState);
+    expect(hooks.scheduleRecoveryObligation).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a cleanup access failure without stopping the next schedule when opening notices are disabled', async () => {
+    const settings = createSettings({ nightModeOpenMessageEnabled: false });
+    const prisma = createPrisma({ findFirst: createCloseEventLookup() });
+    prisma.chatSettings.findUnique.mockResolvedValue(settings);
     const hooks = createHooks({
       deleteClosedNotice: jest.fn().mockResolvedValue(NIGHT_MODE_TRANSITION_PROCESS_STOP),
     });
-    const service = new NightModeTransitionRuntimeService(
-      prisma as unknown as PrismaService,
-      redisCounter as never,
-    );
-
-    await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).resolves.toEqual(
-      NIGHT_MODE_TRANSITION_PROCESS_STOP,
-    );
-
-    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
-    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
-      'night-mode-transition-state:v1:chat-1',
-      expect.stringContaining('"status":"open"'),
-      expect.any(Number),
-    );
-  });
-
-  it('continues after access-loss cleanup when a fresh opening succeeds', async () => {
-    const prisma = createPrisma({
-      findFirst: jest
-        .fn()
-        .mockResolvedValueOnce({
-          id: 'night-close-event-1',
-          messageId: 'night-close-1',
-          botId: null,
-        })
-        .mockResolvedValue(null),
-    });
-    const redisCounter = createRedisCounterMock();
-    redisCounter.stringCache.set(
-      'night-mode-transition-state:v1:chat-1',
-      JSON.stringify({
-        status: 'closed',
-        sessionKey: OPEN_JOB.sessionKey,
-        closeNoticeMessageId: 'night-close-1',
-      }),
-    );
-    const hooks = createHooks({
-      deleteClosedNotice: jest.fn().mockResolvedValue(NIGHT_MODE_TRANSITION_PROCESS_STOP),
-    });
-    const service = new NightModeTransitionRuntimeService(
-      prisma as unknown as PrismaService,
-      redisCounter as never,
-    );
-
+    const service = new NightModeTransitionRuntimeService(prisma as never);
     await expect(service.processNightModeTransitionJob(OPEN_JOB, hooks)).resolves.toEqual(
       NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
     );
+    await expect(
+      service.processNightModeTransitionJob(createCleanupJob(settings), hooks),
+    ).rejects.toThrow('close cleanup has no executable route');
+    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
+  });
 
-    expect(hooks.deleteClosedNotice).toHaveBeenCalledWith(
-      'chat-1',
-      'night-close-1',
-      null,
-      expect.objectContaining({ event: expect.objectContaining({ id: 'night-close-event-1' }) }),
-      expect.any(Function),
+  it('delivers the independent opening before a cleanup access-loss failure', async () => {
+    const hooks = createHooks({
+      deleteClosedNotice: jest.fn().mockResolvedValue(NIGHT_MODE_TRANSITION_PROCESS_STOP),
+    });
+    const service = new NightModeTransitionRuntimeService(
+      createPrisma({ findFirst: createCloseEventLookup() }) as never,
+    );
+    await service.processNightModeTransitionJob(OPEN_JOB, hooks);
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    await expect(service.processNightModeTransitionJob(createCleanupJob(), hooks)).rejects.toThrow(
+      'close cleanup has no executable route',
     );
     expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
   });
 
-  it('does not delete or announce while advancing past a different stale session', async () => {
+  it('does not delete a stale session while announcing the current opening', async () => {
     const prisma = createPrisma();
     const redisCounter = createRedisCounterMock();
     redisCounter.stringCache.set(
@@ -1716,8 +1815,8 @@ describe('NightModeTransitionRuntimeService', () => {
     );
 
     expect(hooks.deleteClosedNotice).not.toHaveBeenCalled();
-    expect(hooks.sendOpenedNotice).not.toHaveBeenCalled();
-    expect(hooks.recoverClosedNoticeEventFromLedger).toHaveBeenCalledTimes(1);
+    expect(hooks.sendOpenedNotice).toHaveBeenCalledTimes(1);
+    expect(hooks.recoverClosedNoticeEventFromLedger).not.toHaveBeenCalled();
     expect(
       JSON.parse(redisCounter.stringCache.get('night-mode-transition-state:v1:chat-1')!),
     ).toEqual({
@@ -1824,7 +1923,7 @@ describe('NightModeTransitionRuntimeService', () => {
     const redisCounter = createRedisCounterMock();
     redisCounter.renewLock.mockImplementation(async () => {
       renewCount += 1;
-      return renewCount === 1;
+      return renewCount <= 2;
     });
     let releaseSend: () => void = () => undefined;
     const sendGate = new Promise<void>((resolve) => {

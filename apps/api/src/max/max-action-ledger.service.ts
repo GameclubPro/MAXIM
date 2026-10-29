@@ -138,7 +138,7 @@ export type MaxCompletedSendDispatch = {
   completedAt: Date | null;
 };
 
-export type ExactCompletedNightModeCloseNoticeDispatch = {
+export type ExactCompletedNightModeNoticeDispatch = {
   jobId: string;
   remoteMessageId: string;
   dispatchBotId: string;
@@ -147,10 +147,13 @@ export type ExactCompletedNightModeCloseNoticeDispatch = {
   stickyRouteHalfOpenProbe: boolean;
 };
 
-export type NightModeCloseNoticeLedgerLookup =
+export type NightModeNoticeLedgerLookup =
   | { kind: 'missing'; jobId: string }
   | { kind: 'mismatch'; jobId: string }
-  | ({ kind: 'completed' } & ExactCompletedNightModeCloseNoticeDispatch);
+  | ({ kind: 'completed' } & ExactCompletedNightModeNoticeDispatch);
+
+export type ExactCompletedNightModeCloseNoticeDispatch = ExactCompletedNightModeNoticeDispatch;
+export type NightModeCloseNoticeLedgerLookup = NightModeNoticeLedgerLookup;
 
 export const MAX_SEND_LEDGER_PREPARATION_ERROR_CODES = {
   MISSING_ROW: 'MAX_SEND_LEDGER_PREPARATION_MISSING_ROW',
@@ -1037,9 +1040,23 @@ export class MaxActionLedgerService {
     chatId: string;
     sessionKey: string;
   }): Promise<NightModeCloseNoticeLedgerLookup> {
+    return this.inspectCompletedNightModeNoticeDispatch('close', params);
+  }
+
+  async inspectCompletedNightModeOpenNoticeDispatch(params: {
+    chatId: string;
+    sessionKey: string;
+  }): Promise<NightModeNoticeLedgerLookup> {
+    return this.inspectCompletedNightModeNoticeDispatch('open', params);
+  }
+
+  private async inspectCompletedNightModeNoticeDispatch(
+    transition: 'close' | 'open',
+    params: { chatId: string; sessionKey: string },
+  ): Promise<NightModeNoticeLedgerLookup> {
     const chatId = this.nullableString(params.chatId);
     const sessionKey = this.nullableString(params.sessionKey);
-    const jobId = buildNightModeNoticeIdempotencyKey('close', chatId ?? '', sessionKey ?? '');
+    const jobId = buildNightModeNoticeIdempotencyKey(transition, chatId ?? '', sessionKey ?? '');
     if (!chatId || !sessionKey) {
       return { kind: 'mismatch', jobId };
     }

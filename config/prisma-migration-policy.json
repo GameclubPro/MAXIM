@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261029070000_add_publication_target_cancellation",
-  "baselineNamesSha256": "ec7fb015bb921a0b360e4e2971e42f782a20ee2df26f271a5f94920026bba6c4",
-  "baselineContentsSha256": "9667fd76ef44978748f39696b5abb7275c24dc2fe6fbb471a6ce888745d557a6",
+  "baselineThrough": "20261029110100_persist_night_mode_recovery_obligations",
+  "baselineNamesSha256": "b08898ce9a6bbacc29916a5843eb333dd9e843837facc19975a9ba53bfebcc5e",
+  "baselineContentsSha256": "f6858ad4dad4ce0c1b905a29d23b87cf5a978b51c4fbe33e6cfb64a994263cde",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -161,6 +161,11 @@
       "reason": "Reviewed replacement of the context CHECK allowlist and static group-off trigger; no data, table or column is removed. DDL first obtains NOWAIT exclusive admission. The new caption table is empty.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Existing aggregate consents remain unchanged at migration. Specializing a group atomically disables its legacy aggregate before copying exact old consent to child contexts; night/rules never inherit old consent. Old readers fail closed after specialization. An old group-off INSERT or UPDATE revokes every child. The validated legacy receipt trigger also revokes publication children after specialization; its unchanged exact-hash proof and binding-before-policy order remain, with NOWAIT receipt-writer admission before replacement. No old receipt or dispatch state is rewritten."
+    },
+    "20261029110000_reconcile_night_mode_capability_changes": {
+      "reason": "Reviewed additive immutable capability predicate and static row trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL, row deletion, index build, table rewrite or existing-data backfill.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Existing membership and durable reconcile contracts remain compatible. The additive trigger only retains a request when effective night-mode capabilities change; old readers can consume the same request. Existing manual unknown-effect fences remain unchanged."
     }
   },
   "nonConcurrentIndexExceptions": {
