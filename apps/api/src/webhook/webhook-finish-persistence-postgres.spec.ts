@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Queue, QueueEvents, Worker, type Job } from 'bullmq';
 import { Prisma, type WebhookEvent } from '../prisma/prisma-client';
-import { WebhookFinishPersistenceError } from '../moderation/webhook-canonical-execution.service';
+import {
+  WebhookFailurePersistenceError,
+  WebhookFinishPersistenceError,
+} from '../moderation/webhook-canonical-execution.service';
 import type { WebhookCanonicalExecutionContext } from '../moderation/webhook-canonical-execution.service';
 import { WebhookParser } from './webhook.parser';
 import {
@@ -39,6 +42,213 @@ function signal() {
   });
   return { promise, resolve };
 }
+
+describeStores('native observed webhook failure persistence', () => {
+  let h: MultibotHarness | undefined;
+  afterEach(async () => {
+    await h?.dispose();
+    h = undefined;
+  });
+
+  it('retains an attempted unknown SEND while following same-chat work progresses', async () => {
+    const s = (h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 2, mode: 'on' }));
+    await s.pause();
+    const [chatId] = await s.seedCatalog(1, { maxMessageLengthEnabled: false });
+    const id = await s.ingest({
+      chatId: chatId!,
+      messageId: randomUUID(),
+      text: 'Unknown send fixture',
+      botId: s.bots[0]!.id,
+    });
+    await s.ingress.preparePersistedWebhookEvent(id);
+    const key = `failed-handler-send-${randomUUID()}`;
+    const handler = jest.spyOn(s.moderation, 'handleUpdate').mockImplementationOnce(async () => {
+      await s.max.sendMessage(chatId!, 'Native unknown-send fixture', undefined, {
+        immediate: true,
+        botId: s.bots[0]!.id,
+        idempotencyKey: key,
+        routing: { purpose: 'send_message' },
+        candidateBotIds: [s.bots[0]!.id],
+      });
+    });
+    s.ambiguousNextSend();
+    try {
+      await expect(s.moderation.processWebhookEvent(id)).rejects.toThrow();
+      const failed = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+      const action = await s.prisma.maxActionLedgerEntry.findFirstOrThrow({
+        where: { chatId: chatId!, actionType: 'SEND_MESSAGE' },
+      });
+      expect(action).toMatchObject({ status: 'AMBIGUOUS', ambiguous: true, attemptCount: 1 });
+      expect(failed).toMatchObject({ status: 'FAILED', nextEnqueueAt: null, processedAt: null });
+      await s.moderation.processWebhookEvent(id);
+      const next = await s.ingest({
+        chatId: chatId!,
+        messageId: randomUUID(),
+        text: 'Following',
+        botId: s.bots[0]!.id,
+      });
+      await s.ingress.preparePersistedWebhookEvent(next);
+      await s.moderation.processWebhookEvent(next);
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: next } })).toMatchObject({
+        status: 'PROCESSED',
+      });
+      expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(failed);
+      expect(
+        await s.prisma.maxActionLedgerEntry.findUniqueOrThrow({ where: { jobId: action.jobId } }),
+      ).toEqual(action);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(s.effects.filter((effect) => effect.method === 'post')).toHaveLength(1);
+    } finally {
+      handler.mockRestore();
+    }
+  });
+
+  it.each(['lost commit acknowledgement', 'changed receipt'] as const)(
+    'keeps exact failure authority across %s without an early lease release',
+    async (scenario) => {
+      const s = (h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 2, mode: 'on' }));
+      await s.pause();
+      const [chatId] = await s.seedCatalog(1);
+      const id = await s.ingest({
+        chatId: chatId!,
+        messageId: randomUUID(),
+        text: 'Failure fixture',
+        botId: s.bots[0]!.id,
+      });
+      await s.ingress.preparePersistedWebhookEvent(id);
+      const context = await s.canonical.prepareExecution(id, s.bots[0]!.id);
+      expect(context).not.toBeNull();
+      const original = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+        where: { webhookEventId: id, kind: 'EXECUTION' },
+      });
+      const receipt =
+        scenario === 'changed receipt'
+          ? await s.prisma.webhookEvent.update({
+              where: { id },
+              data: {
+                normalizedPayload: {
+                  ...(context!.webhookEvent.normalizedPayload as Prisma.JsonObject),
+                  changedAfterStart: true,
+                },
+              },
+            })
+          : await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+      const transaction = s.prisma.$transaction.bind(s.prisma);
+      let attempts = 0;
+      const adapter = jest.spyOn(s.prisma, '$transaction').mockImplementation((async (
+        callback: (tx: Prisma.TransactionClient) => Promise<unknown>,
+        options?: { maxWait?: number; timeout?: number },
+      ) => {
+        attempts += 1;
+        const result = await transaction(callback, options);
+        if (scenario === 'lost commit acknowledgement' && attempts === 1)
+          throw Object.assign(new Error('Lost committed failure response'), { code: 'ECONNRESET' });
+        return result;
+      }) as typeof s.prisma.$transaction);
+      try {
+        const settlement = s.canonical.failExecution(context!, {
+          errorMessage: 'First cause',
+          terminal: false,
+        });
+        if (scenario === 'changed receipt') {
+          await expect(settlement).rejects.toBeInstanceOf(WebhookFailurePersistenceError);
+          expect(attempts).toBe(1);
+          expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(receipt);
+          expect(
+            await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: original.id } }),
+          ).toEqual(original);
+        } else {
+          await expect(settlement).resolves.toBeUndefined();
+          expect(attempts).toBe(2);
+          expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({
+            status: 'FAILED',
+            errorMessage: 'First cause',
+            nextEnqueueAt: null,
+            processedAt: null,
+          });
+          expect(
+            await s.prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: original.id } }),
+          ).toMatchObject({
+            status: 'READY',
+            businessStartedAt: original.businessStartedAt,
+            completedAt: null,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            commandResult: original.commandResult,
+          });
+        }
+        expect(s.effects).toEqual([]);
+      } finally {
+        adapter.mockRestore();
+      }
+    },
+  );
+
+  it.each(['off', 'shadow', 'on'] as const)(
+    'retains the first rejected-handler error without retry or blocking following messages, mode=%s',
+    async (mode) => {
+      const s = (h = await createMultibotHarness({ databaseUrl, redisUrl, bots: 2, mode }));
+      await s.pause();
+      const [chatId] = await s.seedCatalog(1);
+      const id = await s.ingest({
+        chatId: chatId!,
+        messageId: randomUUID(),
+        text: 'Initial failure fixture',
+        botId: s.bots[0]!.id,
+      });
+      await s.ingress.preparePersistedWebhookEvent(id);
+      const originalError = Object.assign(new Error('Original handler connection failure'), {
+        code: 'ECONNRESET',
+      });
+      const handler = jest.spyOn(s.moderation, 'handleUpdate').mockRejectedValueOnce(originalError);
+      try {
+        await expect(s.moderation.processWebhookEvent(id)).rejects.toBe(originalError);
+        const failed = await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } });
+        const claim = await s.prisma.webhookExecutionClaim.findFirstOrThrow({
+          where: { webhookEventId: id, kind: 'EXECUTION' },
+        });
+        expect(failed).toMatchObject({
+          status: 'FAILED',
+          errorMessage: originalError.message,
+          processedAt: null,
+          nextEnqueueAt: null,
+          queueName: null,
+          timeoutQuarantineExpiresAt: null,
+        });
+        expect(claim).toMatchObject({
+          status: 'READY',
+          enforced: true,
+          businessStartedAt: expect.any(Date),
+          completedAt: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        });
+        // FLAG: A stale BullMQ delivery must neither replay this rejected handler nor
+        // replace its retained cause with a new indefinite chat-order barrier.
+        await s.moderation.processWebhookEvent(id);
+        expect(await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id } })).toEqual(failed);
+        expect(handler).toHaveBeenCalledTimes(1);
+        const nextId = await s.ingest({
+          chatId: chatId!,
+          messageId: randomUUID(),
+          text: 'Following',
+          botId: s.bots[0]!.id,
+        });
+        await s.ingress.preparePersistedWebhookEvent(nextId);
+        await s.moderation.processWebhookEvent(nextId);
+        expect(
+          await s.prisma.webhookEvent.findUniqueOrThrow({ where: { id: nextId } }),
+        ).toMatchObject({
+          status: 'PROCESSED',
+        });
+        expect(handler).toHaveBeenCalledTimes(2);
+        expect(s.effects).toEqual([]);
+      } finally {
+        handler.mockRestore();
+      }
+    },
+  );
+});
 
 describeStores('native positive webhook finish persistence', () => {
   let h: MultibotHarness | undefined;
