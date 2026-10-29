@@ -642,6 +642,63 @@ native('durable dependency quarantine and independent final execution', () => {
     ).toBeNull();
   });
 
+  it('expires during completion-proof reads without releasing stale work or blocking another chat', async () => {
+    const poison = await receipt(undefined, { poison: true });
+    const waiting = await receipt(chat(poison));
+    const independentPoison = await receipt(undefined, { poison: true });
+    const independent = await receipt(chat(independentPoison));
+    await quarantine.parkSuccessors(poison.id, [waiting.id]);
+    await quarantine.parkSuccessors(independentPoison.id, [independent.id]);
+    await completePredecessor(poison);
+    await completePredecessor(independentPoison);
+    await makeDue();
+    const deadline = new Date(Date.now() + 1_000);
+    await prisma.webhookEvent.update({
+      where: { id: waiting.id },
+      data: { executionDeadlineAt: deadline },
+    });
+    await prisma.webhookDependencyQuarantine.updateMany({
+      where: { receiptId: waiting.id },
+      data: { deadlineAt: deadline },
+    });
+    let delayedProofs = 0;
+    const delayed = prisma.$extends({
+      query: {
+        webhookExecutionClaim: {
+          async findUnique({ args, query }) {
+            const result = await query(args);
+            if (args.where.kind_semanticKey?.semanticKey === poison.semanticKey) {
+              delayedProofs += 1;
+              expect(Date.now()).toBeLessThan(deadline.getTime());
+              await new Promise((resolve) =>
+                setTimeout(resolve, deadline.getTime() - Date.now() + 20),
+              );
+            }
+            return result;
+          },
+        },
+      },
+    });
+    const reconciler = new WebhookDependencyQuarantineService(
+      delayed as never,
+      new ConfigService({ MAX_PUBLISHER_BOT_ID: publisherBotId }),
+    );
+    expect(await reconciler.reconcileDue()).toEqual({ inspected: 2, released: 1, expired: 1 });
+    expect(delayedProofs).toBe(1);
+    const stored = await prisma.webhookEvent.findUniqueOrThrow({ where: { id: waiting.id } });
+    expect(stored.status).toBe('QUARANTINED');
+    expect(stored.executionDeadlineAt).toEqual(deadline);
+    const journal = await prisma.webhookDependencyQuarantine.findFirstOrThrow({
+      where: { receiptId: waiting.id },
+    });
+    expect(journal.state).toBe('EXPIRED');
+    expect(journal.resolvedAt!.getTime()).toBeGreaterThanOrEqual(deadline.getTime());
+    expect(await canonical.prepareExecution(waiting.id, waiting.botId)).toBeNull();
+    expect(
+      (await prisma.webhookEvent.findUniqueOrThrow({ where: { id: independent.id } })).status,
+    ).toBe('RECEIVED');
+  });
+
   it('expires a released successor at final start without renewing its original deadline', async () => {
     const poison = await receipt(undefined, { poison: true });
     const waiting = await receipt(chat(poison));

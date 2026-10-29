@@ -9,9 +9,11 @@ export const RECOVERY_KEY_COHORT_SAVED_KEY_BYTES = 512;
 export const RECOVERY_KEY_COHORT_SAVED_BOT_BYTES = 512;
 export const RECOVERY_KEY_COHORT_TEXT_BYTES = 8192;
 export const RECOVERY_KEY_COHORT_BLOCKER_CAP = 64;
+// FLAG: Migrations append enum values; insertion order is not the supported-status contract.
+// Require the exact public enum label set, including rejection of unknown or missing labels.
 export const recoveryKeyCohortStatusGuardSql = `SELECT
-  ARRAY(SELECT enumlabel::text FROM pg_enum WHERE enumtypid = to_regtype('public."WebhookStatus"') ORDER BY enumsortorder)
-    = ARRAY['RECEIVED','QUEUED','PROCESSED','DUPLICATE','FAILED','NO_REPLAY_HELD','CANCELLED','QUARANTINED']
+  ARRAY(SELECT enumlabel::text FROM pg_enum WHERE enumtypid = to_regtype('public."WebhookStatus"') ORDER BY enumlabel::text COLLATE "C")
+    = ARRAY['CANCELLED','DUPLICATE','FAILED','NO_REPLAY_HELD','PROCESSED','QUARANTINED','QUEUED','RECEIVED']
   AS recovery_key_cohort_statuses_ready \\gset
 \\if :recovery_key_cohort_statuses_ready
 \\else

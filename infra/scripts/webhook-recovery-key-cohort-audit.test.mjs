@@ -1,12 +1,47 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync, readdirSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
 import {
   buildRecoveryKeyCohortAuditSql,
   validateRecoveryKeyCohortArguments,
   emitRecoveryKeyCohortAuditSql,
+  recoveryKeyCohortStatusGuardSql,
 } from './webhook-recovery-key-cohort-audit.mjs';
+
+const statusGuardQuery = recoveryKeyCohortStatusGuardSql.split('\\gset')[0];
+const migrationsRoot = new URL('../../apps/api/prisma/migrations/', import.meta.url);
+const migratedStatusDdl = readdirSync(migrationsRoot)
+  .sort()
+  .filter((name) => /^\d/u.test(name))
+  .flatMap(
+    (name) =>
+      readFileSync(new URL(`${name}/migration.sql`, migrationsRoot), 'utf8').match(
+        /(?:CREATE TYPE "WebhookStatus" AS ENUM|ALTER TYPE "WebhookStatus" ADD VALUE)[^;]*;/gu,
+      ) ?? [],
+  );
+
+test('status guard accepts actual immutable migration ordering and rejects incompatible public types', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  const ready = async () =>
+    (await db.query(statusGuardQuery)).rows[0].recovery_key_cohort_statuses_ready;
+  await db.exec(migratedStatusDdl.join('\n'));
+  assert.equal(await ready(), true, 'real migrations append QUEUED after FAILED');
+  await db.exec('ALTER TYPE public."WebhookStatus" ADD VALUE \'UNSUPPORTED\'');
+  assert.equal(await ready(), false, 'unknown statuses must fail closed');
+  await db.exec('DROP TYPE public."WebhookStatus"');
+  await db.exec(migratedStatusDdl.filter((sql) => !sql.includes("'QUARANTINED'")).join('\n'));
+  assert.equal(await ready(), false, 'missing statuses must fail closed');
+  await db.exec(
+    'DROP TYPE public."WebhookStatus"; CREATE SCHEMA shadow; SET search_path TO shadow,public',
+  );
+  await db.exec(migratedStatusDdl.join('\n'));
+  assert.equal(await ready(), false, 'a shadow type must not satisfy the public contract');
+  await db.exec('CREATE DOMAIN public."WebhookStatus" AS text');
+  assert.equal(await ready(), false, 'a non-enum public type must fail closed');
+});
 
 const fixture = `SET TIME ZONE 'UTC';
 CREATE TYPE "WebhookStatus" AS ENUM ('RECEIVED','QUEUED','PROCESSED','DUPLICATE','FAILED','NO_REPLAY_HELD','CANCELLED','QUARANTINED');
@@ -290,6 +325,11 @@ test(
         await client.end();
       }
     });
+    assert.equal(
+      (await client.query(statusGuardQuery)).rows[0].recovery_key_cohort_statuses_ready,
+      true,
+      'the public enum installed by actual migrations must pass before using the isolated fixture',
+    );
     await client.query(`CREATE SCHEMA ${schema}; SET search_path TO ${schema},public;`);
     await client.query(fixture);
     await client.query(`INSERT INTO webhook_events(id,status,created_at,normalized_payload)
