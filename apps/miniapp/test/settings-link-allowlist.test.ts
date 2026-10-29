@@ -126,3 +126,22 @@ test('allowlist choices and validation use ordinary user-facing terms', () => {
     assert.doesNotMatch(option.invalidMessage, /contact_id|startapp|<id>/u);
   }
 });
+
+test('allowlist labels present typed network targets without exposing storage prefixes', () => {
+  const cases = [
+    { kind: 'MAX_PROFILE' as const, value: 'user-id:42', label: 'max://user/42' },
+    { kind: 'MAX_ENTITY' as const, value: 'chat-id:-42', label: 'Прежний номер чата: -42' },
+    { kind: 'MINI_APP' as const, value: 'bot:our_bot', label: 'Бот MAX: our_bot' },
+  ];
+  for (const target of cases) {
+    assert.equal(
+      formatNavigationAllowlistEntryTarget({
+        kind: target.kind,
+        domain: target.value,
+        target: target.value,
+        normalizedValue: target.value,
+      }),
+      target.label,
+    );
+  }
+});

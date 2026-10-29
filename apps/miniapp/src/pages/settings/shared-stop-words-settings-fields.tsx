@@ -521,12 +521,12 @@ function StopWordsMuteDuration({ fields }: { fields: ChatSettingsFieldAdapter })
   useEffect(() => setBuffer(null), [key]);
   return (
     <label className="stop-words-editor__field">
-      Длительность мута, часов
+      Длительность ограничения, часов
       <input
         type="number"
         min={1}
         max={168}
-        aria-label="Длительность мута, часов"
+        aria-label="Длительность ограничения, часов"
         value={buffer ?? (state.kind === 'common' ? state.value : '')}
         placeholder={state.kind === 'mixed' ? 'Разные значения' : undefined}
         disabled={state.kind === 'loading'}
@@ -608,10 +608,10 @@ export function SharedStopWordsSettingsFields({ fields, context }: Props) {
         shown(state('stopWordsPolicy.sanctions.warnEnabled')) ? 'Предупреждение' : '',
         shown(state('stopWordsPolicy.sanctions.muteEnabled'))
           ? duration.kind === 'common'
-            ? 'Мут ' + duration.value + ' ч'
-            : 'Мут · разный срок'
+            ? 'Ограничение ' + duration.value + ' ч'
+            : 'Ограничение · разный срок'
           : '',
-        shown(state('stopWordsPolicy.sanctions.banEnabled')) ? 'Бан' : '',
+        shown(state('stopWordsPolicy.sanctions.banEnabled')) ? 'Блокировка' : '',
       ]
         .filter(Boolean)
         .join(' · ') || 'Только удаление'
@@ -732,11 +732,11 @@ export function SharedStopWordsSettingsFields({ fields, context }: Props) {
             <AppIcon icon="EditPencil" />
           </button>,
         )}
-        {toggle('stopWordsPolicy.sanctions.muteEnabled', 'Мут')}
+        {toggle('stopWordsPolicy.sanctions.muteEnabled', 'Ограничение')}
         {shown(state('stopWordsPolicy.sanctions.muteEnabled')) ? (
           <StopWordsMuteDuration fields={fields} />
         ) : null}
-        {toggle('stopWordsPolicy.sanctions.banEnabled', 'Бан')}
+        {toggle('stopWordsPolicy.sanctions.banEnabled', 'Блокировка')}
         {toggle('stopWordsPolicy.sanctions.rulesButtonEnabled', 'Кнопка правил')}
         {toggle(
           'stopWordsPolicy.sanctions.adminContactButtonEnabled',

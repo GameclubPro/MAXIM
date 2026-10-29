@@ -36,8 +36,8 @@ const OBSERVATION_LABELS: Record<DuplicateObservationOutcome, string> = {
   UNTRACKED: 'Сообщение исключено из проверки',
   CONTENT_UNVERIFIED: 'Содержимое не подтверждено',
   UNSUPPORTED_CONTENT: 'Неподдерживаемое содержимое',
-  MEDIA_QUEUED: 'Медиа передано на проверку',
-  MEDIA_CANDIDATE: 'Первое медиа ожидает сравнения',
+  MEDIA_QUEUED: 'Изображение ожидает проверки',
+  MEDIA_CANDIDATE: 'Первое изображение ожидает сравнения',
   SOURCE_UNAVAILABLE: 'Исходное сообщение недоступно',
   POLICY_CHANGED: 'Режим проверки изменился',
   SETTINGS_CHANGED: 'Настройки или доступ изменились',
@@ -47,12 +47,12 @@ const OBSERVATION_LABELS: Record<DuplicateObservationOutcome, string> = {
   COMPARISON_FAILED: 'Сравнение не завершилось',
   UNAVAILABLE: 'Проверку не удалось начать',
   COMPARED_NO_MATCH: 'Сравнено: повтора сверх допуска нет',
-  MATCHED_INELIGIBLE: 'Совпадение без права действия',
-  MATCHED_QUALIFICATION_REJECTED: 'Совпадение: действие отклонено свежей проверкой',
+  MATCHED_INELIGIBLE: 'Повтор найден, удаление недоступно',
+  MATCHED_QUALIFICATION_REJECTED: 'Повтор найден, условия удаления больше не выполняются',
   MATCHED_CLAIM_BLOCKED: 'Совпадение: сообщение обрабатывает другое правило',
   MATCHED_OBSERVE: 'Совпадение в режиме наблюдения',
-  MATCHED_ACTION_FAILED: 'Совпадение: передача действия не завершилась',
-  ENFORCEMENT_REQUESTED: 'Совпадение передано на проверку действия',
+  MATCHED_ACTION_FAILED: 'Повтор найден, запуск удаления не подтверждён',
+  ENFORCEMENT_REQUESTED: 'Повтор найден, удаление запрошено',
 };
 const MATCH_LABELS = {
   exact: 'Одинаковый текст',
@@ -270,7 +270,7 @@ export default function SettingsDuplicateDiagnostics({
           <dl className="duplicate-diagnostics__facts">
             <div>
               <dt>Сохранённая настройка</dt>
-              <dd>{data.enabled ? 'Включён' : 'Выключен'}</dd>
+              <dd>{data.enabled ? 'Включена' : 'Выключена'}</dd>
             </div>
             <div>
               <dt>Режим</dt>

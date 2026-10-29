@@ -63,6 +63,18 @@ test('permission labels cover canonical MAX member management capability', () =>
   assert.equal(formatBotPermissionLabel('bot_connection'), 'Подключить бота к чату или каналу');
 });
 
+test('unknown permission codes never become technical user-facing labels', () => {
+  for (const permission of [
+    'future_permission',
+    'MAXIM_EXECUTION_OWNER',
+    '',
+    'sendInternalThing',
+  ]) {
+    assert.equal(formatBotPermissionLabel(permission), 'Права бота в MAX');
+  }
+  assert.equal(formatBotPermissionLabel(' delete_messages '), 'Удалять сообщения');
+});
+
 test('ignores unrelated and server-side errors', () => {
   assert.equal(
     parseBotPermissionBlocker(

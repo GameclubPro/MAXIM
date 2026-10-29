@@ -1,10 +1,11 @@
 import type { LogsDashboardViolation } from '@maxim/contracts';
+import { formatTimezoneLabel } from './timezone-label';
 
 type ModerationReasonSource = Pick<LogsDashboardViolation, 'ruleCode' | 'metadata'>;
 
 export const trafficModerationLabels: Record<string, string> = {
   SLOW_MODE: 'Медленный режим',
-  MEDIA_RATE_LIMIT: 'Интервал медиа',
+  MEDIA_RATE_LIMIT: 'Интервал для вложений',
   STICKER_BLOCKED: 'Стикеры запрещены',
 };
 
@@ -19,7 +20,7 @@ const commercialSubtypeLabels: Record<string, string> = {
   GOODS_RETAIL: 'розничные товары',
   GOODS: 'товары',
   GROUP_PROMOTION: 'продвижение группы',
-  GENERIC: 'рекламный оффер',
+  GENERIC: 'рекламное предложение',
 };
 
 const profanityCategoryLabels: Record<string, string> = {
@@ -94,7 +95,7 @@ function resolveStructuredReason(
     const blockedDomain =
       readString(metadata?.blockedDomain) ?? readString(metadata?.matchedDomain);
     return blockedDomain
-      ? `Запрещенный домен: ${blockedDomain}.`
+      ? `Запрещённый домен: ${blockedDomain}.`
       : 'Сообщение содержит домен из стоп-листа.';
   }
 
@@ -147,7 +148,7 @@ function resolveStructuredReason(
   }
 
   if (ruleCode === 'MUTE_ACTIVE_DELETE') {
-    return 'Сообщение отправлено во время активного мута участника.';
+    return 'На момент отправки участнику было запрещено писать.';
   }
 
   if (ruleCode === 'NIGHT_MODE_DELETE') {
@@ -155,11 +156,11 @@ function resolveStructuredReason(
     const endTime = readString(metadata?.nightModeEndTime);
     const timezone = readString(metadata?.nightModeTimezone);
     if (startTime && endTime) {
-      return `Чат закрыт по ночному режиму ${startTime}-${endTime}${
-        timezone ? ` (${timezone})` : ''
+      return `Чат закрыт на ночь: ${startTime}–${endTime}${
+        timezone ? ` (${formatTimezoneLabel(timezone)})` : ''
       }.`;
     }
-    return 'Чат закрыт по ночному режиму.';
+    return 'Чат закрыт на ночь.';
   }
 
   if (ruleCode === 'MANUAL_GROUP_CLOSE_DELETE') {
@@ -223,7 +224,7 @@ function normalizeRawModerationReason(reason: string | null): string | null {
 
   const linkAllowlistMatch = reason.match(/^Link\s+(.+)\s+is not in allowlist$/u);
   if (linkAllowlistMatch?.[1]) {
-    return `Ссылка ${linkAllowlistMatch[1]} не входит в разрешенный список.`;
+    return `Ссылка ${linkAllowlistMatch[1]} не входит в разрешённый список.`;
   }
 
   const messageLengthMatch = reason.match(/^Message length\s+(\d+)\s+exceeds limit\s+(\d+)$/u);
@@ -260,7 +261,7 @@ function normalizeRawModerationReason(reason: string | null): string | null {
 
   const blockedDomainMatch = reason.match(/^Blocked domain detected:\s+(.+)$/u);
   if (blockedDomainMatch?.[1]) {
-    return `Запрещенный домен: ${blockedDomainMatch[1]}.`;
+    return `Запрещённый домен: ${blockedDomainMatch[1]}.`;
   }
 
   const labels: Record<string, string> = {
@@ -275,10 +276,10 @@ function normalizeRawModerationReason(reason: string | null): string | null {
     'Voice messages are disabled by chat settings': 'Голосовые сообщения в этом чате отключены.',
     'Forwarded messages are disabled by chat settings':
       'Пересланные сообщения в этом чате запрещены.',
-    'Duplicate message removed': 'Повтор сообщения удален.',
+    'Duplicate message removed': 'Повтор сообщения удалён.',
     'Message removed during active mute window':
-      'Сообщение отправлено во время активного мута участника.',
-    'Message removed while chat is closed for the night': 'Чат закрыт по ночному режиму.',
+      'На момент отправки участнику было запрещено писать.',
+    'Message removed while chat is closed for the night': 'Чат закрыт на ночь.',
     'Message removed while group is manually closed':
       'Группа закрыта вручную, новые сообщения временно удаляются.',
     'Bot account removed because bot accounts are disallowed by chat settings':
@@ -302,7 +303,7 @@ function resolveFallbackReason(ruleCode: string): string {
     LINK_BLOCKED: 'Ссылка запрещена настройками чата.',
     PROFANITY: 'Грубая лексика запрещена правилами чата.',
     COMMERCIAL_AD: 'Коммерческая реклама запрещена в этом чате.',
-    MESSAGE_TOO_LONG: 'Сообщение длиннее разрешенного лимита.',
+    MESSAGE_TOO_LONG: 'Сообщение длиннее разрешённого лимита.',
     MESSAGE_RATE_LIMIT: 'Слишком частая отправка сообщений или стикеров.',
     MESSAGE_COUNT_LIMIT: 'Превышен лимит сообщений за выбранный период.',
     PHOTO_BLOCKED: 'Фото в этом чате отключены.',
@@ -316,15 +317,15 @@ function resolveFallbackReason(ruleCode: string): string {
     TOPIC_FILTER_MISMATCH: 'Сообщение не прошло тематический фильтр.',
     THEMATIC_FILTER: 'Сообщение не прошло тематический фильтр.',
     GLOBAL_CROSS_CHAT_SPAM: 'Обнаружена массовая рассылка по чатам.',
-    GLOBAL_SPAMMER_BAN: 'Участник есть в подтвержденной базе спама.',
-    GLOBAL_SPAMMER_KICK: 'Участник есть в подтвержденной базе спама.',
+    GLOBAL_SPAMMER_BAN: 'Участник есть в подтверждённой базе спама.',
+    GLOBAL_SPAMMER_KICK: 'Участник есть в подтверждённой базе спама.',
     GLOBAL_USER_BLACKLIST_KICK: 'Участник есть в базе запретов.',
     BOT_ACCOUNT_KICK: 'Бот-аккаунты запрещены настройками чата.',
     BOT_MESSAGE_AUTO_DELETE: 'Сообщение бота удаляется по настройкам автоочистки.',
-    MANUAL_MUTE: 'Модератор вручную выдал мут.',
-    MANUAL_BAN: 'Модератор вручную выдал бан.',
-    MANUAL_UNMUTE: 'Модератор вручную снял мут.',
-    MANUAL_UNBAN: 'Модератор вручную снял бан.',
+    MANUAL_MUTE: 'Модератор запретил участнику отправлять сообщения.',
+    MANUAL_BAN: 'Модератор заблокировал участника.',
+    MANUAL_UNMUTE: 'Модератор снял запрет на сообщения.',
+    MANUAL_UNBAN: 'Модератор разблокировал участника.',
   };
 
   return labels[ruleCode] ?? 'Сработало правило модерации.';

@@ -462,22 +462,22 @@ function validateBasicsDraft(draft: GiveawayEditorDraft): GiveawayValidationResu
   }
 
   if (!draft.endsAtLocal.trim()) {
-    return { valid: false, message: 'Укажите дату и время финиша.' };
+    return { valid: false, message: 'Укажите дату и время завершения.' };
   }
 
   const startsAt = draft.startsAtLocal.trim() ? parseDateTimeInput(draft.startsAtLocal) : null;
   if (draft.startsAtLocal.trim() && !startsAt) {
-    return { valid: false, message: 'Проверьте дату старта.' };
+    return { valid: false, message: 'Проверьте дату начала.' };
   }
 
   const endsAt = parseDateTimeInput(draft.endsAtLocal);
   if (!endsAt) {
-    return { valid: false, message: 'Проверьте дату финиша.' };
+    return { valid: false, message: 'Проверьте дату завершения.' };
   }
 
   const startsAtMs = startsAt ? startsAt.getTime() : Date.now();
   if (endsAt.getTime() <= startsAtMs) {
-    return { valid: false, message: 'Финиш должен быть позже старта.' };
+    return { valid: false, message: 'Завершение должно быть позже начала.' };
   }
 
   if (
@@ -584,9 +584,9 @@ function resolveValidationFocusTarget(issue: {
 
 function isFinishAtValidationMessage(message: string): boolean {
   return (
-    message === 'Укажите дату и время финиша.' ||
-    message === 'Проверьте дату финиша.' ||
-    message === 'Финиш должен быть позже старта.'
+    message === 'Укажите дату и время завершения.' ||
+    message === 'Проверьте дату завершения.' ||
+    message === 'Завершение должно быть позже начала.'
   );
 }
 
@@ -620,10 +620,10 @@ function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPaylo
   const startsAtDate = draft.startsAtLocal.trim() ? parseDateTimeInput(draft.startsAtLocal) : null;
   const endsAtDate = parseDateTimeInput(draft.endsAtLocal);
   if (!endsAtDate) {
-    throw new Error('Проверьте дату финиша.');
+    throw new Error('Проверьте дату завершения.');
   }
   if (draft.startsAtLocal.trim() && !startsAtDate) {
-    throw new Error('Проверьте дату старта.');
+    throw new Error('Проверьте дату начала.');
   }
 
   return {
@@ -656,10 +656,10 @@ function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPaylo
 
 function buildCurrentSubtitle(item: ManagedGiveawaySummary): string {
   if (item.status === 'DRAFT') {
-    return `Черновик. Финиш: ${formatDateTime(item.endsAt)}.`;
+    return `Черновик. Завершение: ${formatDateTime(item.endsAt)}.`;
   }
   if (item.status === 'SCHEDULED') {
-    return `Старт: ${formatDateTime(item.startsAt, 'сразу')}. Финиш: ${formatDateTime(item.endsAt)}.`;
+    return `Начало: ${formatDateTime(item.startsAt, 'сразу')}. Завершение: ${formatDateTime(item.endsAt)}.`;
   }
   if (item.status === 'ACTIVE') {
     return `Идёт до ${formatDateTime(item.endsAt)}.`;
@@ -1450,7 +1450,7 @@ function ManagedGiveawayCardImpl(
       const result = await resolveRequiredChannelMutation.mutateAsync(channelLinkValue);
       const channel = result.channel;
       if (channel.id === entityId) {
-        setValidationHint('Источник уже входит в обязательную проверку.');
+        setValidationHint('Этот чат или канал уже входит в условия розыгрыша.');
         return;
       }
       if (draft?.requiredChannelIds.includes(channel.id)) {
@@ -2154,7 +2154,7 @@ function ManagedGiveawayCardImpl(
       : currentStepValidation.valid
         ? editorStep === 'basics'
           ? 'Дальше соберём условия участия и список каналов для проверки.'
-          : 'Останется добавить места, призы и финально проверить публикацию.'
+          : 'Останется добавить места, призы и проверить публикацию.'
         : currentStepValidation.message;
   const showStickyCopy =
     !currentStepValidation.valid || (editorStep === 'prizes' && !publicationTextReady);
@@ -2304,7 +2304,11 @@ function ManagedGiveawayCardImpl(
               <span>Условия</span>
               <strong>{1 + requiredChannelsCount}</strong>
               <small>
-                {requiredChannelsCount > 0 ? 'доп. каналы включены' : 'только источник'}
+                {requiredChannelsCount > 0
+                  ? 'доп. каналы включены'
+                  : entityType === 'channel'
+                    ? 'только канал розыгрыша'
+                    : 'только чат розыгрыша'}
               </small>
             </div>
             <div className="managed-giveaway__dashboard-stat">
@@ -2319,7 +2323,7 @@ function ManagedGiveawayCardImpl(
               </small>
             </div>
             <div className="managed-giveaway__dashboard-stat">
-              <span>{featuredItem.status === 'COMPLETED' ? 'Итоги' : 'Финиш'}</span>
+              <span>{featuredItem.status === 'COMPLETED' ? 'Итоги' : 'Завершение'}</span>
               <strong>
                 {formatCompactMetricDate(
                   featuredItem.completedAt ?? featuredItem.endsAt,
@@ -2328,7 +2332,7 @@ function ManagedGiveawayCardImpl(
               </strong>
               <small>
                 {featuredItem.status === 'SCHEDULED'
-                  ? `Старт ${formatCompactMetricDate(featuredItem.startsAt, 'сразу')}`
+                  ? `Начало ${formatCompactMetricDate(featuredItem.startsAt, 'сразу')}`
                   : featuredItem.status === 'CANCELED'
                     ? 'розыгрыш остановлен'
                     : currentIsDraft
@@ -2574,7 +2578,7 @@ function ManagedGiveawayCardImpl(
             <div className="managed-giveaway__hero-copy">
               <span className="managed-giveaway__eyebrow">Черновик</span>
               <h2>Открываем розыгрыш</h2>
-              <p>Подтягиваем актуальные данные и возвращаем вас на первый шаг.</p>
+              <p>Обновляем данные розыгрыша.</p>
             </div>
             <div className="managed-giveaway__hero-badges">
               <span className="managed-giveaway__badge is-muted">
@@ -2693,14 +2697,14 @@ function ManagedGiveawayCardImpl(
               <div className="managed-giveaway__subsection">
                 <div className="managed-giveaway__subsection-row">
                   <div className="managed-giveaway__subsection-copy">
-                    <strong>Старт</strong>
+                    <strong>Начало</strong>
                   </div>
                 </div>
 
                 <div
                   className="managed-giveaway__choice-grid"
                   role="group"
-                  aria-label="Режим старта"
+                  aria-label="Режим начала"
                 >
                   <button
                     type="button"
@@ -2732,7 +2736,7 @@ function ManagedGiveawayCardImpl(
                 {isScheduledStart ? (
                   <div className="managed-giveaway__split-fields">
                     <DateField
-                      label="Дата старта"
+                      label="Дата начала"
                       value={readDateInputPart(draft.startsAtLocal)}
                       onChange={updateStartDate}
                       disabled={isBusy}
@@ -2753,7 +2757,7 @@ function ManagedGiveawayCardImpl(
               <div className="managed-giveaway__subsection">
                 <div className="managed-giveaway__subsection-row">
                   <div className="managed-giveaway__subsection-copy">
-                    <strong>Финиш</strong>
+                    <strong>Завершение</strong>
                   </div>
                 </div>
 
@@ -2774,7 +2778,7 @@ function ManagedGiveawayCardImpl(
                 <div className="managed-giveaway__split-fields">
                   <DateField
                     ref={endDateInputRef}
-                    label="Дата финиша"
+                    label="Дата завершения"
                     value={readDateInputPart(draft.endsAtLocal)}
                     onChange={updateEndDate}
                     error={finishAtValidationError || undefined}
@@ -2813,8 +2817,7 @@ function ManagedGiveawayCardImpl(
                     onToggleHint={toggleHint}
                     label="Подсказка по условиям участия"
                   >
-                    Подписка на источник обязательна всегда. Дополнительные каналы добавляйте только
-                    когда они реально участвуют в механике розыгрыша.
+                    {`${entityType === 'channel' ? 'Подписка на канал розыгрыша обязательна.' : 'Участие в чате розыгрыша обязательно.'} Добавьте дополнительные каналы, на которые тоже нужно подписаться.`}
                   </GiveawayHintAnchor>
                 </div>
               </div>
@@ -2845,7 +2848,9 @@ function ManagedGiveawayCardImpl(
                 </div>
               ) : (
                 <div className="managed-giveaway__empty managed-giveaway__empty--soft">
-                  <strong>Пока только источник</strong>
+                  <strong>
+                    {entityType === 'channel' ? 'Только канал розыгрыша' : 'Только чат розыгрыша'}
+                  </strong>
                   {channelsQuery.isLoading ? <span>Загружаем ваши каналы…</span> : null}
                   {!channelsQuery.isLoading && canOpenOwnedChannelsModal ? (
                     <button

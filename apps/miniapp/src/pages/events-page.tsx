@@ -784,12 +784,12 @@ function formatRussianCountLabel(count: number, one: string, few: string, many: 
 function resolveSpammerReasonLabel(reason: string | null | undefined): string {
   const raw = reason?.trim() ?? '';
   if (!raw) {
-    return 'другой сигнал';
+    return 'другая причина';
   }
 
   const normalized = raw.toUpperCase();
   if (normalized.includes('EXEMPT')) {
-    return 'исключение админа';
+    return 'администратор не проверяется';
   }
   if (
     normalized.includes('ALLOW') ||
@@ -957,9 +957,9 @@ function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics)
     return 'Ждёт решения админа';
   }
   if (policy.registryStatus === 'EXPIRED') {
-    return 'Ничего не делает';
+    return 'Без автоматических действий';
   }
-  return 'Ничего не делает';
+  return 'Без автоматических действий';
 }
 
 function normalizeDiagnosticsScore(value: number | null | undefined): number | null {
@@ -1194,9 +1194,7 @@ function buildDiagnosticsFacts(
     };
     facts.push({
       label: 'Решение по спам-базе',
-      value:
-        decisionLabels[diagnostics.localAdminDecision.decision] ??
-        'Локальное решение для этого чата',
+      value: decisionLabels[diagnostics.localAdminDecision.decision] ?? 'Решение для этого чата',
     });
   }
 
@@ -3186,7 +3184,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
   const leftShare = movementShares.left;
   const activityBalanceLabel =
     membershipSummary.netUsers > 0
-      ? 'Рост участников'
+      ? 'Прирост участников'
       : membershipSummary.netUsers < 0
         ? 'Отток участников'
         : 'Баланс без изменений';
@@ -3698,7 +3696,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
-                title="По этому фильтру пусто"
+                title="По этому фильтру ничего не найдено"
                 description="Попробуйте переключить тип события или расширить период."
               />
             </GlassCard>
@@ -4007,7 +4005,7 @@ function EventsWorkspace({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="cleanup-unavailable-participants"
         open={cleanupUnavailableConfirmOpen}
-        title="Удалить заблокированные"
+        title="Удалить заблокированные аккаунты?"
         summary="Будут удалены только участники, которых MAX явно пометил как удалённые, заблокированные или отключённые аккаунты."
         previewTitle="Обычные участники, админы, владельцы и боты пропускаются."
         previewMeta="Перед удалением бот ещё раз проверит состояние каждого аккаунта."

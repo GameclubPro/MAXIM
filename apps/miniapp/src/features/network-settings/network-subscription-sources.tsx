@@ -1,3 +1,4 @@
+import { describeUserFacingError } from '../../lib/user-facing-error';
 import { useEffect, useRef, useState } from 'react';
 import { AppIcon } from '../../components/ui/app-icon';
 import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS } from '@maxim/contracts/settings-field-schemas';
@@ -17,7 +18,7 @@ import { canonicalNetworkValue } from './network-settings-controller';
 import type { Scope } from './network-settings-metadata-fields';
 import './network-subscription-sources.css';
 const message = (cause: unknown) =>
-  cause instanceof Error ? cause.message : 'Не удалось проверить данные. Повторите поиск.';
+  describeUserFacingError(cause, 'Не удалось проверить данные. Повторите поиск.');
 export function NetworkSubscriptionSources({
   api,
   scope,

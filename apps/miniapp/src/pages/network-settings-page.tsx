@@ -1,3 +1,4 @@
+import { describeUserFacingError } from '../lib/user-facing-error';
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import type { NetworkSettingsOperationResponse } from '@maxim/contracts/network-settings';
 import type { ApiTransport } from '../lib/api/transport';
@@ -209,9 +210,7 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
         '/networks/' + scope.entityType + '/settings/' + section + '?scope=' + fresh.scopeId,
       );
     } catch (cause) {
-      setFreshEditorError(
-        cause instanceof Error ? cause.message : 'Не удалось открыть новые настройки.',
-      );
+      setFreshEditorError(describeUserFacingError(cause, 'Не удалось открыть новые настройки.'));
     }
   };
   const recipientTitles = new Map(
@@ -324,7 +323,14 @@ export function NetworkSettingsPage(props: NetworkSettingsPageProps) {
         ) : null}
         {controller.error ? (
           <div className="network-settings-page__error" role="alert">
-            <p>{controller.error}</p>
+            <p>
+              {describeUserFacingError(
+                new Error(controller.error),
+                controller.read
+                  ? 'Ответ не получен. Проверяем исходную операцию.'
+                  : 'Не удалось загрузить настройки.',
+              )}
+            </p>
             {!controller.read ? (
               <button type="button" className="button button--ghost" onClick={controller.reload}>
                 Загрузить заново

@@ -44,7 +44,7 @@ test('uses contract-level URL validation for broadcast link buttons', () => {
   ]);
 
   assert.equal(hasBroadcastLinkButtonErrors(errors), true);
-  assert.equal(errors[0]?.url, 'Укажите корректную ссылку (http/https).');
+  assert.equal(errors[0]?.url, 'Укажите ссылку, начинающуюся с http:// или https://.');
 });
 
 test('keeps text validation separate from broadcast button URL errors', () => {

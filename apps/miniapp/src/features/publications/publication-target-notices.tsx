@@ -39,7 +39,7 @@ export function PublicationTargetNotices({
 }: PublicationTargetNoticesProps) {
   const routeMessage =
     initialRoute.failure?.reason === 'not_ready'
-      ? 'Получатель из ссылки пока не готов к публикации через Публик'
+      ? 'Получатель из ссылки пока не готов к публикации через Публика'
       : initialRoute.failure?.kind === 'unavailable'
         ? 'Получатель из ссылки недоступен.'
         : initialRoute.failure

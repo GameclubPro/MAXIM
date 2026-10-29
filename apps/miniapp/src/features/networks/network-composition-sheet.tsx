@@ -146,7 +146,7 @@ export function NetworkCompositionSheet({
       await actions.refreshAssignments(entityType);
       setReviewReady(true);
     } catch {
-      setError('Не удалось прочитать актуальный состав. Изменения сохранены в черновике.');
+      setError('Не удалось загрузить актуальный состав. Изменения сохранены в черновике.');
     } finally {
       setReviewing(false);
     }
@@ -249,7 +249,7 @@ export function NetworkCompositionSheet({
                         } catch {
                           setReviewReady(false);
                           setError(
-                            'Состав снова изменился. Прочитайте его ещё раз перед согласованием.',
+                            'Состав снова изменился. Обновите его и проверьте изменения ещё раз.',
                           );
                         }
                       }}

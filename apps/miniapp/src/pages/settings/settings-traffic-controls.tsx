@@ -5,7 +5,7 @@ const controls = [
   {
     enabled: 'mediaMessageCooldownEnabled',
     interval: 'mediaMessageCooldownSeconds',
-    title: 'Интервал медиа',
+    title: 'Интервал для вложений',
   },
 ] as const;
 

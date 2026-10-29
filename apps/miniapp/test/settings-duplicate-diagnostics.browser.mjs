@@ -212,7 +212,7 @@ try {
       await page.getByRole('button', { name: 'Сохранить выключение', exact: true }).click();
       await panel
         .locator('dd')
-        .filter({ hasText: /^Выключен$/u })
+        .filter({ hasText: /^Выключена$/u })
         .waitFor();
       assert.ok(reads > beforeSave, 'Successful settings save refetches the mounted diagnostics');
       const oldSettingsRecheck = heldRechecks.shift();
@@ -227,7 +227,7 @@ try {
       assert.equal(
         await panel
           .locator('dd')
-          .filter({ hasText: /^Выключен$/u })
+          .filter({ hasText: /^Выключена$/u })
           .count(),
         1,
         'An old recheck cannot overwrite diagnostics refetched after settings save',
@@ -250,7 +250,7 @@ try {
       assert.equal(
         await panel
           .locator('dd')
-          .filter({ hasText: /^Выключен$/u })
+          .filter({ hasText: /^Выключена$/u })
           .count(),
         1,
         'Settings invalidation revokes an old recheck while the fresh GET is in flight',
@@ -292,7 +292,7 @@ try {
         assert.equal(
           await panel
             .locator('dd')
-            .filter({ hasText: /^Выключен$/u })
+            .filter({ hasText: /^Выключена$/u })
             .count(),
           1,
         );

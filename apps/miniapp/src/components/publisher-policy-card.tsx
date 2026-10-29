@@ -122,7 +122,7 @@ export function PublisherPolicyCard({
   const isMutating = mutation.isPending || recheckMutation.isPending;
   const unavailable = !policyQuery.isLoading && !policy;
   const switchLabel = policy
-    ? `${policy.publikEnabled ? 'Выключить' : 'Включить'} Публик для ${
+    ? `${policy.publikEnabled ? 'Выключить' : 'Включить'} Публика для ${
         entityType === 'channel' ? 'канала' : 'чата'
       }`
     : unavailable
@@ -134,7 +134,7 @@ export function PublisherPolicyCard({
       role={unavailable ? 'alert' : undefined}
       aria-label={
         unavailable
-          ? describeUserFacingError(policyQuery.error, 'Не удалось загрузить Публик')
+          ? describeUserFacingError(policyQuery.error, 'Не удалось загрузить настройки Публика')
           : undefined
       }
       aria-busy={policyQuery.isLoading || isMutating || policyQuery.isFetching}

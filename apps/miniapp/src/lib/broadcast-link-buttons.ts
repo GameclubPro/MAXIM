@@ -53,7 +53,7 @@ export function validateBroadcastLinkButtons(
       !parsed.success &&
       parsed.error.issues.some((issue) => issue.path[0] === 'url' || issue.path.length === 0)
     ) {
-      errors.url = 'Укажите корректную ссылку (http/https).';
+      errors.url = 'Укажите ссылку, начинающуюся с http:// или https://.';
     }
 
     if (

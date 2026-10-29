@@ -604,7 +604,7 @@ function PublisherAutoReplyEditor({
       <div className="publisher-auto-replies-page__state has-error" role="alert">
         <IconoirSprite variant="iconoir" icon="WarningCircle" aria-hidden />
         <strong>Не удалось восстановить черновик</strong>
-        <span>Повторите попытку или явно начните без локальной копии.</span>
+        <span>Повторите попытку или начните заново.</span>
         <div className="publisher-auto-replies-page__state-actions">
           <button type="button" onClick={retryHydration}>
             <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
@@ -853,7 +853,7 @@ function PublisherAutoReplyEditor({
             allowImages={draft.retainedAssets.length < AUTO_REPLY_MAX_IMAGES}
             disabled={saveMutation.isPending}
             textError={issues.content}
-            messageAriaLabel="Ответ автоответа"
+            messageAriaLabel="Сообщение автоответа"
             textPlaceholder="Текст ответа"
             textAriaLabel="Текст автоответа"
             showToolLabels
@@ -881,7 +881,8 @@ function PublisherAutoReplyEditor({
         ) : null}
         {storageReadError ? (
           <small className="publisher-auto-reply-editor__missing-images" role="alert">
-            Локальный черновик недоступен. Сохраните автоответ перед закрытием редактора.
+            Не удалось прочитать черновик на устройстве. Сохраните автоответ перед закрытием
+            редактора.
           </small>
         ) : null}
         {totalImages > 0 ? (
@@ -1026,7 +1027,7 @@ function PublisherAutoReplyEditor({
         title="Закрыть редактор?"
         summary={
           storageReadError
-            ? 'Локальный черновик недоступен. Несохранённые изменения будут потеряны.'
+            ? 'Не удалось прочитать черновик на устройстве. Несохранённые изменения будут потеряны.'
             : 'Черновик останется на этом устройстве и восстановится при следующем открытии.'
         }
         confirmLabel="Закрыть"

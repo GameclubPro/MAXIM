@@ -1,7 +1,7 @@
 import { describeApiError, isSessionExpiredApiMessage } from './api-error';
 
 const TECHNICAL_ERROR_PATTERN =
-  /\b(?:api|rps|p95|worker|rollback|dry[- ]?run|prisma|redis|bullmq|sql|stack|exception|statuscode|payload|webhook|token|uuid|econn\w*|etimedout|invalid|failed)\b|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[{}[\]<>]|[\r\n]/iu;
+  /\b(?:maxim|webappdata|init[ _-]?data|api|rps|p95|worker|rollback|dry[- ]?run|prisma|redis|bullmq|sql|stack|exception|statuscode|payload|webhook|token|uuid|econn\w*|etimedout|invalid|failed)\b|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[{}[\]<>]|[\r\n]/iu;
 
 export function describeUserFacingError(error: unknown, fallback: string): string {
   const message = describeApiError(error, fallback).trim();

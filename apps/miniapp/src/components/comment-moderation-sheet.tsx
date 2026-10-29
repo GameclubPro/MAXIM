@@ -90,7 +90,7 @@ export default function CommentModerationSheet({ context, target: initialTarget,
             ? 'Ограничение снято'
             : action === 'BAN'
               ? 'Автор заблокирован в комментариях'
-              : 'Мут применён',
+              : 'Запрет на комментарии применён',
       });
       onClose();
     },
@@ -132,7 +132,11 @@ export default function CommentModerationSheet({ context, target: initialTarget,
   const name =
     target?.displayName || current.data?.displayName || (target ? `Участник ${target.userId}` : '');
   const actionLabel =
-    action === 'RELEASE' ? 'Снять ограничение' : action === 'BAN' ? 'Забанить' : 'Применить мут';
+    action === 'RELEASE'
+      ? 'Снять ограничение'
+      : action === 'BAN'
+        ? 'Заблокировать'
+        : 'Запретить комментировать';
   const scopeLabel = `Все комментарии ${context.entityType === 'channel' ? 'канала' : 'чата'} в ${context.profile === 'publisher' ? 'Публике' : 'Майоре'}`;
 
   return createPortal(
@@ -204,7 +208,7 @@ export default function CommentModerationSheet({ context, target: initialTarget,
                       <p>
                         {action === 'RELEASE'
                           ? 'Участие в комментариях снова будет доступно.'
-                          : 'Отправка, редактирование и реакции будут недоступны. Чтение и членство в MAX сохранятся.'}
+                          : 'Отправлять и редактировать комментарии, а также ставить реакции будет нельзя. Читать комментарии можно. Участие в чате или канале сохранится.'}
                       </p>
                       {reason && action !== 'RELEASE' ? <p>Причина: {reason}</p> : null}
                     </div>
@@ -226,9 +230,9 @@ export default function CommentModerationSheet({ context, target: initialTarget,
                                 }}
                               />
                               {value === 'MUTE'
-                                ? 'Мут'
+                                ? 'Запрет на комментарии'
                                 : value === 'BAN'
-                                  ? 'Бан без срока'
+                                  ? 'Бессрочная блокировка'
                                   : 'Снять ограничение'}
                             </label>
                           ),
@@ -238,7 +242,7 @@ export default function CommentModerationSheet({ context, target: initialTarget,
                         <label className="comment-moderation-sheet__field">
                           Срок
                           <select
-                            aria-label="Срок мута"
+                            aria-label="Срок запрета на комментарии"
                             value={duration}
                             onChange={(event) =>
                               setDuration(Number(event.target.value) as typeof duration)

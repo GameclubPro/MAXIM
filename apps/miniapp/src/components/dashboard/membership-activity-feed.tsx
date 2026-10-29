@@ -310,9 +310,7 @@ export function MembershipActivityFeed({
           onClick={revealLoadedItems}
           disabled={isReloading}
         >
-          {nextRevealCount > 0
-            ? `Показать ещё ${nextRevealCount} из загруженных`
-            : 'Показать ещё загруженные'}
+          {nextRevealCount > 0 ? `Показать ещё ${nextRevealCount}` : 'Показать ещё'}
         </button>
       ) : hasMore ? (
         <button
@@ -327,7 +325,7 @@ export function MembershipActivityFeed({
 
       {items.length > visibleCount ? (
         <p className="membership-feed__render-status" aria-live="polite">
-          {`Показано ${visibleCount} из ${items.length} загруженных`}
+          {`Показано ${visibleCount} из ${items.length}`}
         </p>
       ) : null}
     </section>
