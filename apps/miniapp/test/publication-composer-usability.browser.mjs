@@ -89,7 +89,9 @@ async function assertManualLinkDraftRoundTrip(browser) {
         : route.abort(),
     );
     await context.route('**/src/lib/api/preview-transport-runtime.ts', async (route) => {
-      const response = await route.fetch();
+      // FLAG: Retry one reset of the local Vite module GET; effect requests and HTTP errors
+      // are not retried. A second reset still fails the scenario.
+      const response = await route.fetch({ maxRetries: 1 });
       const source = await response.text();
       const marker = 'if (result !== PREVIEW_NOT_HANDLED) {';
       assert.ok(source.includes(marker));
@@ -221,7 +223,8 @@ try {
         // FLAG: Inject a stale-access response only into the local preview transport.
         // Hold its refresh operation open to exercise the real editor's waiting state.
         await context.route('**/src/lib/api/preview-transport-runtime.ts', async (route) => {
-          const response = await route.fetch();
+          // FLAG: Same bounded ECONNRESET-only retry for the local source module, never publish.
+          const response = await route.fetch({ maxRetries: 1 });
           const source = await response.text();
           const marker = 'for (const handler of handlers) {';
           assert.ok(source.includes(marker));
