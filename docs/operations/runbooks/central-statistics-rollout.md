@@ -64,6 +64,35 @@ current proof. Native regressions in `stats-central-postgres.spec.ts` cover both
 roles, revocation/recovery, return to the original bot and stale references.
 Do not recreate stores, lower floors or re-enable retired history exchange.
 
+Authority lifecycle v2 preserves a revoked predecessor when a new exact-scope
+authority replaces it. The issuer must supply its exact ID, revision and epoch;
+an expired lease alone is not a revocation. A superseded ID is permanently
+revoked, including after a later higher-revision attestation. Resolution of the
+current scope head is authenticated metadata only and never grants access.
+
+The additive migration `20261029193000_statistics_authority_successors` installs
+nullable successor fields and the permanent database tombstone fence. The separate
+`20261029193100_index_statistics_authority_heads` builds the partial unique index
+concurrently while the old constraint still protects the scope. Only
+`20261029193130_index_statistics_current_consumers` separately builds the bounded
+entity/id change-feed seek index. `20261029193200_enable_statistics_authority_successors`
+then removes the legacy constraint. The feed reads current consumers through
+keyset pages and terminal predecessors through an exact primary-key lookup;
+retained chains must not become a whole-authority scan.
+Use the existing migration recovery procedure if a phase fails; never drop an
+invalid index, change a migration receipt or retry schema operations manually.
+
+After this release, normal API deploys and both API rollback paths require
+`maxim_topology_require_statistics_authority_lifecycle` on the exact candidate
+source. It checks the lifecycle-v2 contract, successor readers/writers and all
+three migrations, independently of feature flags or whether any rows have yet
+been replaced. The normal deploy verifies candidate controller compatibility
+before Git checkout/re-exec; the rollback bootstrap retains the new floor along
+with all earlier floors. Static-only immutable rollback retains its offline
+path. The existing applied-migration check remains an independent gate. Keep a
+compatible API image for recovery; neither restoring an older authority table
+nor running a pre-v2 writer is a rollback option.
+
 Native source identity binds the durable access edge's creation, current roles
 and bot membership lifecycle, never the timestamp of an unchanged successful
 rights check. Current exact actor/bot grants and explicit denial/removal are
@@ -117,7 +146,8 @@ metadata expiry remains active. Native regressions live in
 `statistics-exchange-postgres.spec.ts` and
 `statistics-exchange-v3-membership-postgres.spec.ts`.
 
-Focused checks: `statistics-central-rollout-state.test.mjs`, existing
+Focused checks: `statistics-authority-rollback.test.mjs`,
+`statistics-central-rollout-state.test.mjs`, existing
 `statistics-exchange-rollout-state.test.mjs`, Market admission/cutover PostgreSQL
 tests and the exact statistics rollback tests. Report local, exact-SHA CI, released,
 public acceptance and MAX-device evidence separately.

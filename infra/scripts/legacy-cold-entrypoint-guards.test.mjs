@@ -156,6 +156,9 @@ function fixture({ missingHelper = false, rejectAfter = 0, localBranchExists = t
       /^(maxim_topology_require_\w+) "\$TARGET_FULL_SHA"$/gmu,
     ),
   ].map((match) => `${match[1]}() { return 0; }`);
+  // FLAG: Deploy synchronization calls the lifecycle floor directly, while rollback
+  // now enters it through the combined statistics/night-mode recovery capability.
+  sourceFloors.push('maxim_topology_require_statistics_authority_lifecycle() { return 0; }');
   sourceFloors.push('maxim_topology_require_publisher_secret_files() { return 0; }');
   writeFileSync(topology, `${readFileSync(topology, 'utf8')}\n${sourceFloors.join('\n')}\n`);
   mkdirSync(join(directory, 'scripts'), { recursive: true });
@@ -352,7 +355,7 @@ for (const localBranchExists of [true, false]) {
       const result = state.run('vps-pull-build-up.sh', ['main', '--plan'], {
         COLD_ENTRY_TEST_PLAN: '1',
       });
-      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}\n${state.readLog()}`);
       const log = state.readLog();
       assert.match(log, /git:fetch/u);
       assert.equal(
@@ -363,7 +366,10 @@ for (const localBranchExists of [true, false]) {
         log,
         localBranchExists ? /git:checkout main\n/u : /git:checkout -b main origin\/main\n/u,
       );
-      assert.doesNotMatch(log, /authority-checked|npm:|docker:.*\b(?:up|run|start|stop|build|rm)\b/u);
+      assert.doesNotMatch(
+        log,
+        /authority-checked|npm:|docker:.*\b(?:up|run|start|stop|build|rm)\b/u,
+      );
       assert.equal(readFileSync(join(state.directory, '.env'), 'utf8'), 'NODE_ENV=production\n');
     } finally {
       state.cleanup();

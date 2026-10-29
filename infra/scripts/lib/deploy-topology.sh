@@ -407,10 +407,25 @@ maxim_topology_require_exact_statistics_rollup_reader() {
   fi
 }
 
+maxim_topology_require_statistics_authority_lifecycle() {
+  local commit_sha="$1"
+  # FLAG: Superseded statistics authorities are permanent tombstones. A schema-compatible
+  # image must also retain the successor reader/writer fences after flags are disabled.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-statistics-authority-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_night_mode_recovery_reader() {
   local commit_sha="$1"
   # FLAG: SQL-backed opening-event and close-cleanup obligations survive image rollback.
   node "$(dirname "${BASH_SOURCE[0]}")/../assert-night-mode-recovery-source.mjs" "$commit_sha"
+}
+
+maxim_topology_require_statistics_and_night_mode_recovery() {
+  local commit_sha="$1"
+  # FLAG: Either earlier tooling branch lacks the other's permanent recovery floor.
+  # The combined bootstrap capability must execute both checks for the same API source.
+  maxim_topology_require_statistics_authority_lifecycle "$commit_sha" || return $?
+  maxim_topology_require_night_mode_recovery_reader "$commit_sha" || return $?
 }
 
 maxim_topology_require_managed_entity_activation() {

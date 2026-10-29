@@ -39,7 +39,7 @@ local Docker-socket access under the production pg_hba rules, with:
     no canonical/source, actor, user or bot identities
   - thirty-seven optional exchange measurement/authorization metadata columns;
     IDs are join-only, errors are booleans, no message content or tokens
-  - thirty-five optional central statistics metadata columns; join keys stay inside SQL,
+  - thirty-six optional central statistics metadata columns; join keys stay inside SQL,
     no measurement values, coverage payloads, hashes or receipt results
   - eight fixed migration receipt columns; errors classified in SQL, raw logs never reported
   - 25 owner-proof columns across execution claims and action ledger; source keys,
@@ -335,20 +335,20 @@ GRANT SELECT (id, entity_type) ON TABLE public.chats TO maxim_audit;
 DO $central_statistics_grants$
 BEGIN
   IF NOT EXISTS (
-    WITH allowed(table_name,column_name) AS (VALUES ('stats_entities','id'),('stats_entities','kind'),('stats_entities','max_id'),('stats_entities','data_revision'),('stats_authorities','entity_id'),('stats_authorities','issuer'),('stats_authorities','role'),('stats_authorities','producer'),('stats_authorities','consumer'),('stats_authorities','actor_max_id'),('stats_authorities','bot_ref'),('stats_authorities','purpose'),('stats_authorities','state'),('stats_authorities','peer_valid_until'),('stats_authorities','checked_at'),('stats_measurements','entity_id'),('stats_measurements','producer'),('stats_measurements','metric'),('stats_measurements','horizon'),('stats_measurements','method_id'),('stats_measurements','day'),('stats_measurements','deleted'),('stats_measurements','observed_from'),('stats_measurements','observed_to'),('stats_measurements','updated_at'),('stats_ingest_requests','producer'),('stats_ingest_requests','producer_epoch'),('stats_ingest_requests','record_kind'),('stats_ingest_requests','operation_key'),('stats_ingest_requests','created_at'),('stats_changes','id'),('stats_changes','cause'),('stats_changes','created_at'),('stats_changes','published_seq'),('stats_changes','published_at'))
+    WITH allowed(table_name,column_name) AS (VALUES ('stats_entities','id'),('stats_entities','kind'),('stats_entities','max_id'),('stats_entities','data_revision'),('stats_authorities','entity_id'),('stats_authorities','issuer'),('stats_authorities','role'),('stats_authorities','producer'),('stats_authorities','consumer'),('stats_authorities','actor_max_id'),('stats_authorities','bot_ref'),('stats_authorities','purpose'),('stats_authorities','state'),('stats_authorities','superseded_by'),('stats_authorities','peer_valid_until'),('stats_authorities','checked_at'),('stats_measurements','entity_id'),('stats_measurements','producer'),('stats_measurements','metric'),('stats_measurements','horizon'),('stats_measurements','method_id'),('stats_measurements','day'),('stats_measurements','deleted'),('stats_measurements','observed_from'),('stats_measurements','observed_to'),('stats_measurements','updated_at'),('stats_ingest_requests','producer'),('stats_ingest_requests','producer_epoch'),('stats_ingest_requests','record_kind'),('stats_ingest_requests','operation_key'),('stats_ingest_requests','created_at'),('stats_changes','id'),('stats_changes','cause'),('stats_changes','created_at'),('stats_changes','published_seq'),('stats_changes','published_at'))
     SELECT 1 FROM allowed LEFT JOIN pg_attribute attribute
       ON attribute.attrelid=to_regclass('public.'||allowed.table_name)
       AND attribute.attname=allowed.column_name AND attribute.attnum>0 AND NOT attribute.attisdropped
     WHERE attribute.attnum IS NULL
   ) THEN
     GRANT SELECT (id,kind,max_id,data_revision) ON TABLE public.stats_entities TO maxim_audit;
-    GRANT SELECT (entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,state,peer_valid_until,checked_at) ON TABLE public.stats_authorities TO maxim_audit;
+    GRANT SELECT (entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,state,superseded_by,peer_valid_until,checked_at) ON TABLE public.stats_authorities TO maxim_audit;
     GRANT SELECT (entity_id,producer,metric,horizon,method_id,day,deleted,observed_from,observed_to,updated_at) ON TABLE public.stats_measurements TO maxim_audit;
     GRANT SELECT (producer,producer_epoch,record_kind,operation_key,created_at) ON TABLE public.stats_ingest_requests TO maxim_audit;
     GRANT SELECT (id,cause,created_at,published_seq,published_at) ON TABLE public.stats_changes TO maxim_audit;
   END IF;
   IF EXISTS (
-    WITH allowed(table_name,column_name) AS (VALUES ('stats_entities','id'),('stats_entities','kind'),('stats_entities','max_id'),('stats_entities','data_revision'),('stats_authorities','entity_id'),('stats_authorities','issuer'),('stats_authorities','role'),('stats_authorities','producer'),('stats_authorities','consumer'),('stats_authorities','actor_max_id'),('stats_authorities','bot_ref'),('stats_authorities','purpose'),('stats_authorities','state'),('stats_authorities','peer_valid_until'),('stats_authorities','checked_at'),('stats_measurements','entity_id'),('stats_measurements','producer'),('stats_measurements','metric'),('stats_measurements','horizon'),('stats_measurements','method_id'),('stats_measurements','day'),('stats_measurements','deleted'),('stats_measurements','observed_from'),('stats_measurements','observed_to'),('stats_measurements','updated_at'),('stats_ingest_requests','producer'),('stats_ingest_requests','producer_epoch'),('stats_ingest_requests','record_kind'),('stats_ingest_requests','operation_key'),('stats_ingest_requests','created_at'),('stats_changes','id'),('stats_changes','cause'),('stats_changes','created_at'),('stats_changes','published_seq'),('stats_changes','published_at')), effective AS (
+    WITH allowed(table_name,column_name) AS (VALUES ('stats_entities','id'),('stats_entities','kind'),('stats_entities','max_id'),('stats_entities','data_revision'),('stats_authorities','entity_id'),('stats_authorities','issuer'),('stats_authorities','role'),('stats_authorities','producer'),('stats_authorities','consumer'),('stats_authorities','actor_max_id'),('stats_authorities','bot_ref'),('stats_authorities','purpose'),('stats_authorities','state'),('stats_authorities','superseded_by'),('stats_authorities','peer_valid_until'),('stats_authorities','checked_at'),('stats_measurements','entity_id'),('stats_measurements','producer'),('stats_measurements','metric'),('stats_measurements','horizon'),('stats_measurements','method_id'),('stats_measurements','day'),('stats_measurements','deleted'),('stats_measurements','observed_from'),('stats_measurements','observed_to'),('stats_measurements','updated_at'),('stats_ingest_requests','producer'),('stats_ingest_requests','producer_epoch'),('stats_ingest_requests','record_kind'),('stats_ingest_requests','operation_key'),('stats_ingest_requests','created_at'),('stats_changes','id'),('stats_changes','cause'),('stats_changes','created_at'),('stats_changes','published_seq'),('stats_changes','published_at')), effective AS (
       SELECT relation.relname AS table_name,attribute.attname AS column_name
       FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
       JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
@@ -356,7 +356,7 @@ BEGIN
         AND attribute.attnum>0 AND NOT attribute.attisdropped
         AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'SELECT')
     ) SELECT 1 WHERE EXISTS (SELECT * FROM effective EXCEPT SELECT * FROM allowed)
-      OR (SELECT count(*) FROM effective) NOT IN (0,35)
+      OR (SELECT count(*) FROM effective) NOT IN (0,36)
       OR EXISTS (SELECT 1 FROM pg_class relation JOIN pg_namespace ns ON ns.oid=relation.relnamespace
         WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM allowed)
           AND (has_table_privilege('maxim_audit',relation.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
