@@ -2,7 +2,7 @@ import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, type ReactNode } from 'react';
+import { lazy, Suspense, useState, type ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import type {
   KaravanStorefrontAllowlistEntry,
@@ -28,6 +28,8 @@ import { cn } from '../../lib/cn';
 import { maxNotify, openMaxBotLinkAndClose } from '../../lib/max-bridge';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import '../../styles/settings-storefront.css';
+
+const KaravanMarketplacePanel = lazy(() => import('./karavan-marketplace-panel'));
 
 type SettingsStorefrontSectionProps = {
   sharedContent?: ReactNode;
@@ -196,160 +198,170 @@ export function SettingsStorefrontSection({
           >
             {expanded ? (
               <div className="settings-section__collapse-inner">
-                {sharedContent ?? (
-                  <div className="settings-native-toggle">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Караван</span>
-                      </div>
+                {!sharedContent && chatId ? (
+                  <Suspense fallback={<Spinner size="sm" label="Проверяем магазин" />}>
+                    <KaravanMarketplacePanel key={chatId} api={api} chatId={chatId} />
+                  </Suspense>
+                ) : null}
+                <details className="settings-storefront__publications">
+                  <summary>Публикации в чате</summary>
+                  {sharedContent ?? (
+                    <div className="settings-native-toggle">
+                      <div className="settings-native-toggle__row">
+                        <div className="settings-native-toggle__title-wrap">
+                          <span className="settings-native-toggle__title">Кнопка по $</span>
+                        </div>
 
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить кнопку витрины Караван"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.karavanStorefrontEnabled}
-                          onChange={(event) => onFieldChange(event.target.checked)}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
+                        <label
+                          className="settings-native-switch"
+                          aria-label="Включить кнопку витрины Караван"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={draft.karavanStorefrontEnabled}
+                            onChange={(event) => onFieldChange(event.target.checked)}
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+                      <p className="settings-native-toggle__hint">
+                        Разрешить публикации по $ в этом чате. Магазин настраивается отдельно.
+                      </p>
                     </div>
-                    <p className="settings-native-toggle__hint">
-                      Одиночный $ без витрины покажет кнопки витрин.
-                    </p>
-                  </div>
-                )}
+                  )}
 
-                {draft.karavanStorefrontEnabled ? (
-                  <>
-                    {!sharedContent ? (
-                      <SettingsStorefrontTextEditor draft={draft} onChange={onTextChange} />
-                    ) : null}
-                    {!sharedContent ? (
-                      <div className="settings-native-toggle settings-native-toggle--nested">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Только администраторы
-                            </span>
+                  {draft.karavanStorefrontEnabled ? (
+                    <>
+                      {!sharedContent ? (
+                        <SettingsStorefrontTextEditor draft={draft} onChange={onTextChange} />
+                      ) : null}
+                      {!sharedContent ? (
+                        <div className="settings-native-toggle settings-native-toggle--nested">
+                          <div className="settings-native-toggle__row">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">
+                                Только администраторы
+                              </span>
+                            </div>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Разрешать витрину только администраторам и пользователям из списка"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.karavanStorefrontAdminsOnly}
+                                onChange={(event) => onAdminsOnlyChange(event.target.checked)}
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
                           </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Разрешать витрину только администраторам и пользователям из списка"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.karavanStorefrontAdminsOnly}
-                              onChange={(event) => onAdminsOnlyChange(event.target.checked)}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
+                          <p className="settings-native-toggle__hint">
+                            Кнопка будет доступна администраторам и выданным пользователям.
+                          </p>
                         </div>
-                        <p className="settings-native-toggle__hint">
-                          Кнопка будет доступна администраторам и выданным пользователям.
-                        </p>
-                      </div>
-                    ) : null}
+                      ) : null}
 
-                    {draft.karavanStorefrontAdminsOnly ? (
-                      <section
-                        className="settings-storefront__allowlist"
-                        aria-labelledby="settings-storefront-allowlist-title"
-                      >
-                        <div className="settings-storefront__allowlist-head">
-                          <div>
-                            <h3 id="settings-storefront-allowlist-title">
-                              Разрешённые пользователи
-                            </h3>
-                            <p>Доступ действует только в этом чате.</p>
-                          </div>
-                          <button
-                            type="button"
-                            className="settings-storefront__add-button"
-                            onClick={() => handoffMutation.mutate()}
-                            disabled={!chatId || handoffMutation.isPending}
-                          >
-                            <IconoirSprite variant="iconoir" icon="PlusCircle" aria-hidden />
-                            <span>
-                              {handoffMutation.isPending ? 'Открываем...' : 'Добавить пользователя'}
-                            </span>
-                          </button>
-                        </div>
-
-                        {allowlistQuery.isLoading ? (
-                          <div className="settings-storefront__state" role="status">
-                            <Spinner size="sm" label="Загружаем список" />
-                            <span>Загружаем список...</span>
-                          </div>
-                        ) : allowlistQuery.isError ? (
-                          <div className="settings-storefront__state settings-storefront__state--error">
-                            <p>
-                              {describeUserFacingError(
-                                allowlistQuery.error,
-                                'Не удалось загрузить список.',
-                              )}
-                            </p>
-                            <button type="button" onClick={() => void allowlistQuery.refetch()}>
-                              Повторить
+                      {draft.karavanStorefrontAdminsOnly ? (
+                        <section
+                          className="settings-storefront__allowlist"
+                          aria-labelledby="settings-storefront-allowlist-title"
+                        >
+                          <div className="settings-storefront__allowlist-head">
+                            <div>
+                              <h3 id="settings-storefront-allowlist-title">
+                                Разрешённые пользователи
+                              </h3>
+                              <p>Доступ действует только в этом чате.</p>
+                            </div>
+                            <button
+                              type="button"
+                              className="settings-storefront__add-button"
+                              onClick={() => handoffMutation.mutate()}
+                              disabled={!chatId || handoffMutation.isPending}
+                            >
+                              <IconoirSprite variant="iconoir" icon="PlusCircle" aria-hidden />
+                              <span>
+                                {handoffMutation.isPending
+                                  ? 'Открываем...'
+                                  : 'Добавить пользователя'}
+                              </span>
                             </button>
                           </div>
-                        ) : entries.length === 0 ? (
-                          <p className="settings-storefront__empty">Список пока пуст.</p>
-                        ) : (
-                          <div className="settings-storefront__list" aria-live="polite">
-                            {entries.map((entry) => (
-                              <div className="settings-storefront__entry" key={entry.id}>
-                                <div className="settings-storefront__entry-copy">
-                                  <strong>{allowlistEntryLabel(entry)}</strong>
-                                  <span>
-                                    ID: {entry.userId} · {formatAllowlistExpiry(entry.expiresAt)}
-                                  </span>
-                                </div>
-                                {entryToRevoke?.id === entry.id ? (
-                                  <span className="settings-storefront__revoke-confirm">
-                                    <button
-                                      type="button"
-                                      className="settings-storefront__revoke-confirm-button"
-                                      onClick={() => revokeMutation.mutate(entry.id)}
-                                      disabled={revokeMutation.isPending}
-                                    >
-                                      {revokeMutation.isPending ? '...' : 'Отозвать'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="settings-storefront__revoke-cancel-button"
-                                      onClick={() => setEntryToRevoke(null)}
-                                      disabled={revokeMutation.isPending}
-                                    >
-                                      Отмена
-                                    </button>
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="settings-storefront__revoke-button"
-                                    aria-label={`Отозвать доступ: ${allowlistEntryLabel(entry)}`}
-                                    title="Отозвать доступ"
-                                    onClick={() => setEntryToRevoke(entry)}
-                                    disabled={revokeMutation.isPending}
-                                  >
-                                    <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
-                                  </button>
+
+                          {allowlistQuery.isLoading ? (
+                            <div className="settings-storefront__state" role="status">
+                              <Spinner size="sm" label="Загружаем список" />
+                              <span>Загружаем список...</span>
+                            </div>
+                          ) : allowlistQuery.isError ? (
+                            <div className="settings-storefront__state settings-storefront__state--error">
+                              <p>
+                                {describeUserFacingError(
+                                  allowlistQuery.error,
+                                  'Не удалось загрузить список.',
                                 )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </section>
-                    ) : null}
-                  </>
-                ) : null}
+                              </p>
+                              <button type="button" onClick={() => void allowlistQuery.refetch()}>
+                                Повторить
+                              </button>
+                            </div>
+                          ) : entries.length === 0 ? (
+                            <p className="settings-storefront__empty">Список пока пуст.</p>
+                          ) : (
+                            <div className="settings-storefront__list" aria-live="polite">
+                              {entries.map((entry) => (
+                                <div className="settings-storefront__entry" key={entry.id}>
+                                  <div className="settings-storefront__entry-copy">
+                                    <strong>{allowlistEntryLabel(entry)}</strong>
+                                    <span>
+                                      ID: {entry.userId} · {formatAllowlistExpiry(entry.expiresAt)}
+                                    </span>
+                                  </div>
+                                  {entryToRevoke?.id === entry.id ? (
+                                    <span className="settings-storefront__revoke-confirm">
+                                      <button
+                                        type="button"
+                                        className="settings-storefront__revoke-confirm-button"
+                                        onClick={() => revokeMutation.mutate(entry.id)}
+                                        disabled={revokeMutation.isPending}
+                                      >
+                                        {revokeMutation.isPending ? '...' : 'Отозвать'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="settings-storefront__revoke-cancel-button"
+                                        onClick={() => setEntryToRevoke(null)}
+                                        disabled={revokeMutation.isPending}
+                                      >
+                                        Отмена
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="settings-storefront__revoke-button"
+                                      aria-label={`Отозвать доступ: ${allowlistEntryLabel(entry)}`}
+                                      title="Отозвать доступ"
+                                      onClick={() => setEntryToRevoke(entry)}
+                                      disabled={revokeMutation.isPending}
+                                    >
+                                      <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </section>
+                      ) : null}
+                    </>
+                  ) : null}
+                </details>
               </div>
             ) : null}
           </div>

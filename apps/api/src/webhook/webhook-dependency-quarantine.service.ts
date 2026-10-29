@@ -351,22 +351,23 @@ export class WebhookDependencyQuarantineService {
               completed.leaseExpiresAt !== null
             )
               return 'waiting';
-            await tx.webhookEvent.update({
-              where: { id: receipt.id },
-              data: {
-                status: WebhookStatus.RECEIVED,
-                queueName: null,
-                nextEnqueueAt: now,
-              },
-            });
+            // FLAG: Proof reads can outlive the original deadline. Check the database clock
+            // in the locked receipt transition; never enqueue stale work or renew its window.
+            const [released] = await tx.$queryRaw<Array<{ releasedAt: Date }>>`
+              UPDATE webhook_events
+              SET status = 'RECEIVED', queue_name = NULL,
+                  next_enqueue_at = clock_timestamp() AT TIME ZONE 'UTC'
+              WHERE id = ${receipt.id} AND status = 'QUARANTINED'
+                AND execution_deadline_at > clock_timestamp() AT TIME ZONE 'UTC'
+              RETURNING next_enqueue_at AS "releasedAt"`;
             await tx.webhookDependencyQuarantine.update({
               where: { receiptId_blockerId: { receiptId: receipt.id, blockerId: entry.blockerId } },
               data: {
-                state: 'RELEASED',
-                resolvedAt: now,
+                state: released ? 'RELEASED' : 'EXPIRED',
+                resolvedAt: released?.releasedAt ?? new Date(),
               },
             });
-            return 'released';
+            return released ? 'released' : 'expired';
           },
           { timeout: 2_000, maxWait: 1_000 },
         )

@@ -309,9 +309,10 @@ export class MarketplaceStateService {
     const now = input.now ?? new Date();
     // FLAG: The actual sending bot must hold a fresh connection; routing hints never grant access.
     const rows = await this.prisma.$queryRaw<
-      Array<{ public_url: string; append_revision: number }>
+      Array<{ public_url: string; append_revision: number; caption: string | null }>
     >`
-      SELECT b.public_url,b.append_revision FROM marketplace_bindings b
+      SELECT b.public_url,b.append_revision,t.caption FROM marketplace_bindings b
+      LEFT JOIN marketplace_button_captions t ON t.entity_id=b.entity_id AND t.kind=b.kind
       WHERE b.entity_id=${input.chatId} AND b.actor_user_id=${MARKETPLACE_PILOT_USER_ID}
         AND b.state='ACTIVE' AND b.valid_until>${now} AND b.statistics_consent=true
         AND ${marketplaceLocalGrantSql('b')}
@@ -334,7 +335,7 @@ export class MarketplaceStateService {
       ? {
           url: row.public_url,
           revision: row.append_revision,
-          caption: MARKETPLACE_BUTTON_DEFAULT_CAPTION,
+          caption: row.caption ?? MARKETPLACE_BUTTON_DEFAULT_CAPTION,
         }
       : null;
   }

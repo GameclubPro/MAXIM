@@ -81,6 +81,7 @@ postgres('marketplace SQL generations and collection', () => {
     await db.$executeRaw`DELETE FROM marketplace_post_samples WHERE binding_id=${id}::uuid`;
     await db.$executeRaw`DELETE FROM marketplace_audience_observations WHERE binding_id=${id}::uuid`;
     await db.$executeRaw`DELETE FROM marketplace_bindings WHERE id=${id}::uuid`;
+    await db.$executeRaw`DELETE FROM marketplace_button_captions WHERE entity_id=${entityId}`;
     await db.chat.delete({ where: { id: entityId } });
   });
   afterAll(async () => {
@@ -197,6 +198,19 @@ postgres('marketplace SQL generations and collection', () => {
     ).toBeNull();
     await db.chatMembershipActivityEvent.deleteMany({ where: { chatId: entityId } });
   });
+  it('uses the shared platform caption before a legacy publication policy is imported', async () => {
+    await db.$executeRaw`UPDATE marketplace_bindings SET append_enabled=true,public_url='https://max.ru/id613000037577_3_bot',public_verified_until=now()+interval '5 minutes' WHERE id=${id}::uuid`;
+    expect(
+      await state.resolvePublicationButton({ chatId: entityId, botId: 'test-bot' }),
+    ).toMatchObject({ caption: 'Заказать рекламу' });
+    await db.$executeRaw`INSERT INTO marketplace_button_captions(entity_id,kind,caption,revision) VALUES(${entityId},'CHANNEL','Разместить рекламу',1)`;
+    expect(
+      await state.resolvePublicationButton({ chatId: entityId, botId: 'test-bot' }),
+    ).toMatchObject({ caption: 'Разместить рекламу' });
+    expect(
+      await state.resolvePublicationButton({ chatId: entityId, botId: 'another-bot' }),
+    ).toBeNull();
+  });
   it('invalidates a cached statistics generation and publication-button proof when explicit denial is recorded', async () => {
     await db.$executeRaw`UPDATE marketplace_bindings SET append_enabled=true,public_url='https://max.ru/id613000037577_3_bot',public_verified_until=now()+interval '5 minutes' WHERE id=${id}::uuid`;
     const before = (await state.read(id))!;
@@ -238,6 +252,7 @@ postgres('marketplace SQL generations and collection', () => {
   });
   it('reuses unchanged generations but records successful refresh separately', async () => {
     const asOf = new Date();
+    asOf.setUTCMinutes(0, 0, 0);
     const first = await statistics.createGeneration((await state.read(id))!, asOf);
     const later = new Date(asOf.getTime() + 1000);
     const second = await statistics.createGeneration((await state.read(id))!, later);
@@ -246,6 +261,25 @@ postgres('marketplace SQL generations and collection', () => {
     expect((await statistics.page(id, { generationId: first })).manifest.asOf).toBe(
       asOf.toISOString(),
     );
+  });
+  it('creates a new generation when a new UTC hour enters the export window', async () => {
+    const boundary = new Date();
+    boundary.setUTCMinutes(0, 0, 0);
+    const before = new Date(boundary.getTime() - 1);
+    const first = await statistics.createGeneration((await state.read(id))!, before);
+    const second = await statistics.createGeneration((await state.read(id))!, boundary);
+    expect(second).not.toBe(first);
+    const snapshots = await db.$queryRaw<
+      Array<{ id: string; rows: Array<{ metric: string; bucket: string }> }>
+    >`SELECT id,rows FROM marketplace_statistics_generations WHERE id IN (${first}::uuid,${second}::uuid)`;
+    const hour = { metric: 'PUBLICATION_HOUR', bucket: boundary.toISOString() };
+    expect(snapshots.find((snapshot) => snapshot.id === first)!.rows).not.toContainEqual(
+      expect.objectContaining(hour),
+    );
+    expect(snapshots.find((snapshot) => snapshot.id === second)!.rows).toContainEqual(
+      expect.objectContaining({ ...hour, posts: 0 }),
+    );
+    expect((await state.read(id))!.statistics_checked_at).toEqual(boundary);
   });
   it('resumes a 4101-post history through overlapping bounded pages', async () => {
     const from = new Date();
