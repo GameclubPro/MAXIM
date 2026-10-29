@@ -145,6 +145,7 @@ describeNative('night mode durable handoffs with PostgreSQL and BullMQ', () => {
   let queue: Queue<NightModeTransitionJob>;
   let worker: Worker<NightModeTransitionJob> | undefined;
   let chatId: string;
+  const backlogChatIds: string[] = [];
   const settings = {
     nightModeEnabled: true,
     nightModeStartTimeMinutes: 23 * 60,
@@ -210,17 +211,30 @@ describeNative('night mode durable handoffs with PostgreSQL and BullMQ', () => {
     await prisma.maxActionLedgerEntry.deleteMany({ where: { chatId } });
     await prisma.nightModeTransitionScheduledJob.deleteMany({ where: { chatId } });
     await prisma.nightModeTransitionReconcileRequest.deleteMany({ where: { chatId } });
+    await prisma.nightModeTransitionReconcileRequest.deleteMany({
+      where: { chatId: { in: backlogChatIds.splice(0) } },
+    });
     await prisma.$disconnect();
   });
 
   it.each([false, true])(
     'retains the next cycle after both stale jobs complete (crash=%s)',
     async (crash) => {
-      const before = new Date();
+      const now = new Date();
+      const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
+      // Keep this fixture open and outside the two-hour OPEN catch-up window at any CI hour.
+      const openPhaseSettings = {
+        ...settings,
+        nightModeStartTimeMinutes: (minute + 4 * 60) % 1440,
+        nightModeEndTimeMinutes: (minute + 20 * 60) % 1440,
+      };
+      await prisma.chatSettings.update({ where: { chatId }, data: openPhaseSettings });
+      await prisma.nightModeTransitionReconcileRequest.deleteMany({ where: { chatId } });
+      const before = new Date(now);
       before.setUTCDate(before.getUTCDate() - 2);
       before.setUTCHours(12, 0, 0, 0);
-      const fingerprint = buildNightModeTransitionScheduleFingerprint(settings);
-      const jobs = resolveNextNightModeTransitionOccurrences(settings, before).map(
+      const fingerprint = buildNightModeTransitionScheduleFingerprint(openPhaseSettings);
+      const jobs = resolveNextNightModeTransitionOccurrences(openPhaseSettings, before).map(
         (occurrence) => ({
           chatId,
           transition: occurrence.transition,
@@ -309,7 +323,53 @@ describeNative('night mode durable handoffs with PostgreSQL and BullMQ', () => {
         restarted,
         redis,
       );
-      await (reconcile as unknown as { reconcileBatch(): Promise<number> }).reconcileBatch();
+      const oldest = await prisma.nightModeTransitionReconcileRequest.findFirstOrThrow({
+        orderBy: [{ requestedAt: 'asc' }, { chatId: 'asc' }],
+        select: { requestedAt: true },
+      });
+      const pendingRequest = await prisma.nightModeTransitionReconcileRequest.findUniqueOrThrow({
+        where: { chatId },
+        select: { generation: true },
+      });
+      // Deleted chats leave durable cleanup requests shared by all native suites.
+      // Prove that a full earlier batch defers this request without losing it.
+      backlogChatIds.push(...Array.from({ length: 5 }, () => `night-backlog-${randomUUID()}`));
+      await prisma.nightModeTransitionReconcileRequest.createMany({
+        data: backlogChatIds.map((id, index) => ({
+          chatId: id,
+          requestedAt: new Date(oldest.requestedAt.getTime() - 10 + index),
+        })),
+      });
+      const repair = jest.spyOn(restarted, 'repairAccessSchedule');
+      const batches = reconcile as unknown as { reconcileBatch(): Promise<number> };
+      expect(await batches.reconcileBatch()).toBe(4);
+      expect(new Set(repair.mock.calls.map(([id]) => id))).toEqual(
+        new Set(backlogChatIds.slice(0, 4)),
+      );
+      expect(
+        await prisma.nightModeTransitionReconcileRequest.findUnique({ where: { chatId } }),
+      ).toMatchObject({ generation: pendingRequest.generation, attemptCount: 0, leaseToken: null });
+      expect(
+        await prisma.nightModeTransitionReconcileRequest.findUnique({
+          where: { chatId: backlogChatIds[4] },
+        }),
+      ).toMatchObject({ generation: 1n, attemptCount: 0, leaseToken: null });
+      expect(await prisma.nightModeTransitionScheduledJob.count({ where: { chatId } })).toBe(0);
+
+      // Select only our fixture first; do not clear or rewrite other suites' requests.
+      await prisma.nightModeTransitionReconcileRequest.update({
+        where: { chatId },
+        data: { requestedAt: new Date(oldest.requestedAt.getTime() - 11) },
+      });
+      await batches.reconcileBatch();
+      expect(repair.mock.calls.filter(([id]) => id === chatId)).toHaveLength(1);
+      expect(repair).toHaveBeenCalledWith(chatId, {
+        generation: pendingRequest.generation,
+        leaseToken: expect.any(String),
+      });
+      expect(
+        await prisma.nightModeTransitionReconcileRequest.findUnique({ where: { chatId } }),
+      ).toBeNull();
       const future = await prisma.nightModeTransitionScheduledJob.findMany({ where: { chatId } });
       expect(future).toHaveLength(2);
       expect(future.every((row) => row.scheduledFor.getTime() > Date.now())).toBe(true);
