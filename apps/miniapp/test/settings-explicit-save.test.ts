@@ -42,8 +42,8 @@ const settingsNightSectionSource = readFileSync(
   new URL('../src/pages/settings/settings-night-section.tsx', import.meta.url),
   'utf8',
 );
-const settingsStopWordsEditorSource = readFileSync(
-  new URL('../src/pages/settings/settings-stop-words-editor.tsx', import.meta.url),
+const sharedStopWordsFieldsSource = readFileSync(
+  new URL('../src/pages/settings/shared-stop-words-settings-fields.tsx', import.meta.url),
   'utf8',
 );
 const nightModeTimeFieldsSource = readFileSync(
@@ -223,12 +223,13 @@ test('night schedule validation is shown next to the time controls', () => {
 });
 
 test('stop-word image scanning is an explicit persisted switch', () => {
-  assert.match(settingsStopWordsEditorSource, /label="Проверять изображения"/u);
-  assert.match(settingsStopWordsEditorSource, /checked=\{policy\.imageScanEnabled\}/u);
-  assert.match(settingsStopWordsEditorSource, /update\(\{ \.\.\.policy, imageScanEnabled \}\)/u);
+  assert.match(
+    sharedStopWordsFieldsSource,
+    /toggle\('stopWordsPolicy\.imageScanEnabled', 'Проверять изображения'\)/u,
+  );
   assert.match(
     readFileSync(new URL('../src/pages/settings/use-settings-draft.ts', import.meta.url), 'utf8'),
-    /updateStopWords\(/u,
+    /await saveStopWordsSettings\(api,/u,
   );
 });
 

@@ -71,6 +71,13 @@ test('the active save action announces that it is busy', () => {
   assert.match(html, /Сохраняем/u);
 });
 
+test('a review-blocked stop-word action stays disabled without claiming a pending save', () => {
+  const html = renderFooter({ section: 'stopWords', savingSection: 'stopWords', disabled: true });
+  assert.match(html, /disabled=""/u);
+  assert.match(html, />Сохранить<\/button>/u);
+  assert.doesNotMatch(html, /aria-busy|Сохраняем/u);
+});
+
 test('stop-word catalog mounts the recoverable editor only when its panel is open', () => {
   assert.match(stopWordsSectionSource, /<SettingsSectionToggle/u);
   assert.match(stopWordsSectionSource, /<SettingsDrilldownPanel/u);

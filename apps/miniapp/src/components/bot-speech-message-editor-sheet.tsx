@@ -22,6 +22,8 @@ import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overla
 import './bot-speech-message-editor-sheet.css';
 import './bot-speech-message-editor-sheet-a11y.css';
 
+export type BotSpeechEditorFocusRequest = { target: 'text' | 'image'; requestId: number };
+
 type BotSpeechMessageEditorSheetProps = {
   title: string;
   ariaLabel: string;
@@ -30,6 +32,9 @@ type BotSpeechMessageEditorSheetProps = {
   image?: BotSpeechMediaImage | null;
   imageMixed?: boolean;
   textMixed?: boolean;
+  textError?: string | null;
+  mediaError?: string | null;
+  focusRequest?: BotSpeechEditorFocusRequest;
   onChange: (value: string) => void;
   onImageChange?: (image: BotSpeechMediaImage | null) => void;
   onReset: () => void;
@@ -104,6 +109,9 @@ export function BotSpeechMessageEditorSheet({
   image = null,
   imageMixed = false,
   textMixed = false,
+  textError,
+  mediaError,
+  focusRequest,
   onChange,
   onImageChange,
   onReset,
@@ -114,12 +122,15 @@ export function BotSpeechMessageEditorSheet({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const imageButtonRef = useRef<HTMLButtonElement | null>(null);
   const preparationRef = useRef<AbortController | null>(null);
   const imageErrorId = useId();
+  const textErrorId = useId();
   const [editorValue, setEditorValue] = useState(() =>
     hasCustomBotSpeechText(value) ? value : defaultValue,
   );
   const [imageError, setImageError] = useState('');
+  const displayedImageError = imageError || mediaError;
   const [isPreparingImage, setIsPreparingImage] = useState(false);
   const [normalizationReady, setNormalizationReady] = useState(true);
   const portalTarget = resolveBotMessageEditorPortalTarget();
@@ -141,6 +152,18 @@ export function BotSpeechMessageEditorSheet({
     ) === 'native-tap';
 
   useDialogFocusTrap(true, panelRef, closeButtonRef);
+
+  useEffect(() => {
+    if (!focusRequest || (focusRequest.target === 'text' && !normalizationReady)) return;
+    const frame = requestAnimationFrame(() => {
+      if (focusRequest.target === 'image') {
+        (useNativeTapFileInput ? imageInputRef.current : imageButtonRef.current)?.focus();
+      } else {
+        editorRef.current?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusRequest?.requestId, focusRequest?.target, useNativeTapFileInput, normalizationReady]);
 
   const closeEditor = useCallback(() => {
     preparationRef.current?.abort();
@@ -308,9 +331,16 @@ export function BotSpeechMessageEditorSheet({
             placeholder={textMixed ? 'Введите общий текст' : 'Свой текст'}
             preserveCurlyBracePlaceholders
             ariaLabel={title}
+            ariaInvalid={Boolean(textError)}
+            ariaDescribedBy={textError ? textErrorId : undefined}
             className="bot-message-editor-sheet__rich-editor"
             curlyBracePlaceholderLabels={BOT_MESSAGE_PLACEHOLDER_LABELS}
           />
+          {textError ? (
+            <p id={textErrorId} role="alert">
+              {textError}
+            </p>
+          ) : null}
 
           {onImageChange ? (
             <div className="bot-message-editor-sheet__media" aria-busy={isPreparingImage}>
@@ -358,8 +388,8 @@ export function BotSpeechMessageEditorSheet({
                     className="bot-message-editor-sheet__file-input bot-message-editor-sheet__file-input--native"
                     type="file"
                     accept="image/*"
-                    aria-invalid={Boolean(imageError) || undefined}
-                    aria-describedby={imageError ? imageErrorId : undefined}
+                    aria-invalid={Boolean(displayedImageError) || undefined}
+                    aria-describedby={displayedImageError ? imageErrorId : undefined}
                     onChange={handleImageChange}
                     disabled={isPreparingImage}
                     aria-label="Выбрать фото для сообщения"
@@ -368,6 +398,7 @@ export function BotSpeechMessageEditorSheet({
               ) : (
                 <>
                   <button
+                    ref={imageButtonRef}
                     type="button"
                     className={cn(
                       'bot-message-editor-sheet__media-button',
@@ -378,6 +409,8 @@ export function BotSpeechMessageEditorSheet({
                       openFileInputPicker(imageInputRef.current);
                     }}
                     disabled={isPreparingImage}
+                    aria-invalid={Boolean(displayedImageError) || undefined}
+                    aria-describedby={displayedImageError ? imageErrorId : undefined}
                   >
                     <IconoirSprite variant="iconoir" icon="Camera" aria-hidden focusable="false" />
                     <span>
@@ -393,21 +426,21 @@ export function BotSpeechMessageEditorSheet({
                     className="bot-message-editor-sheet__file-input"
                     type="file"
                     accept="image/*"
-                    aria-invalid={Boolean(imageError) || undefined}
-                    aria-describedby={imageError ? imageErrorId : undefined}
+                    aria-invalid={Boolean(displayedImageError) || undefined}
+                    aria-describedby={displayedImageError ? imageErrorId : undefined}
                     onChange={handleImageChange}
                     disabled={isPreparingImage}
                     aria-label="Выбрать фото для сообщения"
                   />
                 </>
               )}
-              {imageError ? (
+              {displayedImageError ? (
                 <small
                   id={imageErrorId}
                   className="bot-message-editor-sheet__media-error"
                   role="alert"
                 >
-                  {imageError}
+                  {displayedImageError}
                 </small>
               ) : null}
             </div>

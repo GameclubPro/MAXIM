@@ -26,6 +26,7 @@ export type SettingsStopWordsSectionProps = SettingsSectionShellProps &
     messageLimitsBlockedWordsError?: string;
     messageLimitsBlockedDomainsError?: string;
     stopWordsError?: string;
+    storageInvalid?: boolean;
     setMessageLimitsBlockedWordsInput: Dispatch<SetStateAction<string>>;
     setMessageLimitsBlockedDomainsInput: Dispatch<SetStateAction<string>>;
   };
@@ -50,12 +51,14 @@ export function SettingsStopWordsSection(props: SettingsStopWordsSectionProps) {
   const count = policy
     ? policy.rules.filter((rule) => rule.enabled).length + policy.domains.length
     : 0;
-  const stopWordsCardStatus = !policy ? 'Проверить' : policy.enabled ? String(count) : 'Выкл';
-  const stopWordsHeaderSummary = !policy
-    ? 'Требуется проверка списка'
-    : policy.enabled
-      ? `Активно: ${count}`
-      : 'Выключено';
+  const stopWordsCardStatus =
+    !policy || props.storageInvalid ? 'Проверить' : policy.enabled ? String(count) : 'Выкл';
+  const stopWordsHeaderSummary =
+    !policy || props.storageInvalid
+      ? 'Требуется проверка списка'
+      : policy.enabled
+        ? `Активно: ${count}`
+        : 'Выключено';
 
   return (
     <GlassCard

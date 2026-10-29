@@ -25,11 +25,18 @@ export async function updateStopWords(
   chatId: string,
   policy: StopWordsPolicy,
   expectedRevision: number,
+  options?: { replaceInvalidStorage?: boolean },
 ) {
   return stopWordsStateSchema.parse(
     await api.request(`/chats/${encodeURIComponent(chatId)}/stop-words`, {
       method: 'PUT',
-      body: JSON.stringify(updateStopWordsRequestSchema.parse({ policy, expectedRevision })),
+      body: JSON.stringify(
+        updateStopWordsRequestSchema.parse({
+          policy,
+          expectedRevision,
+          ...(options?.replaceInvalidStorage === true ? { replaceInvalidStorage: true } : {}),
+        }),
+      ),
     }),
   );
 }

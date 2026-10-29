@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import {
   chatSettingsSchema,
+  stopWordsPolicySchema,
   type ChatSettingsScreenResponse,
 } from '@maxim/contracts/settings';
 import { useSettingsDraft } from '../../src/pages/settings/use-settings-draft';
@@ -13,7 +14,10 @@ const revision = '2026-10-03T00:00:00.000Z';
 const initial = chatSettingsSchema.parse({
   settingsRevision: revision,
   antiSpamEnabled: false,
+  commentsAllEnabled: true,
   messageCountLimitMessages: 5,
+  stopWordsRevision: 7,
+  stopWordsPolicy: stopWordsPolicySchema.parse({ enabled: false }),
 });
 const api: ApiTransport = {
   async request(path, init) {
@@ -52,6 +56,23 @@ function Harness() {
         Другой чат
       </button>
       <button onClick={() => void query.refetch()}>Обновить</button>
+      <label>
+        Стоп-слова
+        <input
+          type="checkbox"
+          checked={state.draft?.stopWordsPolicy?.enabled ?? false}
+          onChange={(event) =>
+            state.setDraft((current) =>
+              current?.stopWordsPolicy
+                ? {
+                    ...current,
+                    stopWordsPolicy: { ...current.stopWordsPolicy, enabled: event.target.checked },
+                  }
+                : current,
+            )
+          }
+        />
+      </label>
       <label>
         Антиспам
         <input
@@ -101,6 +122,27 @@ function Harness() {
       >
         {state.isSavingSettings ? 'Сохраняем' : 'Сохранить'}
       </button>
+      <button
+        disabled={!state.draft || state.isSavingSettings}
+        onClick={() => {
+          if (state.draft)
+            void state.saveWorkspaceDraft(state.draft).then(
+              () => setEvents((current) => [...current, 'workspace saved']),
+              () => setEvents((current) => [...current, 'workspace error']),
+            );
+        }}
+      >
+        Сохранить всё
+      </button>
+      <button
+        disabled={!state.draft || state.isSavingSettings}
+        onClick={() => {
+          if (state.draft)
+            state.saveSectionMutation.mutate({ section: 'stopWords', payload: state.draft });
+        }}
+      >
+        Сохранить стоп-слова
+      </button>
       <output data-testid="state">
         {JSON.stringify({
           chatId,
@@ -110,6 +152,7 @@ function Harness() {
           events,
         })}
       </output>
+      <output data-testid="server">{JSON.stringify(query.data?.settings)}</output>
     </main>
   );
 }

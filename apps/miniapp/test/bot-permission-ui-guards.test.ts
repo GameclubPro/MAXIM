@@ -63,10 +63,25 @@ test('chat moderation saves roll rejected enables back before showing the dialog
 });
 
 test('bulk apply keeps an already-saved source while blocking unready targets', () => {
-  assert.match(chatSettingsSource, /applyTargetSavedSourceRef\.current = saved/u);
+  assert.match(
+    chatSettingsSource,
+    /if \(variables\.isCurrentScope\?\.\(\) !== false\) applyTargetSavedSourceRef\.current = saved/u,
+  );
   assert.match(
     sectionApplySubmitSource,
-    /onSourceSaved\(\{\s*sourceChatId,\s*section,\s*settings: savedSourceSettings,?\s*\}\)/u,
+    /const savedSource = \{\s*sourceChatId,\s*section,\s*settings: savedSourceSettings,\s*\.\.\.\(savedStopWords \? \{ stopWordsReceipt: savedStopWords \} : \{\}\),?\s*\};\s*onSourceSaved\(savedSource\);/u,
+  );
+  assert.match(
+    sectionApplySubmitSource,
+    /onSourceSaved\(savedSource\);\s*if \(isCurrentScope\?\.\(\) === false\) throw[\s\S]*?const result = await applySettingsSectionToAll\(/u,
+  );
+  assert.match(
+    chatSettingsSource,
+    /const sourceSaved =\s*savedSource\?\.section === variables\.section &&\s*savedSource\?\.sourceChatId === variables\.sourceChatId/u,
+  );
+  assert.match(
+    chatSettingsSource,
+    /if \(sourceSaved && savedSource\) \{\s*if \(savedSource\.stopWordsReceipt\) \{\s*await syncSavedStopWords\(\s*savedSource\.stopWordsReceipt,\s*variables\.sourceSettings,\s*variables\.sourceSettings,\s*variables\.sourceChatId,?\s*\);\s*if \(variables\.isCurrentScope\?\.\(\) === false\) return;/u,
   );
   assert.match(
     chatSettingsSource,
