@@ -347,3 +347,20 @@ schedule and separate one-request/second control-scan budget apply only to image
 implementing this stage. Rollback does not establish those efficiency guarantees.
 Stopping Lastik blocks new deletions, but an already sent request can finish; preserve
 its journal for reconciliation. Do not clear the queue or invent successful receipts.
+
+Maintenance retains seven full days of terminal candidates and webhook receipts;
+pending, dispatching, uncertain and review journals are never age-purged. Every
+30 seconds a pass starts with one indexed page of 500 candidates and 1,000 receipts,
+adapting to at most 16 pages. Pages skip locked tuples and recheck their terminal
+predicate. Each statement has a 500 ms timeout and 100 ms lock timeout; admission
+to further pages stops at one second. The final in-flight statement may finish after
+that admission deadline. Replicas use a nonblocking advisory lock. Failure reduces
+the next page budget without stopping dispatch scheduling or causing per-tick retries.
+`/health` and bounded progress logs expose maintenance errors, successful-pass time,
+deleted rows and the separately timestamped oldest expired heads. A stale head is
+not a fresh observation, and a green worker does not imply maintenance caught up.
+
+At the configured maximum, maintenance can admit 23.04 million candidates and
+46.08 million receipts per day. These are scheduling ceilings, not measured sustained
+throughput. See the [storage measurements and remaining acceptance gates](../plans/2026-10-29-lastik-storage-acceptance.md)
+and [Lastik backup profile](postgres-recurring-backups.md#independent-lastik-profile).

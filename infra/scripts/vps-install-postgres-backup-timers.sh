@@ -2,6 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=infra/scripts/lib/postgres-backup-profile.sh
+source "$ROOT_DIR/infra/scripts/lib/postgres-backup-profile.sh"
+BACKUP_CALENDAR="*-*-* 03:20:00"
+RESTORE_CALENDAR="Sun *-*-* 05:30:00"
+if [[ "$MAXIM_BACKUP_PROFILE" == eraser ]]; then
+  BACKUP_CALENDAR="*-*-* 01:20:00"
+  RESTORE_CALENDAR="Sun *-*-* 02:30:00"
+fi
 UNIT_DIR="${MAXIM_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 TEMP_DIR="$(mktemp -d)"
 ENABLE_BACKUP_TIMER="${MAXIM_ENABLE_POSTGRES_BACKUP_TIMER:-0}"
@@ -13,7 +21,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat > "$TEMP_DIR/maxim-postgres-backup.service" <<EOF
+cat > "$TEMP_DIR/${MAXIM_BACKUP_UNIT_PREFIX}-backup.service" <<EOF
 [Unit]
 Description=MAXIM validated PostgreSQL backup
 Requires=docker.service
@@ -24,7 +32,7 @@ ConditionPathExists=$ROOT_DIR/infra/scripts/backup-postgres.sh
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
 EnvironmentFile=-/etc/maxim-postgres-backup.env
-ExecStart=$ROOT_DIR/infra/scripts/backup-postgres.sh
+ExecStart=/usr/bin/env MAXIM_BACKUP_PROFILE=$MAXIM_BACKUP_PROFILE $ROOT_DIR/infra/scripts/backup-postgres.sh
 SuccessExitStatus=75
 TimeoutStartSec=18h15m
 TimeoutStopSec=1m
@@ -36,32 +44,32 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 EOF
 
-cat > "$TEMP_DIR/maxim-postgres-backup.timer" <<'EOF'
+cat > "$TEMP_DIR/${MAXIM_BACKUP_UNIT_PREFIX}-backup.timer" <<EOF
 [Unit]
 Description=Run MAXIM PostgreSQL backup daily
 
 [Timer]
-OnCalendar=*-*-* 03:20:00
+OnCalendar=$BACKUP_CALENDAR
 RandomizedDelaySec=20m
 Persistent=true
-Unit=maxim-postgres-backup.service
+Unit=${MAXIM_BACKUP_UNIT_PREFIX}-backup.service
 
 [Install]
 WantedBy=timers.target
 EOF
 
-cat > "$TEMP_DIR/maxim-postgres-restore-smoke.service" <<EOF
+cat > "$TEMP_DIR/${MAXIM_BACKUP_UNIT_PREFIX}-restore-smoke.service" <<EOF
 [Unit]
 Description=MAXIM isolated PostgreSQL restore smoke
 Requires=docker.service
-After=docker.service maxim-postgres-backup.service
+After=docker.service ${MAXIM_BACKUP_UNIT_PREFIX}-backup.service
 ConditionPathExists=$ROOT_DIR/infra/scripts/restore-postgres-backup-smoke.sh
 
 [Service]
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
 EnvironmentFile=-/etc/maxim-postgres-backup.env
-ExecStart=$ROOT_DIR/infra/scripts/restore-postgres-backup-smoke.sh
+ExecStart=/usr/bin/env MAXIM_BACKUP_PROFILE=$MAXIM_BACKUP_PROFILE $ROOT_DIR/infra/scripts/restore-postgres-backup-smoke.sh
 TimeoutStartSec=12h15m
 TimeoutStopSec=1m
 KillSignal=SIGTERM
@@ -71,21 +79,21 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 EOF
 
-cat > "$TEMP_DIR/maxim-postgres-restore-smoke.timer" <<'EOF'
+cat > "$TEMP_DIR/${MAXIM_BACKUP_UNIT_PREFIX}-restore-smoke.timer" <<EOF
 [Unit]
 Description=Verify a MAXIM PostgreSQL backup can be restored weekly
 
 [Timer]
-OnCalendar=Sun *-*-* 05:30:00
+OnCalendar=$RESTORE_CALENDAR
 RandomizedDelaySec=30m
 Persistent=true
-Unit=maxim-postgres-restore-smoke.service
+Unit=${MAXIM_BACKUP_UNIT_PREFIX}-restore-smoke.service
 
 [Install]
 WantedBy=timers.target
 EOF
 
-cat > "$TEMP_DIR/maxim-postgres-backup-health.service" <<EOF
+cat > "$TEMP_DIR/${MAXIM_BACKUP_UNIT_PREFIX}-backup-health.service" <<EOF
 [Unit]
 Description=MAXIM independent backup and restore freshness
 ConditionPathExists=/etc/maxim-postgres-backup.env
@@ -94,19 +102,19 @@ ConditionPathExists=/etc/maxim-postgres-backup.env
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
 EnvironmentFile=/etc/maxim-postgres-backup.env
-ExecStart=/usr/bin/env node $ROOT_DIR/infra/scripts/check-postgres-backup-health.mjs
+ExecStart=/usr/bin/env MAXIM_BACKUP_PROFILE=$MAXIM_BACKUP_PROFILE node $ROOT_DIR/infra/scripts/check-postgres-backup-health.mjs
 TimeoutStartSec=30s
 UMask=0077
 EOF
 
-cat > "$TEMP_DIR/maxim-postgres-backup-health.timer" <<'EOF'
+cat > "$TEMP_DIR/${MAXIM_BACKUP_UNIT_PREFIX}-backup-health.timer" <<EOF
 [Unit]
 Description=Check MAXIM recovery evidence every hour
 
 [Timer]
 OnCalendar=hourly
 Persistent=true
-Unit=maxim-postgres-backup-health.service
+Unit="${MAXIM_BACKUP_UNIT_PREFIX}-backup-health.service"
 
 [Install]
 WantedBy=timers.target
@@ -122,8 +130,8 @@ if [[ "$ENABLE_BACKUP_TIMER" == "1" ]]; then
     echo "Refusing to enable backup timer without $BACKUP_ENV_FILE." >&2
     exit 2
   fi
-  sudo systemctl start maxim-postgres-backup-health.service
-  sudo systemctl enable --now maxim-postgres-backup.timer maxim-postgres-backup-health.timer
+  sudo systemctl start "${MAXIM_BACKUP_UNIT_PREFIX}-backup-health.service"
+  sudo systemctl enable --now "${MAXIM_BACKUP_UNIT_PREFIX}-backup.timer" "${MAXIM_BACKUP_UNIT_PREFIX}-backup-health.timer"
 else
   echo "Backup timer installed but left disabled. Configure $BACKUP_ENV_FILE and a separate backup volume, then run the service once before enabling the timer."
 fi
@@ -133,11 +141,11 @@ if [[ "$ENABLE_RESTORE_TIMER" == "1" ]]; then
     echo "Refusing to enable restore-smoke timer without $BACKUP_ENV_FILE." >&2
     exit 2
   fi
-  sudo systemctl start maxim-postgres-backup-health.service
-  sudo systemctl enable --now maxim-postgres-restore-smoke.timer maxim-postgres-backup-health.timer
+  sudo systemctl start "${MAXIM_BACKUP_UNIT_PREFIX}-backup-health.service"
+  sudo systemctl enable --now "${MAXIM_BACKUP_UNIT_PREFIX}-restore-smoke.timer" "${MAXIM_BACKUP_UNIT_PREFIX}-backup-health.timer"
 else
   echo "Restore-smoke timer installed but left disabled. Enable it only with a separate disposable volume sized for a full restore."
 fi
 
 sudo systemctl list-timers --all \
-  maxim-postgres-backup.timer maxim-postgres-restore-smoke.timer --no-pager
+  "${MAXIM_BACKUP_UNIT_PREFIX}-backup.timer" "${MAXIM_BACKUP_UNIT_PREFIX}-restore-smoke.timer" --no-pager
