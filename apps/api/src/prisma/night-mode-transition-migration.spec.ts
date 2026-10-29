@@ -32,6 +32,14 @@ describe('night mode transition durable migration', () => {
         acknowledgementMigrationPath,
         runtimeVersionMigrationPath,
         perChatRecoveryIndexMigrationPath,
+        join(
+          __dirname,
+          '../../prisma/migrations/20261029110000_reconcile_night_mode_capability_changes/migration.sql',
+        ),
+        join(
+          __dirname,
+          '../../prisma/migrations/20261029110100_persist_night_mode_recovery_obligations/migration.sql',
+        ),
       ],
       {
         timeout: 20_000,

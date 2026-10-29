@@ -1775,7 +1775,7 @@ rollback_runtime() {
   build_guarded_rollback_command \
     remote_command \
     ./infra/scripts/vps-runtime-rollback.sh \
-    maxim_topology_require_commercial_ai_pool_delete_reader \
+    maxim_topology_require_night_mode_recovery_reader \
     "$@"
   prepend_webhook_rollout_recovery_env remote_command
   remote_exec "$remote_command"
@@ -1790,15 +1790,15 @@ rollback_release() {
   local remote_command
   local capability_marker=select_release_recovery_base
   local rollback_component
-  # FLAG: API rollback retains both v1/v2 guarded AI readers and the preceding statistics,
-  # network intent, assignment, activation and permanent-hold reader floors.
+  # FLAG: API rollback retains independent night-mode recovery and the preceding AI,
+  # statistics, network intent, assignment, activation and permanent-hold reader floors.
   # Static-only rollback keeps its existing image-only offline path.
   if [[ $# -eq 1 ]]; then
-    capability_marker=maxim_topology_require_commercial_ai_pool_delete_reader
+    capability_marker=maxim_topology_require_night_mode_recovery_reader
   else
     for rollback_component in "${@:2}"; do
       if [[ "$rollback_component" == api-shared ]]; then
-        capability_marker=maxim_topology_require_commercial_ai_pool_delete_reader
+        capability_marker=maxim_topology_require_night_mode_recovery_reader
         break
       fi
     done

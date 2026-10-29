@@ -407,6 +407,12 @@ maxim_topology_require_exact_statistics_rollup_reader() {
   fi
 }
 
+maxim_topology_require_night_mode_recovery_reader() {
+  local commit_sha="$1"
+  # FLAG: SQL-backed opening-event and close-cleanup obligations survive image rollback.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-night-mode-recovery-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_managed_entity_activation() {
   local commit_sha="$1"
   # FLAG: Known denials, pending activation, capability ceilings and receipt-only

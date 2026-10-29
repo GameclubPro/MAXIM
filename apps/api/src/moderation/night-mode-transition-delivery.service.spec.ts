@@ -52,6 +52,9 @@ function createSettings(
     nightModeCommentsEnabled: false,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: '',
+    nightModeForceCloseEnabled: false,
+    nightModeForceCloseForever: false,
+    nightModeForceCloseUntil: '',
     nightModeBotButtons: null,
     nightModeBotButtonEnabled: false,
     nightModeBotButtonUrl: '',
@@ -98,6 +101,85 @@ function createEventService() {
 }
 
 describe('NightModeTransitionDeliveryService', () => {
+  it('repairs an opening event from its own exact accepted receipt without MAX calls', async () => {
+    const maxClient = { sendMessage: jest.fn(), deleteMessage: jest.fn() };
+    const eventService = {
+      ensureTransitionEvent: jest.fn().mockResolvedValue({ id: 'open-event' }),
+    };
+    const ledger = {
+      inspectCompletedNightModeOpenNoticeDispatch: jest.fn().mockResolvedValue({
+        kind: 'completed',
+        jobId: 'night-mode:open:chat-1:session:session-1',
+        remoteMessageId: 'open-message',
+        dispatchBotId: 'bot-1',
+        completedAt: new Date(),
+      }),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {} as never,
+      eventService as never,
+      undefined,
+      undefined,
+      undefined,
+      ledger as never,
+    );
+    const params = {
+      chatId: 'chat-1',
+      sessionKey: 'session-1',
+      messageId: 'open-message',
+      botId: 'bot-1',
+      timezone: 'Europe/Moscow',
+      startMinutes: 1380,
+      endMinutes: 480,
+    };
+    await expect(service.recoverOpenedNoticeEvent(params)).resolves.toMatchObject({
+      eventId: 'open-event',
+      messageId: 'open-message',
+    });
+    expect(eventService.ensureTransitionEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
+        messageId: 'open-message',
+        botId: 'bot-1',
+      }),
+    );
+    await expect(
+      service.recoverOpenedNoticeEvent({ ...params, botId: 'foreign-bot' }),
+    ).rejects.toThrow('Exact completed night mode open send is not proven');
+    expect(eventService.ensureTransitionEvent).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('hands an exact recovery obligation to the durable scheduler and propagates persistence failure', async () => {
+    const error = new Error('registry unavailable');
+    const scheduler = { scheduleRecoveryObligation: jest.fn().mockRejectedValue(error) };
+    const service = new NightModeTransitionDeliveryService(
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scheduler as never,
+    );
+    const recovery = {
+      kind: 'open_notice_event' as const,
+      version: 1 as const,
+      sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      messageId: 'open-message',
+      botId: 'bot-1',
+      timezone: 'Europe/Moscow',
+      startMinutes: 1380,
+      endMinutes: 480,
+    };
+    await expect(service.scheduleRecoveryObligation('chat-1', recovery)).rejects.toBe(error);
+    expect(scheduler.scheduleRecoveryObligation).toHaveBeenCalledWith('chat-1', recovery);
+  });
+
   it('recovers a close event only from exact completed ledger proof without MAX calls', async () => {
     const completedAt = new Date('2026-05-30T20:00:01.000Z');
     const maxClient = {
@@ -484,6 +566,7 @@ describe('NightModeTransitionDeliveryService', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'night_mode_transition',
+        hydrateMessageUrl: false,
         ignoreFailureMetricStatuses: [403, 404],
         sendRouteHalfOpenProbe: 'publication_exact_verification',
         sendRouteStickyProbe: {

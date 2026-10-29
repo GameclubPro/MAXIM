@@ -598,8 +598,12 @@ import type {
   NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
 import type { NightModeTransitionSnapshot } from './night-mode-transition-time.util';
-import { NightModeTransitionRuntimeService } from './night-mode-transition-runtime.service';
+import {
+  NightModeTransitionRuntimeService,
+  type NightModeTransitionRuntimeSettings,
+} from './night-mode-transition-runtime.service';
 import { NightModeTransitionDeliveryService } from './night-mode-transition-delivery.service';
+import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 import {
   buildNightModeClosedNotice as buildNightModeClosedNoticeText,
   buildNightModeOpenedNotice as buildNightModeOpenedNoticeText,
@@ -937,6 +941,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly moderationRuleFollowupService?: ModerationRuleFollowupService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
     @Optional() private readonly commercialAi?: CommercialLlmEnforcementService,
+    @Optional() private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -1143,6 +1148,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         undefined,
         undefined,
         this.maxActionLedgerService ?? new MaxActionLedgerService(this.prisma),
+        undefined,
+        this.nightModeTransitionScheduler,
       );
     }
     return this.nightModeTransitionDeliveryInstance;
@@ -18078,35 +18085,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async processNightModeTransitionForChat(
-    settings: Pick<
-      ChatSettings,
-      | 'chatId'
-      | 'nightModeEnabled'
-      | 'nightModeStartTimeMinutes'
-      | 'nightModeEndTimeMinutes'
-      | 'nightModeTimezone'
-      | 'nightModeBotMessageEnabled'
-      | 'nightModeBotMessageText'
-      | 'nightModeCommentsEnabled'
-      | 'nightModeOpenMessageEnabled'
-      | 'nightModeOpenMessageText'
-      | 'nightModeBotButtons'
-      | 'nightModeBotButtonEnabled'
-      | 'nightModeBotButtonUrl'
-      | 'nightModeBotButtonText'
-      | 'nightModeRulesButtonEnabled'
-      | 'commentsEnabled'
-      | 'botSpeechStyle'
-      | 'botSpeechMedia'
-    > & {
-      chat?: {
-        entityType?: ChatEntityType | null;
-        rules?: {
-          publishedUrl: string | null;
-          publishedMessageId: string | null;
-        } | null;
-      } | null;
-    },
+    settings: NightModeTransitionRuntimeSettings,
     providedSnapshot?: NightModeTransitionSnapshot,
   ): Promise<NightModeTransitionProcessResult> {
     return this.nightModeTransitionRuntime.processNightModeTransitionForChat(
