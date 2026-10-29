@@ -192,12 +192,17 @@ export class SafetyDeskRetentionService {
       .safeParse(input);
     if (!parsed.success) throw new BadRequestException('Некорректный курсор сообщений.');
     const cursor = parsed.data;
-    if (this.eraser && (await this.eraser.owns(chatId)))
-      return safetyDeskRetentionPreviewResponseSchema.parse(
+    if (this.eraser && (await this.eraser.owns(chatId))) {
+      const snapshot = safetyDeskRetentionPreviewResponseSchema.parse(
         await this.eraser.request(
           `/chats/${encodeURIComponent(chatId)}/review${cursor ? `?after=${encodeURIComponent(cursor)}` : ''}`,
         ),
       );
+      const protection = await this.eraser
+        .protectionReport(chatId)
+        .catch(() => ({ status: 'unavailable' as const }));
+      return safetyDeskRetentionPreviewResponseSchema.parse({ ...snapshot, protection });
+    }
     const policy = await this.prisma.messageRetentionPolicy.findUnique({ where: { chatId } });
     if (!policy) throw new NotFoundException('Настройки очистки не найдены.');
     let after: string | null = null;

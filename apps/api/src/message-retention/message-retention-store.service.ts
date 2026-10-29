@@ -13,6 +13,7 @@ import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service
 import { captureRetentionMessage } from './message-retention-capture';
 import { purgeRetentionPage, type RetentionPurgeCursor } from './message-retention-purge';
 import { discoverRetentionReceipts } from './message-retention-recovery';
+import { retireTransferredChat } from './eraser-legacy-retirement';
 import { retentionStatus } from './message-retention-status';
 import {
   MESSAGE_RETENTION_CHAT_LIMIT,
@@ -42,6 +43,7 @@ export class MessageRetentionStore {
   private discoveryCursor: RetentionPurgeCursor | null = null;
   private readonly discoveryBefore = new Date();
   private discoveryComplete = false;
+  private transferCursor = '';
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -800,6 +802,40 @@ export class MessageRetentionStore {
       discoverRetentionReceipts(tx, this.discoveryCursor, this.discoveryBefore),
     );
     this.discoveryComplete = this.discoveryCursor === null;
+  }
+
+  async retireTransferredCandidates(): Promise<void> {
+    const bindings = await this.prisma.$queryRaw<{ chatId: string }[]>`
+      SELECT chat_id AS "chatId" FROM eraser_chat_bindings WHERE chat_id > ${this.transferCursor}
+      ORDER BY chat_id LIMIT 100`;
+    if (bindings.length)
+      await this.prisma.$executeRaw(Prisma.sql`
+        INSERT INTO eraser_legacy_retirement(chat_id) VALUES ${Prisma.join(bindings.map((row) => Prisma.sql`(${row.chatId})`))}
+        ON CONFLICT DO NOTHING`);
+    this.transferCursor = bindings.length === 100 ? bindings.at(-1)!.chatId : '';
+    const due = await this.prisma.$queryRaw<{ chatId: string }[]>`
+      SELECT chat_id AS "chatId" FROM eraser_legacy_retirement
+      WHERE completed_at IS NULL AND next_attempt_at<=CURRENT_TIMESTAMP
+      ORDER BY next_attempt_at,chat_id LIMIT 5`;
+    const deadline = Date.now() + 2_000;
+    for (const row of due) {
+      if (Date.now() >= deadline) break;
+      try {
+        await this.prisma.$transaction((tx) => retireTransferredChat(tx, row.chatId), {
+          timeout: 3_000,
+        });
+      } catch {
+        // FLAG: A locked or inconsistent chat cannot starve independent transferred generations.
+        await this.prisma.$executeRaw`
+          WITH page AS (SELECT chat_id FROM eraser_legacy_retirement WHERE chat_id=${row.chatId} FOR UPDATE SKIP LOCKED)
+          UPDATE eraser_legacy_retirement progress SET next_attempt_at=CURRENT_TIMESTAMP+INTERVAL '1 minute'
+          FROM page WHERE progress.chat_id=page.chat_id`;
+        this.logger.warn(
+          { code: 'ERASER_LEGACY_RETIREMENT_DEFERRED' },
+          'Transferred retention awaits review or retry',
+        );
+      }
+    }
   }
 
   async purge(): Promise<void> {
