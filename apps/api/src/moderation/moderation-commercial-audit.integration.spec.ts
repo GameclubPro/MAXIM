@@ -1,9 +1,9 @@
 import { RuleEngineService } from './rule-engine.service';
+import { WebhookParser } from '../webhook/webhook.parser';
 import {
   ModerationService,
   createRedisCounterMock,
   createSettings,
-  createUpdate,
 } from './moderation.service.spec-support';
 
 describe('commercial audit regressions in moderation execution', () => {
@@ -14,6 +14,26 @@ describe('commercial audit regressions in moderation execution', () => {
     'Срочно нужна машина: грузоперевозки или машина с прицепом. Звонить +7 900 000 10 42',
     'Нужно 2 места на завтра из города в посёлок. +7 900 000 10 42',
   ];
+
+  function createAuditUpdate(
+    text: string,
+    type: 'message_created' | 'message_edited' = 'message_created',
+  ): ReturnType<WebhookParser['parse']> {
+    const timestamp = Date.now();
+    // FLAG: Parse the same source that moderation inspects; changing normalized text alone
+    // cannot stand in for a real visible webhook message.
+    return new WebhookParser().parse({
+      update_type: type,
+      update_id: `audit-${type}`,
+      timestamp,
+      message: {
+        timestamp,
+        recipient: { chat_id: 'chat-1', chat_type: 'chat' },
+        sender: { user_id: 'user-1', name: 'Алексей' },
+        body: { mid: 'msg-1', text },
+      },
+    });
+  }
 
   function setup() {
     const settings = createSettings({
@@ -66,11 +86,7 @@ describe('commercial audit regressions in moderation execution', () => {
     async (text) => {
       const { service, prisma, maxClient, sanctions, intents } = setup();
       for (const type of ['message_created', 'message_edited'] as const) {
-        const update = createUpdate();
-        update.type = type;
-        update.updateId = `audit-${type}`;
-        update.message!.text = text;
-        await service.handleUpdate(update);
+        await service.handleUpdate(createAuditUpdate(text, type));
       }
       expect(intents.ensureIntent).not.toHaveBeenCalled();
       expect(intents.ensureAndAttempt).not.toHaveBeenCalled();
@@ -83,17 +99,18 @@ describe('commercial audit regressions in moderation execution', () => {
     },
   );
 
-  it('preserves an independent stop-word violation in an otherwise protected request', async () => {
-    const { service, prisma, intents } = setup();
-    const update = createUpdate();
-    update.message!.text = `${protectedTexts[3]} Стопслово.`;
-    await service.handleUpdate(update);
-    expect(intents.ensureIntent).toHaveBeenCalledWith(
-      expect.objectContaining({ ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE' }),
-      { enqueue: false },
-    );
-    expect(prisma.violation.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ ruleCode: 'MESSAGE_BLOCKED_WORD' }),
-    });
-  });
+  it.each(['message_created', 'message_edited'] as const)(
+    'preserves an independent stop-word violation in an otherwise protected %s request',
+    async (type) => {
+      const { service, prisma, intents } = setup();
+      await service.handleUpdate(createAuditUpdate(`${protectedTexts[3]} Стопслово.`, type));
+      expect(intents.ensureIntent).toHaveBeenCalledWith(
+        expect.objectContaining({ ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE' }),
+        { enqueue: false },
+      );
+      expect(prisma.violation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ ruleCode: 'MESSAGE_BLOCKED_WORD' }),
+      });
+    },
+  );
 });

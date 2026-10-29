@@ -7,6 +7,7 @@ import {
   shouldConfirmImageTextStopListPass,
   type ImageTextStopListSettings,
 } from './image-text-stop-list-decision';
+import { isStopWordsDecisionConfigured } from '../stop-words/stop-words.policy';
 
 const settings = (overrides: Partial<ImageTextStopListSettings> = {}): ImageTextStopListSettings =>
   ({
@@ -37,6 +38,28 @@ function pass(
 }
 
 describe('evaluateImageTextStopListDecision', () => {
+  it.each(['casino', 'marketplace', 'казино'])(
+    'keeps legacy OCR identity configured for %s',
+    (value) => {
+      const current = settings({ stopWordsPolicy: null, messageLimitsBlockedWords: [value] });
+      const decision = evaluateImageTextStopListDecision({
+        settings: current,
+        images: [{ imageIndex: 0, primary: pass(value.toUpperCase()), confirmation: pass(value) }],
+      });
+      expect(decision.kind).toBe('match');
+      if (decision.kind !== 'match') throw new Error('Expected confirmed OCR match');
+      expect(isStopWordsDecisionConfigured(current, decision)).toBe(true);
+      expect(
+        isStopWordsDecisionConfigured({ ...current, messageLimitsBlockedWords: [] }, decision),
+      ).toBe(false);
+      expect(
+        isStopWordsDecisionConfigured(
+          { ...current, messageLimitsBlockedWords: ['другое'] },
+          decision,
+        ),
+      ).toBe(false);
+    },
+  );
   it('preserves the configured Latin identity across both OCR passes', () => {
     const result = evaluateImageTextStopListDecision({
       settings: settings({
@@ -69,6 +92,89 @@ describe('evaluateImageTextStopListDecision', () => {
       }),
     ).toEqual({ kind: 'no_action' });
   });
+
+  it.each(['EXACT', 'MASKED'] as const)(
+    'confirms a typed phrase in %s mode without crossing a paragraph',
+    (matchMode) => {
+      const current = settings({
+        stopWordsPolicy: stopWordsPolicySchema.parse({
+          enabled: true,
+          rules: [{ id: 'phrase', kind: 'PHRASE', value: 'доход без вложений', matchMode }],
+        }),
+      });
+      expect(
+        evaluateImageTextStopListDecision({
+          settings: current,
+          images: [
+            {
+              imageIndex: 0,
+              primary: pass('Доход\nбез вложений'),
+              confirmation: pass('доход без вложений'),
+            },
+          ],
+        }),
+      ).toMatchObject({ kind: 'match', ruleId: 'phrase' });
+      expect(
+        evaluateImageTextStopListDecision({
+          settings: current,
+          images: [
+            {
+              imageIndex: 0,
+              primary: pass('доход\n\nбез вложений'),
+              confirmation: pass('доход без вложений'),
+            },
+          ],
+        }),
+      ).toEqual({ kind: 'no_action' });
+    },
+  );
+
+  it('confirms explicitly enabled masking in both passes without weakening exact mode', () => {
+    const image = {
+      imageIndex: 0,
+      primary: pass('к а з и н о'),
+      confirmation: pass('к.а.з.и.н.о'),
+    };
+    for (const matchMode of ['EXACT', 'MASKED'] as const) {
+      const current = settings({
+        stopWordsPolicy: stopWordsPolicySchema.parse({
+          enabled: true,
+          rules: [{ id: 'masked', kind: 'WORD', value: 'казино', matchMode }],
+        }),
+      });
+      expect(evaluateImageTextStopListDecision({ settings: current, images: [image] })).toEqual(
+        matchMode === 'EXACT'
+          ? { kind: 'no_action' }
+          : expect.objectContaining({ kind: 'match', ruleId: 'masked' }),
+      );
+    }
+  });
+
+  it.each(['uncovered-token', 'overlapping-offsets', 'mismatched-text'] as const)(
+    'rejects %s native spans before stop-word matching',
+    (kind) => {
+      const primary = pass('casino other', 990);
+      const words = primary.words!;
+      const invalid =
+        kind === 'uncovered-token'
+          ? words.slice(0, 1)
+          : kind === 'overlapping-offsets'
+            ? [words[0]!, { ...words[1]!, start: 0 }]
+            : [{ ...words[0]!, text: 'wrong' }, words[1]!];
+      expect(
+        evaluateImageTextStopListDecision({
+          settings: settings({ messageLimitsBlockedWords: ['casino'] }),
+          images: [
+            {
+              imageIndex: 0,
+              primary: { ...primary, words: invalid },
+              confirmation: pass('casino other'),
+            },
+          ],
+        }),
+      ).toEqual({ kind: 'no_action' });
+    },
+  );
   it('requests confirmation only for a high-confidence primary stop-list candidate', () => {
     const currentSettings = settings({ messageLimitsBlockedWords: ['казино'] });
 

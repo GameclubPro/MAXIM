@@ -7,7 +7,9 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { isDeepStrictEqual } from 'node:util';
 import { ConfigService } from '@nestjs/config';
 import {
   stopWordsPreviewRequestSchema,
@@ -21,7 +23,7 @@ import { ManagedEntitiesService } from './managed-entities.service';
 import { AdminSettingsService } from './admin-settings.service';
 import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import {
-  migrateStopWordsPolicy,
+  readStopWordsPolicy,
   stopWordsPolicyStorage,
 } from '../moderation/stop-words/stop-words.policy';
 import { StopWordsMatcher } from '../moderation/stop-words/stop-words.matcher';
@@ -29,11 +31,13 @@ import { createAllowlistLinkMatcher } from '../moderation/rule-engine-link-detec
 import { resolveImageTextStopListOcrRuntimePolicy } from '../moderation/commercial-ocr/image-text-stop-list.runtime';
 import type { NetworkSettingsWriteOptions } from './network-settings-write';
 import type { StopWordsPolicy } from '@maxim/contracts/settings';
+import { readStopWordsStorageStatus } from '../moderation/stop-words/stop-words-storage-status';
+import { readEditableStopWordsPolicy } from './stop-words-editable-policy';
+import { OcrReadinessStateService } from '../health/ocr-readiness-state.service';
 
 @Injectable()
 export class AdminStopWordsService {
   private readonly matcher = new StopWordsMatcher();
-  private readiness: { until: number; value: StopWordsState['imageScanStatus'] } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -42,14 +46,17 @@ export class AdminStopWordsService {
     private readonly capabilities: AdminSettingsBotCapabilityService,
     private readonly cache: ChatContextCacheService,
     private readonly config: ConfigService,
+    @Optional() private readonly ocrReadiness?: OcrReadinessStateService,
   ) {}
 
   async read(chatId: string, user: AuthUser): Promise<StopWordsState> {
     await this.admin.assertChatAdminAccess(chatId, user);
     const settings = await this.load(chatId, user);
     return {
-      policy: migrateStopWordsPolicy(settings),
+      policy: readEditableStopWordsPolicy(settings),
       revision: settings.stopWordsRevision,
+      settingsRevision: settings.updatedAt.toISOString(),
+      storageStatus: readStopWordsStorageStatus(settings),
       imageScanStatus: await this.imageScanStatus(),
     };
   }
@@ -74,7 +81,28 @@ export class AdminStopWordsService {
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const { policy, expectedRevision } = parsed.data;
     const current = await this.load(chatId, user);
-    if (current.stopWordsRevision !== expectedRevision) throw this.conflict();
+    if (current.stopWordsRevision !== expectedRevision) {
+      // FLAG: Recover only the exact already-committed standalone request. Network writes
+      // retain their operation receipts; a different policy or media remains a conflict.
+      const storedPolicy =
+        readStopWordsStorageStatus(current) === 'valid' ? readStopWordsPolicy(current) : null;
+      if (
+        !networkWrite &&
+        current.stopWordsRevision === expectedRevision + 1 &&
+        storedPolicy &&
+        isDeepStrictEqual(storedPolicy, policy)
+      ) {
+        await this.cache.invalidate(chatId);
+        return {
+          policy: storedPolicy,
+          revision: current.stopWordsRevision,
+          settingsRevision: current.updatedAt.toISOString(),
+          storageStatus: 'valid',
+          imageScanStatus: await this.imageScanStatus(),
+        };
+      }
+      throw this.conflict();
+    }
     if (
       networkWrite?.settingsRevision &&
       current.updatedAt.toISOString() !== networkWrite.settingsRevision
@@ -92,7 +120,7 @@ export class AdminStopWordsService {
         networkWrite ? { forceLive: true } : undefined,
       );
     }
-    await this.prisma.$transaction(async (tx) => {
+    const settingsRevision = await this.prisma.$transaction(async (tx) => {
       const lockedChat = await lockModeratorSettingsChat(tx, chatId);
       await assertFixedModeratorCapabilitiesForSettings(
         tx,
@@ -107,18 +135,18 @@ export class AdminStopWordsService {
           : [],
       );
 
-      if (networkWrite?.validateOnly) return;
+      if (networkWrite?.validateOnly) return current.updatedAt.toISOString();
 
       const changed = await tx.chatSettings.updateMany({
         where: { chatId, stopWordsRevision: expectedRevision, updatedAt: current.updatedAt },
         data: { ...stopWordsPolicyStorage(policy), stopWordsRevision: { increment: 1 } },
       });
       if (changed.count !== 1) throw this.conflict();
+      const written = await tx.chatSettings.findUniqueOrThrow({
+        where: { chatId },
+        select: { updatedAt: true },
+      });
       if (networkWrite?.onCommitted) {
-        const written = await tx.chatSettings.findUniqueOrThrow({
-          where: { chatId },
-          select: { updatedAt: true },
-        });
         await networkWrite.onCommitted(tx, written.updatedAt.toISOString());
       }
       await tx.auditLog.create({
@@ -139,12 +167,15 @@ export class AdminStopWordsService {
           },
         },
       });
+      return written.updatedAt.toISOString();
     });
     if (!networkWrite?.deferFollowup && !networkWrite?.validateOnly)
       await this.cache.invalidate(chatId);
     return {
       policy,
       revision: expectedRevision + (networkWrite?.validateOnly ? 0 : 1),
+      settingsRevision,
+      storageStatus: 'valid',
       imageScanStatus: await this.imageScanStatus(),
     };
   }
@@ -205,25 +236,9 @@ export class AdminStopWordsService {
       sandboxBoundaryVerified: false,
     });
     if (runtime.mode !== 'on') return runtime.mode;
-    if (this.readiness && this.readiness.until > Date.now()) return this.readiness.value;
-    let value: StopWordsState['imageScanStatus'] = 'unavailable';
-    try {
-      // Fixed internal destination; no user-controlled URL or credentials are forwarded.
-      const response = await fetch('http://api-media-analysis:3001/api/health/ready?scope=ocr', {
-        signal: AbortSignal.timeout(1_000),
-        redirect: 'error',
-      });
-      if (response.ok) {
-        const body = (await response.json()) as {
-          ok?: boolean;
-          checks?: { ocr?: { ready?: boolean } };
-        };
-        if (body.ok === true && body.checks?.ocr?.ready === true) value = 'ready';
-      }
-    } catch {
-      /* Missing readiness cannot authorize image moderation. */
-    }
-    this.readiness = { until: Date.now() + 5_000, value };
-    return value;
+    const snapshot = await this.ocrReadiness?.read();
+    return snapshot?.mode === 'on' && snapshot.ready && snapshot.identityVerified
+      ? 'ready'
+      : 'unavailable';
   }
 }

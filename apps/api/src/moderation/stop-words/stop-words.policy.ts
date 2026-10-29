@@ -9,6 +9,7 @@ import {
   type StopWordsPolicy,
 } from '@maxim/contracts/settings';
 import type { ChatSettings } from '../../prisma/prisma-client';
+import { normalizeLegacyStopWordIdentity } from '../rule-engine-blocked-words.detector';
 
 export function readStopWordsPolicy(settings: {
   stopWordsPolicy?: unknown;
@@ -76,11 +77,22 @@ export function isStopWordsDecisionConfigured(
             (rule) => rule.enabled && rule.value === decision.value && rule.id === decision.ruleId,
           ))
     );
+  if (decision.ruleCode === 'MESSAGE_BLOCKED_DOMAIN') {
+    const identity = normalizeMessageLimitsBlockedDomainCandidate(decision.value);
+    return (
+      identity !== null &&
+      settings.messageLimitsBlockedDomains.some(
+        (value) => normalizeMessageLimitsBlockedDomainCandidate(value) === identity,
+      )
+    );
+  }
+  const identity = normalizeLegacyStopWordIdentity(decision.value);
   return (
-    decision.ruleCode === 'MESSAGE_BLOCKED_DOMAIN'
-      ? settings.messageLimitsBlockedDomains
-      : settings.messageLimitsBlockedWords
-  ).includes(decision.value);
+    identity !== null &&
+    settings.messageLimitsBlockedWords.some(
+      (value) => normalizeLegacyStopWordIdentity(value) === identity,
+    )
+  );
 }
 
 export function migrateStopWordsPolicy(settings: Partial<ChatSettings>): StopWordsPolicy {

@@ -10,6 +10,12 @@ const ruleFamilies = {
   COMMERCIAL_OCR: ['COMMERCIAL_OCR_DELETE', 'COMMERCIAL_OCR_MESSAGE_ACTION'],
   STOP_WORD: ['MESSAGE_BLOCKED_WORD', 'MESSAGE_BLOCKED_WORD_DELETE'],
   STOP_DOMAIN: ['MESSAGE_BLOCKED_DOMAIN', 'MESSAGE_BLOCKED_DOMAIN_DELETE'],
+  STOP_WORD_GUARD: ['STOP_WORD_GUARD_REJECTED'],
+  STOP_DOMAIN_GUARD: ['STOP_DOMAIN_GUARD_REJECTED'],
+  STOP_OCR_GUARD: ['STOP_OCR_GUARD_REJECTED'],
+  STOP_WORD_CAPABILITY: ['STOP_WORD_CAPABILITY_DEFERRED'],
+  STOP_DOMAIN_CAPABILITY: ['STOP_DOMAIN_CAPABILITY_DEFERRED'],
+  STOP_OCR_CAPABILITY: ['STOP_OCR_CAPABILITY_DEFERRED'],
   PHONE: ['PHONE_NUMBER_BLOCKED', 'PHONE_NUMBER_BLOCKED_DELETE'],
   MESSAGE_LENGTH: ['MESSAGE_TOO_LONG', 'MESSAGE_TOO_LONG_DELETE'],
   MESSAGE_RATE: ['MESSAGE_RATE_LIMIT', 'MESSAGE_RATE_LIMIT_DELETE'],
@@ -52,6 +58,27 @@ const ruleFamilySql = Object.entries(ruleFamilies)
       `WHEN rule_code IN (${codes.map((code) => `'${code}'`).join(', ')}) THEN '${family}'`,
   )
   .join('\n      ');
+
+// FLAG: Admit fixed diagnostics only. Neither rule values nor source/error text may
+// become an output category, including malformed or future metadata.
+const stopWordsRejectionReasons = [
+  'policy_disabled',
+  'policy_changed',
+  'source_changed',
+  'rule_unmatched',
+  'author_protected',
+  'author_absent',
+  'identity_changed',
+  'participant_immune',
+  'sanction_disabled',
+  'delete_receipt_missing',
+  'runtime_disabled',
+  'binding_invalid',
+  'binding_stale',
+  'deadline_expired',
+  'permission_changed',
+];
+const rejectionReasonsSql = stopWordsRejectionReasons.map((reason) => `'${reason}'`).join(', ');
 
 function validateBotId(botId) {
   if (
@@ -169,6 +196,9 @@ export function buildModerationOutcomesAuditSql(explain = false, botId = null) {
   SELECT * FROM candidates ORDER BY created_at DESC LIMIT 512
 ), classified AS MATERIALIZED (
   SELECT created_at, action, rule_code, metadata_admission,
+    CASE WHEN rule_code = 'COMMERCIAL_OCR_DELETE' AND proof->>'source' = 'image_text_ocr'
+      AND proof->>'matchedRuleCode' IN ('MESSAGE_BLOCKED_WORD', 'MESSAGE_BLOCKED_DOMAIN')
+      THEN true ELSE false END AS stop_words_ocr,
     CASE
       WHEN action = 'BAN' AND operator = 'BOT'
         AND proof->'sanctionApplied' = 'true'::jsonb
@@ -215,7 +245,8 @@ export function buildModerationOutcomesAuditSql(explain = false, botId = null) {
   FROM voice_classified GROUP BY evidence
 ), family_classified AS MATERIALIZED (
   SELECT created_at, origin,
-    CASE ${ruleFamilySql}
+    CASE WHEN stop_words_ocr THEN 'STOP_OCR'
+      ${ruleFamilySql}
       ELSE 'OTHER_RULE' END AS rule_family,
     CASE WHEN action IN ('NONE', 'WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN')
       THEN action::text ELSE 'UNKNOWN' END AS action,
@@ -234,6 +265,37 @@ export function buildModerationOutcomesAuditSql(explain = false, botId = null) {
 ), metadata_grouped AS (
   SELECT metadata_admission, count(*) AS count_lower_bound
   FROM classified GROUP BY metadata_admission
+), stop_words_classified AS MATERIALIZED (
+  SELECT created_at,
+    CASE WHEN rule_code IN ('MESSAGE_BLOCKED_WORD', 'MESSAGE_BLOCKED_WORD_DELETE', 'STOP_WORD_GUARD_REJECTED', 'STOP_WORD_CAPABILITY_DEFERRED') THEN 'WORD'
+      WHEN rule_code IN ('MESSAGE_BLOCKED_DOMAIN', 'MESSAGE_BLOCKED_DOMAIN_DELETE', 'STOP_DOMAIN_GUARD_REJECTED', 'STOP_DOMAIN_CAPABILITY_DEFERRED') THEN 'DOMAIN'
+      ELSE 'OCR' END AS source,
+    CASE WHEN operator = 'BOT' AND action = 'NONE'
+      AND rule_code IN ('STOP_WORD_CAPABILITY_DEFERRED', 'STOP_DOMAIN_CAPABILITY_DEFERRED', 'STOP_OCR_CAPABILITY_DEFERRED')
+      AND proof->>'stopWordsRejectionReason' = 'permission_changed' THEN 'GUARD_DEFERRED'
+      WHEN operator = 'BOT' AND action = 'NONE'
+      AND rule_code IN ('STOP_WORD_GUARD_REJECTED', 'STOP_DOMAIN_GUARD_REJECTED', 'STOP_OCR_GUARD_REJECTED')
+      THEN 'GUARD_REJECTED'
+      WHEN operator = 'BOT' AND action = 'DELETE_MESSAGE'
+        AND proof->'moderationDeleteVerified' = 'true'::jsonb THEN 'DELETE_REMOTE_CONFIRMED'
+      WHEN operator = 'BOT' AND action IN ('NONE', 'WARN', 'MUTE', 'BAN')
+        AND rule_code IN ('MESSAGE_BLOCKED_WORD', 'MESSAGE_BLOCKED_DOMAIN') THEN 'DETECTED'
+      ELSE 'OUTCOME_UNKNOWN' END AS evidence,
+    CASE WHEN operator = 'BOT' AND action = 'NONE'
+      AND rule_code IN ('STOP_WORD_GUARD_REJECTED', 'STOP_DOMAIN_GUARD_REJECTED', 'STOP_OCR_GUARD_REJECTED',
+        'STOP_WORD_CAPABILITY_DEFERRED', 'STOP_DOMAIN_CAPABILITY_DEFERRED', 'STOP_OCR_CAPABILITY_DEFERRED')
+      AND proof->>'stopWordsRejectionReason' IN (${rejectionReasonsSql})
+      THEN proof->>'stopWordsRejectionReason' ELSE 'UNSPECIFIED' END AS rejection_reason
+  FROM sample WHERE rule_code IN (
+    'MESSAGE_BLOCKED_WORD', 'MESSAGE_BLOCKED_WORD_DELETE', 'MESSAGE_BLOCKED_DOMAIN', 'MESSAGE_BLOCKED_DOMAIN_DELETE',
+    'STOP_WORD_GUARD_REJECTED', 'STOP_DOMAIN_GUARD_REJECTED', 'STOP_OCR_GUARD_REJECTED',
+    'STOP_WORD_CAPABILITY_DEFERRED', 'STOP_DOMAIN_CAPABILITY_DEFERRED', 'STOP_OCR_CAPABILITY_DEFERRED')
+    OR (rule_code = 'COMMERCIAL_OCR_DELETE' AND proof->>'source' = 'image_text_ocr'
+      AND proof->>'matchedRuleCode' IN ('MESSAGE_BLOCKED_WORD', 'MESSAGE_BLOCKED_DOMAIN'))
+), stop_words_grouped AS (
+  SELECT source, evidence, rejection_reason, count(*) AS count_lower_bound,
+    min(created_at) AS oldest_recorded_at, max(created_at) AS newest_recorded_at
+  FROM stop_words_classified GROUP BY source, evidence, rejection_reason
 )
 SELECT json_build_object(
   'schema_version', 3, 'audit', 'recent_moderation_outcomes',
@@ -257,6 +319,8 @@ SELECT json_build_object(
   'all_attempts_observed', false, 'current_mute_state_proven', false,
   'voice_eligible_inputs_observed', false, 'voice_policy_checked', false,
   'fleet_health_proven', false,
+  'stop_words_detection_coverage_proven', false, 'stop_words_all_guard_rejections_observed', false,
+  'stop_words_rows', coalesce((SELECT json_agg(stop_words_grouped ORDER BY source, evidence, rejection_reason) FROM stop_words_grouped), '[]'::json),
   'metadata_rows', coalesce((SELECT json_agg(metadata_grouped ORDER BY metadata_admission) FROM metadata_grouped), '[]'::json),
   'rule_family_rows', coalesce((SELECT json_agg(family_grouped ORDER BY rule_family, action, origin, evidence) FROM family_grouped), '[]'::json),
   'voice_rows', coalesce((SELECT json_agg(voice_grouped ORDER BY evidence) FROM voice_grouped), '[]'::json),

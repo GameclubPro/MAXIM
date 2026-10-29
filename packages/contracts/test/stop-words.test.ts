@@ -4,6 +4,8 @@ import {
   stopWordsPolicySchema,
   stopWordsRuleSchema,
   updateStopWordsRequestSchema,
+  stopWordsStateSchema,
+  stopWordsStatusSchema,
 } from '../src/stop-words.js';
 
 describe('stop-word policy contract', () => {
@@ -65,5 +67,31 @@ describe('stop-word policy contract', () => {
   });
   it('requires a revision on every scoped write', () => {
     expect(updateStopWordsRequestSchema.safeParse({ policy: {} }).success).toBe(false);
+  });
+  it('adds optional storage health only to the full response', () => {
+    const response = { policy: {}, revision: 3, imageScanStatus: 'unavailable' };
+    expect(stopWordsStateSchema.parse(response).storageStatus).toBeUndefined();
+    expect(
+      stopWordsStateSchema.parse({ ...response, settingsRevision: '2026-10-29T16:00:00.000Z' })
+        .settingsRevision,
+    ).toBe('2026-10-29T16:00:00.000Z');
+    for (const storageStatus of ['valid', 'legacy', 'invalid']) {
+      expect(stopWordsStateSchema.parse({ ...response, storageStatus }).storageStatus).toBe(
+        storageStatus,
+      );
+      expect(
+        stopWordsStatusSchema.parse({
+          ...response,
+          storageStatus,
+          settingsRevision: '2026-10-29T16:00:00.000Z',
+        }),
+      ).toEqual({
+        revision: 3,
+        imageScanStatus: 'unavailable',
+      });
+    }
+    expect(stopWordsStateSchema.safeParse({ ...response, storageStatus: 'unknown' }).success).toBe(
+      false,
+    );
   });
 });

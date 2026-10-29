@@ -12,6 +12,18 @@ function detect(value: string, text: string, matchMode: StopWordsRule['matchMode
 
 describe('StopWordsMatcher', () => {
   it.each(['EXACT', 'MASKED'] as const)(
+    'preserves Unicode line and paragraph boundaries in %s',
+    (mode) => {
+      for (const separator of ['\u2028', '\v', '\r\n', '\r', '\n', '\u00a0']) {
+        const text = `доход${separator}без вложений`;
+        expect(detect('доход без вложений', text, mode)[0]).toMatchObject({ fragment: text });
+      }
+      for (const separator of ['\u2029', '\f', '\n\n', '\r\n \r\n', '\u2028\t\u2028', '\r\r']) {
+        expect(detect('доход без вложений', `доход${separator}без вложений`, mode)).toEqual([]);
+      }
+    },
+  );
+  it.each(['EXACT', 'MASKED'] as const)(
     'does not create boundaries at a removed URL in %s mode',
     (mode) => {
       expect(detect('доход', 'доходhttps://example.com', mode)).toEqual([]);

@@ -90,6 +90,12 @@ const BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH = 4;
 const BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH = 4;
 const BLOCKED_WORD_ARTICLE_CODE_PATTERN =
   /(?<![\p{L}\p{N}])(?:[A-Z0-9]{2,}(?:[-_/][A-Z0-9]{2,})+|[A-Z]{2,}\d[A-Z0-9_-]*|[A-Z0-9_-]*\d[A-Z]{2,}[A-Z0-9_-]*)(?![\p{L}\p{N}])/gu;
+
+export function normalizeLegacyStopWordIdentity(value: string): string | null {
+  const candidate = normalizeMessageLimitsBlockedWordCandidate(value);
+  return candidate ? normalizeMixedWriting(candidate) : null;
+}
+
 export class MessageLimitsBlockedWordDetector {
   private readonly blockedWordListCache = new Map<string, ResolvedBlockedWordIndex>();
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
@@ -437,13 +443,7 @@ export class MessageLimitsBlockedWordDetector {
   }
 
   private normalizeMessageLimitsBlockedWordToken(value: string): string | null {
-    const candidate = normalizeMessageLimitsBlockedWordCandidate(value);
-    if (!candidate) {
-      return null;
-    }
-
-    const normalized = normalizeMixedWriting(candidate);
-    return normalized;
+    return normalizeLegacyStopWordIdentity(value);
   }
 
   private stripMessageLimitsBlockedWordIgnoredTokens(value: string): string {

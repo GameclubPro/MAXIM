@@ -96,7 +96,7 @@ describe('ChatContextLocalCache retained memory boundaries', () => {
     expect(cache.get('hot-b')).toBe(hotB);
   });
 
-  it('expires at the deadline and preserves the current sliding TTL refresh', () => {
+  it('starts a new deadline only when a fresh source snapshot is explicitly published', () => {
     let now = 0;
     const cache = createCache({ now: () => now });
     const value = context('chat');
@@ -110,6 +110,30 @@ describe('ChatContextLocalCache retained memory boundaries', () => {
     now = 199;
     expect(cache.get('chat')).toBeNull();
     expect(cache.snapshot()).toMatchObject({ estimatedBytes: 0, expiredEvictions: 1 });
+  });
+
+  it('keeps the source deadline while reads and title replacements remain active', () => {
+    let now = 0;
+    const cache = createCache({ now: () => now });
+    cache.set('chat', context('chat', 'Original title'));
+    for (now = 20; now < 100; now += 20) {
+      expect(cache.get('chat')).not.toBeNull();
+      cache.replace('chat', context('chat', `Title ${now}`));
+    }
+    expect(cache.get('chat')).toBeNull();
+    expect(cache.snapshot()).toMatchObject({ entries: 0, estimatedBytes: 0, expiredEvictions: 1 });
+  });
+
+  it('does not admit absent or expired values through a presentation-only replacement', () => {
+    let now = 0;
+    const cache = createCache({ now: () => now });
+    cache.replace('absent', context('absent'));
+    cache.set('expired', context('expired'));
+    now = 100;
+    cache.replace('expired', context('expired', 'New title'));
+    expect(cache.get('absent')).toBeNull();
+    expect(cache.get('expired')).toBeNull();
+    expect(cache.snapshot()).toMatchObject({ entries: 0, writes: 1, expiredEvictions: 1 });
   });
 
   it('reuses the encoded size from Redis and on local hits without serializing media again', () => {

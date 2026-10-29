@@ -2,10 +2,9 @@ import { parseArgs } from 'node:util';
 import Redis from 'ioredis';
 import { createPrismaClient, type PrismaClient } from '../prisma/prisma-client';
 import { invalidateSharedChatContext } from '../chat-context/chat-context-cache.service';
-import {
-  migrateStopWordsPolicy,
-  stopWordsPolicyStorage,
-} from '../moderation/stop-words/stop-words.policy';
+import { stopWordsPolicyStorage } from '../moderation/stop-words/stop-words.policy';
+import { readStopWordsStorageStatus } from '../moderation/stop-words/stop-words-storage-status';
+import { readEditableStopWordsPolicy } from '../admin/stop-words-editable-policy';
 
 export async function migrateStopWordsPolicies(params: {
   prisma: PrismaClient;
@@ -21,12 +20,17 @@ export async function migrateStopWordsPolicies(params: {
   const deadline = Date.now() + 60_000;
   const result = {
     apply: params.apply,
+    after: params.after ?? null,
+    limit: params.limit,
     scanned: 0,
+    valid: 0,
+    legacy: 0,
     eligible: 0,
     migrated: 0,
     conflicts: 0,
     invalid: 0,
     exhausted: false,
+    stoppedBy: 'limit' as 'limit' | 'deadline' | 'exhausted',
     nextCursor: params.after ?? (null as string | null),
   };
   while (result.scanned < params.limit && Date.now() < deadline) {
@@ -43,22 +47,30 @@ export async function migrateStopWordsPolicies(params: {
     );
     if (!rows.length) {
       result.exhausted = true;
+      result.stoppedBy = 'exhausted';
       break;
     }
     for (const row of rows) {
       result.scanned += 1;
       result.nextCursor = row.id;
-      if (row.stopWordsPolicy != null) {
+      const storageStatus = readStopWordsStorageStatus(row);
+      if (storageStatus === 'invalid') {
+        result.invalid += 1;
+        continue;
+      }
+      if (storageStatus === 'valid') {
+        result.valid += 1;
         if (params.apply) await params.invalidate(row.chatId);
         continue;
       }
       let policy;
       try {
-        policy = migrateStopWordsPolicy(row);
+        policy = readEditableStopWordsPolicy(row);
       } catch {
         result.invalid += 1;
         continue;
       }
+      result.legacy += 1;
       result.eligible += 1;
       if (!params.apply) continue;
       const migrated = await params.prisma.$transaction(
@@ -98,6 +110,7 @@ export async function migrateStopWordsPolicies(params: {
       result.migrated += 1;
     }
   }
+  if (!result.exhausted && result.scanned < params.limit) result.stoppedBy = 'deadline';
   return result;
 }
 

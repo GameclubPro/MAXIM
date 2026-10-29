@@ -976,6 +976,67 @@ describe('ChatContextCacheService', () => {
     expect(redisInstance.mget).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])(
+    'refreshes settings at the original local deadline despite continuous reads (title change: %s)',
+    async (changeTitle) => {
+      let now = 1_000;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const chatId = `absolute-context-${changeTitle}`;
+      const config = createConfigMock();
+      config.get.mockImplementation((key) =>
+        key === 'CHAT_CONTEXT_LOCAL_CACHE_TTL_MS' ? 100 : undefined,
+      );
+      const service = new ChatContextCacheService(
+        { chat: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) } } as never,
+        config as never,
+        maxBotLinkService as never,
+      );
+      const internals = service as unknown as {
+        patchChatContextInRedis: (
+          chatId: string,
+          patch: (current: ChatContext) => ChatContext,
+        ) => Promise<void>;
+      };
+      // Isolate the local title replacement from the ordinary invalidation its Redis patch emits.
+      const patch = jest.spyOn(internals, 'patchChatContextInRedis').mockResolvedValue(undefined);
+      const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+      const publish = (revision: number, title: string) =>
+        store.set(
+          ChatContextCacheService.cacheKey(chatId),
+          JSON.stringify({
+            chatId,
+            title,
+            settings: { ...buildSettings(chatId), stopWordsRevision: revision },
+            domainAllowlist: [],
+            adminUserIds: [],
+            rulesPublishedUrl: null,
+            rulesPublishedMessageId: null,
+          }),
+        );
+      try {
+        publish(0, 'Original title');
+        expect((await service.getChatContext(chatId)).settings.stopWordsRevision).toBe(0);
+        // A disconnected subscriber misses this source update and cannot clear its local copy.
+        publish(1, changeTitle ? 'New title' : 'Original title');
+        for (now = 1_020; now < 1_100; now += 20) {
+          const context = await service.getChatContext(
+            chatId,
+            changeTitle ? 'New title' : undefined,
+          );
+          expect(context.settings.stopWordsRevision).toBe(0);
+          if (changeTitle) expect(context.title).toBe('New title');
+        }
+        expect((await service.getChatContext(chatId)).settings.stopWordsRevision).toBe(1);
+        expect(getRedisMutationMock(service).mget).toHaveBeenCalledTimes(2);
+        expect(patch).toHaveBeenCalledTimes(changeTitle ? 1 : 0);
+      } finally {
+        patch.mockRestore();
+        clock.mockRestore();
+        await service.onModuleDestroy();
+      }
+    },
+  );
+
   it('invalidates only the local chat context without issuing a Redis mutation', async () => {
     const chatId = 'chat-local-invalidation';
     const cachedSettings = JSON.parse(JSON.stringify(buildSettings(chatId))) as ChatSettings;

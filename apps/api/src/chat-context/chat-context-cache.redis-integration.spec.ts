@@ -16,6 +16,147 @@ const isLocalRedisUrl = (() => {
 const describeLocalRedis = isLocalRedisUrl ? describe : describe.skip;
 
 describeLocalRedis('ChatContextCacheService Redis integration', () => {
+  it('refreshes a busy reader at its original deadline after losing a published invalidation', async () => {
+    const chatId = `absolute-context-${randomUUID()}`;
+    const localTtlMs = 120;
+    const config = {
+      getOrThrow: () => redisIntegrationUrl,
+      get: (key: string) => (key === 'CHAT_CONTEXT_LOCAL_CACHE_TTL_MS' ? localTtlMs : undefined),
+    };
+    // This reader never subscribes, so its populated local entry misses the real publication.
+    const reader = new ChatContextCacheService({} as never, config as never, {} as never);
+    const writer = new ChatContextCacheService({} as never, config as never, {} as never);
+    const inspector = new Redis(redisIntegrationUrl);
+    const contextKey = ChatContextCacheService.cacheKey(chatId);
+    const cachedRevisionKey = ChatContextCacheService.cachedContextRevisionKey(chatId);
+    const revisionKey = ChatContextCacheService.chatContextRevisionKey(chatId);
+    const publish = async (revision: number) => {
+      await inspector.set(
+        contextKey,
+        JSON.stringify({
+          chatId,
+          title: 'Busy chat',
+          settings: { stopWordsRevision: revision },
+          domainAllowlist: [],
+          adminUserIds: [],
+          rulesPublishedUrl: null,
+          rulesPublishedMessageId: null,
+        }),
+        'EX',
+        60,
+      );
+      await inspector.set(cachedRevisionKey, String(revision), 'EX', 60);
+    };
+    try {
+      await publish(0);
+      expect((await reader.getChatContext(chatId)).settings.stopWordsRevision).toBe(0);
+      await writer.invalidate(chatId);
+      await expect(inspector.get(revisionKey)).resolves.toBe('1');
+      await publish(1);
+
+      const deadline = Date.now() + 4 * localTtlMs;
+      let revision = 0;
+      while (Date.now() < deadline && revision === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        revision = (await reader.getChatContext(chatId)).settings.stopWordsRevision;
+      }
+      expect(revision).toBe(1);
+    } finally {
+      await inspector.del(
+        contextKey,
+        cachedRevisionKey,
+        revisionKey,
+        ChatContextCacheService.legacyCacheKey(chatId),
+      );
+      await inspector.quit();
+      await reader.onModuleDestroy();
+      await writer.onModuleDestroy();
+    }
+  });
+
+  it('keeps the Redis source deadline during title changes and eventually reads fresh settings', async () => {
+    const chatId = `title-context-${randomUUID()}`;
+    const localTtlMs = 120;
+    const redisTtlMs = 600;
+    const source = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: chatId,
+          title: 'New title',
+          settings: { stopWordsRevision: 1 },
+          domains: [],
+          admins: [],
+          rules: null,
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const reader = new ChatContextCacheService(
+      source as never,
+      {
+        getOrThrow: () => redisIntegrationUrl,
+        get: (key: string) => (key === 'CHAT_CONTEXT_LOCAL_CACHE_TTL_MS' ? localTtlMs : undefined),
+      } as never,
+      {} as never,
+    );
+    const inspector = new Redis(redisIntegrationUrl);
+    const contextKey = ChatContextCacheService.cacheKey(chatId);
+    const cachedRevisionKey = ChatContextCacheService.cachedContextRevisionKey(chatId);
+    try {
+      await inspector.set(
+        contextKey,
+        JSON.stringify({
+          chatId,
+          title: 'Old title',
+          settings: { stopWordsRevision: 0 },
+          domainAllowlist: [],
+          adminUserIds: [],
+          rulesPublishedUrl: null,
+          rulesPublishedMessageId: null,
+        }),
+        'PX',
+        redisTtlMs,
+      );
+      await inspector.set(cachedRevisionKey, '0', 'PX', redisTtlMs);
+      const originalDeadline = Date.now() + redisTtlMs;
+      expect((await reader.getChatContext(chatId, 'New title')).title).toBe('New title');
+
+      const patchDeadline = Date.now() + 300;
+      let patchedTitle: string | undefined;
+      while (Date.now() < patchDeadline && patchedTitle !== 'New title') {
+        const raw = await inspector.get(contextKey);
+        patchedTitle = raw ? (JSON.parse(raw) as { title?: string }).title : undefined;
+        if (patchedTitle !== 'New title') {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      expect(patchedTitle).toBe('New title');
+      const remainingTtl = await inspector.pttl(contextKey);
+      expect(remainingTtl).toBeGreaterThan(0);
+      expect(remainingTtl).toBeLessThanOrEqual(redisTtlMs);
+      expect(await inspector.pttl(cachedRevisionKey)).toBeLessThanOrEqual(redisTtlMs);
+
+      // Continuous hits must exhaust both existing deadlines without renewing either layer.
+      const deadline = originalDeadline + localTtlMs + 500;
+      let revision = 0;
+      while (Date.now() < deadline && revision === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        revision = (await reader.getChatContext(chatId, 'New title')).settings.stopWordsRevision;
+      }
+      expect(revision).toBe(1);
+      expect(source.chat.findUnique).toHaveBeenCalledTimes(1);
+    } finally {
+      await inspector.del(
+        contextKey,
+        cachedRevisionKey,
+        ChatContextCacheService.chatContextRevisionKey(chatId),
+        ChatContextCacheService.legacyCacheKey(chatId),
+      );
+      await inspector.quit();
+      await reader.onModuleDestroy();
+    }
+  });
+
   it('admits one metadata refresh across viewers and reopens it after the finite cooldown', async () => {
     const chatId = `header-refresh-${randomUUID()}`;
     const config = { getOrThrow: () => redisIntegrationUrl };

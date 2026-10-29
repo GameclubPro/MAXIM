@@ -922,6 +922,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     chatId: string;
     messageId: string;
     text: string;
+    textCarrier?: 'message_text' | 'body_plain' | 'payload_caption' | 'nested_caption';
     botId?: string;
     type?: 'message_created' | 'message_edited';
     at?: number;
@@ -943,9 +944,13 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
         },
         timestamp: at,
         ...(input.link ? { link: input.link } : {}),
+        ...(input.textCarrier === 'message_text' ? { text: input.text } : {}),
+        ...(input.textCarrier === 'payload_caption' ? { payload: { caption: input.text } } : {}),
+        ...(input.textCarrier === 'nested_caption' ? { message: { caption: input.text } } : {}),
         body: {
           mid: input.messageId,
-          text: input.text,
+          ...(!input.textCarrier ? { text: input.text } : {}),
+          ...(input.textCarrier === 'body_plain' ? { plain: input.text } : {}),
           ...(input.attachments ? { attachments: input.attachments } : {}),
         },
       },

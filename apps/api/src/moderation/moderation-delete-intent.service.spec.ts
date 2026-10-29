@@ -45,6 +45,7 @@ import {
 } from './night-mode-transition-generation.util';
 import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
 import { ProfanityDeleteGuardRejectedError } from './profanity/profanity-delete-guard.service';
+import { StopWordsDeleteGuardRejectedError } from './stop-words/stop-words-delete-guard.service';
 import { CommercialDeleteGuardRejectedError } from './commercial/commercial-delete-guard.service';
 import { fingerprintCommercialDeleteReasons } from './commercial/commercial-delete-binding';
 import { MESSAGE_DUPLICATE_MEDIA_VERSION } from './message-duplicate/message-duplicate-state';
@@ -77,6 +78,22 @@ const VERIFIED_RECEIPT_RULE_CODES = [
 ];
 
 type ServiceInternals = {
+  describeError(
+    error: unknown,
+    fallback: string,
+  ): {
+    status: string;
+    statusCode: number | null;
+    errorCode: string;
+    message: string;
+    retryDelayMs: number | null;
+  };
+  finishTerminalPreDispatchGuardRejection(
+    intent: Record<string, unknown>,
+    leaseToken: string,
+    details: unknown,
+    guardError: unknown,
+  ): Promise<{ status: string }>;
   authorizeGuardedUserDeleteReasons(
     intent: Record<string, unknown>,
     botId: string,
@@ -134,6 +151,7 @@ type ServiceInternals = {
       errorCode: string;
       message: string;
       retryDelayMs: number | null;
+      certifiedCapabilityLoss?: true;
     },
   ): Promise<{ status: string }>;
   recordCandidateFailure(
@@ -153,7 +171,9 @@ type ServiceInternals = {
   assertImageTextStopListDeleteIntentStillActionable(
     intent: Record<string, unknown>,
     botId: string,
-  ): Promise<'not_applicable' | 'allowed' | 'absent'>;
+  ): Promise<
+    'not_applicable' | 'absent' | { reasonDeadlines: { reasonKey: string; deadlineAtMs: number }[] }
+  >;
   isTerminalDeleteGuardRejection(error: unknown): boolean;
   hasRemoteSuccessMarker(intent: Record<string, unknown>): boolean;
   hasDeleteDispatchMarker(intent: Record<string, unknown>): boolean;
@@ -867,7 +887,12 @@ describe('ModerationDeleteIntentService', () => {
       assertNightModeCloseNoticeCleanupStillAuthorized: jest.fn(),
       resolveDeleteIntentCommercialOcrGuard: jest.fn().mockResolvedValue(false),
       assertPhotoDuplicateDeleteIntentStillActionable: jest.fn(),
-      assertImageTextStopListDeleteIntentStillActionable: jest.fn(),
+      assertImageTextStopListDeleteIntentStillActionable: jest
+        .fn<
+          ReturnType<ServiceInternals['assertImageTextStopListDeleteIntentStillActionable']>,
+          Parameters<ServiceInternals['assertImageTextStopListDeleteIntentStillActionable']>
+        >()
+        .mockResolvedValue('not_applicable'),
       enqueueWakeup: jest.fn(),
     });
     return { ...fixture, leased, deferred, remoteDelete, mark, clear };
@@ -2666,7 +2691,11 @@ describe('ModerationDeleteIntentService', () => {
       admins: [],
       domains: [],
     };
-    const reason = { ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE, metadata };
+    const reason = {
+      ruleCode: COMMERCIAL_OCR_DELETE_RULE_CODE,
+      reasonKey: input.intent.reasonKey,
+      metadata,
+    };
     const { service, participantImmunity, prisma } = createService(
       {
         COMMERCIAL_OCR_ROLLOUT_MODE: 'shadow',
@@ -2726,7 +2755,14 @@ describe('ModerationDeleteIntentService', () => {
         intent,
         'bot-1',
       ),
-    ).resolves.toBe('allowed');
+    ).resolves.toEqual({
+      reasonDeadlines: [
+        {
+          reasonKey: input.intent.reasonKey,
+          deadlineAtMs: Date.parse(binding.deleteDeadlineAt),
+        },
+      ],
+    });
 
     expect(binding).toMatchObject({ value: 'казино', expectedImageCount: 1 });
     expect(participantImmunity.consumeForMessage).toHaveBeenCalledWith(
@@ -12402,6 +12438,165 @@ describe('ModerationDeleteIntentService', () => {
     for (const [query] of executeRaw.mock.calls) {
       expect(query?.values).toContain(100);
     }
+  });
+});
+
+describe('durable stop-word guard rejection diagnostics', () => {
+  it.each(['certified', 'uncertified', 'uncertain_effect', 'lease_lost'] as const)(
+    'records a capability deferral only after a certified owned wait (%s)',
+    async (variant) => {
+      const intent = {
+        ...baseIntent,
+        ...(variant === 'uncertain_effect'
+          ? { deleteDispatchStartedAt: new Date(), deleteDispatchStartedBotId: 'bot-1' }
+          : {}),
+      };
+      const tx = { $executeRaw: jest.fn().mockResolvedValue(variant === 'lease_lost' ? 0 : 1) };
+      const { service } = createService(
+        {},
+        {
+          $executeRaw: jest.fn().mockResolvedValue(1),
+          $transaction: jest.fn(async (fn) => fn(tx)),
+        },
+      );
+      Object.assign(service, {
+        loadRequiredIntent: jest.fn().mockResolvedValue({
+          ...intent,
+          status: variant === 'uncertain_effect' ? 'AMBIGUOUS' : 'WAITING_CAPABILITY',
+        }),
+        enqueueWakeup: jest.fn(),
+      });
+      await (service as unknown as ServiceInternals).finishRetryableAttempt(intent, 'lease-1', {
+        status: 'WAITING_CAPABILITY',
+        statusCode: 403,
+        errorCode: 'chat.denied',
+        message: 'Access denied',
+        retryDelayMs: 30_000,
+        ...(variant === 'uncertified' ? {} : { certifiedCapabilityLoss: true as const }),
+      });
+      const event = tx.$executeRaw.mock.calls.find(([query]) =>
+        query.strings.join('').includes('INSERT INTO "moderation_events"'),
+      );
+      expect(Boolean(event)).toBe(variant === 'certified');
+      if (event)
+        expect(event[0].values).toEqual(
+          expect.arrayContaining([
+            'permission_changed',
+            'CAPABILITY_DEFERRED',
+            'WAITING_CAPABILITY',
+          ]),
+        );
+    },
+  );
+
+  it.each(['terminal', 'concurrent_reason', 'uncertain_effect', 'lease_lost'] as const)(
+    'preserves the typed reason through aggregation and emits only for owned terminal rejection (%s)',
+    async (variant) => {
+      const reasons = [
+        { ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE', reasonKey: 'stop', score: 1, metadata: {} },
+      ];
+      const latest = {
+        ...baseIntent,
+        lastBotId: 'bot-1',
+        ...(variant === 'uncertain_effect'
+          ? { remoteDeleteSucceededAt: new Date(), remoteDeleteSucceededBotId: 'bot-1' }
+          : {}),
+      };
+      const tx = {
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValueOnce([{ id: latest.id }])
+          .mockResolvedValueOnce([latest]),
+        $executeRaw: jest.fn().mockResolvedValue(variant === 'lease_lost' ? 0 : 1),
+        moderationDeleteIntentReason: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue(
+              variant === 'concurrent_reason'
+                ? [
+                    ...reasons,
+                    { ruleCode: 'INDEPENDENT_DELETE', reasonKey: 'fresh', score: 1, metadata: {} },
+                  ]
+                : reasons,
+            ),
+        },
+      };
+      const { service } = createService(
+        {},
+        {
+          moderationDeleteIntentReason: { findMany: jest.fn().mockResolvedValue(reasons) },
+          $transaction: jest.fn(async (fn) => fn(tx)),
+        },
+      );
+      Object.assign(service, {
+        stopWordsDeleteGuard: {
+          authorizeIntent: jest
+            .fn()
+            .mockRejectedValue(new StopWordsDeleteGuardRejectedError('policy_disabled')),
+        },
+        enqueueWakeup: jest.fn(),
+        loadRequiredIntent: jest.fn().mockResolvedValue({ ...latest, status: 'FAILED_TERMINAL' }),
+      });
+      const internals = service as unknown as ServiceInternals;
+      const rejection: unknown = await internals
+        .authorizeGuardedUserDeleteReasons(latest, 'bot-1')
+        .catch((error: unknown) => error);
+      expect(rejection).toMatchObject({
+        code: 'moderation_delete_reasons_no_longer_authorized',
+        stopWordsRejectionReason: 'policy_disabled',
+        reasonFingerprint: expect.any(String),
+      });
+      const details = internals.describeError(rejection, 'fallback');
+      expect(details.errorCode).toBe('moderation_delete_reasons_no_longer_authorized');
+      expect(JSON.parse(details.message)).toEqual({
+        type: 'stop_words_guard_rejection',
+        rejectionReason: 'policy_disabled',
+      });
+      const result = await internals.finishTerminalPreDispatchGuardRejection(
+        latest,
+        'lease-1',
+        details,
+        rejection,
+      );
+      expect(result.status).toBe(
+        variant === 'concurrent_reason'
+          ? 'RETRYABLE'
+          : variant === 'uncertain_effect'
+            ? 'AMBIGUOUS'
+            : 'FAILED_TERMINAL',
+      );
+      const diagnostic = tx.$executeRaw.mock.calls.find(([query]) =>
+        query.strings.join('').includes('INSERT INTO "moderation_events"'),
+      );
+      expect(Boolean(diagnostic)).toBe(variant === 'terminal');
+      if (diagnostic) {
+        expect(diagnostic[0].values).toContain('policy_disabled');
+        expect(diagnostic[0].strings.join('')).toContain('LIMIT 65');
+        expect(diagnostic[0].strings.join('')).toContain('ON CONFLICT ("id") DO NOTHING');
+      }
+    },
+  );
+
+  it.each([
+    ['image_text_stop_list_policy_changed', 'policy_changed'],
+    ['image_text_stop_list_message_changed', 'source_changed'],
+    ['image_text_stop_list_runtime_disabled', 'runtime_disabled'],
+    ['image_text_stop_list_deadline_expired', 'deadline_expired'],
+  ])('serializes only a fixed OCR rejection reason for %s', (code, rejectionReason) => {
+    const { service } = createService();
+    const internals = service as unknown as ServiceInternals;
+    const error = new ImageTextStopListDeleteIntentGuardRejectedError(
+      code!,
+      'Potential sensitive diagnostic',
+    );
+    expect(internals.describeError(error, 'fallback')).toMatchObject({
+      errorCode: code,
+      message: JSON.stringify({ type: 'stop_words_guard_rejection', rejectionReason }),
+    });
+    expect(
+      internals.describeError(Object.assign(new Error('Remote failure'), { code }), 'fallback')
+        .message,
+    ).toBe('Remote failure');
   });
 });
 

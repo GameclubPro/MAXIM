@@ -56,8 +56,9 @@ import { publishChannelEngagementMessage as publishChannelEngagementMessageValue
 import { readChannelSettings, saveChannelSettings } from './admin-channel-settings';
 import {
   isRequiredSubscriptionCurrentlyActive,
-  readChatSettings,
+  readChatSettingsSnapshot,
   saveChatSettings,
+  type ChatSettingsReadSnapshot,
 } from './admin-chat-settings';
 import { buildRulesTextFromSettings } from './admin-chat-rules-text-format';
 import { buildSettingsSectionPatch } from './admin-settings-section-patch';
@@ -151,10 +152,18 @@ export class AdminSettingsService {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ChatSettings> {
+    return (await this.getSettingsSnapshot(chatId, user, options)).settings;
+  }
+
+  private async getSettingsSnapshot(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ChatSettingsReadSnapshot> {
     await this.assertSensitiveSettingsReadAccess(chatId, user, 'chat', options);
     const botAssignmentData =
       await this.legacyAdminService.resolveChatSettingsReadBotAssignmentData(chatId);
-    return readChatSettings({
+    return readChatSettingsSnapshot({
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
       logger: this.logger,
@@ -172,8 +181,8 @@ export class AdminSettingsService {
       this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat'),
     );
 
-    const [settings, rules, headerBundle, domains, messageRetention] = await Promise.all([
-      this.getSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+    const [settingsSnapshot, rules, headerBundle, domains, messageRetention] = await Promise.all([
+      this.getSettingsSnapshot(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.getRules(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
       this.managedEntitiesService.getChatHeaderWithBotSpeechPreviewProfile(chatId, user, {
         skipAdminCheck: true,
@@ -187,6 +196,7 @@ export class AdminSettingsService {
         return undefined;
       }),
     ]);
+    const { settings, stopWordsStorageStatus } = settingsSnapshot;
     const [requiredSubscriptionChannels, duplicatePhotoPolicyMatrix] = await Promise.all([
       this.legacyAdminService.resolveRequiredSubscriptionChannelHeadersForSettings(
         settings.requiredSubscriptionChannelIds,
@@ -219,6 +229,7 @@ export class AdminSettingsService {
           ).catch(() => undefined)
         : undefined,
       settings,
+      stopWordsStorageStatus,
       // FLAG: Retain the response field for older clients; the commercial filter is text-only.
       commercialPhotoModerationMode: 'OFF',
       commercialAiModerationMode: this.commercialAiModerationMode(),

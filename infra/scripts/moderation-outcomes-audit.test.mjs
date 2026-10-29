@@ -132,9 +132,84 @@ test('reports an empty complete event sample without treating absence as fleet s
   assert.deepEqual(report.voice_rows, []);
   assert.deepEqual(report.rule_family_rows, []);
   assert.deepEqual(report.metadata_rows, []);
+  assert.deepEqual(report.stop_words_rows, []);
   assert.equal(report.sample_span_seconds, null);
   assert.equal(report.sample_complete, true);
   assert.equal(report.fleet_health_proven, false);
+});
+
+test('stop-word collector separates detection, refused guards and verified deletion without source text', async (t) => {
+  const db = new PGlite();
+  t.after(() => db.close());
+  await db.exec(enumFixture);
+  const events = [
+    ['NONE', 'BOT', 'MESSAGE_BLOCKED_WORD', {}],
+    ['DELETE_MESSAGE', 'BOT', 'MESSAGE_BLOCKED_WORD_DELETE', { moderationDeleteVerified: true }],
+    ['DELETE_MESSAGE', 'BOT', 'MESSAGE_BLOCKED_DOMAIN_DELETE', {}],
+    [
+      'DELETE_MESSAGE',
+      'BOT',
+      'MESSAGE_BLOCKED_DOMAIN_DELETE',
+      { moderationDeleteVerified: 'true' },
+    ],
+    ['NONE', 'BOT', 'STOP_WORD_GUARD_REJECTED', { stopWordsRejectionReason: 'policy_changed' }],
+    ['NONE', 'BOT', 'STOP_DOMAIN_GUARD_REJECTED', { stopWordsRejectionReason: 'private-error' }],
+    ['NONE', 'BOT', 'STOP_OCR_GUARD_REJECTED', { stopWordsRejectionReason: 'participant_immune' }],
+    [
+      'NONE',
+      'BOT',
+      'STOP_WORD_CAPABILITY_DEFERRED',
+      { stopWordsRejectionReason: 'permission_changed' },
+    ],
+    [
+      'DELETE_MESSAGE',
+      'BOT',
+      'COMMERCIAL_OCR_DELETE',
+      {
+        source: 'image_text_ocr',
+        matchedRuleCode: 'MESSAGE_BLOCKED_WORD',
+        moderationDeleteVerified: true,
+      },
+    ],
+    ['DELETE_MESSAGE', 'ADMIN', 'MESSAGE_BLOCKED_WORD_DELETE', { moderationDeleteVerified: true }],
+    ['DELETE_MESSAGE', 'BOT', 'COMMERCIAL_OCR_DELETE', { source: 'private-source' }],
+  ];
+  for (const [i, [action, operator, rule, metadata]] of events.entries()) {
+    await db.query(
+      `INSERT INTO moderation_events (id,action,operator,rule_code,metadata,masked_excerpt)
+      VALUES ($1,$2,$3,$4,$5::jsonb,'private-message')`,
+      [
+        String(i),
+        action,
+        operator,
+        rule,
+        JSON.stringify({ ...metadata, blockedWord: 'private-word' }),
+      ],
+    );
+  }
+  const report = (await db.query(query)).rows[0].json_build_object;
+  const counts = Object.fromEntries(
+    report.stop_words_rows.map((row) => [
+      `${row.source}:${row.evidence}:${row.rejection_reason}`,
+      row.count_lower_bound,
+    ]),
+  );
+  assert.equal(counts['WORD:DETECTED:UNSPECIFIED'], 1);
+  assert.equal(counts['WORD:DELETE_REMOTE_CONFIRMED:UNSPECIFIED'], 1);
+  assert.equal(counts['DOMAIN:OUTCOME_UNKNOWN:UNSPECIFIED'], 2);
+  assert.equal(counts['WORD:GUARD_REJECTED:policy_changed'], 1);
+  assert.equal(counts['DOMAIN:GUARD_REJECTED:UNSPECIFIED'], 1);
+  assert.equal(counts['OCR:GUARD_REJECTED:participant_immune'], 1);
+  assert.equal(counts['WORD:GUARD_DEFERRED:permission_changed'], 1);
+  assert.equal(counts['OCR:DELETE_REMOTE_CONFIRMED:UNSPECIFIED'], 1);
+  assert.equal(counts['WORD:OUTCOME_UNKNOWN:UNSPECIFIED'], 1);
+  assert.equal(
+    report.stop_words_rows.reduce((sum, row) => sum + row.count_lower_bound, 0),
+    10,
+  );
+  assert.equal(report.stop_words_detection_coverage_proven, false);
+  assert.equal(report.stop_words_all_guard_rejections_observed, false);
+  assert.doesNotMatch(JSON.stringify(report), /private-|blockedWord|masked_excerpt/u);
 });
 
 test('voice observations require independent boolean delete proof and never imply input coverage', async (t) => {
