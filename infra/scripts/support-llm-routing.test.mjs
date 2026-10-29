@@ -8,6 +8,11 @@ import {
   validateSupportAnswer,
 } from './support-llm-client.mjs';
 
+test('moderation rights questions retain deletion permission alongside general group access', () => {
+  const facts = selectKnowledge('Я администратор. Какие права дать боту для модерации группы?');
+  assert.ok(facts.some((entry) => entry.id === 'max-delete-rights'));
+});
+
 test('Lastik exclusion questions without named exception keywords retain the complete source', () => {
   for (const text of [
     'Я администратор. Как подключить Ластик и какие сообщения он не удаляет?',

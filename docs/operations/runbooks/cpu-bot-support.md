@@ -36,6 +36,22 @@ different model. Provider errors stay private and produce no diagnostic reply in
 Questions asking which messages Lastik does not delete or touch retain its complete exclusion
 fact even when the question does not name pins, rules or giveaways explicitly.
 
+Ordinary administrator answers use Russian permission descriptions and aim for 500–800
+characters while preserving required conditions and every requested task. Platform owner
+details are included for explicit API/developer questions or an actual failure to add a bot,
+not routine onboarding. Known `read_all_messages` and `write` codes in ordinary model drafts
+are rendered as Russian descriptions; technical API answers retain the codes.
+
+API `ask` returns sanitized provider-reported `usage`; missing or inconsistent counts remain
+`null`. `completionTokens` includes `reasoningTokens`; never add reasoning again to `totalTokens`.
+The private `chat-status.json` retains `lastInference` and `lastReplyUsage` for this worker run.
+The latter requires a matching source digest and confirmed `sent` settlement; inference alone
+does not prove publication. Entries hold timestamps, a hashed source identity and numeric usage,
+without question/answer text or credentials. `no-api-request` identifies a direct local reply;
+`provider-reported` with `usage: null` means counts were unavailable, not zero. These fields are
+never sent to MAX. Historical responses without saved usage cannot be reconstructed exactly,
+and provider counts do not establish a monetary price.
+
 The bridge accepts the exact reviewed API configuration digest in a distinct `apiProfileSha256`
 field, or the existing CPU weight digest. Frames carrying both identities are rejected. The API
 key never crosses SSH or enters a MAX message. After exact-source CI and guarded tooling sync,
