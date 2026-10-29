@@ -171,6 +171,14 @@ function readJournal(
   return journal;
 }
 
+const recordedNoticeRecoveries = new WeakMap<WebhookCanonicalExecutionContext, Readonly<Journal>>();
+
+// FLAG: Only a committed, locally certified unattempted notice may retain scheduling
+// after its handler rejects. A stored kind string alone is not this handoff proof.
+export function readRecordedGroupCommandNoticeRecovery(context: WebhookCanonicalExecutionContext) {
+  return recordedNoticeRecoveries.get(context);
+}
+
 // FLAG: Only a live, exact original handler can certify a weak-set transport guard rejection.
 // A missing ledger, error string, timeout, attempted POST or unknown outcome supplies no proof.
 export async function recordGroupCommandNoticeRecovery(
@@ -189,7 +197,7 @@ export async function recordGroupCommandNoticeRecovery(
   const update = context.update;
   if (update.type !== 'message_created' || !update.message || !context.activeBotId) return;
   const failureCode = MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE;
-  return prisma.$transaction(async (tx) => {
+  const recordedJournal = await prisma.$transaction(async (tx) => {
     const execution = await tx.webhookExecutionClaim.findFirst({
       where: { kind: 'EXECUTION', webhookEventId: context.webhookEvent.id },
     });
@@ -255,6 +263,8 @@ export async function recordGroupCommandNoticeRecovery(
     });
     return recorded.count === 1 ? journal : undefined;
   });
+  if (recordedJournal) recordedNoticeRecoveries.set(context, Object.freeze({ ...recordedJournal }));
+  return recordedJournal;
 }
 
 export async function recoverGroupCommandNotice(

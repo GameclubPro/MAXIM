@@ -40,6 +40,11 @@ import {
   WEBHOOK_NO_EXECUTABLE_OWNER,
 } from '../webhook/webhook-execution-deadline';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
+import { readRecordedGroupCommandNoticeRecovery } from '../common/group-command-notice-recovery';
+import {
+  describeWebhookExecutionFailure,
+  webhookDiagnosticReference,
+} from './webhook-execution-diagnostic';
 import {
   MULTIBOT_EXECUTION_AUTHORITY_VERSION,
   isEarlierWebhookReceipt,
@@ -111,6 +116,16 @@ export class WebhookFinishPersistenceError extends Error {
   ) {
     super(`Returned webhook handler remains fenced: ${outcome} during ${phase}`, { cause });
     this.name = 'WebhookFinishPersistenceError';
+  }
+}
+
+export class WebhookFailurePersistenceError extends Error {
+  constructor(
+    readonly outcome: 'authority_changed' | 'storage_unavailable',
+    cause: unknown,
+  ) {
+    super(`Rejected webhook handler remains fenced: ${outcome}`, { cause });
+    this.name = 'WebhookFailurePersistenceError';
   }
 }
 
@@ -514,6 +529,15 @@ export class WebhookCanonicalExecutionService implements OnModuleDestroy {
 
     if (executionClaim?.businessStartedAt) {
       if (await this.tryRecoverFinishedExecution(webhookEvent, executionClaim)) return null;
+      // FLAG: A terminal failed owner already forbids whole-handler replay. A stale job
+      // must preserve its first error and must not turn it into a new chat-order barrier.
+      // Pending/live timeout fences were handled above and remain unchanged.
+      if (
+        webhookEvent.status === WebhookStatus.FAILED &&
+        webhookEvent.nextEnqueueAt === null &&
+        webhookEvent.timeoutQuarantineExpiresAt === null
+      )
+        return null;
       if (
         executionClaim.leaseToken &&
         executionClaim.leaseExpiresAt &&
@@ -523,7 +547,7 @@ export class WebhookCanonicalExecutionService implements OnModuleDestroy {
       // FLAG: A started whole-engine attempt is never reclaimed, including by the same
       // bot. Its independent durable action/media/command journals recover existing work;
       // this receipt retains the ordered replay fence until exact proof recovery settles it.
-      await this.prisma.webhookEvent.updateMany({
+      const quarantined = await this.prisma.webhookEvent.updateMany({
         where: {
           id: webhookEvent.id,
           status: webhookEvent.status,
@@ -537,6 +561,20 @@ export class WebhookCanonicalExecutionService implements OnModuleDestroy {
           queueName: null,
         },
       });
+      if (quarantined.count !== 1) return null;
+      this.logger.warn(
+        {
+          eventRef: webhookDiagnosticReference(webhookEvent.id),
+          stage: 'canonical_recovery',
+          outcome: 'unknown_started_owner',
+          priorStatus: webhookEvent.status,
+          leaseState: executionClaim.leaseToken ? 'expired_or_incomplete' : 'absent',
+          businessReplayAllowed: false,
+          effectsOutcome: 'unknown',
+          ...describeWebhookExecutionFailure({ message: webhookEvent.errorMessage }),
+        },
+        'Retained unknown started webhook authority; exact recovery proof required',
+      );
       if (update.message?.chatId)
         await this.runtimeDiagnostics?.recordProblemChat({
           chatId: update.message.chatId,
@@ -1681,6 +1719,12 @@ export class WebhookCanonicalExecutionService implements OnModuleDestroy {
     context: WebhookCanonicalExecutionContext,
     params: { errorMessage: string; terminal: boolean; retryAfterMs?: number },
   ): Promise<void> {
+    if (WebhookCanonicalExecutionService.startedOwners.has(context)) {
+      // FLAG: Only the current awaited handler's rejection enters this path. A successful
+      // return already owns positive finish persistence and cannot be recast as a failure.
+      if (WebhookCanonicalExecutionService.awaitedFinishes.has(context)) return;
+      return this.settleRejectedStartedExecution(context, params);
+    }
     await this.releaseBusinessLease(context);
 
     const requestedRetryAfterMs = Math.trunc(params.retryAfterMs ?? 0);
@@ -1718,6 +1762,169 @@ export class WebhookCanonicalExecutionService implements OnModuleDestroy {
           : {}),
       },
     });
+  }
+
+  private async settleRejectedStartedExecution(
+    context: WebhookCanonicalExecutionContext,
+    params: { errorMessage: string; terminal: boolean; retryAfterMs?: number },
+  ): Promise<void> {
+    const { errorMessage } = params;
+    const owner = WebhookCanonicalExecutionService.startedOwners.get(context)!;
+    const source = WebhookCanonicalExecutionService.startedSources.get(context)!;
+    const noticeRecovery = readRecordedGroupCommandNoticeRecovery(context);
+    const requestedRetry = Math.trunc(params.retryAfterMs ?? 0);
+    const retryDelay =
+      Number.isFinite(requestedRetry) && requestedRetry > 0 ? requestedRetry : 15_000;
+    const nextEnqueueAt =
+      noticeRecovery && !params.terminal ? new Date(Date.now() + retryDelay) : null;
+    const observation = { owner, source, finishedAt: new Date() };
+    if (
+      !source ||
+      owner.webhookEventId !== context.webhookEvent.id ||
+      owner.executionBotId !== context.activeBotId ||
+      owner.leaseToken !== context.businessLeaseToken
+    )
+      throw new WebhookFailurePersistenceError(
+        'authority_changed',
+        new Error('Original failed owner unavailable'),
+      );
+    for (let attempt = 0; attempt < WEBHOOK_FINISH_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        if (this.finishPersistenceClosed) throw new Error('Webhook failure persistence is closing');
+        const remaining = attempt === 0 ? Infinity : owner.leaseExpiresAt.getTime() - Date.now();
+        if (remaining < 2)
+          throw new WebhookFinishAuthorityChangedError(
+            'Original failure persistence lease expired',
+          );
+        const maxWait = Math.min(WEBHOOK_FINISH_TRANSACTION_MAX_WAIT_MS, Math.floor(remaining / 2));
+        const result = await this.prisma.$transaction(
+          async (tx) => {
+            // FLAG: Preserve claim-before-receipt lock order. Failure evidence and lease release
+            // commit together; an unsuccessful write cannot expose a started owner for retry.
+            await this.lockOriginalFinishOwner(tx, observation);
+            const claim = await tx.webhookExecutionClaim.findUnique({
+              where: { id: owner.claimId },
+            });
+            const receipt = await tx.webhookEvent.findUnique({ where: { id: source.id } });
+            if (!claim || !receipt || !this.matchesOriginalFinishOwner(claim, observation))
+              throw new WebhookFinishAuthorityChangedError('Rejected handler authority changed');
+            if (
+              claim.status === 'COMPLETED' ||
+              this.finishedExecutionJournal(source, claim) ||
+              receipt.status === WebhookStatus.PROCESSED ||
+              receipt.status === WebhookStatus.DUPLICATE ||
+              receipt.status === WebhookStatus.CANCELLED ||
+              receipt.status === WebhookStatus.NO_REPLAY_HELD ||
+              receipt.status === WebhookStatus.QUARANTINED
+            )
+              return 'retained' as const;
+            const sourceWhere = {
+              id: source.id,
+              normalizedPayload: { equals: source.normalizedPayload as Prisma.InputJsonValue },
+              executionDeadlineAt: source.executionDeadlineAt,
+              processedAt: source.processedAt,
+              timeoutQuarantineExpiresAt: null,
+            };
+            if (
+              claim.status === 'READY' &&
+              claim.leaseToken === null &&
+              claim.leaseExpiresAt === null
+            ) {
+              // FLAG: After a lost COMMIT acknowledgement, accept only the exact retained failure;
+              // never repeat the handler or infer rollback from a disconnected database client.
+              const saved = await tx.webhookEvent.findFirst({
+                where: {
+                  ...sourceWhere,
+                  status: WebhookStatus.FAILED,
+                  errorMessage,
+                  nextEnqueueAt,
+                  queueName: null,
+                },
+                select: { id: true },
+              });
+              if (saved) return 'settled' as const;
+            }
+            const released = await tx.webhookExecutionClaim.updateMany({
+              where: {
+                id: owner.claimId,
+                kind: 'EXECUTION',
+                webhookEventId: source.id,
+                semanticKey: owner.semanticKey,
+                enforced: true,
+                status: 'READY',
+                executionBotId: owner.executionBotId,
+                preparedAt: owner.preparedAt,
+                businessStartedAt: owner.businessStartedAt,
+                completedAt: null,
+                leaseToken: owner.leaseToken,
+                commandResult: {
+                  equals: noticeRecovery
+                    ? (noticeRecovery as Prisma.InputJsonValue)
+                    : owner.commandResultIsSqlNull
+                      ? Prisma.DbNull
+                      : owner.commandResult === null
+                        ? Prisma.JsonNull
+                        : (owner.commandResult as Prisma.InputJsonValue),
+                },
+              },
+              data: { leaseToken: null, leaseExpiresAt: null },
+            });
+            if (released.count !== 1)
+              throw new WebhookFinishAuthorityChangedError('Rejected handler lease changed');
+            const failed = await tx.webhookEvent.updateMany({
+              where: { ...sourceWhere, status: source.status, errorMessage: source.errorMessage },
+              data: {
+                status: WebhookStatus.FAILED,
+                errorMessage,
+                nextEnqueueAt,
+                queueName: null,
+              },
+            });
+            if (failed.count !== 1)
+              throw new WebhookFinishAuthorityChangedError('Rejected handler receipt changed');
+            return 'settled' as const;
+          },
+          {
+            maxWait,
+            timeout: Math.min(WEBHOOK_FINISH_TRANSACTION_TIMEOUT_MS, remaining - maxWait),
+          },
+        );
+        this.logger.warn(
+          {
+            eventRef: webhookDiagnosticReference(source.id),
+            stage: 'failure_settlement',
+            outcome: result,
+            continuation: nextEnqueueAt ? 'certified_command_notice' : 'none',
+            businessReplayAllowed: false,
+            effectsOutcome: 'unknown',
+          },
+          'Saved rejected webhook handler outcome without whole-handler retry',
+        );
+        return;
+      } catch (cause: unknown) {
+        const authorityChanged = cause instanceof WebhookFinishAuthorityChangedError;
+        if (
+          !authorityChanged &&
+          attempt + 1 < WEBHOOK_FINISH_MAX_ATTEMPTS &&
+          !this.finishPersistenceClosed &&
+          Date.now() < owner.leaseExpiresAt.getTime() &&
+          this.isRetryableFinishStorageError(cause)
+        )
+          continue;
+        const outcome = authorityChanged ? 'authority_changed' : 'storage_unavailable';
+        this.logger.error(
+          {
+            eventRef: webhookDiagnosticReference(source.id),
+            stage: 'failure_settlement',
+            outcome,
+            businessReplayAllowed: false,
+            ...describeWebhookExecutionFailure(cause),
+          },
+          'Rejected webhook handler failure could not be saved; original authority retained',
+        );
+        throw new WebhookFailurePersistenceError(outcome, cause);
+      }
+    }
   }
 
   // FLAG: An unfenced timeout settlement must persist before its exact business lease is released.
