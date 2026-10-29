@@ -8,7 +8,11 @@ import {
   retentionWorkerWarning,
   retentionPageWarning,
 } from './retention-diagnostics';
-import { RetentionConnectionDetails, RetentionRuntimeDetails } from './retention-details';
+import {
+  RetentionConnectionDetails,
+  RetentionRuntimeDetails,
+  RetentionProtectionDetails,
+} from './retention-details';
 
 const statusLabels: Record<SafetyDeskRetentionRuntimeItem['status'], string> = {
   off: 'Выключено',
@@ -290,6 +294,7 @@ export function RetentionDesk(props: RetentionDeskProps) {
             ) : (
               preview && (
                 <>
+                  <RetentionProtectionDetails preview={preview} />
                   <p className="retention-snapshot">
                     Ревизия {preview.revision} · запуск {preview.activationId}
                   </p>

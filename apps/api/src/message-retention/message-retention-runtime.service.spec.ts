@@ -51,6 +51,7 @@ function setup() {
     deferReconciliation: jest.fn(),
     settleReconciliation: jest.fn(),
     discoverLegacyReceipts: jest.fn(),
+    retireTransferredCandidates: jest.fn(),
     updateRunStatus: jest.fn(),
     resumeAdmission: jest.fn(),
     dueCandidates: jest.fn().mockResolvedValue([candidate]),
