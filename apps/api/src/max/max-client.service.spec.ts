@@ -1,3 +1,4 @@
+import type { MarketplaceStateService } from '../integrations/marketplace/marketplace-state.service';
 import {
   HIGHER_PRIORITY_ACTIVITY_KEY,
   HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
@@ -2694,7 +2695,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
         request: jest.fn().mockReturnValue(of({ status: 200, data: { mid: 'marketplace-send' } })),
       };
       const marketplace = {
-        resolvePublicationButton: jest.fn().mockResolvedValue({ url: marketplaceUrl, revision: 3 }),
+        resolvePublicationButton: jest
+          .fn<
+            ReturnType<MarketplaceStateService['resolvePublicationButton']>,
+            Parameters<MarketplaceStateService['resolvePublicationButton']>
+          >()
+          .mockResolvedValue({ url: marketplaceUrl, revision: 3, caption: 'Заказать рекламу' }),
         recordButtonDiagnostic: jest.fn(),
       };
       return { http, marketplace };
@@ -2727,7 +2733,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       const order: string[] = [];
       f.marketplace.resolvePublicationButton.mockImplementation(async () => {
         order.push('resolve');
-        return { url: marketplaceUrl, revision: 3 };
+        return { url: marketplaceUrl, revision: 3, caption: 'Реклама здесь' };
       });
       await service.sendMessageImmediateWithId('-100', 'Пост', {
         marketplacePublication: intent,
@@ -2742,7 +2748,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         purpose: 'PUBLICATION',
       });
       expect(f.http.request.mock.calls[0][0].data.attachments[0].payload.buttons).toEqual([
-        [{ type: 'link', text: 'Профиль в Биржике', url: marketplaceUrl }],
+        [{ type: 'link', text: 'Реклама здесь', url: marketplaceUrl }],
       ]);
       expect(f.http.request.mock.calls[0][0].data).not.toHaveProperty('marketplacePublication');
       await service.sendMessageImmediateToUser('100', 'Превью', { marketplacePublication: intent });
@@ -2843,7 +2849,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 payload: {
                   buttons: [
                     ...existing,
-                    [{ type: 'link', text: 'Профиль в Биржике', url: marketplaceUrl }],
+                    [{ type: 'link', text: 'Заказать рекламу', url: marketplaceUrl }],
                   ],
                 },
               },
@@ -2903,7 +2909,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         ledger.claimSendDispatch.mock.invocationCallOrder[0],
       );
       expect(f.http.request.mock.calls[0][0].data.attachments[0].payload.buttons).toEqual([
-        [{ type: 'link', text: 'Профиль в Биржике', url: marketplaceUrl }],
+        [{ type: 'link', text: 'Заказать рекламу', url: marketplaceUrl }],
       ]);
       ledger.claimSendDispatch.mockResolvedValueOnce({
         kind: 'recovered',
@@ -2923,7 +2929,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       let enabled = true;
       f.marketplace.resolvePublicationButton.mockImplementation(async () => {
         order.push('profile');
-        return enabled ? { url: marketplaceUrl, revision: 3 } : null;
+        return enabled ? { url: marketplaceUrl, revision: 3, caption: 'Заказать рекламу' } : null;
       });
       f.http.request.mockImplementation(() => {
         order.push('http');
@@ -2968,7 +2974,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         let enabled = true;
         const f = fixture();
         f.marketplace.resolvePublicationButton.mockImplementation(async () =>
-          enabled ? { url: marketplaceUrl, revision: 3 } : null,
+          enabled ? { url: marketplaceUrl, revision: 3, caption: 'Заказать рекламу' } : null,
         );
         const http = {
           request: jest.fn().mockImplementation((request: { method: string }) =>

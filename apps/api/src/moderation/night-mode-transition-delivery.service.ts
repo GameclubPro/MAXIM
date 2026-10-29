@@ -1,3 +1,4 @@
+import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
 import { Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
   MAX_MESSAGE_TEXT_LENGTH,
@@ -409,10 +410,16 @@ export class NightModeTransitionDeliveryService {
     const baseMessage = prepareMessage(params.messageText);
     const buildMessageOptions = (
       textFormat: MaxSendMessageOptions['textFormat'],
-    ): MaxSendMessageOptions => ({
-      ...(params.messageOptions ?? {}),
-      textFormat,
-    });
+    ): MaxSendMessageOptions =>
+      withMarketplaceModerationMessage(
+        {
+          ...(params.messageOptions ?? {}),
+          textFormat,
+        },
+        params.chatId,
+        'MODERATION_NOTICE',
+        'NIGHT_MODE',
+      );
     const media = this.botSpeechMediaService.resolveMedia(
       params.mediaSettings,
       params.mediaFieldKey,

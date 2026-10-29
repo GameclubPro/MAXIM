@@ -22,6 +22,7 @@ import type {
 import type { ChannelSettings, ChannelSettingsScreenResponse } from '@maxim/contracts/settings';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
+const MarketplaceModuleToggle = lazy(() => import('../components/marketplace-module-toggle'));
 
 import '../styles/settings-drilldown-core.css';
 import '../styles/settings-native-controls.css';
@@ -3388,6 +3389,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                 onChange: (next) => setDraft(next),
               })}
             />
+            {expandedSections.quickButtons && chatId && (
+              <Suspense fallback={null}>
+                <MarketplaceModuleToggle
+                  api={api}
+                  entityId={chatId}
+                  entityType="channel"
+                  profile="moderation"
+                  module="CHANNEL_POST"
+                />
+              </Suspense>
+            )}
           </SettingsDrilldownPanel>
         </GlassCard>
 

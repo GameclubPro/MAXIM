@@ -399,4 +399,37 @@
     border-radius: 14px;
     box-shadow: 0 5px 14px var(--marketplace-action-shadow);
   }
+  .marketplace-button-policy__caption,
+  .marketplace-button-policy__caption label {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+  .marketplace-button-policy__caption input {
+    width: 100%;
+    min-height: 48px;
+    padding: 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--color-surface-muted);
+    color: var(--color-text);
+    font: inherit;
+  }
+  .marketplace-button-policy__modules {
+    padding-inline-start: 12px;
+    border-inline-start: 2px solid var(--color-border);
+  }
+  .marketplace-button-policy__sample {
+    overflow-wrap: anywhere;
+  }
+  .marketplace-module-toggle {
+    margin-block: 16px;
+  }
+  .marketplace-profile__switch input:indeterminate + .marketplace-profile__track {
+    background: var(--color-accent);
+    opacity: 0.65;
+  }
+  .marketplace-profile__switch input:indeterminate + .marketplace-profile__track::after {
+    transform: translateX(10px);
+  }
 }

@@ -196,6 +196,21 @@ postgres('marketplace durable owner policy changes', () => {
     expect((await policy.get()).contexts[0]!.enabled).toBe(true);
     expect((await readLegacy()).appendEnabled).toBe(true);
   });
+  it('lets an old-client explicit on restore all publication modules after an off', async () => {
+    const policy = await canonicalFixture();
+    await policy.set(true, 0);
+    await policy.set(false, 1);
+    const before = await readLegacy();
+    const result = await mutate({
+      action: 'toggle',
+      requestId: randomUUID(),
+      expectedRevision: before.appendRevision,
+      appendEnabled: true,
+    });
+    expect(result.appendEnabled).toBe(true);
+    expect((await policy.get()).contexts[0]!.modules.every((child) => child.enabled)).toBe(true);
+    expect((await readLegacy()).appendEnabled).toBe(true);
+  });
   it('keeps canonical PUBLICATIONS visible after independent statistics withdrawal', async () => {
     const policy = await canonicalFixture();
     await policy.set(true, 0);

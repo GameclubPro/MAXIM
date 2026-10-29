@@ -1,8 +1,10 @@
+import type { ReactNode } from 'react';
 import type { UpdatePublisherEntityModuleSettingsRequest } from '@maxim/contracts/publisher';
 import { SettingsDrilldownPanel } from './ui/settings-drilldown-panel';
 
 type PublisherSuggestionsPanelProps = {
   entityTitle: string;
+  advertising?: ReactNode;
   enabled: boolean;
   requireSubscription: boolean;
   deleteOnUnsubscribe: boolean;
@@ -40,6 +42,7 @@ function SuggestionsSwitch({
 
 export default function PublisherSuggestionsPanel({
   entityTitle,
+  advertising,
   enabled,
   requireSubscription,
   deleteOnUnsubscribe,
@@ -89,6 +92,7 @@ export default function PublisherSuggestionsPanel({
             }
           />
         </div>
+        {advertising}
       </div>
     </SettingsDrilldownPanel>
   );

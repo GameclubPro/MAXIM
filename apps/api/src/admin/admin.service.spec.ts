@@ -30684,7 +30684,13 @@ describe('AdminService chat rules', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
       'Опубликуйте только по теме.',
-      undefined,
+      {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
+      },
       expectChatRulesSendOptions(),
     );
     expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
@@ -30781,7 +30787,13 @@ describe('AdminService chat rules', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
       expect.stringContaining('Пожалуйста, без мата и грубой лексики.'),
-      undefined,
+      {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
+      },
       expectChatRulesSendOptions(),
     );
     expect(prisma.chatRules.updateMany).toHaveBeenCalledWith({
@@ -30882,6 +30894,11 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Правила без прямой ссылки.',
       {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
         textFormat: 'html',
       },
       expectChatRulesSendOptions(),
@@ -30941,6 +30958,11 @@ describe('AdminService chat rules', () => {
       'chat-1',
       '🔥<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>\n\n<s>Зачеркнутый</s>\n\n&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;пробелами',
       {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
         textFormat: 'html',
       },
       expectChatRulesSendOptions(),
@@ -31001,6 +31023,11 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Правила с кнопкой.',
       {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
         textFormat: 'html',
         buttons: [[{ text: 'Подробнее', type: 'link', url: 'https://max.ru/help/rules' }]],
       },
@@ -31069,6 +31096,11 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Правила со связью.\n\nСвязь с админом: <a href="max://user/admin-1">Админ</a>',
       {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
         textFormat: 'html',
       },
       expectChatRulesSendOptions(),
@@ -31154,6 +31186,11 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Правила со старой связью.\n\nСвязь с админом: <a href="max://user/admin-1">Админ</a>',
       {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
         textFormat: 'html',
       },
       expectChatRulesSendOptions(),
@@ -31220,6 +31257,11 @@ describe('AdminService chat rules', () => {
       'chat-1',
       'Правила с набором кнопок.',
       {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
         textFormat: 'html',
         buttons: [
           [
