@@ -3,6 +3,8 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { RetentionRuntimeMetrics } from '../src/retention-desk-shell';
+import { RetentionProtectionDetails } from '../src/retention-details';
+import type { SafetyDeskRetentionPreviewResponse } from '@maxim/contracts/safety-desk';
 import type { SafetyDeskRetentionRuntimeResponse } from '@maxim/contracts/safety-desk';
 import type { SafetyDeskRetentionRuntimeItem } from '@maxim/contracts/safety-desk';
 import {
@@ -233,4 +235,49 @@ test('bounded diagnostics are incomplete without inventing source failure or tre
   const anotherPage = { incomplete: false, unavailableSources: [], nextAfter: '-999' };
   assert.equal(retentionPageWarning(anotherPage), null);
   assert.equal(retentionPageWarning({}), 'Полнота диагностики не подтверждена.');
+});
+
+test('protection details separate exact import completion from historical coverage and delivery', () => {
+  const preview: SafetyDeskRetentionPreviewResponse = {
+    chatId: '-1',
+    revision: 1,
+    activationId: 'a',
+    source: 'eraser',
+    items: [],
+    protection: {
+      status: 'available',
+      sourceRevision: 2,
+      deliveredRevision: 1,
+      historicalGapBefore: '2026-10-29T00:00:00.000Z',
+      imports: {
+        giveawayEntities: true,
+        rulesAudit: true,
+        giveawayAudit: true,
+        legacyHolds: true,
+        sourceHolds: true,
+      },
+      catalog: { ready: true, referencesHashed: 501 },
+      deliveredEvidence: null,
+      legacyRetirement: {
+        scanComplete: true,
+        retiredCount: 2,
+        reconciliationCount: 1,
+        retainedAtScan: 4,
+      },
+    },
+    protectionEvidence: null,
+  };
+  const html = renderToStaticMarkup(createElement(RetentionProtectionDetails, { preview }));
+  assert.match(html, /синхронизация не подтверждена/);
+  assert.match(html, /полностью не подтверждена/);
+  assert.match(html, /Журнал публикаций розыгрышей/);
+  assert.match(html, /а не текущее число неизвестных результатов/);
+  assert.doesNotMatch(html, /Подтверждённый интервал:/);
+  const unavailable = renderToStaticMarkup(
+    createElement(RetentionProtectionDetails, {
+      preview: { ...preview, protection: { status: 'unavailable' } },
+    }),
+  );
+  assert.match(unavailable, /Отчёт о защите истории недоступен/);
+  assert.doesNotMatch(unavailable, /импорт завершён/);
 });

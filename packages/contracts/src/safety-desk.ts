@@ -835,6 +835,45 @@ export const safetyDeskRetentionPreviewItemSchema = z.object({
 });
 export type SafetyDeskRetentionPreviewItem = z.infer<typeof safetyDeskRetentionPreviewItemSchema>;
 
+export const retentionProtectionEvidenceSchema = z.object({
+  version: z.literal(1),
+  source: z.literal('ownership_capture_v1'),
+  chatId: z.string().regex(/^-[1-9]\d*$/),
+  sourceRevision: z.number().int().nonnegative(),
+  completeFrom: z.string().datetime(),
+  completeThrough: z.string().datetime(),
+  catalogDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  referenceCount: z.number().int().nonnegative(),
+  checksum: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export const retentionProtectionReportSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('unavailable') }),
+  z.object({
+    status: z.literal('available'),
+    sourceRevision: z.number().int().nonnegative(),
+    deliveredRevision: z.number().int().min(-1),
+    historicalGapBefore: z.string().datetime(),
+    imports: z.object({
+      giveawayEntities: z.boolean(),
+      rulesAudit: z.boolean(),
+      giveawayAudit: z.boolean(),
+      legacyHolds: z.boolean(),
+      sourceHolds: z.boolean(),
+    }),
+    catalog: z.object({ ready: z.boolean(), referencesHashed: z.number().int().nonnegative() }),
+    deliveredEvidence: retentionProtectionEvidenceSchema.nullable(),
+    legacyRetirement: z
+      .object({
+        scanComplete: z.boolean(),
+        retiredCount: z.number().int().nonnegative(),
+        reconciliationCount: z.number().int().nonnegative(),
+        retainedAtScan: z.number().int().nonnegative(),
+      })
+      .nullable(),
+  }),
+]);
+export type RetentionProtectionReport = z.infer<typeof retentionProtectionReportSchema>;
+
 export const safetyDeskRetentionPreviewResponseSchema = z.object({
   chatId: z.string().min(1),
   revision: z.number().int().nonnegative(),
@@ -843,6 +882,8 @@ export const safetyDeskRetentionPreviewResponseSchema = z.object({
   sourceStatus: z.literal('available').optional(),
   nextAfter: z.string().min(1).nullable().optional(),
   incomplete: z.boolean().optional(),
+  protection: retentionProtectionReportSchema.optional(),
+  protectionEvidence: retentionProtectionEvidenceSchema.nullable().optional(),
   items: z.array(safetyDeskRetentionPreviewItemSchema).max(20),
 });
 export type SafetyDeskRetentionPreviewResponse = z.infer<

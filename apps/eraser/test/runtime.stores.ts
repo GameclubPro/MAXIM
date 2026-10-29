@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
@@ -32,7 +32,7 @@ const redis = new Redis(redisUrl, { maxRetriesPerRequest: 1 });
 const prefix = `eraser:test:${randomUUID()}`;
 const source = () => Date.now() - 8 * 86_400_000;
 function protection(extra: Partial<Protection> = {}): Protection {
-  return {
+  const value: Protection = {
     sourceRevision: 1,
     protectedMessageIds: [],
     protectedBotIds: [],
@@ -40,6 +40,23 @@ function protection(extra: Partial<Protection> = {}): Protection {
     completeThrough: new Date().toISOString(),
     ...extra,
   };
+  if (value.botHistoryCompleteFrom && value.completeThrough && value.complete !== false) {
+    const evidence = {
+      version: 1 as const,
+      source: 'ownership_capture_v1' as const,
+      chatId: '-1',
+      sourceRevision: value.sourceRevision,
+      completeFrom: value.botHistoryCompleteFrom,
+      completeThrough: value.completeThrough,
+      catalogDigest: 'a'.repeat(64),
+      referenceCount: 1,
+    };
+    value.evidence = {
+      ...evidence,
+      checksum: createHash('sha256').update(JSON.stringify(evidence)).digest('hex'),
+    };
+  }
+  return value;
 }
 async function enable(id = '-1', hours: 24 | 48 | 168 = 24) {
   await store.bootstrap(id, hours, protection());
@@ -810,6 +827,49 @@ describe('bounded history and same-chat progress', () => {
     const next = (await store.policy('-1'))!;
     assert.equal(next.history_complete, false);
     assert.ok(Number(next.history_cursor) >= messages[2]!.sourceMs);
+  });
+  test('historical expansion refuses missing or mismatched evidence and preserves its parked range', async () => {
+    await enable();
+    const at = source();
+    await store.protect(
+      '-1',
+      protection({ sourceRevision: 2, botHistoryCompleteFrom: new Date(at + 1000).toISOString() }),
+    );
+    await pool.query(
+      "UPDATE eraser_policies SET historical_deferred_from=$1,historical_deferred_to=$1 WHERE chat_id='-1'",
+      [at],
+    );
+    const expanded = protection({
+      sourceRevision: 3,
+      botHistoryCompleteFrom: new Date(at - 1000).toISOString(),
+    });
+    const unproved = { ...expanded };
+    delete unproved.evidence;
+    await assert.rejects(store.protect('-1', unproved), {
+      code: 'ERASER_PROTECTION_EVIDENCE_REQUIRED',
+    });
+    await assert.rejects(
+      store.protect('-1', {
+        ...expanded,
+        evidence: { ...expanded.evidence!, checksum: '0'.repeat(64) },
+      }),
+      { code: 'INVALID_PROTECTION_EVIDENCE' },
+    );
+    await assert.rejects(store.protect('-1', { ...expanded, sourceRevision: 4 }), {
+      code: 'ERASER_PROTECTION_EVIDENCE_CONFLICT',
+    });
+    await store.protect('-1', protection({ sourceRevision: 3, botHistoryCompleteFrom: null }));
+    await assert.rejects(store.protect('-1', unproved), {
+      code: 'ERASER_PROTECTION_EVIDENCE_REQUIRED',
+    });
+    assert.equal((await store.policy('-1'))!.historical_deferred_from, String(at));
+    await store.protect('-1', expanded);
+    assert.equal((await store.policy('-1'))!.historical_deferred_from, null);
+    assert.deepEqual(
+      (await pool.query("SELECT evidence FROM eraser_protection_state WHERE chat_id='-1'")).rows[0]
+        .evidence,
+      expanded.evidence,
+    );
   });
   test('old unproven module posts keep a durable gap while other authors delete and watermark updates do not rescan it', async () => {
     await enable();

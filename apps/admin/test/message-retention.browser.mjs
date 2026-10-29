@@ -300,6 +300,54 @@ async function waitForPosts(page, state, count) {
 }
 
 try {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    const { context, page, state, errors } = await fixture(viewport);
+    state.rows = [chat('-1')];
+    state.previewData = preview('-1', {
+      protection: {
+        status: 'available',
+        sourceRevision: 2,
+        deliveredRevision: 1,
+        historicalGapBefore: date,
+        imports: {
+          giveawayEntities: true,
+          rulesAudit: true,
+          giveawayAudit: true,
+          legacyHolds: true,
+          sourceHolds: true,
+        },
+        catalog: { ready: true, referencesHashed: 501 },
+        deliveredEvidence: null,
+        legacyRetirement: {
+          scanComplete: true,
+          retiredCount: 2,
+          reconciliationCount: 1,
+          retainedAtScan: 4,
+        },
+      },
+      protectionEvidence: null,
+    });
+    await openRetention(page);
+    await openPreview(page);
+    await page.getByText('Защита истории: синхронизация не подтверждена', { exact: true }).click();
+    await page.getByText(/История до .*полностью не подтверждена/).waitFor();
+    await page
+      .getByText('Журнал публикаций розыгрышей: импорт завершён', { exact: true })
+      .waitFor();
+    assert.equal(await page.getByText(/Подтверждённый интервал:/).count(), 0);
+    state.previewData = preview('-1', { protection: { status: 'unavailable' } });
+    await page.getByRole('button', { name: 'Обновить диагностику', exact: true }).click();
+    await page.getByText('Отчёт о защите истории недоступен.', { exact: true }).waitFor();
+    assert.equal(state.posts.length, 0);
+    assert.deepEqual(errors, []);
+    await context.close();
+    process.stdout.write(
+      `PASS historical protection evidence and unavailable source at ${viewport.width}px\n`,
+    );
+  }
   {
     const { context, page, state, errors } = await fixture();
     const moduleUrl = (url) => url.pathname.endsWith('/src/retention-desk.tsx');

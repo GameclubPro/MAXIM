@@ -4,6 +4,7 @@ import type { Config } from './config.js';
 import { MaxError, type MaxTransport } from './max.js';
 import type { CleanupRuntime } from './runtime.js';
 import { Store } from './store.js';
+import { readProtectionEvidence } from './protection-evidence.js';
 import {
   ServiceError,
   hours,
@@ -74,6 +75,7 @@ export function protectionInput(value: Record<string, unknown>): Protection {
     completeThrough: value.completeThrough as string | null,
     botHistoryCompleteFrom: (value.botHistoryCompleteFrom ?? null) as string | null,
     ...(value.complete === undefined ? {} : { complete: value.complete }),
+    ...(value.evidence === undefined ? {} : { evidence: readProtectionEvidence(value.evidence) }),
   };
 }
 export function updateInput(value: Record<string, unknown>): UpdatePolicy {
@@ -363,9 +365,16 @@ async function review(store: Store, chatId: string, cursor: string | null = null
       [chatId, after],
     )
   ).rows;
+  const protectionState = (
+    await store.pool.query<{ evidence: unknown }>(
+      "SELECT CASE WHEN ready AND evidence->>'sourceRevision'=source_revision::text THEN evidence ELSE NULL END AS evidence FROM eraser_protection_state WHERE chat_id=$1",
+      [chatId],
+    )
+  ).rows[0];
   return {
     chatId,
     revision: policy.revision,
+    protectionEvidence: protectionState?.evidence ?? null,
     activationId: policy.activation_id,
     source: 'eraser',
     sourceStatus: 'available',
