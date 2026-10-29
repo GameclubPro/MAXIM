@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
-import { chatRulesSchema, chatSettingsSchema } from '@maxim/contracts';
+import { chatRulesSchema, chatSettingsSchema, stopWordsPolicySchema } from '@maxim/contracts';
 import type {
   NetworkSettingsChange,
   NetworkSettingsSection,
 } from '@maxim/contracts/network-settings';
-import { createPrismaAdapter, PrismaClient } from '../prisma/prisma-client';
+import { createPrismaAdapter, Prisma, PrismaClient } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { ManagedEntitiesService } from './managed-entities.service';
 import type { AdminSettingsService } from './admin-settings.service';
 import type { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
@@ -18,6 +19,11 @@ import { NetworkSettingsService } from './network-settings.service';
 import { NetworkNavigationAllowlist } from './network-navigation-allowlist';
 import { saveChatSettings, sanitizeStoredChatSettings } from './admin-chat-settings';
 import { saveChatRulesDraft, writeNetworkChatRulesDraft } from './admin-chat-rules';
+import { AdminStopWordsService } from './admin-stop-words.service';
+import {
+  readStopWordsPolicy,
+  stopWordsPolicyStorage,
+} from '../moderation/stop-words/stop-words.policy';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL ?? '';
 const integration = databaseUrl ? describe : describe.skip;
@@ -27,12 +33,19 @@ integration('supplemental network settings with PostgreSQL', () => {
   let service: NetworkSettingsService;
   let retention: AdminMessageRetentionService;
   let advertising: AdvertisingPlacementService;
+  let stopWords: AdminStopWordsService;
   const suffix = randomUUID();
   const number = BigInt(`0x${suffix.replaceAll('-', '').slice(0, 13)}`);
   const ids = [`-${number}`, `-${number + 1n}`];
   const operations: string[] = [];
   const user = { userId: '323459159', username: null, displayName: null };
   const cache = { invalidate: async () => undefined };
+  const followup = jest
+    .fn<
+      ReturnType<AdminSettingsService['finishNetworkSettingsFollowup']>,
+      Parameters<AdminSettingsService['finishNetworkSettingsFollowup']>
+    >()
+    .mockResolvedValue(undefined);
   const access = {
     assertChatAdminAccess: jest.fn(async () => undefined),
     assertManagedEntityAdminAccess: jest.fn(async () => undefined),
@@ -121,7 +134,7 @@ integration('supplemental network settings with PostgreSQL', () => {
           assertBotCapabilities: async () => undefined,
           refreshExecutionReadiness: async () => undefined,
         }),
-      finishNetworkSettingsFollowup: async () => undefined,
+      finishNetworkSettingsFollowup: followup,
       buildNetworkRulesText: async (id: string) =>
         `Generated ${(await db.chatSettings.findUniqueOrThrow({ where: { chatId: id } })).greetingBotMessageText}`,
     } satisfies Pick<
@@ -132,12 +145,23 @@ integration('supplemental network settings with PostgreSQL', () => {
       | 'finishNetworkSettingsFollowup'
       | 'buildNetworkRulesText'
     >;
+    const capabilities = {
+      assertChatSettingsBotCapabilities: async () => undefined,
+    } satisfies Pick<AdminSettingsBotCapabilityService, 'assertChatSettingsBotCapabilities'>;
+    stopWords = new AdminStopWordsService(
+      prisma,
+      access as unknown as ManagedEntitiesService,
+      settings as unknown as AdminSettingsService,
+      capabilities as unknown as AdminSettingsBotCapabilityService,
+      cache as unknown as ChatContextCacheService,
+      new ConfigService({ IMAGE_TEXT_STOP_LIST_OCR_ROLLOUT_MODE: 'off' }),
+    );
     service = new NetworkSettingsService(
       prisma,
       {} as never,
       access as unknown as ManagedEntitiesService,
       settings as unknown as AdminSettingsService,
-      {} as never,
+      stopWords,
       {} as never,
       new NetworkNavigationAllowlist(prisma),
       retention,
@@ -321,5 +345,152 @@ integration('supplemental network settings with PostgreSQL', () => {
     expect(
       (await db.chatRules.findUniqueOrThrow({ where: { chatId: id } })).publishedMessageId,
     ).toBe(row.publishedMessageId);
+  });
+
+  const stopWordsScope = {
+    entityType: 'chat' as const,
+    section: 'stopWords' as const,
+    target: { mode: 'selected' as const, entityIds: ids },
+  };
+
+  async function seedStopWords() {
+    for (const [index, id] of ids.entries())
+      await db.chatSettings.update({
+        where: { chatId: id },
+        data: {
+          ...stopWordsPolicyStorage(
+            stopWordsPolicySchema.parse({
+              enabled: true,
+              rules: [{ id: `own-${index}`, kind: 'WORD', value: `private${index}` }],
+              domains: [`own${index}.example`],
+            }),
+          ),
+          stopWordsRevision: 7,
+        },
+      });
+  }
+
+  it.each(['policy', 'media'] as const)(
+    'refuses an invalid %s as a network source without rewriting or exposing it',
+    async (field) => {
+      await seedStopWords();
+      await db.chatSettings.update({
+        where: { chatId: ids[0]! },
+        data:
+          field === 'policy'
+            ? { stopWordsPolicy: { version: 999, privateSource: 'private-policy' } }
+            : { stopWordsMedia: { explanation: { base64: 17, privateSource: 'private-media' } } },
+      });
+      const before = await db.chatSettings.findMany({ where: { chatId: { in: ids } } });
+      const audits = await db.auditLog.count({ where: { chatId: { in: ids } } });
+      await expect(service.read(user, stopWordsScope)).rejects.toMatchObject({
+        response: { code: 'STOP_WORDS_POLICY_REVIEW_REQUIRED', revision: 7, fieldPaths: [] },
+      });
+      try {
+        await service.read(user, stopWordsScope);
+      } catch (error: unknown) {
+        expect(JSON.stringify(error)).not.toMatch(/private-policy|private-media|private0/);
+      }
+      expect(await db.chatSettings.findMany({ where: { chatId: { in: ids } } })).toEqual(before);
+      expect(await db.auditLog.count({ where: { chatId: { in: ids } } })).toBe(audits);
+    },
+  );
+
+  it('keeps valid and convertible legacy target rules during a sanctions-only network change', async () => {
+    await seedStopWords();
+    await db.chatSettings.update({
+      where: { chatId: ids[1]! },
+      data: {
+        stopWordsPolicy: Prisma.DbNull,
+        messageLimitsBlockedWords: ['legacyword'],
+        messageLimitsBlockedDomains: ['legacy.example'],
+      },
+    });
+    const before = await Promise.all(ids.map((id) => stopWords.read(id, user)));
+    expect(before.map((state) => state.storageStatus)).toEqual(['valid', 'legacy']);
+    const input = await prepared('stopWords', [
+      { path: 'stopWordsPolicy.sanctions.warnEnabled', op: 'set', value: true },
+    ]);
+    expect((await apply(input)).status).toBe('COMPLETE');
+    for (const [index, id] of ids.entries()) {
+      const stored = await db.chatSettings.findUniqueOrThrow({ where: { chatId: id } });
+      expect(stored.stopWordsRevision).toBe(before[index]!.revision + 1);
+      expect(readStopWordsPolicy(stored)).toEqual({
+        ...before[index]!.policy,
+        sanctions: { ...before[index]!.policy.sanctions, warnEnabled: true },
+      });
+    }
+  });
+
+  it('rejects a retained preview built from an invalid fallback without writing any target', async () => {
+    await seedStopWords();
+    const read = await service.read(user, stopWordsScope);
+    const original = await db.chatSettings.findUniqueOrThrow({ where: { chatId: ids[0]! } });
+    // FLAG: Retain the old reader's exact fence: this represents an already-invalid row
+    // whose disabled fallback was accepted into a preview before the compatible guard.
+    await db.chatSettings.update({
+      where: { chatId: ids[0]! },
+      data: { stopWordsMedia: { explanation: { base64: 17 } }, updatedAt: original.updatedAt },
+    });
+    const before = await db.chatSettings.findMany({ where: { chatId: { in: ids } } });
+    const audits = await db.auditLog.count({ where: { chatId: { in: ids } } });
+    const previousFollowups = followup.mock.calls.length;
+    const operationId = randomUUID();
+    operations.push(operationId);
+    await service.preview(user, {
+      ...stopWordsScope,
+      operationId,
+      compositionVersion: read.compositionVersion,
+      recipients: read.recipients,
+      changes: [{ path: 'stopWordsPolicy.sanctions.warnEnabled', op: 'set', value: true }],
+    });
+    await service.tick(1);
+    const failed = await service.status(user, operationId);
+    expect(failed.status).toBe('FAILED');
+    expect(failed.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ entityId: ids[0], status: 'FAILED', failureCode: 'CONFLICT' }),
+        expect.objectContaining({
+          entityId: ids[1],
+          status: 'FAILED',
+          failureCode: 'PREFLIGHT_ABORTED',
+        }),
+      ]),
+    );
+    await service.tick(1);
+    expect(await db.chatSettings.findMany({ where: { chatId: { in: ids } } })).toEqual(before);
+    expect(await db.auditLog.count({ where: { chatId: { in: ids } } })).toBe(audits);
+    expect(followup.mock.calls).toHaveLength(previousFollowups);
+  });
+
+  it('resumes only the followup of a committed target even if its current storage is invalid', async () => {
+    await seedStopWords();
+    const input = await prepared('stopWords', [
+      { path: 'stopWordsPolicy.imageScanEnabled', op: 'set', value: true },
+    ]);
+    await service.apply(user, input);
+    await service.tick(1);
+    followup
+      .mockRejectedValueOnce(new Error('followup temporarily unavailable'))
+      .mockRejectedValueOnce(new Error('followup temporarily unavailable'));
+    await service.tick(1);
+    expect((await service.status(user, input.operationId)).status).toBe('RUNNING');
+    expect(
+      await db.networkSettingsOperationTarget.count({
+        where: { operationId: input.operationId, status: 'COMMITTED' },
+      }),
+    ).toBe(2);
+    await db.chatSettings.update({
+      where: { chatId: ids[0]! },
+      data: { stopWordsMedia: { explanation: { base64: 17 } } },
+    });
+    const before = await db.chatSettings.findMany({ where: { chatId: { in: ids } } });
+    const audits = await db.auditLog.count({ where: { chatId: { in: ids } } });
+    const previousFollowups = followup.mock.calls.length;
+    await service.tick(1);
+    expect((await service.status(user, input.operationId)).status).toBe('COMPLETE');
+    expect(followup.mock.calls.length - previousFollowups).toBe(2);
+    expect(await db.chatSettings.findMany({ where: { chatId: { in: ids } } })).toEqual(before);
+    expect(await db.auditLog.count({ where: { chatId: { in: ids } } })).toBe(audits);
   });
 });

@@ -19,13 +19,14 @@ import {
   type ReportSettings,
   type ChatSummary,
   type SettingsApplyPartialError,
+  stopWordsPolicySchema,
 } from '@maxim/contracts';
 import { BadRequestException, ConflictException, HttpException } from '@nestjs/common';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { mapWithConcurrencyLimit } from './admin-legacy-utils';
-import type { ResolvedBotAssignmentData } from './admin-chat-settings';
+import type { ChatSettingsReadSnapshot, ResolvedBotAssignmentData } from './admin-chat-settings';
 import {
   APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT,
   APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
@@ -54,6 +55,7 @@ import {
 } from './stop-words-settings-ownership';
 import { stopWordsPolicyStorage } from '../moderation/stop-words/stop-words.policy';
 import { assertReportsActivationAvailable } from './report-settings-availability';
+import { assertStopWordsStorageEditable } from './stop-words-storage-boundary';
 
 const REPORT_SETTINGS_KEYS = Object.keys(reportSettingsSchema.shape) as Array<keyof ReportSettings>;
 const REPORT_COMMAND_SELECT = Object.fromEntries(
@@ -827,6 +829,7 @@ export async function applySettingsSectionToAllChats(params: {
   body: unknown;
   source: AdminActionSource;
   getSourceSettings: () => Promise<ChatSettings>;
+  getSourceStopWordsSettings?: () => Promise<ChatSettingsReadSnapshot>;
   applySettings: (
     settings: ChatSettings,
     target: ApplySettingsTarget,
@@ -843,7 +846,21 @@ export async function applySettingsSectionToAllChats(params: {
   }
   const section = parsed.data.section;
 
-  const sourceSettings = await params.getSourceSettings();
+  // FLAG: A disabled presentation of invalid storage cannot become a copied policy. The
+  // source policy, validity and revision must come from one snapshot, including legacy conversion.
+  const stopWordsSource =
+    section === 'stopWords' ? await params.getSourceStopWordsSettings?.() : undefined;
+  if (section === 'stopWords') {
+    assertStopWordsStorageEditable({
+      revision:
+        stopWordsSource?.settings.stopWordsRevision ?? parsed.data.expectedSourceRevision ?? 0,
+      storageStatus: stopWordsPolicySchema.safeParse(stopWordsSource?.settings.stopWordsPolicy)
+        .success
+        ? stopWordsSource?.stopWordsStorageStatus
+        : undefined,
+    });
+  }
+  const sourceSettings = stopWordsSource?.settings ?? (await params.getSourceSettings());
   if (
     section === 'stopWords' &&
     (sourceSettings.stopWordsRevision ?? 0) !== parsed.data.expectedSourceRevision
