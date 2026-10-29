@@ -5,6 +5,7 @@ import { MaxError, type MaxTransport } from './max.js';
 import { Store, CHAT_BUFFER, HOUSEKEEPING_INTERVAL_MS } from './store.js';
 import { ServiceError, type Lane } from './types.js';
 import { ProgressLog } from './progress-log.js';
+import type { HousekeepingHealth } from './housekeeping.js';
 
 export const MAX_WAKEUPS = 64;
 export const MAX_SAFETY_WAKEUPS = 2;
@@ -348,8 +349,11 @@ export class CleanupRuntime {
         }
       }
       if (Date.now() - this.lastMaintenance >= HOUSEKEEPING_INTERVAL_MS) {
-        await this.store.housekeeping();
+        // FLAG: Attempt time bounds failure retries too; maintenance failure cannot stall dispatch.
         this.lastMaintenance = Date.now();
+        await this.store
+          .housekeeping()
+          .catch(() => this.progressLog.failure('housekeeping_failed'));
       }
       this.lastSchedulerAt = Date.now();
     } finally {
@@ -471,6 +475,7 @@ export class CleanupRuntime {
     connectionSchedulerLastSuccessfulAt?: string | null;
     connectionSchedulerHealthy?: boolean;
     workers?: { cleanup: WorkerHealth; connection: WorkerHealth };
+    housekeeping?: HousekeepingHealth;
   } {
     const now = Date.now();
     const iso = (value: number | null) => (value === null ? null : new Date(value).toISOString());
@@ -529,6 +534,7 @@ export class CleanupRuntime {
         : null,
       connectionSchedulerHealthy: connectionHealthy,
       workers,
+      housekeeping: this.store.housekeepingHealth(),
     };
   }
   stopAdmission(): void {

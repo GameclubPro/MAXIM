@@ -3,7 +3,9 @@ set -euo pipefail
 umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BACKUP_DIR="${MAXIM_BACKUP_DIR:-$ROOT_DIR/infra/data/backups}"
+# shellcheck source=infra/scripts/lib/postgres-backup-profile.sh
+source "$ROOT_DIR/infra/scripts/lib/postgres-backup-profile.sh"
+BACKUP_DIR="$(maxim_backup_profile_directory "${MAXIM_BACKUP_DIR:-$ROOT_DIR/infra/data/backups}")"
 RETENTION_DAYS="${MAXIM_BACKUP_RETENTION_DAYS:-14}"
 COMPOSE_FILE="${MAXIM_BACKUP_COMPOSE_FILE:-$ROOT_DIR/infra/docker-compose.yml}"
 MIN_FREE_BYTES="${MAXIM_BACKUP_MIN_FREE_BYTES:-2147483648}"
@@ -14,7 +16,7 @@ READINESS_URL="${MAXIM_BACKUP_READINESS_URL:-http://127.0.0.1:3001/api/health/re
 READINESS_TIMEOUT_SEC="${MAXIM_BACKUP_READINESS_TIMEOUT_SEC:-10}"
 WATCHDOG_INTERVAL_SEC="${MAXIM_BACKUP_WATCHDOG_INTERVAL_SEC:-30}"
 WATCHDOG_FAILURE_THRESHOLD="${MAXIM_BACKUP_WATCHDOG_FAILURE_THRESHOLD:-2}"
-LOCK_FILE="${MAXIM_BACKUP_LOCK_FILE:-$BACKUP_DIR/.maxim-postgres-backup.lock}"
+LOCK_FILE="${MAXIM_BACKUP_LOCK_FILE:-$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}-postgres-backup.lock}"
 RATE_LIMITER="$ROOT_DIR/infra/scripts/rate-limit-stream.mjs"
 DEPLOY_LOCK_HELPER="$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 BACKING_FILESYSTEM_PATH="${MAXIM_BACKUP_BACKING_FILESYSTEM_PATH:-$BACKUP_DIR}"
@@ -105,7 +107,7 @@ if ! flock -n "$BACKUP_LOCK_FD"; then
 fi
 
 probe_runtime_ready() {
-  node "$ROOT_DIR/infra/scripts/probe-postgres-backup-readiness.mjs" "$READINESS_URL" "$READINESS_TIMEOUT_SEC"
+  maxim_backup_profile_readiness "$READINESS_URL" "$READINESS_TIMEOUT_SEC"
 }
 
 if ! probe_runtime_ready; then
@@ -136,7 +138,7 @@ fi
 # dump/checksum pair until a later run has successfully published its replacement.
 LATEST_COMPLETED_DUMP=""
 shopt -s nullglob
-for completed_dump in "$BACKUP_DIR"/maxim_*.dump; do
+for completed_dump in "$BACKUP_DIR"/"${MAXIM_BACKUP_PREFIX}"_*.dump; do
   if [[ -f "$completed_dump.sha256" ]]; then
     LATEST_COMPLETED_DUMP="$completed_dump"
   fi
@@ -149,14 +151,14 @@ if [[ "$MODE" != "--preflight-only" ]]; then
       continue
     fi
     rm -f -- "$expired_dump" "$expired_dump.sha256"
-  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'maxim_*.dump' -mtime "+$RETENTION_DAYS" -print0)
+  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${MAXIM_BACKUP_PREFIX}_*.dump" -mtime "+$RETENTION_DAYS" -print0)
   while IFS= read -r -d '' expired_checksum; do
     if [[ "$expired_checksum" == "$LATEST_COMPLETED_DUMP.sha256" ]]; then
       continue
     fi
     rm -f -- "$expired_checksum"
   done < <(
-    find "$BACKUP_DIR" -maxdepth 1 -type f -name 'maxim_*.dump.sha256' \
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name "${MAXIM_BACKUP_PREFIX}_*.dump.sha256" \
       -mtime "+$RETENTION_DAYS" -print0
   )
 fi
@@ -167,17 +169,17 @@ if [[ "$MODE" != "--preflight-only" ]]; then
   for receipt_suffix in remote-verified restore-verified; do
     latest_receipt=""
     shopt -s nullglob
-    for receipt_file in "$BACKUP_DIR"/maxim_*.dump."$receipt_suffix".json; do latest_receipt="$receipt_file"; done
+    for receipt_file in "$BACKUP_DIR"/"${MAXIM_BACKUP_PREFIX}"_*.dump."$receipt_suffix".json; do latest_receipt="$receipt_file"; done
     shopt -u nullglob
     while IFS= read -r -d '' receipt_file; do
       if [[ "$receipt_file" != "$latest_receipt" ]]; then rm -f -- "$receipt_file"; fi
-    done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "maxim_*.dump.$receipt_suffix.json" -mtime +14 -print0)
+    done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${MAXIM_BACKUP_PREFIX}_*.dump.$receipt_suffix.json" -mtime +14 -print0)
   done
 fi
 
 DATABASE_BYTES="$(
-  docker compose -f "$COMPOSE_FILE" exec -T postgres \
-    psql -U maxim -d maxim -Atqc 'SELECT pg_database_size(current_database())'
+  docker compose -f "$COMPOSE_FILE" exec -T "$MAXIM_BACKUP_SERVICE" \
+    psql -U "$MAXIM_BACKUP_DATABASE" -d "$MAXIM_BACKUP_DATABASE" -Atqc 'SELECT pg_database_size(current_database())'
 )"
 DATABASE_BYTES="${DATABASE_BYTES//[[:space:]]/}"
 AVAILABLE_BYTES="$(df -PB1 "$BACKUP_DIR" | awk 'NR == 2 { print $4 }')"
@@ -204,17 +206,17 @@ if [[ "$MODE" == "--preflight-only" ]]; then
 fi
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-PG_APP_NAME="maxim-postgres-backup-${STAMP}-${BASHPID}"
-TARGET="$BACKUP_DIR/maxim_${STAMP}.dump"
+PG_APP_NAME="${MAXIM_BACKUP_PREFIX}-postgres-backup-${STAMP}-${BASHPID}"
+TARGET="$BACKUP_DIR/${MAXIM_BACKUP_PREFIX}_${STAMP}.dump"
 CHECKSUM_TARGET="$TARGET.sha256"
 if [[ -e "$TARGET" || -e "$CHECKSUM_TARGET" ]]; then
   echo "Refusing to overwrite an existing PostgreSQL backup generation." >&2
   exit 1
 fi
-TEMP_DUMP="$(mktemp "$BACKUP_DIR/.maxim_${STAMP}.XXXXXX.dump.tmp")"
-TEMP_CHECKSUM="$(mktemp "$BACKUP_DIR/.maxim_${STAMP}.XXXXXX.sha256.tmp")"
-TEMP_PIPE="$(mktemp "$BACKUP_DIR/.maxim_${STAMP}.XXXXXX.pipe.tmp")"
-WATCHDOG_ABORT_MARKER="$(mktemp "$BACKUP_DIR/.maxim_${STAMP}.XXXXXX.watchdog.tmp")"
+TEMP_DUMP="$(mktemp "$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}_${STAMP}.XXXXXX.dump.tmp")"
+TEMP_CHECKSUM="$(mktemp "$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}_${STAMP}.XXXXXX.sha256.tmp")"
+TEMP_PIPE="$(mktemp "$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}_${STAMP}.XXXXXX.pipe.tmp")"
+WATCHDOG_ABORT_MARKER="$(mktemp "$BACKUP_DIR/.${MAXIM_BACKUP_PREFIX}_${STAMP}.XXXXXX.watchdog.tmp")"
 rm -f -- "$TEMP_PIPE"
 mkfifo -m 600 "$TEMP_PIPE"
 DUMP_STARTED=0
@@ -224,8 +226,8 @@ LIMITER_PROCESS_PID=""
 WATCHDOG_PROCESS_PID=""
 
 cleanup_backend() {
-  docker compose -f "$COMPOSE_FILE" exec -T postgres \
-    psql -U maxim -d maxim -Atqc \
+  docker compose -f "$COMPOSE_FILE" exec -T "$MAXIM_BACKUP_SERVICE" \
+    psql -U "$MAXIM_BACKUP_DATABASE" -d "$MAXIM_BACKUP_DATABASE" -Atqc \
       "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '$PG_APP_NAME' AND pid <> pg_backend_pid()" \
     >/dev/null 2>&1 || true
 }
@@ -315,11 +317,11 @@ set -m
 # Positional parameters expand inside the container shell.
 # shellcheck disable=SC2016
 timeout --signal=TERM --kill-after=30s "${MAX_DURATION_SEC}s" \
-  docker compose -f "$COMPOSE_FILE" exec -T postgres \
+  docker compose -f "$COMPOSE_FILE" exec -T "$MAXIM_BACKUP_SERVICE" \
     sh -lc 'exec env PGAPPNAME="$3" ionice -c2 -n7 nice -n19 pg_dump \
       --no-password -U "$1" -d "$2" \
       --format=custom --compress=gzip:3 --no-owner --no-privileges \
-      --lock-wait-timeout=10s' -- maxim maxim "$PG_APP_NAME" >"$TEMP_PIPE" &
+      --lock-wait-timeout=10s' -- "$MAXIM_BACKUP_DATABASE" "$MAXIM_BACKUP_DATABASE" "$PG_APP_NAME" >"$TEMP_PIPE" &
 DUMP_PROCESS_PID=$!
 node "$RATE_LIMITER" "$RATE_LIMIT_BYTES_PER_SEC" <"$TEMP_PIPE" >"$TEMP_DUMP" &
 LIMITER_PROCESS_PID=$!
@@ -369,7 +371,7 @@ if [[ ! -s "$TEMP_DUMP" ]]; then
   exit 1
 fi
 
-docker compose -f "$COMPOSE_FILE" exec -T postgres pg_restore --list <"$TEMP_DUMP" >/dev/null
+docker compose -f "$COMPOSE_FILE" exec -T "$MAXIM_BACKUP_SERVICE" pg_restore --list <"$TEMP_DUMP" >/dev/null
 
 CHECKSUM="$(sha256sum "$TEMP_DUMP" | awk '{print $1}')"
 printf '%s  %s\n' "$CHECKSUM" "$(basename "$TARGET")" >"$TEMP_CHECKSUM"
