@@ -3087,8 +3087,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).not.toHaveBeenCalled();
   });
 
-  it.each([MAX_ERASER_BOT_CONTACT_ID, MAX_ERASER_BOT_ID])(
-    'protects Lastik %s from direct and previously queued kick/ban using the real registry',
+  it.each([MAX_ERASER_BOT_CONTACT_ID, MAX_ERASER_BOT_ID, '269798165', 'id613000037577_3_bot'])(
+    'protects independent service bot %s from direct and previously queued kick/ban using the real registry',
     async (userId) => {
       const httpService = {
         request: jest.fn(() => of({ status: 200, data: { success: true } })),
