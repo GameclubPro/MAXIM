@@ -52,6 +52,335 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     return h;
   }
 
+  it.each(['message_text', 'body_plain', 'payload_caption', 'nested_caption'] as const)(
+    'stop-word source deletes supported %s content once across mirrored deliveries',
+    async (textCarrier) => {
+      const s = await fixture(2);
+      const [chatId] = await s.seedCatalog(1, {
+        maxMessageLengthEnabled: false,
+        antiSpamEnabled: false,
+        stopWordsPolicy: {
+          version: 1,
+          enabled: true,
+          rules: [{ id: 'casino', kind: 'WORD', value: 'casino' }],
+        },
+      });
+      const messageId = `stop-word-carrier-${randomUUID()}`;
+      const at = Date.now();
+      await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            text: 'casino',
+            textCarrier,
+            at,
+            botId: bot.id,
+          }),
+        ),
+      );
+      await s.drain();
+      await waitForUserDelete(s, chatId!, messageId);
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === messageId),
+      ).toHaveLength(1);
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+        include: { reasons: true },
+      });
+      expect(intent.status).toBe('SUCCEEDED');
+      expect(intent.reasons).toEqual([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE',
+          metadata: expect.objectContaining({
+            stopWordsRuleId: 'casino',
+            moderationDeleteVerified: true,
+          }),
+        }),
+      ]);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['ставка', 'ставки'],
+    ['казино', 'kазино'],
+  ])(
+    'stop-word source preserves legacy %s matching through guarded deletion',
+    async (word, text) => {
+      const s = await fixture(2);
+      const [chatId] = await s.seedCatalog(1, {
+        maxMessageLengthEnabled: false,
+        antiSpamEnabled: false,
+        stopWordsPolicy: Prisma.DbNull,
+        messageLimitsBlockedWords: [word],
+      });
+      const messageId = `stop-word-legacy-${randomUUID()}`;
+      const at = Date.now();
+      await Promise.all(
+        s.bots.map((bot) => s.ingest({ chatId: chatId!, messageId, text, at, botId: bot.id })),
+      );
+      await s.drain();
+      await waitForUserDelete(s, chatId!, messageId);
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === messageId),
+      ).toHaveLength(1);
+      expect(
+        (await s.prisma.chatSettings.findUniqueOrThrow({ where: { chatId } })).stopWordsPolicy,
+      ).toBeNull();
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it('stop-word source keeps line continuations separate from paragraph and forward boundaries', async () => {
+    const s = await fixture(2);
+    const [chatId] = await s.seedCatalog(1, {
+      maxMessageLengthEnabled: false,
+      antiSpamEnabled: false,
+      stopWordsPolicy: {
+        version: 1,
+        enabled: true,
+        rules: [{ id: 'phrase', kind: 'PHRASE', value: 'доход без вложений' }],
+      },
+    });
+    const cases = [
+      { text: 'доход\u2028без вложений', deleted: true },
+      { text: 'доход\u2029без вложений', deleted: false },
+      { text: 'доход\fбез вложений', deleted: false },
+      { text: 'доход\n\nбез вложений', deleted: false },
+      {
+        text: 'доход',
+        link: { type: 'forward', message: { payload: { caption: 'без вложений' } } },
+        deleted: false,
+      },
+      {
+        text: '',
+        link: { type: 'reply', message: { payload: { caption: 'доход без вложений' } } },
+        deleted: false,
+      },
+      {
+        text: '',
+        link: { type: 'forward', message: { payload: { caption: 'доход без вложений' } } },
+        deleted: true,
+      },
+    ];
+    for (const scenario of cases) {
+      const messageId = `stop-word-boundary-${randomUUID()}`;
+      const at = Date.now();
+      await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            text: scenario.text,
+            link: scenario.link,
+            at,
+            botId: bot.id,
+          }),
+        ),
+      );
+      await s.drain();
+      if (scenario.deleted) await waitForUserDelete(s, chatId!, messageId);
+      expect(
+        s.effects.filter((effect) => effect.method === 'delete' && effect.messageId === messageId),
+      ).toHaveLength(scenario.deleted ? 1 : 0);
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(
+        scenario.deleted ? 1 : 0,
+      );
+    }
+    expect(s.failures).toEqual([]);
+  });
+
+  it.each([
+    [
+      'WORD',
+      'casino',
+      'MESSAGE_BLOCKED_WORD_DELETE',
+      'STOP_WORD_GUARD_REJECTED',
+      'policy_disabled',
+    ],
+    [
+      'DOMAIN',
+      'https://blocked.example/path',
+      'MESSAGE_BLOCKED_DOMAIN_DELETE',
+      'STOP_DOMAIN_GUARD_REJECTED',
+      'policy_disabled',
+    ],
+    ['WORD', 'casino', 'MESSAGE_BLOCKED_WORD_DELETE', 'STOP_WORD_GUARD_REJECTED', 'source_changed'],
+    [
+      'WORD',
+      'casino',
+      'MESSAGE_BLOCKED_WORD_DELETE',
+      'STOP_WORD_GUARD_REJECTED',
+      'participant_immune',
+    ],
+  ])(
+    'stop-word source durably records one revoked %s policy refusal without a mutation',
+    async (kind, text, deleteCode, diagnosticCode, rejectionReason) => {
+      const s = await fixture(2);
+      const [chatId] = await s.seedCatalog(1, {
+        maxMessageLengthEnabled: false,
+        antiSpamEnabled: false,
+        stopWordsPolicy: {
+          version: 1,
+          enabled: true,
+          rules: kind === 'WORD' ? [{ id: 'casino', kind: 'WORD', value: 'casino' }] : [],
+          domains: kind === 'DOMAIN' ? ['blocked.example'] : [],
+        },
+      });
+      const ensure = s.intents.ensureAndAttempt.bind(s.intents);
+      let changed = false;
+      jest.spyOn(s.intents, 'ensureAndAttempt').mockImplementation(async (input, options) => {
+        if (input.ruleCode === deleteCode && !changed) {
+          changed = true;
+          if (rejectionReason === 'source_changed') {
+            const row = s.messages.get(input.messageId)!;
+            s.messages.set(input.messageId, {
+              ...row,
+              body: { mid: input.messageId, text: 'Corrected content' },
+            });
+          } else if (rejectionReason === 'participant_immune') {
+            await s.prisma.chatParticipantModerationImmunity.create({
+              data: {
+                chatId: chatId!,
+                userId: 'fixture-user',
+                dailyViolationLimit: 1,
+                expiresAt: new Date(Date.now() + 86_400_000),
+              },
+            });
+          } else {
+            await s.prisma.chatSettings.update({
+              where: { chatId },
+              data: {
+                stopWordsPolicy: { version: 1, enabled: false },
+                stopWordsRevision: { increment: 1 },
+              },
+            });
+          }
+        }
+        return ensure(input, options);
+      });
+      const messageId = `stop-word-revoked-${randomUUID()}`;
+      await s.ingest({ chatId: chatId!, messageId, text: text! });
+      await s.drain();
+      expect(changed).toBe(true);
+      const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: chatId!, messageId } },
+      });
+      expect(intent.status).toBe('FAILED_TERMINAL');
+      expect(JSON.parse(intent.lastError!)).toEqual({
+        type: 'stop_words_guard_rejection',
+        rejectionReason,
+      });
+      await s.intents.attemptIntent(intent.id);
+      const events = await s.prisma.moderationEvent.findMany({ where: { chatId, messageId } });
+      expect(events).toEqual([
+        expect.objectContaining({
+          ruleCode: diagnosticCode,
+          action: 'NONE',
+          botId: s.bots[0]!.id,
+          userId: 'fixture-user',
+          maskedExcerpt: null,
+          metadata: { stopWordsRejectionReason: rejectionReason },
+        }),
+      ]);
+      expect(s.effects.filter((effect) => effect.messageId === messageId)).toEqual([]);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
+  it('stop-word source keeps legacy masking inside each source and paragraph', async () => {
+    const s = await fixture(2);
+    const [chatId] = await s.seedCatalog(1, {
+      maxMessageLengthEnabled: false,
+      antiSpamEnabled: false,
+      stopWordsPolicy: Prisma.DbNull,
+      messageLimitsBlockedWords: ['доходбезвложений'],
+    });
+    const cases = [
+      { text: 'доход\nбез вложений', deleted: true },
+      { text: 'доход\u2028без вложений', deleted: true },
+      { text: 'доход\n\nбез вложений', deleted: false },
+      { text: 'доход\u2029без вложений', deleted: false },
+      { text: 'доход\fбез вложений', deleted: false },
+      {
+        text: 'доход',
+        link: { type: 'forward', message: { payload: { caption: 'без вложений' } } },
+        deleted: false,
+      },
+      {
+        text: '',
+        link: { type: 'reply', message: { payload: { caption: 'доход без вложений' } } },
+        deleted: false,
+      },
+      {
+        text: '',
+        link: { type: 'forward', message: { payload: { caption: 'доход без вложений' } } },
+        deleted: true,
+      },
+    ];
+    for (const scenario of cases) {
+      const messageId = `stop-word-legacy-boundary-${randomUUID()}`;
+      const at = Date.now();
+      await Promise.all(
+        s.bots.map((bot) =>
+          s.ingest({
+            chatId: chatId!,
+            messageId,
+            text: scenario.text,
+            link: scenario.link,
+            at,
+            botId: bot.id,
+          }),
+        ),
+      );
+      await s.drain();
+      if (scenario.deleted) await waitForUserDelete(s, chatId!, messageId);
+      expect(
+        s.effects.filter((effect) => effect.messageId === messageId && effect.method === 'delete'),
+      ).toHaveLength(scenario.deleted ? 1 : 0);
+      expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(
+        scenario.deleted ? 1 : 0,
+      );
+    }
+    expect(s.failures).toEqual([]);
+  });
+
+  it('stop-word source records a certified capability deferral without a deletion or terminal refusal', async () => {
+    const s = await fixture(1);
+    const [chatId] = await s.seedCatalog(1, {
+      maxMessageLengthEnabled: false,
+      antiSpamEnabled: false,
+      stopWordsPolicy: {
+        version: 1,
+        enabled: true,
+        rules: [{ id: 'casino', kind: 'WORD', value: 'casino' }],
+      },
+    });
+    const ensure = s.intents.ensureAndAttempt.bind(s.intents);
+    jest.spyOn(s.intents, 'ensureAndAttempt').mockImplementation(async (input, options) => {
+      if (input.ruleCode === 'MESSAGE_BLOCKED_WORD_DELETE') s.denyBot(s.bots[0]!.id);
+      return ensure(input, options);
+    });
+    const messageId = `stop-word-capability-${randomUUID()}`;
+    await s.ingest({ chatId: chatId!, messageId, text: 'casino' });
+    await s.drain();
+    const intent = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { chatId_messageId: { chatId: chatId!, messageId } },
+    });
+    expect(intent.status).toBe('WAITING_CAPABILITY');
+    expect(await s.prisma.moderationEvent.findMany({ where: { chatId, messageId } })).toEqual([
+      expect.objectContaining({
+        ruleCode: 'STOP_WORD_CAPABILITY_DEFERRED',
+        action: 'NONE',
+        botId: s.bots[0]!.id,
+        metadata: { stopWordsRejectionReason: 'permission_changed' },
+      }),
+    ]);
+    expect(s.effects.filter((effect) => effect.messageId === messageId)).toEqual([]);
+    expect(s.failures).toEqual([]);
+  });
+
   it.each([19, 20, 21])(
     'enforces the visible length boundary once across four bots (%i characters)',
     async (length) => {

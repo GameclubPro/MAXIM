@@ -67,6 +67,7 @@ describe('profanity audit report', () => {
         id: 'delete-1',
         ruleCode: 'PROFANITY_DELETE',
         action: 'DELETE_MESSAGE',
+        metadata: { ...(event().metadata as object), moderationDeleteVerified: true },
         createdAt: new Date('2026-08-24T10:00:00.000Z'),
       }),
       event({
@@ -163,7 +164,11 @@ describe('profanity audit report', () => {
     ]);
     const report = buildProfanityAuditReport({
       events: [
-        event({ ruleCode: 'PROFANITY_DELETE', action: 'DELETE_MESSAGE' }),
+        event({
+          ruleCode: 'PROFANITY_DELETE',
+          action: 'DELETE_MESSAGE',
+          metadata: { ...(event().metadata as object), moderationDeleteVerified: true },
+        }),
         event({ id: 'warning-1', action: 'WARN', metadata: null }),
       ],
       options,
@@ -188,5 +193,71 @@ describe('profanity audit report', () => {
     });
 
     expect(report.missingStructuredMetadata).toBe(1);
+  });
+
+  it('never infers deletion from a DELETE name, action or string-valued proof', () => {
+    const report = buildProfanityAuditReport({
+      events: [{}, { moderationDeleteVerified: 'true' }, { moderationDeleteVerified: false }].map(
+        (metadata, index) =>
+          event({
+            id: String(index),
+            messageId: String(index),
+            ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE',
+            action: 'DELETE_MESSAGE',
+            metadata,
+          }),
+      ),
+      options: readProfanityAuditCliOptions([]),
+    });
+    expect(report.deletionCounts).toEqual({ NOT_CONFIRMED: 3 });
+  });
+
+  it('separates words, domains and OCR and excludes configured text even with opt-in', () => {
+    const report = buildProfanityAuditReport({
+      events: [
+        event({
+          ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE',
+          metadata: {
+            moderationDeleteVerified: true,
+            matchedVariant: 'private-rule',
+          },
+          action: 'DELETE_MESSAGE',
+        }),
+        event({
+          id: 'domain',
+          ruleCode: 'MESSAGE_BLOCKED_DOMAIN_DELETE',
+          metadata: {},
+          action: 'DELETE_MESSAGE',
+        }),
+        event({
+          id: 'ocr',
+          ruleCode: 'COMMERCIAL_OCR_DELETE',
+          metadata: {
+            source: 'image_text_ocr',
+            matchedRuleCode: 'MESSAGE_BLOCKED_WORD',
+            moderationDeleteVerified: true,
+            familyId: 'private-configured-rule',
+            matchKind: 'private-rule',
+            evidence: ['private-recognized-text'],
+            detectorVersion: 'private-source',
+          },
+          action: 'DELETE_MESSAGE',
+        }),
+        event({ id: 'commercial', ruleCode: 'COMMERCIAL_OCR_DELETE', metadata: {} }),
+      ],
+      options: readProfanityAuditCliOptions(['--include-sanitized-text']),
+    });
+    expect(report.uniqueDecisions).toBe(3);
+    expect(report.categoryCounts).toEqual({
+      CHAT_STOP_LIST: 1,
+      CHAT_STOP_LIST_DOMAIN: 1,
+      CHAT_STOP_LIST_OCR_WORD: 1,
+    });
+    expect(report.deletionCounts).toEqual({ DELETED: 2, NOT_CONFIRMED: 1 });
+    expect(report.samples.every((sample) => !sample.sanitizedText && !sample.matchedVariant)).toBe(
+      true,
+    );
+    expect(JSON.stringify(report)).not.toContain('private-rule');
+    expect(JSON.stringify(report)).not.toContain('private-');
   });
 });

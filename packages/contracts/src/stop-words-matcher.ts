@@ -80,7 +80,7 @@ function buildRulePattern(rule: StopWordsRule, normalizedValue: string): RegExp 
   const pattern = normalizedValue
     .split(' ')
     .map((token) => tokenPattern(token, rule.matchMode === 'MASKED'))
-    .join(String.raw`[\p{Zs}\t\r\n]+`);
+    .join(String.raw`[\p{Zs}\t\r\n\v\u2028]+`);
   return new RegExp(
     `(?<!${WORD_BOUNDARY})(?<!${WORD_BOUNDARY}${WORD_CONNECTOR})${pattern}(?!${WORD_BOUNDARY})(?!${WORD_CONNECTOR}${WORD_BOUNDARY})`,
     'gu',
@@ -91,7 +91,7 @@ function compactMaskedText(text: string): string {
   return [...text]
     .map((char) => visualMap.get(char)?.[0] ?? char)
     .join('')
-    .replace(/[\p{Cf}\p{Zs}\t\r\n._*-]+/gu, '');
+    .replace(/[\p{Cf}\p{Zs}\t\r\n\v\u2028._*-]+/gu, '');
 }
 
 function removeInvisibleCharacters(view: TextView): TextView {
@@ -112,9 +112,11 @@ function removeInvisibleCharacters(view: TextView): TextView {
 
 function collapseWhitespace(view: TextView): TextView {
   const result: TextView = { text: '', starts: [], ends: [] };
-  for (const match of view.text.matchAll(/[\p{Zs}\t\r\n]+|[^\p{Zs}\t\r\n]/gu)) {
-    const whitespace = /^[\p{Zs}\t\r\n]/u.test(match[0]);
-    const value = whitespace ? (/\n[\p{Zs}\t\r]*\n/u.test(match[0]) ? '\0' : ' ') : match[0];
+  for (const match of view.text.matchAll(
+    /[\p{Zs}\t\r\n\v\f\u2028\u2029]+|[^\p{Zs}\t\r\n\v\f\u2028\u2029]/gu,
+  )) {
+    const whitespace = /^[\p{Zs}\t\r\n\v\f\u2028\u2029]/u.test(match[0]);
+    const value = whitespace ? (hasParagraphBoundary(match[0]) ? '\0' : ' ') : match[0];
     result.text += value;
     for (let index = 0; index < value.length; index += 1) {
       result.starts.push(view.starts[match.index + (whitespace ? 0 : index)]);
@@ -122,6 +124,13 @@ function collapseWhitespace(view: TextView): TextView {
     }
   }
   return result;
+}
+
+function hasParagraphBoundary(value: string): boolean {
+  // FLAG: A line separator may continue a phrase; paragraphs, pages and empty lines never do.
+  return (
+    /[\f\u2029]/u.test(value) || /\n[\p{Zs}\t]*\n/u.test(value.replace(/\r\n|\r|\v|\u2028/gu, '\n'))
+  );
 }
 
 function hasSourceBoundary(text: string, start: number, end: number, masked = false): boolean {
@@ -225,7 +234,7 @@ export class StopWordsMatcher {
         const matchingView = rule.matchMode === 'MASKED' ? maskedView! : view;
         pattern.lastIndex = 0;
         for (const match of matchingView.text.matchAll(pattern)) {
-          if (/\n[\t\p{Zs}\r]*\n/u.test(match[0])) continue;
+          if (hasParagraphBoundary(match[0])) continue;
           const start = matchingView.starts[match.index] ?? 0;
           const end = matchingView.ends[match.index + match[0].length - 1] ?? start;
           if (!hasSourceBoundary(text, start, end, true)) continue;

@@ -1,4 +1,5 @@
 import { channelSettingsSchema, chatSettingsSchema } from '@maxim/contracts';
+import { stopWordsPolicySchema } from '@maxim/contracts/settings';
 import {
   ForbiddenException,
   InternalServerErrorException,
@@ -525,6 +526,24 @@ function createService(
 }
 
 describe('AdminSettingsService chat rules', () => {
+  it.each([
+    { policy: null, expected: 'legacy' },
+    { policy: stopWordsPolicySchema.parse({ enabled: true }), expected: 'valid' },
+    { policy: { version: 999, enabled: true }, expected: 'invalid' },
+  ])('exposes raw $expected stop-word storage outside editable settings', async (testCase) => {
+    const persisted = createPersistedChatSettings({ stopWordsPolicy: testCase.policy });
+    const { service, prisma } = createService({ persistedSettings: persisted });
+
+    const result = await service.getChatSettingsScreen('chat-1', user as never);
+
+    expect(result.stopWordsStorageStatus).toBe(testCase.expected);
+    expect(result.settings).not.toHaveProperty('stopWordsStorageStatus');
+    if (testCase.expected === 'invalid')
+      expect(result.settings.stopWordsPolicy?.enabled).toBe(false);
+    expect(prisma.chat.upsert).toHaveBeenCalledTimes(1);
+    expect(persisted.stopWordsPolicy).toEqual(testCase.policy);
+  });
+
   it('uses the authoritative weekly retention summary on the settings home', async () => {
     const summary = { enabled: true, hours: 168 as const, revision: 9, status: 'running' as const };
     const retention: jest.Mocked<Pick<AdminMessageRetentionService, 'summary'>> = {

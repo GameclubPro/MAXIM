@@ -2506,13 +2506,10 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     if (cached && this.isChatContextReadGenerationCurrent(chatId, generation)) {
       try {
         const decoded = await this.mediaCache.decode(cached);
-        return this.reconcileCachedChatTitle(
-          chatId,
-          decoded.value,
-          normalizedTitle,
-          generation,
-          decoded.fullBytesEstimate,
-        );
+        if (this.isChatContextReadGenerationCurrent(chatId, generation)) {
+          this.writeLocalChatContext(chatId, decoded.value, decoded.fullBytesEstimate);
+        }
+        return this.reconcileCachedChatTitle(chatId, decoded.value, normalizedTitle, generation);
       } catch (error: unknown) {
         this.logger.warn(
           { chatId, err: error instanceof Error ? error.message : String(error) },
@@ -2638,12 +2635,8 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     value: ChatContext,
     normalizedTitle: string | null,
     generation: ChatContextReadGeneration,
-    encodedBytes?: number,
   ): ChatContext {
     if (!normalizedTitle || value.title === normalizedTitle) {
-      if (this.isChatContextReadGenerationCurrent(chatId, generation)) {
-        this.writeLocalChatContext(chatId, value, encodedBytes);
-      }
       return value;
     }
 
@@ -2652,7 +2645,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       title: normalizedTitle,
     };
     if (this.isChatContextReadGenerationCurrent(chatId, generation)) {
-      this.writeLocalChatContext(chatId, nextValue);
+      this.localChatContextCache.replace(chatId, nextValue);
     }
     void this.runRedisWriteWithin(
       this.patchChatContextInRedis(chatId, (current) => ({

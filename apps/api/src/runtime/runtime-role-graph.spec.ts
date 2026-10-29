@@ -198,10 +198,28 @@ describe('runtime role dependency graphs', () => {
             if (service.appRole !== 'message-retention') {
               const { SystemModule } = await import('../system/system.module');
               const { SystemDashboardService } = await import('../system/system-dashboard.service');
+              const { AdminModule } = await import('../admin/admin.module');
+              const { HealthModule } = await import('../health/health.module');
+              const { OcrReadinessHeartbeatService } =
+                await import('../health/ocr-readiness-heartbeat.service');
+              const { OcrReadinessStateService } =
+                await import('../health/ocr-readiness-state.service');
+              const { AdminStopWordsService } = await import('../admin/admin-stop-words.service');
               expect(context.select(SystemModule).get(QueueMetricsService)).toBe(
                 context.select(SystemRuntimeModule).get(QueueMetricsService),
               );
               expect(context.get(SystemDashboardService)).toBeInstanceOf(SystemDashboardService);
+              const state = context.get(OcrReadinessStateService);
+              expect(context.select(AdminModule).get(OcrReadinessStateService)).toBe(state);
+              expect(context.select(HealthModule).get(OcrReadinessStateService)).toBe(state);
+              const heartbeat = context.get(OcrReadinessHeartbeatService) as unknown as {
+                state: InstanceType<typeof OcrReadinessStateService>;
+              };
+              expect(heartbeat.state).toBe(state);
+              const stopWords = context.get(AdminStopWordsService) as unknown as {
+                ocrReadiness: InstanceType<typeof OcrReadinessStateService>;
+              };
+              expect(stopWords.ocrReadiness).toBe(state);
             }
           } finally {
             await context.close();

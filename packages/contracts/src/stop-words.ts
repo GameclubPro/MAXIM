@@ -176,13 +176,21 @@ export const stopWordsPolicySchema = z
   });
 export type StopWordsPolicy = z.infer<typeof stopWordsPolicySchema>;
 
+export const stopWordsStorageStatusSchema = z.enum(['valid', 'legacy', 'invalid']);
+export type StopWordsStorageStatus = z.infer<typeof stopWordsStorageStatusSchema>;
+
 export const stopWordsStateSchema = z.object({
   policy: stopWordsPolicySchema,
   revision: z.number().int().nonnegative(),
+  settingsRevision: z.iso.datetime().optional(),
   imageScanStatus: z.enum(['off', 'shadow', 'unavailable', 'ready']),
+  storageStatus: stopWordsStorageStatusSchema.optional(),
 });
 export type StopWordsState = z.infer<typeof stopWordsStateSchema>;
-export const stopWordsStatusSchema = stopWordsStateSchema.omit({ policy: true });
+export const stopWordsStatusSchema = stopWordsStateSchema.pick({
+  revision: true,
+  imageScanStatus: true,
+});
 export const updateStopWordsRequestSchema = z.object({
   policy: stopWordsPolicySchema,
   expectedRevision: z.number().int().nonnegative(),

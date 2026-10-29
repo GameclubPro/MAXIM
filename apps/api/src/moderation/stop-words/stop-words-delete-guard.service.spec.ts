@@ -1,7 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { stopWordsPolicySchema } from '@maxim/contracts/settings';
 import { StopWordsDeleteGuardService } from './stop-words-delete-guard.service';
-import { detectStopWordsViolations } from './stop-words.detection';
+import { detectLegacyStopWordsViolations, detectStopWordsViolations } from './stop-words.detection';
 
 function harness() {
   const policy = stopWordsPolicySchema.parse({
@@ -59,39 +59,142 @@ function harness() {
 }
 
 describe('StopWordsDeleteGuardService', () => {
+  it.each([
+    ['ставка', 'ставки'],
+    ['казино', 'kазино'],
+    ['casino', 'CASINO'],
+  ])('retains legacy %s semantics at the fresh source boundary', async (word, text) => {
+    const h = harness();
+    const settings = { ...h.settings, stopWordsPolicy: null, messageLimitsBlockedWords: [word] };
+    h.prisma.chatSettings.findUnique.mockResolvedValue(settings);
+    h.reasons[0]!.metadata = detectLegacyStopWordsViolations({ text, settings })[0]!.metadata;
+    h.max.getExactMessageRow.mockResolvedValue(h.message(text));
+    await expect(h.guard.assertIntentStillActionable(h.input)).resolves.toBe('allowed');
+    expect(h.max.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+      expect.objectContaining({ bypassCache: true }),
+    );
+    expect(h.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not substitute another legacy rule for the originally owned reason', async () => {
+    const h = harness();
+    const settings = {
+      ...h.settings,
+      stopWordsPolicy: null,
+      messageLimitsBlockedWords: ['ставка', 'казино'],
+    };
+    h.prisma.chatSettings.findUnique.mockResolvedValue(settings);
+    h.reasons[0]!.metadata = { blockedWord: 'ставка', matchKind: 'inflection' };
+    h.max.getExactMessageRow.mockResolvedValue(h.message('казино'));
+    await expect(h.guard.assertIntentStillActionable(h.input)).rejects.toMatchObject({
+      rejectionReason: 'rule_unmatched',
+    });
+    expect(h.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['paragraph', 'forward'])(
+    'rejects a historical legacy reason synthesized across a %s boundary',
+    async (boundary) => {
+      const h = harness();
+      h.prisma.chatSettings.findUnique.mockResolvedValue({
+        ...h.settings,
+        stopWordsPolicy: null,
+        messageLimitsBlockedWords: ['доходбезвложений'],
+      });
+      h.reasons[0]!.metadata = { blockedWord: 'доходбезвложений', matchKind: 'pattern' };
+      h.max.getExactMessageRow.mockResolvedValue(
+        boundary === 'paragraph'
+          ? h.message('доход\n\nбез вложений')
+          : { ...h.message('доход'), link: { type: 'forward', message: { text: 'без вложений' } } },
+      );
+      await expect(h.guard.assertIntentStillActionable(h.input)).rejects.toMatchObject({
+        rejectionReason: 'rule_unmatched',
+      });
+      expect(h.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('uses the same supported caption source for initial and final detection', async () => {
+    const h = harness();
+    h.max.getExactMessageRow.mockResolvedValue({
+      ...h.message(''),
+      body: { mid: 'message-1' },
+      payload: { caption: 'casino' },
+    });
+    await expect(h.guard.assertIntentStillActionable(h.input)).resolves.toBe('allowed');
+  });
+
+  it('keeps transport uncertainty retryable without consuming immunity', async () => {
+    const h = harness();
+    const error = new Error('Exact source temporarily unavailable');
+    h.max.getExactMessageRow.mockRejectedValue(error);
+    await expect(h.guard.assertIntentStillActionable(h.input)).rejects.toBe(error);
+    expect(h.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
   it('keeps legacy sanctions on their existing path only before policy activation', async () => {
     const h = harness();
     h.prisma.chatSettings.findUnique.mockResolvedValue({ ...h.settings, stopWordsPolicy: null });
-    await expect(h.guard.assertSanctionStillActionable({ ...h.input, ruleCode: 'MESSAGE_BLOCKED_WORD', metadata: {}, action: 'MUTE' })).resolves.toBeUndefined();
+    await expect(
+      h.guard.assertSanctionStillActionable({
+        ...h.input,
+        ruleCode: 'MESSAGE_BLOCKED_WORD',
+        metadata: {},
+        action: 'MUTE',
+      }),
+    ).resolves.toBeUndefined();
     expect(h.max.getExactMessageRow).not.toHaveBeenCalled();
   });
   it('rechecks exact source, rule identity and settings before deletion', async () => {
     const h = harness();
     await expect(h.guard.assertIntentStillActionable(h.input)).resolves.toBe('allowed');
-    expect(h.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(2);
+    expect(h.prisma.chatSettings.findUnique).toHaveBeenCalledTimes(3);
     expect(h.max.getExactMessageRow).toHaveBeenCalledTimes(1);
   });
-  it.each(['enabled', 'rule', 'revision', 'admin', 'bot', 'immunity', 'edited'])(
-    'rejects %s changes',
-    async (change) => {
-      const h = harness();
-      if (change === 'enabled') h.settings.stopWordsPolicy.enabled = false;
-      if (change === 'rule') h.settings.stopWordsPolicy.rules[0]!.enabled = false;
-      if (change === 'revision') h.settings.stopWordsRevision += 1;
-      if (change === 'admin')
-        h.max.getChatMemberAccess.mockResolvedValue({
-          userId: 'user-1',
-          isAdmin: true,
-          isOwner: false,
-        });
-      if (change === 'bot') h.bots.isKnownBotUserId.mockReturnValue(true);
-      if (change === 'immunity') h.immunity.consumeForMessage.mockResolvedValue('granted');
-      if (change === 'edited') h.max.getExactMessageRow.mockResolvedValue(h.message('Спасибо'));
-      await expect(h.guard.assertIntentStillActionable(h.input)).rejects.toMatchObject({
-        code: 'stop_words_delete_no_longer_authorized',
+
+  it('does not consume participant protection when policy is revoked during a MAX source read', async () => {
+    const h = harness();
+    h.max.getExactMessageRow.mockImplementation(async () => {
+      h.prisma.chatSettings.findUnique.mockResolvedValue({
+        ...h.settings,
+        stopWordsPolicy: { ...h.settings.stopWordsPolicy, enabled: false },
       });
-    },
-  );
+      return h.message('casino');
+    });
+    h.immunity.consumeForMessage.mockResolvedValue('granted');
+    await expect(h.guard.assertIntentStillActionable(h.input)).rejects.toMatchObject({
+      rejectionReason: 'policy_disabled',
+    });
+    expect(h.immunity.consumeForMessage).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['enabled', 'policy_disabled'],
+    ['rule', 'rule_unmatched'],
+    ['revision', 'policy_changed'],
+    ['admin', 'author_protected'],
+    ['bot', 'author_protected'],
+    ['immunity', 'participant_immune'],
+    ['edited', 'source_changed'],
+  ])('rejects %s changes with a fixed diagnostic reason', async (change, rejectionReason) => {
+    const h = harness();
+    if (change === 'enabled') h.settings.stopWordsPolicy.enabled = false;
+    if (change === 'rule') h.settings.stopWordsPolicy.rules[0]!.enabled = false;
+    if (change === 'revision') h.settings.stopWordsRevision += 1;
+    if (change === 'admin')
+      h.max.getChatMemberAccess.mockResolvedValue({
+        userId: 'user-1',
+        isAdmin: true,
+        isOwner: false,
+      });
+    if (change === 'bot') h.bots.isKnownBotUserId.mockReturnValue(true);
+    if (change === 'immunity') h.immunity.consumeForMessage.mockResolvedValue('granted');
+    if (change === 'edited') h.max.getExactMessageRow.mockResolvedValue(h.message('Спасибо'));
+    await expect(h.guard.assertIntentStillActionable(h.input)).rejects.toMatchObject({
+      code: 'stop_words_delete_no_longer_authorized',
+      rejectionReason,
+    });
+  });
   it('rejects a settings change after remote verification', async () => {
     const h = harness();
     h.prisma.chatSettings.findUnique
@@ -133,6 +236,28 @@ describe('StopWordsDeleteGuardService', () => {
         action: 'MUTE',
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it('does not consume protection for a revoked sanction after its own successful deletion', async () => {
+    const h = harness();
+    h.max.getExactMessageRow.mockImplementation(async () => {
+      h.prisma.chatSettings.findUnique.mockResolvedValue({
+        ...h.settings,
+        stopWordsPolicy: { ...h.settings.stopWordsPolicy, enabled: false },
+      });
+      return null;
+    });
+    h.prisma.moderationDeleteIntent.findFirst.mockResolvedValue({ id: 'intent-1' });
+    h.immunity.consumeForMessage.mockResolvedValue('granted');
+    await expect(
+      h.guard.assertSanctionStillActionable({
+        ...h.input,
+        ruleCode: 'MESSAGE_BLOCKED_WORD',
+        metadata: h.metadata,
+        action: 'MUTE',
+      }),
+    ).rejects.toMatchObject({ rejectionReason: 'policy_disabled' });
+    expect(h.immunity.consumeForMessage).not.toHaveBeenCalled();
   });
   it('does not permit a disabled sanction or a stronger action', async () => {
     const h = harness();
