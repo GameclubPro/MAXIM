@@ -1,11 +1,20 @@
-import type { ApplySettingsTarget, ChatSettings } from '@maxim/contracts/settings';
+import type {
+  ApplySettingsTarget,
+  ChatSettings,
+  StopWordsState,
+  StopWordsStorageStatus,
+} from '@maxim/contracts/settings';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
   applySettingsSectionToAll,
   patchSettingsSection,
 } from '../../lib/api/chat-settings-client';
-import { getStopWords, updateStopWords } from '../../lib/api/stop-words-client';
+import { getStopWords } from '../../lib/api/stop-words-client';
 import { SECTION_SETTING_KEYS, type ApplySectionKey } from '../settings-page-state';
+import {
+  saveStopWordsSettings,
+  type StopWordsReplacementAuthorization,
+} from './settings-save-coordinator';
 
 export type SettingsApplySubmission = {
   sourceChatId: string;
@@ -13,12 +22,16 @@ export type SettingsApplySubmission = {
   section: ApplySectionKey;
   sourceSettings: ChatSettings;
   target: ApplySettingsTarget;
+  stopWordsStorageStatus?: StopWordsStorageStatus;
+  stopWordsReplacement?: StopWordsReplacementAuthorization;
+  isCurrentScope?: () => boolean;
 };
 
 export type SettingsApplySavedSource = {
   sourceChatId: string;
   section: ApplySectionKey;
   settings: ChatSettings;
+  stopWordsReceipt?: StopWordsState;
 };
 
 export async function applySettingsSectionWithConfirmedSource(
@@ -29,6 +42,9 @@ export async function applySettingsSectionWithConfirmedSource(
     sourceSettings,
     target,
     confirmedTargetChatIds,
+    stopWordsStorageStatus,
+    stopWordsReplacement,
+    isCurrentScope,
   }: SettingsApplySubmission,
   onSourceSaved: (saved: SettingsApplySavedSource | null) => void,
 ) {
@@ -39,12 +55,12 @@ export async function applySettingsSectionWithConfirmedSource(
   onSourceSaved(null);
   const savedStopWords =
     section === 'stopWords' && sourceSettings.stopWordsPolicy
-      ? await updateStopWords(
-          api,
-          sourceChatId,
-          sourceSettings.stopWordsPolicy,
-          sourceSettings.stopWordsRevision ?? 0,
-        )
+      ? await saveStopWordsSettings(api, {
+          chatId: sourceChatId,
+          draft: sourceSettings,
+          storageStatus: stopWordsStorageStatus,
+          replacement: stopWordsReplacement,
+        })
       : null;
   const savedSourceSettings = savedStopWords
     ? {
@@ -59,7 +75,14 @@ export async function applySettingsSectionWithConfirmedSource(
         sourceSettings,
         SECTION_SETTING_KEYS[section],
       );
-  onSourceSaved({ sourceChatId, section, settings: savedSourceSettings });
+  const savedSource = {
+    sourceChatId,
+    section,
+    settings: savedSourceSettings,
+    ...(savedStopWords ? { stopWordsReceipt: savedStopWords } : {}),
+  };
+  onSourceSaved(savedSource);
+  if (isCurrentScope?.() === false) throw new Error('Чат изменился во время сохранения.');
   if (section === 'reports' && !savedSourceSettings.settingsRevision)
     throw new Error(
       'Не удалось подтвердить сохранённые настройки. Обновите экран перед применением.',
@@ -77,18 +100,22 @@ export async function applySettingsSectionWithConfirmedSource(
         }
       : undefined,
   );
+  const refreshedSource =
+    savedStopWords && isCurrentScope?.() !== false
+      ? await refreshSavedStopWordsSource(api, savedSource)
+      : savedSource;
   return {
     ...result,
     section,
-    sourceSettings:
-      savedStopWords && result.appliedChatIds.includes(sourceChatId)
-        ? { ...savedSourceSettings, stopWordsRevision: savedStopWords.revision + 1 }
-        : {
-            ...savedSourceSettings,
-            ...(result.sourceSettingsRevision
-              ? { settingsRevision: result.sourceSettingsRevision }
-              : {}),
-          },
+    stopWordsReceipt: refreshedSource.stopWordsReceipt,
+    sourceSettings: savedStopWords
+      ? refreshedSource.settings
+      : {
+          ...savedSourceSettings,
+          ...(result.sourceSettingsRevision
+            ? { settingsRevision: result.sourceSettingsRevision }
+            : {}),
+        },
   };
 }
 
@@ -100,6 +127,7 @@ export async function refreshSavedStopWordsSource(
     const fresh = await getStopWords(api, savedSource.sourceChatId);
     return {
       ...savedSource,
+      stopWordsReceipt: fresh,
       settings: {
         ...savedSource.settings,
         stopWordsPolicy: fresh.policy,

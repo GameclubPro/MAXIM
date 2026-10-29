@@ -217,7 +217,14 @@ import {
   applySettingsSectionWithConfirmedSource,
   refreshSavedStopWordsSource,
   type SettingsApplySubmission,
+  type SettingsApplySavedSource,
 } from './settings/settings-section-apply-submit';
+import {
+  mapStopWordsValidationIssues,
+  type StopWordsFocusRequest,
+  type StopWordsFocusTarget,
+} from './settings/stop-words-settings-feedback';
+import { ApiRequestError } from '../lib/api-request-error';
 import {
   formatDuplicateSettingsSummary,
   resolveDuplicatePhotoPolicyForDraft,
@@ -404,6 +411,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   favoritesCompositionEpochRef.current = favoritesCompositionEpoch;
   const [applyTargetPreviewEpoch, setApplyTargetPreviewEpoch] = useState<number | null>(null);
   const [sharedFieldErrors, setSharedFieldErrors] = useState<Record<string, string>>({});
+  const [stopWordsFocusRequest, setStopWordsFocusRequest] = useState<StopWordsFocusRequest>();
+  const [stopWordsModuleError, setStopWordsModuleError] = useState<string | null>(null);
+  const stopWordsFocusSequenceRef = useRef(0);
   const [isReloadingStopWords, setIsReloadingStopWords] = useState(false);
   const stopWordsReloadRequestRef = useRef<symbol | null>(null);
   useEffect(() => {
@@ -413,7 +423,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [sharedSectionEpochs, setSharedSectionEpochs] = useState<
     Partial<Record<ApplySectionKey, number>>
   >({});
-  useEffect(() => setSharedFieldErrors({}), [chatId]);
+  useEffect(() => {
+    setSharedFieldErrors({});
+    setStopWordsFocusRequest(undefined);
+    setStopWordsModuleError(null);
+  }, [chatId]);
   const location = useLocation();
   const navigate = useNavigate();
   const { isCompact: isHeaderCompact } = useAutoHideHeader();
@@ -511,11 +525,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
   const [applyTargetPreviewLoading, setApplyTargetPreviewLoading] = useState(false);
   const [applyTargetPreviewError, setApplyTargetPreviewError] = useState<string | null>(null);
-  const applyTargetSavedSourceRef = useRef<{
-    sourceChatId: string;
-    section: ApplySectionKey;
-    settings: ChatSettings;
-  } | null>(null);
+  const applyTargetSavedSourceRef = useRef<SettingsApplySavedSource | null>(null);
   const applyTargetOverlayStyle = useVisualViewportOverlayStyle(Boolean(applyTargetSheet));
 
   useEffect(() => {
@@ -782,6 +792,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearFieldError,
     syncSavedSectionSettings,
     syncSavedBotSpeechStyle,
+    syncSavedStopWords,
+    stopWordsStorageStatus,
+    stopWordsReplacement,
+    authorizeStopWordsReplacement,
+    discardStopWordsEditorState,
+    stopWordsConflict,
+    stopWordsSaveError,
+    handleStopWordsSaveError,
+    saveWorkspaceDraft,
     handleSettingsPermissionError,
     saveSectionMutation,
     isSavingSettings,
@@ -793,6 +812,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     chatId,
     userId: meQuery.data?.userId ?? null,
     serverSettings: settingsScreenQuery.data?.settings,
+    stopWordsStorageStatus: settingsScreenQuery.data?.stopWordsStorageStatus,
     refetchSettings: settingsScreenQuery.refetch,
     onHydrated: () => setDuplicateWindowInputValue(null),
     onStopWordsSaved: () => {
@@ -808,6 +828,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       maxNotify('success');
     },
     onError: (error, section, permission) => {
+      if (section === 'stopWords') applyStopWordsServerValidation(error);
       if (!permission)
         pushToast({
           tone: 'danger',
@@ -817,6 +838,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       maxNotify('error');
     },
   });
+  const stopWordsReplacementAuthorized = Boolean(
+    stopWordsReplacement &&
+    stopWordsReplacement.chatId === chatId &&
+    stopWordsReplacement.expectedRevision === (draft?.stopWordsRevision ?? 0),
+  );
+  const stopWordsStorageLocked =
+    stopWordsStorageStatus === 'invalid' && !stopWordsReplacementAuthorized;
   const reportsAvailabilityQuery = useQuery({
     queryKey: ['report-availability', chatId],
     queryFn: async ({ signal }) => {
@@ -1397,17 +1425,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const applySectionToAllMutation = useMutation({
     mutationFn: (variables: SettingsApplySubmission) =>
       applySettingsSectionWithConfirmedSource(api, variables, (saved) => {
-        applyTargetSavedSourceRef.current = saved;
+        if (variables.isCurrentScope?.() !== false) applyTargetSavedSourceRef.current = saved;
       }),
-    onSuccess: (result, variables) => {
+    onSuccess: async (result, variables) => {
+      if (variables.isCurrentScope?.() === false) return;
       applyTargetSavedSourceRef.current = null;
-      syncSavedSectionSettings(
-        result.section,
-        result.sourceSettings,
-        variables.sourceSettings.settingsRevision,
-        variables.sourceChatId,
-        variables.sourceSettings,
-      );
+      if (result.stopWordsReceipt) {
+        await syncSavedStopWords(
+          result.stopWordsReceipt,
+          variables.sourceSettings,
+          variables.sourceSettings,
+          variables.sourceChatId,
+        );
+        if (variables.isCurrentScope?.() === false) return;
+      } else
+        syncSavedSectionSettings(
+          result.section,
+          result.sourceSettings,
+          variables.sourceSettings.settingsRevision,
+          variables.sourceChatId,
+          variables.sourceSettings,
+        );
       if (activeChatIdRef.current !== variables.sourceChatId) return;
       if (result.section === 'stopWords') {
         setMessageLimitsBlockedWordsInput('');
@@ -1422,6 +1460,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       maxNotify('success');
     },
     onError: async (error, variables) => {
+      if (variables.isCurrentScope?.() === false) return;
       let savedSource = applyTargetSavedSourceRef.current;
       applyTargetSavedSourceRef.current = null;
       const sourceSaved =
@@ -1429,26 +1468,37 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         savedSource?.sourceChatId === variables.sourceChatId;
       if (sourceSaved && variables.section === 'stopWords' && savedSource) {
         savedSource = await refreshSavedStopWordsSource(api, savedSource);
+        if (variables.isCurrentScope?.() === false) return;
         if (activeChatIdRef.current === variables.sourceChatId) {
           setMessageLimitsBlockedWordsInput('');
           setMessageLimitsBlockedDomainsInput('');
         }
       }
       const { parseSettingsApplyPartial } = await import('../lib/chat-settings-conflict');
+      if (variables.isCurrentScope?.() === false) return;
       const partial = parseSettingsApplyPartial(error);
       if (sourceSaved && savedSource) {
-        syncSavedSectionSettings(
-          savedSource.section,
-          {
-            ...savedSource.settings,
-            ...(partial?.sourceSettingsRevision
-              ? { settingsRevision: partial.sourceSettingsRevision }
-              : {}),
-          },
-          variables.sourceSettings.settingsRevision,
-          variables.sourceChatId,
-          variables.sourceSettings,
-        );
+        if (savedSource.stopWordsReceipt) {
+          await syncSavedStopWords(
+            savedSource.stopWordsReceipt,
+            variables.sourceSettings,
+            variables.sourceSettings,
+            variables.sourceChatId,
+          );
+          if (variables.isCurrentScope?.() === false) return;
+        } else
+          syncSavedSectionSettings(
+            savedSource.section,
+            {
+              ...savedSource.settings,
+              ...(partial?.sourceSettingsRevision
+                ? { settingsRevision: partial.sourceSettingsRevision }
+                : {}),
+            },
+            variables.sourceSettings.settingsRevision,
+            variables.sourceChatId,
+            variables.sourceSettings,
+          );
       }
       if (partial) {
         if (activeChatIdRef.current !== variables.sourceChatId) {
@@ -1471,6 +1521,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       const { resolveChatSettingsSaveError } = await import('../lib/chat-settings-save-error');
       if (activeChatIdRef.current !== variables.sourceChatId) return;
       const persisted = settingsQuery.data;
+      if (variables.isCurrentScope?.() === false) return;
+      if (variables.section === 'stopWords') {
+        await handleStopWordsSaveError(error);
+        if (variables.isCurrentScope?.() === false) return;
+      }
       const resolution = resolveChatSettingsSaveError(
         error,
         persisted ? normalizeRequiredSubscriptionDraftSettings(persisted) : null,
@@ -1985,9 +2040,70 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  function revealStopWordsFeedback(
+    target: StopWordsFocusTarget | null,
+    message: string | null = null,
+  ) {
+    setExpandedSections({ ...INITIAL_EXPANDED_SECTIONS, stopWords: true });
+    setStopWordsModuleError(message);
+    if (target)
+      setStopWordsFocusRequest({ ...target, requestId: ++stopWordsFocusSequenceRef.current });
+  }
+  function revealSharedStopWordsErrors() {
+    const feedback = mapStopWordsValidationIssues(
+      Object.entries(sharedFieldErrors).map(([path, message]) => ({
+        path: path.split('.'),
+        message,
+      })),
+    );
+    if (feedback.first || feedback.moduleError)
+      revealStopWordsFeedback(feedback.first, feedback.moduleError);
+  }
+  function applyStopWordsServerValidation(error: unknown) {
+    if (!(error instanceof ApiRequestError) || error.status !== 400) return;
+    const issues = Array.isArray(error.payload?.issues) ? error.payload.issues : [];
+    const normalized = issues.flatMap((issue) => {
+      if (
+        !issue ||
+        typeof issue !== 'object' ||
+        Array.isArray(issue) ||
+        !Array.isArray(issue.path) ||
+        typeof issue.message !== 'string' ||
+        !issue.path.every(
+          (part: unknown) =>
+            typeof part === 'string' || (typeof part === 'number' && Number.isSafeInteger(part)),
+        )
+      )
+        return [];
+      return [
+        {
+          path: issue.path.map((part: string | number, index: number) =>
+            index === 0 && part === 'policy' ? 'stopWordsPolicy' : part,
+          ),
+          message: issue.message.slice(0, 500),
+        },
+      ];
+    });
+    const feedback = mapStopWordsValidationIssues(normalized);
+    setSharedFieldErrors((current) => ({ ...current, ...feedback.errors }));
+    revealStopWordsFeedback(
+      feedback.first,
+      feedback.moduleError ?? (feedback.first ? null : 'Проверьте настройки стоп-слов.'),
+    );
+  }
   function validateDraft(value: ChatSettings): ChatSettings | null {
     if (isReloadingStopWords) return null;
-    if (Object.keys(sharedFieldErrors).length) return null;
+    if (Object.keys(sharedFieldErrors).length) {
+      revealSharedStopWordsErrors();
+      return null;
+    }
+    if (
+      stopWordsStorageLocked &&
+      JSON.stringify(value.stopWordsPolicy) !== JSON.stringify(settingsQuery.data?.stopWordsPolicy)
+    ) {
+      revealStopWordsFeedback(null, 'Подтвердите замену сохранённого списка.');
+      return null;
+    }
     const normalizedValue = normalizeRequiredSubscriptionDraftSettings(value);
     const parsed = updateSettingsRequestSchema.safeParse(normalizedValue);
 
@@ -2005,6 +2121,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
       if (Object.keys(nextErrors).length === 0) {
         setFieldErrors({});
+        setStopWordsModuleError(null);
         return normalizedParsed;
       }
 
@@ -2013,8 +2130,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const nextErrors: FieldErrors = {};
+    const stopFeedback = mapStopWordsValidationIssues(parsed.error.issues);
+    if (stopFeedback.first || stopFeedback.moduleError) {
+      setSharedFieldErrors((current) => ({ ...current, ...stopFeedback.errors }));
+      revealStopWordsFeedback(stopFeedback.first, stopFeedback.moduleError);
+    }
     for (const issue of parsed.error.issues) {
       const key = issue.path[0] as keyof ChatSettings | undefined;
+      if (key === 'stopWordsPolicy') continue;
       if (!key || nextErrors[key]) {
         continue;
       }
@@ -4088,6 +4211,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return settingsSectionPaths('chat', section).some((path) => Boolean(sharedFieldErrors[path]));
   }
   function isSectionDirty(section: ApplySectionKey) {
+    if (section === 'stopWords' && stopWordsReplacementAuthorized) return true;
     if (hasSharedSectionErrors(section)) return true;
     if (!draft || !settingsQuery.data) {
       return false;
@@ -4122,6 +4246,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const savedSettings = normalizeSectionDraftSettings(settingsQuery.data, section);
     if (section === 'stopWords') {
+      discardStopWordsEditorState();
+      setStopWordsModuleError(null);
+      setStopWordsFocusRequest(undefined);
       setMessageLimitsBlockedWordsInput('');
       setMessageLimitsBlockedDomainsInput('');
       clearFieldError('messageLimitsBlockedWords');
@@ -4139,7 +4266,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function buildSectionPayload(section: ApplySectionKey) {
     if (section === 'stopWords' && isReloadingStopWords) return null;
-    if (hasSharedSectionErrors(section)) return null;
+    if (section === 'stopWords' && stopWordsStorageLocked) {
+      revealStopWordsFeedback(null, 'Подтвердите замену сохранённого списка.');
+      return null;
+    }
+    if (hasSharedSectionErrors(section)) {
+      if (section === 'stopWords') revealSharedStopWordsErrors();
+      return null;
+    }
     if (!draft || !settingsQuery.data) {
       return null;
     }
@@ -4229,12 +4363,33 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       sourceChatId: chatId,
       section,
       sourceSettings: payload,
+      stopWordsStorageStatus,
+      stopWordsReplacement,
+      isCurrentScope: isCurrentSettingsScope,
       target: createDefaultApplySettingsTarget(),
     });
   }
 
   async function handleConfirmApplyTarget() {
     if (!applyTargetSheet) {
+      return;
+    }
+    if (applyTargetSheet.isCurrentScope?.() === false) return;
+    if (
+      applyTargetSheet.section === 'stopWords' &&
+      (stopWordsStorageLocked ||
+        (applyTargetSheet.stopWordsReplacement &&
+          (applyTargetSheet.stopWordsReplacement.expectedRevision !==
+            stopWordsReplacement?.expectedRevision ||
+            applyTargetSheet.stopWordsReplacement.chatId !== stopWordsReplacement?.chatId)))
+    ) {
+      setApplyTargetSheet(null);
+      revealStopWordsFeedback(
+        null,
+        stopWordsStorageLocked
+          ? 'Подтвердите замену сохранённого списка.'
+          : 'Список изменился. Загрузите сохранённый список перед применением.',
+      );
       return;
     }
 
@@ -4261,8 +4416,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         confirmedTargetChatIds:
           applyTargetSheet.section === 'reports' ? applyTargetPreview?.appliedChatIds : undefined,
       });
-      if (activeChatIdRef.current === applyTargetSheet.sourceChatId)
-        closeSection(applyTargetSheet.section);
+      if (applyTargetSheet.isCurrentScope?.() !== false) closeSection(applyTargetSheet.section);
     } catch {
       // Errors are handled by the mutation.
     }
@@ -4286,16 +4440,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft,
     serverSettings: settingsQuery.data,
     serverRules: rulesQuery.data,
-    settingsDirty: hasChanges || Object.keys(sharedFieldErrors).length > 0,
+    settingsDirty:
+      hasChanges || stopWordsReplacementAuthorized || Object.keys(sharedFieldErrors).length > 0,
     rulesDirty: hasRulesChanges,
     saving:
       isHeaderSaving || isApplyingSectionToAll || isPublishingRules || isResettingPublishedRules,
     validateDraft,
+    saveSettings: saveWorkspaceDraft,
     saveRules: () => saveRulesDraftNow({ forceButtonErrors: true }),
     setDraft,
     setRulesDraft,
-    onSettingsSaveError: (error) => handleSettingsPermissionError(error, null),
+    onSettingsSaveError: (error) => {
+      applyStopWordsServerValidation(error);
+      return handleSettingsPermissionError(error, null);
+    },
     clearValidationErrors: () => {
+      discardStopWordsEditorState();
+      setStopWordsModuleError(null);
+      setStopWordsFocusRequest(undefined);
       setSharedFieldErrors({});
       setFieldErrors({});
       setRulesTextError('');
@@ -4320,6 +4482,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         <LazySettingsSectionSaveFooter
           section={section}
           options={options}
+          disabled={section === 'stopWords' && stopWordsStorageLocked}
           isSavingSettings={isSavingSettings || (section === 'stopWords' && isReloadingStopWords)}
           savingSection={savingSection}
           isApplyingSectionToAll={isApplyingSectionToAll}
@@ -4372,7 +4535,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         disabled={
           isSavingSettings ||
           isApplyingSectionToAll ||
-          (section === 'stopWords' && isReloadingStopWords)
+          (section === 'stopWords' && (isReloadingStopWords || stopWordsStorageLocked))
         }
       >
         {isApplying ? (
@@ -4392,7 +4555,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? createChatSettingsFieldAdapter({
           settings: draft,
           baseline: settingsQuery.data,
-          onChange: setDraft,
+          onChange: (next) => {
+            if (section === 'stopWords' && stopWordsStorageLocked) return;
+            setDraft(next);
+          },
           readOnly:
             isSavingSettings ||
             isApplyingSectionToAll ||
@@ -4807,17 +4973,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setIsReloadingStopWords(true);
     try {
       const saved = await getStopWords(api, chatId);
-      if (activeChatIdRef.current !== chatId || stopWordsReloadRequestRef.current !== request)
+      if (!isCurrentSettingsScope() || stopWordsReloadRequestRef.current !== request) return;
+      const accepted = await syncSavedStopWords(
+        saved,
+        draft ?? settingsQuery.data,
+        settingsQuery.data,
+        chatId,
+        true,
+      );
+      if (
+        accepted === false ||
+        !isCurrentSettingsScope() ||
+        stopWordsReloadRequestRef.current !== request
+      )
         return;
-      syncSavedSectionSettings('stopWords', {
-        ...settingsQuery.data,
-        stopWordsPolicy: saved.policy,
-        stopWordsRevision: saved.revision,
-      });
       setMessageLimitsBlockedWordsInput('');
       setMessageLimitsBlockedDomainsInput('');
       clearFieldError('messageLimitsBlockedWords');
       clearFieldError('messageLimitsBlockedDomains');
+      setStopWordsModuleError(null);
+      setStopWordsFocusRequest(undefined);
       resetSharedSectionEditor('stopWords');
     } finally {
       if (stopWordsReloadRequestRef.current === request) {
@@ -4842,8 +5017,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           policy={draft?.stopWordsPolicy}
           revision={draft?.stopWordsRevision}
           dirty={isSectionDirty('stopWords')}
-          busy={singleFields.readOnly}
-          invalid={hasSharedSectionErrors('stopWords')}
+          busy={isSavingSettings || isApplyingSectionToAll || isReloadingStopWords}
+          invalid={hasSharedSectionErrors('stopWords') || stopWordsStorageLocked}
+          conflict={stopWordsConflict}
           reloadPolicy={reloadStopWordsPolicy}
         />
       </Suspense>
@@ -4869,6 +5045,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         fields={singleFields}
         context={{
           mode: 'single',
+          stopWordsEditor:
+            section === 'stopWords'
+              ? {
+                  storageStatus: stopWordsStorageStatus,
+                  replacementAuthorized: stopWordsReplacementAuthorized,
+                  onAuthorizeReplacement: () => {
+                    authorizeStopWordsReplacement();
+                    setStopWordsModuleError(null);
+                  },
+                  focusRequest: stopWordsFocusRequest,
+                  moduleError: stopWordsModuleError ?? stopWordsSaveError,
+                }
+              : undefined,
           sectionTools:
             advertisingModule && chatId && expandedSections[section]
               ? {
@@ -5672,6 +5861,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 order={getNetworkSettingsSectionPresentation('chat', 'stopWords').order}
               >
                 <SettingsStopWordsSection
+                  storageInvalid={stopWordsStorageStatus === 'invalid'}
                   sharedContent={renderSharedChatSection('stopWords')}
                   api={api}
                   chatId={chatId ?? ''}

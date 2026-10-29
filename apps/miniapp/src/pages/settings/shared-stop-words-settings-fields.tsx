@@ -1,7 +1,18 @@
-import { lazy, Suspense, useMemo, useRef, useEffect, useId, useState, type ReactNode } from 'react';
+import {
+  lazy,
+  Suspense,
+  useMemo,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useId,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   normalizeStopWordsValue,
   stopWordsRuleSchema,
+  stopWordsPolicySchema,
   type StopWordsRule,
 } from '@maxim/contracts/settings';
 import type { BroadcastLinkButton } from '@maxim/contracts/broadcast';
@@ -18,6 +29,7 @@ import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-p
 import { ActionConfirmSheet } from '../../components/ui/action-confirm-sheet';
 import { Spinner } from '../../components/ui/spinner';
 import type { SharedChatSettingsSectionProps } from './shared-chat-settings-section';
+import type { StopWordsFieldPath, StopWordsFocusRequest } from './stop-words-settings-feedback';
 import './stop-words-policy-editor.css';
 
 const Presets = lazy(() =>
@@ -38,18 +50,25 @@ function Toggle({
   state,
   onChange,
   children,
+  field,
+  error,
+  focusKey,
 }: {
   label: string;
   state: SettingsFieldState<boolean>;
   onChange: (value: boolean) => void;
   children?: ReactNode;
+  field?: StopWordsFieldPath;
+  error?: string | null;
+  focusKey?: string;
 }) {
   const ref = useRef<HTMLInputElement>(null);
+  const errorId = useId();
   useEffect(() => {
     if (ref.current) ref.current.indeterminate = state.kind === 'mixed';
   }, [state.kind]);
   return (
-    <div className="stop-words-editor__toggle">
+    <div className="stop-words-editor__toggle" data-stop-words-field={field}>
       <span>{label}</span>
       {children}
       {state.kind === 'mixed' ? <small>Разные значения</small> : null}
@@ -59,6 +78,9 @@ function Toggle({
           type="checkbox"
           checked={state.kind === 'common' && state.value}
           aria-checked={state.kind === 'mixed' ? 'mixed' : state.kind === 'common' && state.value}
+          aria-invalid={Boolean(error) || undefined}
+          aria-describedby={error ? errorId : undefined}
+          data-stop-words-rule-field={focusKey}
           disabled={state.kind === 'loading'}
           onChange={(event) => onChange(event.target.checked)}
         />
@@ -66,17 +88,32 @@ function Toggle({
           <span className="toggle-switch__thumb" />
         </span>
       </label>
+      {error ? (
+        <small id={errorId} role="alert">
+          {error}
+        </small>
+      ) : null}
     </div>
   );
 }
 
-type ListProps = { fields: ChatSettingsFieldAdapter; toolbar?: ReactNode; notice?: ReactNode } & (
+type ListProps = {
+  fields: ChatSettingsFieldAdapter;
+  active: boolean;
+  toolbar?: ReactNode;
+  notice?: ReactNode;
+  focusRequest?: StopWordsFocusRequest;
+} & (
   | { mode: 'words'; items: StopWordsRule[]; replace: (next: StopWordsRule[]) => void }
   | { mode: 'domains'; items: string[]; replace: (next: string[]) => void }
 );
 function StopWordsListEditor(props: ListProps) {
   const { fields, mode } = props;
   const resultId = useId();
+  const ruleErrorId = useId();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const ruleRootRef = useRef<HTMLDivElement>(null);
+  const ruleInitialFocusRef = useRef<HTMLElement | null>(null);
   const path = mode === 'words' ? 'stopWordsPolicy.rules' : 'stopWordsPolicy.domains';
   const rules = props.mode === 'words' ? props.items : [];
   const domains = props.mode === 'domains' ? props.items : [];
@@ -89,6 +126,40 @@ function StopWordsListEditor(props: ListProps) {
   const [editError, setEditError] = useState('');
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [presetError, setPresetError] = useState('');
+  useLayoutEffect(() => {
+    const index = props.focusRequest?.path[2];
+    const leaf =
+      props.focusRequest?.field === path &&
+      typeof index === 'number' &&
+      rules[index]?.id === editingRule?.id
+        ? props.focusRequest.path[3]
+        : 'value';
+    const target = leaf === 'enabled' || leaf === 'matchMode' ? leaf : 'value';
+    ruleInitialFocusRef.current =
+      ruleRootRef.current?.querySelector<HTMLElement>(`[data-stop-words-rule-field="${target}"]`) ??
+      null;
+  }, [editingRule, props.focusRequest?.requestId]);
+  useEffect(() => {
+    if (!props.active || props.focusRequest?.field !== path) return;
+    const index = props.focusRequest.path[2];
+    if (mode === 'words' && typeof index === 'number' && rules[index]) {
+      setEditingRule({ ...rules[index] });
+      setEditError(fields.error(path) ?? 'Проверьте запись.');
+    }
+    const frame = requestAnimationFrame(() => {
+      if (ruleRootRef.current) {
+        const leaf = props.focusRequest?.path[3];
+        const target = leaf === 'enabled' || leaf === 'matchMode' ? leaf : 'value';
+        ruleRootRef.current
+          .querySelector<HTMLInputElement>(`[data-stop-words-rule-field="${target}"]`)
+          ?.focus();
+      } else {
+        inputRef.current?.focus();
+        inputRef.current?.scrollIntoView({ block: 'nearest' });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.focusRequest?.requestId, props.active]);
   const prepared = useMemo(
     () =>
       prepareStopWordsLists(
@@ -161,6 +232,7 @@ function StopWordsListEditor(props: ListProps) {
     <>
       <div className="stop-words-editor__input">
         <textarea
+          ref={inputRef}
           rows={2}
           value={input}
           maxLength={160000}
@@ -198,7 +270,7 @@ function StopWordsListEditor(props: ListProps) {
         </button>
       </div>
       <div id={resultId} className="stop-words-editor__input-result" aria-live="polite">
-        {fields.error(path) && !input.trim() ? <p role="alert">{fields.error(path)}</p> : null}
+        {fields.error(path) ? <p role="alert">{fields.error(path)}</p> : null}
         {prepared.errors.map((message, index) => (
           <p role="alert" key={index}>
             {message}
@@ -373,6 +445,7 @@ function StopWordsListEditor(props: ListProps) {
         id="stop-words-rule-editor"
         open={Boolean(editingRule)}
         title="Правило"
+        initialFocusRef={ruleInitialFocusRef}
         confirmCloseWhen={dirtyRule}
         onClose={cancelRule}
         onDiscardChanges={cancelRule}
@@ -384,19 +457,24 @@ function StopWordsListEditor(props: ListProps) {
         }
       >
         {editingRule ? (
-          <div className="stop-words-editor">
+          <div className="stop-words-editor" ref={ruleRootRef}>
             <input
               autoFocus
+              data-stop-words-rule-field="value"
+              aria-invalid={Boolean(editError) || undefined}
+              aria-describedby={editError ? ruleErrorId : undefined}
               aria-label="Слово или фраза"
               value={editingRule.value}
               maxLength={160}
               onChange={(event) => {
+                setEditError('');
                 setEditingRule({ ...editingRule, value: event.target.value });
                 fields.setError(path, 'Примените изменение записи или отмените ввод.');
               }}
             />
             <Toggle
               label="Правило включено"
+              focusKey="enabled"
               state={{ kind: 'common', value: editingRule.enabled }}
               onChange={(enabled) => {
                 setEditingRule({ ...editingRule, enabled });
@@ -405,13 +483,18 @@ function StopWordsListEditor(props: ListProps) {
             />
             <Toggle
               label="Распознавать маскировки"
+              focusKey="matchMode"
               state={{ kind: 'common', value: editingRule.matchMode === 'MASKED' }}
               onChange={(masked) => {
                 setEditingRule({ ...editingRule, matchMode: masked ? 'MASKED' : 'EXACT' });
                 fields.setError(path, 'Примените изменение записи или отмените ввод.');
               }}
             />
-            {editError ? <p role="alert">{editError}</p> : null}
+            {editError ? (
+              <p id={ruleErrorId} role="alert">
+                {editError}
+              </p>
+            ) : null}
           </div>
         ) : null}
       </SettingsDrilldownPanel>
@@ -445,25 +528,67 @@ function StopWordsButtons({
   fields,
   items,
   replace,
+  focusRequest,
 }: {
   fields: ChatSettingsFieldAdapter;
   items: BroadcastLinkButton[];
   replace: (items: BroadcastLinkButton[]) => void;
+  focusRequest?: StopWordsFocusRequest;
 }) {
   const [buffer, setBuffer] = useState<BroadcastLinkButton[] | null>(null);
-  const key = JSON.stringify(items);
-  useEffect(() => setBuffer(null), [key]);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const errorId = useId();
+  const error = fields.error('stopWordsPolicy.sanctions.botButtons');
   const buttons = buffer ?? items;
+  const validation = useMemo(
+    () => stopWordsPolicySchema.safeParse({ sanctions: { botButtons: buttons } }),
+    [buttons],
+  );
+  useEffect(() => {
+    if (focusRequest?.field !== 'stopWordsPolicy.sanctions.botButtons') return;
+    const localPath = validation.success ? null : validation.error.issues[0]?.path;
+    const index = typeof focusRequest.path[3] === 'number' ? focusRequest.path[3] : localPath?.[2];
+    const leaf = typeof focusRequest.path[4] === 'string' ? focusRequest.path[4] : localPath?.[3];
+    const frame = requestAnimationFrame(() => {
+      const target =
+        typeof index === 'number' && (leaf === 'text' || leaf === 'url')
+          ? rootRef.current?.querySelector<HTMLElement>(
+              `[data-stop-words-button-index="${index}"][data-stop-words-button-field="${leaf}"]`,
+            )
+          : rootRef.current?.querySelector<HTMLElement>('input,button');
+      target?.focus();
+      target?.scrollIntoView({ block: 'nearest' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusRequest?.requestId]);
   const change = (next: BroadcastLinkButton[]) => {
-    setBuffer(next);
-    replace(next);
+    const parsed = stopWordsPolicySchema.safeParse({ sanctions: { botButtons: next } });
+    if (!parsed.success) {
+      setBuffer(next);
+      fields.setError(
+        'stopWordsPolicy.sanctions.botButtons',
+        'Укажите название и корректную ссылку для каждой кнопки.',
+      );
+      return;
+    }
+    setBuffer(null);
+    replace(parsed.data.sanctions.botButtons);
+    fields.setError('stopWordsPolicy.sanctions.botButtons', null);
   };
   return (
-    <div className="stop-words-editor__buttons">
+    <div
+      ref={rootRef}
+      className="stop-words-editor__buttons"
+      data-stop-words-field="stopWordsPolicy.sanctions.botButtons"
+    >
       {buttons.map((button, index) => (
         <div key={index}>
           <input
             aria-label={'Название кнопки ' + (index + 1)}
+            data-stop-words-button-index={index}
+            data-stop-words-button-field="text"
+            aria-invalid={Boolean(error) || undefined}
+            aria-describedby={error ? errorId : undefined}
             value={button.text}
             maxLength={32}
             onChange={(event) =>
@@ -477,6 +602,10 @@ function StopWordsButtons({
           <input
             type="url"
             aria-label={'Ссылка кнопки ' + (index + 1)}
+            data-stop-words-button-index={index}
+            data-stop-words-button-field="url"
+            aria-invalid={Boolean(error) || undefined}
+            aria-describedby={error ? errorId : undefined}
             value={button.url}
             onChange={(event) =>
               change(
@@ -506,8 +635,10 @@ function StopWordsButtons({
         <AppIcon icon="Plus" />
         Добавить кнопку
       </button>
-      {fields.error('stopWordsPolicy.sanctions.botButtons') ? (
-        <p role="alert">{fields.error('stopWordsPolicy.sanctions.botButtons')}</p>
+      {error ? (
+        <p id={errorId} role="alert">
+          {error}
+        </p>
       ) : null}
     </div>
   );
@@ -517,8 +648,8 @@ function StopWordsMuteDuration({ fields }: { fields: ChatSettingsFieldAdapter })
   const path = 'stopWordsPolicy.sanctions.muteDurationHours';
   const state = fields.read(path);
   const [buffer, setBuffer] = useState<string | null>(null);
-  const key = state.kind === 'common' ? state.value : state.kind;
-  useEffect(() => setBuffer(null), [key]);
+  const errorId = useId();
+  const error = fields.error(path);
   return (
     <label className="stop-words-editor__field">
       Длительность ограничения, часов
@@ -527,6 +658,9 @@ function StopWordsMuteDuration({ fields }: { fields: ChatSettingsFieldAdapter })
         min={1}
         max={168}
         aria-label="Длительность ограничения, часов"
+        data-stop-words-field={path}
+        aria-invalid={Boolean(error) || undefined}
+        aria-describedby={error ? errorId : undefined}
         value={buffer ?? (state.kind === 'common' ? state.value : '')}
         placeholder={state.kind === 'mixed' ? 'Разные значения' : undefined}
         disabled={state.kind === 'loading'}
@@ -538,10 +672,16 @@ function StopWordsMuteDuration({ fields }: { fields: ChatSettingsFieldAdapter })
             fields.setError(path, 'Укажите от 1 до 168 часов.');
             return;
           }
+          setBuffer(null);
           fields.setScalar(path, value);
+          fields.setError(path, null);
         }}
       />
-      {fields.error(path) ? <span role="alert">{fields.error(path)}</span> : null}
+      {error ? (
+        <span id={errorId} role="alert">
+          {error}
+        </span>
+      ) : null}
     </label>
   );
 }
@@ -550,6 +690,8 @@ function StopWordsAdminUrl({ fields }: { fields: ChatSettingsFieldAdapter }) {
   const path = 'stopWordsPolicy.sanctions.adminContactButtonUrl';
   const state = fields.read(path);
   const [buffer, setBuffer] = useState<string | null>(null);
+  const errorId = useId();
+  const error = fields.error(path);
   const key = state.kind === 'common' ? state.value : state.kind;
   useEffect(() => setBuffer(null), [key]);
   return (
@@ -557,15 +699,23 @@ function StopWordsAdminUrl({ fields }: { fields: ChatSettingsFieldAdapter }) {
       <input
         type="url"
         aria-label="Ссылка администратора"
+        data-stop-words-field={path}
+        aria-invalid={Boolean(error) || undefined}
+        aria-describedby={error ? errorId : undefined}
         value={buffer ?? (state.kind === 'common' ? state.value : '')}
         placeholder={state.kind === 'mixed' ? 'Разные значения' : undefined}
         disabled={state.kind === 'loading'}
         onChange={(event) => {
           setBuffer(event.target.value);
           fields.setScalar(path, event.target.value);
+          fields.setError(path, null);
         }}
       />
-      {fields.error(path) ? <p role="alert">{fields.error(path)}</p> : null}
+      {error ? (
+        <p id={errorId} role="alert">
+          {error}
+        </p>
+      ) : null}
     </>
   );
 }
@@ -573,6 +723,47 @@ function StopWordsAdminUrl({ fields }: { fields: ChatSettingsFieldAdapter }) {
 export function SharedStopWordsSettingsFields({ fields, context }: Props) {
   const [mode, setMode] = useState<'words' | 'domains'>('words');
   const [speech, setSpeech] = useState<'explanation' | 'warning' | null>(null);
+  const rootRef = useRef<HTMLFieldSetElement>(null);
+  const sanctionsRef = useRef<HTMLDetailsElement>(null);
+  const imageScanRef = useRef<HTMLDetailsElement>(null);
+  const [replacementAction, setReplacementAction] = useState<(() => void) | null>(null);
+  const editor = context.stopWordsEditor;
+  const storageBlocked = editor?.storageStatus === 'invalid' && !editor.replacementAuthorized;
+  const focusRequest = editor?.focusRequest;
+  useEffect(() => {
+    if (!focusRequest || storageBlocked) return;
+    const { field } = focusRequest;
+    if (field === 'stopWordsPolicy.rules') setMode('words');
+    if (field === 'stopWordsPolicy.domains') setMode('domains');
+    if (field.startsWith('stopWordsPolicy.sanctions.') && sanctionsRef.current)
+      sanctionsRef.current.open = true;
+    if (field === 'stopWordsPolicy.imageScanEnabled' && imageScanRef.current)
+      imageScanRef.current.open = true;
+    if (
+      field === 'stopWordsPolicy.sanctions.botMessageText' ||
+      field.endsWith('.media.explanation')
+    ) {
+      setSpeech('explanation');
+      return;
+    }
+    if (field === 'stopWordsPolicy.sanctions.warnMessageText' || field.endsWith('.media.warning')) {
+      setSpeech('warning');
+      return;
+    }
+    setSpeech(null);
+    if (field === 'stopWordsPolicy.sanctions.botButtons') return;
+    const frame = requestAnimationFrame(() => {
+      const owner = rootRef.current?.querySelector<HTMLElement>(
+        `[data-stop-words-field="${field}"]`,
+      );
+      const target = owner?.matches('input,textarea,button')
+        ? owner
+        : owner?.querySelector<HTMLElement>('input,textarea,button');
+      target?.focus();
+      target?.scrollIntoView({ block: 'nearest' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusRequest?.requestId, storageBlocked]);
   const rules = fields.read('stopWordsPolicy.rules');
   const domains = fields.read('stopWordsPolicy.domains');
   const buttons = fields.read('stopWordsPolicy.sanctions.botButtons');
@@ -580,9 +771,12 @@ export function SharedStopWordsSettingsFields({ fields, context }: Props) {
   const toggle = (path: ChatBooleanField, label: string, children?: ReactNode) => (
     <Toggle
       label={label}
+      field={path as StopWordsFieldPath}
+      error={fields.error(path)}
       state={state(path)}
       onChange={(next) => {
         fields.setScalar(path, next);
+        fields.setError(path, null);
         if (!next && path === 'stopWordsPolicy.sanctions.botButtonEnabled')
           fields.setError('stopWordsPolicy.sanctions.botButtons', null);
         if (!next && path === 'stopWordsPolicy.sanctions.adminContactButtonEnabled')
@@ -622,180 +816,253 @@ export function SharedStopWordsSettingsFields({ fields, context }: Props) {
   )
     return <div role="alert">Не удалось загрузить стоп-слова. Обновите настройки.</div>;
   return (
-    <fieldset className="stop-words-editor" disabled={fields.readOnly}>
-      {toggle('stopWordsPolicy.enabled', 'Стоп-слова включены')}
-      <SegmentedControl
-        value={mode}
-        ariaLabel="Запрещённые слова и сайты"
-        options={[
-          {
-            value: 'words',
-            label: 'Слова и фразы',
-            count: rules.kind === 'common' ? rules.value.length : undefined,
-          },
-          {
-            value: 'domains',
-            label: 'Сайты',
-            count: domains.kind === 'common' ? domains.value.length : undefined,
-          },
-        ]}
-        onChange={setMode}
+    <>
+      {storageBlocked ? (
+        <div role="alert">
+          <p>Сохранённые настройки стоп-слов требуют проверки.</p>
+          <button
+            type="button"
+            className="button button--accent"
+            disabled={fields.readOnly}
+            onClick={() => {
+              if (editor) setReplacementAction(() => editor.onAuthorizeReplacement);
+            }}
+          >
+            Создать новый список
+          </button>
+        </div>
+      ) : null}
+      {editor?.moduleError ? <p role="alert">{editor.moduleError}</p> : null}
+      <ActionConfirmSheet
+        id="shared-stop-words-replace"
+        open={replacementAction !== null}
+        title="Создать новый список?"
+        summary="Сохранённые настройки будут заменены после сохранения нового списка."
+        confirmLabel="Создать"
+        onClose={() => setReplacementAction(null)}
+        onConfirm={() => {
+          replacementAction?.();
+          setReplacementAction(null);
+        }}
       />
-      <div hidden={mode !== 'words'}>
-        {rules.kind === 'common' ? (
-          <StopWordsListEditor
-            key="words"
-            mode="words"
-            fields={fields}
-            items={rules.value}
-            replace={(next) => fields.replaceList('stopWordsPolicy.rules', next)}
-            toolbar={mode === 'words' ? context.stopWordsTools?.toolbar : null}
-            notice={mode === 'words' ? context.stopWordsTools?.notice : null}
-          />
-        ) : (
-          <FieldList<StopWordsRule>
-            label="Слова и фразы"
-            state={rules}
-            disabled={fields.readOnly}
-            onChange={(next) => fields.replaceList('stopWordsPolicy.rules', next)}
-          >
-            {(items, replace) => (
-              <StopWordsListEditor
-                key="words"
-                mode="words"
-                fields={fields}
-                items={items}
-                replace={replace}
-              />
-            )}
-          </FieldList>
-        )}
-      </div>
-      <div hidden={mode !== 'domains'}>
-        {domains.kind === 'common' ? (
-          <StopWordsListEditor
-            key="domains"
-            mode="domains"
-            fields={fields}
-            items={domains.value}
-            replace={(next) => fields.replaceList('stopWordsPolicy.domains', next)}
-            toolbar={mode === 'domains' ? context.stopWordsTools?.toolbar : null}
-            notice={mode === 'domains' ? context.stopWordsTools?.notice : null}
-          />
-        ) : (
-          <FieldList<string>
-            label="Сайты"
-            state={domains}
-            disabled={fields.readOnly}
-            onChange={(next) => fields.replaceList('stopWordsPolicy.domains', next)}
-          >
-            {(items, replace) => (
-              <StopWordsListEditor
-                key="domains"
-                mode="domains"
-                fields={fields}
-                items={items}
-                replace={replace}
-              />
-            )}
-          </FieldList>
-        )}
-      </div>
-      {context.stopWordsTools?.preview}
-      <details className="stop-words-editor__section">
-        <summary>
-          Наказания и сообщения бота<small>{summary}</small>
-        </summary>
-        {toggle(
-          'stopWordsPolicy.sanctions.botMessageEnabled',
-          'Объяснение',
-          <button
-            type="button"
-            className="stop-words-editor__icon"
-            title="Изменить объяснение"
-            aria-label="Изменить объяснение"
-            onClick={() => setSpeech('explanation')}
-          >
-            <AppIcon icon="EditPencil" />
-          </button>,
-        )}
-        {toggle(
-          'stopWordsPolicy.sanctions.warnEnabled',
-          'Предупреждение',
-          <button
-            type="button"
-            className="stop-words-editor__icon"
-            title="Изменить предупреждение"
-            aria-label="Изменить предупреждение"
-            onClick={() => setSpeech('warning')}
-          >
-            <AppIcon icon="EditPencil" />
-          </button>,
-        )}
-        {toggle('stopWordsPolicy.sanctions.muteEnabled', 'Ограничение')}
-        {shown(state('stopWordsPolicy.sanctions.muteEnabled')) ? (
-          <StopWordsMuteDuration fields={fields} />
-        ) : null}
-        {toggle('stopWordsPolicy.sanctions.banEnabled', 'Блокировка')}
-        {toggle('stopWordsPolicy.sanctions.rulesButtonEnabled', 'Кнопка правил')}
-        {toggle(
-          'stopWordsPolicy.sanctions.adminContactButtonEnabled',
-          'Связаться с администратором',
-        )}
-        {shown(state('stopWordsPolicy.sanctions.adminContactButtonEnabled')) ? (
-          <StopWordsAdminUrl fields={fields} />
-        ) : null}
-        {toggle('stopWordsPolicy.sanctions.botButtonEnabled', 'Кнопки сообщения')}
-        {shown(state('stopWordsPolicy.sanctions.botButtonEnabled')) ? (
-          buttons.kind === 'common' ? (
-            <StopWordsButtons
+      <fieldset
+        ref={rootRef}
+        className="stop-words-editor"
+        disabled={fields.readOnly || storageBlocked}
+        hidden={storageBlocked}
+        style={storageBlocked ? { display: 'none' } : undefined}
+      >
+        {toggle('stopWordsPolicy.enabled', 'Стоп-слова включены')}
+        <SegmentedControl
+          value={mode}
+          ariaLabel="Запрещённые слова и сайты"
+          options={[
+            {
+              value: 'words',
+              label: 'Слова и фразы',
+              count: rules.kind === 'common' ? rules.value.length : undefined,
+            },
+            {
+              value: 'domains',
+              label: 'Сайты',
+              count: domains.kind === 'common' ? domains.value.length : undefined,
+            },
+          ]}
+          onChange={setMode}
+        />
+        <div hidden={mode !== 'words'}>
+          {rules.kind === 'common' ? (
+            <StopWordsListEditor
+              key="words"
+              mode="words"
+              active={mode === 'words'}
+              focusRequest={focusRequest}
               fields={fields}
-              items={buttons.value}
-              replace={(next) => fields.replaceList('stopWordsPolicy.sanctions.botButtons', next)}
+              items={rules.value}
+              replace={(next) => fields.replaceList('stopWordsPolicy.rules', next)}
+              toolbar={mode === 'words' ? context.stopWordsTools?.toolbar : null}
+              notice={mode === 'words' ? context.stopWordsTools?.notice : null}
             />
           ) : (
-            <FieldList<BroadcastLinkButton>
-              label="Кнопки сообщения"
-              state={buttons}
+            <FieldList<StopWordsRule>
+              label="Слова и фразы"
+              state={rules}
               disabled={fields.readOnly}
-              onChange={(next) => fields.replaceList('stopWordsPolicy.sanctions.botButtons', next)}
+              onChange={(next) => fields.replaceList('stopWordsPolicy.rules', next)}
             >
               {(items, replace) => (
-                <StopWordsButtons fields={fields} items={items} replace={replace} />
+                <StopWordsListEditor
+                  key="words"
+                  mode="words"
+                  active={mode === 'words'}
+                  focusRequest={focusRequest}
+                  fields={fields}
+                  items={items}
+                  replace={replace}
+                />
               )}
             </FieldList>
-          )
+          )}
+        </div>
+        <div hidden={mode !== 'domains'}>
+          {domains.kind === 'common' ? (
+            <StopWordsListEditor
+              key="domains"
+              mode="domains"
+              active={mode === 'domains'}
+              focusRequest={focusRequest}
+              fields={fields}
+              items={domains.value}
+              replace={(next) => fields.replaceList('stopWordsPolicy.domains', next)}
+              toolbar={mode === 'domains' ? context.stopWordsTools?.toolbar : null}
+              notice={mode === 'domains' ? context.stopWordsTools?.notice : null}
+            />
+          ) : (
+            <FieldList<string>
+              label="Сайты"
+              state={domains}
+              disabled={fields.readOnly}
+              onChange={(next) => fields.replaceList('stopWordsPolicy.domains', next)}
+            >
+              {(items, replace) => (
+                <StopWordsListEditor
+                  key="domains"
+                  mode="domains"
+                  active={mode === 'domains'}
+                  focusRequest={focusRequest}
+                  fields={fields}
+                  items={items}
+                  replace={replace}
+                />
+              )}
+            </FieldList>
+          )}
+        </div>
+        {context.stopWordsTools?.preview}
+        <details ref={sanctionsRef} className="stop-words-editor__section">
+          <summary>
+            Наказания и сообщения бота<small>{summary}</small>
+          </summary>
+          {toggle(
+            'stopWordsPolicy.sanctions.botMessageEnabled',
+            'Объяснение',
+            <button
+              type="button"
+              className="stop-words-editor__icon"
+              title="Изменить объяснение"
+              aria-label="Изменить объяснение"
+              onClick={() => setSpeech('explanation')}
+            >
+              <AppIcon icon="EditPencil" />
+            </button>,
+          )}
+          {toggle(
+            'stopWordsPolicy.sanctions.warnEnabled',
+            'Предупреждение',
+            <button
+              type="button"
+              className="stop-words-editor__icon"
+              title="Изменить предупреждение"
+              aria-label="Изменить предупреждение"
+              onClick={() => setSpeech('warning')}
+            >
+              <AppIcon icon="EditPencil" />
+            </button>,
+          )}
+          {toggle('stopWordsPolicy.sanctions.muteEnabled', 'Ограничение')}
+          {shown(state('stopWordsPolicy.sanctions.muteEnabled')) ||
+          fields.error('stopWordsPolicy.sanctions.muteDurationHours') ? (
+            <StopWordsMuteDuration fields={fields} />
+          ) : null}
+          {toggle('stopWordsPolicy.sanctions.banEnabled', 'Блокировка')}
+          {toggle('stopWordsPolicy.sanctions.rulesButtonEnabled', 'Кнопка правил')}
+          {toggle(
+            'stopWordsPolicy.sanctions.adminContactButtonEnabled',
+            'Связаться с администратором',
+          )}
+          {shown(state('stopWordsPolicy.sanctions.adminContactButtonEnabled')) ||
+          fields.error('stopWordsPolicy.sanctions.adminContactButtonUrl') ? (
+            <StopWordsAdminUrl fields={fields} />
+          ) : null}
+          {toggle('stopWordsPolicy.sanctions.botButtonEnabled', 'Кнопки сообщения')}
+          {shown(state('stopWordsPolicy.sanctions.botButtonEnabled')) ||
+          fields.error('stopWordsPolicy.sanctions.botButtons') ? (
+            buttons.kind === 'common' ? (
+              <StopWordsButtons
+                fields={fields}
+                focusRequest={focusRequest}
+                items={buttons.value}
+                replace={(next) => fields.replaceList('stopWordsPolicy.sanctions.botButtons', next)}
+              />
+            ) : (
+              <FieldList<BroadcastLinkButton>
+                label="Кнопки сообщения"
+                state={buttons}
+                disabled={fields.readOnly}
+                onChange={(next) =>
+                  fields.replaceList('stopWordsPolicy.sanctions.botButtons', next)
+                }
+              >
+                {(items, replace) => (
+                  <StopWordsButtons
+                    fields={fields}
+                    items={items}
+                    replace={replace}
+                    focusRequest={focusRequest}
+                  />
+                )}
+              </FieldList>
+            )
+          ) : null}
+        </details>
+        <details ref={imageScanRef} className="stop-words-editor__section">
+          <summary>
+            Текст на изображениях<small>Только удаление</small>
+          </summary>
+          {toggle('stopWordsPolicy.imageScanEnabled', 'Проверять изображения')}
+          {context.stopWordsTools?.imageScan}
+          {context.mode === 'network' ? (
+            <p role="status">Доступность распознавания зависит от каждого выбранного чата.</p>
+          ) : null}
+        </details>
+        {speech ? (
+          <Suspense fallback={<Spinner label="Загружаем редактор сообщения" />}>
+            <SpeechEditor
+              fields={fields}
+              path={
+                speech === 'explanation'
+                  ? 'stopWordsPolicy.sanctions.botMessageText'
+                  : 'stopWordsPolicy.sanctions.warnMessageText'
+              }
+              mediaPath={
+                speech === 'explanation'
+                  ? 'stopWordsPolicy.sanctions.media.explanation'
+                  : 'stopWordsPolicy.sanctions.media.warning'
+              }
+              title={speech === 'explanation' ? 'Объяснение' : 'Предупреждение'}
+              textError={fields.error(
+                speech === 'explanation'
+                  ? 'stopWordsPolicy.sanctions.botMessageText'
+                  : 'stopWordsPolicy.sanctions.warnMessageText',
+              )}
+              mediaError={fields.error(
+                speech === 'explanation'
+                  ? 'stopWordsPolicy.sanctions.media.explanation'
+                  : 'stopWordsPolicy.sanctions.media.warning',
+              )}
+              focusRequest={
+                focusRequest
+                  ? {
+                      target: focusRequest.field.includes('.media.') ? 'image' : 'text',
+                      requestId: focusRequest.requestId,
+                    }
+                  : undefined
+              }
+              onClose={() => setSpeech(null)}
+            />
+          </Suspense>
         ) : null}
-      </details>
-      <details className="stop-words-editor__section">
-        <summary>
-          Текст на изображениях<small>Только удаление</small>
-        </summary>
-        {toggle('stopWordsPolicy.imageScanEnabled', 'Проверять изображения')}
-        {context.stopWordsTools?.imageScan}
-        {context.mode === 'network' ? (
-          <p role="status">Доступность распознавания зависит от каждого выбранного чата.</p>
-        ) : null}
-      </details>
-      {speech ? (
-        <Suspense fallback={<Spinner label="Загружаем редактор сообщения" />}>
-          <SpeechEditor
-            fields={fields}
-            path={
-              speech === 'explanation'
-                ? 'stopWordsPolicy.sanctions.botMessageText'
-                : 'stopWordsPolicy.sanctions.warnMessageText'
-            }
-            mediaPath={
-              speech === 'explanation'
-                ? 'stopWordsPolicy.sanctions.media.explanation'
-                : 'stopWordsPolicy.sanctions.media.warning'
-            }
-            title={speech === 'explanation' ? 'Объяснение' : 'Предупреждение'}
-            onClose={() => setSpeech(null)}
-          />
-        </Suspense>
-      ) : null}
-    </fieldset>
+      </fieldset>
+    </>
   );
 }

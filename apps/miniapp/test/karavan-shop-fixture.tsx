@@ -5,6 +5,9 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from '../src/components/ui/toast';
 import { SettingsStorefrontSection } from '../src/pages/settings/settings-storefront-section';
+import { SharedChatSettingsSection } from '../src/pages/settings/shared-chat-settings-section';
+import { createChatSettingsFieldAdapter } from '../src/features/network-settings/settings-field-bindings';
+import { chatSettingsSchema } from '@maxim/contracts/settings';
 import '../src/pages/settings-page';
 import '../src/styles/moderation-workspace.css';
 const params = new URLSearchParams(location.search);
@@ -263,14 +266,15 @@ const api = {
         enabled: true,
         actorMaxUserId: '777',
         sellerBotUrl: 'https://max.ru/synthetic_seller_bot',
-        marketplace: market,
-        binding,
+        marketplace: params.get('scenario') === 'unbound' ? null : market,
+        binding: params.get('scenario') === 'unbound' ? null : binding,
+        currentChatTitle: 'Соседи',
         permissions,
         counts,
         canManage: true,
         buyerUrl: 'https://max.ru/synthetic_buyer_bot?startapp=m_synthetic-shop',
         previewUrl: 'https://max.ru/synthetic_buyer_bot?startapp=mp_synthetic-shop',
-        bindings: [binding],
+        bindings: params.get('scenario') === 'unbound' ? [] : [binding],
         publicationChoices: [],
         setupOperation: null,
       };
@@ -278,21 +282,33 @@ const api = {
   },
   requestKeepalive: () => {},
 };
-const initial = {
+const initial = chatSettingsSchema.parse({
   karavanStorefrontEnabled: true,
   karavanStorefrontAdminsOnly: false,
   karavanStorefrontMessageText: '',
   karavanStorefrontOpenButtonText: '',
   karavanStorefrontCatalogButtonText: '',
   karavanStorefrontCreateButtonText: '',
-};
+});
 function Harness() {
   const [open, setOpen] = React.useState(false),
     [draft, setDraft] = React.useState(initial),
     [saved, setSaved] = React.useState(initial);
   const change = (key: string, value: unknown) => setDraft((old) => ({ ...old, [key]: value }));
+  const fields = createChatSettingsFieldAdapter({
+    settings: draft,
+    baseline: saved,
+    onChange: setDraft,
+  });
   return (
     <SettingsStorefrontSection
+      sharedContent={
+        <SharedChatSettingsSection
+          section="storefront"
+          fields={fields}
+          context={{ mode: 'single', api }}
+        />
+      }
       api={api}
       chatId="-123"
       draft={draft}

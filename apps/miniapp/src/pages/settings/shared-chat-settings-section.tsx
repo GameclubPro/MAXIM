@@ -7,7 +7,11 @@ import type {
 } from '../../features/network-settings/field-model';
 import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
 import { Spinner } from '../../components/ui/spinner';
-import type { DuplicatePhotoEffectivePolicy } from '@maxim/contracts/settings';
+import type {
+  DuplicatePhotoEffectivePolicy,
+  StopWordsStorageStatus,
+} from '@maxim/contracts/settings';
+import type { StopWordsFocusRequest } from './stop-words-settings-feedback';
 
 export type SharedChatSettingsContext = {
   mode: 'single' | 'network';
@@ -15,6 +19,13 @@ export type SharedChatSettingsContext = {
   api: ApiTransport;
   sectionTools?: Partial<Record<ApplySectionKey, ReactNode>>;
   stopWordsTools?: Partial<Record<'toolbar' | 'notice' | 'preview' | 'imageScan', ReactNode>>;
+  stopWordsEditor?: {
+    storageStatus?: StopWordsStorageStatus;
+    replacementAuthorized: boolean;
+    onAuthorizeReplacement: () => void;
+    focusRequest?: StopWordsFocusRequest;
+    moduleError?: string | null;
+  };
   navigationAllowlist?: ReactNode;
   requiredSubscriptionSources?: ReactNode;
   renderAdminContact?: (input: {

@@ -8,6 +8,7 @@ const removedFixtureFile = new URL('preview-transport-fixtures.ts', apiDirectory
 
 const domainLimits = new Map([
   ['preview-chat-closure.ts', 100],
+  ['preview-stop-words.ts', 300],
   ['preview-transport-autoposts.ts', 1_500],
   ['preview-transport-dialog.ts', 1_500],
   ['preview-transport-events-fixtures.ts', 1_500],

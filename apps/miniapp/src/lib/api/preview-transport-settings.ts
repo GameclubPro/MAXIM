@@ -1,12 +1,8 @@
 import { SECTION_SETTING_KEYS } from '../../pages/settings-page-state';
 import { createPreviewOpenChatClosure } from './preview-chat-closure';
 import {
-  StopWordsMatcher,
   duplicateDiagnosticsResponseSchema,
-  normalizeStopWordsDomain,
   stopWordsPolicySchema,
-  stopWordsPreviewRequestSchema,
-  updateStopWordsRequestSchema,
 } from '@maxim/contracts/settings';
 import {
   addDomainRequestSchema,
@@ -93,6 +89,7 @@ import {
 import type { PreviewState } from './preview-transport-state';
 import { handlePreviewReports } from './preview-reports';
 import { getPreviewMessageRetention } from './preview-message-retention';
+import { handlePreviewStopWords } from './preview-stop-words';
 
 function activePreviewDomains(state: PreviewState) {
   const now = readPreviewClock(state.clock).getTime();
@@ -178,7 +175,11 @@ export function buildChatSettingsScreen(
   return chatSettingsScreenResponseSchema.parse({
     messageRetention: getPreviewMessageRetention(state, chatId),
     closure: createPreviewOpenChatClosure(state.chatSettings, readPreviewClock(state.clock)),
-    settings: state.chatSettings,
+    settings:
+      state.stopWordsStorageStatus === 'invalid'
+        ? { ...state.chatSettings, stopWordsPolicy: stopWordsPolicySchema.parse({}) }
+        : state.chatSettings,
+    stopWordsStorageStatus: state.stopWordsStorageStatus,
     commercialPhotoModerationMode: 'OFF',
     commercialAiModerationMode: 'DELETE_ONLY',
     reportsAvailable: state.reportsAvailable,
@@ -599,7 +600,11 @@ export async function handleChatRequest(
 
   if (tail[0] === 'settings' && tail.length === 1) {
     if (method === 'GET') {
-      return cloneJson(state.chatSettings);
+      return cloneJson(
+        state.stopWordsStorageStatus === 'invalid'
+          ? { ...state.chatSettings, stopWordsPolicy: stopWordsPolicySchema.parse({}) }
+          : state.chatSettings,
+      );
     }
 
     if (method === 'PUT') {
@@ -628,66 +633,17 @@ export async function handleChatRequest(
           Math.max(Date.now(), Date.parse(request.settingsRevision) + 1),
         ).toISOString(),
       });
-      return cloneJson(state.chatSettings);
+      return cloneJson(
+        state.stopWordsStorageStatus === 'invalid'
+          ? { ...state.chatSettings, stopWordsPolicy: stopWordsPolicySchema.parse({}) }
+          : state.chatSettings,
+      );
     }
   }
 
   if (tail[0] === 'stop-words') {
     assertPreviewSettingsScreenAvailable(state);
-    if (tail[1] === 'status' && method === 'GET')
-      return { revision: state.chatSettings.stopWordsRevision ?? 0, imageScanStatus: 'shadow' };
-    if (tail.length === 1 && method === 'GET')
-      return cloneJson({
-        policy: state.chatSettings.stopWordsPolicy ?? stopWordsPolicySchema.parse({}),
-        revision: state.chatSettings.stopWordsRevision ?? 0,
-        imageScanStatus: 'shadow',
-      });
-    if (tail.length === 1 && method === 'PUT') {
-      const failure = state.stopWordsWriteError;
-      state.stopWordsWriteError = null;
-      if (failure === 'network')
-        throw new ApiRequestError(503, '{}', 'Сервис временно недоступен. Повторите позже.');
-      if (failure === 'conflict') {
-        state.chatSettings.stopWordsRevision = (state.chatSettings.stopWordsRevision ?? 0) + 1;
-        throw new ApiRequestError(409, '{}', 'Стоп-слова уже изменены. Обновите список.');
-      }
-      const payload = updateStopWordsRequestSchema.parse(parseJsonBody(init));
-      if (payload.expectedRevision !== (state.chatSettings.stopWordsRevision ?? 0))
-        throw new ApiRequestError(409, '{}', 'Стоп-слова уже изменены. Обновите список.');
-      state.chatSettings = {
-        ...state.chatSettings,
-        stopWordsPolicy: payload.policy,
-        stopWordsRevision: payload.expectedRevision + 1,
-      };
-      return cloneJson({
-        policy: payload.policy,
-        revision: payload.expectedRevision + 1,
-        imageScanStatus: 'shadow',
-      });
-    }
-    if (tail[1] === 'preview' && method === 'POST') {
-      const input = stopWordsPreviewRequestSchema.parse(parseJsonBody(init));
-      const matcher = new StopWordsMatcher();
-      return {
-        enabled: input.policy.enabled,
-        matches: matcher.detect({
-          ...input,
-          isLinkAllowlisted: (link) => {
-            const host = normalizeStopWordsDomain(link);
-            return state.chatDomains.some((entry) => {
-              if (
-                entry.removeAfterAt &&
-                Date.parse(entry.removeAfterAt) <= readPreviewClock(state.clock).getTime()
-              )
-                return false;
-              return entry.matchType === 'DOMAIN'
-                ? host === entry.domain || host?.endsWith('.' + entry.domain) === true
-                : link === entry.domain;
-            });
-          },
-        }),
-      };
-    }
+    return handlePreviewStopWords(state, tail, url, method, init);
   }
 
   if (tail[0] === 'settings' && tail[1] === 'apply-section-to-all' && method === 'POST') {
@@ -721,10 +677,27 @@ export async function handleChatRequest(
         );
     }
     if (payload?.section === 'stopWords') {
+      if (state.stopWordsStorageStatus === 'invalid')
+        throw new ApiRequestError(
+          409,
+          JSON.stringify({
+            code: 'STOP_WORDS_POLICY_REVIEW_REQUIRED',
+            revision: state.chatSettings.stopWordsRevision ?? 0,
+          }),
+          'Проверьте сохранённый список перед заменой.',
+        );
       if (payload.expectedSourceRevision !== (state.chatSettings.stopWordsRevision ?? 0))
-        throw new ApiRequestError(409, '{}', 'Стоп-слова уже изменены.');
-      if (targetChats.some((chat) => chat.id === chatId))
+        throw new ApiRequestError(
+          409,
+          JSON.stringify({ code: 'STOP_WORDS_REVISION_CONFLICT' }),
+          'Стоп-слова уже изменены.',
+        );
+      if (targetChats.some((chat) => chat.id === chatId)) {
         state.chatSettings.stopWordsRevision = payload.expectedSourceRevision + 1;
+        state.chatSettings.settingsRevision = new Date(
+          Math.max(Date.now(), Date.parse(state.chatSettings.settingsRevision ?? '') + 1 || 0),
+        ).toISOString();
+      }
     }
     return applySectionToAllResponseSchema.parse({
       section: payload?.section ?? 'links',

@@ -43,6 +43,9 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import type {ApiTransport} from '../../../src/lib/api/transport';
 import {ToastProvider} from '../../../src/components/ui/toast';
 import {SettingsStorefrontSection} from '../../../src/pages/settings/settings-storefront-section';
+import {SharedChatSettingsSection} from '../../../src/pages/settings/shared-chat-settings-section';
+import {createChatSettingsFieldAdapter} from '../../../src/features/network-settings/settings-field-bindings';
+import {chatSettingsSchema} from '@maxim/contracts/settings';
 import '../../../src/styles.css';
 // Load the actual route and shell styles, including lazy settings dependencies.
 import '../../../src/pages/settings-page';
@@ -62,13 +65,15 @@ const api={request:async(path,init={})=>{
   if(scenario==='loading') return new Promise(resolve=>{window.__resolveShop=()=>resolve({enabled:false});});
   return {enabled:false};
 },requestKeepalive:()=>{}} satisfies ApiTransport;
-const initial={karavanStorefrontEnabled:scenario!=='off',karavanStorefrontAdminsOnly:false,karavanStorefrontMessageText:'',karavanStorefrontOpenButtonText:'',karavanStorefrontCatalogButtonText:'',karavanStorefrontCreateButtonText:''};
+const initial=chatSettingsSchema.parse({karavanStorefrontEnabled:scenario!=='off',karavanStorefrontAdminsOnly:false,karavanStorefrontMessageText:'',karavanStorefrontOpenButtonText:'',karavanStorefrontCatalogButtonText:'',karavanStorefrontCreateButtonText:''});
 function Harness(){
   const [open,setOpen]=React.useState(false);
   const [draft,setDraft]=React.useState(initial);
   const [saved,setSaved]=React.useState(initial);
   const change=(field,value)=>setDraft(current=>({...current,[field]:value}));
+  const fields=createChatSettingsFieldAdapter({settings:draft,baseline:saved,onChange:setDraft});
   return <SettingsStorefrontSection api={api} chatId="-123" draft={draft} expanded={open} summary="" status=""
+    sharedContent={<SharedChatSettingsSection section="storefront" fields={fields} context={{mode:'single',api}}/>}
     hasChanges={JSON.stringify(draft)!==JSON.stringify(saved)} onToggleSection={()=>setOpen(value=>!value)}
     onDiscardChanges={()=>setDraft(saved)} onFieldChange={value=>change('karavanStorefrontEnabled',value)}
     onAdminsOnlyChange={value=>change('karavanStorefrontAdminsOnly',value)} onTextChange={change}

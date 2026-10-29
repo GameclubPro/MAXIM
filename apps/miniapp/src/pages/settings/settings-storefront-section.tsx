@@ -342,7 +342,7 @@ export function SettingsStorefrontSection({
           >
             {expanded ? (
               <div className="settings-section__collapse-inner">
-                {!sharedContent && chatId ? (
+                {chatId ? (
                   <Suspense fallback={<Spinner size="sm" label="Проверяем магазин" />}>
                     <KaravanMarketplacePanel
                       key={chatId}
@@ -354,8 +354,9 @@ export function SettingsStorefrontSection({
                       discardPublications={onDiscardChanges}
                     />
                   </Suspense>
-                ) : null}
-                {sharedContent ? publicationControls : null}
+                ) : (
+                  publicationControls
+                )}
               </div>
             ) : null}
           </div>

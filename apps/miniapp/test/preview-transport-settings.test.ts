@@ -13,7 +13,109 @@ import {
   updateChannelPostSignature,
   updateChannelSettings,
 } from '../src/lib/api/channel-settings-client';
-import type { ChatSettings } from '@maxim/contracts/settings';
+import {
+  stopWordsPolicySchema,
+  type ChatSettings,
+  type ChatSettingsScreenResponse,
+} from '@maxim/contracts/settings';
+import { getStopWords, updateStopWords } from '../src/lib/api/stop-words-client';
+
+test('preview stop-word receipts share full-screen revision, preserve modes and retry without another revision', async () => {
+  const api = createPreviewApiTransport();
+  const before = await getStopWords(api, 'preview-chat');
+  const screen = (await api.request(
+    '/chats/preview-chat/settings-screen',
+  )) as ChatSettingsScreenResponse;
+  assert.equal(screen.stopWordsStorageStatus, 'valid');
+  assert.equal(before.storageStatus, 'valid');
+  assert.equal(before.settingsRevision, screen.settings.settingsRevision);
+  const policy = stopWordsPolicySchema.parse({
+    enabled: true,
+    rules: [
+      { id: 'exact', value: 'казино', kind: 'WORD', enabled: true, matchMode: 'EXACT' },
+      { id: 'masked', value: 'реклама', kind: 'WORD', enabled: true, matchMode: 'MASKED' },
+    ],
+  });
+  const saved = await updateStopWords(api, 'preview-chat', policy, before.revision);
+  assert.equal(saved.revision, before.revision + 1);
+  assert.ok(Date.parse(saved.settingsRevision!) > Date.parse(before.settingsRevision!));
+  assert.deepEqual(await updateStopWords(api, 'preview-chat', policy, before.revision), saved);
+  assert.deepEqual(
+    (await getStopWords(api, 'preview-chat')).policy.rules.map((rule) => rule.matchMode),
+    ['EXACT', 'MASKED'],
+  );
+  await assert.rejects(
+    updateStopWords(api, 'preview-chat', { ...policy, enabled: false }, before.revision),
+    (error: unknown) =>
+      error instanceof ApiRequestError && error.code === 'STOP_WORDS_REVISION_CONFLICT',
+  );
+  assert.deepEqual(await getStopWords(api, 'preview-chat'), saved);
+});
+
+test('preview invalid storage requires literal explicit standalone replacement and blocks copying', async () => {
+  const api = createPreviewApiTransport({ search: '?stopWordsStorage=invalid' });
+  const before = await getStopWords(api, 'preview-chat');
+  const screen = (await api.request(
+    '/chats/preview-chat/settings-screen',
+  )) as ChatSettingsScreenResponse;
+  assert.equal(screen.stopWordsStorageStatus, 'invalid');
+  assert.equal(before.storageStatus, 'invalid');
+  assert.equal(before.policy.enabled, false);
+  for (const replaceInvalidStorage of [undefined, false]) {
+    await assert.rejects(
+      api.request('/chats/preview-chat/stop-words', {
+        method: 'PUT',
+        body: JSON.stringify({
+          policy: before.policy,
+          expectedRevision: before.revision,
+          ...(replaceInvalidStorage === undefined ? {} : { replaceInvalidStorage }),
+        }),
+      }),
+      (error: unknown) =>
+        error instanceof ApiRequestError && error.code === 'STOP_WORDS_POLICY_REVIEW_REQUIRED',
+    );
+    assert.deepEqual(await getStopWords(api, 'preview-chat'), before);
+  }
+  await assert.rejects(
+    api.request('/chats/preview-chat/settings/apply-section-to-all', {
+      method: 'POST',
+      body: JSON.stringify({ section: 'stopWords', expectedSourceRevision: before.revision }),
+    }),
+    (error: unknown) =>
+      error instanceof ApiRequestError && error.code === 'STOP_WORDS_POLICY_REVIEW_REQUIRED',
+  );
+  const saved = await updateStopWords(api, 'preview-chat', before.policy, before.revision, {
+    replaceInvalidStorage: true,
+  });
+  assert.equal(saved.storageStatus, 'valid');
+  assert.equal(saved.revision, before.revision + 1);
+});
+
+test('preview cached-valid review transition preserves the policy until explicit replacement', async () => {
+  const api = createPreviewApiTransport({ search: '?stopWordsWriteError=review' });
+  const before = await getStopWords(api, 'preview-chat');
+  assert.equal(before.storageStatus, 'valid');
+  const policy = { ...before.policy, domains: ['new.example'] };
+  await assert.rejects(
+    updateStopWords(api, 'preview-chat', policy, before.revision),
+    (error: unknown) =>
+      error instanceof ApiRequestError && error.code === 'STOP_WORDS_POLICY_REVIEW_REQUIRED',
+  );
+  const invalid = await getStopWords(api, 'preview-chat');
+  assert.equal(invalid.storageStatus, 'invalid');
+  assert.equal(invalid.revision, before.revision);
+  await assert.rejects(
+    updateStopWords(api, 'preview-chat', policy, before.revision),
+    (error: unknown) =>
+      error instanceof ApiRequestError && error.code === 'STOP_WORDS_POLICY_REVIEW_REQUIRED',
+  );
+  assert.equal((await getStopWords(api, 'preview-chat')).revision, before.revision);
+  const saved = await updateStopWords(api, 'preview-chat', policy, before.revision, {
+    replaceInvalidStorage: true,
+  });
+  assert.deepEqual(saved.policy, policy);
+  assert.equal(saved.storageStatus, 'valid');
+});
 
 test('preview style writes preserve current custom text and media without accepting unrelated data', async () => {
   const api = createPreviewApiTransport();

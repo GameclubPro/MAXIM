@@ -1,10 +1,5 @@
-import type {
-  ChatRules,
-  ChatSettings,
-  ChatSettingsScreenResponse,
-} from '@maxim/contracts/settings';
+import type { ChatRules, ChatSettings } from '@maxim/contracts/settings';
 import type { ManagedEntityHeader } from '@maxim/contracts/managed-entities';
-import { useQueryClient } from '@tanstack/react-query';
 import {
   lazy,
   Suspense,
@@ -19,7 +14,6 @@ import '../../components/ui/managed-entity-settings-header.css';
 import '../../styles/settings-overview-steel.css';
 import '../../styles/settings-steel.css';
 import { useToast } from '../../components/ui/toast';
-import { updateSettings } from '../../lib/api/chat-settings-client';
 import type { ApiTransport } from '../../lib/api/transport';
 import { maxNotify, setMaxClosingConfirmation } from '../../lib/max-bridge';
 import { useManagedEntityLeaveGuard } from '../../lib/managed-entity-navigation';
@@ -62,6 +56,7 @@ type ChatSettingsWorkspaceLeaveGuardOptions = {
   rulesDirty: boolean;
   saving: boolean;
   validateDraft: (draft: ChatSettings) => ChatSettings | null;
+  saveSettings: (payload: ChatSettings) => Promise<void>;
   saveRules: () => Promise<ChatRules | null>;
   setDraft: Dispatch<SetStateAction<ChatSettings | null>>;
   setRulesDraft: Dispatch<SetStateAction<ChatRules | null>>;
@@ -70,7 +65,6 @@ type ChatSettingsWorkspaceLeaveGuardOptions = {
 };
 
 export function useChatSettingsWorkspaceLeaveGuard({
-  api,
   chatId,
   draft,
   serverSettings,
@@ -79,13 +73,13 @@ export function useChatSettingsWorkspaceLeaveGuard({
   rulesDirty,
   saving,
   validateDraft,
+  saveSettings,
   saveRules,
   setDraft,
   setRulesDraft,
   clearValidationErrors,
   onSettingsSaveError,
 }: ChatSettingsWorkspaceLeaveGuardOptions): void {
-  const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const dirty = settingsDirty || rulesDirty;
 
@@ -113,12 +107,7 @@ export function useChatSettingsWorkspaceLeaveGuard({
             return false;
           }
 
-          const saved = await updateSettings(api, chatId, payload);
-          setDraft(normalizeWorkspaceDraft(saved));
-          queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
-            ['settings-screen', chatId],
-            (current) => (current ? { ...current, settings: saved } : current),
-          );
+          await saveSettings(payload);
         }
 
         if (rulesDirty && !(await saveRules())) {

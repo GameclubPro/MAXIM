@@ -60,6 +60,7 @@ try {
             await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
             const home = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
             await home.getByRole('button', { name: 'Каталог', exact: true }).waitFor();
+            assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
             assert.equal(await home.locator('.karavan-shop__menu button').count(), 6);
             assert.equal(
               await home
@@ -205,18 +206,49 @@ try {
             await home.getByRole('button', { name: 'Публикации', exact: true }).click();
             panel = page.getByRole('dialog', { name: 'Публикации', exact: true });
             await panel
+              .getByRole('textbox', { name: /^Текст сообщения/ })
+              .fill('Магазин нашего чата');
+            assert.equal(await page.evaluate(() => window.__shopSaves.length), 0);
+            await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+            assert.equal(
+              await page.evaluate(() => window.__shopSaves.at(-1).karavanStorefrontMessageText),
+              'Магазин нашего чата',
+            );
+            await close('Публикации');
+            await home.getByRole('button', { name: 'Публикации', exact: true }).click();
+            assert.equal(
+              await panel.getByRole('textbox', { name: /^Текст сообщения/ }).inputValue(),
+              'Магазин нашего чата',
+            );
+            await panel
               .getByRole('checkbox', { name: 'Включить кнопку витрины Караван' })
               .uncheck();
             await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
-            assert.equal(await page.evaluate(() => window.__shopSaves.length), 1);
+            assert.equal(await page.evaluate(() => window.__shopSaves.length), 2);
             await shot('publications', panel);
             await close('Публикации');
             assert.deepEqual(errors, []);
             count++;
             if (width === 360 && theme === 'light')
-              for (const scenario of ['empty', 'error']) {
+              for (const scenario of ['empty', 'error', 'unbound']) {
                 await page.goto(`${url}?theme=${theme}&scenario=${scenario}`);
                 await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+                if (scenario === 'unbound') {
+                  await home
+                    .getByRole('button', { name: 'Подключить магазин', exact: true })
+                    .click();
+                  await home
+                    .getByRole('radio', { name: 'Выбрать существующий', exact: true })
+                    .waitFor();
+                  assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
+                  assert.ok(
+                    (await page.evaluate(() => window.__shopRequests)).every((row) => !row.body),
+                    'entering setup never creates or binds a marketplace',
+                  );
+                  await shot(scenario, home);
+                  assert.deepEqual(errors, []);
+                  continue;
+                }
                 await page.getByRole('button', { name: 'Каталог', exact: true }).click();
                 panel = page.getByRole('dialog', { name: 'Каталог', exact: true });
                 if (scenario === 'error') {
