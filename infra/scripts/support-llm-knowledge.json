@@ -403,11 +403,13 @@
     {
       "id": "sanctions",
       "keywords": "мут бан запрет писать заблокировать разблокировать снять ограничение участник 6 часов",
-      "answer": "«Запретить писать» оставляет участника в чате, но ограничивает отправку сообщений; временный вариант по умолчанию действует 6 часов, бессрочный не заканчивается автоматически. «Заблокировать» действует в текущем чате; «Заблокировать во всех чатах» затрагивает подключённые чаты под вашим управлением. Сроки и снятие ограничений проверяйте в карточке участника.",
+      "answer": "Команды модерации и карточка участника — разные способы управления. Команда временного запрета писать по умолчанию действует 6 часов; точную команду и срок проверяют в «Командах». В карточке «Без сообщений» срок выбирают отдельно: человек остаётся в чате, а бот удаляет его новые сообщения. «Заблокировать» — отдельная мера; для действия по нескольким чатам перед подтверждением проверяют выбранные цели. История и снятие находятся в «Ограничениях»; если доступна только проверка снятия блокировки в MAX, сама проверка не разблокирует человека.",
       "sources": [
         "apps/miniapp/src/pages/settings/settings-admin-command-config.ts",
         "apps/miniapp/src/components/dashboard/chat-participant-sheet.tsx"
-      ]
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
     },
     {
       "id": "participant-protection",
@@ -504,8 +506,21 @@
       "answer": "В «Удалении старых сообщений» состояние показано сверху. Строка «История чата» может показывать «Ожидает очистки», «Очищается», «Проверена» или «Часть истории отложена». Раскройте «Подробности очистки»: там есть «Ожидают», «Больше нет в чате», «Пропущены», «Проверено сообщений» и, при наличии данных, даты «Включено», «Ожидают удаления с», «Очистка на паузе с». Это сведения о состоянии, выбора дат для просмотра истории здесь нет. Кнопка со стрелками «Обновить состояние» запрашивает свежие данные. «Проверена» не означает, что чат должен быть пустым: сообщения младше срока и защищённые сообщения сохраняются. Помощник сам не видит ваши счётчики и не может подтвердить завершение очистки.",
       "sources": [
         "apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx",
+        "apps/miniapp/src/pages/settings/settings-message-retention-model.ts",
         "apps/eraser/src/store.ts"
       ]
+    },
+    {
+      "id": "lastik-diagnostics",
+      "keywords": "Ластик диагностика не менее неполный счётчик результат не подтверждён часть истории ещё не проверена последний полный обход неопределённый результат",
+      "answer": "В «Удалении старых сообщений» раскройте «Подробности очистки». Если показано «Ожидают, не менее», это нижняя граница, а не точное общее число. «Результат не подтверждён» означает неизвестный исход удаления: нельзя утверждать, что сообщение точно осталось или точно удалено. «Неопределённый результат с» относится к этому состоянию, а не к возрасту сообщения. «Часть истории ещё не проверена» означает пробел в проверке истории. Дата «Последний полный обход» сама по себе не подтверждает, что всё удалено или что после неё нет пробелов. Нажмите «Обновить состояние»; если состояние не меняется, передайте оператору название чата, время и видимые показатели. Помощник не видит ваши счётчики и не может подтвердить завершение очистки.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx",
+        "apps/miniapp/src/pages/settings/settings-message-retention-model.ts",
+        "apps/eraser/src/store.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "48284a2a2fafcc5b3c471db2050ad93d4a3f828c"
     },
     {
       "id": "lastik-permissions",
@@ -589,11 +604,47 @@
     {
       "id": "karavan-storefront",
       "keywords": "интернет витрина караван магазин товары доллар кнопка витрина доступ администраторам",
-      "answer": "В разделе «Интернет-витрина» настраивается кнопка витрины Караван. Если функция включена, одиночный знак $ без выбранной витрины показывает кнопки витрин. Переключатель «Только администраторы» ограничивает доступ к кнопке администраторами и выданными пользователями. Это отдельная витрина, а не универсальное разрешение публиковать объявления в любом чате.",
+      "answer": "Раздел «Интернет-витрина» связан с Караваном. Если доступен блок магазина чата, магазин создаётся или подключается через «Подключить магазин»; личная сетка Майора сама магазин не создаёт. В старом режиме, без такого подключения, включённый модуль обрабатывает одиночный знак $ и показывает кнопки витрин. Переключатель «Только администраторы» ограничивает доступ к кнопке администраторами и выданными пользователями. Для подключённого магазина действуют его привязка и отдельный выбор витрины. Это не универсальное разрешение публиковать объявления в любом чате.",
       "sources": [
         "apps/miniapp/src/pages/settings/shared-settings-storefront-fields.tsx",
-        "apps/miniapp/src/pages/settings/settings-workspace-sections.ts"
-      ]
+        "apps/miniapp/src/pages/settings/settings-workspace-sections.ts",
+        "apps/miniapp/src/pages/settings/karavan-marketplace-panel.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "337c806d882cc74387e31a403ea9a3472a074eb0"
+    },
+    {
+      "id": "karavan-chat-marketplace",
+      "keywords": "Караван магазин чата подключить создать существующий общий магазин черновик правила несколько чатов частичное подключение",
+      "answer": "Если в «Интернет-витрине» доступен блок магазина чата, нажмите «Подключить магазин». В мастере выберите «Создать магазин» либо «Выбрать существующий» и нужные свои чаты. Для нового магазина задайте название, категории и правила; для существующего проверьте показанные правила. После предварительной проверки подтвердите подключение в мастере. Один магазин для нескольких чатов означает общие витрины и порядок; права проверяются для каждого чата отдельно. При отсутствии блока уточните доступность интеграции у оператора. Помощник сам ничего не подключает.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/karavan-marketplace-panel.tsx",
+        "apps/miniapp/src/pages/settings/karavan-marketplace-wizard.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "337c806d882cc74387e31a403ea9a3472a074eb0"
+    },
+    {
+      "id": "karavan-setup-recovery",
+      "keywords": "Караван магазин подключение не подтверждено неизвестный результат частично часть чатов продолжить повтор создать второй",
+      "answer": "При частичном или неподтверждённом подключении магазина Каравана не создавайте второй магазин. В «Интернет-витрине» продолжайте прежнюю операцию кнопкой «Продолжить подключение» и дождитесь обновлённого результата по каждому чату. Успешные шаги сохраняются. Ошибка одного подключения не означает отмену остальных. Потеря ответа не доказывает, что магазин не создан или чат не подключён. Продолжение прежней операции не требует заново проходить мастер создания и подтверждать новый запрос. «Настроить черновик» доступно только после подтверждённого подключения исходного чата. Если результат остаётся неизвестным, передайте оператору название чата, время и видимое состояние. Помощник не может подтвердить исход по вашим аккаунтам.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/karavan-marketplace-panel.tsx",
+        "apps/miniapp/src/pages/settings/use-karavan-marketplace-binding.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "337c806d882cc74387e31a403ea9a3472a074eb0"
+    },
+    {
+      "id": "karavan-storefront-publishing",
+      "keywords": "Караван доллар $ выбрать витрину публикация выбор сохранён сообщение не отправлено магазин чата ссылка",
+      "answer": "В чате с подключённым магазином Каравана $ публикует ссылку только на подходящую витрину этого магазина при действующем допуске. Если витрин несколько и выбора нет, сообщение не публикуется: выберите витрину в личном интерфейсе Майора либо кабинете Каравана. «Выбор сохранён» само по себе ничего не отправляет в чат; для публикации нужен новый явный $ в чате. Право отправлять $ и право управлять магазином различаются. Ошибка или неопределённое подключение не разрешают подменить витрину общим каталогом. Если неизвестен исход уже отправленной публикации, сначала проверьте её наличие, а не повторяйте отправку вслепую. Помощник не видит ваши подключения и публикации.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/karavan-marketplace-panel.tsx",
+        "apps/api/src/integrations/karavan-storefront/karavan-storefront-relay.service.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "337c806d882cc74387e31a403ea9a3472a074eb0"
     },
     {
       "id": "publik",
@@ -1176,6 +1227,847 @@
         "apps/api/src/moderation/moderation.service.legacy.ts",
         "docs/bot-support-policy.md"
       ]
+    },
+    {
+      "id": "project-modules",
+      "keywords": "возможности модули функции обзор проект что умеет Майор Публик Ластик",
+      "answer": "В «Майоре Максимове» задачи разделены по ботам.\n\n• Модераторы: ссылки, телефоны, мат и оскорбления, реклама, стоп-слова, антидубль, ограничения, подписка, жалобы и ночной режим. Есть правила, приветствие, стиль речи, участники, журнал и статистика, опросы и розыгрыши.\n• Публик: посты, расписания, импорт VK, автоответы, комментарии и предложения. Подключается отдельно.\n• Ластик: удаление старых сообщений группового чата по сроку; подключается отдельно.\n\nСетки объединяют сообщества для общих настроек и статистики. У канала есть действие под публикацией и быстрые кнопки. Интернет-витрина связана с Караваном, биржа и рекламная площадка — со Связкой; доступность отдельных функций зависит от интерфейса и прав.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/settings-workspace-sections.ts",
+        "apps/miniapp/src/pages/settings-page.legacy.tsx",
+        "apps/miniapp/src/pages/channel-settings-page.tsx",
+        "apps/miniapp/src/pages/publisher-entity-modules-page.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "phone-numbers",
+      "keywords": "телефон номера запрет разрешить телефонные номера цифры",
+      "answer": "В настройках чата → «Ограничения» есть «Разрешить телефоны». Выключите его, чтобы запрещать номера в тексте, или включите, чтобы разрешать, затем сохраните. Меры за повторы настраиваются отдельно в «Номерах телефонов». Разрешённый номер не исключает срабатывания других фильтров; причину конкретного удаления проверяют по журналу своего чата.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/shared-settings-limits-fields.tsx",
+        "apps/miniapp/src/pages/settings/shared-chat-settings-fields.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "invitation-access",
+      "keywords": "доступ за приглашения пригласить участников активация недоступна",
+      "answer": "«Доступ за приглашения» пока нельзя активировать: интерфейс позволяет подготовить и сохранить параметры для будущего включения. Это отдельная функция от обязательной подписки. Сохранённое количество приглашений само по себе не включает ограничение доступа.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/shared-chat-settings-fields.tsx",
+        "apps/miniapp/src/pages/settings-page.legacy.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "service-messages-and-bots",
+      "keywords": "сообщения и боты свои сообщения удалять других ботов выгонять сервис",
+      "answer": "В настройках чата откройте «Сообщения и боты». «Удалять сообщения бота» убирает собственные сообщения модератора через выбранное время; задайте «Через сколько удалять» и сохраните. «Удалять других ботов» — отдельная настройка удаления бот-аккаунтов из группы. Это не удаление старой переписки участников: для него используется Ластик.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/shared-settings-lifecycle-fields.tsx",
+        "apps/miniapp/src/pages/settings/settings-extra-section.tsx",
+        "apps/miniapp/src/pages/settings/settings-workspace-sections.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "duplicates-photo",
+      "keywords": "антидубль одинаковые картинки фото разные участники подписи повторы",
+      "answer": "В «Антидубле» у «Одинаковых картинок» проверяйте доступность: если написано «Проверка картинок сейчас недоступна», одни настройки её не включают. В «Чьи картинки сравнивать» выбирают «Одного участника» или «Всех участников». Во втором случае повтором может стать картинка другого автора. Подпись не учитывается; допуск повторов, предупреждения и ограничения учитываются отдельно для отправителя. Поиск одинаковых картинок не означает поиск любых визуально похожих изображений.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/settings-duplicate-photo-controls.tsx",
+        "apps/miniapp/src/pages/settings/settings-duplicate-photo-options.ts",
+        "apps/miniapp/src/pages/settings/settings-duplicate-photo-status.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "limits-attachments",
+      "keywords": "ограничения голосовые пересылки файлы видео фото стикеры типы сообщений",
+      "answer": "В настройках чата → «Ограничения» → «Разрешённые типы сообщений» отдельно разрешают или запрещают стикеры, фото, видео, файлы, голосовые и пересланные сообщения. Выключите разрешение нужного типа и сохраните. Разрешение фото или стикеров не отменяет отдельный интервал их отправки, антидубль и другие включённые фильтры.",
+      "sources": ["apps/miniapp/src/pages/settings/shared-settings-limits-fields.tsx"],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "reports-outcomes",
+      "keywords": "жалобы порог меры история 24 часа ограничить автора журнал отклонить",
+      "answer": "В «Системе жалоб» задают порог от 2 до 6 голосов и действие: «Одно сообщение» либо «История за 24 часа». Отдельно включают «Ограничить участника» и срок. Журнал жалоб показывает голоса, хронологию и результаты удаления; достижение порога не подтверждает успех всех действий. Если включение недоступно, сохранение параметров само по себе его не активирует. Возраст сообщения и условия приёма жалобы проверяются отдельно.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/reports-settings-fields.tsx",
+        "apps/miniapp/src/pages/settings/settings-reports-journal.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "participants",
+      "keywords": "участники карточка участника список поиск роль активность персональные настройки",
+      "answer": "В статистике нужного чата откройте «Участники», найдите человека и откройте карточку. Есть поиск, фильтры по роли и активности в MAX. В карточке доступны «Защита», «Без сообщений», «Ограничения», «Профиль в MAX» и «Проверка по базе спама» в зависимости от прав и подтверждённого статуса. Если статус в чате проверить не удалось, персональные действия временно недоступны: нажмите «Обновить». Отсутствие человека в результате поиска само по себе не подтверждает, что он вышел из чата.",
+      "sources": [
+        "apps/miniapp/src/pages/events-page.tsx",
+        "apps/miniapp/src/components/dashboard/chat-participants-roster.tsx",
+        "apps/miniapp/src/components/dashboard/chat-participant-sheet.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "participant-mute",
+      "keywords": "без сообщений запретить писать временно оставить участника ограничить сообщения мут",
+      "answer": "В карточке участника своего чата откройте «Без сообщений», выберите срок и нажмите «Ограничить сообщения». Человек остаётся в чате, а бот удаляет его новые сообщения в течение выбранного срока; затем ограничение снимается автоматически. Это не блокировка аккаунта в MAX. Текущее ограничение и его снятие доступны через «Ограничения», если действие разрешено и статус участника подтверждён.",
+      "sources": [
+        "apps/miniapp/src/components/dashboard/chat-participant-sheet.tsx",
+        "apps/miniapp/src/components/dashboard/chat-sanctions-workspace.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "sanction-history",
+      "keywords": "ограничения участников история снять бан разблокировать разрешить писать архив проверка",
+      "answer": "В статистике чата откройте «Модерация» → «Ограничения». Есть состояния «Действуют», «Архив», «Проверка», «Все» и типы «Запрет писать» и «Блокировка». Карточка показывает причину, срок, инициатора и состояние. Доступное снятие подтверждается отдельно. Если вместо снятия блокировки показана проверка в MAX, сначала снимите блокировку вручную в MAX, затем нажмите «Проверить»: эта проверка подтверждает возвращение в чат, а не разблокирует человека сама. Неизвестный результат действия не равен успеху.",
+      "sources": [
+        "apps/miniapp/src/pages/events-page.tsx",
+        "apps/miniapp/src/components/dashboard/chat-sanctions-workspace.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "spammer-review",
+      "keywords": "база спама спамеры проверить участника не спам подтвердить спам заблокировать",
+      "answer": "«Проверка по базе спама» в карточке участника показывает доступные признаки и состояние проверки. В очереди «База спама» кнопка «Не спам» исключает из проверки, а «Подтвердить спам» сохраняет решение без немедленного удаления человека. «Заблокировать» — отдельное действие с выбором чатов; перед подтверждением проверьте цели. Оценка признаков сама по себе не является доказательством мошенничества или подтверждением выполненной блокировки.",
+      "sources": [
+        "apps/miniapp/src/components/dashboard/chat-participant-sheet.tsx",
+        "apps/miniapp/src/pages/events-page.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "chat-statistics",
+      "keywords": "статистика чата за месяц неделю сутки аудитория прирост баланс участники",
+      "answer": "В статистике нужного чата доступны периоды «24ч», «7д», «30д» и вкладки «Модерация», «Участники», «События». В «Участниках» показаны доступные сведения об аудитории и входах/выходах за период; в модерации — сводка действий. Число участников и баланс входов/выходов — разные показатели. Ошибка обновления или неполные данные не подтверждают нулевую активность. Помощник не видит текущие показатели вашего чата.",
+      "sources": [
+        "apps/miniapp/src/pages/events-page.tsx",
+        "packages/contracts/src/dashboard-common.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "chat-events",
+      "keywords": "события журнал удалений кто удалил причина модерация история действия фильтр",
+      "answer": "В статистике своего чата откройте «Модерация» → «Журнал», выберите период и нужный тип действия, например «Удаления». Там проверяют доступную причину и сведения об участнике. Вкладка «События» отдельно показывает входы и выходы. Отсутствие записи не доказывает, какой бот удалил сообщение. Если журнал недоступен, для оператора здесь достаточно названия сообщества, времени и примера сообщения или текста ошибки; помощник сам журнал не просматривает.",
+      "sources": ["apps/miniapp/src/pages/events-page.tsx"],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "poll-create",
+      "keywords": "опрос создать новый варианты ответов анонимный вопрос лимит",
+      "answer": "В мини-приложении Майора откройте нужный чат или канал → «Опросы» → «Новый». Задайте вопрос, от 2 до 6 разных вариантов и выберите «Анонимный опрос». Вопрос — до 2000 символов, вариант — до 80; при необходимости добавьте фото. «Сохранить» оставляет черновик, «Опубликовать» требует подтверждения и отправляет опрос в выбранное сообщество. Опрос допускает один выбранный ответ. Опубликованный вопрос и варианты не редактируются.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/settings-polls-section.tsx",
+        "apps/miniapp/src/pages/channel-settings-page.tsx",
+        "apps/miniapp/src/components/managed-poll-workspace.tsx",
+        "packages/contracts/src/poll.ts",
+        "apps/api/src/admin/managed-poll.service.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "poll-voting",
+      "keywords": "опрос голосование анонимный имена кто голосовал переголосовать завершить один ответ",
+      "answer": "В опросе выбирается один ответ. Пока опрос идёт, выбор другого варианта меняет голос, а не добавляет второй. В анонимном опросе имена голосовавших скрыты, в том числе от администратора; список участников доступен для открытого опроса. Кнопка «Завершить» закрывает голосование. После публикации изменить вопрос, варианты или анонимность нельзя.",
+      "sources": [
+        "apps/miniapp/src/components/managed-poll-workspace.tsx",
+        "apps/api/src/admin/managed-poll.service.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "poll-recovery",
+      "keywords": "опрос нужна проверка публикация проверяется завис вернуть черновики обновить публикацию",
+      "answer": "«Публикуется» и «Нужна проверка» у опроса не подтверждают отсутствие публикации. Сначала откройте существующий опрос, обновите состояние и проверьте сам пост в нужном сообществе. Повторная публикация при неизвестном результате может создать дубль. «Обновить публикацию», когда доступно, исправляет отображение существующего поста. «Вернуть в черновики» — отдельное действие для состояния проверки, а не подтверждение, что прежнего сообщения нет. Если результат неясен, опишите оператору здесь сообщество, время и опрос.",
+      "sources": [
+        "apps/miniapp/src/components/managed-poll-workspace.tsx",
+        "apps/api/src/admin/managed-poll.service.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "giveaway-create",
+      "keywords": "розыгрыш конкурс создать призовые места условия старт финиш каналы",
+      "answer": "В мини-приложении Майора откройте чат или канал → «Розыгрыши» → «Новый розыгрыш». Заполните шаги «Основа», «Условия», «Призы»: название, старт и финиш, обязательные каналы и призовые места. Можно задать от 1 до 10 мест и до 10 дополнительных каналов; финиш должен быть позже старта. Затем заполните текст публикации, при необходимости фото, проверьте и подтвердите «Опубликовать». Сохранённый черновик ещё не опубликован. Если уже есть текущий розыгрыш, сначала завершите или отмените его.",
+      "sources": [
+        "apps/miniapp/src/components/managed-giveaway-card.tsx",
+        "packages/contracts/src/giveaway.ts",
+        "apps/api/src/admin/managed-giveaway.service.ts",
+        "apps/miniapp/src/pages/settings-page.legacy.tsx",
+        "apps/miniapp/src/pages/channel-settings-page.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "giveaway-participation",
+      "keywords": "розыгрыш участвовать подписки допуск заявка победил подтвердить выигрыш приз",
+      "answer": "Для участия откройте страницу розыгрыша из его поста, подпишитесь на источники из условий и нажмите «Проверить и участвовать». Если заявка уже есть, используйте «Проверить подписки». Сохранённая заявка и подтверждённый допуск — разные состояния: «MAX пока не подтвердил подписки» означает, что допуск ещё не подтверждён. При победе доступна кнопка «Подтвердить выигрыш» до показанного срока. Помощник не проверяет вашу личную подписку и не выдаёт приз; индивидуальный случай разбирает организатор розыгрыша.",
+      "sources": ["apps/miniapp/src/pages/giveaway-page.tsx", "packages/contracts/src/giveaway.ts"],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "giveaway-results",
+      "keywords": "розыгрыш победители итоги заменить другого приз выдано срок подтверждения завершить",
+      "answer": "В карточке розыгрыша администратор смотрит «Победителей», «Открыть итоги» и доступные действия. «Выбрать другого» запускает отдельный выбор победителя для места, когда эта кнопка доступна. «Выдано» отмечает выдачу приза; это не перевод денег и не доставка самим ботом. Срок подтверждения задаётся от 1 до 336 часов, по умолчанию 24. «Завершить сейчас» заканчивает текущий розыгрыш; состояние «Подводим итоги» ещё не означает готовые результаты. Личный выигрыш и факт выдачи помощник подтвердить не может.",
+      "sources": [
+        "apps/miniapp/src/components/managed-giveaway-card.tsx",
+        "packages/contracts/src/giveaway.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "channel-post-action",
+      "keywords": "канал действие под публикацией подписаться подпись постоянная кнопка ссылка",
+      "answer": "В настройках канала откройте «Действие под публикацией» и включите «Добавлять действие». Выберите «Ссылка в тексте» либо «Кнопка», задайте текст и адрес ссылки, сохраните. Текст кнопки — до 32 символов, ссылки — до 120; адрес http/https — до 256 символов, без логина и пароля. Это действие канала; кнопки из строк нового поста настраиваются отдельно в «Быстрых кнопках».",
+      "sources": [
+        "apps/miniapp/src/pages/settings/channel-post-signature-fields.tsx",
+        "packages/contracts/src/channel-post-signature.ts",
+        "apps/miniapp/src/pages/settings/settings-workspace-sections.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "channel-quick-buttons",
+      "keywords": "быстрые кнопки строка название равно ссылка пост кнопки канал",
+      "answer": "В настройках канала включите «Быстрые кнопки» и сохраните. Для каждой кнопки добавьте в новом посте отдельную строку «Название = ссылка», указав настоящий адрес нужной страницы. Бот уберёт такую строку и добавит кнопку под постом; вложения и оформление текста сохранятся. Это отдельная настройка от постоянного «Действия под публикацией» и кнопок в редакторе Публика.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/channel-quick-buttons-fields.tsx",
+        "apps/api/src/moderation/channel-quick-buttons.ts"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "channel-suggestions-entry",
+      "keywords": "предложения предложка канал отправка в приложении в боте суточный лимит",
+      "answer": "В настройках «Предложения» нужного канала включите «Принимать предложения». В «Отправке» выбирают «В приложении» или «В боте»; «От одного пользователя» задаёт от 1 до 10 предложений в сутки. Также настраиваются «Требовать подписку», «Удалять посты после отписки», текст кнопки и инструкция «Что нужно прислать». Сохраните изменения. Приём и рассмотрение предложения не означают автоматическую публикацию.",
+      "sources": [
+        "apps/miniapp/src/pages/settings/channel-post-suggestions-fields.tsx",
+        "apps/miniapp/src/pages/publisher-entity-modules-page.tsx",
+        "apps/miniapp/src/components/publisher-suggestions-panel.tsx"
+      ],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    },
+    {
+      "id": "miniapp-relaunch",
+      "keywords": "мини приложение срок входа истек открыть заново нет доступа настройки не загружаются",
+      "answer": "При «Срок входа истёк» или «Нужно открыть приложение заново» закройте мини-приложение и откройте его снова из MAX. «Нет доступа к настройкам» требует проверки ваших прав администратора или выбора другого сообщества. Для обычной ошибки загрузки есть «Повторить». Повторный вход не выдаёт права администратора; токен или код входа в чат поддержки отправлять не нужно.",
+      "sources": ["apps/miniapp/src/components/settings-load-error-state.tsx"],
+      "reviewedAt": "2026-10-29",
+      "reviewedSource": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd"
+    }
+  ],
+  "projectReview": {
+    "source": "eebfa2be1a6b585dd5f0b24c1c8927bad9a045dd",
+    "date": "2026-10-29",
+    "scope": "Customer-facing module inventory and new or corrected facts; original official MAX page retrieval dates are unchanged."
+  },
+  "moduleCoverage": [
+    {
+      "id": "connection",
+      "label": "Подключение и выбор модератора",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["connect", "community-access", "choose-moderator"],
+      "probe": {
+        "text": "Как подключить бота модерации к своему чату?",
+        "requiredIds": ["connect"]
+      }
+    },
+    {
+      "id": "catalog",
+      "label": "Восемь ботов",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["bots"],
+      "probe": {
+        "text": "Какие у вас есть боты?",
+        "requiredIds": ["bots"]
+      }
+    },
+    {
+      "id": "links",
+      "label": "Ссылки",
+      "chatSections": ["links"],
+      "channelSections": [],
+      "factIds": ["links-policy"],
+      "probe": {
+        "text": "Как разрешить ссылки только на выбранные сайты?",
+        "requiredIds": ["links-policy"]
+      }
+    },
+    {
+      "id": "phones",
+      "label": "Номера телефонов",
+      "chatSections": ["phones"],
+      "channelSections": [],
+      "factIds": ["phone-numbers"],
+      "probe": {
+        "text": "Как разрешить номера телефонов в чате?",
+        "requiredIds": ["phone-numbers"]
+      }
+    },
+    {
+      "id": "limits",
+      "label": "Ограничения",
+      "chatSections": ["limits"],
+      "channelSections": [],
+      "factIds": ["message-limits", "limits-attachments"],
+      "probe": {
+        "text": "Как ограничить частоту сообщений и запретить голосовые?",
+        "requiredIds": ["limits-attachments"]
+      }
+    },
+    {
+      "id": "profanity",
+      "label": "Мат и оскорбления",
+      "chatSections": ["profanityFilter"],
+      "channelSections": [],
+      "factIds": ["profanity-sensitivity"],
+      "probe": {
+        "text": "Чем в антимате «Баланс» отличается от «Строго»?",
+        "requiredIds": ["profanity-sensitivity"]
+      }
+    },
+    {
+      "id": "commercial",
+      "label": "Коммерческая реклама",
+      "chatSections": ["commercialFilter"],
+      "channelSections": [],
+      "factIds": [
+        "commercial-text-filter",
+        "commercial-sanctions",
+        "commercial-ai-mode",
+        "commercial-ai-observation",
+        "commercial-ai-double-check"
+      ],
+      "probe": {
+        "text": "Как в ИИ-модерации рекламы настроить чувствительность?",
+        "requiredIds": ["commercial-ai-sensitivity"]
+      }
+    },
+    {
+      "id": "stop-words",
+      "label": "Стоп-слова",
+      "chatSections": ["stopWords"],
+      "channelSections": [],
+      "factIds": ["stop-words", "image-text-versus-commercial"],
+      "probe": {
+        "text": "Как проверить фразу перед добавлением в стоп-слова?",
+        "requiredIds": ["stop-words"]
+      }
+    },
+    {
+      "id": "duplicates",
+      "label": "Антидубль",
+      "chatSections": ["duplicates"],
+      "channelSections": [],
+      "factIds": ["duplicates", "duplicates-photo"],
+      "probe": {
+        "text": "Что означает «Всех участников» у одинаковых картинок в антидубле?",
+        "requiredIds": ["duplicates-photo"]
+      }
+    },
+    {
+      "id": "subscription",
+      "label": "Обязательная подписка",
+      "chatSections": ["requiredSubscription"],
+      "channelSections": [],
+      "factIds": ["subscription", "subscription-membership", "subscription-participant"],
+      "probe": {
+        "text": "Я админ, как добавить обязательный канал в подписку?",
+        "requiredIds": ["subscription"]
+      }
+    },
+    {
+      "id": "invitations",
+      "label": "Доступ за приглашения",
+      "chatSections": ["invitationAccess"],
+      "channelSections": [],
+      "factIds": ["invitation-access"],
+      "probe": {
+        "text": "Почему нельзя включить доступ за приглашения?",
+        "requiredIds": ["invitation-access"]
+      }
+    },
+    {
+      "id": "reports",
+      "label": "Жалобы",
+      "chatSections": ["reports"],
+      "channelSections": [],
+      "factIds": ["community-reports", "reports-outcomes"],
+      "probe": {
+        "text": "Каким сообщением участник подаёт жалобу на нарушение?",
+        "requiredIds": ["community-reports"]
+      }
+    },
+    {
+      "id": "night",
+      "label": "Ночной режим",
+      "chatSections": ["night"],
+      "channelSections": [],
+      "factIds": ["night", "night-manual", "night-permissions"],
+      "probe": {
+        "text": "Как вручную закрыть чат до утра?",
+        "requiredIds": ["night-manual"]
+      }
+    },
+    {
+      "id": "rules",
+      "label": "Правила",
+      "chatSections": ["rules"],
+      "channelSections": [],
+      "factIds": ["chat-rules"],
+      "probe": {
+        "text": "Как сохранить и опубликовать правила чата?",
+        "requiredIds": ["chat-rules"]
+      }
+    },
+    {
+      "id": "greeting",
+      "label": "Приветствие",
+      "chatSections": ["greeting"],
+      "channelSections": [],
+      "factIds": ["greeting-and-speech"],
+      "probe": {
+        "text": "Как настроить приветствие новым участникам?",
+        "requiredIds": ["greeting-and-speech"]
+      }
+    },
+    {
+      "id": "speech",
+      "label": "Стиль речи",
+      "chatSections": ["speechStyle"],
+      "channelSections": [],
+      "factIds": ["greeting-and-speech"],
+      "probe": {
+        "text": "Стиль речи перезапишет мои собственные тексты?",
+        "requiredIds": ["greeting-and-speech"]
+      }
+    },
+    {
+      "id": "commands",
+      "label": "Команды",
+      "chatSections": ["commands"],
+      "channelSections": [],
+      "factIds": ["admin-commands"],
+      "probe": {
+        "text": "Где посмотреть команды бана и мута?",
+        "requiredIds": ["admin-commands"]
+      }
+    },
+    {
+      "id": "extra",
+      "label": "Сообщения и боты",
+      "chatSections": ["extra"],
+      "channelSections": [],
+      "factIds": ["service-messages-and-bots"],
+      "probe": {
+        "text": "Как удалить собственные сообщения бота по таймеру?",
+        "requiredIds": ["service-messages-and-bots"]
+      }
+    },
+    {
+      "id": "storefront",
+      "label": "Интернет-витрина",
+      "chatSections": ["storefront"],
+      "channelSections": [],
+      "factIds": [
+        "karavan-storefront",
+        "karavan-chat-marketplace",
+        "karavan-setup-recovery",
+        "karavan-storefront-publishing"
+      ],
+      "probe": {
+        "text": "Как в чате настроить интернет-витрину Караван?",
+        "requiredIds": ["karavan-storefront"]
+      }
+    },
+    {
+      "id": "advertising",
+      "label": "Рекламная площадка",
+      "chatSections": ["advertising"],
+      "channelSections": [],
+      "factIds": ["advertising-capability", "marketplace-placement"],
+      "probe": {
+        "text": "Рекламная площадка пишет «Скоро». Можно подключить сейчас?",
+        "requiredIds": ["advertising-capability"]
+      }
+    },
+    {
+      "id": "retention",
+      "label": "Удаление старых сообщений",
+      "chatSections": ["messageRetention"],
+      "channelSections": [],
+      "factIds": [
+        "lastik-connect",
+        "message-retention",
+        "lastik-exclusions",
+        "lastik-progress",
+        "lastik-diagnostics",
+        "lastik-save-recovery"
+      ],
+      "probe": {
+        "text": "Как подключить Ластика для удаления старых сообщений?",
+        "requiredIds": ["lastik-connect"]
+      }
+    },
+    {
+      "id": "participants",
+      "label": "Участники",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["participants"],
+      "probe": {
+        "text": "Где поиск и карточка участника чата?",
+        "requiredIds": ["participants"]
+      }
+    },
+    {
+      "id": "mute",
+      "label": "Без сообщений",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["participant-mute"],
+      "probe": {
+        "text": "Как на время запретить участнику писать, не удаляя из группы?",
+        "requiredIds": ["participant-mute"]
+      }
+    },
+    {
+      "id": "protection",
+      "label": "Защита",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["participant-protection"],
+      "probe": {
+        "text": "Защита «Всегда» снимается сама по сроку?",
+        "requiredIds": ["participant-protection"]
+      }
+    },
+    {
+      "id": "sanctions",
+      "label": "Ограничения участников",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["sanction-history", "sanctions"],
+      "probe": {
+        "text": "Как снять действующую блокировку участника?",
+        "requiredIds": ["sanction-history"]
+      }
+    },
+    {
+      "id": "spam",
+      "label": "База спама",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["spammer-review"],
+      "probe": {
+        "text": "Кнопка «Не спам» что делает в базе спама?",
+        "requiredIds": ["spammer-review"]
+      }
+    },
+    {
+      "id": "statistics",
+      "label": "Статистика чата",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["chat-statistics"],
+      "probe": {
+        "text": "Где статистика участников моего чата за 30 дней?",
+        "requiredIds": ["chat-statistics"]
+      }
+    },
+    {
+      "id": "events",
+      "label": "Журнал и события",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["chat-events"],
+      "probe": {
+        "text": "Где журнал удалений в моём чате?",
+        "requiredIds": ["chat-events"]
+      }
+    },
+    {
+      "id": "polls",
+      "label": "Опросы",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["poll-create", "poll-voting", "poll-recovery"],
+      "probe": {
+        "text": "Как сделать анонимный опрос, можно ли потом увидеть имена?",
+        "requiredIds": ["poll-voting"]
+      }
+    },
+    {
+      "id": "giveaways",
+      "label": "Розыгрыши",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["giveaway-create", "giveaway-participation", "giveaway-results"],
+      "probe": {
+        "text": "Как организовать розыгрыш с тремя призовыми местами?",
+        "requiredIds": ["giveaway-create"]
+      }
+    },
+    {
+      "id": "channel-action",
+      "label": "Действие под публикацией",
+      "chatSections": [],
+      "channelSections": ["postSignature"],
+      "factIds": ["channel-post-action"],
+      "probe": {
+        "text": "Как включить действие под публикацией канала?",
+        "requiredIds": ["channel-post-action"]
+      }
+    },
+    {
+      "id": "channel-buttons",
+      "label": "Быстрые кнопки",
+      "chatSections": [],
+      "channelSections": ["quickButtons"],
+      "factIds": ["channel-quick-buttons"],
+      "probe": {
+        "text": "Как включить быстрые кнопки и написать строку для кнопки?",
+        "requiredIds": ["channel-quick-buttons"]
+      }
+    },
+    {
+      "id": "channel-comments",
+      "label": "Комментарии в приложении",
+      "chatSections": [],
+      "channelSections": ["comments"],
+      "factIds": ["publisher-comments-channel", "comments", "max-native-channel-comments"],
+      "probe": {
+        "text": "Как включить комментарии под постами канала через Публика?",
+        "requiredIds": ["publisher-comments-channel"]
+      }
+    },
+    {
+      "id": "channel-suggestions",
+      "label": "Предложения",
+      "chatSections": [],
+      "channelSections": ["postSuggestions"],
+      "factIds": ["publisher-suggestions", "channel-suggestions-entry"],
+      "probe": {
+        "text": "Как в предложке канала задать лимит предложений в сутки?",
+        "requiredIds": ["channel-suggestions-entry"]
+      }
+    },
+    {
+      "id": "networks",
+      "label": "Сетки и состав",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["networks-management", "networks-compose"],
+      "probe": {
+        "text": "Как в сетку добавить свои чаты?",
+        "requiredIds": ["networks-compose"]
+      }
+    },
+    {
+      "id": "network-settings",
+      "label": "Настройки сетки",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["networks-settings-statistics"],
+      "probe": {
+        "text": "Как применить общие настройки только к части чатов сетки?",
+        "requiredIds": ["networks-settings-statistics"]
+      }
+    },
+    {
+      "id": "network-statistics",
+      "label": "Статистика сетки",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["networks-audience-statistics"],
+      "probe": {
+        "text": "В статистике сетки аудитория по 7 из 12 — это вся аудитория?",
+        "requiredIds": ["networks-audience-statistics"]
+      }
+    },
+    {
+      "id": "marketplace",
+      "label": "Профиль на бирже",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["marketplace-profile", "marketplace-placement"],
+      "probe": {
+        "text": "Как опубликовать профиль на бирже Связки?",
+        "requiredIds": ["marketplace-profile"]
+      }
+    },
+    {
+      "id": "publik-connect",
+      "label": "Подключение Публика",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["publik", "publisher-readiness"],
+      "probe": {
+        "text": "Как подключить Публика к каналу?",
+        "requiredIds": ["publik"]
+      }
+    },
+    {
+      "id": "posts",
+      "label": "Новый пост и получатели",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["publisher-post-create", "publisher-post-targets", "publisher-post-media"],
+      "probe": {
+        "text": "Как через Публика создать пост с фото для двух каналов?",
+        "requiredIds": ["publisher-post-create"]
+      }
+    },
+    {
+      "id": "schedule",
+      "label": "Расписание и повторы",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": [
+        "publisher-schedule-once",
+        "publisher-schedule-recurrence",
+        "publisher-schedule-dates",
+        "publisher-schedule-timezone",
+        "publisher-late-policy"
+      ],
+      "probe": {
+        "text": "Как в Публике сделать ежедневный повтор поста?",
+        "requiredIds": ["publisher-schedule-recurrence"]
+      }
+    },
+    {
+      "id": "post-control",
+      "label": "После публикации и управление постом",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["publisher-after-publish", "publisher-post-control", "publisher-drafts-history"],
+      "probe": {
+        "text": "Как в Публике настроить удаление поста после публикации?",
+        "requiredIds": ["publisher-after-publish"]
+      }
+    },
+    {
+      "id": "delivery",
+      "label": "Результаты отправок",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["publisher-delivery-status"],
+      "probe": {
+        "text": "Публик: у отправки «Нужно проверить». Отправлять снова?",
+        "requiredIds": ["publisher-delivery-status"]
+      }
+    },
+    {
+      "id": "import",
+      "label": "Импорт MAX",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["publisher-import-max"],
+      "probe": {
+        "text": "Как импортировать в Публик пост из MAX?",
+        "requiredIds": ["publisher-import-max"]
+      }
+    },
+    {
+      "id": "auto-replies",
+      "label": "Автоответы",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["publisher-auto-replies-create", "publisher-auto-replies-matching"],
+      "probe": {
+        "text": "Как создать автоответ в Публике по ключевому слову?",
+        "requiredIds": ["publisher-auto-replies-create"]
+      }
+    },
+    {
+      "id": "chat-comments",
+      "label": "Комментарии чата",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["comments"],
+      "probe": {
+        "text": "Как в Публике включить комментарии для сообщений администраторов чата?",
+        "requiredIds": ["comments"]
+      }
+    },
+    {
+      "id": "vk",
+      "label": "Посты из VK",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["publisher-vk-connect", "publisher-vk-automation", "vk-review"],
+      "probe": {
+        "text": "Как настроить в Публике согласование постов из VK в личке?",
+        "requiredIds": ["vk-review"]
+      }
+    },
+    {
+      "id": "notifications",
+      "label": "Уведомления",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["notifications", "max-bot-notifications"],
+      "probe": {
+        "text": "Как в Публике оставить уведомления только об ответах?",
+        "requiredIds": ["notifications"]
+      }
+    },
+    {
+      "id": "miniapp",
+      "label": "Вход и доступ",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": ["miniapp-relaunch", "community-access"],
+      "probe": {
+        "text": "Срок входа в мини-приложение истёк, как зайти заново?",
+        "requiredIds": ["miniapp-relaunch"]
+      }
+    },
+    {
+      "id": "support",
+      "label": "Обращение в поддержку",
+      "chatSections": [],
+      "channelSections": [],
+      "factIds": [
+        "support-room",
+        "operator",
+        "support-incident-evidence",
+        "announcement-placement",
+        "announcement-removal"
+      ],
+      "probe": {
+        "text": "Я участник чужой группы. Где выложить объявление?",
+        "requiredIds": ["announcement-placement"]
+      }
     }
   ]
 }

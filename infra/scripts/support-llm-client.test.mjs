@@ -661,6 +661,49 @@ async function completionFixture(t, answer) {
   return fixture;
 }
 
+test('giveaway eligibility and journal navigation keep their facts instead of an unrelated reviewed reply', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'Состояние конкретного сообщества помощнику неизвестно.',
+    sourceIds: ['operator'],
+  });
+  for (const [text, id] of [
+    [
+      'Розыгрыш сохранил мою заявку, но MAX пока не подтвердил подписки. Я уже допущен?',
+      'giveaway-participation',
+    ],
+    [
+      'Как понять по журналу, почему бот удалил конкретный пост? А если журнала вообще не вижу?',
+      'chat-events',
+    ],
+  ]) {
+    const before = fixture.requests;
+    const answer = await answerSupport({ ...fixture.input, text });
+    assert.equal(fixture.requests, before + 1, text);
+    assert.equal(answer.responseRoute, 'model-inference');
+    assert.ok(fixture.inputs.at(-1).verifiedKnowledge.some((fact) => fact.id === id));
+  }
+});
+
+test('quick-button inference preserves abstract syntax without requiring an invented example URL', async (t) => {
+  const fixture = await completionFixture(t, {
+    action: 'reply',
+    text: 'В новом посте добавьте строку «Название = ссылка», подставив адрес своей страницы.',
+    sourceIds: ['channel-quick-buttons'],
+  });
+  const answer = await answerSupport({
+    ...fixture.input,
+    text: 'Какой синтаксис у быстрых кнопок?',
+  });
+  assert.equal(answer.responseRoute, 'model-inference');
+  const requirement = fixture.inputs
+    .at(-1)
+    .answerRequirements.find((item) => item.sourceId === 'channel-quick-buttons');
+  assert.match(requirement.instruction, /«Название = ссылка»/u);
+  assert.match(requirement.instruction, /Не придумывай адрес/u);
+  assert.doesNotMatch(answer.text, /https?:\/\//u);
+});
+
 test('a Test-mode removal incident without Events keeps AI facts and incident requirements in inference', async (t) => {
   const fixture = await completionFixture(t, {
     action: 'reply',
