@@ -1908,6 +1908,50 @@ describe('MaxActionLedgerService', () => {
     });
   });
 
+  it('reads opening recovery only from its own exact terminal successful receipt', async () => {
+    const row = {
+      actionType: 'SEND_MESSAGE',
+      chatId: 'chat-1',
+      sourceTag: 'night_mode_transition',
+      status: MaxActionLedgerStatus.SUCCEEDED,
+      ambiguous: false,
+      terminal: true,
+      completedAt: new Date('2026-05-31T05:00:01.000Z'),
+      dispatchBotId: 'bot-1',
+      remoteMessageId: 'open-message',
+    };
+    const { service, prisma } = createService(row);
+    await expect(
+      service.inspectCompletedNightModeOpenNoticeDispatch({
+        chatId: 'chat-1',
+        sessionKey: 'session-1',
+      }),
+    ).resolves.toMatchObject({
+      kind: 'completed',
+      jobId: 'night-mode:open:chat-1:session:session-1',
+      remoteMessageId: 'open-message',
+    });
+    expect(prisma.maxActionLedgerEntry.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { jobId: 'night-mode:open:chat-1:session:session-1' },
+      }),
+    );
+    for (const override of [
+      { ambiguous: true },
+      { sourceTag: 'foreign-source' },
+      { terminal: false },
+      { remoteMessageId: null },
+    ]) {
+      const unsafe = createService({ ...row, ...override }).service;
+      await expect(
+        unsafe.inspectCompletedNightModeOpenNoticeDispatch({
+          chatId: 'chat-1',
+          sessionKey: 'session-1',
+        }),
+      ).resolves.toMatchObject({ kind: 'mismatch' });
+    }
+  });
+
   it('preserves exact future-night sticky probe provenance in the close ledger proof', async () => {
     const completedAt = new Date('2026-08-21T20:00:01.000Z');
     const failureBefore = '2026-08-21T20:00:00.000Z';

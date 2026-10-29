@@ -414,6 +414,20 @@ maxim_topology_require_statistics_authority_lifecycle() {
   node "$(dirname "${BASH_SOURCE[0]}")/../assert-statistics-authority-source.mjs" "$commit_sha"
 }
 
+maxim_topology_require_night_mode_recovery_reader() {
+  local commit_sha="$1"
+  # FLAG: SQL-backed opening-event and close-cleanup obligations survive image rollback.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-night-mode-recovery-source.mjs" "$commit_sha"
+}
+
+maxim_topology_require_statistics_and_night_mode_recovery() {
+  local commit_sha="$1"
+  # FLAG: Either earlier tooling branch lacks the other's permanent recovery floor.
+  # The combined bootstrap capability must execute both checks for the same API source.
+  maxim_topology_require_statistics_authority_lifecycle "$commit_sha" || return $?
+  maxim_topology_require_night_mode_recovery_reader "$commit_sha" || return $?
+}
+
 maxim_topology_require_managed_entity_activation() {
   local commit_sha="$1"
   # FLAG: Known denials, pending activation, capability ceilings and receipt-only

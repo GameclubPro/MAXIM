@@ -30,6 +30,12 @@ import {
   bindMessageLimitEvidence,
   fingerprintModerationSettings,
 } from '../moderation/message-limits-delete-guard.service';
+import {
+  buildNightModeTransitionScheduleFingerprint,
+  buildNightModeTransitionSideEffectFingerprint,
+} from '../moderation/night-mode-transition-generation.util';
+import { resolveNightModeTransitionSnapshot } from '../moderation/night-mode-transition-time.util';
+import { NightModeTransitionEventService } from '../moderation/night-mode-transition-event.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
@@ -51,6 +57,113 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     h = await createMultibotHarness({ databaseUrl, redisUrl, bots, mode: 'on' });
     return h;
   }
+
+  it.each(['forever', 'timed', 'expired'] as const)(
+    'night cleanup rechecks %s manual closure at the final DELETE boundary',
+    async (manualClosure) => {
+      const s = await fixture(2);
+      const now = new Date();
+      const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
+      const [chatId] = await s.seedCatalog(1, {
+        nightModeEnabled: true,
+        nightModeTimezone: 'UTC',
+        nightModeStartTimeMinutes: (minute + 1320) % 1440,
+        nightModeEndTimeMinutes: (minute + 1380) % 1440,
+        nightModeBotMessageEnabled: true,
+        nightModeOpenMessageEnabled: true,
+        nightModeForceCloseEnabled: false,
+      });
+      const settings = await s.prisma.chatSettings.findUniqueOrThrow({
+        where: { chatId },
+        include: { chat: { select: { entityType: true, rules: true } } },
+      });
+      const snapshot = resolveNightModeTransitionSnapshot(settings, now)!;
+      expect(snapshot.status).toBe('open');
+      const messageId = `night-cleanup-${randomUUID()}`;
+      const botId = s.bots[0]!.id;
+      s.messages.set(messageId, {
+        sender: { user_id: botId, is_bot: true },
+        recipient: { chat_id: chatId!, chat_type: 'chat' },
+        timestamp: now.getTime() - 90 * 60_000,
+        body: { mid: messageId, text: 'Чат закрыт на ночь.' },
+      });
+      const event = await new NightModeTransitionEventService(
+        s.prisma as never,
+      ).ensureTransitionEvent({
+        chatId: chatId!,
+        messageId,
+        botId,
+        ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+        sessionKey: snapshot.sessionKey,
+        timezone: snapshot.timezone,
+        startMinutes: snapshot.startMinutes,
+        endMinutes: snapshot.endMinutes,
+      });
+      const binding = {
+        version: 1,
+        sessionKey: snapshot.sessionKey,
+        scheduleFingerprint: buildNightModeTransitionScheduleFingerprint(settings),
+        sideEffectFingerprint: buildNightModeTransitionSideEffectFingerprint(settings),
+        event: { id: event.id, ruleCode: 'NIGHT_MODE_CLOSE_NOTICE', messageId },
+      };
+      const ensured = await s.intents.ensureIntent(
+        {
+          chatId: chatId!,
+          messageId,
+          originBotId: botId,
+          routingPolicy: 'origin_only',
+          entityType: 'CHAT',
+          messageAuthorKind: 'bot',
+          reasonKey: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
+          ruleCode: 'NIGHT_MODE_CLOSE_NOTICE_CLEANUP',
+          event: { eventType: 'SYSTEM', metadata: { nightModeCloseNoticeCleanup: binding } },
+        },
+        { enqueue: false },
+      );
+      if (!ensured.intentId) throw new Error('Expected a durable night cleanup intent');
+      const originalDelete = s.max.deleteMessage.bind(s.max);
+      const dispatch = jest
+        .spyOn(s.max, 'deleteMessage')
+        .mockImplementation(async (chat, mid, options) => {
+          // FLAG: Commit the manual state after the first guard, before the real transport guard.
+          await s.prisma.chatSettings.update({
+            where: { chatId },
+            data: {
+              nightModeForceCloseEnabled: true,
+              nightModeForceCloseForever: manualClosure === 'forever',
+              nightModeForceCloseUntil: new Date(
+                Date.now() + (manualClosure === 'expired' ? -60_000 : 60_000),
+              ).toISOString(),
+            },
+          });
+          return originalDelete(chat, mid, options);
+        });
+
+      const result = await s.intents.attemptIntent(ensured.intentId);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      const deletes = s.effects.filter(
+        (effect) => effect.method === 'delete' && effect.messageId === messageId,
+      );
+      const stored = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: ensured.intentId },
+      });
+      if (manualClosure === 'expired') {
+        expect(result).toMatchObject({ confirmed: true, status: 'SUCCEEDED' });
+        expect(deletes).toHaveLength(1);
+        expect(s.messages.has(messageId)).toBe(false);
+      } else {
+        expect(result).toMatchObject({ confirmed: false, status: 'FAILED_TERMINAL' });
+        expect(deletes).toHaveLength(0);
+        expect(s.messages.has(messageId)).toBe(true);
+        expect(stored).toMatchObject({
+          lastErrorCode: 'night_mode_close_notice_cleanup_stale',
+          deleteDispatchStartedAt: null,
+          remoteDeleteSucceededAt: null,
+        });
+      }
+      expect(s.failures).toEqual([]);
+    },
+  );
 
   it.each(['message_text', 'body_plain', 'payload_caption', 'nested_caption'] as const)(
     'stop-word source deletes supported %s content once across mirrored deliveries',

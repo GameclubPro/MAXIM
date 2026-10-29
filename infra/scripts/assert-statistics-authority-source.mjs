@@ -71,15 +71,16 @@ export const STATISTICS_AUTHORITY_SOURCE_CHECKS = Object.freeze([
     [
       'maxim_topology_require_statistics_authority_lifecycle() {',
       '/../assert-statistics-authority-source.mjs" "$commit_sha"',
+      'maxim_topology_require_statistics_and_night_mode_recovery() { local commit_sha="$1" maxim_topology_require_statistics_authority_lifecycle "$commit_sha" || return $? maxim_topology_require_night_mode_recovery_reader "$commit_sha" || return $? }',
     ],
   ],
   [
     'infra/scripts/vps-runtime-rollback.sh',
-    ['maxim_topology_require_statistics_authority_lifecycle "$TARGET_FULL_SHA"'],
+    ['maxim_topology_require_statistics_and_night_mode_recovery "$TARGET_FULL_SHA"'],
   ],
   [
     'infra/scripts/vps-release-rollback.sh',
-    ['maxim_topology_require_statistics_authority_lifecycle "$API_SOURCE_SHA"'],
+    ['maxim_topology_require_statistics_and_night_mode_recovery "$API_SOURCE_SHA"'],
   ],
   [
     'infra/scripts/vps-pull-build-up.sh',
@@ -91,7 +92,7 @@ export const STATISTICS_AUTHORITY_SOURCE_CHECKS = Object.freeze([
   ],
   [
     'infra/scripts/vps-connect.sh',
-    ['capability_marker=maxim_topology_require_statistics_authority_lifecycle'],
+    ['capability_marker=maxim_topology_require_statistics_and_night_mode_recovery'],
   ],
   [
     'infra/scripts/assert-statistics-authority-source.mjs',

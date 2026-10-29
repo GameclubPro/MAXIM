@@ -60,6 +60,7 @@ export async function applyGroupChatControlCommand(
     source: string;
     action: 'SILENCE' | 'OPEN_CHAT';
     message: string;
+    resolveMessage?: (settings: ChatSettings) => string;
     settings: GroupChatControlSettings;
     auditPayload?: Prisma.InputJsonObject;
   },
@@ -74,11 +75,14 @@ export async function applyGroupChatControlCommand(
       noticeText: applies ? params.message : null,
     };
     if (applies) {
-      await tx.chatSettings.upsert({
+      const settings = await tx.chatSettings.upsert({
         where: { chatId: params.chatId },
         create: { chatId: params.chatId, ...params.settings },
         update: params.settings,
       });
+      // FLAG: Derive the durable notice from the committed settings candidate under the
+      // same chat order lock; a pre-transaction read can describe a superseded schedule.
+      result.noticeText = params.resolveMessage?.(settings) ?? params.message;
       await tx.auditLog.create({
         data: {
           chatId: params.chatId,

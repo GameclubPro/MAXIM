@@ -13,6 +13,7 @@ import {
   buildNightModeRouteVerificationJobId,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
   NIGHT_MODE_TRANSITION_QUEUE,
+  NightModeRecoveryUnsafeError,
   parseNightModeRouteVerification,
   type NightModeTransitionJob,
   type NightModeTransitionProcessResult,
@@ -56,11 +57,17 @@ export class NightModeTransitionProcessor extends WorkerHost {
           `Night mode recovery-only proof is no longer valid (${job.data.chatId})`,
         );
       }
+      if (
+        recoveryPreflight === 'already_complete' &&
+        job.data.recoveryOnly.kind === 'close_notice_cleanup'
+      )
+        return;
     } else {
       if (
         typeof this.scheduler.isTransitionManuallyFenced === 'function' &&
         (await this.scheduler.isTransitionManuallyFenced(job.data, job.id ?? null))
       ) {
+        await this.scheduler.retireTransition(job.data);
         return;
       }
       const disposition = await this.scheduler.inspectTransitionExecution(job.data, job.id ?? null);
@@ -70,6 +77,9 @@ export class NightModeTransitionProcessor extends WorkerHost {
         );
       }
       if (disposition === 'retire') {
+        // FLAG: Completion removes this occurrence's SQL registry. Retain the next-cycle
+        // handoff first, even when both queued boundaries expired during a worker outage.
+        await this.scheduler.retireTransition(job.data);
         return;
       }
       if (disposition === 'defer') {
@@ -87,6 +97,9 @@ export class NightModeTransitionProcessor extends WorkerHost {
     try {
       result = await this.moderationExecutionService.processNightModeTransitionJob(job.data);
     } catch (error: unknown) {
+      if (job.data.recoveryOnly && error instanceof NightModeRecoveryUnsafeError) {
+        throw new UnrecoverableError(error.message);
+      }
       const isNoRoute = isMaxActionNoExecutableRouteError(error);
       const isQuarantinedRoute = isMaxActionRouteQuarantinedError(error);
       if (!isNoRoute && !isQuarantinedRoute) {
@@ -113,6 +126,7 @@ export class NightModeTransitionProcessor extends WorkerHost {
           );
         }
         if (disposition === 'retire') {
+          await this.scheduler.retireTransition(job.data);
           return;
         }
       }

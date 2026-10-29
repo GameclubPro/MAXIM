@@ -12,6 +12,7 @@ import {
 const root = resolve(import.meta.dirname, '../..');
 const read = (path) => readFileSync(resolve(root, path), 'utf8');
 const marker = 'maxim_topology_require_statistics_authority_lifecycle';
+const rollbackMarker = 'maxim_topology_require_statistics_and_night_mode_recovery';
 const failure = /lacks statistics authority lifecycle v2 readers\/writers/u;
 
 test('compatible lifecycle source retains the permanent writer and both reader fences', () => {
@@ -61,6 +62,26 @@ test('missing or comment-only schema, API and tooling support fails closed', () 
         failure,
         path,
       );
+  }
+});
+
+test('the combined recovery capability cannot omit either source check or its fail-fast boundary', () => {
+  const path = 'infra/scripts/lib/deploy-topology.sh';
+  const source = read(path);
+  for (const call of [
+    'maxim_topology_require_statistics_authority_lifecycle "$commit_sha" || return $?',
+    'maxim_topology_require_night_mode_recovery_reader "$commit_sha" || return $?',
+  ]) {
+    assert.ok(source.includes(call));
+    for (const replacement of ['', call.replace(' || return $?', '')]) {
+      assert.throws(
+        () =>
+          assertStatisticsAuthoritySource('a'.repeat(40), (candidate) =>
+            candidate === path ? source.replace(call, replacement) : read(candidate),
+          ),
+        failure,
+      );
+    }
   }
 });
 
@@ -163,7 +184,7 @@ test('both API rollback paths enforce the authority lifecycle floor before any r
     ['vps-release-rollback.sh', 'API_SOURCE_SHA', '\nbegin_release_runtime_transition\n'],
   ]) {
     const source = read(`infra/scripts/${file}`);
-    const call = `${marker} "$${target}"`;
+    const call = `${rollbackMarker} "$${target}"`;
     const position = source.indexOf(call);
     assert.ok(position >= 0, `${file} must verify the exact API source`);
     assert.equal(source.indexOf(call, position + call.length), -1);

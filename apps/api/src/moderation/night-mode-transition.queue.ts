@@ -4,6 +4,7 @@ import {
   buildNightModeTransitionSessionKey,
   parseNightModeTransitionSessionKey,
   resolveNightModeTransitionSessionCloseAt,
+  resolveNightModeTransitionSessionOpenAt,
   type NightModeTransitionKind,
 } from './night-mode-transition-time.util';
 
@@ -12,6 +13,16 @@ export const NIGHT_MODE_TRANSITION_JOB_NAME = 'night-mode-transition';
 export const NIGHT_MODE_ROUTE_VERIFICATION_JOB_NAME = 'night-mode-route-verification';
 export const NIGHT_MODE_ROUTE_VERIFICATION_KIND = 'close_notice_presence' as const;
 export const NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY = 'close_notice_event' as const;
+export const NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY = 'open_notice_event' as const;
+export const NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY = 'close_notice_cleanup' as const;
+export const NIGHT_MODE_INDEPENDENT_RECOVERY_READER_VERSION = 1;
+export const NIGHT_MODE_RECOVERY_UNSAFE_PREFIX = 'Night mode recovery proof is unsafe';
+export class NightModeRecoveryUnsafeError extends Error {
+  constructor(reason: string) {
+    super(`${NIGHT_MODE_RECOVERY_UNSAFE_PREFIX}: ${reason}`);
+    this.name = 'NightModeRecoveryUnsafeError';
+  }
+}
 export const NIGHT_MODE_STICKY_ROUTE_PROBE_KIND = 'future_night_close' as const;
 export const NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX =
   'Night mode transition post-execution scheduling failed';
@@ -27,6 +38,27 @@ export type NightModeTransitionRecoveryOnly = {
   startMinutes: number;
   endMinutes: number;
 };
+
+export type NightModeTransitionOpenEventRecovery = Omit<NightModeTransitionRecoveryOnly, 'kind'> & {
+  kind: typeof NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY;
+};
+
+export type NightModeTransitionCloseCleanupRecovery = {
+  kind: typeof NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY;
+  version: 1;
+  sessionKey: string;
+  timezone: string;
+  startMinutes: number;
+  endMinutes: number;
+  openScheduledFor: string;
+  scheduleFingerprint: string;
+  sideEffectFingerprint: string;
+};
+
+export type NightModeTransitionRecoveryObligation =
+  | NightModeTransitionRecoveryOnly
+  | NightModeTransitionOpenEventRecovery
+  | NightModeTransitionCloseCleanupRecovery;
 
 export type NightModeRouteVerification = {
   kind: typeof NIGHT_MODE_ROUTE_VERIFICATION_KIND;
@@ -70,7 +102,7 @@ export type NightModeTransitionJob = QueueJobEnvelope<
     transitionRuntimeVersion?: 2 | 3 | 4;
     scheduleFingerprint?: string;
     stickyRouteProbe?: NightModeStickyRouteProbe;
-    recoveryOnly?: NightModeTransitionRecoveryOnly;
+    recoveryOnly?: NightModeTransitionRecoveryObligation;
     routeVerification?: NightModeRouteVerification;
   }
 >;
@@ -108,7 +140,7 @@ export function buildNightModeTransitionJobIdPrefix(chatId: string): string {
 
 export function buildNightModeTransitionRecoveryJobId(
   chatId: string,
-  recovery: NightModeTransitionRecoveryOnly,
+  recovery: NightModeTransitionRecoveryObligation,
 ): string {
   const digest = createHash('sha256')
     .update(
@@ -117,8 +149,13 @@ export function buildNightModeTransitionRecoveryJobId(
         recovery.kind,
         recovery.version,
         recovery.sessionKey,
-        recovery.messageId,
-        recovery.botId,
+        ...(recovery.kind === NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY
+          ? [
+              recovery.openScheduledFor,
+              recovery.scheduleFingerprint,
+              recovery.sideEffectFingerprint,
+            ]
+          : [recovery.messageId, recovery.botId]),
       ].join('\u001f'),
     )
     .digest('hex');
@@ -200,6 +237,58 @@ export function parseNightModeTransitionRecoveryOnly(
     timezone,
     startMinutes,
     endMinutes,
+  };
+}
+
+export function parseNightModeTransitionRecoveryObligation(
+  value: unknown,
+): NightModeTransitionRecoveryObligation | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind === NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY) {
+    return parseNightModeTransitionRecoveryOnly(value);
+  }
+  if (record.kind === NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY) {
+    const receipt = parseNightModeTransitionRecoveryOnly({
+      ...record,
+      kind: NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+    });
+    return receipt && parseNightModeTransitionSessionKey(receipt.sessionKey)
+      ? { ...receipt, kind: NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY }
+      : null;
+  }
+  const sessionKey = boundedString(record.sessionKey, 512);
+  const session = sessionKey ? parseNightModeTransitionSessionKey(sessionKey) : null;
+  const openAt = sessionKey ? resolveNightModeTransitionSessionOpenAt(sessionKey) : null;
+  const openScheduledFor = boundedString(record.openScheduledFor, 64);
+  const scheduleFingerprint = boundedString(record.scheduleFingerprint, 128);
+  const sideEffectFingerprint = boundedString(record.sideEffectFingerprint, 128);
+  if (
+    record.kind !== NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY ||
+    record.version !== 1 ||
+    !sessionKey ||
+    !session ||
+    !openAt ||
+    record.timezone !== session.timezone ||
+    record.startMinutes !== session.startMinutes ||
+    record.endMinutes !== session.endMinutes ||
+    openScheduledFor !== openAt.toISOString() ||
+    !scheduleFingerprint ||
+    !/^sha256:[a-f0-9]{64}$/u.test(scheduleFingerprint) ||
+    !sideEffectFingerprint ||
+    !/^sha256:[a-f0-9]{64}$/u.test(sideEffectFingerprint)
+  )
+    return null;
+  return {
+    kind: NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY,
+    version: 1,
+    sessionKey,
+    timezone: session.timezone,
+    startMinutes: session.startMinutes,
+    endMinutes: session.endMinutes,
+    openScheduledFor,
+    scheduleFingerprint,
+    sideEffectFingerprint,
   };
 }
 

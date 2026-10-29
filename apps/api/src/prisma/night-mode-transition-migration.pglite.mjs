@@ -42,6 +42,8 @@ try {
       "bot_id" TEXT NOT NULL,
       "status" TEXT NOT NULL,
       "bot_access_state" TEXT NOT NULL,
+      "bot_access_source" TEXT,
+      "permissions_snapshot" JSONB,
       "bot_access_checked_at" TIMESTAMPTZ,
       "bot_access_expires_at" TIMESTAMPTZ
     );

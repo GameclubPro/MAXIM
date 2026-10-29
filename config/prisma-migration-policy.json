@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
   "baselineThrough": "20261029193200_enable_statistics_authority_successors",
-  "baselineNamesSha256": "7197627c038382c845c80317d276af04474f707751873c632f858331835f4d20",
-  "baselineContentsSha256": "51b87975f462f8d254e0d3548983677605d1150abf66ac82001423f37ad635fc",
+  "baselineNamesSha256": "6786e9269965bb3a18d7de64a4e18eed74471150cf9f3d5c9f119c8803b44333",
+  "baselineContentsSha256": "fc6a384c455d334b7bc8886040ddf072de9b8a83e870771fa3cc66a4ef94d55e",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -166,6 +166,11 @@
       "reason": "Reviewed additive nullable successor fields, validated constraints and a static immutable-tombstone trigger. The deferred self-reference permits atomic head replacement without deleting authority identities or measurements. EXECUTE FUNCTION is static, with no dynamic SQL or data removal.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "The parser classifies the static trigger body as column removal, but this migration only adds nullable columns and constraints. Old readers retain all existing columns; the peer-compatible runtime and permanent rollback source floor precede new Market successor requests. No column or stored authority is removed."
+    },
+    "20261029110000_reconcile_night_mode_capability_changes": {
+      "reason": "Reviewed additive immutable capability predicate and static row trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL, row deletion, index build, table rewrite or existing-data backfill.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Existing membership and durable reconcile contracts remain compatible. The additive trigger only retains a request when effective night-mode capabilities change; old readers can consume the same request. Existing manual unknown-effect fences remain unchanged."
     }
   },
   "nonConcurrentIndexExceptions": {

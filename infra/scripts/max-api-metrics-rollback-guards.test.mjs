@@ -13,16 +13,16 @@ const paths = {
   keys: 'apps/api/src/max/max-api-metrics-key.util.ts',
 };
 const minuteReaderMarker = 'maxim_topology_require_max_api_metrics_minute_reader';
-const apiAuthorityMarker = 'maxim_topology_require_statistics_authority_lifecycle';
+const apiAuthorityMarker = 'maxim_topology_require_statistics_and_night_mode_recovery';
 const previousReleaseMarker = 'select_release_recovery_base';
 const connect = readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8');
 
-function functionBlock(name) {
-  const start = connect.indexOf(`${name}() {`);
+function functionBlock(name, source = connect) {
+  const start = source.indexOf(`${name}() {`);
   assert.notEqual(start, -1, `Missing shell function: ${name}`);
-  const end = connect.indexOf('\n}\n', start);
+  const end = source.indexOf('\n}\n', start);
   assert.notEqual(end, -1, `Unterminated shell function: ${name}`);
-  return connect.slice(start, end + 2);
+  return source.slice(start, end + 2);
 }
 
 function wrapperMarker(name, args) {
@@ -309,6 +309,31 @@ test('ref source floor checks the exact target before Git switch, image build, o
   }
 });
 
+test('combined API recovery checks both exact source floors and refuses either failure without errexit', () => {
+  const topology = readFileSync(resolve(root, 'infra/scripts/lib/deploy-topology.sh'), 'utf8');
+  for (const [statisticsStatus, nightStatus, expectedStatus, expectedCalls] of [
+    [17, 0, 17, ['statistics exact-sha']],
+    [0, 23, 23, ['statistics exact-sha', 'night exact-sha']],
+    [0, 0, 0, ['statistics exact-sha', 'night exact-sha', 'RUNTIME_ALLOWED']],
+  ]) {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -uo pipefail
+maxim_topology_require_statistics_authority_lifecycle() { printf 'statistics %s\\n' "$1"; return ${statisticsStatus}; }
+maxim_topology_require_night_mode_recovery_reader() { printf 'night %s\\n' "$1"; return ${nightStatus}; }
+${functionBlock(apiAuthorityMarker, topology)}
+${apiAuthorityMarker} exact-sha && printf 'RUNTIME_ALLOWED\\n'
+`,
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, expectedStatus, result.stderr);
+    assert.deepEqual(result.stdout.trim().split('\n'), expectedCalls);
+  }
+});
+
 for (const [name, args, expected] of [
   ['rollback_runtime', ['compatibility-sha', 'api-action'], apiAuthorityMarker],
   ['rollback_release', ['release-id'], apiAuthorityMarker],
@@ -330,6 +355,19 @@ for (const [name, args] of [
   ['rollback_runtime', ['compatibility-sha', 'api-action']],
   ['rollback_release', ['release-id', 'admin-static', 'api-shared']],
 ]) {
+  for (const [description, previousMarker] of [
+    ['lifecycle-only', 'maxim_topology_require_statistics_authority_lifecycle'],
+    ['night-mode-only', 'maxim_topology_require_night_mode_recovery_reader'],
+  ]) {
+    test(`${name} upgrades ${description} tooling before either recovery floor can be bypassed`, (t) => {
+      const probe = bootstrapProbe(t, { name, args, previousMarker });
+      assert.equal(probe.result.status, 0, probe.result.stderr);
+      assert.equal(probe.result.stdout, 'current\n');
+      assert.deepEqual(probe.arguments, args);
+      assert.ok(probe.gitCalls.includes('checkout main'));
+    });
+  }
+
   test(`${name} restores reviewed tooling when the previous guarded entrypoint lacks the authority floor`, (t) => {
     const probe = bootstrapProbe(t, { name, args });
     assert.equal(probe.result.status, 0, probe.result.stderr);

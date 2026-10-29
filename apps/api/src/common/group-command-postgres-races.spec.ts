@@ -983,6 +983,63 @@ describePostgresRace('PostgreSQL durable GROUP command races', () => {
     },
   );
 
+  it.each(['disabled', 'active', 'daytime', 'all-day'] as const)(
+    'persists a truthful OPEN notice without changing the %s night schedule',
+    async (schedule) => {
+      const data = await fixture(3);
+      const now = new Date();
+      const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+      const nightSettings = {
+        nightModeEnabled: schedule !== 'disabled',
+        nightModeStartTimeMinutes:
+          schedule === 'daytime' ? (currentMinutes + 60) % 1440 : (currentMinutes + 1430) % 1440,
+        nightModeEndTimeMinutes:
+          schedule === 'all-day' ? (currentMinutes + 1430) % 1440 : (currentMinutes + 120) % 1440,
+        nightModeTimezone: 'UTC',
+        nightModeBotMessageEnabled: true,
+        nightModeOpenMessageEnabled: true,
+      };
+      await prisma.chatSettings.update({
+        where: { chatId: data.chatId },
+        data: {
+          ...nightSettings,
+          nightModeForceCloseEnabled: true,
+          nightModeForceCloseForever: true,
+        },
+      });
+      const permit = await claim(data.updates[0]!);
+      const result = await admin().applyManualOpenChatCommand(
+        data.chatId,
+        actor,
+        'group_command',
+        permit,
+      );
+      const message =
+        schedule === 'active' || schedule === 'all-day'
+          ? 'Ручное закрытие снято. Чат остаётся закрыт по ночному расписанию.'
+          : 'Чат открыт. Для сообщений снова действуют обычные правила.';
+      expect(result).toEqual({ ok: true, message });
+      expect(
+        await prisma.chatSettings.findUniqueOrThrow({ where: { chatId: data.chatId } }),
+      ).toMatchObject({
+        ...nightSettings,
+        nightModeForceCloseEnabled: false,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseUntil: '',
+      });
+      const commandResult = { action: 'OPEN_CHAT', applied: true, noticeText: message };
+      expect(permit.result).toEqual(commandResult);
+      expect(
+        await prisma.webhookExecutionClaim.findUniqueOrThrow({ where: { id: permit.claimId } }),
+      ).toMatchObject({ status: 'READY', commandResult });
+      expect(
+        await prisma.auditLog.findFirstOrThrow({
+          where: { chatId: data.chatId, action: 'MANUAL_CHAT_OPEN' },
+        }),
+      ).toMatchObject({ payload: { result: commandResult } });
+    },
+  );
+
   it('keeps a newer OPEN result when older SILENCE workers acquire the parent lock later', async () => {
     const oldData = await fixture(9, new Date(Date.now() - 120_000));
     const newData = await fixture(12, new Date(Date.now() - 60_000), oldData.chatId);
