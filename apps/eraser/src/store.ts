@@ -61,6 +61,43 @@ type ProtectionState = {
   complete_through: Date | null;
   bot_history_complete_from: Date | null;
 };
+type DiagnosticPolicy = PolicyRow & {
+  connection_request:
+    | (Omit<ConnectionRequest, 'expires_at' | 'next_attempt_at' | 'updated_at'> & {
+        expires_at: string;
+        next_attempt_at: string;
+        updated_at: string;
+      })
+    | null;
+  durable_cooldown: Date | null;
+  observed_at: Date;
+};
+type DiagnosticCounts = {
+  chat_id: string;
+  pending: number;
+  oldest: string | null;
+  unknown: number;
+  unknown_at: Date | null;
+  eligible: number;
+  eligible_at: string | null;
+  review: boolean;
+  dispatching: boolean;
+};
+const CONNECTION_ERRORS = new Set([
+  'bot_removed',
+  'eraser_rights_missing',
+  'membership_unknown',
+  'actor_rights_missing',
+  'queue_race',
+  'queue_unavailable',
+  'connection_proof_stale',
+  'connection_guard_changed',
+  'connection_check_failed',
+  'ERASER_CONNECTION_STOPPED',
+  'transport_unknown',
+  'malformed_response',
+  'unknown',
+]);
 export function protectionGap(
   message: Pick<Message, 'isBot' | 'sourceMs'>,
   moduleBot: boolean,
@@ -226,104 +263,146 @@ export class Store {
         [chatId, floor],
       );
   }
-  async snapshot(
-    chatId: string,
-    client: pg.Pool | pg.PoolClient = this.pool,
-  ): Promise<Record<string, unknown>> {
-    const policy = (
-      await client.query<PolicyRow>('SELECT * FROM eraser_policies WHERE chat_id=$1', [chatId])
-    ).rows[0];
-    if (!policy)
-      return {
-        enabled: false,
-        hours: 48,
-        revision: 0,
-        enabledAt: null,
-        captureAfter: null,
-        pausedAt: null,
-        pendingCount: 0,
-        deletedCount: 0,
-        skippedCount: 0,
-        oldestDueAt: null,
-        status: this.executionEnabled ? 'off' : 'unavailable',
-        connectionStatus: 'unknown',
-        historyStatus: 'off',
-        historyScannedCount: 0,
-        connectionRequest: null,
-      };
-    const connection = (
-      await client.query<ConnectionRequest & { effective_status: ConnectionRequest['status'] }>(
-        `SELECT *,CASE WHEN status='pending' AND expires_at<=clock_timestamp() THEN 'expired'
-          WHEN status='pending' AND policy_revision<>$2 THEN 'cancelled' ELSE status END AS effective_status
-         FROM eraser_connection_requests WHERE chat_id=$1`,
-        [chatId, policy.revision],
+  private async diagnosticPage(
+    client: pg.Pool | pg.PoolClient,
+    selection: { chatIds?: string[]; after?: string | null },
+    botId = '',
+  ) {
+    if (selection.chatIds && selection.chatIds.length > 50)
+      throw new Error('Diagnostic page too large');
+    const rows = (
+      await client.query<DiagnosticPolicy>(
+        `WITH page AS MATERIALIZED (
+        SELECT * FROM eraser_policies
+        WHERE ($1::text[] IS NULL OR chat_id=ANY($1)) AND ($2::text IS NULL OR chat_id>$2)
+        ORDER BY chat_id LIMIT 51
+      ) SELECT page.*,row_to_json(request) AS connection_request,
+        cooldown.not_before AS durable_cooldown,statement_timestamp() AS observed_at
+      FROM (SELECT (SELECT not_before FROM eraser_rate_limits WHERE bot_id=$3) AS not_before) cooldown
+      LEFT JOIN page ON true LEFT JOIN eraser_connection_requests request USING(chat_id)
+      ORDER BY page.chat_id`,
+        [selection.chatIds ?? null, selection.after ?? null, botId],
       )
-    ).rows[0];
-    const counts = (
-      await client.query<{
-        pending: number;
-        unresolved: number;
-        review: number;
-        oldest: string | null;
-      }>(
-        // FLAG: Journals outlive the pending buffer. Probe each indexed state independently;
-        // one large uncertainty history must not hide pending work, review or the oldest source.
-        `SELECT
-          (SELECT COUNT(*)::int FROM (SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state='pending' LIMIT ${CHAT_BUFFER + 1}) p) AS pending,
-          (EXISTS(SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state IN ('uncertain','dispatching')))::int AS unresolved,
-          (EXISTS(SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state='review'))::int AS review,
-          (SELECT MIN(source_ms)::text FROM (
-            (SELECT source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='pending' ORDER BY source_ms,message_id LIMIT 1)
-            UNION ALL (SELECT source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='uncertain' ORDER BY source_ms,message_id LIMIT 1)
-            UNION ALL (SELECT source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='dispatching' ORDER BY source_ms,message_id LIMIT 1)
-            UNION ALL (SELECT source_ms FROM eraser_candidates WHERE chat_id=$1 AND state='review' ORDER BY source_ms,message_id LIMIT 1)
-          ) oldest) AS oldest`,
-        [chatId],
-      )
-    ).rows[0]!;
+    ).rows;
+    const policies = rows.filter((row) => row.chat_id).slice(0, 50);
+    const observedAt = rows[0]!.observed_at;
+    const probes = policies.length
+      ? (
+          await client.query<DiagnosticCounts>(
+            // FLAG: Bound each state/lane before aggregation. Retained journals and terminal history
+            // must never turn an operator page into a ledger scan or displace another state's probe.
+            `SELECT input.chat_id,pending.total AS pending,oldest.source_ms AS oldest,
+        unknown.total AS unknown,unknown.oldest AS unknown_at,
+        eligible.total AS eligible,eligible.oldest AS eligible_at,
+        COALESCE((SELECT true FROM eraser_candidates WHERE chat_id=input.chat_id AND state='review'
+          ORDER BY message_id LIMIT 1),false) AS review,
+        COALESCE((SELECT true FROM eraser_candidates WHERE chat_id=input.chat_id AND state='dispatching'
+          ORDER BY message_id LIMIT 1),false) AS dispatching
+      FROM unnest($1::text[],$2::integer[]) AS input(chat_id,hours)
+      CROSS JOIN LATERAL (SELECT COUNT(*)::int AS total FROM (
+        SELECT 1 FROM eraser_candidates WHERE chat_id=input.chat_id AND state='pending'
+        ORDER BY message_id LIMIT ${CHAT_BUFFER + 1}
+      ) limited) pending
+      LEFT JOIN LATERAL (
+        SELECT candidate.source_ms::text FROM eraser_candidates candidate WHERE chat_id=input.chat_id AND state='pending'
+        ORDER BY candidate.source_ms,candidate.message_id LIMIT 1
+      ) oldest ON true
+      CROSS JOIN LATERAL (SELECT COUNT(*)::int AS total,MIN(unknown_at) AS oldest FROM (
+        SELECT unknown_at FROM (
+          (SELECT updated_at AS unknown_at FROM eraser_candidates
+            WHERE chat_id=input.chat_id AND state='uncertain'
+            ORDER BY updated_at,message_id LIMIT ${CHAT_BUFFER + 1})
+          UNION ALL
+          (SELECT next_attempt_at AS unknown_at FROM eraser_candidates
+            WHERE chat_id=input.chat_id AND state='dispatching' AND next_attempt_at<=$3
+            ORDER BY next_attempt_at,message_id LIMIT ${CHAT_BUFFER + 1})
+        ) states ORDER BY unknown_at LIMIT ${CHAT_BUFFER + 1}
+      ) limited) unknown
+      CROSS JOIN LATERAL (SELECT COUNT(*)::int AS total,MIN(due_at)::text AS oldest FROM (
+        SELECT due_at FROM (
+          ${([24, 48, 168] as const)
+            .flatMap((period) =>
+              (['live', 'history'] as const).map(
+                (lane) =>
+                  `(SELECT ${effectiveDueSql(period)} AS due_at FROM eraser_candidates
+              WHERE input.hours=${period} AND chat_id=input.chat_id AND lane='${lane}' AND state='pending'
+                AND ${effectiveDueSql(period)}<=$4
+              ORDER BY ${effectiveDueSql(period)},source_ms,message_id LIMIT ${CHAT_BUFFER + 1})`,
+              ),
+            )
+            .join(' UNION ALL ')}
+        ) lanes ORDER BY due_at LIMIT ${CHAT_BUFFER + 1}
+      ) limited) eligible`,
+            [
+              policies.map((row) => row.chat_id),
+              policies.map((row) => row.hours),
+              observedAt,
+              observedAt.getTime(),
+            ],
+          )
+        ).rows
+      : [];
+    return {
+      policies,
+      counts: new Map(probes.map((row) => [row.chat_id, row])),
+      observedAt,
+      durableUntil: rows[0]!.durable_cooldown?.toISOString() ?? null,
+      nextAfter: rows.filter((row) => row.chat_id).length > 50 ? policies[49]!.chat_id : null,
+    };
+  }
+  private projectSnapshot(policy: DiagnosticPolicy, counts: DiagnosticCounts) {
+    const connection = policy.connection_request;
+    const connectionStatus =
+      connection?.status === 'pending'
+        ? Date.parse(connection.expires_at) <= policy.observed_at.getTime()
+          ? 'expired'
+          : connection.policy_revision !== policy.revision
+            ? 'cancelled'
+            : 'pending'
+        : connection?.status;
+    const gap = policy.history_gap || policy.live_gap_at !== null || policy.safety_gap_at !== null;
+    const protectedHistory = policy.historical_deferred_from !== null;
+    const executionStopped =
+      !this.executionEnabled ||
+      !policy.enabled ||
+      ['no_access', 'missing'].includes(policy.connection_status);
     const status = !this.executionEnabled
       ? 'unavailable'
       : !policy.enabled
         ? 'off'
-        : policy.connection_status === 'no_access' || policy.connection_status === 'missing'
+        : ['no_access', 'missing'].includes(policy.connection_status)
           ? 'no_access'
           : counts.review
             ? 'error'
-            : counts.unresolved ||
-                policy.last_error ||
-                policy.deferred_from ||
-                policy.historical_deferred_from ||
-                policy.history_gap ||
-                policy.live_gap_at !== null ||
-                policy.safety_gap_at !== null
+            : counts.unknown || policy.last_error || policy.deferred_from || protectedHistory || gap
               ? 'delayed'
               : 'running';
     const historyStatus = !policy.enabled
       ? 'off'
-      : policy.history_gap ||
-          policy.live_gap_at !== null ||
-          policy.safety_gap_at !== null ||
+      : gap ||
           policy.deferred_from ||
-          policy.historical_deferred_from ||
+          protectedHistory ||
           policy.last_error ||
           ['missing', 'no_access'].includes(policy.connection_status)
         ? 'blocked'
         : policy.history_complete &&
             counts.pending === 0 &&
-            counts.unresolved === 0 &&
-            counts.review === 0
+            counts.unknown === 0 &&
+            !counts.review &&
+            !counts.dispatching
           ? 'complete'
           : Number(policy.scanned_count)
             ? 'running'
             : 'pending';
     return {
+      initialized: true,
       enabled: policy.enabled,
       hours: policy.hours,
       revision: policy.revision,
       enabledAt: policy.enabled_at?.toISOString() ?? null,
       captureAfter: null,
       pausedAt: null,
-      pendingCount: counts.pending,
+      pendingCount: Math.min(CHAT_BUFFER, counts.pending),
       deletedCount: Number(policy.deleted_count),
       skippedCount: Number(policy.skipped_count),
       oldestDueAt: counts.oldest
@@ -334,10 +413,125 @@ export class Store {
       historyStatus,
       historyScannedCount: Number(policy.scanned_count),
       connectionRequest:
-        connection && connection.effective_status !== 'activated'
-          ? { status: connection.effective_status, expiresAt: connection.expires_at.toISOString() }
+        connection && connectionStatus !== 'activated'
+          ? { status: connectionStatus, expiresAt: new Date(connection.expires_at).toISOString() }
           : null,
+      progress: {
+        pendingCountComplete: counts.pending <= CHAT_BUFFER,
+        eligibleCount: Math.min(CHAT_BUFFER, counts.eligible),
+        eligibleCountComplete: counts.eligible <= CHAT_BUFFER,
+        oldestEligibleDueAt: counts.eligible_at
+          ? new Date(Number(counts.eligible_at)).toISOString()
+          : null,
+        unknownCount: Math.min(CHAT_BUFFER, counts.unknown),
+        unknownCountComplete: counts.unknown <= CHAT_BUFFER,
+        // FLAG: Unknown age begins at the dispatch confirmation deadline or the recorded
+        // uncertain transition, not at source-message age or a guessed original DELETE time.
+        oldestUnknownAt: counts.unknown_at?.toISOString() ?? null,
+      },
+      coverage: {
+        lastCompletedAt: policy.last_live_completed_at?.toISOString() ?? null,
+        gap,
+        protectedHistory,
+        executionStopped,
+      },
       ...(policy.last_operation_id ? { lastOperationId: policy.last_operation_id } : {}),
+    };
+  }
+  async runtimeDiagnostics(
+    botId: string,
+    selection: { chatIds?: string[]; after?: string | null },
+  ) {
+    const page = await this.diagnosticPage(this.pool, selection, botId);
+    const available = new Set(page.policies.map((row) => row.chat_id));
+    const unavailableSources = (selection.chatIds ?? [])
+      .filter((id) => !available.has(id))
+      .map((chatId) => ({
+        chatId,
+        chatTitle: 'Чат',
+        source: 'eraser',
+        reason: 'not_initialized',
+      }));
+    return {
+      generatedAt: page.observedAt.toISOString(),
+      nextAfter: page.nextAfter,
+      incomplete: unavailableSources.length > 0,
+      unavailableSources,
+      cooldown: { durableUntil: page.durableUntil },
+      items: page.policies.map((policy) => {
+        const counts = page.counts.get(policy.chat_id)!;
+        const snapshot = this.projectSnapshot(policy, counts);
+        const connection = policy.connection_request;
+        return {
+          ...snapshot,
+          chatId: policy.chat_id,
+          chatTitle: 'Чат',
+          source: 'eraser',
+          sourceStatus: 'available',
+          activationId: policy.activation_id,
+          nextRunAt: policy.next_run_at.toISOString(),
+          hasTerminalReview: counts.review,
+          hasUnresolvedReceipt: counts.unknown > 0,
+          connectionRequest: connection
+            ? {
+                status: snapshot.connectionRequest?.status ?? 'activated',
+                operationId: connection.operation_id,
+                actorUserId: connection.actor_user_id,
+                policyRevision: connection.policy_revision,
+                expiresAt: new Date(connection.expires_at).toISOString(),
+                nextAttemptAt:
+                  snapshot.connectionRequest?.status === 'pending'
+                    ? new Date(connection.next_attempt_at).toISOString()
+                    : null,
+                updatedAt: new Date(connection.updated_at).toISOString(),
+                lastError:
+                  connection.last_error === null
+                    ? null
+                    : CONNECTION_ERRORS.has(connection.last_error)
+                      ? connection.last_error
+                      : 'unknown',
+              }
+            : null,
+          confirmationCounts: {
+            historicalUnknown: Number(policy.deleted_historical_unknown_count),
+            deleteAcknowledged: Number(policy.deleted_acknowledged_count),
+            removalReceipt: Number(policy.deleted_removal_receipt_count),
+          },
+          diagnostics: {
+            lastError: policy.last_error,
+            historyBoundaryBlocked: snapshot.coverage.gap,
+            awaitingCurrentProtection: policy.deferred_from !== null,
+            awaitingHistoricalProtection: policy.historical_deferred_from !== null,
+          },
+          updatedAt: policy.updated_at.toISOString(),
+        };
+      }),
+    };
+  }
+  async snapshot(
+    chatId: string,
+    client: pg.Pool | pg.PoolClient = this.pool,
+  ): Promise<Record<string, unknown>> {
+    const page = await this.diagnosticPage(client, { chatIds: [chatId] });
+    const policy = page.policies[0];
+    if (policy) return this.projectSnapshot(policy, page.counts.get(chatId)!);
+    return {
+      initialized: false,
+      enabled: false,
+      hours: 48,
+      revision: 0,
+      enabledAt: null,
+      captureAfter: null,
+      pausedAt: null,
+      pendingCount: 0,
+      deletedCount: 0,
+      skippedCount: 0,
+      oldestDueAt: null,
+      status: this.executionEnabled ? 'off' : 'unavailable',
+      connectionStatus: 'unknown',
+      historyStatus: 'off',
+      historyScannedCount: 0,
+      connectionRequest: null,
     };
   }
   async operation(chatId: string, input: UpdatePolicy): Promise<Record<string, unknown> | null> {
@@ -1327,7 +1521,7 @@ export class Store {
       }
       if (state === 'deleted' || state === 'protected')
         await client.query(
-          `UPDATE eraser_policies SET ${state === 'deleted' ? 'deleted_count=deleted_count+1' : 'skipped_count=skipped_count+1'} WHERE chat_id=$1`,
+          `UPDATE eraser_policies SET ${state === 'deleted' ? 'deleted_count=deleted_count+1,deleted_acknowledged_count=deleted_acknowledged_count+1' : 'skipped_count=skipped_count+1'} WHERE chat_id=$1`,
           [candidate.chat_id],
         );
     });
@@ -1487,7 +1681,7 @@ export class Store {
         );
         if (result.rowCount)
           await client.query(
-            'UPDATE eraser_policies SET deleted_count=deleted_count+1 WHERE chat_id=$1',
+            'UPDATE eraser_policies SET deleted_count=deleted_count+1,deleted_removal_receipt_count=deleted_removal_receipt_count+1 WHERE chat_id=$1',
             [chatId],
           );
         // FLAG: Freeing ordinary page capacity may expose known due work after idle polling

@@ -24,6 +24,9 @@ export type Policy = {
   history_gap: boolean;
   scanned_count: string;
   deleted_count: string;
+  deleted_historical_unknown_count: string;
+  deleted_acknowledged_count: string;
+  deleted_removal_receipt_count: string;
   skipped_count: string;
   connection_status: 'connected' | 'missing' | 'no_access' | 'unknown';
   last_error: string | null;
@@ -74,6 +77,7 @@ export type ConnectionRequest = {
   lease_token: string | null;
   lease_until: Date | null;
   last_error: string | null;
+  updated_at: Date;
 };
 export class ServiceError extends Error {
   constructor(

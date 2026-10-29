@@ -1,7 +1,13 @@
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { fork } from 'node:child_process';
+import { join } from 'node:path';
+import { once } from 'node:events';
 import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
+import { SafetyDeskRetentionService } from '../admin/safety-desk-retention.service';
+import { MessageRetentionStore } from './message-retention-store.service';
+import { retentionLegacyDiagnosticsQuery } from '../admin/safety-desk-retention-queries';
 import { EraserControlService } from './eraser-control.service';
 import { retentionBindingQuery } from './message-retention-binding';
 
@@ -29,6 +35,7 @@ native('independent Lastik bridge with PostgreSQL', () => {
       service: EraserControlService,
       chatId: string,
     ) => Promise<void>,
+    enabled = true,
   ) {
     const rollback = new Error('rollback Lastik fixture');
     try {
@@ -64,7 +71,7 @@ native('independent Lastik bridge with PostgreSQL', () => {
           const service = new EraserControlService(
             scoped as unknown as PrismaService,
             new ConfigService({
-              ERASER_ENABLED: true,
+              ERASER_ENABLED: enabled,
               ERASER_CONTROL_URL: 'http://eraser:3000',
               ERASER_CONTROL_TOKEN: 'a'.repeat(64),
             }),
@@ -95,6 +102,436 @@ native('independent Lastik bridge with PostgreSQL', () => {
       lastOperationId: operationId,
     };
   }
+
+  it('reads a saved Lastik owner with execution disabled without bootstrap or legacy fallback', async () =>
+    isolated(async (tx, service, chatId) => {
+      await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id,legacy_hours) VALUES(${chatId},24)`;
+      const before = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
+      const fetch = jest.spyOn(global, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            ...state(randomUUID()),
+            initialized: true,
+            hours: 168,
+            connectionRequest: { status: 'pending', expiresAt: '2026-11-01T00:00:00.000Z' },
+          }),
+          { status: 200 },
+        ),
+      );
+      await expect(service.read(chatId)).resolves.toMatchObject({
+        hours: 168,
+        connectionRequest: { status: 'pending' },
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringMatching(/\/policy$/),
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } })).toEqual(
+        before,
+      );
+    }, false));
+
+  it('initialized polling performs one read and never repeats bootstrap', async () =>
+    isolated(async (_tx, service, chatId) => {
+      const fetch = jest.spyOn(global, 'fetch').mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ...state(randomUUID()),
+              initialized: true,
+              hours: 168,
+            }),
+            { status: 200 },
+          ),
+      );
+      await service.read(chatId);
+      await service.read(chatId);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+    }));
+
+  it('execution-disabled control refuses before storing an operation or taking ownership', async () =>
+    isolated(async (tx, service, chatId) => {
+      const operationId = randomUUID();
+      const before = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
+      await expect(
+        service.update(chatId, 'admin', {
+          enabled: true,
+          hours: 168,
+          expectedRevision: 0,
+          operationId,
+        }),
+      ).rejects.toMatchObject({ status: 503 });
+      expect(
+        await tx.$queryRaw`SELECT id FROM eraser_control_operations WHERE id=${operationId}`,
+      ).toEqual([]);
+      expect(
+        await tx.$queryRaw`SELECT chat_id FROM eraser_chat_bindings WHERE chat_id=${chatId}`,
+      ).toEqual([]);
+      expect(await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } })).toEqual(
+        before,
+      );
+    }, false));
+
+  it('bootstraps only an explicit uninitialized source and reads back the imported legacy policy', async () =>
+    isolated(async (tx, service, chatId) => {
+      await tx.messageRetentionPolicy.update({ where: { chatId }, data: { hours: 48 } });
+      const fetch = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...state(randomUUID()), initialized: false }), {
+            status: 200,
+          }),
+        )
+        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ...state(randomUUID()), hours: 48, initialized: true }), {
+            status: 200,
+          }),
+        );
+      await expect(service.read(chatId)).resolves.toMatchObject({ hours: 48 });
+      expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual(['GET', 'PUT', 'GET']);
+      expect(JSON.parse(String(fetch.mock.calls[1]![1]?.body))).toEqual({ hours: 48 });
+    }));
+
+  it('keeps a persisted missing source unavailable without reinitializing it', async () =>
+    isolated(async (tx, service, chatId) => {
+      await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id,legacy_hours) VALUES(${chatId},24)`;
+      const fetch = jest.spyOn(global, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ ...state(randomUUID()), initialized: false }), {
+          status: 200,
+        }),
+      );
+      await expect(service.read(chatId)).rejects.toMatchObject({ status: 503 });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }));
+
+  it('requires successful initialized readback after first bootstrap', async () =>
+    isolated(async (_tx, service, chatId) => {
+      const fetch = jest.spyOn(global, 'fetch').mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ ...state(randomUUID()), initialized: false }), {
+            status: 200,
+          }),
+      );
+      await expect(service.read(chatId)).rejects.toMatchObject({ status: 503 });
+      expect(fetch).toHaveBeenCalledTimes(3);
+    }));
+
+  it('allows only protection delivery to existing owners when execution is disabled', async () =>
+    isolated(async (tx, service, chatId) => {
+      await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id,legacy_hours) VALUES(${chatId},24)`;
+      const fetch = jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(async () => new Response('{}', { status: 200 }));
+      await service.request(`/chats/${chatId}/protection`, 'PUT', {}, 'protection');
+      await service.request('/holds', 'PUT', {}, 'protection');
+      await expect(
+        service.request(`/chats/${chatId}1/protection`, 'PUT', {}, 'protection'),
+      ).rejects.toMatchObject({ status: 503 });
+      await expect(
+        service.request(`/chats/${chatId}/policy`, 'PUT', {}, 'protection'),
+      ).rejects.toMatchObject({ status: 503 });
+      await expect(
+        service.request(`/chats/${chatId}/retry`, 'POST', {}, 'protection'),
+      ).rejects.toMatchObject({ status: 503 });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    }, false));
+
+  it('reads completed operation receipts but leaves pending operations untouched with execution disabled', async () =>
+    isolated(async (tx, service, chatId) => {
+      const saved = state(randomUUID());
+      const pendingId = randomUUID();
+      await tx.$executeRaw`INSERT INTO eraser_control_operations(id,chat_id,actor_user_id,request,result) VALUES
+        (${saved.lastOperationId},${chatId},'admin','{}'::jsonb,${JSON.stringify(saved)}::jsonb),
+        (${pendingId},${chatId},'admin','{}'::jsonb,NULL)`;
+      const fetch = jest.spyOn(global, 'fetch');
+      await expect(service.resume(chatId, 'admin', saved.lastOperationId)).resolves.toMatchObject(
+        saved,
+      );
+      await expect(service.resume(chatId, 'admin', pendingId)).rejects.toMatchObject({
+        status: 503,
+      });
+      expect(
+        await tx.$queryRaw`SELECT chat_id FROM eraser_chat_bindings WHERE chat_id=${chatId}`,
+      ).toEqual([]);
+      expect(fetch).not.toHaveBeenCalled();
+    }, false));
+
+  it('pages all 201 legacy review rows without gaps and rejects a changed policy cursor', async () =>
+    isolated(async (tx, eraser, chatId) => {
+      const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status,outcome_code)
+        SELECT ${chatId},'review-'||LPAD(id::text,4,'0'),'5','bot',CURRENT_TIMESTAMP-INTERVAL '3 days',${policy.activationId},'skipped',
+          CASE WHEN id%2=0 THEN 'reconciliation' ELSE 'terminal_review' END FROM generate_series(1,201) id`;
+      const store = new MessageRetentionStore(
+        tx as unknown as PrismaService,
+        new ConfigService({ MESSAGE_RETENTION_MODE: 'on' }),
+      );
+      const desk = new SafetyDeskRetentionService(
+        tx as unknown as PrismaService,
+        store,
+        {} as never,
+        eraser,
+      );
+      const request = jest.spyOn(eraser, 'request');
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      let first: string | undefined;
+      do {
+        const page = await desk.preview(chatId, cursor);
+        expect(page.items.length).toBeLessThanOrEqual(20);
+        expect(page.source).toBe('legacy');
+        ids.push(...page.items.map((row) => row.messageId));
+        cursor = page.nextAfter ?? undefined;
+        first ??= cursor;
+      } while (cursor);
+      expect(request).not.toHaveBeenCalled();
+      expect(ids).toHaveLength(201);
+      expect(new Set(ids).size).toBe(201);
+      expect(ids).toEqual([...ids].sort());
+      const decoded = JSON.parse(Buffer.from(first!, 'base64url').toString('utf8'));
+      for (const changed of [
+        { source: 'eraser' },
+        { chatId: '-123' },
+        { activationId: 'changed' },
+        { revision: policy.revision + 1 },
+      ])
+        await expect(
+          desk.preview(
+            chatId,
+            Buffer.from(JSON.stringify({ ...decoded, ...changed })).toString('base64url'),
+          ),
+        ).rejects.toMatchObject({ status: 409 });
+      await tx.messageRetentionPolicy.update({
+        where: { chatId },
+        data: { revision: { increment: 1 } },
+      });
+      await expect(desk.preview(chatId, first)).rejects.toMatchObject({ status: 409 });
+    }));
+
+  it(
+    'uses at most five real SQL statements for 50 mixed owners over the real Lastik HTTP boundary',
+    async () =>
+      isolated(async (tx, _eraser, chatId) => {
+        const ids = Array.from(
+          { length: 49 },
+          (_, i) => `${chatId}${String(i + 1).padStart(2, '0')}`,
+        );
+        await tx.chat.createMany({
+          data: ids.map((id) => ({ id, title: 'Mixed budget fixture' })),
+        });
+        const legacyIds = ids.slice(0, 24),
+          ownedIds = ids.slice(24);
+        await tx.messageRetentionPolicy.createMany({
+          data: legacyIds.map((id) => ({ chatId: id, activationId: randomUUID(), quotaShard: 0 })),
+        });
+        await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id,legacy_hours) SELECT id,24 FROM chats WHERE id IN (${Prisma.join(ownedIds)})`;
+        const child = fork(
+          join(__dirname, '../../../eraser/test/support/runtime-native-fixture.mjs'),
+          [],
+          {
+            execArgv: ['--import', 'tsx'],
+            stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+            env: process.env,
+          },
+        );
+        const exchange = (message: Record<string, unknown>) =>
+          new Promise<Record<string, unknown>>((resolve, reject) => {
+            const timer = setTimeout(
+              () => done(new Error('Native HTTP fixture deadline exceeded')),
+              20000,
+            );
+            const onMessage = (value: Record<string, unknown>) =>
+              value.type === 'error'
+                ? done(new Error('Native HTTP fixture failed'))
+                : done(null, value);
+            const onExit = () => done(new Error('Native HTTP fixture exited early'));
+            const done = (error: Error | null, value?: Record<string, unknown>) => {
+              clearTimeout(timer);
+              child.off('message', onMessage);
+              child.off('exit', onExit);
+              if (error) reject(error);
+              else resolve(value!);
+            };
+            child.once('message', onMessage);
+            child.once('exit', onExit);
+            child.send(message);
+          });
+        let errors = '';
+        child.stderr?.on('data', (chunk) => {
+          errors += String(chunk).slice(0, 2000);
+        });
+        try {
+          const ready = await exchange({ type: 'start', chatIds: ownedIds });
+          expect(ready.type).toBe('ready');
+          const traced = { $queryRaw: jest.fn((query: Prisma.Sql) => tx.$queryRaw(query)) };
+          const control = new EraserControlService(
+            traced as unknown as PrismaService,
+            new ConfigService({
+              ERASER_ENABLED: false,
+              ERASER_CONTROL_URL: ready.url,
+              ERASER_CONTROL_TOKEN: 'a'.repeat(32),
+            }),
+          );
+          const store = new MessageRetentionStore(
+            traced as unknown as PrismaService,
+            new ConfigService({ MESSAGE_RETENTION_MODE: 'on' }),
+          );
+          const desk = new SafetyDeskRetentionService(
+            traced as unknown as PrismaService,
+            store,
+            {} as never,
+            control,
+          );
+          const page = await desk.runtime();
+          const stats = await exchange({ type: 'stats' });
+          expect(page.items).toHaveLength(50);
+          expect(page.items.filter((row) => row.source === 'eraser')).toHaveLength(25);
+          expect(page.items.filter((row) => row.source === 'legacy')).toHaveLength(25);
+          expect(page.unavailableSources).toEqual([]);
+          expect(page.nextAfter).toBeNull();
+          expect(traced.$queryRaw).toHaveBeenCalledTimes(2);
+          expect(stats.queries).toBe(2);
+          expect(traced.$queryRaw.mock.calls.length + Number(stats.queries)).toBeLessThanOrEqual(5);
+        } catch (error) {
+          if (errors) process.stderr.write(errors);
+          throw error;
+        } finally {
+          if (child.connected) {
+            const exited = once(child, 'exit');
+            await exchange({ type: 'stop' });
+            await exited;
+          } else if (child.exitCode === null) child.kill('SIGTERM');
+        }
+      }),
+    30000,
+  );
+
+  it('pages mixed persisted owners with the flag off in two main-database queries', async () =>
+    isolated(async (tx, eraser, chatId) => {
+      const ownedId = `${chatId}7`;
+      await tx.chat.create({ data: { id: ownedId, title: 'Independent owner' } });
+      await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id,legacy_hours) VALUES(${ownedId},24)`;
+      const request = jest.spyOn(eraser, 'request').mockResolvedValue({
+        generatedAt: new Date().toISOString(),
+        mode: 'on',
+        nextAfter: null,
+        quotas: [],
+        items: [
+          {
+            ...state(randomUUID()),
+            chatId: ownedId,
+            chatTitle: 'Remote title',
+            activationId: 'owned',
+            nextRunAt: null,
+            hasTerminalReview: false,
+            hasUnresolvedReceipt: true,
+            source: 'eraser',
+            sourceStatus: 'available',
+          },
+        ],
+      });
+      const traced = {
+        messageRetentionPolicy: tx.messageRetentionPolicy,
+        messageRetentionQuota: tx.messageRetentionQuota,
+        chat: tx.chat,
+        $queryRaw: jest.fn((query: Prisma.Sql) => tx.$queryRaw(query)),
+      };
+      const store = new MessageRetentionStore(
+        traced as unknown as PrismaService,
+        new ConfigService({ MESSAGE_RETENTION_MODE: 'on' }),
+      );
+      const desk = new SafetyDeskRetentionService(
+        traced as unknown as PrismaService,
+        store,
+        {} as never,
+        eraser,
+      );
+      const result = await desk.runtime();
+      expect(result.items.filter((item) => [chatId, ownedId].includes(item.chatId))).toHaveLength(
+        2,
+      );
+      expect(result.items.find((item) => item.chatId === ownedId)).toMatchObject({
+        hours: 168,
+        chatTitle: 'Independent owner',
+        source: 'eraser',
+      });
+      expect(request).toHaveBeenCalledWith(`/runtime?chatIds=${encodeURIComponent(ownedId)}`);
+      expect(traced.$queryRaw).toHaveBeenCalledTimes(2);
+    }, false));
+
+  it('keeps an unavailable persisted owner explicit without legacy values or invented counters', async () =>
+    isolated(async (tx, eraser, chatId) => {
+      await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id,legacy_hours) VALUES(${chatId},24)`;
+      jest.spyOn(eraser, 'request').mockRejectedValue(new Error('private upstream error'));
+      const store = new MessageRetentionStore(
+        tx as unknown as PrismaService,
+        new ConfigService({ MESSAGE_RETENTION_MODE: 'on' }),
+      );
+      const desk = new SafetyDeskRetentionService(
+        tx as unknown as PrismaService,
+        store,
+        {} as never,
+        eraser,
+      );
+      const result = await desk.runtime();
+      expect(result.items.some((item) => item.chatId === chatId)).toBe(false);
+      expect(result.unavailableSources).toContainEqual({
+        chatId,
+        chatTitle: 'Lastik isolated fixture',
+        source: 'eraser',
+        reason: 'unavailable',
+      });
+      expect(result.incomplete).toBe(true);
+      expect(JSON.stringify(result)).not.toContain('private upstream');
+    }, false));
+
+  it('bounds legacy activation probes before deriving ages under retained-history skew', async () =>
+    isolated(async (tx, _eraser, chatId) => {
+      const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status)
+        SELECT ${chatId},'retained-'||id,'5','bot',CURRENT_TIMESTAMP-INTERVAL '30 days','retired','pending' FROM generate_series(1,10000) id`;
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status)
+        SELECT ${chatId},'current-'||id,'5','bot',CURRENT_TIMESTAMP-INTERVAL '3 days',${policy.activationId},'pending' FROM generate_series(1,201) id`;
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status,outcome_code)
+        SELECT ${chatId},'outcome-'||outcome||'-'||id,'5','bot',CURRENT_TIMESTAMP-INTERVAL '30 days','retired','skipped',outcome
+        FROM unnest(ARRAY['terminal_review','worker_error','waiting_access','reconciliation','deferred']) outcome CROSS JOIN generate_series(1,1000) id`;
+      await tx.$executeRaw`ANALYZE message_retention_candidates`;
+      const query = retentionLegacyDiagnosticsQuery([chatId]);
+      const [result] =
+        await tx.$queryRaw<
+          Array<{ diagnostics: Array<{ incomplete: boolean; oldestSourceMs: number | null }> }>
+        >(query);
+      expect(result?.diagnostics[0]).toMatchObject({ incomplete: true, oldestSourceMs: null });
+      type Plan = {
+        ['Node Type']: string;
+        ['Relation Name']?: string;
+        ['Index Name']?: string;
+        ['Actual Rows']?: number;
+        ['Rows Removed by Filter']?: number;
+        Plans?: Plan[];
+      };
+      const explained = await tx.$queryRaw<Array<{ 'QUERY PLAN': Array<{ Plan: Plan }> }>>(
+        Prisma.sql`EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ${query}`,
+      );
+      const nodes = (plan: Plan): Plan[] => [plan, ...(plan.Plans ?? []).flatMap(nodes)];
+      const scans = nodes(explained[0]!['QUERY PLAN'][0]!.Plan).filter(
+        (node) => node['Relation Name'] === 'message_retention_candidates',
+      );
+      expect(
+        scans.some((node) => node['Index Name'] === 'message_retention_candidates_activation_idx'),
+      ).toBe(true);
+      expect(
+        scans.every(
+          (node) =>
+            node['Node Type'] !== 'Seq Scan' &&
+            (node['Actual Rows'] ?? 0) <= 201 &&
+            (node['Rows Removed by Filter'] ?? 0) === 0,
+        ),
+      ).toBe(true);
+    }));
 
   it('fences legacy execution before enable and preserves uncertain deletion evidence', async () =>
     isolated(async (tx, service, chatId) => {

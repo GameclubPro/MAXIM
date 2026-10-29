@@ -32,6 +32,7 @@ import {
   retentionErrorMessage,
 } from './settings-message-retention-editor-state';
 import './settings-message-retention.css';
+import { retentionEligibleSince, retentionHistoryLabel } from './settings-message-retention-model';
 
 const PermissionDialog = lazy(() =>
   import('../../components/bot-permission-required-dialog').then((module) => ({
@@ -129,6 +130,7 @@ export function SettingsMessageRetentionEditor({
           : 30_000,
   });
   const state = query.data;
+  const eligibleSince = state ? retentionEligibleSince(state) : null;
   useEffect(() => {
     if (state) onSnapshot(state, query.dataUpdatedAt);
   }, [state, onSnapshot, query.dataUpdatedAt]);
@@ -437,16 +439,7 @@ export function SettingsMessageRetentionEditor({
               <dl className="message-retention-settings__facts">
                 <div>
                   <dt>История чата</dt>
-                  <dd>
-                    {
-                      {
-                        pending: 'Ожидает очистки',
-                        running: 'Очищается',
-                        complete: 'Проверена',
-                        blocked: 'Часть истории отложена',
-                      }[state.historyStatus]
-                    }
-                  </dd>
+                  <dd>{retentionHistoryLabel(state)}</dd>
                 </div>
               </dl>
             ) : null}
@@ -459,7 +452,13 @@ export function SettingsMessageRetentionEditor({
                 <summary>Подробности очистки</summary>
                 <dl className="message-retention-stats">
                   {[
-                    { label: 'Ожидают', value: state.pendingCount },
+                    {
+                      label:
+                        state.progress?.pendingCountComplete === false
+                          ? 'Ожидают, не менее'
+                          : 'Ожидают',
+                      value: state.pendingCount,
+                    },
                     { label: 'Больше нет в чате', value: state.deletedCount },
                     { label: 'Пропущены', value: state.skippedCount },
                   ].map((item) => (
@@ -490,13 +489,42 @@ export function SettingsMessageRetentionEditor({
                       </dd>
                     </div>
                   ) : null}
-                  {state.oldestDueAt &&
-                  state.pendingCount > 0 &&
-                  new Date(state.oldestDueAt).getTime() < Date.now() ? (
+                  {eligibleSince ? (
                     <div>
                       <dt>Ожидают удаления с</dt>
                       <dd>
-                        <time dateTime={state.oldestDueAt}>{retentionDate(state.oldestDueAt)}</time>
+                        <time dateTime={eligibleSince}>{retentionDate(eligibleSince)}</time>
+                      </dd>
+                    </div>
+                  ) : null}
+                  {state.progress && state.progress.unknownCount > 0 ? (
+                    <>
+                      <div>
+                        <dt>Результат не подтверждён</dt>
+                        <dd>
+                          {state.progress.unknownCountComplete ? '' : 'Не менее '}
+                          {retentionCount(state.progress.unknownCount)}
+                        </dd>
+                      </div>
+                      {state.progress.oldestUnknownAt ? (
+                        <div>
+                          <dt>Неопределённый результат с</dt>
+                          <dd>
+                            <time dateTime={state.progress.oldestUnknownAt}>
+                              {retentionDate(state.progress.oldestUnknownAt)}
+                            </time>
+                          </dd>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {state.coverage?.lastCompletedAt ? (
+                    <div>
+                      <dt>Последний полный обход</dt>
+                      <dd>
+                        <time dateTime={state.coverage.lastCompletedAt}>
+                          {retentionDate(state.coverage.lastCompletedAt)}
+                        </time>
                       </dd>
                     </div>
                   ) : null}

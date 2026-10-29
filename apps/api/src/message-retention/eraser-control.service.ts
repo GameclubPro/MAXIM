@@ -69,9 +69,27 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
     return this.config.get<boolean>('ERASER_ENABLED', false) === true;
   }
 
-  onModuleInit(): void {
-    if (!this.enabled || !['admin', 'all'].includes(getAppRole())) return;
-    this.schedule();
+  async onModuleInit(): Promise<void> {
+    if (!this.readAvailable || !['admin', 'all'].includes(getAppRole())) return;
+    if (this.enabled || (await this.hasOwned())) this.schedule();
+  }
+
+  get readAvailable(): boolean {
+    return Boolean(
+      this.config.get<string>('ERASER_CONTROL_URL') &&
+      this.config.get<string>('ERASER_CONTROL_TOKEN'),
+    );
+  }
+
+  private assertExecution(): void {
+    if (!this.enabled)
+      throw new ServiceUnavailableException('Управление Ластиком временно недоступно.');
+  }
+
+  private async hasOwned(): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<{ owned: boolean }[]>`
+      SELECT EXISTS(SELECT 1 FROM eraser_chat_bindings LIMIT 1) AS owned`;
+    return rows[0]?.owned === true;
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -101,11 +119,24 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
     return rows[0]?.owned === true;
   }
 
-  async request(path: string, method = 'GET', body?: unknown): Promise<unknown> {
+  async request(
+    path: string,
+    method = 'GET',
+    body?: unknown,
+    authority: 'control' | 'protection' = 'control',
+  ): Promise<unknown> {
+    if (authority === 'protection') {
+      const chat = /^\/chats\/(-[1-9]\d*)\/(bootstrap|protection)$/.exec(path);
+      if (method !== 'PUT' || (!chat && path !== '/holds'))
+        throw new ServiceUnavailableException('Недопустимая операция синхронизации защиты.');
+      // FLAG: Existing ownership permits conservative protection delivery with execution off.
+      // This transport can neither activate policies nor reopen an attempted DELETE.
+      if (!this.enabled && !(chat ? await this.owns(chat[1]!) : await this.hasOwned()))
+        throw new ServiceUnavailableException('Ластик не управляет этим источником.');
+    } else if (method !== 'GET') this.assertExecution();
     const origin = this.config.get<string>('ERASER_CONTROL_URL');
     const token = this.config.get<string>('ERASER_CONTROL_TOKEN');
-    if (!this.enabled || !origin || !token)
-      throw new ServiceUnavailableException('Ластик временно недоступен.');
+    if (!origin || !token) throw new ServiceUnavailableException('Ластик временно недоступен.');
     let response: Response;
     try {
       response = await fetch(`${origin.replace(/\/$/, '')}/internal/v1${path}`, {
@@ -137,6 +168,7 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
           'Список защищённых сообщений изменился. Синхронизация будет повторена.',
         ERASER_HOLD_EFFECT_PENDING: 'Неопределённый результат удаления требует проверки.',
         ERASER_RETRY_CONFLICT: 'Состояние удаления изменилось. Обновите список.',
+        ERASER_REVIEW_CONFLICT: 'Настройки изменились. Обновите список.',
       };
       const safeCode =
         typeof code === 'string' && Object.hasOwn(conflicts, code) ? code : 'ERASER_CONFLICT';
@@ -154,17 +186,42 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
   }
 
   async read(chatId: string): Promise<MessageRetentionState> {
-    // FLAG: Importing the old interval never activates broader historical deletion.
-    const old = await this.prisma.messageRetentionPolicy.findUnique({
-      where: { chatId },
-      select: { hours: true },
-    });
-    await this.request(`/chats/${encodeURIComponent(chatId)}/bootstrap`, 'PUT', {
-      hours: old?.hours === 24 ? 24 : old?.hours === 168 ? 168 : 48,
-    });
-    return messageRetentionStateSchema.parse(
-      await this.request(`/chats/${encodeURIComponent(chatId)}/policy`),
-    );
+    return this.readState(chatId, false);
+  }
+
+  private async readState(
+    chatId: string,
+    initializeOwned: boolean,
+  ): Promise<MessageRetentionState> {
+    const path = `/chats/${encodeURIComponent(chatId)}`;
+    let value = await this.request(`${path}/policy`);
+    if (
+      value &&
+      typeof value === 'object' &&
+      'initialized' in value &&
+      value.initialized === false
+    ) {
+      // FLAG: A lost source for a persisted owner is unavailable, never a fresh disabled policy.
+      if (!initializeOwned && (await this.owns(chatId)))
+        throw new ServiceUnavailableException('Сохранённые настройки Ластика пока недоступны.');
+      this.assertExecution();
+      const old = await this.prisma.messageRetentionPolicy.findUnique({
+        where: { chatId },
+        select: { hours: true },
+      });
+      await this.request(`${path}/bootstrap`, 'PUT', {
+        hours: old?.hours === 24 ? 24 : old?.hours === 168 ? 168 : 48,
+      });
+      value = await this.request(`${path}/policy`);
+      if (
+        value &&
+        typeof value === 'object' &&
+        'initialized' in value &&
+        value.initialized === false
+      )
+        throw new ServiceUnavailableException('Настройки Ластика ещё не подтверждены.');
+    }
+    return messageRetentionStateSchema.parse(value);
   }
 
   async resume(
@@ -186,6 +243,7 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
     input: UpdateMessageRetention,
     options?: NetworkSettingsWriteOptions,
   ): Promise<MessageRetentionState> {
+    this.assertExecution();
     if (options?.validateOnly) {
       const current = await this.read(chatId);
       if (current.revision !== input.expectedRevision)
@@ -228,9 +286,10 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
         });
       return result;
     }
+    this.assertExecution();
     if (options?.beforeWrite) await this.prisma.$transaction(options.beforeWrite);
     await this.takeOwnership(operation.chatId);
-    await this.read(operation.chatId);
+    await this.readState(operation.chatId, true);
     // A bounded pass may leave a large bootstrap incomplete. The same operation is safe to retry.
     await this.syncChat(operation.chatId);
     await this.syncGlobalHolds();
@@ -351,22 +410,32 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
         ? new Date(Math.min(cutoff.getTime(), earliest.getTime() - 1))
         : cutoff;
       if (outbox.deliveredRevision < 0) {
-        await this.request(`/chats/${encodeURIComponent(chatId)}/bootstrap`, 'PUT', {
-          hours: binding?.hours ?? 48,
-        });
+        await this.request(
+          `/chats/${encodeURIComponent(chatId)}/bootstrap`,
+          'PUT',
+          {
+            hours: binding?.hours ?? 48,
+          },
+          'protection',
+        );
       }
       // FLAG: Incomplete pages invalidate the watermark. Only a complete, stable source revision seals it.
-      await this.request(`/chats/${encodeURIComponent(chatId)}/protection`, 'PUT', {
-        sourceRevision: outbox.revision,
-        protectedMessageIds: messages.filter((row) => !row.held).map((row) => row.messageId),
-        holdMessageIds: messages.filter((row) => row.held).map((row) => row.messageId),
-        protectedBotIds: [
-          ...new Set(protectedBots.flatMap((row) => [...buildBotIdVariants(row.botId)])),
-        ],
-        botHistoryCompleteFrom: binding?.createdAt.toISOString() ?? null,
-        complete,
-        completeThrough: complete ? through.toISOString() : null,
-      });
+      await this.request(
+        `/chats/${encodeURIComponent(chatId)}/protection`,
+        'PUT',
+        {
+          sourceRevision: outbox.revision,
+          protectedMessageIds: messages.filter((row) => !row.held).map((row) => row.messageId),
+          holdMessageIds: messages.filter((row) => row.held).map((row) => row.messageId),
+          protectedBotIds: [
+            ...new Set(protectedBots.flatMap((row) => [...buildBotIdVariants(row.botId)])),
+          ],
+          botHistoryCompleteFrom: binding?.createdAt.toISOString() ?? null,
+          complete,
+          completeThrough: complete ? through.toISOString() : null,
+        },
+        'protection',
+      );
       if (messages.length)
         await this.prisma.$executeRaw(Prisma.sql`
         UPDATE eraser_protected_messages AS protected SET delivered = TRUE
@@ -553,7 +622,12 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
       const authors = await this.prisma.$queryRaw<{ authorId: string }[]>`
         SELECT author_id AS "authorId" FROM eraser_held_authors WHERE delivered = FALSE ORDER BY author_id LIMIT ${PAGE_SIZE}`;
       if (authors.length) {
-        await this.request('/holds', 'PUT', { holdAuthorIds: authors.map((row) => row.authorId) });
+        await this.request(
+          '/holds',
+          'PUT',
+          { holdAuthorIds: authors.map((row) => row.authorId) },
+          'protection',
+        );
         await this.prisma.$executeRaw(
           Prisma.sql`UPDATE eraser_held_authors SET delivered = TRUE WHERE author_id IN (${Prisma.join(authors.map((row) => row.authorId))})`,
         );

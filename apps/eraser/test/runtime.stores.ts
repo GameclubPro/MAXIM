@@ -996,7 +996,16 @@ describe('bounded history and same-chat progress', () => {
       const snapshot = await store.snapshot('-1');
       assert.equal(snapshot.pendingCount, 200, 'journals must not truncate pending diagnostics');
       assert.equal(snapshot.status, 'error', 'review must remain visible after the buffer fills');
-      assert.equal(snapshot.oldestDueAt, new Date(at - 2000 + 24 * 3_600_000).toISOString());
+      assert.equal(
+        snapshot.oldestDueAt,
+        new Date(at - 199 + 24 * 3_600_000).toISOString(),
+        'pending age excludes older review and unresolved journals',
+      );
+      assert.equal(
+        (snapshot.progress as { unknownCount: number }).unknownCount,
+        unresolved,
+        'unknown diagnostics exclude the fresh dispatch whose confirmation deadline is still ahead',
+      );
       const removed: string[] = [];
       const runtime = new CleanupRuntime(
         store,

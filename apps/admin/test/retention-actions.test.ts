@@ -83,7 +83,7 @@ test('retention API encodes chat/cursor and sends an exact POST snapshot without
     }),
   );
   await client.fetchRetentionRuntime('unit-access', 'chat/1?after=other');
-  await client.fetchRetentionPreview('chat/1', 'unit-access');
+  await client.fetchRetentionPreview('chat/1', 'unit-access', 'opaque/+?cursor=1');
   const request = buildRetentionRetryRequest(preview, candidate);
   assert.ok(request);
   await client.retryRetention('chat/1', request, 'unit-access');
@@ -91,7 +91,7 @@ test('retention API encodes chat/cursor and sends an exact POST snapshot without
     calls.map((call) => call.path),
     [
       '/api/v1/safety-desk/runtime/retention?after=chat%2F1%3Fafter%3Dother',
-      '/api/v1/safety-desk/runtime/retention/chat%2F1/preview',
+      '/api/v1/safety-desk/runtime/retention/chat%2F1/preview?after=opaque%2F%2B%3Fcursor%3D1',
       '/api/v1/safety-desk/runtime/retention/chat%2F1/retry',
     ],
   );
@@ -99,6 +99,30 @@ test('retention API encodes chat/cursor and sends an exact POST snapshot without
   assert.deepEqual(JSON.parse(String(calls[2]?.init?.body)), request);
   assert.equal(String(calls[2]?.init?.body).includes('unit-access'), false);
   assert.equal(new Headers(calls[2]?.init?.headers).get('X-Admin-Access-Code'), 'unit-access');
+});
+
+test('review metadata never enters the exact retry body and microseconds remain unchanged', () => {
+  const item = { ...candidate, intentUpdatedAt: '2026-10-29T01:02:03.123456Z' };
+  assert.deepEqual(
+    buildRetentionRetryRequest(
+      {
+        ...preview,
+        source: 'eraser',
+        sourceStatus: 'available',
+        nextAfter: 'opaque',
+        incomplete: true,
+      },
+      item,
+    ),
+    {
+      messageId: item.messageId,
+      activationId: preview.activationId,
+      expectedRevision: 7,
+      intentId: 'intent-1',
+      expectedIntentUpdatedAt: item.intentUpdatedAt,
+      expectedAttemptCount: 3,
+    },
+  );
 });
 
 test('retention API rejects an oversized diagnostics response', async () => {

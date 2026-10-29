@@ -9,6 +9,23 @@ export {
 } from './message-retention-summary.js';
 export type { MessageRetentionSummary } from './message-retention-summary.js';
 
+export const messageRetentionProgressSchema = z.object({
+  pendingCountComplete: z.boolean(),
+  eligibleCount: z.number().int().nonnegative(),
+  eligibleCountComplete: z.boolean(),
+  oldestEligibleDueAt: z.string().datetime().nullable(),
+  unknownCount: z.number().int().nonnegative(),
+  unknownCountComplete: z.boolean(),
+  oldestUnknownAt: z.string().datetime().nullable(),
+});
+
+export const messageRetentionCoverageSchema = z.object({
+  lastCompletedAt: z.string().datetime().nullable(),
+  gap: z.boolean(),
+  protectedHistory: z.boolean(),
+  executionStopped: z.boolean(),
+});
+
 export const updateMessageRetentionSchema = z
   .strictObject({
     enabled: z.boolean(),
@@ -29,6 +46,8 @@ export const messageRetentionStateSchema = messageRetentionSummarySchema.extend(
   deletedCount: z.number().int().nonnegative(),
   skippedCount: z.number().int().nonnegative(),
   oldestDueAt: z.string().datetime().nullable(),
+  progress: messageRetentionProgressSchema.optional(),
+  coverage: messageRetentionCoverageSchema.optional(),
   connectionStatus: z.enum(['connected', 'missing', 'no_access', 'unknown']).optional(),
   historyStatus: z.enum(['pending', 'running', 'complete', 'blocked', 'off']).optional(),
   historyScannedCount: z.number().int().nonnegative().optional(),
