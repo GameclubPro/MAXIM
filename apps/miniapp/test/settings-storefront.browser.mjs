@@ -113,12 +113,9 @@ try {
               page.on('pageerror', (error) => errors.push(error.message));
               await page.goto(`${url}?theme=${theme}&scenario=${scenario}`);
               await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
-              const sheet = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
+              const rootSheet = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
+              let sheet = rootSheet;
               await sheet.waitFor();
-              const toggle = sheet.getByRole('checkbox', {
-                name: 'Включить кнопку витрины Караван',
-              });
-              await toggle.waitFor({ state: 'visible' });
               if (scenario === 'loading') {
                 await sheet
                   .getByRole('status', { name: 'Проверяем магазин', exact: true })
@@ -134,6 +131,12 @@ try {
                 await sheet.getByRole('button', { name: 'Повторить', exact: true }).click();
               }
               await sheet.getByText('Магазин чата пока недоступен.', { exact: true }).waitFor();
+              await sheet.getByRole('button', { name: 'Публикации', exact: true }).click();
+              sheet = page.getByRole('dialog', { name: 'Публикации', exact: true });
+              const toggle = sheet.getByRole('checkbox', {
+                name: 'Включить кнопку витрины Караван',
+              });
+              await toggle.waitFor({ state: 'visible' });
               await settleVisualFrame(page);
               const label = `${engineName}-${width}-${theme}-${scenario}`;
               assert.equal(
@@ -154,7 +157,9 @@ try {
                 .locator('.settings-storefront__publications')
                 .evaluate((node) => {
                   const rect = node.getBoundingClientRect();
-                  const summary = node.querySelector('summary').getBoundingClientRect();
+                  const summary = node
+                    .querySelector('.settings-native-switch')
+                    .getBoundingClientRect();
                   return {
                     left: rect.left,
                     right: rect.right,
@@ -186,10 +191,6 @@ try {
                 `${label}: actual sheet and switch styles must be loaded`,
               );
               await page.screenshot({ path: `${output}/${label}.png` });
-              const summary = sheet.locator('.settings-storefront__publications > summary');
-              await summary.click();
-              assert.equal(await toggle.isVisible(), false);
-              await summary.click();
               await toggle.setChecked(scenario === 'off');
               assert.deepEqual(
                 await page.evaluate(() => window.__saves),
@@ -202,7 +203,7 @@ try {
                 scenario === 'off',
               );
               await sheet.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
-              await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+              await rootSheet.getByRole('button', { name: 'Публикации', exact: true }).click();
               await toggle.waitFor({ state: 'visible' });
               assert.equal(
                 await toggle.isChecked(),

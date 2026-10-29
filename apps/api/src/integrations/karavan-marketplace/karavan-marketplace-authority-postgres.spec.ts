@@ -163,6 +163,32 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
     await expect(service.introspect(proof)).rejects.toThrow('Сессия завершена');
   });
 
+  it('binds native shop management to its exact operation and rechecks current MAX administrators', async () => {
+    const input = {
+      ...scope(),
+      action: 'manage_shop' as const,
+      marketplaceId: randomUUID(),
+      expectedBindingGeneration: 7,
+    };
+    const proof = await service.issue(input, principal);
+    expect(await service.introspect(proof)).toMatchObject({
+      action: 'manage_shop',
+      chatId,
+      actorMaxUserId,
+      marketplaceId: input.marketplaceId,
+      expectedBindingGeneration: 7,
+    });
+    await expect(service.introspect({ ...proof, expectedBindingGeneration: 8 })).rejects.toThrow();
+    max.getChatMemberAccess.mockResolvedValue({
+      isAdmin: false,
+      isOwner: false,
+      explicitPrivilegeEvidence: true,
+      userId: actorMaxUserId,
+      isBot: false,
+    });
+    await expect(service.issue({ ...input, commandId: randomUUID() }, principal)).rejects.toThrow();
+  });
+
   it('fences denial committed while the remote human probe was in flight', async () => {
     max.getChatMemberAccess.mockImplementationOnce(async () => {
       await db.$transaction(async (tx) => {

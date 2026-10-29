@@ -67,6 +67,21 @@ export class KaravanMarketplaceController {
     };
   }
 
+  @Post('chats/:chatId/karavan-marketplace/manage')
+  manage(
+    @Param('chatId') rawChatId: string,
+    @Body() body: unknown,
+    @CurrentUser() user: AuthUser,
+    @Req() request: Request,
+  ) {
+    return this.proxy.manage(
+      karavanMarketplaceChatIdSchema.parse(rawChatId),
+      user.userId,
+      body,
+      this.authority.principal(user, request.miniappAuth),
+    );
+  }
+
   @Post('chats/:chatId/karavan-marketplace/publication-choice')
   async savePublicationChoice(
     @Param('chatId') rawChatId: string,
@@ -244,7 +259,8 @@ export class KaravanMarketplaceController {
       throw new ForbiddenException('Управление этим магазином недоступно.');
     if (
       (input.destination === 'view' && module.marketplace.status !== 'active') ||
-      (input.destination === 'preview' && !['draft', 'paused'].includes(module.marketplace.status))
+      (input.destination === 'preview' &&
+        !['draft', 'paused', 'active'].includes(module.marketplace.status))
     )
       throw new ForbiddenException('Просмотр этого магазина недоступен.');
     return this.handoffs.issue(chatId, user.userId, input, principal);

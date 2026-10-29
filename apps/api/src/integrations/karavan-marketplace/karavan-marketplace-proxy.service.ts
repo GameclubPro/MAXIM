@@ -1,3 +1,8 @@
+import { throwKnownKaravanManagementError } from './karavan-marketplace-management-errors';
+import {
+  marketplaceManagementRequestSchema,
+  marketplaceManagementResponseSchema,
+} from '@maxim/contracts/karavan-marketplace-management';
 import {
   ConflictException,
   ForbiddenException,
@@ -80,12 +85,13 @@ export class KaravanMarketplaceProxyService {
           },
           body: JSON.stringify({ authority, payload }),
           redirect: 'error',
-          signal: AbortSignal.timeout(8_000),
+          signal: AbortSignal.timeout(path === '/manage' ? 35_000 : 8_000),
         },
       );
     } catch {
       throw new KaravanCommandUnavailable('unknown');
     }
+    if (!result.ok && path === '/manage') await throwKnownKaravanManagementError(result);
     if (!result.ok)
       throw new KaravanCommandUnavailable(
         result.status >= 500 || result.status === 408 ? 'unknown' : 'rejected',
@@ -95,6 +101,24 @@ export class KaravanMarketplaceProxyService {
     } catch {
       throw new KaravanCommandUnavailable('unknown');
     }
+  }
+
+  async manage(chatId: string, actorMaxUserId: string, raw: unknown, principal: KaravanPrincipal) {
+    const payload = marketplaceManagementRequestSchema.parse({ ...(raw as object), chatId });
+    return this.command(
+      '/manage',
+      {
+        commandId: payload.commandId,
+        chatId,
+        actorMaxUserId,
+        action: 'manage_shop',
+        marketplaceId: payload.marketplaceId,
+        expectedBindingGeneration: payload.expectedBindingGeneration,
+      },
+      payload,
+      principal,
+      marketplaceManagementResponseSchema,
+    );
   }
 
   async module(

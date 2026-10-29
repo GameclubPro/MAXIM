@@ -99,10 +99,10 @@ describe('Karavan module destination permissions', () => {
     await expect(invoke('view')).rejects.toThrow('недоступен');
     state.marketplace!.status = 'active';
     await expect(invoke('view')).resolves.toHaveProperty('url');
-    await expect(invoke('preview')).rejects.toThrow('недоступен');
+    await expect(invoke('preview')).resolves.toHaveProperty('url');
     state.permissions = [];
     await expect(invoke('view')).rejects.toThrow('недоступно');
-    expect(handoffs.issue).toHaveBeenCalledTimes(2);
+    expect(handoffs.issue).toHaveBeenCalledTimes(3);
   });
   it('does not expose a destination after marketplace membership was revoked', async () => {
     const { state, invoke, handoffs } = fixture();

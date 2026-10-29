@@ -1,0 +1,200 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .karavan-shop__drag {
+    touch-action: none;
+    flex: 0 0 44px;
+    width: 44px;
+    margin-left: auto;
+  }
+
+  body[data-miniapp-profile='moderation'] .karavan-shop {
+    --shop-selected-surface: color-mix(in srgb, var(--karavan-brand) 10%, transparent);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__menu {
+    display: grid;
+    gap: 6px;
+  }
+  body[data-miniapp-profile='moderation']
+    .karavan-module
+    .karavan-shop__menu
+    .settings-section__toggle {
+    border: 0;
+    text-align: left;
+    padding: 12px 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__row {
+    display: grid;
+    gap: 12px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--color-border);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__identity {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__identity > div {
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__identity img {
+    flex: 0 0 56px;
+    width: 56px;
+    height: 56px;
+    object-fit: cover;
+    border-radius: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__filters label {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    font-size: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__filters select {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    color: var(--text-primary);
+    background: var(--color-surface);
+    font: inherit;
+    font-size: 14px;
+    padding: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__form {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    border: 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__media {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__media > div {
+    display: grid;
+    align-content: start;
+    gap: 8px;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__media img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 14px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__media .is-cover img {
+    aspect-ratio: 3;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__upload {
+    position: relative;
+    display: grid;
+    min-height: 44px;
+    place-items: center;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: 650;
+    overflow: hidden;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__upload input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__upload:focus-within {
+    outline: 3px solid var(--accent);
+    outline-offset: 2px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__accents {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  body[data-miniapp-profile='moderation']
+    .karavan-module
+    .karavan-shop__accents
+    button[data-accent] {
+    width: 44px;
+    height: 44px;
+    border: 4px solid transparent;
+    background: var(--shop-swatch);
+    box-shadow: inset 0 0 0 2px var(--color-surface);
+    border-radius: 50%;
+  }
+  body[data-miniapp-profile='moderation']
+    .karavan-module
+    .karavan-shop__accents
+    button[aria-pressed='true'] {
+    border-color: var(--text-primary);
+  }
+  body[data-miniapp-profile='moderation'] [data-accent='blue'] {
+    --shop-swatch: #435ee9;
+  }
+  body[data-miniapp-profile='moderation'] [data-accent='violet'] {
+    --shop-swatch: #7954d6;
+  }
+  body[data-miniapp-profile='moderation'] [data-accent='teal'] {
+    --shop-swatch: #007e80;
+  }
+  body[data-miniapp-profile='moderation'] [data-accent='rose'] {
+    --shop-swatch: #bb376d;
+  }
+  body[data-miniapp-profile='moderation'] [data-accent='graphite'] {
+    --shop-swatch: #343d51;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__block {
+    display: grid;
+    grid-template-columns: 1fr 44px 44px;
+    gap: 6px;
+    align-items: center;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__block label {
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__category {
+    border-bottom: 1px solid var(--color-border);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__category summary {
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__category summary > :last-child {
+    font-size: 11px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__check {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 44px;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__check input {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    accent-color: var(--karavan-brand);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module [role='tab'][aria-selected='true'] {
+    color: var(--karavan-brand);
+    background: var(--shop-selected-surface);
+    border-color: var(--karavan-brand);
+  }
+}
