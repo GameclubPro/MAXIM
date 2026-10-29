@@ -407,6 +407,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       reversePhotos?: boolean;
       changedPhotoIndex?: number;
       missingUrl?: boolean;
+      messageLink?: 'forward' | 'reply';
       userId?: number;
       time?: number;
       editedFrom?: number;
@@ -428,39 +429,50 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     const keyboard = options.buttons
       ? [{ type: 'inline_keyboard', payload: { buttons: options.buttons } }]
       : [];
-    const raw = {
-      update_type: options.editedFrom === undefined ? 'message_created' : 'message_edited',
-      timestamp: time,
-      message: {
+    const message = (photoAttachments: typeof attachments) => {
+      const content = {
+        text: options.text ?? '',
+        ...(options.markup ? { markup: options.markup } : {}),
+        attachments: [...photoAttachments, ...keyboard],
+      };
+      return {
         sender: { user_id: options.userId ?? 123, name: 'Test' },
         recipient: { chat_id: Number(chatId), chat_type: 'chat' },
         timestamp: options.editedFrom ?? time,
-        body: {
-          mid: id,
-          text: options.text ?? '',
-          ...(options.markup ? { markup: options.markup } : {}),
-          attachments: [...attachments, ...keyboard],
-        },
-      },
+        body: options.messageLink
+          ? { mid: id, text: options.messageLink === 'reply' ? (options.text ?? '') : '' }
+          : { mid: id, ...content },
+        ...(options.messageLink
+          ? {
+              link: {
+                type: options.messageLink,
+                chat_id: -987654321,
+                sender: { user_id: 789, name: 'Original author' },
+                message: { mid: `source-${id}`, ...content },
+              },
+            }
+          : {}),
+      };
+    };
+    const raw = {
+      update_type: options.editedFrom === undefined ? 'message_created' : 'message_edited',
+      timestamp: time,
+      message: message(attachments),
     };
     const update = new WebhookParser().parse(raw);
     const receipt = `${suffix}:${id}:${time}`;
     rows.set(receipt, update);
-    remote.set(id, {
-      ...raw.message,
-      body: {
-        ...raw.message.body,
-        attachments: [
-          ...(options.photo
-            ? Array.from({ length: options.photoCount ?? 1 }, (_, index) => ({
-                type: 'image',
-                payload: { photo_id: `${photoId}:${index}`, url: `${url}?item=${index}` },
-              }))
-            : []),
-          ...keyboard,
-        ],
-      },
-    });
+    remote.set(
+      id,
+      message(
+        options.photo
+          ? Array.from({ length: options.photoCount ?? 1 }, (_, index) => ({
+              type: 'image',
+              payload: { photo_id: `${photoId}:${index}`, url: `${url}?item=${index}` },
+            }))
+          : [],
+      ),
+    );
     if (options.photo) {
       images.set(
         url,
@@ -1532,6 +1544,108 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       );
       for (const item of items) await flow.processor.process((await flow.ingest(item))!);
       expect(flow.deleted).toEqual([items[2]!.id]);
+    });
+
+    it.each([
+      ['direct', 'forward'],
+      ['forward', 'direct'],
+      ['forward', 'forward'],
+    ] as const)(
+      'keeps the outer author and personal WARN for CHAT image repeats from %s to %s',
+      async (originalKind, repeatKind) => {
+        flow = await createFlow({
+          duplicatePhotoScope: 'CHAT',
+          duplicateWarnEnabled: true,
+          duplicateMuteEnabled: true,
+          duplicateWarnMaxCount: 1,
+          duplicateMuteMaxCount: 2,
+        });
+        const original = flow.prepare({
+          photo: 'png',
+          messageLink: originalKind === 'forward' ? 'forward' : undefined,
+          userId: 123,
+        });
+        const ownRepeat = flow.prepare({
+          photo: 'png',
+          messageLink: originalKind === 'forward' ? 'forward' : undefined,
+          userId: 123,
+        });
+        const otherAuthorRepeat = flow.prepare({
+          photo: 'webp',
+          messageLink: repeatKind === 'forward' ? 'forward' : undefined,
+          userId: 456,
+          text: 'Another author and caption',
+        });
+        for (const item of [original, ownRepeat])
+          await flow.processor.process((await flow.ingest(item))!);
+        const job = (await flow.ingest(otherAuthorRepeat))!;
+        await flow.processor.process(job);
+
+        expect(flow.deleted).toEqual([ownRepeat.id, otherAuthorRepeat.id]);
+        expect(flow.sanctions).toEqual([
+          { messageId: ownRepeat.id, action: 'WARN' },
+          { messageId: otherAuthorRepeat.id, action: 'WARN' },
+        ]);
+        const intent = flow.records.get(`intent:${otherAuthorRepeat.id}`)!.input;
+        const binding = parseMessageDuplicateBinding(intent.event!.metadata)!;
+        expect(intent.subjectUserId).toBe('456');
+        expect(binding).toMatchObject({
+          senderId: '456',
+          messageId: otherAuthorRepeat.id,
+          original: { senderId: '123', messageId: original.id },
+        });
+        expect(flow.remote.has(original.id)).toBe(true);
+        expect(flow.downloads).toHaveBeenCalledTimes(3);
+
+        await flow.ingest(otherAuthorRepeat);
+        await flow.processor.process(job);
+        expect(flow.deleted).toEqual([ownRepeat.id, otherAuthorRepeat.id]);
+        expect(flow.sanctions).toHaveLength(2);
+        expect(flow.downloads).toHaveBeenCalledTimes(3);
+      },
+    );
+
+    it('keeps cross-author forwards separate in SAME_AUTHOR despite the same nested sender', async () => {
+      flow = await createFlow({
+        duplicatePhotoScope: 'SAME_AUTHOR',
+        duplicateWarnEnabled: true,
+      });
+      for (const userId of [123, 456]) {
+        const item = flow.prepare({ photo: 'png', messageLink: 'forward', userId });
+        await flow.processor.process((await flow.ingest(item))!);
+      }
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+    });
+
+    it('preserves a changed forwarded image in CHAT comparison', async () => {
+      flow = await createFlow({ duplicatePhotoScope: 'CHAT', duplicateWarnEnabled: true });
+      const original = flow.prepare({ photo: 'png', userId: 123 });
+      const changed = flow.prepare({ photo: 'different', messageLink: 'forward', userId: 456 });
+      for (const item of [original, changed])
+        await flow.processor.process((await flow.ingest(item))!);
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      expect(flow.remote.has(original.id)).toBe(true);
+      expect(flow.remote.has(changed.id)).toBe(true);
+    });
+
+    it('does not compare an image present only in a reply reference as a repost', async () => {
+      flow = await createFlow({ duplicatePhotoScope: 'CHAT', duplicateWarnEnabled: true });
+      const original = flow.prepare({ photo: 'png', userId: 123 });
+      await flow.processor.process((await flow.ingest(original))!);
+      const reply = flow.prepare({
+        photo: 'png',
+        messageLink: 'reply',
+        userId: 456,
+        text: 'Is this still available?',
+      });
+      expect(await flow.ingest(reply)).toBeUndefined();
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+      expect(flow.downloads).not.toHaveBeenCalled();
+      expect(flow.remote.has(original.id)).toBe(true);
+      expect(flow.remote.has(reply.id)).toBe(true);
     });
 
     it('keeps each author on their own sanction ladder in chat-wide image comparison', async () => {
