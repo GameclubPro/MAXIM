@@ -851,6 +851,7 @@ export class AdminSettingsService {
       body,
       source,
       getSourceSettings: () => this.getSettings(sourceChatId, user),
+      getSourceStopWordsSettings: () => this.getSettingsSnapshot(sourceChatId, user),
       applySettings: (
         settings,
         target,

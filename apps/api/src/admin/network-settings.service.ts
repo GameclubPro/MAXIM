@@ -67,6 +67,7 @@ import {
   validateChatRulesDraft,
   writeNetworkChatRulesDraft,
 } from './admin-chat-rules';
+import { assertStopWordsStorageEditable } from './stop-words-storage-boundary';
 
 const PREVIEW_TTL_MS = 10 * 60_000;
 const LEASE_MS = 5 * 60_000;
@@ -177,6 +178,7 @@ export class NetworkSettingsService {
       });
       const stop =
         request.section === 'stopWords' ? await this.stopWords.read(entityId, user) : null;
+      if (stop) assertStopWordsStorageEditable(stop);
       const row = await this.prisma.chat.findUniqueOrThrow({
         where: { id: entityId },
         select: { title: true, settings: { select: { updatedAt: true } } },

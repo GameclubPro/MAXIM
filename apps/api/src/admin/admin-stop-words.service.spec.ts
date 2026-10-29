@@ -113,6 +113,71 @@ describe('AdminStopWordsService', () => {
     expect(malformed.stopWordsMedia.explanation.base64).toBe(17);
     expect(h.tx.chatSettings.updateMany).not.toHaveBeenCalled();
   });
+  it.each([undefined, false])(
+    'refuses an old client replacing invalid storage without explicit true intent: %s',
+    async (replaceInvalidStorage) => {
+      const h = harness();
+      const malformed = { ...h.row, stopWordsPolicy: { version: 999 } };
+      h.prisma.chatSettings.findUnique.mockResolvedValue(malformed);
+      await expect(
+        h.service.update('chat-1', h.user, {
+          expectedRevision: 2,
+          policy: { sanctions: { warnEnabled: true } },
+          replaceInvalidStorage,
+        }),
+      ).rejects.toMatchObject({
+        response: { code: 'STOP_WORDS_POLICY_REVIEW_REQUIRED', revision: 2, fieldPaths: [] },
+      });
+      expect(h.prisma.$transaction).not.toHaveBeenCalled();
+      expect(h.capabilities.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
+      expect(h.cache.invalidate).not.toHaveBeenCalled();
+      expect(malformed.stopWordsPolicy).toEqual({ version: 999 });
+    },
+  );
+  it('allows explicit replacement only at the matching standalone revision', async () => {
+    const h = harness();
+    h.prisma.chatSettings.findUnique.mockResolvedValue({
+      ...h.row,
+      stopWordsPolicy: { version: 999 },
+    });
+    await expect(
+      h.service.update('chat-1', h.user, {
+        expectedRevision: 1,
+        replaceInvalidStorage: true,
+        policy: {},
+      }),
+    ).rejects.toMatchObject({ response: { code: 'STOP_WORDS_REVISION_CONFLICT' } });
+    expect(h.tx.chatSettings.updateMany).not.toHaveBeenCalled();
+    await expect(
+      h.service.update('chat-1', h.user, {
+        expectedRevision: 2,
+        replaceInvalidStorage: true,
+        policy: {},
+      }),
+    ).resolves.toMatchObject({ storageStatus: 'valid', revision: 3 });
+    expect(h.tx.chatSettings.updateMany).toHaveBeenCalledTimes(1);
+    expect(h.tx.auditLog.create).toHaveBeenCalledTimes(1);
+  });
+  it.each([true, false])(
+    'refuses replacement intent on an invalid network request (validation-only: %s)',
+    async (validateOnly) => {
+      const h = harness();
+      h.prisma.chatSettings.findUnique.mockResolvedValue({
+        ...h.row,
+        stopWordsPolicy: { version: 999 },
+      });
+      await expect(
+        h.service.update(
+          'chat-1',
+          h.user,
+          { expectedRevision: 2, replaceInvalidStorage: true, policy: {} },
+          { validateOnly },
+        ),
+      ).rejects.toMatchObject({ response: { code: 'STOP_WORDS_POLICY_REVIEW_REQUIRED' } });
+      expect(h.prisma.$transaction).not.toHaveBeenCalled();
+      expect(h.cache.invalidate).not.toHaveBeenCalled();
+    },
+  );
   it('returns a structured review requirement without exposing unconvertible legacy values', async () => {
     const h = harness();
     h.prisma.chatSettings.findUnique.mockResolvedValue({

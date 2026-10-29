@@ -48,6 +48,7 @@ import {
   readDialogButtonToken,
 } from './admin-service-test-support';
 import { moderationReleaseMessageOptions } from './moderation-release-test.util';
+import { stopWordsPolicySchema } from '@maxim/contracts/settings';
 
 const TINY_JPEG_BASE64 =
   '/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJXAIf/Z';
@@ -17475,8 +17476,9 @@ describe('AdminService settings screen endpoints', () => {
   });
 
   it('routes section apply-to-all through partial settings keys', async () => {
+    const prisma = createPrismaMock();
     const service = new AdminService(
-      createPrismaMock() as never,
+      prisma as never,
       {} as never,
       createChatContextCacheMock() as never,
       createConfigMock() as never,
@@ -17555,6 +17557,22 @@ describe('AdminService settings screen endpoints', () => {
     expect(limitsSettingKeys).not.toContain('messageLimitsBlockedDomains');
     expect(limitsResult.section).toBe('limits');
 
+    const sourcePolicy = stopWordsPolicySchema.parse({
+      enabled: true,
+      rules: [{ id: 'source-rule', kind: 'WORD', value: 'casino' }],
+    });
+    prisma.chat.upsert.mockResolvedValueOnce({
+      id: 'chat-1',
+      settings: {
+        ...settings,
+        stopWordsPolicy: sourcePolicy,
+        stopWordsRevision: 0,
+        updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+      },
+    } as never);
+    jest.spyOn(service as any, 'assertManagedEntityReadAccess').mockResolvedValue(undefined);
+    jest.spyOn(service, 'resolveChatSettingsReadBotAssignmentData').mockResolvedValue({});
+
     const stopWordsResult = await service.applySettingsSectionToAllChats(
       'chat-1',
       {
@@ -17573,7 +17591,7 @@ describe('AdminService settings screen endpoints', () => {
     expect(applySpy).toHaveBeenLastCalledWith(
       'chat-1',
       expect.objectContaining({ userId: 'admin-1' }),
-      settings,
+      expect.objectContaining({ stopWordsPolicy: sourcePolicy, stopWordsRevision: 0 }),
       'miniapp',
       { mode: 'all', favoriteTypes: [], chatIds: [] },
       ['stopWordsPolicy'],
