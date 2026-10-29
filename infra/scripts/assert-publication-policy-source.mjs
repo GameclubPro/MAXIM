@@ -72,7 +72,7 @@ export const PUBLICATION_POLICY_SOURCE_CHECKS = [
     [
       'await this.assertDeliveryReady(delivery.targetChatId, requiredBotId, authority)',
       'await this.requiresLegacyActorAuthority(authority, requiredBotId, chatId)',
-      'occurrence.publication.targets[0]!.canceledAt',
+      'occurrence.publication.targets.some((target) => target.canceledAt)',
       'throw new PublisherDeliveryDeferredError(PUBLISHER_TARGET_CANCELED)',
       'resolvePublicationExecutionIntent(occurrence)',
       'occurrence.contentRevisionId !== authority.contentRevisionId',

@@ -215,10 +215,9 @@ export class PublisherManagedBroadcastDispatch {
       occurrence.schedule.revision !== occurrence.scheduleRevision
     )
       throw new PublisherDeliveryDeferredError(PUBLISHER_RUNTIME_BLOCKER);
-    if (
-      occurrence.publication.targets.length !== 1 ||
-      occurrence.publication.targets[0]!.canceledAt
-    ) {
+    // FLAG: Legacy envelopes can predate saved targets. Only a durable cancellation
+    // stops their accepted recipient; the intent and author fences below still apply.
+    if (occurrence.publication.targets.some((target) => target.canceledAt)) {
       throw new PublisherDeliveryDeferredError(PUBLISHER_TARGET_CANCELED);
     }
     const intent = resolvePublicationExecutionIntent(occurrence);

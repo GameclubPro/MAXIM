@@ -158,6 +158,26 @@ describe('Publisher pre-dispatch claim deferral', () => {
     },
   );
 
+  it.each([false, true])(
+    'preserves existing authority when no saved target exists, legacy intent=%s',
+    async (legacy) => {
+      const f = acceptedHarness();
+      f.occurrence.publication.targets = [];
+      if (legacy) {
+        f.occurrence.deliveryDeadlineAt = null;
+        await expect(
+          f.service.assertDeliveryReady('channel', 'publik', f.authority),
+        ).rejects.toMatchObject({ blockerCode: 'PUBLISHER_ACTOR_ACCESS_REQUIRED' });
+        expect(f.findMany).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(
+          f.service.assertDeliveryReady('channel', 'publik', f.authority),
+        ).resolves.toBeUndefined();
+        expect(f.findMany).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('never falls back to author authority after finite intent expires', async () => {
     const f = acceptedHarness();
     f.occurrence.deliveryDeadlineAt = new Date(Date.now() - 1);
