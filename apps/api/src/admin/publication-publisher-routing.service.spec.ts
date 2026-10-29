@@ -22,7 +22,10 @@ describe('PublicationPublisherRoutingService', () => {
           requiredBotId: 'publik',
           audienceMode: 'DYNAMIC',
           audienceSelection,
-          targets: [{ targetChatId: 'accepted', entityType: ChatEntityType.CHANNEL }],
+          targets: [
+            { targetChatId: 'accepted', entityType: ChatEntityType.CHANNEL },
+            { targetChatId: 'canceled', entityType: ChatEntityType.CHAT, canceledAt: new Date() },
+          ],
         }),
       ).resolves.toEqual([
         {

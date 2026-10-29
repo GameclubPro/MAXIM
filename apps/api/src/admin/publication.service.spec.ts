@@ -2161,6 +2161,7 @@ describe('PublicationService', () => {
           targetChatId: 'chat-1',
           entityType: ChatEntityType.CHAT,
           position: 0,
+          canceledAt: null,
         },
       ],
     });

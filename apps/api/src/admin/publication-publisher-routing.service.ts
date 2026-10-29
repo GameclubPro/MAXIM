@@ -194,13 +194,19 @@ export class PublicationPublisherRoutingService {
     requiredBotId: string | null;
     audienceMode: string;
     audienceSelection: PublicationAudienceInput['selection'];
-    targets: readonly { targetChatId: string; entityType: ChatEntityType }[];
+    targets: readonly {
+      targetChatId: string;
+      entityType: ChatEntityType;
+      canceledAt?: Date | null;
+    }[];
   }): Promise<ResolvedPublicationTarget[]> {
-    const targets = publication.targets.map((target) => ({
-      chatId: target.targetChatId,
-      entityType:
-        target.entityType === ChatEntityType.CHANNEL ? ('channel' as const) : ('chat' as const),
-    }));
+    const targets = publication.targets
+      .filter((target) => !target.canceledAt)
+      .map((target) => ({
+        chatId: target.targetChatId,
+        entityType:
+          target.entityType === ChatEntityType.CHANNEL ? ('channel' as const) : ('chat' as const),
+      }));
     // FLAG: The accepted recipients are the entity-owned scope, including old DYNAMIC
     // schedules. A change of administrator must never expand it to their other chats.
     // Current actor/bot/policy authority is checked independently at each final effect.

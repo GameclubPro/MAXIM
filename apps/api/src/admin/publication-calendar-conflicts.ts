@@ -80,7 +80,7 @@ export async function findPublicationCalendarConflicts(
     publication: {
       is: {
         lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
-        targets: { some: { OR: targetPredicates } },
+        targets: { some: { OR: targetPredicates, canceledAt: null } },
       },
     },
   };
