@@ -43,6 +43,50 @@ suggests about 11.7 GB and 31.1 GB respectively for tables plus indexes, excludi
 bloat, WAL, backups and replica overhead. Use measured steady-state sizes before
 provisioning; these extrapolations are not capacity acceptance.
 
+## Runtime and sustained maintenance samples
+
+The additional runtime probes used the actual Store, CleanupRuntime, MaxClient,
+PostgreSQL, Redis and shared 20-request/second gate. The MAX HTTP function was replaced
+with an in-memory synthetic endpoint; no requests reached MAX. Each database contained
+20,000 policies. These probes supplied already-due late message events, with deletion
+receipts and occasional edits. They measure this discovery path, not natural 24-hour
+webhook maturation or real network latency. The protected-message and uncertain-effect
+cases remain covered separately by the native regression suite.
+
+| Profile                                       | Duration | Arrivals | Deletes | Remaining |
+| --------------------------------------------- | -------: | -------: | ------: | --------: |
+| Idle, next safety scan in the future          |     20 s |        0 |       0 |         0 |
+| Uniform target 6 million/day                  |     60 s |    4,166 |     290 |     3,876 |
+| 1% of chats receive 80%                       |     60 s |    4,165 |     356 |     3,809 |
+| Target traffic plus 1,000 historical messages |     60 s |    5,166 |     289 |     4,877 |
+| Fivefold target peak                          |    900 s |  312,491 |   7,965 |   304,526 |
+| 2 messages/s with 20-second Retry-After       |     70 s |      139 |     108 |        31 |
+| 2 messages/s                                  |    180 s |      359 |     358 |         1 |
+
+No probe issued a duplicate DELETE. The idle probe made zero HTTP requests, but does
+not measure a complete safety-scan cycle. The skew probe served 186 quiet chats and
+51 hot chats; this demonstrates independent progress, not a fleet fairness percentile.
+The history probe removed eight historical messages and 281 current messages. The
+cooldown probe resumed after its refusal; its remaining queue is explicit, not counted
+as drained. At 2 messages/s, completed-message delay was p95 1.36 s and p99 1.57 s;
+the single remaining message was 715 ms old when observation ended. Short local runs
+do not establish a production SLA or measured sustainable MAX capacity.
+
+The fifteen-minute peak used 14,276 HTTP requests, 367,224,696 WAL bytes and at most
+421,658,624 process RSS bytes. Useful DELETE/request was 0.558 (0.246 in the uniform
+probe). Only 2,045 distinct chats received deletions during the overloaded peak; the
+oldest remaining message was about fifteen minutes overdue. Completed-only latency
+quantiles must never hide that remaining work. Both target and peak fail capacity
+admission with the current single-token limit.
+
+A separate five-minute PostgreSQL maintenance sample fed expired terminal candidates
+at 6 million/day and receipts at 12 million/day, retaining the actual 30-second cadence.
+Starting backlog was 21,000/42,000 rows; 20,831/41,662 arrived during the sample and
+41,251/82,502 were purged. The final backlog was 580/1,160. All 1,000 unknown journals
+and 100,000 recent candidates remained. Maintenance generated about 35.8 MB WAL and
+used about 95.7 MB process RSS. This confirms catch-up within this isolated sample;
+large-table vacuum, shared host pressure and multi-day growth remain separate gates.
+
 ## Safety and recovery evidence
 
 Native regressions cover indexed page work beside retained history, skip-locked
@@ -65,10 +109,10 @@ Mocked Docker/S3 command tests do not establish production recovery.
 2. Lastik's own encrypted independent copy with complete readback and isolated
    production-archive restore. Rehearse a downloaded/decrypted independent copy
    with the off-host key. Do not enable recurring timers before freshness health passes.
-3. Sustained isolated mixed-workload runs: 20,000 idle chats; uniform 300 messages
-   per chat/day; 1% producing 80%; fivefold peak for 15 minutes; history alongside
-   current messages; long 429 and Redis/PostgreSQL outage/recovery. Existing native
-   regressions establish small-case safety, not sustained fleet performance.
+3. Extend the sampled profiles to sustained natural expiry, a complete safety-scan
+   cycle and Redis/PostgreSQL outage/recovery during load. Existing native regressions
+   establish bounded failure/restart safety; the samples above do not establish
+   sustained fleet performance or multi-day vacuum/bloat behavior.
 4. Measure useful DELETE/HTTP, eligibility delay, per-chat fairness, query cost,
    RSS, WAL, vacuum and table growth. At no more than 70% of **measured** sustainable
    capacity, require p95 eligibility delay ≤5 minutes, p99 ≤15 minutes and no

@@ -6,9 +6,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/infra/scripts/lib/postgres-backup-profile.sh"
 BACKUP_CALENDAR="*-*-* 03:20:00"
 RESTORE_CALENDAR="Sun *-*-* 05:30:00"
+PROFILE_PRECHECK=""
 if [[ "$MAXIM_BACKUP_PROFILE" == eraser ]]; then
   BACKUP_CALENDAR="*-*-* 01:20:00"
   RESTORE_CALENDAR="Sun *-*-* 02:30:00"
+  # FLAG: Units survive checkout rollbacks. Old tooling ignores ERASER's profile and
+  # would select the main database; a missing tracked capability must fail the service.
+  PROFILE_PRECHECK="ExecStartPre=/usr/bin/test -f $ROOT_DIR/infra/scripts/lib/postgres-backup-profile.sh"
 fi
 UNIT_DIR="${MAXIM_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 TEMP_DIR="$(mktemp -d)"
@@ -32,6 +36,7 @@ ConditionPathExists=$ROOT_DIR/infra/scripts/backup-postgres.sh
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
 EnvironmentFile=-/etc/maxim-postgres-backup.env
+$PROFILE_PRECHECK
 ExecStart=/usr/bin/env MAXIM_BACKUP_PROFILE=$MAXIM_BACKUP_PROFILE $ROOT_DIR/infra/scripts/backup-postgres.sh
 SuccessExitStatus=75
 TimeoutStartSec=18h15m
@@ -69,6 +74,7 @@ ConditionPathExists=$ROOT_DIR/infra/scripts/restore-postgres-backup-smoke.sh
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
 EnvironmentFile=-/etc/maxim-postgres-backup.env
+$PROFILE_PRECHECK
 ExecStart=/usr/bin/env MAXIM_BACKUP_PROFILE=$MAXIM_BACKUP_PROFILE $ROOT_DIR/infra/scripts/restore-postgres-backup-smoke.sh
 TimeoutStartSec=12h15m
 TimeoutStopSec=1m
@@ -102,6 +108,7 @@ ConditionPathExists=/etc/maxim-postgres-backup.env
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
 EnvironmentFile=/etc/maxim-postgres-backup.env
+$PROFILE_PRECHECK
 ExecStart=/usr/bin/env MAXIM_BACKUP_PROFILE=$MAXIM_BACKUP_PROFILE node $ROOT_DIR/infra/scripts/check-postgres-backup-health.mjs
 TimeoutStartSec=30s
 UMask=0077

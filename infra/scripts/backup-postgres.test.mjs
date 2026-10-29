@@ -539,10 +539,21 @@ esac
     assert.equal(names.length, 6);
     assert.ok(names.every((name) => name.startsWith('maxim-eraser-postgres-')));
     for (const name of names.filter((name) => name.endsWith('.service'))) {
-      assert.match(
-        readFileSync(join(units, name), 'utf8'),
-        /ExecStart=.*MAXIM_BACKUP_PROFILE=eraser /,
+      const service = readFileSync(join(units, name), 'utf8');
+      assert.match(service, /ExecStart=.*MAXIM_BACKUP_PROFILE=eraser /);
+      const precheck = service.match(/^ExecStartPre=\/usr\/bin\/test -f (.+)$/m)?.[1];
+      assert.equal(precheck, join(root, 'infra/scripts/lib/postgres-backup-profile.sh'));
+      // A checkout rollback removes this newly introduced tracked capability file. Systemd
+      // must fail, not skip the unit successfully or execute the old main-database script.
+      assert.equal(spawnSync('/usr/bin/test', ['-f', precheck]).status, 0);
+      assert.notEqual(
+        spawnSync('/usr/bin/test', [
+          '-f',
+          join(directory, 'old-checkout', 'infra/scripts/lib/postgres-backup-profile.sh'),
+        ]).status,
+        0,
       );
+      assert.doesNotMatch(service, /^ConditionPathExists=.*postgres-backup-profile/m);
     }
     const commands = readFileSync(log, 'utf8');
     assert.doesNotMatch(commands, /systemctl (?:start|enable).* maxim-postgres-/);

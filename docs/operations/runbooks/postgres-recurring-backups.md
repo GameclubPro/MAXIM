@@ -103,6 +103,13 @@ Do not append the suffix to the base configuration a second time. The readiness
 watchdog checks both the shared API and Lastik's live worker health. Both profiles
 keep the same protected deploy lock and capacity floors.
 
+Lastik units require the tracked `postgres-backup-profile.sh` capability file in
+`ExecStartPre`. A checkout rollback predating profile support must fail each service,
+including freshness health, before an old script can silently select the main database.
+Keep this file with all profile-aware scripts; do not replace this failure with a
+systemd condition that reports a successful skip. An image-only rollback leaves the
+compatible host tooling in place.
+
 The eraser restore verifies exact migration names and digests plus critical tables
 and indexes, in a network-isolated disposable PostgreSQL container. Its receipt
 contains `profile=eraser`, the schema digest and
