@@ -59,7 +59,10 @@ test('comment preview preserves scope, expiry and revisions through mute and rel
 
 test('comment moderation labels and cache identities retain scope', () => {
   assert.equal(commentRestrictionLabel(undefined), 'Без ограничений');
-  assert.equal(commentRestrictionLabel({ kind: 'BAN' } as CommentRestriction), 'Бан без срока');
+  assert.equal(
+    commentRestrictionLabel({ kind: 'BAN' } as CommentRestriction),
+    'Бессрочная блокировка',
+  );
   const context = {
     api: {} as never,
     profile: 'moderation' as const,

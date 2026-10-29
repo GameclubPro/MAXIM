@@ -69,7 +69,7 @@ export function SettingsStopWordsSingleTools({
       : availability === 'shadow'
         ? 'Наблюдение, без удаления'
         : availability === 'off'
-          ? 'Выключена на сервере'
+          ? 'Сейчас выключена'
           : availability === 'unavailable'
             ? 'Состояние недоступно'
             : 'Проверяем доступность';

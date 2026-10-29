@@ -116,7 +116,7 @@ export function useNetworkEntries({
           error instanceof ApiRequestError && error.status === 409
             ? 'Состав изменился. Обновите список.'
             : error instanceof ApiRequestError
-              ? 'Не удалось загрузить сообщества. Повторите чтение.'
+              ? 'Не удалось загрузить сообщества. Попробуйте ещё раз.'
               : error instanceof NetworkListReadError
                 ? error.message
                 : 'Не удалось загрузить сообщества.';

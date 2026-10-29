@@ -176,7 +176,7 @@ export function validateAutoReplyTriggerDraft(draft: AutoReplyDraft): AutoReplyD
     draft.fuzzyMatch &&
     phrases.some((phrase) => countAutoReplyPhraseAlnum(phrase) < AUTO_REPLY_FUZZY_MIN_ALNUM_COUNT)
   ) {
-    issues.fuzzyMatch = `Для опечаток в каждой фразе нужно минимум ${AUTO_REPLY_FUZZY_MIN_ALNUM_COUNT} букв или цифр.`;
+    issues.fuzzyMatch = `Чтобы учитывать опечатки, в каждой фразе нужно минимум ${AUTO_REPLY_FUZZY_MIN_ALNUM_COUNT} букв или цифр.`;
   }
 
   return issues;
@@ -347,7 +347,7 @@ export function getAutoReplyAuthoringStateLabel(state: PublisherAutoReplyAuthori
     return 'Создание не завершено';
   }
   if (state === 'expired') {
-    return 'Время ожидания вышло';
+    return 'Время ожидания истекло';
   }
   return 'Создание отменено';
 }

@@ -179,7 +179,7 @@ const trafficControls = [
   {
     enabled: 'mediaMessageCooldownEnabled',
     interval: 'mediaMessageCooldownSeconds',
-    title: 'Интервал медиа',
+    title: 'Интервал для вложений',
   },
 ] as const;
 
@@ -323,11 +323,11 @@ export function SharedSettingsLimitsFields({
       <div className="settings-native-toggle">
         <div className="settings-native-toggle__row">
           <div className="settings-native-toggle__title-wrap">
-            <span className="settings-native-toggle__title">Анти-спам</span>
+            <span className="settings-native-toggle__title">Антиспам</span>
             <button
               type="button"
               className={cn('settings-info-button', openHintKey === 'antiSpam' && 'is-open')}
-              aria-label="Пояснение для анти-спама"
+              aria-label="Пояснение для антиспама"
               aria-controls="anti-spam-hint"
               aria-expanded={openHintKey === 'antiSpam'}
               data-hint-key="antiSpam"
@@ -343,7 +343,7 @@ export function SharedSettingsLimitsFields({
             </button>
           </div>
 
-          <label className="settings-native-switch" aria-label="Включить анти-спам">
+          <label className="settings-native-switch" aria-label="Включить антиспам">
             <LimitsSwitch fields={fields} path="antiSpamEnabled" />
             <span className="toggle-switch" aria-hidden>
               <span className="toggle-switch__thumb" />

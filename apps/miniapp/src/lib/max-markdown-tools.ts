@@ -18,5 +18,5 @@ export const MAX_MARKDOWN_TOOL_DEFINITIONS: Array<{
   { id: 'underline', label: 'U', title: 'Подчеркнутый' },
   { id: 'strike', label: 'S', title: 'Зачеркнутый' },
   { id: 'code', label: '</>', title: 'Код' },
-  { id: 'link', label: 'Link', title: 'Ссылка' },
+  { id: 'link', label: 'Ссылка', title: 'Ссылка' },
 ];

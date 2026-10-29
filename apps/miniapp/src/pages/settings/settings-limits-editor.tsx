@@ -67,11 +67,11 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
       <div className="settings-native-toggle">
         <div className="settings-native-toggle__row">
           <div className="settings-native-toggle__title-wrap">
-            <span className="settings-native-toggle__title">Анти-спам</span>
+            <span className="settings-native-toggle__title">Антиспам</span>
             <button
               type="button"
               className={cn('settings-info-button', openHintKey === 'antiSpam' && 'is-open')}
-              aria-label="Пояснение для анти-спама"
+              aria-label="Пояснение для антиспама"
               aria-controls="anti-spam-hint"
               aria-expanded={openHintKey === 'antiSpam'}
               data-hint-key="antiSpam"
@@ -81,7 +81,7 @@ export function SettingsLimitsEditor(props: SettingsLimitsSectionProps) {
             </button>
           </div>
 
-          <label className="settings-native-switch" aria-label="Включить анти-спам">
+          <label className="settings-native-switch" aria-label="Включить антиспам">
             <input
               type="checkbox"
               checked={draft.antiSpamEnabled}

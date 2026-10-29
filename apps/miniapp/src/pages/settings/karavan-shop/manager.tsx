@@ -73,7 +73,7 @@ function Workspace({
               : market.status === 'paused'
                 ? 'На паузе'
                 : 'В архиве'}
-          {module.counts.chats > 1 ? ` · ${module.counts.chats} чата` : ''}
+          {module.counts.chats > 1 ? ` · Чаты: ${module.counts.chats}` : ''}
           {module.counts.pendingApplications > 0
             ? ` · Заявки: ${module.counts.pendingApplications}`
             : ''}
@@ -162,7 +162,7 @@ function Workspace({
         >
           <div className="karavan-module karavan-shop">
             {module.counts.chats > 1 && section !== 'publications' && section !== 'chats' ? (
-              <p className="karavan-shop__scope">Общий магазин · {module.counts.chats} чата</p>
+              <p className="karavan-shop__scope">Общий магазин · Чаты: {module.counts.chats}</p>
             ) : null}
             <Suspense fallback={<ShopLoading />}>
               {section === 'catalog' ? (

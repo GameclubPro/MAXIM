@@ -3548,8 +3548,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : spammerReviewMetricsQuery.data?.enforcementMode === 'shadow'
       ? 'Проверка'
       : 'Активно';
-  const extraHeaderSummary =
-    extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
+  const extraHeaderSummary = extraEnabledCount > 0 ? `Включено: ${extraEnabledCount}` : 'Выключено';
   const extraCardStatus = extraEnabledCount > 0 ? `${extraEnabledCount}` : 'Выкл';
   const storefrontHeaderSummary = draft?.karavanStorefrontEnabled
     ? draft.karavanStorefrontAdminsOnly

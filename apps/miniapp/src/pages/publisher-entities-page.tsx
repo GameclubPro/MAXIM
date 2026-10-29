@@ -669,7 +669,7 @@ export function PublisherEntitiesPage({
           <IconoirSprite variant="iconoir" icon="Refresh" className="is-refreshing" aria-hidden />
           <span>
             {bulkRefresh.phase === 'enqueueing'
-              ? 'Запускаю проверку MAX'
+              ? 'Запускаем проверку подключений'
               : `Проверяю подключения · ${bulkRefresh.queuedCount}`}
           </span>
         </div>
@@ -807,7 +807,7 @@ export function PublisherEntitiesPage({
         <div className="publisher-entities-page__state is-onboarding" role="status">
           <strong>Подключите первый чат или канал</strong>
           <span>
-            Добавьте Публик администратором, затем перешлите ему сообщение или пост из нужного чата
+            Добавьте Публика администратором, затем перешлите ему сообщение или пост из нужного чата
             или канала.
           </span>
           <button type="button" disabled={openingBotDialog} onClick={handleOpenBotDialog}>

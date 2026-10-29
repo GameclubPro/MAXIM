@@ -95,7 +95,7 @@ test('permission state is distinct from the enabled setting', () => {
   const missing = render('MISSING');
   assert.match(missing, /Нет прав удаления/);
   assert.match(missing, /Сохранённая настройка/);
-  assert.match(missing, /Включён/);
+  assert.match(missing, /Включена/);
   assert.match(render('UNKNOWN'), /Права удаления не подтверждены/);
 });
 test('refresh errors never reuse the old confirmed badge', () => {

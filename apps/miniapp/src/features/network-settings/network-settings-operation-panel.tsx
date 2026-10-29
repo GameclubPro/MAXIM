@@ -1,3 +1,4 @@
+import { describeUserFacingError } from '../../lib/user-facing-error';
 import { useState } from 'react';
 import type { NetworkSettingsOperationResponse } from '@maxim/contracts/network-settings';
 import type { useNetworkSettingsController } from './network-settings-controller';
@@ -63,7 +64,14 @@ export function NetworkSettingsOperationPanel({
         <li key={row.entityId} data-outcome={row.status}>
           <strong>{recipientTitles.get(row.entityId) || 'Сообщество'}</strong>
           <span>{outcomeLabel(row)}</span>
-          {row.failureMessage ? <small>{row.failureMessage}</small> : null}
+          {row.failureMessage ? (
+            <small>
+              {describeUserFacingError(
+                new Error(row.failureMessage),
+                'Не удалось применить настройки.',
+              )}
+            </small>
+          ) : null}
         </li>
       ))}
     </ul>
@@ -85,7 +93,7 @@ export function NetworkSettingsOperationPanel({
         <p>
           {controller.canStartAgain
             ? 'Эта проверка не применялась. Откройте настройки и задайте изменения заново.'
-            : 'Подтверждаем состояние операции. Результат пока неизвестен.'}
+            : 'Проверяем результат. Пока неизвестно, сохранились ли настройки.'}
         </p>
       ) : null}
       {failures.length ? (

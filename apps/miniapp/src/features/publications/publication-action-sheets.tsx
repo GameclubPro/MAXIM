@@ -37,7 +37,7 @@ export function PublicationActionSheet({
           cancelsAccessibleTargets
             ? 'Рассылки в остальных чатах и каналах продолжатся. Уже отправленные сообщения сохранятся.'
             : cancelsFutureSends
-              ? 'Будущие отправки отменятся, а ошибки нельзя будет повторить.'
+              ? 'Будущие отправки отменятся. Повторить неудачные отправки будет нельзя.'
               : undefined
         }
         previewTitle={
@@ -117,7 +117,7 @@ export function PublicationDeliveryActionSheets({
             ? 'Сообщение опубликовано?'
             : 'Сообщение не отправлено?'
         }
-        summary="Это ручная проверка неоднозначной отправки."
+        summary="Проверьте в чате или канале, появился ли пост, и подтвердите результат."
         confirmLabel="Подтвердить"
         confirmBusyLabel="Сохраняем..."
         tone={ambiguousTarget?.resolution === 'mark_failed' ? 'danger' : 'accent'}

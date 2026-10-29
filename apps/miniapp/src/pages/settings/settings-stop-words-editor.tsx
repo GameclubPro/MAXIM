@@ -148,7 +148,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
       : availability === 'shadow'
         ? 'Наблюдение, без удаления'
         : availability === 'off'
-          ? 'Выключена на сервере'
+          ? 'Сейчас выключена'
           : availability === 'unavailable'
             ? 'Временно недоступна'
             : 'Проверяем доступность';
@@ -485,8 +485,8 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
             {[
               sanctions.botMessageEnabled ? 'Объяснение' : '',
               sanctions.warnEnabled ? 'Предупреждение' : '',
-              sanctions.muteEnabled ? 'Мут ' + sanctions.muteDurationHours + ' ч' : '',
-              sanctions.banEnabled ? 'Бан' : '',
+              sanctions.muteEnabled ? 'Ограничение ' + sanctions.muteDurationHours + ' ч' : '',
+              sanctions.banEnabled ? 'Блокировка' : '',
             ]
               .filter(Boolean)
               .join(' · ') || 'Только удаление'}
@@ -523,13 +523,13 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
           </button>
         </Toggle>
         <Toggle
-          label="Мут"
+          label="Ограничение"
           checked={sanctions.muteEnabled}
           onChange={(muteEnabled) => updateSanctions({ muteEnabled })}
         />
         {sanctions.muteEnabled ? (
           <label className="stop-words-editor__field">
-            Длительность мута, часов
+            Длительность ограничения, часов
             <input
               type="number"
               min={1}
@@ -542,7 +542,7 @@ export function SettingsStopWordsEditor(props: SettingsStopWordsEditorProps) {
           </label>
         ) : null}
         <Toggle
-          label="Бан"
+          label="Блокировка"
           checked={sanctions.banEnabled}
           onChange={(banEnabled) => updateSanctions({ banEnabled })}
         />

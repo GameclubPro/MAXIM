@@ -2,6 +2,7 @@ import type {
   NetworkSettingsChange,
   NetworkSettingsField,
 } from '@maxim/contracts/network-settings';
+import { formatTimezoneLabel } from '../../lib/timezone-label';
 const LABELS: Record<string, string> = {
   botSpeechStyle: 'Стиль речи',
   rulesAttachViolationsEnabled: 'Кнопка правил в сообщениях о нарушениях',
@@ -238,7 +239,11 @@ export function networkSettingsValueLabel(value: unknown, path?: string): string
   if (path === 'rules.imageBase64') return value ? 'Изображение' : 'Без изображения';
   if (typeof value === 'boolean') return value ? 'Включено' : 'Выключено';
   if (value === null || value === undefined || value === '') return 'Не задано';
-  if (typeof value === 'string') return (path ? ENUM_VALUES[path]?.[value] : undefined) ?? value;
+  if (typeof value === 'string') {
+    if (path === 'duplicateTimezone' || path === 'nightModeTimezone')
+      return formatTimezoneLabel(value);
+    return (path ? ENUM_VALUES[path]?.[value] : undefined) ?? value;
+  }
   if (typeof value === 'number') {
     if (path === 'messageRetention.hours') {
       if (value === 24) return '24 часа';

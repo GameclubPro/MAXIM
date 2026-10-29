@@ -151,11 +151,7 @@ export function formatBotPermissionLabel(permission: string): string {
     return knownLabel;
   }
 
-  const readable = trimmed
-    .replace(/[._-]+/gu, ' ')
-    .replace(/\s+/gu, ' ')
-    .trim();
-  return readable ? `${readable[0]?.toUpperCase() ?? ''}${readable.slice(1)}` : 'Права бота в MAX';
+  return 'Права бота в MAX';
 }
 
 export function getBotPermissionBlockerLabels(blocker: BotPermissionBlocker): readonly string[] {

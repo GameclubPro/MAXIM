@@ -1,3 +1,4 @@
+import { describeUserFacingError } from '../../lib/user-facing-error';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import type { SettingsFieldState } from './field-model';
 import type { BotSpeechMediaImage } from '@maxim/contracts/settings';
@@ -126,7 +127,7 @@ export function FieldText({
         onError?.(null);
         onChange(e.target.value);
       } catch (cause) {
-        onError?.(cause instanceof Error ? cause.message : 'Проверьте значение.');
+        onError?.(describeUserFacingError(cause, 'Проверьте значение.'));
       }
     },
   };
@@ -181,7 +182,7 @@ export function FieldNumber({
             onError?.(null);
             onChange(value);
           } catch (cause) {
-            onError?.(cause instanceof Error ? cause.message : 'Проверьте число.');
+            onError?.(describeUserFacingError(cause, 'Проверьте число.'));
           }
         }}
       />
@@ -260,7 +261,7 @@ export function FieldTime({
             onError?.(null);
             onChange(Number(match[1]) * 60 + Number(match[2]));
           } catch (cause) {
-            onError?.(cause instanceof Error ? cause.message : 'Проверьте время.');
+            onError?.(describeUserFacingError(cause, 'Проверьте время.'));
           }
         }}
       />
@@ -341,8 +342,7 @@ export function FieldMedia({
               });
             } catch (cause) {
               if (request.current === revision && !latest.current.disabled) {
-                const message =
-                  cause instanceof Error ? cause.message : 'Не удалось прочитать изображение.';
+                const message = describeUserFacingError(cause, 'Не удалось прочитать изображение.');
                 setFailure(message);
                 latest.current.onError?.(message);
               }

@@ -538,7 +538,7 @@ export function PublicationsPage({
         onClick: () =>
           focusEditorSection(
             'targets',
-            'Выбранный получатель пока не готов к публикации через Публик.',
+            'Выбранный получатель пока не готов к публикации через Публика.',
           ),
       });
     }
@@ -696,7 +696,7 @@ export function PublicationsPage({
       return reject('targets', 'Выберите хотя бы одного получателя.');
     }
     if (!isRetryVersionEditor && selectedPublisherTargetUnavailable) {
-      return reject('targets', 'Выбранный получатель пока не готов к публикации через Публик.');
+      return reject('targets', 'Выбранный получатель пока не готов к публикации через Публика.');
     }
     if (!options.ignoreSchedule && !preservesSavedSchedule) {
       if (reportExplicitSlotsLimit()) {
@@ -1476,7 +1476,7 @@ export function PublicationsPage({
         draft.scheduleKind === 'slots' &&
         calendarAvailabilityQuery.isError ? (
           <div className="publications-calendar-error" role="alert">
-            <span>Не удалось загрузить занятые слоты.</span>
+            <span>Не удалось загрузить занятое время.</span>
             <button type="button" onClick={() => void calendarAvailabilityQuery.refetch()}>
               <IconoirSprite variant="iconoir" icon="Refresh" aria-hidden />
               <span>Повторить</span>
@@ -1939,7 +1939,7 @@ export function PublicationsPage({
         id="publication-revision-conflict"
         open={revisionConflictPublicationId !== null}
         title="Публикация изменилась"
-        summary="Локальные правки будут перенесены в актуальную версию."
+        summary="Ваши правки будут перенесены в актуальную версию."
         confirmLabel="Обновить"
         cancelLabel="Остаться"
         tone="accent"

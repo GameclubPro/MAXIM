@@ -73,7 +73,7 @@ export function SharedSettingsStorefrontFields({ fields }: { fields: ChatSetting
             disabled={fields.readOnly}
             nested
             onChange={(value) => fields.setScalar('karavanStorefrontAdminsOnly', value)}
-            description="Кнопка будет доступна администраторам и выданным пользователям."
+            description="Кнопка будет доступна администраторам и пользователям из списка."
           />
         </>
       ) : null}

@@ -47,7 +47,7 @@ function validatePublicationButtons(
       errors.text = 'Введите название кнопки до 32 символов.';
     }
     if (parsed.error.issues.some((issue) => issue.path[0] === 'url')) {
-      errors.url = 'Укажите корректную ссылку (http/https).';
+      errors.url = 'Укажите ссылку, начинающуюся с http:// или https://.';
     }
     return errors;
   });

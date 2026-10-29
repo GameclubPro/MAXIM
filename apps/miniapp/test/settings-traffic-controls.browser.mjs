@@ -33,9 +33,9 @@ try {
     await panel.getByRole('checkbox', { name: 'Медленный режим', exact: true }).check();
     const slow = panel.getByRole('spinbutton', { name: 'Медленный режим: интервал в секундах' });
     await slow.fill('90');
-    await panel.getByRole('checkbox', { name: 'Интервал медиа', exact: true }).check();
+    await panel.getByRole('checkbox', { name: 'Интервал для вложений', exact: true }).check();
     await panel
-      .getByRole('spinbutton', { name: 'Интервал медиа: интервал в секундах' })
+      .getByRole('spinbutton', { name: 'Интервал для вложений: интервал в секундах' })
       .fill('120');
     await slow.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(screenshotDir, `${name}-intervals.png`) });
@@ -58,7 +58,7 @@ try {
     assert.equal(await slow.inputValue(), '90');
     assert.equal(
       await panel
-        .getByRole('spinbutton', { name: 'Интервал медиа: интервал в секундах' })
+        .getByRole('spinbutton', { name: 'Интервал для вложений: интервал в секундах' })
         .inputValue(),
       '120',
     );

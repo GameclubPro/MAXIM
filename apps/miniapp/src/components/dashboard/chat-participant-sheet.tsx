@@ -235,11 +235,11 @@ function describeImmunity(immunity: ChatParticipantImmunityView | null): string 
   const remaining = parseNonNegativeInteger(immunity.remainingViolatingMessagesToday);
   const limit = parsePositiveInteger(immunity.dailyViolationLimit);
   if (remaining !== null && limit !== null) {
-    return `Защита: ${remaining} из ${limit} нарушающих сообщений осталось на сегодня`;
+    return `Защита: ${remaining} из ${limit} сообщений с нарушениями осталось на сегодня`;
   }
 
   if (limit !== null) {
-    return `Защита: лимит ${limit} нарушающих сообщений в день`;
+    return `Защита: лимит ${limit} сообщений с нарушениями в день`;
   }
 
   return 'Защита с дневным лимитом';
@@ -856,7 +856,7 @@ export function ChatParticipantSheet({
                 aria-label={
                   isAlwaysMode
                     ? 'Защита всегда: без срока и дневного лимита'
-                    : `Лимит ${dailyViolationLimit} нарушающих сообщений в день`
+                    : `Лимит ${dailyViolationLimit} сообщений с нарушениями в день`
                 }
               >
                 {isAlwaysMode ? 'Всегда' : `${dailyViolationLimit}/д`}
@@ -992,7 +992,7 @@ export function ChatParticipantSheet({
                       setDailyViolationLimit(Number(event.target.value));
                       setDraftDirty(true);
                     }}
-                    aria-label="Лимит нарушающих сообщений в день"
+                    aria-label="Лимит сообщений с нарушениями в день"
                     aria-describedby={
                       openHintKey === 'limit' ? 'participant-sheet-hint-limit' : undefined
                     }

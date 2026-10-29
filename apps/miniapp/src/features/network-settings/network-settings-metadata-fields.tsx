@@ -1,3 +1,4 @@
+import { describeUserFacingError } from '../../lib/user-facing-error';
 import { AppIcon } from '../../components/ui/app-icon';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -67,7 +68,7 @@ type Props = {
   children: (context: SharedChatSettingsContext) => ReactNode;
 };
 const message = (cause: unknown) =>
-  cause instanceof Error ? cause.message : 'Не удалось проверить данные. Повторите поиск.';
+  describeUserFacingError(cause, 'Не удалось проверить данные. Повторите поиск.');
 export function NetworkSettingsMetadataFields(props: Props) {
   const key = canonicalNetworkValue({
     scopeId: props.scopeId,
@@ -493,7 +494,7 @@ function entryTargetLabel(entry: AllowlistEntry) {
     return `@${entry.value.slice(9)}`;
   if (entry.value.startsWith('url:')) return entry.value.slice(4);
   if (entry.kind === 'MAX_ENTITY' && entry.value.startsWith('chat-id:'))
-    return `Старый ID чата: ${entry.value.slice(8)}`;
+    return `Прежний номер чата: ${entry.value.slice(8)}`;
   if (entry.kind === 'MINI_APP' && entry.value.startsWith('bot:'))
     return `Бот MAX: ${entry.value.slice(4)}`;
   if (entry.kind === 'MINI_APP' && entry.value.startsWith('contact-id:'))
@@ -774,7 +775,7 @@ function Allowlist({
             </p>
             {entries.length ? (
               <div className="allowlist-results">
-                <ul className="allowlist-list" aria-label="Разрешённые навигационные цели">
+                <ul className="allowlist-list" aria-label="Разрешённые ссылки">
                   {entries.map((entry) => {
                     const targetLabel = entryTargetLabel(entry);
                     const isScheduleOpen =

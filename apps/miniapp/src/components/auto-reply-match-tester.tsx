@@ -34,10 +34,10 @@ export type AutoReplyMatchTesterProps = {
 };
 
 function getMatchKindLabel(kind: PublisherAutoReplyMatchKind): string {
-  if (kind === 'exact_context') return 'точно внутри сообщения';
-  if (kind === 'fuzzy_full') return 'сообщение целиком с опечаткой';
-  if (kind === 'fuzzy_context') return 'внутри сообщения с опечаткой';
-  return 'точное сообщение';
+  if (kind === 'exact_context') return 'точная фраза в сообщении';
+  if (kind === 'fuzzy_full') return 'сообщение целиком, с учётом опечаток';
+  if (kind === 'fuzzy_context') return 'фраза в сообщении, с учётом опечаток';
+  return 'точное совпадение сообщения';
 }
 
 function MatchFeedback({ result }: { result: PublisherAutoReplyPreviewResponse }) {
@@ -80,7 +80,7 @@ function MatchFeedback({ result }: { result: PublisherAutoReplyPreviewResponse }
       )}
       <span>
         <strong>
-          {result.selected.matchedDraft ? 'Правило совпадёт' : 'Совпадёт другое правило'}
+          {result.selected.matchedDraft ? 'Сработает это правило' : 'Сработает другое правило'}
         </strong>
         <small>
           «{result.selected.phrase}» · {getMatchKindLabel(result.selected.matchKind)}

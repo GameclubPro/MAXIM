@@ -165,6 +165,24 @@ test('preserves concise Russian backend validation messages', () => {
   );
 });
 
+test('hides internal branding and bridge diagnostics while preserving public bot names', () => {
+  const fallback = 'Не удалось выполнить действие.';
+  for (const message of [
+    'MAXIM временно недоступен.',
+    'Не удалось прочитать WebAppData.',
+    'Некорректный initData.',
+  ]) {
+    assert.equal(describeUserFacingError(new Error(message), fallback), fallback);
+  }
+  for (const message of [
+    'Назначьте Публика администратором канала.',
+    'Майор Максимов не добавлен в чат.',
+    'MAX временно ограничил отправку.',
+  ]) {
+    assert.equal(describeUserFacingError(new Error(message), fallback), message);
+  }
+});
+
 test('translates schedule conflict codes without exposing internal names', () => {
   assert.equal(
     describeUserFacingError(

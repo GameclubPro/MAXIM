@@ -539,7 +539,7 @@ export default function KaravanMarketplaceWizard({
             <>
               <strong>{target.marketplace.name}</strong>
               <p>
-                {target.counts.listings} витрин · {target.counts.chats} чатов
+                Витрины: {target.counts.listings} · Чаты: {target.counts.chats}
               </p>
               <p>Подключаемые чаты получат существующий состав и порядок витрин.</p>
               <p>
