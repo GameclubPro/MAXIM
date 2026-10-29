@@ -13,6 +13,7 @@ import {
   preSemanticUnitSettingsDigests,
   prePrefixUnitSettingsDigests,
   preElectricalUnitSettingsDigests,
+  preSourceReaderSettingsDigests,
 } from './message-duplicate-test-fixtures';
 
 describe('safe text evidence compatibility', () => {
@@ -23,6 +24,9 @@ describe('safe text evidence compatibility', () => {
     ['CUSTOM_PHONE', { duplicateDetectionPreset: 'CUSTOM', duplicateIgnorePhonesEnabled: true }],
   ] as const)('revokes prior quantity-unit %s text evidence', (key, overrides) => {
     expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
+      preSourceReaderSettingsDigests[key],
+    );
+    expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
       preSemanticUnitSettingsDigests[key],
     );
     expect(messageDuplicateSettingsDigest(duplicateSettings(overrides))).not.toBe(
@@ -32,14 +36,22 @@ describe('safe text evidence compatibility', () => {
       preElectricalUnitSettingsDigests[key],
     );
   });
-  it('keeps exact IMAGE authority unchanged by quantity-unit semantics', () => {
-    expect(exactImageSettingsDigest(duplicateSettings())).toBe(
+  it('revokes earlier IMAGE authority whose publication clock used the old source reader', () => {
+    expect(exactImageSettingsDigest(duplicateSettings())).not.toBe(
+      preSourceReaderSettingsDigests.IMAGE,
+    );
+    expect(exactImageSettingsDigest(duplicateSettings())).not.toBe(
       preSemanticUnitSettingsDigests.IMAGE,
     );
-    expect(exactImageSettingsDigest(duplicateSettings())).toBe(prePrefixUnitSettingsDigests.IMAGE);
-    expect(exactImageSettingsDigest(duplicateSettings())).toBe(
+    expect(exactImageSettingsDigest(duplicateSettings())).not.toBe(
+      prePrefixUnitSettingsDigests.IMAGE,
+    );
+    expect(exactImageSettingsDigest(duplicateSettings())).not.toBe(
       preElectricalUnitSettingsDigests.IMAGE,
     );
+    expect(
+      exactImageSettingsDigest(duplicateSettings({ duplicateDetectionPreset: 'STRICT' })),
+    ).toBe(exactImageSettingsDigest(duplicateSettings()));
   });
   it.each([
     ['STRICT', { duplicateDetectionPreset: 'STRICT' }],

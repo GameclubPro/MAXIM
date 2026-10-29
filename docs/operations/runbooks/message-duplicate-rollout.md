@@ -44,6 +44,38 @@ The 30-second ceiling, single-worker isolation, byte/pixel budgets and exact ras
 hash are unchanged. Verify the boundary and next-request usability with
 `native-photo-sandbox.spec.ts`, alongside hash, decode-budget and media worker tests.
 
+## Source selection and publication clocks
+
+Duplicate content and original publication time use the same message candidate as webhook
+ingress. Diagnostic candidate paths are never interpreted as JSON paths: supported envelopes
+can contain arrays or literal dots/brackets in object keys. Exact-message reads compare the
+returned message itself, including its `content` body. Ambiguous navigation, incomplete albums,
+unknown attachments and malformed actions retain their existing refusal rules.
+
+The selected message's `timestamp`, `createdAt` or `created_at` anchors its publication window.
+An edit without that proof stays unverified; neither a forward's date nor the event delivery
+clock supplies an original publication date for an edit. Material edits still acquire their
+introduction time through the existing lifecycle observation.
+
+History v4 starts fresh positive evidence because v3 could retain an incorrect publication
+clock from an enveloped message. Both TEXT/MESSAGE and IMAGE settings digests include the
+storage version, rejecting old queued grants. No Redis keys or queues are purged, and old
+messages/actions are not replayed. Until new originals are observed, comparison history warms up.
+Old positive records expire under their existing bounded TTLs.
+
+Removal/reset fences stay in the v3 namespace. A surviving v3 lifecycle also retains stale,
+equal-time conflict and unknown-introduction refusals, including preliminary lifecycle/source
+refreshes. It supplies negative reset evidence when no v4 incarnation has been materialized.
+An unchanged, unverified or insufficiently dated
+old incarnation cannot reappear after reset; a proven later content change can establish a
+new one. The old publication clock, match counts and revision never become v4 positive proof.
+
+Persisted webhook semantic keys and readiness deadlines explicitly retain their existing
+`webhook_identity_v1` source projection. Improving duplicate parsing must not create another
+execution identity or extend an already admitted deadline. Both rollback paths require these
+readers and the v4 positive/v3 negative history boundary. See the
+[source audit](../incidents/2026-10-29-antiduplicate-source-audit.md) for reproductions.
+
 ## Fixed Publication Windows
 
 `dup:window:v1:<chat-hash>:v2:` stores a fixed window per verified fingerprint, anchored to an accepted original's
@@ -475,7 +507,7 @@ prefix/suffix quantity guards, including a prefix before an explicit phone label
 compound expressions cannot be rescanned by the outer scanner; the ordered span merge stays linear.
 Truncated protective contexts must fail closed, and numeric
 colon operands cannot become phones. Shared analysis preserves independent CUSTOM switches.
-History storage v3 additionally participates in every settings digest, including exact-only,
+History storage v4 additionally participates in every settings digest, including exact-only,
 CUSTOM-link-only and IMAGE: this transition invalidates all older history, queued jobs and grants.
 The new baseline fills from newly accepted originals; the first repeat without such an original
 can be accepted. Exact IMAGE raster matching semantics remain unchanged.
@@ -527,7 +559,7 @@ the stored enabled settings and old grants must not regain authority on a later 
 Pending intents
 can survive a control downgrade, so an older unguarded API is not a valid rollback target.
 Use a retained compatible immutable release and the normal queue-fenced rollback workflow.
-Both rollback paths require the actual v3 history namespace, isolated reset/removal,
+Both rollback paths require the actual v4 positive history namespace, retained v3 reset/removal fences,
 Redis-clock-bounded PXAT expiry, replay expiry preservation and the shared 48-hour window cap.
 History lives at most 48 hours plus 11 minutes for existing processing/clock budgets;
 message/qualification use their own shorter window plus that grace. Replays cannot extend expiry.
@@ -535,7 +567,7 @@ Legacy settings above 48 hours are clamped by the resolver and repaired with the
 CAS without overwriting unrelated fields or authored text. Old Redis keys expire naturally;
 do not mass-delete history or shorten durable sanction/action fences.
 See [Bounded history review](../../antiduplicate-bounded-history-2026-10-05.md).
-API images before text-v14/history-v3 do not satisfy this source floor. Recovery
+API images before text-v14/history-v4 do not satisfy this source floor. Recovery
 uses the reviewed control OFF path above and a forward compatible release; static-only rollback
 is independent. Do not weaken source or applied-migration compatibility checks to reuse an old API.
 Older images do not understand the new protocol and are rejected as targets; rollback does not downgrade

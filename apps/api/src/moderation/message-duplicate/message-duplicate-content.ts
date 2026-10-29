@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { selectMaxMessageCandidate } from '../../max/max-message-candidate.util';
 import {
   adaptMaxMessageNavigationView,
   adaptMaxWebhookNavigationView,
@@ -121,10 +122,24 @@ export function duplicateNavigationAnchorIdentityKeys(
 export function extractDuplicateMessageContent(
   raw: unknown,
   webhook = true,
+  sourceSelection: 'parser' | 'webhook_identity_v1' = 'parser',
 ): DuplicateMessageContent {
   const initial = webhook ? adaptMaxWebhookNavigationView(raw) : adaptMaxMessageNavigationView(raw);
   const root = asRecord(raw);
-  const selected = root && initial.messagePath ? readPath(root, initial.messagePath) : root;
+  // FLAG: Candidate paths are diagnostic labels, not executable JSON paths: arrays and
+  // keys containing dots/brackets must retain the exact node selected by ingress.
+  // Persisted webhook identities/deadlines explicitly retain their original projection.
+  const selected =
+    sourceSelection === 'webhook_identity_v1'
+      ? root && initial.messagePath
+        ? readPath(root, initial.messagePath)
+        : root
+      : webhook && root && initial.messagePath && initial.messagePath !== '$'
+        ? (selectMaxMessageCandidate(
+            root,
+            String(root.type ?? root.update_type ?? root.event_type ?? 'unknown'),
+          )?.node ?? null)
+        : root;
   const texts: string[] = [];
   const navigation = new Set<string>();
   const navigationTargets: NavigationTargetEvidence[] = [];

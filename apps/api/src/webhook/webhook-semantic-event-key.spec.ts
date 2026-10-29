@@ -2,8 +2,27 @@ import {
   buildWebhookSemanticEventKey,
   readWebhookEventTimestamp,
 } from './webhook-semantic-event-key';
+import { WebhookParser } from './webhook.parser';
 
 describe('buildWebhookSemanticEventKey', () => {
+  it('preserves the deployed semantic identity of edits in array envelopes', () => {
+    const update = new WebhookParser().parse({
+      update_type: 'message_edited',
+      timestamp: Date.parse('2026-10-29T05:00:00Z'),
+      data: {
+        items: [
+          {
+            sender: { user_id: 123 },
+            recipient: { chat_id: -123 },
+            body: { mid: 'offer', text: 'offer' },
+          },
+        ],
+      },
+    });
+    expect(buildWebhookSemanticEventKey(update)).toBe(
+      'message:message_edited:-123:offer:2026-10-29T05:00:00.000Z:8f576607e66d8b39fa145a6c50a56d05042afdffec2af8d5be6b3c0067c8d993',
+    );
+  });
   it.each([1e20, 8_640_000_000_000_001, Number.POSITIVE_INFINITY, new Date('invalid')])(
     'does not canonicalize invalid lifecycle timestamp %s or throw while reading it',
     (timestamp) => {

@@ -636,12 +636,15 @@ maxim_topology_require_message_duplicate_delete_guard() {
     apps/api/src/moderation/message-duplicate/message-duplicate-window.script.ts
     packages/contracts/src/duplicate-settings.ts
     apps/api/src/moderation/duplicate-semantic-text.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-publication-time.ts
+    apps/api/src/webhook/webhook-semantic-event-key.ts
+    apps/api/src/webhook/webhook-execution-deadline.ts
   )
 
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
   # must retain lifecycle revisions, durable first admission/revocation and the last permit fence.
   # Bounded phone labels, strong identifier/quantity guards and original-text phone-before-URL
-  # normalization remain mandatory with v14 text fences, v8 phone evidence and bounded v3 storage.
+  # normalization remain mandatory with v14 text fences, v8 phone evidence and bounded v4 history with retained v3 negative fences.
   # Case-sensitive quantity units before/after values and finite phone authority must survive
   # exact/near matching and lifecycle identity.
   for source_path in "${source_paths[@]}"; do
@@ -657,8 +660,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const input = require("node:fs").readFileSync(0);
     if (input.length > 4 * 1024 * 1024) process.exit(1);
     const parts = input.toString("utf8").split("\0");
-    if (parts.length !== 18 || parts.pop() !== "") process.exit(1);
-    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history, window, settings, semantic] = parts;
+    if (parts.length !== 21 || parts.pop() !== "") process.exit(1);
+    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history, window, settings, semantic, publicationTime, semanticKey, executionDeadline] = parts;
     const method = (source, marker) => {
       const start = source.indexOf(marker);
       const end = source.indexOf("\n  private ", start + 1);
@@ -881,8 +884,26 @@ maxim_topology_require_message_duplicate_delete_guard() {
       phones.includes("\\.(?![ \\t\\u00a0\\u202f])") &&
       state.includes("import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from \u0027./message-duplicate-window.script\u0027;") &&
       count(state, "historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION") === 2 &&
-      window.includes("MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = \u0027v3\u0027") &&
-      window.includes("local resetPrefix = prefix") &&
+      window.includes("MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = \u0027v4\u0027") &&
+      window.includes("MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION = \u0027v3\u0027") &&
+      window.includes("local resetPrefix = KEYS[1] .. \u0027${MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION}:\u0027") &&
+      count(window, "local namespace = string.sub(key, 1, 8) == \u0027removed:\u0027 and resetPrefix or prefix") === 2 &&
+      window.includes("local raw = redis.call(\u0027GET\u0027, namespace .. key)") &&
+      window.includes("redis.call(\u0027SET\u0027, namespace .. key, cjson.encode(value), \u0027PXAT\u0027, expiry)") &&
+      window.includes("if (not previousLife or not previousLife.materializedRevision) and currentEpoch ~= 0 then") &&
+      window.includes("local raw = redis.call(\u0027GET\u0027, resetPrefix .. \u0027life:\u0027 .. p.member .. \u0027:\u0027 .. p.mode)") &&
+      window.includes("local materialized = previousLife and previousLife.materialized or (priorLife and priorLife.materialized or nil)") &&
+      window.includes("if life.source == materialized.source or priorLife then life.introducedAt = p.at end") &&
+      count(window, "local raw = redis.call(\u0027GET\u0027, resetPrefix .. key)") === 2 &&
+      window.includes("if at < prior.at or (at == prior.at and (prior.conflict or prior.source ~= source)) then return nil end") &&
+      squash(window).includes("if prior.source ~= source then publishedAt = at elseif prior.introducedKnown == false then") &&
+      window.includes("revision = p.token, introducedAt = 0, introducedKnown = false }") &&
+      content.includes("sourceSelection: \u0027parser\u0027 | \u0027webhook_identity_v1\u0027 = \u0027parser\u0027") &&
+      content.includes("selectMaxMessageCandidate(") &&
+      publicationTime.includes("selectMaxMessageCandidate(raw as Record<string, unknown>, update.type)?.node") &&
+      publicationTime.includes("message?.timestamp ?? message?.createdAt ?? message?.created_at") &&
+      semanticKey.includes("extractDuplicateMessageContent(row.raw ?? row, true, \u0027webhook_identity_v1\u0027)") &&
+      executionDeadline.includes("extractDuplicateMessageContent(update.raw, true, \u0027webhook_identity_v1\u0027)") &&
       window.includes("local function eventExpiry(at)") &&
       window.includes("math.min(at and at > 0 and at or now, now) + retentionMs") &&
       window.includes("p.windowMs = math.min(p.windowMs, ${DUPLICATE_WINDOW_MAX_SEC * 1000})") &&
@@ -896,7 +917,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       window.includes("life.materialized = { epoch = currentEpoch, at = p.at, source = p.source, identity = p.identity }") &&
       window.includes("local resetIncarnation = materialized and materialized.epoch ~= currentEpoch") &&
       squash(window).includes("if resetIncarnation and (p.at <= materialized.at or p.identity == \u0027\u0027 or not materialized.identity or materialized.identity == \u0027\u0027 or p.identity == materialized.identity) then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
-      squash(window).includes("if not materialized and previousLife and previousLife.materializedRevision and currentEpoch ~= 0 then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
+      squash(window).includes("if not materialized and ((previousLife and previousLife.materializedRevision) or (priorLife and priorLife.materializedRevision)) and currentEpoch ~= 0 then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
       window.includes("if life.introducedAt <= currentEpoch then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
       window.includes("if previous and previous.epoch == currentEpoch and previous.source ~= p.source") &&
       window.includes("elseif previous and previous.epoch == currentEpoch and previous.revision == life.revision") &&

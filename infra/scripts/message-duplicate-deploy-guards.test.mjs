@@ -26,6 +26,10 @@ const paths = {
   window: 'apps/api/src/moderation/message-duplicate/message-duplicate-window.script.ts',
   settings: 'packages/contracts/src/duplicate-settings.ts',
   semantic: 'apps/api/src/moderation/duplicate-semantic-text.ts',
+  publicationTime:
+    'apps/api/src/moderation/message-duplicate/message-duplicate-publication-time.ts',
+  semanticKey: 'apps/api/src/webhook/webhook-semantic-event-key.ts',
+  executionDeadline: 'apps/api/src/webhook/webhook-execution-deadline.ts',
 };
 function probe(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-duplicate-floor-'));
@@ -72,6 +76,10 @@ test('requires the message-v3 reader, durable admission and last action permit o
 });
 
 const mutations = [
+  ['window', 'at < prior.at or (at == prior.at', 'false or (at == prior.at'],
+  ['window', 'prior.conflict or prior.source ~= source', 'false'],
+  ['window', 'elseif prior.introducedKnown == false then', 'elseif false then'],
+  ['window', "redis.call('GET', resetPrefix .. key)", "redis.call('GET', prefix .. key)"],
   [
     'guard',
     'Date.now() >= Math.min(binding.authorization!.deadlineAtMs, binding.original.expiresAtMs)',
@@ -331,10 +339,41 @@ const mutations = [
   ['phones', 'options.ignoreLinks ? analysis.urlRanges : []', 'analysis.urlRanges'],
   [
     'window',
+    "MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = 'v4'",
     "MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = 'v3'",
-    "MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = 'v2'",
   ],
-  ['window', 'local resetPrefix = prefix', 'local resetPrefix = KEYS[1]'],
+  [
+    'window',
+    "MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION = 'v3'",
+    "MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION = 'v4'",
+  ],
+  [
+    'window',
+    "local resetPrefix = KEYS[1] .. '${MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION}:'",
+    'local resetPrefix = prefix',
+  ],
+  [
+    'window',
+    "local namespace = string.sub(key, 1, 8) == 'removed:' and resetPrefix or prefix",
+    'local namespace = prefix',
+  ],
+  ['window', 'or (priorLife and priorLife.materialized or nil)', 'or nil'],
+  ['window', 'or (priorLife and priorLife.materializedRevision)', 'or false'],
+  [
+    'publicationTime',
+    'selectMaxMessageCandidate(raw as Record<string, unknown>, update.type)?.node',
+    'undefined',
+  ],
+  [
+    'semanticKey',
+    "extractDuplicateMessageContent(row.raw ?? row, true, 'webhook_identity_v1')",
+    'extractDuplicateMessageContent(row.raw ?? row)',
+  ],
+  [
+    'executionDeadline',
+    "extractDuplicateMessageContent(update.raw, true, 'webhook_identity_v1')",
+    'extractDuplicateMessageContent(update.raw)',
+  ],
   ['window', 'math.min(at and at > 0 and at or now, now) + retentionMs', 'now + retentionMs'],
   ['window', "'PXAT', expiry", "'EX', 1209661"],
   ['window', "redis.call('PEXPIRETIME', prefix .. key)", '-1'],
@@ -354,7 +393,11 @@ const mutations = [
   ['window', 'materialized.epoch ~= currentEpoch', 'false'],
   ['window', 'p.at <= materialized.at', 'false'],
   ['window', "materialized.identity == '' or p.identity == materialized.identity", 'false'],
-  ['window', 'previousLife.materializedRevision and currentEpoch ~= 0', 'false'],
+  [
+    'window',
+    '((previousLife and previousLife.materializedRevision) or (priorLife and priorLife.materializedRevision)) and currentEpoch ~= 0',
+    'false',
+  ],
   ['window', 'life.introducedAt <= currentEpoch', 'false'],
   [
     'window',

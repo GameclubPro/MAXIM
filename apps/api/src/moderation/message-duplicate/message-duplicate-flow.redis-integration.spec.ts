@@ -545,6 +545,93 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       await flow?.close();
     });
 
+    it.each(['MESSAGE', 'TEXT', 'IMAGE'] as const)(
+      'deletes an identical announcement from a parser-supported array envelope (%s)',
+      async (mode) => {
+        flow = await createFlow({ duplicateCompareMode: mode === 'IMAGE' ? 'MESSAGE' : mode });
+        const options = {
+          text: 'Одинаковое объявление',
+          ...(mode === 'IMAGE' ? { photo: 'png' as const } : {}),
+        };
+        const firstJob = await flow.ingest(flow.prepare(options));
+        if (firstJob) await flow.processor.process(firstJob);
+        const repeat = flow.prepare(options);
+        const raw = repeat.update.raw as Record<string, unknown>;
+        Object.assign(
+          repeat.update,
+          new WebhookParser().parse({
+            update_type: 'message_created',
+            timestamp: repeat.time,
+            data: { items: [raw.message] },
+          }),
+        );
+        const repeatJob = await flow.ingest(repeat);
+        if (repeatJob) await flow.processor.process(repeatJob);
+        expect(flow.deleted).toEqual([repeat.id]);
+      },
+    );
+
+    it('verifies a repeated announcement when the exact MAX read returns a content body', async () => {
+      flow = await createFlow();
+      await flow.ingest(flow.prepare({ text: 'Одинаковое объявление' }));
+      const repeat = flow.prepare({ text: 'Одинаковое объявление' });
+      const { body, ...row } = flow.remote.get(repeat.id)!;
+      flow.remote.set(repeat.id, { ...row, content: body });
+      await flow.ingest(repeat);
+      expect(flow.deleted).toEqual([repeat.id]);
+    });
+
+    it('deletes an edit into an existing announcement from an event envelope', async () => {
+      flow = await createFlow();
+      await flow.ingest(flow.prepare({ id: 'original', text: 'Одинаковое объявление' }));
+      const first = flow.prepare({ id: 'edited', text: 'Другое объявление' });
+      await flow.ingest(first);
+      const edit = flow.prepare({
+        id: first.id,
+        text: 'Одинаковое объявление',
+        time: first.time + 100,
+        editedFrom: first.time,
+      });
+      const raw = edit.update.raw as Record<string, unknown>;
+      Object.assign(
+        edit.update,
+        new WebhookParser().parse({
+          update_type: 'message_edited',
+          timestamp: edit.time,
+          message_edited: { message: raw.message },
+        }),
+      );
+      await flow.ingest(edit);
+      expect(flow.deleted).toEqual([edit.id]);
+    });
+
+    it('does not renew a delayed envelope original beyond its publication window', async () => {
+      flow = await createFlow({ duplicateWarnWindowSec: 3600 });
+      const now = Date.now();
+      const original = flow.prepare({
+        id: 'delayed',
+        text: 'Одинаковое объявление',
+        time: now - 30 * 60_000,
+      });
+      const raw = original.update.raw as Record<string, unknown>;
+      const originalMessage = {
+        ...(raw.message as Record<string, unknown>),
+        timestamp: now - 70 * 60_000,
+      };
+      flow.remote.set(original.id, originalMessage);
+      Object.assign(
+        original.update,
+        new WebhookParser().parse({
+          update_type: 'message_created',
+          timestamp: original.time,
+          data: { message: originalMessage },
+        }),
+      );
+      await flow.ingest(original);
+      await flow.ingest(flow.prepare({ text: 'Одинаковое объявление', time: now - 1000 }));
+      expect(flow.deleted).toEqual([]);
+    });
+
     it.each(['MESSAGE', 'TEXT'] as const)(
       'anchors the 24-hour window to the accepted original (%s)',
       async (mode) => {

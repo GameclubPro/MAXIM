@@ -12,6 +12,7 @@ import {
   MESSAGE_DUPLICATE_HISTORY_GRACE_MS,
   MESSAGE_DUPLICATE_HISTORY_RETENTION_MS,
   MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION,
+  MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION,
 } from './message-duplicate-window.script';
 import type { MessageDuplicateBinding } from './message-duplicate-state';
 import {
@@ -71,6 +72,8 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
 
   const windowPrefix = () =>
     `dup:window:v1:${digestDuplicateContent(chatId)}:${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:`;
+  const fencePrefix = () =>
+    `dup:window:v1:${digestDuplicateContent(chatId)}:${MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION}:`;
   const recordExpiry = async (key: string) => Number(await inspector.call('PEXPIRETIME', key));
 
   it('rejects an expired Redis admission before mutation despite the longer reply wait', async () => {
@@ -315,7 +318,7 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
       expect(await history.qualify(chatId, old!.binding)).toBe(1);
       await redis.resetDuplicateWindow(chatId, '123');
       const resetAt = Number(
-        await inspector.get(`${windowPrefix()}reset:${digestDuplicateContent('123')}`),
+        await inspector.get(`${fencePrefix()}reset:${digestDuplicateContent('123')}`),
       );
       const stateKey = `${windowPrefix()}message:${digestDuplicateContent('future-original')}:MESSAGE`;
       if (loseState) await inspector.del(stateKey);
@@ -427,11 +430,11 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     );
     await redis.resetDuplicateWindow(chatId, '123');
     const resetExpiry = await recordExpiry(
-      `${windowPrefix()}reset:${digestDuplicateContent('123')}`,
+      `${fencePrefix()}reset:${digestDuplicateContent('123')}`,
     );
     expect(resetExpiry).toBeGreaterThanOrEqual(Math.max(...proofExpiries));
     await history.remove(chatId, 'future-original');
-    const removalKey = `${windowPrefix()}removed:${digestDuplicateContent('future-original')}`;
+    const removalKey = `${fencePrefix()}removed:${digestDuplicateContent('future-original')}`;
     const removalExpiry = await recordExpiry(removalKey);
     expect(removalExpiry).toBeGreaterThanOrEqual(Math.max(...proofExpiries));
     await history.remove(chatId, 'future-original');
@@ -461,7 +464,7 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await recordExpiry(lifeKey)).toBe(lifeExpiry);
   });
 
-  it('isolates v3 history and reset/removal fences from surviving v2 storage', async () => {
+  it('isolates current history and reset/removal fences from retired v2 storage', async () => {
     const oldPrefix = `dup:window:v1:${digestDuplicateContent(chatId)}:`;
     const oldReset = `${oldPrefix}reset:${digestDuplicateContent('123')}`;
     const oldRemoved = `${oldPrefix}v2:removed:${digestDuplicateContent('original')}`;
@@ -481,7 +484,123 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     expect(await inspector.get(oldState)).toBe('{"legacy":true}');
   });
 
-  it('replays v3 absolute expiry and equal-timestamp qualification against its private virtual clock', async () => {
+  it('retains v3 removal and reset fences without importing its incorrect positive clock', async () => {
+    const oldAt = start - 1800_000;
+    const oldLifeKey = `${fencePrefix()}life:${digestDuplicateContent('original')}:MESSAGE`;
+    const oldLife = JSON.stringify({
+      at: start,
+      introducedAt: start,
+      introducedKnown: true,
+      source: extractDuplicateMessageContent({ message: { body: { text: 'offer' } } }).sourceDigest,
+      revision: 'old',
+    });
+    await inspector.set(oldLifeKey, oldLife, 'EX', 172800);
+    await observe('original', 0, 'offer', { publishedAtMs: oldAt });
+    const match = await observe('target', 100, 'offer');
+    expect(match?.binding.original?.publishedAtMs).toBe(oldAt);
+    expect(match?.binding.original?.expiresAtMs).toBe(oldAt + match!.binding.windowSeconds * 1000);
+    expect(await inspector.get(oldLifeKey)).toBe(oldLife);
+    const removedKey = `${fencePrefix()}removed:${digestDuplicateContent('original')}`;
+    await inspector.set(removedKey, 'true', 'EX', 172800);
+    const removedExpiry = await recordExpiry(removedKey);
+    expect(await history.stillMatches(chatId, match!.binding)).toBe(false);
+    await history.remove(chatId, 'original');
+    expect(await recordExpiry(removedKey)).toBe(removedExpiry);
+    const resetKey = `${fencePrefix()}reset:${digestDuplicateContent('123')}`;
+    await inspector.set(resetKey, JSON.stringify(Date.now()), 'EX', 172800);
+    expect(await observe('older-copy', 200, 'offer')).toBeNull();
+    expect(
+      await inspector.get(
+        `${windowPrefix()}message:${digestDuplicateContent('older-copy')}:MESSAGE`,
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps a reset future-dated v3 incarnation revoked after positive history advances', async () => {
+    const at = Date.now() + 30_000;
+    await observe('old-future', at - start, 'offer');
+    const lifeKey = `life:${digestDuplicateContent('old-future')}:MESSAGE`;
+    const life = await inspector.get(`${windowPrefix()}${lifeKey}`);
+    expect(life).not.toBeNull();
+    await inspector.set(`${fencePrefix()}${lifeKey}`, life!, 'EX', 172800);
+    await redis.deleteKeysByPattern(`${windowPrefix()}*`);
+    await redis.resetDuplicateWindow(chatId, '123');
+    await history.observeLifecycle({
+      chatId,
+      messageId: 'old-future',
+      eventTimestampMs: at + 1,
+      publishedAtMs: at,
+      content: extractDuplicateMessageContent({ message: { body: { text: 'offer' } } }),
+    });
+    expect(await observe('old-future', at + 1 - start, 'offer')).toBeNull();
+    expect(
+      await inspector.get(
+        `${windowPrefix()}message:${digestDuplicateContent('old-future')}:MESSAGE`,
+      ),
+    ).toBeNull();
+    await observe('old-future', at + 2 - start, 'new offer', { publishedAtMs: at });
+    const match = await observe('new-repeat', at + 3 - start, 'new offer');
+    expect(match?.binding.original?.messageId).toBe('old-future');
+    expect(match?.binding.original?.publishedAtMs).toBe(at + 2);
+  });
+
+  it.each(['none', 'lifecycle', 'invalidate'])(
+    'preserves old stale/conflicting lifecycle refusal with preliminary observation=%s',
+    async (preliminary) => {
+      for (const scenario of ['older', 'conflict', 'equal-change', 'unknown-time']) {
+        const messageId = `transition-${scenario}`;
+        await observe(messageId, 0, 'offer');
+        const content = (text: string) =>
+          extractDuplicateMessageContent({ message: { body: { text } } });
+        if (scenario === 'conflict') {
+          await history.observeLifecycle({
+            chatId,
+            messageId,
+            eventTimestampMs: start,
+            content: content('conflict'),
+          });
+        } else if (scenario === 'unknown-time') {
+          await history.invalidateLifecycle({ chatId, messageId, content: content('unknown') });
+        }
+        const lifeKey = `life:${digestDuplicateContent(messageId)}:MESSAGE`;
+        const oldLife = await inspector.get(`${windowPrefix()}${lifeKey}`);
+        expect(oldLife).not.toBeNull();
+        await inspector.set(`${fencePrefix()}${lifeKey}`, oldLife!, 'EX', 172800);
+        await redis.deleteKeysByPattern(`${windowPrefix()}*`);
+        const time = scenario === 'older' ? -1 : scenario === 'unknown-time' ? 100 : 0;
+        const text =
+          scenario === 'equal-change'
+            ? 'changed'
+            : scenario === 'unknown-time'
+              ? 'unknown'
+              : 'offer';
+        if (preliminary === 'lifecycle') {
+          await history.observeLifecycle({
+            chatId,
+            messageId,
+            eventTimestampMs: start + time,
+            publishedAtMs: start - 1000,
+            content: content(text),
+          });
+        } else if (preliminary === 'invalidate') {
+          await history.invalidateLifecycle({ chatId, messageId, content: content(text) });
+        }
+        await observe(messageId, time, text, { publishedAtMs: start - 1000 });
+        expect(await observe(`fresh-${scenario}`, 200, text)).toBeNull();
+        expect((await observe(`repeat-${scenario}`, 300, text))?.binding.original?.messageId).toBe(
+          `fresh-${scenario}`,
+        );
+        await observe(messageId, 400, 'proven later edit', { publishedAtMs: start - 1000 });
+        const later = await observe(`later-${scenario}`, 500, 'proven later edit');
+        expect(later?.binding.original?.messageId).toBe(messageId);
+        expect(later?.binding.original?.publishedAtMs).toBe(start + 400);
+        expect(await inspector.get(`${fencePrefix()}${lifeKey}`)).toBe(oldLife);
+        await redis.deleteKeysByPattern(`${windowPrefix()}*`);
+      }
+    },
+  );
+
+  it('replays current absolute expiry and equal-timestamp qualification against its private virtual clock', async () => {
     const offline = new OfflineDuplicateWindow(inspector);
     const replayHistory = new MessageDuplicateHistoryService(
       offline as unknown as RedisCounterService,
