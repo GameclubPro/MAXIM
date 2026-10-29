@@ -985,9 +985,7 @@ native('independent Lastik bridge with PostgreSQL', () => {
       await tx.$executeRaw`ANALYZE message_retention_candidates`;
       const plans = await tx.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${retirementCandidatePageQuery(chatId, null)}`);
-      const serialized = JSON.stringify(plans);
-      expect(serialized).toContain('message_retention_candidates_eraser_retirement_idx');
-      expect(serialized).not.toContain('Seq Scan');
+      assertRetirementPlan(plans, 201);
       expect(await tx.$queryRaw(retirementCandidatePageQuery(chatId, null))).toHaveLength(100);
       await retireTransferredChat(tx, chatId);
       expect(
@@ -1004,6 +1002,52 @@ native('independent Lastik bridge with PostgreSQL', () => {
       expect(
         await tx.$queryRaw`SELECT retired_count,completed_at IS NOT NULL AS complete FROM eraser_legacy_retirement WHERE chat_id=${chatId}`,
       ).toEqual([{ retired_count: 201n, complete: true }]);
+    }));
+
+  function assertRetirementPlan(plans: Array<{ 'QUERY PLAN': unknown }>, budget: number) {
+    type Plan = {
+      'Node Type': string;
+      'Relation Name'?: string;
+      'Actual Rows'?: number;
+      'Actual Loops'?: number;
+      'Rows Removed by Filter'?: number;
+      Plans?: Plan[];
+    };
+    const root = (plans[0]!['QUERY PLAN'] as Array<{ Plan: Plan }>)[0]!.Plan;
+    const nodes = (plan: Plan): Plan[] => [plan, ...(plan.Plans ?? []).flatMap(nodes)];
+    const scans = nodes(root).filter(
+      (node) => node['Relation Name'] === 'message_retention_candidates',
+    );
+    expect(scans.length).toBeGreaterThan(0);
+    // FLAG: PostgreSQL may prefer another bounded index for a small active pool.
+    // Actual examined rows, including rejected rows, must stay independent of terminal history.
+    for (const scan of scans) {
+      expect(scan['Node Type']).toMatch(/^Index (Only )?Scan$/);
+      expect(
+        ((scan['Actual Rows'] ?? 0) + (scan['Rows Removed by Filter'] ?? 0)) *
+          (scan['Actual Loops'] ?? 1),
+      ).toBeLessThanOrEqual(budget);
+    }
+  }
+
+  it('stops the retirement index walk at 100 inside a large active pool', async () =>
+    isolated(async (tx, _service, chatId) => {
+      const activation = randomUUID();
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status,completed_at)
+        SELECT ${chatId},'a-terminal-'||lpad(i::text,6,'0'),'5','123',TIMESTAMP '2020-01-01',${activation},'deleted',CURRENT_TIMESTAMP
+        FROM generate_series(1,20000) i`;
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id)
+        SELECT ${chatId},'z-active-'||lpad(i::text,6,'0'),'5','123',TIMESTAMP '2020-01-01',${activation}
+        FROM generate_series(1,20001) i`;
+      await tx.$executeRaw`ANALYZE message_retention_candidates`;
+      for (const after of [null, 'z-active-010000']) {
+        const plans = await tx.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${retirementCandidatePageQuery(chatId, after)}`);
+        expect(JSON.stringify(plans)).toContain(
+          'message_retention_candidates_eraser_retirement_idx',
+        );
+        assertRetirementPlan(plans, 100);
+      }
     }));
 
   it('rolls back retirement on a concurrent intent lock and preserves its later dispatch marker', async () => {
