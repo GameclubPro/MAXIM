@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261029110100_persist_night_mode_recovery_obligations",
-  "baselineNamesSha256": "b08898ce9a6bbacc29916a5843eb333dd9e843837facc19975a9ba53bfebcc5e",
-  "baselineContentsSha256": "f6858ad4dad4ce0c1b905a29d23b87cf5a978b51c4fbe33e6cfb64a994263cde",
+  "baselineThrough": "20261029193200_enable_statistics_authority_successors",
+  "baselineNamesSha256": "6786e9269965bb3a18d7de64a4e18eed74471150cf9f3d5c9f119c8803b44333",
+  "baselineContentsSha256": "fc6a384c455d334b7bc8886040ddf072de9b8a83e870771fa3cc66a4ef94d55e",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -161,6 +161,11 @@
       "reason": "Reviewed replacement of the context CHECK allowlist and static group-off trigger; no data, table or column is removed. DDL first obtains NOWAIT exclusive admission. The new caption table is empty.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Existing aggregate consents remain unchanged at migration. Specializing a group atomically disables its legacy aggregate before copying exact old consent to child contexts; night/rules never inherit old consent. Old readers fail closed after specialization. An old group-off INSERT or UPDATE revokes every child. The validated legacy receipt trigger also revokes publication children after specialization; its unchanged exact-hash proof and binding-before-policy order remain, with NOWAIT receipt-writer admission before replacement. No old receipt or dispatch state is rewritten."
+    },
+    "20261029193000_statistics_authority_successors": {
+      "reason": "Reviewed additive nullable successor fields, validated constraints and a static immutable-tombstone trigger. The deferred self-reference permits atomic head replacement without deleting authority identities or measurements. EXECUTE FUNCTION is static, with no dynamic SQL or data removal.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "The parser classifies the static trigger body as column removal, but this migration only adds nullable columns and constraints. Old readers retain all existing columns; the peer-compatible runtime and permanent rollback source floor precede new Market successor requests. No column or stored authority is removed."
     },
     "20261029110000_reconcile_night_mode_capability_changes": {
       "reason": "Reviewed additive immutable capability predicate and static row trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL, row deletion, index build, table rewrite or existing-data backfill.",

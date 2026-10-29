@@ -68,6 +68,9 @@ source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 source "$ROOT_DIR/${outcomeHelper}"
 source "$ROOT_DIR/${topologyHelper}"
 source "$ROOT_DIR/${eraserHelper}"
+# This fixture proves controller re-exec, while the lifecycle floor has separate
+# immutable-source rejection tests and must not inspect this synthetic API tree.
+maxim_topology_require_statistics_authority_lifecycle() { :; }
 ${sharedFunctions}
 ${lateCapture ? lateCaptureSync : sync}
 acquire_deploy_lock

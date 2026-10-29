@@ -1,6 +1,7 @@
 /** Design artifact. Portable wire source; mirror byte-for-byte after the r6 gate. */
 export const STATS_CONTRACT_VERSION = 1 as const;
 export const STATS_SELECTOR_VERSION = 1 as const;
+export const STATISTICS_AUTHORITY_LIFECYCLE_VERSION = 2 as const;
 export const STATS_CONTROLLER_PREFIX = 'v1/internal/statistics' as const;
 export const STATS_HTTP_PREFIX = '/api/v1/internal/statistics' as const;
 export const STATS_PRODUCTION_BASE_URL =
@@ -28,6 +29,7 @@ export const STATS_LIMITS = {
 export const STATS_ROUTES = {
   status: '/status',
   authorities: '/authorities:batch',
+  authorityResolve: '/authorities:resolve',
   ingest: '/ingest',
   summaries: '/summaries:batch',
   history: '/history:batch',
@@ -218,6 +220,27 @@ export type StatsAuthorityOperation = {
   checkedAt: StatsTime; // this current-proof attestation, not old native observation time
   producerEpoch: StatsUuid;
   localAccessFence: StatsLocalAccessFence;
+  supersedes?: { id: StatsUuid; revision: StatsBig; epoch: StatsBig };
+};
+/** Exact issuer scope only; resolving an identity does not grant access. */
+export type StatsAuthorityResolveRequest = {
+  contractVersion: 1;
+  producerEpoch: StatsUuid;
+  entity: StatsEntity;
+  role: 'SOURCE' | 'CONSUMER';
+  actorMaxUserId: string;
+  botRef: string;
+  consumer: StatsProducer;
+  purpose: StatsPurpose;
+};
+export type StatsAuthorityResolveResult = {
+  contractVersion: 1;
+  head: {
+    id: StatsUuid;
+    revision: StatsBig;
+    epoch: StatsBig;
+    state: 'ACTIVE' | 'REVOKED' | 'EXPIRED';
+  } | null;
 };
 export type StatsAuthorityRequest = {
   contractVersion: 1;
