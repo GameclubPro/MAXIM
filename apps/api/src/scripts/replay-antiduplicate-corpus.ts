@@ -41,7 +41,7 @@ import type { RedisCounterService } from '../moderation/redis-counter.service';
 
 const REPLAY_CANDIDATE_BRANCH =
   'elseif original.member ~= p.member and publishedAt >= original.publishedAtMs and p.at < original.expiresAtMs then';
-const REVIEWED_WINDOW_SHA256 = 'a5dd9ee3912bdb90bdf685ccd5ba130ab00443a8489a9a7e14af3fe2d3088397';
+const REVIEWED_WINDOW_SHA256 = 'f8fa9d4407ffb4681b6dae40192fa39183664dfa5424b85528940f27ce105425';
 export function buildOfflineDuplicateScript(source = MESSAGE_DUPLICATE_WINDOW_SCRIPT): string {
   if (
     createHash('sha256').update(source).digest('hex') !== REVIEWED_WINDOW_SHA256 ||

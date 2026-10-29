@@ -1,10 +1,17 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import { selectMaxMessageCandidate } from '../../max/max-message-candidate.util';
 
 // FLAG: Update.timestamp orders edits; Message.timestamp anchors the duplicate window.
 // An edit without a verifiable publication date cannot create a new original.
 export function duplicatePublicationTime(update: MaxUpdate): number | undefined {
-  const raw = update.raw as { message?: { timestamp?: unknown; createdAt?: unknown } } | undefined;
-  const value = raw?.message?.timestamp ?? raw?.message?.createdAt;
+  const raw = update.raw;
+  // FLAG: Read the publication clock from the same outer message as ingress, including
+  // supported envelopes. An update/forward timestamp cannot renew the original's window.
+  const message =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? selectMaxMessageCandidate(raw as Record<string, unknown>, update.type)?.node
+      : undefined;
+  const value = message?.timestamp ?? message?.createdAt ?? message?.created_at;
   let timestamp =
     typeof value === 'number'
       ? value

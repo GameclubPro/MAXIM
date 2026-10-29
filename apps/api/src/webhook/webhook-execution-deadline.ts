@@ -39,7 +39,9 @@ export function buildWebhookExecutionDeadlineAt(
   // remain stricter; retrying or choosing another bot never starts a new time window.
   // FLAG: Joins and title changes require an executor, but never inherit an image's longer wait.
   const lifetime =
-    messageEvent && isExactImageContent(extractDuplicateMessageContent(update.raw))
+    // FLAG: Source parsing improvements never extend a previously admitted readiness budget.
+    messageEvent &&
+    isExactImageContent(extractDuplicateMessageContent(update.raw, true, 'webhook_identity_v1'))
       ? IMAGE_PENDING_READINESS_MS
       : TEXT_PENDING_READINESS_MS;
   return new Date(sourceMs + lifetime);

@@ -15,7 +15,7 @@ import { MessageRetentionStore } from '../message-retention/message-retention-st
 import { DefaultWebhookLeaseManagerService } from '../moderation/default-webhook-lease-manager.service';
 import { WebhookCanonicalExecutionService } from '../moderation/webhook-canonical-execution.service';
 import { digestDuplicateContent } from '../moderation/message-duplicate/message-duplicate-content';
-import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from '../moderation/message-duplicate/message-duplicate-window.script';
+import { MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION } from '../moderation/message-duplicate/message-duplicate-window.script';
 import {
   BackgroundWebhookProcessor,
   JOIN_WEBHOOK_SHARD_PROCESSORS,
@@ -1186,7 +1186,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       tryHandleCallback: jest.fn().mockRejectedValue(new Error('Unexpected callback')),
     };
     Object.assign(s.moderation, { managedPollService: poll });
-    const tombstone = `dup:window:v1:${digestDuplicateContent(chatId)}:${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:removed:${digestDuplicateContent(messageId)}`;
+    const tombstone = `dup:window:v1:${digestDuplicateContent(chatId)}:${MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION}:removed:${digestDuplicateContent(messageId)}`;
     return { s, id, chatId, messageId, ingestRemoval, readiness, handler, remove, poll, tombstone };
   }
 

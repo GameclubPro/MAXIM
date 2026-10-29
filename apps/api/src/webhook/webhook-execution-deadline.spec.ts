@@ -26,6 +26,25 @@ describe('webhook executor readiness source deadlines', () => {
       raw: imageRaw,
     }) satisfies MaxUpdate;
 
+  it('does not extend retained array-envelope readiness after media parsing improves', () => {
+    const value: MaxUpdate = update('message_created', earlierAt.toISOString(), 'payload');
+    value.raw = {
+      update_type: 'message_created',
+      data: {
+        items: [
+          {
+            ...imageRaw.message,
+            message_id: 'fixture-message',
+            chat_id: -123,
+          },
+        ],
+      },
+    };
+    expect(buildWebhookExecutionDeadlineAt(value, receivedAt)).toEqual(
+      new Date('2026-10-06T21:04:00.000Z'),
+    );
+  });
+
   it.each([
     ['payload', earlierAt.toISOString(), '2026-10-06T21:04:00.000Z'],
     ['payload', '2026-10-06T22:00:00.000Z', '2026-10-06T21:05:00.000Z'],

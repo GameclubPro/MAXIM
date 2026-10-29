@@ -6,6 +6,7 @@ import {
   exactImageSourceDigest,
   isDuplicateContentComparable,
 } from './message-duplicate-content';
+import { WebhookParser } from '../../webhook/webhook.parser';
 
 const content = (body: Record<string, unknown>, extra = {}) =>
   extractDuplicateMessageContent({ message: { body, ...extra } });
@@ -17,6 +18,44 @@ const photo = (id: string) => ({
 });
 
 describe('message duplicate canonical contents', () => {
+  it.each(['array', 'dotted-key', 'root-search'])(
+    'compares the same source selected by ingress in a %s envelope',
+    (shape) => {
+      const message = {
+        sender: { user_id: 123 },
+        recipient: { chat_id: -123, chat_type: 'chat' },
+        timestamp: Date.now() - 1000,
+        body: { mid: 'offer', text: 'Одинаковое объявление', attachments: [photo('a')] },
+      };
+      const envelope =
+        shape === 'array'
+          ? { data: { items: [message] } }
+          : shape === 'dotted-key'
+            ? { data: { 'item.with.dot': message } }
+            : { transport: { item: message } };
+      const update = new WebhookParser().parse({
+        update_type: 'message_created',
+        timestamp: message.timestamp,
+        ...envelope,
+      });
+      expect(update.message?.messageId).toBe('offer');
+      const extracted = extractDuplicateMessageContent(update.raw);
+      expect(extracted.complete).toBe(true);
+      expect(extracted.rawText).toBe(message.body.text);
+      expect(extracted.sourceDigest).toBe(extractDuplicateMessageContent({ message }).sourceDigest);
+      expect(buildMessageDuplicateIdentity(extracted, 'IMAGE', ['a'.repeat(64)])).not.toBeNull();
+    },
+  );
+
+  it('compares a direct MAX content row during final source verification', () => {
+    const row = { content: { mid: 'offer', text: 'Одинаковое объявление' } };
+    const extracted = extractDuplicateMessageContent(row, false);
+    expect(extracted.complete).toBe(true);
+    expect(buildMessageDuplicateIdentity(extracted, 'MESSAGE')).toBe(
+      identity({ text: 'Одинаковое объявление' }),
+    );
+  });
+
   it.each(['TEXT', 'MESSAGE'] as const)(
     'binds numeric quantity-unit case to %s identity and source evidence',
     (mode) => {
