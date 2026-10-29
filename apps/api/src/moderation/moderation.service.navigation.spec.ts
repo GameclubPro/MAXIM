@@ -1942,7 +1942,11 @@ describe('ModerationService', () => {
           url: 'https://max.ru/channel/news',
         },
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'LINKS',
+        },
       },
     );
   });
@@ -2004,7 +2008,11 @@ describe('ModerationService', () => {
       )}\n\n<a href="https://max.ru/admin">Связь с админом</a>`,
       {
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'LINKS',
+        },
       },
     );
   });
@@ -2324,7 +2332,11 @@ describe('ModerationService', () => {
           url: 'https://max.ru/channel/rules',
         },
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'LINKS',
+        },
       },
     );
   });
@@ -2401,7 +2413,11 @@ describe('ModerationService', () => {
           ],
         ],
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'LINKS',
+        },
       },
     );
   });
@@ -2530,7 +2546,11 @@ describe('ModerationService', () => {
           mid: 'mid-rules-1',
         },
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'LINKS',
+        },
       },
     );
     expect(maxClient.resolveMessageLink).not.toHaveBeenCalled();
@@ -2603,7 +2623,11 @@ describe('ModerationService', () => {
           mid: 'mid-rules-2',
         },
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'LINKS',
+        },
       },
     );
   });
@@ -3075,7 +3099,11 @@ describe('ModerationService', () => {
           ],
         ],
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'LINKS',
+        },
       },
     );
   });
@@ -3240,7 +3268,11 @@ describe('ModerationService', () => {
           ],
         ],
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'LINKS',
+        },
       },
     );
   });
@@ -6000,7 +6032,11 @@ describe('ModerationService', () => {
           url: 'https://max.ru/channel/rules',
         },
         textFormat: 'html',
-        marketplacePublication: { entityId: 'chat-1', purpose: 'MODERATION_NOTICE' },
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'MESSAGE_LIMITS',
+        },
       },
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();

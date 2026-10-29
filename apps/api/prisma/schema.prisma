@@ -5131,3 +5131,12 @@ model MarketplaceButtonRequest {
   policy MarketplaceButtonPolicy @relation(fields: [policyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   @@map("marketplace_button_requests")
 }
+
+model MarketplaceButtonCaption {
+  entityId String @map("entity_id")
+  kind String
+  caption String
+  revision Int @default(0)
+  @@id([entityId, kind])
+  @@map("marketplace_button_captions")
+}

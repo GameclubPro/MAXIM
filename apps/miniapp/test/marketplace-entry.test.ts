@@ -116,3 +116,44 @@ test('marketplace links preserve exact entity kind and reject foreign or malform
   ])
     assert.equal(marketplaceTargetFromLink(url, 'CHAT', '-100'), null);
 });
+
+test('advertising caption is shared across profiles while module selections remain independent', async () => {
+  const api = createPreviewApiTransport({ search: '?marketplacePublished=1' });
+  const path = `${base}/button-policy?profile=moderation`;
+  await api.request(path, {
+    method: 'POST',
+    body: JSON.stringify({
+      requestId: randomUUID(),
+      expectedCaptionRevision: 0,
+      caption: 'Реклама здесь',
+    }),
+  });
+  const publisher = marketplaceButtonPolicyStateSchema.parse(
+    await api.request(`${base}/button-policy?profile=publisher`),
+  );
+  assert.equal(publisher.caption, 'Реклама здесь');
+  assert.equal(publisher.captionRevision, 1);
+  const group = marketplaceButtonPolicyStateSchema.parse(
+    await api.request(path, {
+      method: 'POST',
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        expectedRevision: 0,
+        context: 'MODERATION_NOTICES',
+        module: 'LINKS',
+        enabled: true,
+      }),
+    }),
+  );
+  assert.equal(group.contexts[1].partial, true);
+  assert.deepEqual(
+    group.contexts[1].modules.filter((item) => item.enabled).map((item) => item.module),
+    ['LINKS'],
+  );
+  const merged = mergeMarketplaceButtonPolicy(
+    { ...group, caption: 'old', captionRevision: 0 },
+    { ...group, revision: 0 },
+  );
+  assert.equal(merged.caption, 'Реклама здесь');
+  assert.equal(merged.revision, 1);
+});

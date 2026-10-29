@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
   "baselineThrough": "20261029010200_align_eraser_provenance_client",
-  "baselineNamesSha256": "ed0b03d63b60b809debc243328ca345783a782b8fab0038cea48ce97d468a68b",
-  "baselineContentsSha256": "eed4e406d259886b1c9c963412dc7cad391e6b65956dc2ed7b216a2f09dd8a28",
+  "baselineNamesSha256": "0689b8b76199b4509c91c13471a26c4b15a6024b4548978fff6fec138970e66f",
+  "baselineContentsSha256": "b0f75d75a6c7ef9bfbd4a38322f7627545c2b6809c03081b7dfc02d249e38bae",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -156,6 +156,11 @@
       "reason": "Reviewed static additive triggers remember exact binding/administrator access loss, clear the previous publication flag on known loss, and mirror only a proven legacy toggle-off receipt into PUBLICATIONS. A current-binding seed clears known REVOKED/USER_DENIED/member demotions before lazy import. No dynamic SQL, DROP, DELETE, retained history rewrite or dispatch mutation exists.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Release prerequisite: deploy and verify the compatible Publisher terminal-writer Chat-before-edge source change on every API role before applying this migration. This avoids introducing the new edge-to-binding trigger while an old binding-before-edge webhook can meet an old edge-first terminal writer. New policy tables start empty. Bounded import preserves only the previous publication scope; every other context starts off. Exact legacy toggle-off receipts fence canonical PUBLICATIONS during the rolling release, with binding-before-policy lock order. Canonical PUBLICATIONS changes clear superseded legacy flags; known denial clears those flags before a later access regrant. The applied-migration rollback guard rejects pre-feature sources. Old statistics-revoke writers conservatively invalidate authority during mixed versions; only the updated writers preserve independent button access, and no automatic consent restoration is promised for an old revoke. New statistics presentation retains REVOKED after explicit withdrawal even when independent access refresh succeeds. One transaction first acquires binding ACCESS EXCLUSIVE and source edge/activity/receipt SHARE ROW EXCLUSIVE locks with NOWAIT; any occupied relation aborts before DDL without lock upgrades or waiting cycles. The current-binding seed records persisted REVOKED timestamps and current explicit denied/member edges and clears append/public proof before later attestation can rewrite updated_at. Unknown/transient evidence, statistics consent, history and receipts remain unchanged; no historical membership events are inferred."
+    },
+    "20261029010000_marketplace_button_modules": {
+      "reason": "Reviewed replacement of the context CHECK allowlist and static group-off trigger; no data, table or column is removed. DDL first obtains NOWAIT exclusive admission. The new caption table is empty.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Existing aggregate consents remain unchanged at migration. Specializing a group atomically disables its legacy aggregate before copying exact old consent to child contexts; night/rules never inherit old consent. Old readers fail closed after specialization. An old group-off INSERT or UPDATE revokes every child. The validated legacy receipt trigger also revokes publication children after specialization; its unchanged exact-hash proof and binding-before-policy order remain, with NOWAIT receipt-writer admission before replacement. No old receipt or dispatch state is rewritten."
     }
   },
   "nonConcurrentIndexExceptions": {

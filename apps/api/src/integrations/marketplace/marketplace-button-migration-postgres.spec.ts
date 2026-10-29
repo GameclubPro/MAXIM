@@ -277,6 +277,7 @@ postgres.each(['moderation', 'publisher'] as const)(
         ).toBe(true);
         const before = await preserved();
         await sql.query(migration);
+        await sql.query(migrationSql('20261029010000_marketplace_button_modules'));
         if (loss !== 'REVOKED')
           await db.managedEntityAccessEdge.update({
             where: { chatId_userId_botId: { chatId: input.entityId, userId: actor, botId } },
@@ -314,6 +315,7 @@ postgres.each(['moderation', 'publisher'] as const)(
     it('preserves an uninterrupted legacy opt-in only for publications', async () => {
       const before = await preserved();
       await sql.query(migration);
+      await sql.query(migrationSql('20261029010000_marketplace_button_modules'));
       const policy = await service.get(input);
       expect(
         policy.contexts.filter((context) => context.enabled).map((context) => context.context),
@@ -356,6 +358,7 @@ postgres.each(['moderation', 'publisher'] as const)(
         ).toEqual([{ count: 0 }]);
         await other.query('COMMIT');
         await sql.query(migration);
+        await sql.query(migrationSql('20261029010000_marketplace_button_modules'));
         expect(
           (await service.get(input)).contexts.some(
             (context) => context.context === 'PUBLICATIONS' && context.enabled,

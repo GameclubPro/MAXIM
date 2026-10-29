@@ -215,20 +215,89 @@ export const marketplaceButtonContextSchema = z.enum([
   'CHANNEL_POSTS',
   'PUBLICATIONS',
 ]);
-export const marketplaceButtonPolicyMutationSchema = z
-  .object({
-    requestId: z.string().uuid(),
-    expectedRevision: count,
-    context: marketplaceButtonContextSchema,
-    enabled: z.boolean(),
-  })
-  .strict();
+export const marketplaceButtonCaptionSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(48)
+  .refine(
+    (value) => !/[\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]/u.test(value),
+    'Текст должен быть в одну строку',
+  );
+export const MARKETPLACE_BUTTON_DEFAULT_CAPTION = 'Заказать рекламу';
+export const marketplaceButtonModuleSchema = z.enum([
+  'GREETING',
+  'LINKS',
+  'PROFANITY',
+  'COMMERCIAL',
+  'DUPLICATES',
+  'MESSAGE_LIMITS',
+  'STOP_WORDS',
+  'PHONE_NUMBERS',
+  'REQUIRED_SUBSCRIPTION',
+  'INVITATION_ACCESS',
+  'OTHER_MODERATION',
+  'NIGHT_MODE',
+  'RULES',
+  'CHANNEL_POST',
+  'PUBLICATION',
+  'VK_IMPORT',
+  'APPROVED_SUGGESTION',
+]);
+export type MarketplaceButtonModule = z.infer<typeof marketplaceButtonModuleSchema>;
+export const marketplaceButtonModules: Record<
+  MarketplaceButtonContext,
+  readonly MarketplaceButtonModule[]
+> = {
+  GREETINGS: ['GREETING'],
+  MODERATION_NOTICES: [
+    'LINKS',
+    'PROFANITY',
+    'COMMERCIAL',
+    'DUPLICATES',
+    'MESSAGE_LIMITS',
+    'STOP_WORDS',
+    'PHONE_NUMBERS',
+    'REQUIRED_SUBSCRIPTION',
+    'INVITATION_ACCESS',
+    'OTHER_MODERATION',
+    'NIGHT_MODE',
+    'RULES',
+  ],
+  CHANNEL_POSTS: ['CHANNEL_POST'],
+  PUBLICATIONS: ['PUBLICATION', 'VK_IMPORT', 'APPROVED_SUGGESTION'],
+};
+export const marketplaceButtonPolicyMutationSchema = z.union([
+  z
+    .object({
+      requestId: z.string().uuid(),
+      expectedRevision: count,
+      context: marketplaceButtonContextSchema,
+      enabled: z.boolean(),
+      module: marketplaceButtonModuleSchema.optional(),
+    })
+    .strict()
+    .refine(
+      (value) => !value.module || marketplaceButtonModules[value.context].includes(value.module),
+      'Модуль не относится к этой группе',
+    ),
+  z
+    .object({
+      requestId: z.string().uuid(),
+      expectedCaptionRevision: count,
+      caption: marketplaceButtonCaptionSchema,
+    })
+    .strict(),
+]);
+export type MarketplaceButtonPolicyMutation = z.infer<typeof marketplaceButtonPolicyMutationSchema>;
 export const marketplaceButtonPolicyStateSchema = z
   .object({
     entityId: marketplaceEntityIdSchema,
     kind: marketplaceKindSchema,
     profile: marketplaceProfileSchema,
     revision: count,
+    caption: marketplaceButtonCaptionSchema.default(MARKETPLACE_BUTTON_DEFAULT_CAPTION),
+    captionRevision: count.default(0),
     contexts: z
       .array(
         z
@@ -245,6 +314,20 @@ export const marketplaceButtonPolicyStateSchema = z
               'CONFIRM_REQUIRED',
             ]),
             enabledAt: timestamp.nullable(),
+            partial: z.boolean().default(false),
+            modules: z
+              .array(
+                z
+                  .object({
+                    module: marketplaceButtonModuleSchema,
+                    enabled: z.boolean(),
+                    effective: z.boolean(),
+                    needsConfirmation: z.boolean(),
+                  })
+                  .strict(),
+              )
+              .max(12)
+              .default([]),
           })
           .strict(),
       )
