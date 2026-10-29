@@ -7,11 +7,19 @@ export const NIGHT_MODE_RECOVERY_SOURCE_CHECKS = Object.freeze([
   [
     'apps/api/src/moderation/night-mode-transition.queue.ts',
     [
-      'NIGHT_MODE_INDEPENDENT_RECOVERY_READER_VERSION = 1',
+      'NIGHT_MODE_INDEPENDENT_RECOVERY_READER_VERSION = 2',
       "'open_notice_event'",
       "'close_notice_cleanup'",
       'parseNightModeTransitionRecoveryObligation',
     ],
+  ],
+  [
+    'apps/api/src/moderation/night-mode-recovery-time-compat.util.ts',
+    ['matchesNightModeRecoveryBoundaryTime', 'resolveNightModeLegacyRecoveryTime'],
+  ],
+  [
+    'apps/api/src/moderation/night-mode-calendar.util.ts',
+    ['resolveNightModeCalendar', 'NIGHT_MODE_CALENDAR_CACHE_LIMIT'],
   ],
   ['apps/api/prisma/schema.prisma', ['recoveryPayload', '@map("recovery_payload")']],
   [

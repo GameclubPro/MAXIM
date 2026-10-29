@@ -13,6 +13,19 @@ test('night-mode rollback accepts the durable independent recovery reader', () =
   assert.doesNotThrow(() => assertNightModeRecoverySource('a'.repeat(40), read));
 });
 
+test('night-mode rollback refuses the Stage 1 reader before calendar interpretation support', () => {
+  assert.throws(
+    () =>
+      assertNightModeRecoverySource('a'.repeat(40), (path) =>
+        read(path).replace(
+          'NIGHT_MODE_INDEPENDENT_RECOVERY_READER_VERSION = 2',
+          'NIGHT_MODE_INDEPENDENT_RECOVERY_READER_VERSION = 1',
+        ),
+      ),
+    /lacks independent night-mode recovery readers/u,
+  );
+});
+
 for (const [path, markers] of NIGHT_MODE_RECOVERY_SOURCE_CHECKS) {
   for (const marker of markers) {
     test(`night-mode rollback rejects missing capability ${path}: ${marker}`, () => {

@@ -4047,7 +4047,6 @@ describe('ModerationService', () => {
       {
         name: 'manual group close',
         configure: (service: ModerationService) => {
-          jest.spyOn(service as any, 'isNightModeForceCloseActiveNow').mockReturnValue(true);
           jest
             .spyOn(service as any, 'handleNightModeForceCloseMessage')
             .mockResolvedValue(undefined);
@@ -4056,7 +4055,6 @@ describe('ModerationService', () => {
       {
         name: 'night mode',
         configure: (service: ModerationService) => {
-          jest.spyOn(service as any, 'isNightModeActiveNow').mockReturnValue(true);
           jest.spyOn(service as any, 'handleNightModeMessage').mockResolvedValue(undefined);
         },
       },
@@ -4111,13 +4109,26 @@ describe('ModerationService', () => {
       'queues an observation-only photo before the $name early return',
       async ({ name, configure }) => {
         const harness = createHarness({
-          settingsOverrides: [
-            'developer-forced global spammer',
-            'local blocklist',
-            'known global spammer',
-          ].includes(name)
-            ? { deleteSpammersEnabled: true }
-            : {},
+          settingsOverrides: {
+            ...(name === 'manual group close'
+              ? { nightModeForceCloseEnabled: true, nightModeForceCloseForever: true }
+              : {}),
+            ...(name === 'night mode'
+              ? {
+                  nightModeEnabled: true,
+                  nightModeStartTimeMinutes: 0,
+                  nightModeEndTimeMinutes: 0,
+                  nightModeTimezone: 'UTC',
+                }
+              : {}),
+            ...([
+              'developer-forced global spammer',
+              'local blocklist',
+              'known global spammer',
+            ].includes(name)
+              ? { deleteSpammersEnabled: true }
+              : {}),
+          },
         });
         configure(harness.service);
         const update = createPhotoAttachmentUpdate(98);

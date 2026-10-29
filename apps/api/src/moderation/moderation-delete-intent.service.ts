@@ -124,7 +124,10 @@ import {
   buildNightModeTransitionScheduleFingerprint,
   buildNightModeTransitionSideEffectFingerprint,
 } from './night-mode-transition-generation.util';
-import { resolveNightModeTransitionSnapshot } from './night-mode-transition-time.util';
+import {
+  resolveManualChatClosure,
+  resolveNightModeTransitionSnapshot,
+} from './night-mode-transition-time.util';
 import {
   ClosedChatDeleteGuardService,
   ClosedChatDeleteGuardRejectedError,
@@ -4612,11 +4615,7 @@ export class ModerationDeleteIntentService {
     }
     // FLAG: A manual closure can begin after the opening worker hands off cleanup. Check
     // its current lifetime at DELETE dispatch without changing existing binding fingerprints.
-    if (
-      settings.nightModeForceCloseEnabled &&
-      (settings.nightModeForceCloseForever ||
-        Date.parse(settings.nightModeForceCloseUntil) > Date.now())
-    ) {
+    if (resolveManualChatClosure(settings).active) {
       throw new NightModeCloseNoticeCleanupGuardRejectedError(
         'Night mode close notice cleanup is blocked while manual closure remains active',
       );

@@ -4,6 +4,8 @@ import { getNetworkSettingsSectionPresentation } from './settings-workspace-sect
 import type { ChatSettings, ChatClosureStatus } from '@maxim/contracts/settings';
 import { Suspense } from 'react';
 import SettingsChatClosureStatus from './settings-chat-closure-status';
+import { getNightTimezoneOptions } from './settings-timezones';
+import './settings-night-status.css';
 import { BroadcastLinkButtonsEditor } from '../../components/broadcast-link-buttons-editor';
 import { GlassCard } from '../../components/ui/glass-card';
 import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
@@ -31,7 +33,6 @@ import {
   NIGHT_FORCE_CLOSE_MIN_HOURS,
   NIGHT_MODE_BOT_BUTTON_GROUP,
   PublishedRulesButtonToggleSlot,
-  RUSSIAN_TIMEZONE_OPTIONS,
   SettingsHintAnchor,
 } from './settings-page-helpers';
 import type {
@@ -62,6 +63,7 @@ export type SettingsNightSectionProps = SettingsSectionShellProps &
   > & {
     api: ApiTransport;
     closureStatus?: ChatClosureStatus;
+    closureRefreshFailed?: boolean;
     hasNightBotButtonError: boolean;
     hasNightForceCloseDurationError: boolean;
     hasPublishedRules: boolean;
@@ -150,7 +152,10 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
             {expanded ? (
               <>
                 {props.closureStatus ? (
-                  <SettingsChatClosureStatus status={props.closureStatus} />
+                  <SettingsChatClosureStatus
+                    status={props.closureStatus}
+                    refreshFailed={props.closureRefreshFailed}
+                  />
                 ) : (
                   <p role="status">Текущее состояние закрытия неизвестно.</p>
                 )}
@@ -167,7 +172,10 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
               {expanded ? (
                 <div className="settings-section__collapse-inner">
                   {props.closureStatus ? (
-                    <SettingsChatClosureStatus status={props.closureStatus} />
+                    <SettingsChatClosureStatus
+                      status={props.closureStatus}
+                      refreshFailed={props.closureRefreshFailed}
+                    />
                   ) : null}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
@@ -261,7 +269,7 @@ export function SettingsNightSection(props: SettingsNightSectionProps) {
                             setFieldValue('nightModeTimezone', event.target.value)
                           }
                         >
-                          {RUSSIAN_TIMEZONE_OPTIONS.map((option) => (
+                          {getNightTimezoneOptions(draft.nightModeTimezone).map((option) => (
                             <option key={option.value} value={option.value}>
                               {option.label}
                             </option>

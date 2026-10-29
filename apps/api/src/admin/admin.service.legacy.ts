@@ -1,5 +1,5 @@
 import { resolveModerationSanctionExpiry } from '../moderation/moderation-sanction-expiry.util';
-import { resolveNightModeTransitionSnapshot } from '../moderation/night-mode-transition-time.util';
+import { resolveEffectiveChatClosure } from '../moderation/night-mode-transition-time.util';
 import { resolveAdminBotUserId } from './admin-bot-identity';
 import { ManagedEntityPresentationService } from './managed-entity-presentation.service';
 import { assertPublisherSuggestionDeliveryReady } from './publisher-suggestion-setup-block';
@@ -10792,7 +10792,7 @@ export class AdminService implements OnModuleDestroy {
       action: 'OPEN_CHAT',
       message,
       resolveMessage: (settings) =>
-        resolveNightModeTransitionSnapshot(settings)?.status === 'closed'
+        resolveEffectiveChatClosure(settings).closed
           ? 'Ручное закрытие снято. Чат остаётся закрыт по ночному расписанию.'
           : message,
       settings: {

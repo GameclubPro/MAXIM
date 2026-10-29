@@ -17,7 +17,7 @@ import { NightModeTransitionDeliveryService } from './night-mode-transition-deli
 import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
 import type { MaxClientService } from '../max/max-client.service';
-import type { BotSpeechMediaService } from './bot-speech-media.service';
+import { BotSpeechMediaService } from './bot-speech-media.service';
 import {
   buildNightModeTransitionJobId,
   buildNightModeTransitionRecoveryJobId,
@@ -345,6 +345,306 @@ describeNative('night mode durable handoffs with PostgreSQL and BullMQ', () => {
       )?.recoveryPayload,
     ).toEqual(recovery);
   });
+
+  it('restores legacy fold recovery timestamps unchanged after queue loss and disable', async () => {
+    const sessionKey = 'v1:Europe/Berlin:23:00:02:30:2026-10-24';
+    const oldTime = '2026-10-25T01:30:00.000Z';
+    const current = await prisma.chatSettings.update({
+      where: { chatId },
+      data: {
+        nightModeStartTimeMinutes: 1380,
+        nightModeEndTimeMinutes: 150,
+        nightModeTimezone: 'Europe/Berlin',
+      },
+    });
+    const cleanup = {
+      kind: NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY,
+      version: 1 as const,
+      sessionKey,
+      timezone: 'Europe/Berlin',
+      startMinutes: 1380,
+      endMinutes: 150,
+      openScheduledFor: oldTime,
+      scheduleFingerprint: buildNightModeTransitionScheduleFingerprint(current),
+      sideEffectFingerprint: buildNightModeTransitionSideEffectFingerprint(current),
+    };
+    const receipt: NightModeTransitionOpenEventRecovery = {
+      kind: NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
+      version: 1,
+      sessionKey,
+      timezone: 'Europe/Berlin',
+      startMinutes: 1380,
+      endMinutes: 150,
+      messageId: 'old-fold-opening',
+      botId: 'native-bot',
+    };
+    const scheduler = createScheduler();
+    await scheduler.scheduleRecoveryObligation(chatId, cleanup);
+    await scheduler.scheduleRecoveryObligation(chatId, receipt);
+    const receiptId = buildNightModeTransitionRecoveryJobId(chatId, receipt);
+    await prisma.nightModeTransitionScheduledJob.update({
+      where: { chatId_jobId: { chatId, jobId: receiptId } },
+      data: { scheduledFor: new Date(oldTime) },
+    });
+    for (const recovery of [cleanup, receipt])
+      await (await queue.getJob(buildNightModeTransitionRecoveryJobId(chatId, recovery)))!.remove();
+    await prisma.chatSettings.update({ where: { chatId }, data: { nightModeEnabled: false } });
+    await createScheduler().repairAccessSchedule(chatId);
+    for (const recovery of [cleanup, receipt]) {
+      const jobId = buildNightModeTransitionRecoveryJobId(chatId, recovery);
+      const restored = (await queue.getJob(jobId))!;
+      expect(restored.data.scheduledFor).toBe(oldTime);
+      expect(restored.data.recoveryOnly).toEqual(recovery);
+      const row = await prisma.nightModeTransitionScheduledJob.findUniqueOrThrow({
+        where: { chatId_jobId: { chatId, jobId } },
+      });
+      expect(row.scheduledFor.toISOString()).toBe(oldTime);
+      expect(row.recoveryPayload).toEqual(recovery);
+    }
+  });
+
+  it.each([false, true])(
+    'retains CLOSE receipt or uncertainty after an absorbed job retires (ambiguous=%s)',
+    async (ambiguous) => {
+      const sessionKey = 'v1:Europe/Berlin:03:00:02:30:2026-03-29';
+      const ownerKey = 'v1:Europe/Berlin:03:00:02:30:2026-03-28';
+      const scheduledFor = '2026-03-29T01:00:00.000Z';
+      const current = await prisma.chatSettings.update({
+        where: { chatId },
+        data: {
+          nightModeStartTimeMinutes: 180,
+          nightModeEndTimeMinutes: 150,
+          nightModeTimezone: 'Europe/Berlin',
+        },
+      });
+      const fingerprint = buildNightModeTransitionScheduleFingerprint(current);
+      const job: NightModeTransitionJob = {
+        chatId,
+        transition: 'close',
+        sessionKey,
+        scheduledFor,
+        transitionRuntimeVersion: 4,
+        scheduleFingerprint: fingerprint,
+      };
+      const jobId = buildNightModeTransitionJobId(chatId, 'close', scheduledFor, sessionKey);
+      const ledgerJobId = buildNightModeNoticeIdempotencyKey('close', chatId, sessionKey);
+      await prisma.maxActionLedgerEntry.create({
+        data: {
+          chatId,
+          jobId: ledgerJobId,
+          actionType: 'SEND_MESSAGE',
+          sourceTag: 'night_mode_transition',
+          status: ambiguous ? 'AMBIGUOUS' : 'SUCCEEDED',
+          terminal: true,
+          ambiguous,
+          attemptCount: 1,
+          dispatchStartedAt: new Date(scheduledFor),
+          dispatchBotId: 'native-bot',
+          completedAt: ambiguous ? null : new Date(scheduledFor),
+          remoteMessageId: ambiguous ? null : 'accepted-legacy-closing',
+        },
+      });
+      await prisma.nightModeTransitionScheduledJob.create({
+        data: {
+          chatId,
+          jobId,
+          transition: 'close',
+          sessionKey,
+          scheduledFor: new Date(scheduledFor),
+          scheduleFingerprint: fingerprint,
+          runtimeVersion: 4,
+          createdAt: new Date('2026-03-28T20:00:00.000Z'),
+        },
+      });
+      await queue.add(NIGHT_MODE_TRANSITION_JOB_NAME, job, { jobId, removeOnComplete: true });
+      await prisma.chatSettings.update({ where: { chatId }, data: { nightModeEnabled: false } });
+      const unexpectedExecution = {
+        processWebhookEvent: jest.fn<Promise<void>, [string]>(),
+        processNightModeTransitionJob: jest.fn<
+          ReturnType<ModerationExecutionLegacy['processNightModeTransitionJob']>,
+          Parameters<ModerationExecutionLegacy['processNightModeTransitionJob']>
+        >(),
+      } satisfies ModerationExecutionLegacy;
+      const processor = new NightModeTransitionProcessor(
+        new ModerationExecutionService(unexpectedExecution),
+        createScheduler(),
+      );
+      worker = new Worker<NightModeTransitionJob>(
+        chatId,
+        (entry, token) => processor.process(entry, token),
+        { connection, autorun: false },
+      );
+      const completed = new Promise<void>((resolve, reject) => {
+        worker!.once('failed', (_entry, error) => reject(error));
+        worker!.once('error', reject);
+        worker!.once('completed', (entry) => {
+          void processor.onCompleted(entry).then(resolve, reject);
+        });
+      });
+      void worker.run();
+      await completed;
+      await worker.close();
+      worker = undefined;
+      expect(unexpectedExecution.processNightModeTransitionJob).not.toHaveBeenCalled();
+      expect(
+        await prisma.nightModeTransitionScheduledJob.findUnique({
+          where: { chatId_jobId: { chatId, jobId } },
+        }),
+      ).toBeNull();
+      expect(
+        await prisma.nightModeTransitionReconcileRequest.findUnique({ where: { chatId } }),
+      ).not.toBeNull();
+      await createScheduler().repairAccessSchedule(chatId);
+      const rows = await prisma.nightModeTransitionScheduledJob.findMany({ where: { chatId } });
+      const max = { sendMessage: jest.fn(), deleteMessage: jest.fn() };
+      const ledger = new MaxActionLedgerService(prisma as unknown as PrismaService);
+      const delivery = new NightModeTransitionDeliveryService(
+        max as unknown as MaxClientService,
+        new BotSpeechMediaService(max as unknown as MaxClientService),
+        new NightModeTransitionEventService(prisma as unknown as PrismaService),
+        undefined,
+        undefined,
+        undefined,
+        ledger,
+      );
+      const adapters = {
+        getBotSpeechProfile: () => ({ persona: 'male' as const, characterName: 'Major' }),
+        buildClosedNoticeOptions: () => null,
+        resolveBotId: async () => 'native-bot',
+      };
+      if (ambiguous) expect(rows).toHaveLength(0);
+      else {
+        const recovery = (await queue.getJob(rows[0]!.jobId))!;
+        expect(recovery.data.recoveryOnly?.kind).toBe('close_notice_event');
+        expect(recovery.data.sessionKey).toBe(sessionKey);
+        const runtime = new NightModeTransitionRuntimeService(
+          prisma as unknown as PrismaService,
+          redis,
+        );
+        await runtime.processNightModeTransitionJob(recovery.data, delivery.createHooks(adapters));
+        expect(
+          await prisma.moderationEvent.count({
+            where: {
+              chatId,
+              ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+              messageId: 'accepted-legacy-closing',
+            },
+          }),
+        ).toBe(1);
+      }
+      await expect(
+        delivery.sendClosedNotice(
+          current,
+          { sessionKey: ownerKey, timezone: 'Europe/Berlin', startMinutes: 180, endMinutes: 150 },
+          adapters,
+        ),
+      ).rejects.toThrow('retains another SEND identity');
+      const retained = await prisma.maxActionLedgerEntry.findUniqueOrThrow({
+        where: { jobId: ledgerJobId },
+      });
+      expect(retained.ambiguous).toBe(ambiguous);
+      expect(retained.status).toBe(ambiguous ? 'AMBIGUOUS' : 'SUCCEEDED');
+      expect(await prisma.maxActionLedgerEntry.count({ where: { chatId } })).toBe(1);
+      expect(max.sendMessage).not.toHaveBeenCalled();
+      expect(max.deleteMessage).not.toHaveBeenCalled();
+    },
+    20_000,
+  );
+
+  it.each([
+    {
+      sessionKey: 'v1:Europe/Berlin:23:00:02:30:2026-10-24',
+      scheduledFor: '2026-10-25T01:30:00.000Z',
+      start: 1380,
+      end: 150,
+    },
+    {
+      sessionKey: 'v1:Europe/Berlin:03:00:02:30:2026-03-29',
+      scheduledFor: '2026-03-30T00:30:00.000Z',
+      start: 180,
+      end: 150,
+    },
+  ])(
+    'repairs an accepted legacy OPEN event for $sessionKey without another send',
+    async ({ sessionKey, scheduledFor, start, end }) => {
+      await prisma.maxActionLedgerEntry.create({
+        data: {
+          chatId,
+          jobId: buildNightModeNoticeIdempotencyKey('open', chatId, sessionKey),
+          actionType: 'SEND_MESSAGE',
+          sourceTag: 'night_mode_transition',
+          status: 'SUCCEEDED',
+          terminal: true,
+          ambiguous: false,
+          completedAt: new Date(scheduledFor),
+          dispatchBotId: 'native-bot',
+          remoteMessageId: 'accepted-legacy-opening',
+        },
+      });
+      const scheduler = createScheduler();
+      await scheduler.retireTransition({
+        chatId,
+        transition: 'open',
+        sessionKey,
+        scheduledFor,
+        transitionRuntimeVersion: 4,
+        scheduleFingerprint: buildNightModeTransitionScheduleFingerprint({
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: start,
+          nightModeEndTimeMinutes: end,
+          nightModeTimezone: 'Europe/Berlin',
+        }),
+      });
+      const row = (
+        await prisma.nightModeTransitionScheduledJob.findMany({ where: { chatId } })
+      ).find(
+        (entry) =>
+          (entry.recoveryPayload as { kind?: string } | null)?.kind ===
+          NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
+      )!;
+      expect(row).toBeDefined();
+      await (await queue.getJob(row.jobId))!.remove();
+      await prisma.chatSettings.update({ where: { chatId }, data: { nightModeEnabled: false } });
+      await createScheduler().repairAccessSchedule(chatId);
+      const restored = (await queue.getJob(row.jobId))!;
+      const max = { sendMessage: jest.fn(), deleteMessage: jest.fn() };
+      const events = new NightModeTransitionEventService(prisma as unknown as PrismaService);
+      const delivery = new NightModeTransitionDeliveryService(
+        max as unknown as MaxClientService,
+        new BotSpeechMediaService(max as unknown as MaxClientService),
+        events,
+        undefined,
+        undefined,
+        undefined,
+        new MaxActionLedgerService(prisma as unknown as PrismaService),
+      );
+      const hooks = delivery.createHooks({
+        getBotSpeechProfile: () => ({ persona: 'male', characterName: 'Major' }),
+        buildClosedNoticeOptions: () => null,
+        resolveBotId: async () => 'native-bot',
+      });
+      const runtime = new NightModeTransitionRuntimeService(
+        prisma as unknown as PrismaService,
+        redis,
+      );
+      await Promise.all([
+        runtime.processNightModeTransitionJob(restored.data, hooks),
+        runtime.processNightModeTransitionJob(restored.data, hooks),
+      ]);
+      expect(
+        await prisma.moderationEvent.count({
+          where: {
+            chatId,
+            ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
+            messageId: 'accepted-legacy-opening',
+          },
+        }),
+      ).toBe(1);
+      expect(max.sendMessage).not.toHaveBeenCalled();
+      expect(max.deleteMessage).not.toHaveBeenCalled();
+      expect(await prisma.maxActionLedgerEntry.count({ where: { chatId } })).toBe(1);
+    },
+  );
 
   it('repairs an accepted opening event exactly once after Redis job loss without a second send', async () => {
     const now = new Date();

@@ -1,3 +1,7 @@
+import {
+  resolveNightModeTransitionSessionAliases,
+  type NightModeTransitionKind,
+} from './night-mode-transition-time.util';
 import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
 import { Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
@@ -316,6 +320,8 @@ export class NightModeTransitionDeliveryService {
     try {
       sent = await this.sendNotice({
         chatId: settings.chatId,
+        transition: 'close',
+        sessionKey: snapshot.sessionKey,
         logicalIdempotencyKey: buildNightModeNoticeIdempotencyKey(
           'close',
           settings.chatId,
@@ -418,6 +424,8 @@ export class NightModeTransitionDeliveryService {
     try {
       sent = await this.sendNotice({
         chatId: settings.chatId,
+        transition: 'open',
+        sessionKey: snapshot.sessionKey,
         logicalIdempotencyKey: buildNightModeNoticeIdempotencyKey(
           'open',
           settings.chatId,
@@ -463,6 +471,8 @@ export class NightModeTransitionDeliveryService {
   }
 
   private async sendNotice(params: {
+    transition: NightModeTransitionKind;
+    sessionKey: string;
     chatId: string;
     logicalIdempotencyKey: string;
     messageText: string;
@@ -476,6 +486,18 @@ export class NightModeTransitionDeliveryService {
     validateBeforeDispatch?: () => Promise<boolean>;
     onDispatchAttempt: (botId: string | null, startedAt: Date) => void;
   }): Promise<{ messageId: string | null; botId: string | null }> {
+    const assertNoAlias = async () => {
+      if (resolveNightModeTransitionSessionAliases(params.sessionKey).length <= 1) return;
+      if (
+        !this.maxActionLedgerService ||
+        (await this.maxActionLedgerService.hasNightModeAliasSendProvenance(params))
+      ) {
+        throw new NightModeRecoveryUnsafeError(
+          'A merged night session retains another SEND identity',
+        );
+      }
+    };
+    await assertNoAlias();
     const sourceTextFormat = params.messageOptions?.textFormat ?? 'markdown';
     const prepareMessage = (text: string) => {
       const prepared = prepareFormattedTextForMaxDelivery(text, sourceTextFormat);
@@ -552,6 +574,7 @@ export class NightModeTransitionDeliveryService {
         },
         beforeSendMutation: async () => {
           await this.assertCurrentTransitionState(params.chatId, params.validateBeforeDispatch);
+          await assertNoAlias();
         },
       });
     }
@@ -576,6 +599,7 @@ export class NightModeTransitionDeliveryService {
         beforeImmediateSendMutation: async (revalidateRoute) => {
           await revalidateRoute?.();
           await this.assertCurrentTransitionState(params.chatId, params.validateBeforeDispatch);
+          await assertNoAlias();
         },
       },
     );

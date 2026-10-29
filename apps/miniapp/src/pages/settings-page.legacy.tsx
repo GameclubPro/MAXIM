@@ -56,7 +56,8 @@ import '../styles/settings-home-route-polish.css';
 import '../styles/broadcast-studio-base.css';
 import './settings/settings-rules-publication.css';
 import '../styles/settings-link-allowlist.css';
-import { getNavigationAllowlistRefreshInterval } from './settings/settings-link-allowlist';
+import { useSettingsScreenQuery } from './settings/use-settings-screen-query';
+import { formatTimezoneLabel } from '../lib/timezone-label';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-duration-editor.css';
 import '../styles/settings-route-polish.css';
@@ -120,7 +121,6 @@ import {
   getManagedAutopostRules,
   getManagedBroadcast,
   getManagedBroadcastCalendar,
-  getSettingsScreen,
   previewApplySettingsSectionTarget,
   removeDomain,
   recheckManagedEntityAccess,
@@ -302,7 +302,6 @@ import {
   resolveDuplicateAllowedCount,
   resolveDuplicateAllowedCountMax,
   buildDuplicateFlowSettings,
-  RUSSIAN_TIMEZONE_OPTIONS,
   resolveBotSpeechPreviewContext,
   formatApiError,
   minutesToTimeInput,
@@ -755,28 +754,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-  const settingsScreenQuery = useQuery({
-    queryKey: ['settings-screen', chatId],
-    queryFn: ({ signal }) =>
-      getSettingsScreen(api, chatId ?? '', { signal, prefetch: handoffRequested }),
-    enabled: Boolean(chatId),
-    refetchOnMount: 'always',
-    refetchOnWindowFocus: expandedSections.links,
-    refetchInterval: (query) => {
-      const expiryInterval = expandedSections.links
-        ? getNavigationAllowlistRefreshInterval(query.state.data?.domains)
-        : false;
-      return expandedSections.duplicates
-        ? Math.min(60_000, expiryInterval || Infinity)
-        : expiryInterval;
-    },
-    ...(handoffRequested
-      ? {
-          retry: (failureCount: number, error: unknown) =>
-            shouldRetryTransientApiError(failureCount, error, 7),
-          retryDelay: (failureCount: number) => Math.min(800 + failureCount * 400, 2600),
-        }
-      : {}),
+  const settingsScreenQuery = useSettingsScreenQuery({
+    api,
+    chatId,
+    handoffRequested,
+    expandedSections,
   });
   const {
     draft,
@@ -3598,9 +3580,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft ? !draft.phoneNumbersEnabled : false,
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
-  const nightTimezoneLabel =
-    RUSSIAN_TIMEZONE_OPTIONS.find((option) => option.value === draft?.nightModeTimezone)?.label ??
-    'Москва (UTC+3)';
+  const nightTimezoneLabel = formatTimezoneLabel(draft?.nightModeTimezone ?? 'Europe/Moscow');
   const nightWindowLabel = draft
     ? `${minutesToTimeInput(draft.nightModeStartTimeMinutes)}-${minutesToTimeInput(
         draft.nightModeEndTimeMinutes,
@@ -5903,6 +5883,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   sharedContent={renderSharedChatSection('night')}
                   api={api}
                   closureStatus={settingsScreenQuery.data?.closure}
+                  closureRefreshFailed={settingsScreenQuery.isError}
                   botSpeechEditorProps={botSpeechEditorProps!}
                   botSpeechPreviewContext={botSpeechPreviewContext}
                   clearButtonGroupErrors={clearButtonGroupErrors}

@@ -1,3 +1,14 @@
+import { formatTimezoneLabel } from '../../lib/timezone-label';
+
+export function getNightTimezoneOptions(savedTimezone: string | undefined) {
+  return savedTimezone && !RUSSIAN_TIMEZONE_OPTIONS.some((option) => option.value === savedTimezone)
+    ? [
+        { value: savedTimezone, label: formatTimezoneLabel(savedTimezone) },
+        ...RUSSIAN_TIMEZONE_OPTIONS,
+      ]
+    : RUSSIAN_TIMEZONE_OPTIONS;
+}
+
 export const RUSSIAN_TIMEZONE_OPTIONS = [
   { value: 'Europe/Kaliningrad', label: 'Калининград (UTC+2)' },
   { value: 'Europe/Moscow', label: 'Москва (UTC+3)' },
