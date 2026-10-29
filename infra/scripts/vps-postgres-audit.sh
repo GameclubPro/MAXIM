@@ -18,6 +18,7 @@ POSTGRES_AUDIT_ROLE=maxim_audit
 LEGACY_DEFAULT_DB_AUDIT_HELPER="$ROOT_DIR/infra/scripts/legacy-default-webhook-db-audit.mjs"
 LEGACY_DEFAULT_SNAPSHOT_PATH=''
 AUDIT_SQL_FILE=''
+KARAVAN_CANDIDATE_ARGS=()
 AUDIT_STDERR_FILE=''
 AUDIT_BACKEND_MAY_EXIST=0
 POSTGRES_AUDIT_APP_NAME="maxim-bounded-audit-$(date -u +%Y%m%dT%H%M%SZ)-${BASHPID}-${RANDOM}"
@@ -58,6 +59,7 @@ Usage:
   ./infra/scripts/vps-postgres-audit.sh commercial-quality [--explain]
   ./infra/scripts/vps-postgres-audit.sh network-statistics <negative-chat-ID-CSV, max 12> [--observations] [--membership=7d|30d] [--explain]
   ./infra/scripts/vps-postgres-audit.sh statistics-exchange <exact-actor-id> [--explain]
+  ./infra/scripts/vps-postgres-audit.sh karavan-candidates [--after settings-id] [--limit 1..40] [--explain]
   ./infra/scripts/vps-postgres-audit.sh central-statistics <negative-chat-ID-CSV, max 12> [--explain]
 
 The monitor-only mode is reserved for vps-monitor-readonly.sh:
@@ -119,6 +121,10 @@ case "$AUDIT_MODE" in
   statistics-exchange)
     STATISTICS_EXCHANGE_ARGS=("${@:2}")
     node "$ROOT_DIR/infra/scripts/statistics-exchange-audit.mjs" --validate-scope "${STATISTICS_EXCHANGE_ARGS[@]}" >/dev/null || exit 2
+    ;;
+  karavan-candidates)
+    KARAVAN_CANDIDATE_ARGS=("${@:2}")
+    node "$ROOT_DIR/infra/scripts/karavan-candidates-audit.mjs" --validate-scope "${KARAVAN_CANDIDATE_ARGS[@]}" >/dev/null || exit 2
     ;;
   network-statistics)
     NETWORK_STATISTICS_ARGS=("${@:2}")
@@ -231,10 +237,10 @@ esac
 
 # FLAG: This report attests public relations. Pin resolution before the shared
 # privilege admission as well as the report, including pg_temp last explicitly.
-if [[ "$AUDIT_MODE" == 'publisher-slots' || "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-held-receipt' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' || "$AUDIT_MODE" == 'network-statistics' || "$AUDIT_MODE" == 'statistics-exchange' || "$AUDIT_MODE" == 'central-statistics' ]]; then
+if [[ "$AUDIT_MODE" == 'publisher-slots' || "$AUDIT_MODE" == 'webhook-quarantine-proof' || "$AUDIT_MODE" == 'webhook-source-envelope' || "$AUDIT_MODE" == 'webhook-held-receipt' || "$AUDIT_MODE" == 'webhook-recovery-key-cohort' || "$AUDIT_MODE" == 'network-statistics' || "$AUDIT_MODE" == 'statistics-exchange' || "$AUDIT_MODE" == 'central-statistics' || "$AUDIT_MODE" == 'karavan-candidates' ]]; then
   POSTGRES_AUDIT_OPTIONS+=' -c search_path=pg_catalog,public,pg_temp'
 fi
-if [[ "$AUDIT_MODE" == 'statistics-exchange' || "$AUDIT_MODE" == 'central-statistics' ]]; then POSTGRES_AUDIT_OPTIONS+=' -c timezone=UTC'; fi
+if [[ "$AUDIT_MODE" == 'statistics-exchange' || "$AUDIT_MODE" == 'central-statistics' || "$AUDIT_MODE" == 'karavan-candidates' ]]; then POSTGRES_AUDIT_OPTIONS+=' -c timezone=UTC'; fi
 
 emit_prelude() {
   cat <<'SQL'
@@ -534,6 +540,7 @@ SELECT CASE
               'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
               'stats_entities', 'stats_authorities', 'stats_measurements', 'stats_ingest_requests', 'stats_changes',
               'statistics_exchange_grants', 'statistics_exchange_entities', 'statistics_exchange_imports', 'statistics_exchange_generations',
+              'karavan_marketplace_candidate_settings', 'karavan_marketplace_candidate_events',
                 'chat_settings',
                 'moderation_delete_intents',
                 'moderation_delete_intent_reasons'
@@ -2387,6 +2394,9 @@ emit_legacy_default_webhook_audit() {
 
 emit_sql() {
   emit_prelude
+  local karavan_privilege_args=(--privileges)
+  if [[ "$AUDIT_MODE" == 'karavan-candidates' ]]; then karavan_privilege_args+=(--require-all); fi
+  node "$ROOT_DIR/infra/scripts/karavan-candidates-audit.mjs" "${karavan_privilege_args[@]}"
   local central_privilege_args=(--privileges)
   if [[ "$AUDIT_MODE" == 'central-statistics' ]]; then central_privilege_args+=(--require-all); fi
   node "$ROOT_DIR/infra/scripts/central-statistics-audit.mjs" "${central_privilege_args[@]}"
@@ -2424,6 +2434,9 @@ emit_sql() {
   if [[ "$AUDIT_MODE" == 'webhook-quarantine' ]]; then quarantine_privilege_args+=(--require-all); fi
   node "$ROOT_DIR/infra/scripts/webhook-quarantine-audit.mjs" "${quarantine_privilege_args[@]}"
   case "$AUDIT_MODE" in
+    karavan-candidates)
+      node "$ROOT_DIR/infra/scripts/karavan-candidates-audit.mjs" "${KARAVAN_CANDIDATE_ARGS[@]}"
+      ;;
     central-statistics)
       node "$ROOT_DIR/infra/scripts/central-statistics-audit.mjs" "${CENTRAL_STATISTICS_ARGS[@]}"
       ;;
@@ -2696,6 +2709,7 @@ cleanup() {
     rm -f -- "$AUDIT_SQL_FILE"
   fi
   AUDIT_SQL_FILE=''
+KARAVAN_CANDIDATE_ARGS=()
   if [[ -n "$AUDIT_STDERR_FILE" && -f "$AUDIT_STDERR_FILE" && ! -L "$AUDIT_STDERR_FILE" ]]; then
     rm -f -- "$AUDIT_STDERR_FILE"
   fi

@@ -1,3 +1,6 @@
+import { KaravanMarketplaceAuthorityService } from '../integrations/karavan-marketplace/karavan-marketplace-authority.service';
+import { KaravanMarketplacePublicationPolicyService } from '../integrations/karavan-marketplace/karavan-marketplace-publication-policy.service';
+import { KaravanMarketplaceResolverService } from '../integrations/karavan-marketplace/karavan-marketplace-resolver.service';
 import { registerRuntimeQueues } from '../runtime/runtime-queues';
 import { MarketplaceStateModule } from '../integrations/marketplace/marketplace-state.module';
 import { HttpModule } from '@nestjs/axios';
@@ -37,6 +40,9 @@ import { MaxDuplicateNoticeGuardService } from './max-duplicate-notice.guard';
 import { ParticipantModerationImmunityService } from '../moderation/participant-moderation-immunity.service';
 
 const maxProviders = [
+  KaravanMarketplaceAuthorityService,
+  KaravanMarketplacePublicationPolicyService,
+  KaravanMarketplaceResolverService,
   GroupCommandAuthorityService,
   MaxClientService,
   MaxModerationRuleNoticeGuardService,
@@ -83,6 +89,8 @@ const maxProviders = [
   ],
   providers: maxProviders,
   exports: [
+    KaravanMarketplaceAuthorityService,
+    KaravanMarketplaceResolverService,
     GroupCommandAuthorityService,
     MaxClientService,
     MaxActionDispatchService,

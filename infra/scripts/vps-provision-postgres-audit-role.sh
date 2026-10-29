@@ -46,6 +46,7 @@ local Docker-socket access under the production pg_hba rules, with:
     lease/dispatch tokens and command journal are join/check-only and never report output
   - 28 optional held-receipt scalar metadata columns; identities and seal bindings
     are join/check-only, with no payload, snapshot, attestation or effect authority
+  - thirteen optional Karavan inventory projection columns; chat IDs/titles only in the private report, no actor IDs or raw audit payloads
   - no publication content, media, tokens or raw permission payloads
   - INHERIT only so the pg_read_all_stats membership takes effect
   - read-only/time/parallel/memory/temp defaults used as a server-side backstop
@@ -154,7 +155,8 @@ BEGIN
         'managed_entity_audience_observations', 'channel_view_observation_states', 'channel_view_observed_intervals',
         'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
         'stats_entities', 'stats_authorities', 'stats_measurements', 'stats_ingest_requests', 'stats_changes',
-        'statistics_exchange_grants', 'statistics_exchange_entities', 'statistics_exchange_imports', 'statistics_exchange_generations'
+        'statistics_exchange_grants', 'statistics_exchange_entities', 'statistics_exchange_imports', 'statistics_exchange_generations',
+        'karavan_marketplace_candidate_settings', 'karavan_marketplace_candidate_events'
       )
     GROUP BY table_name
   LOOP
@@ -167,6 +169,27 @@ BEGIN
   END LOOP;
 END
 $revoke_audit_columns$;
+
+DO $karavan_candidates$ BEGIN
+    IF to_regclass('public.karavan_marketplace_candidate_settings') IS NOT NULL AND to_regclass('public.karavan_marketplace_candidate_events') IS NOT NULL THEN
+      GRANT SELECT(settings_id,chat_id,chat_title,entity_type,enabled,admins_only) ON public.karavan_marketplace_candidate_settings TO maxim_audit;
+      GRANT SELECT(id,chat_id,action,created_at,storefront_field_touched,relay_status,relay_sent_confirmed) ON public.karavan_marketplace_candidate_events TO maxim_audit;
+    END IF;
+  END $karavan_candidates$;
+
+DO $karavan_candidate_privileges$ BEGIN IF NOT (WITH allowed(table_name,column_name) AS (VALUES ('karavan_marketplace_candidate_settings','settings_id'),('karavan_marketplace_candidate_settings','chat_id'),('karavan_marketplace_candidate_settings','chat_title'),('karavan_marketplace_candidate_settings','entity_type'),('karavan_marketplace_candidate_settings','enabled'),('karavan_marketplace_candidate_settings','admins_only'),('karavan_marketplace_candidate_events','id'),('karavan_marketplace_candidate_events','chat_id'),('karavan_marketplace_candidate_events','action'),('karavan_marketplace_candidate_events','created_at'),('karavan_marketplace_candidate_events','storefront_field_touched'),('karavan_marketplace_candidate_events','relay_status'),('karavan_marketplace_candidate_events','relay_sent_confirmed')), effective AS (
+    SELECT relation.relname AS table_name,attribute.attname AS column_name FROM pg_class relation
+    JOIN pg_namespace ns ON ns.oid=relation.relnamespace JOIN pg_attribute attribute ON attribute.attrelid=relation.oid
+    WHERE ns.nspname='public' AND relation.relname IN (SELECT table_name FROM allowed)
+      AND attribute.attnum>0 AND NOT attribute.attisdropped
+      AND has_column_privilege('maxim_audit',relation.oid,attribute.attnum,'SELECT')
+  ) SELECT NOT EXISTS(SELECT * FROM effective EXCEPT SELECT * FROM allowed)
+    AND (SELECT count(*) FROM effective) IN (0,13)
+    AND NOT has_table_privilege('maxim_audit','public.audit_logs','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+    AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid='public.audit_logs'::regclass AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege('maxim_audit',a.attrelid,a.attnum,'SELECT,INSERT,UPDATE,REFERENCES'))
+    AND NOT EXISTS(SELECT 1 FROM pg_class r JOIN pg_namespace ns ON ns.oid=r.relnamespace WHERE ns.nspname='public' AND r.relname IN (SELECT table_name FROM allowed)
+      AND (has_table_privilege('maxim_audit',r.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=r.oid AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege('maxim_audit',r.oid,a.attnum,'INSERT,UPDATE,REFERENCES'))))
+   ) THEN RAISE EXCEPTION 'maxim_audit Karavan candidate privileges are not exact'; END IF; END $karavan_candidate_privileges$;
 
 GRANT CONNECT ON DATABASE maxim TO maxim_audit;
 GRANT USAGE ON SCHEMA public TO maxim_audit;
@@ -1084,6 +1107,7 @@ BEGIN
               'channel_view_archive_states', 'marketplace_bindings', 'chat_membership_activity_rollups', 'chat_membership_activity_feed_items',
               'stats_entities', 'stats_authorities', 'stats_measurements', 'stats_ingest_requests', 'stats_changes',
         'statistics_exchange_grants', 'statistics_exchange_entities', 'statistics_exchange_imports', 'statistics_exchange_generations',
+        'karavan_marketplace_candidate_settings', 'karavan_marketplace_candidate_events',
               'chat_settings',
               'moderation_delete_intents',
               'moderation_delete_intent_reasons'

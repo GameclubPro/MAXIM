@@ -44,6 +44,37 @@ describe('validateEnv boolean parsing', () => {
       validateEnv(createValidEnv({ COMMERCIAL_LLM_POOL_4B_POLICY: 'anything' })),
     ).toThrow(/COMMERCIAL_LLM_POOL_4B_POLICY/u);
   });
+  it('keeps Karavan selfservice disabled until dedicated credentials and endpoints are present', () => {
+    expect(validateEnv(createValidEnv()).KARAVAN_MARKETPLACE_ENABLED).toBe(false);
+    expect(() => validateEnv(createValidEnv({ KARAVAN_MARKETPLACE_ENABLED: 'true' }))).toThrow(
+      /KARAVAN_MARKETPLACE_ENABLED/u,
+    );
+    const config = {
+      KARAVAN_MARKETPLACE_ENABLED: 'true',
+      KARAVAN_MARKETPLACE_AUTHORITY_TOKEN: 'authority'.repeat(8),
+      KARAVAN_MARKETPLACE_COMMAND_TOKEN: 'commands'.repeat(8),
+      KARAVAN_MARKETPLACE_API_BASE_URL: 'https://karavan.example/karavan',
+      KARAVAN_SELLER_BOT_USERNAME: 'synthetic_seller_bot',
+    };
+    expect(validateEnv(createValidEnv(config)).KARAVAN_MARKETPLACE_ENABLED).toBe(true);
+    expect(() =>
+      validateEnv(
+        createValidEnv({
+          ...config,
+          KARAVAN_MARKETPLACE_COMMAND_TOKEN: config.KARAVAN_MARKETPLACE_AUTHORITY_TOKEN,
+        }),
+      ),
+    ).toThrow();
+    for (const url of [
+      'http://karavan.example',
+      'https://user:secret@karavan.example',
+      'https://karavan.example?token=secret',
+      'https://karavan.example/#secret',
+    ])
+      expect(() =>
+        validateEnv(createValidEnv({ ...config, KARAVAN_MARKETPLACE_API_BASE_URL: url })),
+      ).toThrow(/KARAVAN_MARKETPLACE_API_BASE_URL/u);
+  });
   it('requires independent Lastik control credentials only when its feature is enabled', () => {
     expect(validateEnv(createValidEnv()).ERASER_ENABLED).toBe(false);
     expect(() => validateEnv(createValidEnv({ ERASER_ENABLED: 'true' }))).toThrow(/ERASER_ENABLED/);

@@ -170,6 +170,10 @@
     "./statistics-central-validation": {
       "types": "./dist/statistics-central-validation.d.ts",
       "default": "./dist/statistics-central-validation.js"
+    },
+    "./karavan-marketplace": {
+      "types": "./dist/karavan-marketplace.d.ts",
+      "default": "./dist/karavan-marketplace.js"
     }
   },
   "files": [

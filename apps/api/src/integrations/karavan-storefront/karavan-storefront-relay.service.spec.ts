@@ -1,3 +1,4 @@
+import type { KaravanMarketplaceResolverService } from '../karavan-marketplace/karavan-marketplace-resolver.service';
 import { KaravanStorefrontRelayService } from './karavan-storefront-relay.service';
 
 function createConfigMock(overrides: Record<string, unknown> = {}) {
@@ -21,6 +22,7 @@ function createConfigMock(overrides: Record<string, unknown> = {}) {
 function createService(
   options: {
     config?: Record<string, unknown>;
+    resolver?: Pick<KaravanMarketplaceResolverService, 'shouldUseScopedRelay' | 'resolve'>;
     authorization?: { canPublish: jest.Mock };
     fetchResponse?: unknown;
     lockToken?: string | null;
@@ -76,6 +78,7 @@ function createService(
     redisCounter as never,
     createConfigMock(options.config) as never,
     options.authorization as never,
+    options.resolver as never,
   );
 
   return {
@@ -109,6 +112,122 @@ const baseContext = {
 };
 
 describe('KaravanStorefrontRelayService', () => {
+  it('keeps legacy for never-enrolled chats while selfservice is enabled', async () => {
+    const resolver = {
+      shouldUseScopedRelay: jest.fn().mockResolvedValue(false),
+      resolve: jest.fn(),
+    };
+    const f = createService({ config: { KARAVAN_MARKETPLACE_ENABLED: true }, resolver });
+    try {
+      expect(await f.service.handleMessageCreated(baseContext)).toBe('handled');
+      expect(f.fetchMock).toHaveBeenCalledTimes(1);
+      expect(resolver.resolve).not.toHaveBeenCalled();
+    } finally {
+      f.restore();
+    }
+  });
+  it.each([true, false])(
+    'never downgrades enrolled chats after resolver failure (feature=%s)',
+    async (enabled) => {
+      const resolver = {
+        shouldUseScopedRelay: jest.fn().mockResolvedValue(true),
+        resolve: jest.fn().mockRejectedValue(new Error('Synthetic unknown binding')),
+      };
+      const f = createService({ config: { KARAVAN_MARKETPLACE_ENABLED: enabled }, resolver });
+      try {
+        expect(await f.service.handleMessageCreated(baseContext)).toBe('failed');
+        expect(f.fetchMock).not.toHaveBeenCalled();
+        expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+      } finally {
+        f.restore();
+      }
+    },
+  );
+  it('does not publish a global catalog for an enrolled disconnected chat', async () => {
+    const resolver = {
+      shouldUseScopedRelay: jest.fn().mockResolvedValue(true),
+      resolve: jest.fn().mockResolvedValue({
+        result: { status: 'unbound', stores: [], marketplace: null, binding: null },
+        publication: null,
+      }),
+    };
+    const f = createService({ config: { KARAVAN_MARKETPLACE_ENABLED: true }, resolver });
+    try {
+      expect(
+        await f.service.handleMessageCreated({
+          ...baseContext,
+          text: '$',
+          raw: { message: { body: { text: '$' } } },
+        }),
+      ).toBe('noop');
+      expect(f.fetchMock).not.toHaveBeenCalled();
+      expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+    } finally {
+      f.restore();
+    }
+  });
+  it('keeps an ambiguous storefront choice private without sending a generic fallback', async () => {
+    const resolver = {
+      shouldUseScopedRelay: jest.fn().mockResolvedValue(true),
+      resolve: jest
+        .fn()
+        .mockResolvedValue({ result: { status: 'choose_store', stores: [] }, publication: null }),
+    };
+    const f = createService({ config: { KARAVAN_MARKETPLACE_ENABLED: true }, resolver });
+    try {
+      expect(await f.service.handleMessageCreated(baseContext)).toBe('noop');
+      expect(f.maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(f.fetchMock).not.toHaveBeenCalled();
+    } finally {
+      f.restore();
+    }
+  });
+  it('persists scoped target and exact bot so final queued dispatch can revalidate', async () => {
+    const publication = {
+      chatId: baseContext.chatId,
+      actorMaxUserId: baseContext.senderId,
+      subjectMaxUserId: baseContext.senderId,
+      sourceMessageId: baseContext.messageId,
+      botId: baseContext.botId,
+      marketplaceId: '7d6aac8f-060b-4758-bc51-a63e07ae29a2',
+      bindingGeneration: 3,
+      storeId: 'b20c5040-e501-4221-84d6-b52778ce56a8',
+      url: 'https://max.ru/synthetic_bot?startapp=m_synthetic__s_test',
+      sourceFingerprint: 'a'.repeat(64),
+    };
+    const resolver = {
+      shouldUseScopedRelay: jest.fn().mockResolvedValue(true),
+      resolve: jest.fn().mockResolvedValue({
+        result: {
+          status: 'published',
+          stores: [
+            {
+              id: publication.storeId,
+              slug: 'test',
+              name: 'Test',
+              url: publication.url,
+              inviteUrl: publication.url,
+            },
+          ],
+        },
+        publication,
+      }),
+    };
+    const f = createService({ config: { KARAVAN_MARKETPLACE_ENABLED: true }, resolver });
+    try {
+      expect(await f.service.handleMessageCreated(baseContext)).toBe('handled');
+      expect(f.fetchMock).not.toHaveBeenCalled();
+      const args = f.maxClient.sendMessage.mock.calls[0];
+      expect(args[2].buttons).toEqual([[expect.objectContaining({ url: publication.url })]]);
+      expect(args[3]).toMatchObject({
+        routing: { requiredBotId: baseContext.botId },
+        ledgerContext: { karavanMarketplacePublication: publication },
+      });
+    } finally {
+      f.restore();
+    }
+  });
+
   it.each([true, false])(
     'sends configured plain copy and preserves button destinations (store=%s)',
     async (hasStore) => {

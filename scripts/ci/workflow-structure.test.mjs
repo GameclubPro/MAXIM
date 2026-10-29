@@ -220,7 +220,7 @@ test('shared statistics native coverage runs against required stores in the bloc
   assert.equal(postgres.env.MAXIM_TEST_REDIS_URL, 'redis://127.0.0.1:6379');
   const commands = step.run.trim().split('\n');
   assert.deepEqual(commands, [
-    "npm test --workspace @maxim/api -- 'integrations/marketplace/.*postgres|statistics/.*postgres'",
+    "npm test --workspace @maxim/api -- 'integrations/(marketplace|karavan-marketplace)/.*postgres|statistics/.*postgres'",
     'node --test --test-concurrency=1 infra/scripts/statistics-exchange-audit.test.mjs infra/scripts/central-statistics-audit.test.mjs',
   ]);
   const selector = commands[0].match(/-- '([^']+)'$/u)?.[1];
@@ -237,5 +237,11 @@ test('shared statistics native coverage runs against required stores in the bloc
   );
   for (const path of centralPaths)
     assert.ok(new RegExp(selector, 'u').test(path), `Missing native statistics suite: ${path}`);
+  const karavanPaths = readdirSync(resolve(root, 'apps/api/src/integrations/karavan-marketplace'))
+    .filter((name) => name.endsWith('-postgres.spec.ts'))
+    .map((name) => `src/integrations/karavan-marketplace/${name}`);
+  assert.ok(karavanPaths.length >= 2, 'Expected marketplace authority and private choice suites');
+  for (const path of karavanPaths)
+    assert.ok(new RegExp(selector, 'u').test(path), `Missing native marketplace suite: ${path}`);
   assert.ok(jobs.required.needs.includes('postgres-races'));
 });
