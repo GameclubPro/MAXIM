@@ -10,6 +10,8 @@ import { MessageRetentionStore } from './message-retention-store.service';
 import { retentionLegacyDiagnosticsQuery } from '../admin/safety-desk-retention-queries';
 import { EraserControlService } from './eraser-control.service';
 import { retentionBindingQuery } from './message-retention-binding';
+import { retireTransferredChat, retirementCandidatePageQuery } from './eraser-legacy-retirement';
+import { protectionEvidencePage } from './eraser-protection-provenance';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const native = databaseUrl ? describe : describe.skip;
@@ -804,6 +806,380 @@ native('independent Lastik bridge with PostgreSQL', () => {
       expect(snapshots.at(-1)).toMatchObject({
         complete: true,
         botHistoryCompleteFrom: binding!.createdAt.toISOString(),
+      });
+    }));
+
+  it('imports exact giveaway publication audits across timestamp ties without requiring a surviving giveaway', async () =>
+    isolated(async (tx, service, chatId) => {
+      const prefix = randomUUID();
+      await tx.auditLog.createMany({
+        data: Array.from({ length: 501 }, (_, index) => ({
+          id: `${prefix}-${String(index).padStart(4, '0')}`,
+          chatId,
+          actorUserId: 'admin',
+          action: 'PUBLISH_GIVEAWAY',
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          payload: {
+            giveawayId: 'entity-no-longer-present',
+            publicationMessageId: `historical-giveaway-${index}`,
+            publicationBotId: '987654321',
+          },
+        })),
+      });
+      const snapshots: Record<string, unknown>[] = [];
+      const operationId = randomUUID();
+      jest.spyOn(service, 'request').mockImplementation(async (path, _method, body) => {
+        if (path.endsWith('/protection')) snapshots.push(body as Record<string, unknown>);
+        return path.endsWith('/policy') ? state(operationId, false) : {};
+      });
+      await service.update(chatId, 'admin', {
+        enabled: false,
+        hours: 48,
+        expectedRevision: 0,
+        operationId,
+      });
+      for (let page = 0; page < 10; page++) await service.syncChat(chatId);
+      const refs = await tx.$queryRaw<{ id: string }[]>`
+        SELECT message_id AS id FROM eraser_protected_messages WHERE chat_id=${chatId}`;
+      expect(refs).toHaveLength(501);
+      expect(snapshots.flatMap((row) => row.protectedMessageIds)).toEqual(
+        expect.arrayContaining(['historical-giveaway-0', 'historical-giveaway-500']),
+      );
+      expect(snapshots.flatMap((row) => row.protectedBotIds)).toContain('987654321');
+      const [binding] = await tx.$queryRaw<{ createdAt: Date }[]>`
+        SELECT created_at AS "createdAt" FROM eraser_chat_bindings WHERE chat_id=${chatId}`;
+      // FLAG: A complete audit page is an exact-reference import, not proof of all past results.
+      expect(snapshots.at(-1)?.botHistoryCompleteFrom).toBe(binding!.createdAt.toISOString());
+      await service.syncChat(chatId);
+      expect(
+        await tx.$queryRaw`SELECT message_id FROM eraser_protected_messages WHERE chat_id=${chatId}`,
+      ).toHaveLength(501);
+    }));
+
+  it('retires only unissued transferred candidates, releases quota once and preserves uncertain journals', async () =>
+    isolated(async (tx, _service, chatId) => {
+      const oldActivation = randomUUID();
+      await tx.messageRetentionPolicy.update({
+        where: { chatId },
+        data: { enabled: false, activationId: randomUUID(), pendingCount: 7 },
+      });
+      const quotaBefore = await tx.messageRetentionQuota.findUniqueOrThrow({ where: { shard: 0 } });
+      await tx.messageRetentionQuota.update({
+        where: { shard: 0 },
+        data: { pendingCount: { increment: 7 } },
+      });
+      await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id) VALUES(${chatId})`;
+      await tx.$executeRaw`INSERT INTO eraser_legacy_retirement(chat_id) VALUES(${chatId})`;
+      const ids = new Map<string, string>();
+      for (const name of ['safe-intent', 'unknown', 'confirmed', 'foreign', 'leased']) {
+        const id = randomUUID();
+        ids.set(name, id);
+        await tx.moderationDeleteIntent.create({
+          data: {
+            id,
+            chatId,
+            messageId: name,
+            retentionOwned: name !== 'foreign',
+            status:
+              name === 'unknown'
+                ? 'AMBIGUOUS'
+                : name === 'confirmed'
+                  ? 'SUCCEEDED'
+                  : name === 'leased'
+                    ? 'IN_PROGRESS'
+                    : 'PENDING',
+            retryUntilAt: new Date(Date.now() + 86_400_000),
+            ...(name === 'unknown'
+              ? { deleteDispatchStartedAt: new Date(), deleteDispatchStartedBotId: '123' }
+              : {}),
+            ...(name === 'confirmed'
+              ? { remoteDeleteSucceededAt: new Date(), remoteDeleteSucceededBotId: '123' }
+              : {}),
+            ...(name === 'leased'
+              ? { leaseToken: randomUUID(), leaseExpiresAt: new Date(Date.now() + 60_000) }
+              : {}),
+          },
+        });
+      }
+      ids.set('missing', randomUUID());
+      const messages = [
+        'safe-no-intent',
+        'safe-intent',
+        'unknown',
+        'confirmed',
+        'missing',
+        'foreign',
+        'leased',
+      ];
+      await tx.messageRetentionCandidate.createMany({
+        data: messages.map((messageId) => ({
+          chatId,
+          messageId,
+          authorId: '5',
+          originBotId: '123',
+          sourceAt: new Date(0),
+          activationId: oldActivation,
+          intentId: ids.get(messageId) ?? null,
+        })),
+      });
+      const journals = await tx.moderationDeleteIntent.findMany({
+        where: { chatId },
+        orderBy: { id: 'asc' },
+      });
+      await retireTransferredChat(tx, chatId);
+      await retireTransferredChat(tx, chatId);
+      const candidates = await tx.messageRetentionCandidate.findMany({ where: { chatId } });
+      expect(
+        candidates
+          .filter((row) => row.status === 'cancelled')
+          .map((row) => row.messageId)
+          .sort(),
+      ).toEqual(['safe-intent', 'safe-no-intent']);
+      expect(candidates.find((row) => row.messageId === 'confirmed')).toMatchObject({
+        status: 'pending',
+        outcomeCode: 'reconciliation',
+        reconcileAfter: expect.any(Date),
+      });
+      for (const messageId of ['unknown', 'missing', 'foreign', 'leased'])
+        expect(candidates.find((row) => row.messageId === messageId)).toMatchObject({
+          status: 'pending',
+          intentId: ids.get(messageId),
+          reconcileAfter: null,
+        });
+      expect(
+        (await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } })).pendingCount,
+      ).toBe(5);
+      expect(
+        (await tx.messageRetentionQuota.findUniqueOrThrow({ where: { shard: 0 } })).pendingCount,
+      ).toBe(quotaBefore.pendingCount + 5);
+      expect(
+        await tx.moderationDeleteIntent.findMany({ where: { chatId }, orderBy: { id: 'asc' } }),
+      ).toEqual(journals);
+      expect(
+        await tx.$queryRaw`SELECT retired_count,reconciliation_count,retained_count,completed_at IS NOT NULL AS complete FROM eraser_legacy_retirement WHERE chat_id=${chatId}`,
+      ).toEqual([
+        { retired_count: 2n, reconciliation_count: 1n, retained_count: 4n, complete: true },
+      ]);
+    }));
+
+  it('pages 201 transferred candidates through the active index beside 20000 terminal rows', async () =>
+    isolated(async (tx, _service, chatId) => {
+      const activation = randomUUID();
+      await tx.messageRetentionPolicy.update({
+        where: { chatId },
+        data: { enabled: false, activationId: randomUUID(), pendingCount: 201 },
+      });
+      const quota = await tx.messageRetentionQuota.findUniqueOrThrow({ where: { shard: 0 } });
+      await tx.messageRetentionQuota.update({
+        where: { shard: 0 },
+        data: { pendingCount: { increment: 201 } },
+      });
+      await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id) VALUES(${chatId})`;
+      await tx.$executeRaw`INSERT INTO eraser_legacy_retirement(chat_id) VALUES(${chatId})`;
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status,completed_at)
+        SELECT ${chatId},'a-terminal-'||lpad(i::text,6,'0'),'5','123',TIMESTAMP '2020-01-01',${activation},'deleted',CURRENT_TIMESTAMP
+        FROM generate_series(1,20000) i`;
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id)
+        SELECT ${chatId},'z-active-'||lpad(i::text,6,'0'),'5','123',TIMESTAMP '2020-01-01',${activation}
+        FROM generate_series(1,201) i`;
+      await tx.$executeRaw`ANALYZE message_retention_candidates`;
+      const plans = await tx.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${retirementCandidatePageQuery(chatId, null)}`);
+      assertRetirementPlan(plans, 201);
+      expect(await tx.$queryRaw(retirementCandidatePageQuery(chatId, null))).toHaveLength(100);
+      await retireTransferredChat(tx, chatId);
+      expect(
+        (await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } })).pendingCount,
+      ).toBe(101);
+      await retireTransferredChat(tx, chatId);
+      await retireTransferredChat(tx, chatId);
+      expect(
+        (await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } })).pendingCount,
+      ).toBe(0);
+      expect(
+        (await tx.messageRetentionQuota.findUniqueOrThrow({ where: { shard: 0 } })).pendingCount,
+      ).toBe(quota.pendingCount);
+      expect(
+        await tx.$queryRaw`SELECT retired_count,completed_at IS NOT NULL AS complete FROM eraser_legacy_retirement WHERE chat_id=${chatId}`,
+      ).toEqual([{ retired_count: 201n, complete: true }]);
+    }));
+
+  function assertRetirementPlan(plans: Array<{ 'QUERY PLAN': unknown }>, budget: number) {
+    type Plan = {
+      'Node Type': string;
+      'Relation Name'?: string;
+      'Actual Rows'?: number;
+      'Actual Loops'?: number;
+      'Rows Removed by Filter'?: number;
+      Plans?: Plan[];
+    };
+    const root = (plans[0]!['QUERY PLAN'] as Array<{ Plan: Plan }>)[0]!.Plan;
+    const nodes = (plan: Plan): Plan[] => [plan, ...(plan.Plans ?? []).flatMap(nodes)];
+    const scans = nodes(root).filter(
+      (node) => node['Relation Name'] === 'message_retention_candidates',
+    );
+    expect(scans.length).toBeGreaterThan(0);
+    // FLAG: PostgreSQL may prefer another bounded index for a small active pool.
+    // Actual examined rows, including rejected rows, must stay independent of terminal history.
+    for (const scan of scans) {
+      expect(scan['Node Type']).toMatch(/^Index (Only )?Scan$/);
+      expect(
+        ((scan['Actual Rows'] ?? 0) + (scan['Rows Removed by Filter'] ?? 0)) *
+          (scan['Actual Loops'] ?? 1),
+      ).toBeLessThanOrEqual(budget);
+    }
+  }
+
+  it('stops the retirement index walk at 100 inside a large active pool', async () =>
+    isolated(async (tx, _service, chatId) => {
+      const activation = randomUUID();
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id,status,completed_at)
+        SELECT ${chatId},'a-terminal-'||lpad(i::text,6,'0'),'5','123',TIMESTAMP '2020-01-01',${activation},'deleted',CURRENT_TIMESTAMP
+        FROM generate_series(1,20000) i`;
+      await tx.$executeRaw`INSERT INTO message_retention_candidates(chat_id,message_id,author_id,origin_bot_id,source_at,activation_id)
+        SELECT ${chatId},'z-active-'||lpad(i::text,6,'0'),'5','123',TIMESTAMP '2020-01-01',${activation}
+        FROM generate_series(1,20001) i`;
+      await tx.$executeRaw`ANALYZE message_retention_candidates`;
+      for (const after of [null, 'z-active-010000']) {
+        const plans = await tx.$queryRaw<Array<{ 'QUERY PLAN': unknown }>>(Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${retirementCandidatePageQuery(chatId, after)}`);
+        expect(JSON.stringify(plans)).toContain(
+          'message_retention_candidates_eraser_retirement_idx',
+        );
+        assertRetirementPlan(plans, 100);
+      }
+    }));
+
+  it('rolls back retirement on a concurrent intent lock and preserves its later dispatch marker', async () => {
+    const chatId = `-${BigInt(`0x${randomUUID().replaceAll('-', '').slice(0, 13)}`)}`;
+    const intentId = randomUUID();
+    let unlock: (() => void) | undefined;
+    let holder: Promise<unknown> | undefined;
+    try {
+      await db.chat.create({ data: { id: chatId, title: 'Isolated retirement race' } });
+      await db.messageRetentionPolicy.create({
+        data: {
+          chatId,
+          activationId: randomUUID(),
+          enabled: false,
+          quotaShard: 31,
+          pendingCount: 1,
+        },
+      });
+      await db.messageRetentionQuota.update({
+        where: { shard: 31 },
+        data: { pendingCount: { increment: 1 } },
+      });
+      await db.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id) VALUES(${chatId})`;
+      await db.$executeRaw`INSERT INTO eraser_legacy_retirement(chat_id) VALUES(${chatId})`;
+      await db.moderationDeleteIntent.create({
+        data: {
+          id: intentId,
+          chatId,
+          messageId: 'racing',
+          retentionOwned: true,
+          status: 'PENDING',
+          retryUntilAt: new Date(Date.now() + 60_000),
+        },
+      });
+      await db.messageRetentionCandidate.create({
+        data: {
+          chatId,
+          messageId: 'racing',
+          authorId: '5',
+          originBotId: '123',
+          sourceAt: new Date(0),
+          activationId: randomUUID(),
+          intentId,
+        },
+      });
+      let locked!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        unlock = resolve;
+      });
+      holder = db.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT id FROM moderation_delete_intents WHERE id=${intentId} FOR UPDATE`;
+          locked();
+          await release;
+          await tx.moderationDeleteIntent.update({
+            where: { id: intentId },
+            data: {
+              status: 'AMBIGUOUS',
+              deleteDispatchStartedAt: new Date(),
+              deleteDispatchStartedBotId: '123',
+            },
+          });
+        },
+        { timeout: 5_000 },
+      );
+      await ready;
+      await expect(
+        db.$transaction((tx) => retireTransferredChat(tx, chatId)),
+      ).rejects.toMatchObject({ code: 'P2010' });
+      expect(
+        await db.$queryRaw`SELECT cursor_message_id,retired_count FROM eraser_legacy_retirement WHERE chat_id=${chatId}`,
+      ).toEqual([{ cursor_message_id: null, retired_count: 0n }]);
+      unlock?.();
+      await holder;
+      await db.$transaction((tx) => retireTransferredChat(tx, chatId));
+      expect(
+        await db.messageRetentionCandidate.findUnique({
+          where: { chatId_messageId: { chatId, messageId: 'racing' } },
+        }),
+      ).toMatchObject({ status: 'pending', intentId, completedAt: null });
+      expect(
+        (await db.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } })).pendingCount,
+      ).toBe(1);
+      expect(await db.moderationDeleteIntent.findUnique({ where: { id: intentId } })).toMatchObject(
+        { status: 'AMBIGUOUS', deleteDispatchStartedAt: expect.any(Date) },
+      );
+    } finally {
+      unlock?.();
+      await holder?.catch(() => undefined);
+      await db.$transaction(async (tx) => {
+        const policy = await tx.messageRetentionPolicy.findUnique({ where: { chatId } });
+        if (policy?.pendingCount)
+          await tx.messageRetentionQuota.update({
+            where: { shard: 31 },
+            data: { pendingCount: { decrement: policy.pendingCount } },
+          });
+        await tx.messageRetentionCandidate.deleteMany({ where: { chatId } });
+        await tx.moderationDeleteIntent.deleteMany({ where: { chatId } });
+        await tx.$executeRaw`DELETE FROM eraser_legacy_retirement WHERE chat_id=${chatId}`;
+        await tx.$executeRaw`DELETE FROM eraser_chat_bindings WHERE chat_id=${chatId}`;
+        await tx.messageRetentionPolicy.deleteMany({ where: { chatId } });
+        await tx.chat.deleteMany({ where: { id: chatId } });
+      });
+    }
+  });
+
+  it('restarts a bounded protection checksum when an earlier catalogue reference arrives', async () =>
+    isolated(async (tx, service, chatId) => {
+      const token = randomUUID();
+      await tx.$executeRaw`INSERT INTO eraser_chat_bindings(chat_id) VALUES(${chatId})`;
+      await tx.$executeRaw`INSERT INTO eraser_protection_outbox(chat_id,lease_token) VALUES(${chatId},${token})`;
+      await tx.$executeRaw`INSERT INTO eraser_protected_messages(chat_id,message_id)
+        SELECT ${chatId},'m-'||lpad(i::text,5,'0') FROM generate_series(1,501) i`;
+      expect(await protectionEvidencePage(tx, chatId, token)).toBeNull();
+      await tx.$executeRaw`INSERT INTO eraser_protected_messages(chat_id,message_id) VALUES(${chatId},'a-before-cursor')`;
+      await tx.$executeRaw`SELECT eraser_mark_protection_dirty(${chatId})`;
+      expect(await protectionEvidencePage(tx, chatId, token)).toBeNull();
+      expect(await protectionEvidencePage(tx, chatId, token)).toBeNull();
+      const sealed = await protectionEvidencePage(tx, chatId, token);
+      expect(sealed).toMatchObject({
+        revision: 1,
+        count: 502,
+        digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(await protectionEvidencePage(tx, chatId, token)).toEqual(sealed);
+      expect(await service.protectionReport(chatId)).toMatchObject({
+        status: 'available',
+        catalog: { ready: true, referencesHashed: 502 },
+        deliveredEvidence: null,
       });
     }));
 

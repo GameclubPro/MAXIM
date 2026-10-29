@@ -203,8 +203,11 @@ export function SettingsStorefrontSection({
                     <KaravanMarketplacePanel key={chatId} api={api} chatId={chatId} />
                   </Suspense>
                 ) : null}
-                <details className="settings-storefront__publications">
-                  <summary>Публикации в чате</summary>
+                <details className="settings-storefront__publications" open>
+                  <summary>
+                    <span>Публикации в чате</span>
+                    <IconoirSprite variant="iconoir" icon="NavArrowDown" aria-hidden />
+                  </summary>
                   {sharedContent ?? (
                     <div className="settings-native-toggle">
                       <div className="settings-native-toggle__row">
@@ -226,9 +229,6 @@ export function SettingsStorefrontSection({
                           </span>
                         </label>
                       </div>
-                      <p className="settings-native-toggle__hint">
-                        Разрешить публикации по $ в этом чате. Магазин настраивается отдельно.
-                      </p>
                     </div>
                   )}
 
