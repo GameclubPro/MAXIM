@@ -29,6 +29,7 @@ const compactIconsSource = readSource('../src/components/ui/compact-icons.tsx');
 const actionConfirmSheetSource = readSource('../src/components/ui/action-confirm-sheet.tsx');
 const chatSettingsSource = readSource('../src/pages/settings-page.legacy.tsx');
 const chatSettingsWorkspaceSource = readSource('../src/pages/settings/chat-settings-workspace.tsx');
+const chatSettingsDraftSource = readSource('../src/pages/settings/use-settings-draft.ts');
 const channelSettingsSource = readSource('../src/pages/channel-settings-page.tsx');
 const chatStatsSource = readSource('../src/pages/events-page.tsx');
 const channelStatsSource = readSource('../src/pages/channel-stats-page.tsx');
@@ -375,17 +376,40 @@ test('all managed detail screens provide authoritative identity to the shared he
 });
 
 test('chat and channel settings register save and discard leave guards', () => {
+  const chatLeaveGuard = sourceBetween(
+    chatSettingsSource,
+    '  useChatSettingsWorkspaceLeaveGuard({',
+    '  function renderSectionSaveFooter(',
+  );
+  const workspaceMutation = sourceBetween(
+    chatSettingsDraftSource,
+    '  const workspaceMutation = useMutation({',
+    '  useLayoutEffect(() => {',
+  );
   assert.match(
     chatSettingsSource,
     /const isHeaderSaving =\s*isSavingSettings \|\|\s*isSavingRules \|\|\s*isPreparingRulesPublish \|\|\s*isSavingSpeechStyle \|\|\s*updateRulesAttachMutation\.isPending;/u,
   );
   assert.match(
-    chatSettingsSource,
-    /useChatSettingsWorkspaceLeaveGuard\(\{[\s\S]*?settingsDirty: hasChanges \|\| Object\.keys\(sharedFieldErrors\)\.length > 0,[\s\S]*?rulesDirty: hasRulesChanges,[\s\S]*?saving:\s*isHeaderSaving \|\|\s*isApplyingSectionToAll \|\|\s*isPublishingRules \|\|\s*isResettingPublishedRules,[\s\S]*?saveRules: \(\) => saveRulesDraftNow\(\{ forceButtonErrors: true \}\)/u,
+    chatLeaveGuard,
+    /settingsDirty:\s*hasChanges \|\| stopWordsReplacementAuthorized \|\| Object\.keys\(sharedFieldErrors\)\.length > 0,[\s\S]*?rulesDirty: hasRulesChanges,[\s\S]*?saving:\s*isHeaderSaving \|\|\s*isApplyingSectionToAll \|\|\s*isPublishingRules \|\|\s*isResettingPublishedRules,[\s\S]*?validateDraft,\s*saveSettings: saveWorkspaceDraft,\s*saveRules: \(\) => saveRulesDraftNow\(\{ forceButtonErrors: true \}\)/u,
   );
   assert.match(
     chatSettingsWorkspaceSource,
-    /setMaxClosingConfirmation\(dirty \|\| saving\)[\s\S]*?useManagedEntityLeaveGuard\(\{\s*dirty,\s*saving,[\s\S]*?const saved = await updateSettings\(api, chatId, payload\)[\s\S]*?rulesDirty && !\(await saveRules\(\)\)[\s\S]*?discard: \(\) => \{[\s\S]*?setDraft\(normalizeWorkspaceDraft\(serverSettings\)\)[\s\S]*?setRulesDraft\(serverRules\)/u,
+    /setMaxClosingConfirmation\(dirty \|\| saving\)[\s\S]*?useManagedEntityLeaveGuard\(\{\s*dirty,\s*saving,[\s\S]*?const payload = validateDraft\(draft\);[\s\S]*?if \(!payload\) \{[\s\S]*?return false;[\s\S]*?await saveSettings\(payload\);[\s\S]*?rulesDirty && !\(await saveRules\(\)\)[\s\S]*?discard: \(\) => \{[\s\S]*?setDraft\(normalizeWorkspaceDraft\(serverSettings\)\)[\s\S]*?setRulesDraft\(serverRules\)/u,
+  );
+  assert.doesNotMatch(chatSettingsWorkspaceSource, /updateSettings\(/u);
+  assert.match(
+    workspaceMutation,
+    /return saveWorkspaceSettings\(\s*api,\s*\{\s*chatId: request\.identity\.chatId \?\? '',\s*draft: request\.payload,\s*baseline,\s*replacement: request\.replacement,\s*storageStatus: request\.storageStatus,?\s*\},\s*async \(progress\) => \{\s*if \(active\.current !== request\.identity\)/u,
+  );
+  assert.match(
+    chatSettingsDraftSource,
+    /async function saveWorkspaceDraft\(payload: ChatSettings\) \{[\s\S]*?await workspaceMutation\.mutateAsync\(\{\s*payload,\s*identity,\s*baseline: normalizeServerDraft\(serverSettings\),\s*replacement: stopWordsReplacement,\s*storageStatus: stopWordsStorageStatus,?\s*\}\);\s*if \(!isCurrentSettingsScope\(\)\) throw/u,
+  );
+  assert.match(
+    chatLeaveGuard,
+    /clearValidationErrors: \(\) => \{\s*discardStopWordsEditorState\(\);/u,
   );
   assert.match(
     channelSettingsSource,

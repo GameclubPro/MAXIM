@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { StopWordsPolicy } from '@maxim/contracts/settings';
 import type { ApiTransport } from '../../lib/api/transport';
@@ -18,6 +18,7 @@ export function SettingsStopWordsSingleTools({
   revision,
   dirty,
   invalid = false,
+  conflict = false,
 }: {
   api: ApiTransport;
   chatId: string;
@@ -28,7 +29,11 @@ export function SettingsStopWordsSingleTools({
   revision?: number;
   dirty: boolean;
   invalid?: boolean;
+  conflict?: boolean;
 }) {
+  const identity = useMemo(() => ({ chatId }), [chatId]);
+  const activeIdentity = useRef<typeof identity | null>(identity);
+  activeIdentity.current = identity;
   const [text, setText] = useState('');
   const [confirmReload, setConfirmReload] = useState(false);
   const status = useQuery({
@@ -59,9 +64,25 @@ export function SettingsStopWordsSingleTools({
     }),
   });
   const reload = useMutation({
-    mutationFn: reloadPolicy,
-    onSuccess: () => setConfirmReload(false),
+    mutationFn: async () => {
+      const scope = identity;
+      await reloadPolicy();
+      return scope;
+    },
+    onSuccess: (scope) => {
+      if (activeIdentity.current === scope) setConfirmReload(false);
+    },
   });
+  useEffect(() => {
+    activeIdentity.current = identity;
+    setText('');
+    setConfirmReload(false);
+    reload.reset();
+    tester.reset();
+    return () => {
+      if (activeIdentity.current === identity) activeIdentity.current = null;
+    };
+  }, [identity]);
   const availability = status.isError ? 'unavailable' : status.data?.imageScanStatus;
   const availabilityText =
     availability === 'ready'
@@ -75,7 +96,7 @@ export function SettingsStopWordsSingleTools({
             : 'Проверяем доступность';
   if (slot === 'imageScan') return <p role="status">{availabilityText}</p>;
   if (slot === 'notice')
-    return (status.data?.revision ?? 0) > (revision ?? 0) ? (
+    return conflict || (status.data?.revision ?? 0) > (revision ?? 0) ? (
       <p role="status">Список изменён другим администратором.</p>
     ) : null;
   if (slot === 'toolbar')
@@ -87,7 +108,7 @@ export function SettingsStopWordsSingleTools({
           title="Загрузить сохранённый список"
           aria-label="Загрузить сохранённый список"
           disabled={busy || reload.isPending}
-          onClick={() => (dirty ? setConfirmReload(true) : reload.mutate())}
+          onClick={() => (dirty || conflict ? setConfirmReload(true) : reload.mutate())}
         >
           <AppIcon icon="Refresh" />
         </button>

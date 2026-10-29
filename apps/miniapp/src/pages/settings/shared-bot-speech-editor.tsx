@@ -6,7 +6,10 @@ import type {
   ChatMediaFieldPath,
   ChatSettingsFieldAdapter,
 } from '../../features/network-settings/field-model';
-import { BotSpeechMessageEditorSheet } from '../../components/bot-speech-message-editor-sheet';
+import {
+  BotSpeechMessageEditorSheet,
+  type BotSpeechEditorFocusRequest,
+} from '../../components/bot-speech-message-editor-sheet';
 
 export type SharedSpeechPath =
   | BotSpeechEditableFieldKey
@@ -19,6 +22,9 @@ export type SharedBotSpeechEditorProps = {
   mediaPath?: ChatMediaFieldPath;
   title: string;
   onClose: () => void;
+  textError?: string | null;
+  mediaError?: string | null;
+  focusRequest?: BotSpeechEditorFocusRequest;
 };
 
 export function SharedBotSpeechEditor({
@@ -27,6 +33,9 @@ export function SharedBotSpeechEditor({
   mediaPath,
   title,
   onClose,
+  textError,
+  mediaError,
+  focusRequest,
 }: SharedBotSpeechEditorProps) {
   const text = fields.read(path);
   const media = mediaPath ? fields.read(mediaPath) : null;
@@ -62,6 +71,9 @@ export function SharedBotSpeechEditor({
       image={media?.kind === 'common' ? media.value : null}
       imageMixed={media?.kind === 'mixed'}
       textMixed={text.kind === 'mixed'}
+      textError={textError}
+      mediaError={mediaError}
+      focusRequest={focusRequest}
       onChange={(value) => edit(() => fields.setScalar(path, value), path)}
       onImageChange={
         mediaPath

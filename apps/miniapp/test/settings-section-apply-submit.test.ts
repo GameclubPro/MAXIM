@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chatSettingsSchema } from '@maxim/contracts/settings';
+import { chatSettingsSchema, stopWordsPolicySchema } from '@maxim/contracts/settings';
+import { ApiRequestError } from '../src/lib/api-request-error';
 import type { ApiTransport } from '../src/lib/api/transport';
 import {
   applySettingsSectionWithConfirmedSource,
@@ -60,4 +61,194 @@ test('failed stop-word recovery preserves the last confirmed source snapshot', a
     requestKeepalive: () => {},
   };
   assert.equal(await refreshSavedStopWordsSource(api, savedSource), savedSource);
+});
+
+test('stop-word source copy uses acknowledged CAS and refreshes its receipt without promoting general revision', async () => {
+  const policy = stopWordsPolicySchema.parse({ enabled: true, domains: ['source.example'] });
+  const sourceSettings = chatSettingsSchema.parse({
+    settingsRevision: draftRevision,
+    stopWordsPolicy: policy,
+    stopWordsRevision: 7,
+  });
+  const snapshots: Array<SettingsApplySavedSource | null> = [];
+  const calls: string[] = [];
+  const api: ApiTransport = {
+    async request(path, init) {
+      calls.push(`${init?.method ?? 'GET'} ${path}`);
+      if (path.endsWith('/stop-words') && init?.method === 'PUT') {
+        assert.deepEqual(JSON.parse(String(init.body)), { policy, expectedRevision: 7 });
+        return {
+          policy,
+          revision: 8,
+          settingsRevision: savedRevision,
+          imageScanStatus: 'shadow',
+          storageStatus: 'valid',
+        };
+      }
+      if (path.endsWith('/settings/apply-section-to-all')) {
+        assert.equal(snapshots.at(-1)?.settings.settingsRevision, draftRevision);
+        assert.equal(JSON.parse(String(init?.body)).expectedSourceRevision, 8);
+        return {
+          section: 'stopWords',
+          sourceChatId: 'source',
+          targetMode: 'all',
+          updatedChats: 2,
+          appliedChatIds: ['source', 'target'],
+        };
+      }
+      assert.equal(path, '/chats/source/stop-words');
+      return {
+        policy,
+        revision: 9,
+        settingsRevision: '2026-10-01T12:00:00.000Z',
+        imageScanStatus: 'shadow',
+        storageStatus: 'valid',
+      };
+    },
+    requestKeepalive() {},
+  };
+  const result = await applySettingsSectionWithConfirmedSource(
+    api,
+    {
+      sourceChatId: 'source',
+      section: 'stopWords',
+      sourceSettings,
+      target: { mode: 'all', favoriteTypes: [], chatIds: [] },
+    },
+    (snapshot) => snapshots.push(snapshot),
+  );
+  assert.deepEqual(calls, [
+    'PUT /chats/source/stop-words',
+    'POST /chats/source/settings/apply-section-to-all',
+    'GET /chats/source/stop-words',
+  ]);
+  assert.equal(result.sourceSettings.settingsRevision, draftRevision);
+  assert.equal(result.sourceSettings.stopWordsRevision, 9);
+  assert.equal(result.stopWordsReceipt?.settingsRevision, '2026-10-01T12:00:00.000Z');
+});
+
+test('invalid stop source copy requires exact explicit replacement before any mutation', async () => {
+  const sourceSettings = chatSettingsSchema.parse({
+    settingsRevision: draftRevision,
+    stopWordsPolicy: stopWordsPolicySchema.parse({}),
+    stopWordsRevision: 7,
+  });
+  for (const stopWordsReplacement of [
+    undefined,
+    { chatId: 'other', expectedRevision: 7 },
+    { chatId: 'source', expectedRevision: 6 },
+  ]) {
+    let writes = 0;
+    const api: ApiTransport = {
+      request: async () => {
+        writes++;
+      },
+      requestKeepalive() {},
+    };
+    await assert.rejects(
+      applySettingsSectionWithConfirmedSource(
+        api,
+        {
+          sourceChatId: 'source',
+          section: 'stopWords',
+          sourceSettings,
+          target: { mode: 'all', favoriteTypes: [], chatIds: [] },
+          stopWordsStorageStatus: 'invalid',
+          stopWordsReplacement,
+        },
+        () => {},
+      ),
+      (error: unknown) =>
+        error instanceof ApiRequestError && error.code === 'STOP_WORDS_POLICY_REVIEW_REQUIRED',
+    );
+    assert.equal(writes, 0);
+  }
+});
+
+test('stop target copy failure retains the confirmed source and original general fence', async () => {
+  const policy = stopWordsPolicySchema.parse({ enabled: true });
+  const sourceSettings = chatSettingsSchema.parse({
+    settingsRevision: draftRevision,
+    stopWordsPolicy: policy,
+    stopWordsRevision: 7,
+  });
+  let confirmed: SettingsApplySavedSource | null = null;
+  const api: ApiTransport = {
+    async request(path) {
+      if (path.endsWith('/stop-words'))
+        return {
+          policy,
+          revision: 8,
+          settingsRevision: savedRevision,
+          imageScanStatus: 'shadow',
+          storageStatus: 'valid',
+        };
+      throw new Error('copy failed');
+    },
+    requestKeepalive() {},
+  };
+  await assert.rejects(
+    applySettingsSectionWithConfirmedSource(
+      api,
+      {
+        sourceChatId: 'source',
+        section: 'stopWords',
+        sourceSettings,
+        target: { mode: 'all', favoriteTypes: [], chatIds: [] },
+      },
+      (snapshot) => {
+        confirmed = snapshot;
+      },
+    ),
+    /copy failed/u,
+  );
+  assert.equal(
+    (confirmed as SettingsApplySavedSource | null)?.settings.settingsRevision,
+    draftRevision,
+  );
+  assert.equal((confirmed as SettingsApplySavedSource | null)?.settings.stopWordsRevision, 8);
+});
+
+test('leaving the source scope after its receipt prevents starting target copy', async () => {
+  const policy = stopWordsPolicySchema.parse({ enabled: true });
+  const sourceSettings = chatSettingsSchema.parse({
+    settingsRevision: draftRevision,
+    stopWordsPolicy: policy,
+    stopWordsRevision: 7,
+  });
+  const calls: string[] = [];
+  let current = true;
+  let confirmed: SettingsApplySavedSource | null = null;
+  const api: ApiTransport = {
+    async request(path) {
+      calls.push(path);
+      assert.equal(path, '/chats/source/stop-words');
+      return {
+        policy,
+        revision: 8,
+        settingsRevision: savedRevision,
+        imageScanStatus: 'shadow',
+        storageStatus: 'valid',
+      };
+    },
+    requestKeepalive() {},
+  };
+  await assert.rejects(
+    applySettingsSectionWithConfirmedSource(
+      api,
+      {
+        sourceChatId: 'source',
+        section: 'stopWords',
+        sourceSettings,
+        target: { mode: 'all', favoriteTypes: [], chatIds: [] },
+        isCurrentScope: () => current,
+      },
+      (snapshot) => {
+        confirmed = snapshot;
+        if (snapshot) current = false;
+      },
+    ),
+  );
+  assert.deepEqual(calls, ['/chats/source/stop-words']);
+  assert.equal((confirmed as SettingsApplySavedSource | null)?.settings.stopWordsRevision, 8);
 });

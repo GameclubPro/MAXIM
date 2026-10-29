@@ -8,6 +8,7 @@ type SettingsSectionSaveFooterOptions = {
 type SettingsSectionSaveFooterProps = {
   section: ApplySectionKey;
   options?: SettingsSectionSaveFooterOptions;
+  disabled?: boolean;
   isSavingSettings: boolean;
   savingSection: ApplySectionKey | null;
   isApplyingSectionToAll: boolean;
@@ -19,6 +20,7 @@ type SettingsSectionSaveFooterProps = {
 export function SettingsSectionSaveFooter({
   section,
   options,
+  disabled = false,
   isSavingSettings,
   savingSection,
   isApplyingSectionToAll,
@@ -52,7 +54,7 @@ export function SettingsSectionSaveFooter({
           type="button"
           className="button button--accent"
           onClick={() => onSaveSection(section)}
-          disabled={isSavingSettings || isApplyingSectionToAll}
+          disabled={disabled || isSavingSettings || isApplyingSectionToAll}
           aria-busy={isCurrentSectionSaving || isCurrentSectionApplying || undefined}
         >
           {isCurrentSectionSaving || isCurrentSectionApplying

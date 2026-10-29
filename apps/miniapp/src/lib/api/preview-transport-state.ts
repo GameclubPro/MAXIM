@@ -83,7 +83,8 @@ import { createPreviewVkParsingFeed } from './preview-transport-vk';
 export type PreviewState = {
   networksScenario: string;
   retentionScenario: string;
-  stopWordsWriteError: 'network' | 'conflict' | null;
+  stopWordsWriteError: 'network' | 'conflict' | 'review' | null;
+  stopWordsStorageStatus: 'valid' | 'legacy' | 'invalid';
   advertisingPilot: boolean;
   marketplacePilot: boolean;
   marketplaceOwner: boolean;
@@ -850,7 +851,15 @@ export function createInitialState(search: string, clock: PreviewClock): Preview
         ? 'network'
         : searchParams.get('stopWordsWriteError') === 'conflict'
           ? 'conflict'
-          : null,
+          : searchParams.get('stopWordsWriteError') === 'review'
+            ? 'review'
+            : null,
+    stopWordsStorageStatus:
+      searchParams.get('stopWordsStorage') === 'invalid'
+        ? 'invalid'
+        : searchParams.get('stopWordsStorage') === 'legacy'
+          ? 'legacy'
+          : 'valid',
     advertisingPilot: !publisherProfile && searchParams.get('advertisingPilot') === '1',
     marketplacePilot: searchParams.get('marketplacePilot') === '1',
     marketplaceOwner: searchParams.get('marketplaceOwner') !== '0',
