@@ -1487,10 +1487,21 @@ export class WebhookCanonicalExecutionService implements OnModuleDestroy {
         'checkpoint',
         new Error('Original started owner snapshot unavailable'),
       );
+    const finishedAt = new Date();
+    const sqlClockLeadMs = owner.businessStartedAt.getTime() - finishedAt.getTime();
+    // FLAG: SQL timestamp(3) rounds while JavaScript truncates milliseconds. Normalize
+    // only that one-millisecond boundary against this exact owner's recorded start.
+    if (sqlClockLeadMs > 1)
+      throw new WebhookFinishPersistenceError(
+        'authority_changed',
+        'checkpoint',
+        new Error('Handler finish precedes original SQL start'),
+      );
+    if (sqlClockLeadMs > 0) finishedAt.setTime(owner.businessStartedAt.getTime());
     const finish = Object.freeze({
       owner,
       source: WebhookCanonicalExecutionService.startedSources.get(context)!,
-      finishedAt: new Date(),
+      finishedAt,
     });
     WebhookCanonicalExecutionService.awaitedFinishes.set(context, finish);
     return finish;

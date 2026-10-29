@@ -1160,9 +1160,13 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
     },
   );
 
-  it.each(['exact', 'changed journal', 'changed receipt', 'unsettled receipt'] as const)(
-    'accepts concurrent finished recovery only with an %s checkpoint without regressing on late failure',
-    async (proofState) => {
+  it.each(
+    (['exact', 'changed journal', 'changed receipt', 'unsettled receipt'] as const).flatMap(
+      (proofState) => [0, 1].map((sqlClockLeadMs) => ({ proofState, sqlClockLeadMs })),
+    ),
+  )(
+    'accepts concurrent finished recovery only with an $proofState checkpoint and $sqlClockLeadMs ms SQL clock lead without regressing on late failure',
+    async ({ proofState, sqlClockLeadMs }) => {
       const source = await semanticReceipt({
         chatId: `-${randomUUID()}`,
         messageId: 'completion-race',
@@ -1171,6 +1175,29 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       const claim = await readyClaim(source);
       const worker = new WebhookCanonicalExecutionService(prisma as never);
       const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+      if (sqlClockLeadMs) {
+        const started = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+          where: { id: claim.id },
+        });
+        const originalDate = Date;
+        const observedAt = started.businessStartedAt!.getTime() - sqlClockLeadMs;
+        // FLAG: Only finish observation uses this clock; native SQL and timers stay real.
+        globalThis.Date = new Proxy(originalDate, {
+          construct(target, args) {
+            return Reflect.construct(target, args.length ? args : [observedAt]);
+          },
+          get(target, key, receiver) {
+            return key === 'now' ? () => observedAt : Reflect.get(target, key, receiver);
+          },
+        });
+        try {
+          (
+            worker as unknown as { observeAwaitedFinish: (value: typeof context) => unknown }
+          ).observeAwaitedFinish(context);
+        } finally {
+          globalThis.Date = originalDate;
+        }
+      }
       await (
         worker as unknown as {
           markExecutionHandlerFinished: (
@@ -1210,9 +1237,12 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
           (error: unknown) => ({ error }),
         );
       try {
-        expect(
-          await Promise.race([atCas.then(() => 'at-cas'), completing.then(() => 'settled')]),
-        ).toBe('at-cas');
+        const entry = await Promise.race([
+          atCas.then(() => ({ phase: 'at-cas' as const })),
+          completing.then((result) => ({ phase: 'settled' as const, result })),
+        ]);
+        if (entry.phase === 'settled' && entry.result.error) throw entry.result.error;
+        expect(entry.phase).toBe('at-cas');
         expect(
           await new WebhookCanonicalExecutionService(prisma as never).prepareExecution(
             source.event.id,
@@ -1280,6 +1310,80 @@ describePostgres('PostgreSQL webhook outbox queries', () => {
       }
     },
   );
+
+  it('refuses a finish observation more than one millisecond before its original SQL start', async () => {
+    const source = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'finish-clock-skew',
+      createdAt: new Date(),
+    });
+    const claim = await readyClaim(source);
+    const worker = new WebhookCanonicalExecutionService(prisma as never);
+    const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+    const started = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+      where: { id: claim.id },
+    });
+    const originalDate = Date;
+    const observedAt = started.businessStartedAt!.getTime() - 2;
+    globalThis.Date = new Proxy(originalDate, {
+      construct(target, args) {
+        return Reflect.construct(target, args.length ? args : [observedAt]);
+      },
+      get(target, key, receiver) {
+        return key === 'now' ? () => observedAt : Reflect.get(target, key, receiver);
+      },
+    });
+    let completion: Promise<void>;
+    try {
+      completion = worker.completeExecution(context!);
+    } finally {
+      globalThis.Date = originalDate;
+    }
+    await expect(completion!).rejects.toMatchObject({
+      outcome: 'authority_changed',
+      phase: 'checkpoint',
+      cause: { message: 'Handler finish precedes original SQL start' },
+    });
+    expect(
+      await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }),
+    ).toMatchObject({ status: 'READY', commandResult: null, completedAt: null });
+  });
+
+  it('rejects a persisted finished journal earlier than its original SQL business start', async () => {
+    const source = await semanticReceipt({
+      chatId: `-${randomUUID()}`,
+      messageId: 'invalid-finished-time',
+      createdAt: new Date(),
+    });
+    const claim = await readyClaim(source);
+    const worker = new WebhookCanonicalExecutionService(prisma as never);
+    const context = await worker.prepareExecution(source.event.id, 'preparation-bot');
+    await (
+      worker as unknown as {
+        markExecutionHandlerFinished: (value: typeof context) => Promise<void>;
+      }
+    ).markExecutionHandlerFinished(context);
+    const saved = await prisma.webhookExecutionClaim.findUniqueOrThrow({
+      where: { id: claim.id },
+    });
+    await prisma.webhookExecutionClaim.update({
+      where: { id: claim.id },
+      data: {
+        commandResult: {
+          ...(saved.commandResult as Prisma.JsonObject),
+          finishedAt: new Date(saved.businessStartedAt!.getTime() - 1).toISOString(),
+        },
+      },
+    });
+    await expect(worker.completeExecution(context!)).rejects.toMatchObject({
+      outcome: 'authority_changed',
+      phase: 'checkpoint',
+      cause: { message: 'Handler-finished journal changed' },
+    });
+    expect(
+      await prisma.webhookExecutionClaim.findUnique({ where: { id: claim.id } }),
+    ).toMatchObject({ status: 'READY', completedAt: null });
+  });
 
   it.each([
     ['PENDING', new Date(Date.UTC(2020, 0, 1))],

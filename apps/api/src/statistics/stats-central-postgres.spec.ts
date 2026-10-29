@@ -452,11 +452,36 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
       changes.items.filter((item) => item.viewId === successor.id && item.action === 'REFRESH'),
     ).toHaveLength(1);
   });
-  it('bounds feed authority probes with retained tombstones and preserves exact paged revocations', async () => {
-    const background = { ...entity, maxId: `${entity.maxId}2` };
-    const [other] = await db.$queryRaw<Array<{ id: string }>>`
+  describe('retained feed history', () => {
+    let backgroundEntityId: string | undefined;
+    let timings: Record<string, number>;
+    beforeEach(() => {
+      backgroundEntityId = undefined;
+      timings = {};
+    });
+    // FLAG: Bulk deferred self-FK validation belongs to fixture teardown. It must
+    // finish before the outer cleanup; it is not part of the five-second feed read.
+    afterEach(async () => {
+      if (!backgroundEntityId) return;
+      const started = performance.now();
+      try {
+        await db.$executeRaw`DELETE FROM stats_entities WHERE id=${backgroundEntityId}::uuid OR (kind=${entity.kind} AND max_id=${entity.maxId})`;
+      } finally {
+        timings.cleanup = Math.round(performance.now() - started);
+        console.info('statistics-feed-phases', JSON.stringify(timings));
+      }
+    }, 15_000);
+    it('bounds feed authority probes with retained tombstones and preserves exact paged revocations', async () => {
+      let phaseStarted = performance.now();
+      const recordPhase = (name: string) => {
+        const finished = performance.now();
+        timings[name] = Math.round(finished - phaseStarted);
+        phaseStarted = finished;
+      };
+      const background = { ...entity, maxId: `${entity.maxId}2` };
+      const [other] = await db.$queryRaw<Array<{ id: string }>>`
       INSERT INTO stats_entities(kind,max_id) VALUES(${background.kind},${background.maxId}) RETURNING id`;
-    try {
+      backgroundEntityId = other!.id;
       await db.$executeRaw`
         INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,
           scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at,superseded_by,superseded_at)
@@ -484,6 +509,7 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
       await db.$executeRaw`ANALYZE stats_authorities`;
       await db.$executeRaw`ANALYZE stats_changes`;
       await db.$executeRaw`ANALYZE stats_entities`;
+      recordPhase('fixture');
       const cursor = encodeCursor(
         {
           type: 'changes',
@@ -569,6 +595,7 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
         items.filter((item) => item.viewId === consumer.id && item.action === 'REFRESH'),
       ).toHaveLength(2);
       expect(items).toHaveLength(3);
+      recordPhase('boundedProbeAndRevocations');
       await db.$executeRaw`
         INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,
           scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at)
@@ -578,6 +605,7 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
       await db.$executeRaw`
         INSERT INTO stats_changes(entity_id,entity_revision,cause,published_seq,published_at)
         VALUES(${other!.id}::uuid,5001,'DATA',${cursorSeq + 3n},now())`;
+      recordPhase('paginationFixture');
       const seen = new Set<string>();
       let continuation = page!.nextCursor;
       for (let index = 0; ; index++) {
@@ -593,9 +621,8 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
       }
       expect(seen.size).toBe(5001);
       expect(seen.has('00000000-0000-0000-0000-000000000000')).toBe(true);
-    } finally {
-      await db.$executeRaw`DELETE FROM stats_entities WHERE id=${other!.id}::uuid`;
-    }
+      recordPhase('pagination5001');
+    });
   });
   it('retries a nested PostgreSQL deadlock once without masking it behind Prisma P2010', async () => {
     const transaction = jest
