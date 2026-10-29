@@ -176,3 +176,27 @@ describe('closed retention diagnostics boundary', () => {
     ).toBe(false);
   });
 });
+
+describe('protection provenance boundary', () => {
+  it('keeps missing source evidence distinct from a completed catalogue', () => {
+    const base = { chatId: '-1', revision: 0, activationId: 'a', source: 'eraser', items: [] };
+    expect(
+      safetyDeskRetentionPreviewResponseSchema.parse({
+        ...base,
+        protection: { status: 'unavailable' },
+      }).protection,
+    ).toEqual({ status: 'unavailable' });
+    expect(
+      safetyDeskRetentionPreviewResponseSchema.safeParse({
+        ...base,
+        protection: { status: 'available' },
+      }).success,
+    ).toBe(false);
+    expect(
+      safetyDeskRetentionPreviewResponseSchema.safeParse({
+        ...base,
+        protectionEvidence: { source: 'audit_page_complete', completeFrom: '2020-01-01T00:00:00Z' },
+      }).success,
+    ).toBe(false);
+  });
+});

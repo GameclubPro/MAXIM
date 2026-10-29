@@ -119,10 +119,13 @@ describe('closed retention operator boundary', () => {
       items: [],
       nextAfter: null,
     };
-    const eraser: jest.Mocked<Pick<EraserControlService, 'enabled' | 'owns' | 'request'>> = {
+    const eraser: jest.Mocked<
+      Pick<EraserControlService, 'enabled' | 'owns' | 'request' | 'protectionReport'>
+    > = {
       enabled: false,
       owns: jest.fn().mockResolvedValue(true),
       request: jest.fn().mockResolvedValue(preview),
+      protectionReport: jest.fn().mockResolvedValue({ status: 'unavailable' }),
     };
     const service = new SafetyDeskRetentionService(
       prisma as unknown as PrismaService,

@@ -113,6 +113,7 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
         return;
       }
       if (!this.stopping && Date.now() >= this.nextMaintenanceAt) {
+        await this.store.retireTransferredCandidates();
         await this.store.discoverLegacyReceipts();
         this.nextMaintenanceAt = Date.now() + 60_000;
       }

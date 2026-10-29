@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type pg from 'pg';
+import { readProtectionEvidence } from './protection-evidence.js';
 import {
   ServiceError,
   type Candidate,
@@ -206,8 +207,12 @@ export class Store {
   private async applyProtection(client: pg.PoolClient, chatId: string, input: Protection) {
     await client.query('SELECT chat_id FROM eraser_policies WHERE chat_id=$1 FOR UPDATE', [chatId]);
     const old = (
-      await client.query<{ source_revision: string; bot_history_complete_from: Date | null }>(
-        'SELECT source_revision,bot_history_complete_from FROM eraser_protection_state WHERE chat_id=$1',
+      await client.query<{
+        source_revision: string;
+        bot_history_complete_from: Date | null;
+        history_anchor: Date | null;
+      }>(
+        'SELECT source_revision,bot_history_complete_from,history_anchor FROM eraser_protection_state WHERE chat_id=$1',
         [chatId],
       )
     ).rows[0];
@@ -216,6 +221,36 @@ export class Store {
         409,
         'ERASER_PROTECTION_REVISION_CONFLICT',
         'Защита публикаций уже изменена.',
+      );
+    const evidence = input.evidence ? readProtectionEvidence(input.evidence) : null;
+    const floor = input.botHistoryCompleteFrom ? Date.parse(input.botHistoryCompleteFrom) : null;
+    if (
+      evidence &&
+      (input.complete === false ||
+        evidence.chatId !== chatId ||
+        evidence.sourceRevision !== input.sourceRevision ||
+        evidence.completeFrom !== input.botHistoryCompleteFrom ||
+        evidence.completeThrough !== input.completeThrough)
+    )
+      throw new ServiceError(
+        409,
+        'ERASER_PROTECTION_EVIDENCE_CONFLICT',
+        'Подтверждение относится к другой версии защиты.',
+      );
+    // FLAG: Existing readers may refresh the same conservative floor. An earlier interval
+    // requires a complete source certificate; neither an audit page nor a timestamp is proof.
+    const anchor = old?.history_anchor ?? old?.bot_history_complete_from;
+    if (
+      anchor &&
+      input.complete !== false &&
+      floor !== null &&
+      floor < anchor.getTime() &&
+      !evidence
+    )
+      throw new ServiceError(
+        409,
+        'ERASER_PROTECTION_EVIDENCE_REQUIRED',
+        'Исторический интервал ещё не подтверждён.',
       );
     for (const [kind, ids] of [
       ['protected', input.protectedMessageIds],
@@ -235,13 +270,14 @@ export class Store {
       [chatId, input.protectedBotIds],
     );
     await client.query(
-      `INSERT INTO eraser_protection_state(chat_id,source_revision,complete_through,ready,bot_history_complete_from) VALUES($1,$2,$3,$4,$5) ON CONFLICT(chat_id) DO UPDATE SET source_revision=EXCLUDED.source_revision,complete_through=EXCLUDED.complete_through,ready=EXCLUDED.ready,bot_history_complete_from=CASE WHEN EXCLUDED.ready THEN EXCLUDED.bot_history_complete_from ELSE eraser_protection_state.bot_history_complete_from END,updated_at=CURRENT_TIMESTAMP`,
+      `INSERT INTO eraser_protection_state(chat_id,source_revision,complete_through,ready,bot_history_complete_from,evidence,history_anchor) VALUES($1,$2,$3,$4,$5,$6::jsonb,$5) ON CONFLICT(chat_id) DO UPDATE SET source_revision=EXCLUDED.source_revision,complete_through=EXCLUDED.complete_through,ready=EXCLUDED.ready,bot_history_complete_from=CASE WHEN EXCLUDED.ready THEN EXCLUDED.bot_history_complete_from ELSE eraser_protection_state.bot_history_complete_from END,evidence=CASE WHEN EXCLUDED.ready THEN EXCLUDED.evidence ELSE eraser_protection_state.evidence END,history_anchor=LEAST(COALESCE(eraser_protection_state.history_anchor,eraser_protection_state.bot_history_complete_from),EXCLUDED.history_anchor),updated_at=CURRENT_TIMESTAMP`,
       [
         chatId,
         input.sourceRevision,
         input.complete === false ? null : input.completeThrough,
         input.complete !== false,
         input.complete === false ? null : (input.botHistoryCompleteFrom ?? null),
+        evidence ? JSON.stringify(evidence) : null,
       ],
     );
     // FLAG: Revisit deferred ranges only after a complete local protection snapshot exists.
@@ -252,7 +288,6 @@ export class Store {
       );
     }
     // FLAG: An advancing current watermark cannot certify older module-bot publications.
-    const floor = input.botHistoryCompleteFrom ? Date.parse(input.botHistoryCompleteFrom) : null;
     if (
       input.complete !== false &&
       floor !== null &&

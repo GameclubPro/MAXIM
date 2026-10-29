@@ -21,6 +21,11 @@ import { getAppRole } from '../runtime/app-role';
 import type { NetworkSettingsWriteOptions } from '../admin/network-settings-write';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { buildBotIdVariants } from '../max/max-bot-config.util';
+import { protectionEvidence, protectionEvidencePage } from './eraser-protection-provenance';
+import {
+  retentionProtectionReportSchema,
+  type RetentionProtectionReport,
+} from '@maxim/contracts/safety-desk';
 
 // FLAG: A reader with this version must keep the persisted ownership fence, even with the flag off.
 export const ERASER_OWNERSHIP_VERSION = 1;
@@ -46,6 +51,9 @@ type OutboxRow = {
   rulesAuditAt: Date | null;
   rulesAuditId: string | null;
   rulesAuditComplete: boolean;
+  giveawayAuditAt: Date | null;
+  giveawayAuditId: string | null;
+  giveawayAuditComplete: boolean;
   holdCursor: string | null;
   holdsComplete: boolean;
   sourceCursor: string | null;
@@ -187,6 +195,67 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
 
   async read(chatId: string): Promise<MessageRetentionState> {
     return this.readState(chatId, false);
+  }
+
+  async protectionReport(chatId: string): Promise<RetentionProtectionReport> {
+    // FLAG: Closed detail reads use exact primary keys. Fleet polling does not run this query per chat.
+    const [row] = await this.prisma.$queryRaw<
+      {
+        revision: number;
+        deliveredRevision: number;
+        createdAt: Date;
+        giveawayEntities: boolean;
+        rulesAudit: boolean;
+        giveawayAudit: boolean;
+        legacyHolds: boolean;
+        sourceHolds: boolean;
+        evidenceReady: boolean;
+        references: bigint;
+        evidence: unknown;
+        retirementPresent: boolean;
+        scanComplete: boolean;
+        retired: bigint | null;
+        reconciliation: bigint | null;
+        retained: bigint | null;
+      }[]
+    >`
+      SELECT outbox.revision, outbox.delivered_revision AS "deliveredRevision", binding.created_at AS "createdAt",
+        bootstrap_complete AS "giveawayEntities", rules_audit_complete AS "rulesAudit", giveaway_audit_complete AS "giveawayAudit",
+        holds_complete AS "legacyHolds", source_stage=3 AS "sourceHolds",
+        evidence_revision=outbox.revision AND evidence_stage=2 AS "evidenceReady", evidence_count AS "references",
+        delivered_evidence AS evidence, retirement.chat_id IS NOT NULL AS "retirementPresent",
+        retirement.completed_at IS NOT NULL AS "scanComplete", retired_count AS retired,
+        reconciliation_count AS reconciliation, retained_count AS retained
+      FROM eraser_chat_bindings binding JOIN eraser_protection_outbox outbox ON outbox.chat_id=binding.chat_id
+      LEFT JOIN eraser_legacy_retirement retirement ON retirement.chat_id=binding.chat_id
+      WHERE binding.chat_id=${chatId}`;
+    if (!row) return { status: 'unavailable' };
+    return retentionProtectionReportSchema.parse({
+      status: 'available',
+      sourceRevision: row.revision,
+      deliveredRevision: row.deliveredRevision,
+      historicalGapBefore: row.createdAt.toISOString(),
+      imports: {
+        giveawayEntities: row.giveawayEntities,
+        rulesAudit: row.rulesAudit,
+        giveawayAudit: row.giveawayAudit,
+        legacyHolds: row.legacyHolds,
+        sourceHolds: row.sourceHolds,
+      },
+      catalog: { ready: row.evidenceReady, referencesHashed: Number(row.references) },
+      deliveredEvidence: row.evidence as Extract<
+        RetentionProtectionReport,
+        { status: 'available' }
+      >['deliveredEvidence'],
+      legacyRetirement: row.retirementPresent
+        ? {
+            scanComplete: row.scanComplete,
+            retiredCount: Number(row.retired),
+            reconciliationCount: Number(row.reconciliation),
+            retainedAtScan: Number(row.retained),
+          }
+        : null,
+    });
   }
 
   private async readState(
@@ -350,6 +419,7 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
         },
       });
       await tx.$executeRaw`INSERT INTO eraser_protection_outbox(chat_id) VALUES(${chatId}) ON CONFLICT DO NOTHING`;
+      await tx.$executeRaw`INSERT INTO eraser_legacy_retirement(chat_id) VALUES(${chatId}) ON CONFLICT DO NOTHING`;
     });
   }
 
@@ -378,13 +448,14 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
     const rows = await this.prisma.$queryRaw<OutboxRow[]>`
       UPDATE eraser_protection_outbox SET lease_token = ${token}, lease_until = CURRENT_TIMESTAMP + INTERVAL '30 seconds'
       WHERE chat_id = ${chatId} AND (lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP)
-      RETURNING chat_id AS "chatId", revision, delivered_revision AS "deliveredRevision", bootstrap_cursor AS "bootstrapCursor", bootstrap_complete AS "bootstrapComplete", rules_audit_at AS "rulesAuditAt", rules_audit_id AS "rulesAuditId", rules_audit_complete AS "rulesAuditComplete", hold_cursor AS "holdCursor", holds_complete AS "holdsComplete", source_cursor AS "sourceCursor", source_stage AS "sourceStage"`;
+      RETURNING chat_id AS "chatId", revision, delivered_revision AS "deliveredRevision", bootstrap_cursor AS "bootstrapCursor", bootstrap_complete AS "bootstrapComplete", rules_audit_at AS "rulesAuditAt", rules_audit_id AS "rulesAuditId", rules_audit_complete AS "rulesAuditComplete", giveaway_audit_at AS "giveawayAuditAt", giveaway_audit_id AS "giveawayAuditId", giveaway_audit_complete AS "giveawayAuditComplete", hold_cursor AS "holdCursor", holds_complete AS "holdsComplete", source_cursor AS "sourceCursor", source_stage AS "sourceStage"`;
     const outbox = rows[0];
     if (!outbox) return;
     try {
       if (
         !outbox.bootstrapComplete ||
         !outbox.rulesAuditComplete ||
+        !outbox.giveawayAuditComplete ||
         !outbox.holdsComplete ||
         outbox.sourceStage < 3
       ) {
@@ -399,7 +470,13 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
         SELECT bot_id AS "botId" FROM eraser_protected_bots WHERE chat_id = ${chatId} AND delivered = FALSE ORDER BY bot_id LIMIT ${BOT_PAGE_SIZE}`;
       const [binding] = await this.prisma.$queryRaw<{ hours: number; createdAt: Date }[]>`
         SELECT legacy_hours AS hours, created_at AS "createdAt" FROM eraser_chat_bindings WHERE chat_id = ${chatId}`;
-      const complete = messages.length < PAGE_SIZE && protectedBots.length < BOT_PAGE_SIZE;
+      const catalog = await this.prisma.$transaction((tx) =>
+        protectionEvidencePage(tx, chatId, token),
+      );
+      const complete =
+        messages.length < PAGE_SIZE &&
+        protectedBots.length < BOT_PAGE_SIZE &&
+        catalog?.revision === outbox.revision;
       const guards = complete
         ? await this.prisma.$queryRaw<{ earliest: Date | null }[]>`
         SELECT started_at AS earliest FROM eraser_publication_fences
@@ -409,6 +486,10 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
       const through = earliest
         ? new Date(Math.min(cutoff.getTime(), earliest.getTime() - 1))
         : cutoff;
+      const evidence =
+        complete && binding && catalog
+          ? protectionEvidence(chatId, outbox.revision, binding.createdAt, through, catalog)
+          : null;
       if (outbox.deliveredRevision < 0) {
         await this.request(
           `/chats/${encodeURIComponent(chatId)}/bootstrap`,
@@ -433,6 +514,7 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
           botHistoryCompleteFrom: binding?.createdAt.toISOString() ?? null,
           complete,
           completeThrough: complete ? through.toISOString() : null,
+          ...(evidence ? { evidence } : {}),
         },
         'protection',
       );
@@ -448,6 +530,7 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
             AND EXISTS(SELECT 1 FROM eraser_protection_outbox WHERE chat_id = ${chatId} AND revision = ${outbox.revision} AND lease_token = ${token})`);
       await this.prisma.$executeRaw`
         UPDATE eraser_protection_outbox SET delivered_revision = CASE WHEN ${complete} THEN revision ELSE delivered_revision END,
+          delivered_evidence = CASE WHEN ${complete} THEN ${JSON.stringify(evidence)}::jsonb ELSE delivered_evidence END,
           next_attempt_at = CURRENT_TIMESTAMP + ${complete ? 600_000 : 100} * INTERVAL '1 millisecond'
         WHERE chat_id = ${chatId} AND revision = ${outbox.revision} AND lease_token = ${token}`;
     } finally {
@@ -533,6 +616,27 @@ export class EraserControlService implements OnModuleInit, OnModuleDestroy {
               await this.protectBot(tx, chatId, payload[key]);
         }
         await tx.$executeRaw`UPDATE eraser_protection_outbox SET rules_audit_at = ${audit.at(-1)?.createdAt ?? outbox.rulesAuditAt}, rules_audit_id = ${audit.at(-1)?.id ?? outbox.rulesAuditId}, rules_audit_complete = ${audit.length < PAGE_SIZE} WHERE chat_id = ${chatId} AND lease_token = ${token}`;
+      }
+      if (!outbox.giveawayAuditComplete) {
+        // FLAG: Exact audit references survive entity deletion. Missing results history remains a gap.
+        const audit = await tx.$queryRaw<
+          { id: string; createdAt: Date; messageId: string | null; botId: string | null }[]
+        >`
+          SELECT id, created_at AS "createdAt",
+            CASE WHEN jsonb_typeof(payload->'publicationMessageId')='string' AND length(payload->>'publicationMessageId') BETWEEN 1 AND 256 THEN payload->>'publicationMessageId' END AS "messageId",
+            CASE WHEN jsonb_typeof(payload->'publicationBotId')='string' AND length(payload->>'publicationBotId') BETWEEN 1 AND 256 THEN payload->>'publicationBotId' END AS "botId"
+          FROM audit_logs WHERE chat_id=${chatId} AND action='PUBLISH_GIVEAWAY'
+            AND (created_at,id) > (${outbox.giveawayAuditAt ?? new Date(0)},${outbox.giveawayAuditId ?? ''})
+          ORDER BY created_at,id LIMIT ${PAGE_SIZE}`;
+        for (const row of audit) {
+          if (row.messageId) await this.protect(tx, chatId, row.messageId, false);
+          if (row.botId) await this.protectBot(tx, chatId, row.botId);
+        }
+        await tx.$executeRaw`
+          UPDATE eraser_protection_outbox SET giveaway_audit_at=${audit.at(-1)?.createdAt ?? outbox.giveawayAuditAt},
+            giveaway_audit_id=${audit.at(-1)?.id ?? outbox.giveawayAuditId}, giveaway_audit_complete=${audit.length < PAGE_SIZE},
+            giveaway_audit_count=giveaway_audit_count+${audit.length}
+          WHERE chat_id=${chatId} AND lease_token=${token}`;
       }
       if (!outbox.holdsComplete) {
         // FLAG: Page candidates before effect probes; never scan a chat's complete deletion history.

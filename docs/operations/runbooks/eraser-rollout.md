@@ -161,8 +161,60 @@ Public connection states remain pending, expired or cancelled; activation is rep
 by the saved enabled policy. Neither surface exposes lease tokens or raw upstream errors.
 
 The expanded diagnostics retain the lazy-loaded retention panel and add no browser dependency.
-The measured complete Safety Desk build is 457.0 KiB raw / 127.8 KiB gzip JavaScript; its
-reviewed feature budget is 459 / 129 KiB. CSS and budget tolerance remain unchanged.
+The measured complete Safety Desk build with the historical protection report is
+462.2 KiB raw / 129.2 KiB gzip JavaScript; its reviewed feature budget is 464 / 130 KiB.
+CSS and budget tolerance remain unchanged.
+
+## Historical protection evidence and legacy retirement
+
+The bridge imports exact `PUBLISH_GIVEAWAY` audit references independently of surviving
+giveaway entities. Its `(created_at, id)` cursor handles tied timestamps and advances
+only in the same transaction as the protected references and historical bot identities.
+Each visit reads at most 500 rows through the action-specific partial index. Audit
+completion does not prove a complete catalogue of old results or removed publications.
+Missing or malformed references never widen the historical interval.
+
+A separate bounded pass hashes the exact message/hold and bot catalogue, 500 rows at
+a time, at one protection revision. A source revision change restarts this pass; a
+partial hash cannot certify delivery. The `ownership_capture_v1` certificate binds
+the chat, revision, conservative ownership start, current protected watermark, catalogue
+digest and reference count with SHA-256. It is evidence from the authenticated control
+source, not an independent signature or proof that old audit history was exhaustive.
+This source never certifies an interval before the saved ownership start. Older
+intervals require another reviewed source of complete evidence; do not manufacture a
+certificate from an empty audit page or manually lower a timestamp.
+
+Lastik validates certificate identity and checksum before accepting an earlier historical
+floor. Its retained `history_anchor` survives an omitted/null floor, so clearing a field
+cannot bypass the evidence requirement on the next update. Initial legacy delivery
+can establish the same conservative baseline as before; it is not presented as a
+verified certificate. Incomplete catalogue pages and source fences retain their existing
+protection. The full MAX timestamp boundary remains a coverage gap, never a reason to
+skip a millisecond.
+
+The closed per-chat review shows source and delivered revisions, import phases,
+catalogue progress, the source and runtime certificates, and the unproved earlier
+history. Missing report data is unavailable. A matching checksum alone is insufficient
+for the current-version label when the source revision has advanced. These exact-key
+detail queries are outside fleet polling, whose fixed page query budget is unchanged.
+The public confirmed-removal counter and retention periods are unchanged.
+
+The legacy retention role discovers transferred chats in primary-key pages and visits
+at most five due chats per maintenance pass, bounded to two seconds between transactions.
+Each transaction selects at most 100 active candidates through the dedicated partial
+index, with a 300 ms lock timeout and 1.5 second statement timeout. It locks intents,
+quota, policy and candidates in the existing receipt order. Only an ended activation
+with proof of no dispatch can become cancelled; admission credit is released exactly
+once. Missing/mismatched journals, independent intents, active leases, ambiguous
+statuses and mutation evidence stay intact. Positive receipts enter the existing
+database-only reconciliation path. No MAX request or queue removal occurs here.
+
+Retirement progress and its cursor commit with the candidate/quota updates. Lock or
+consistency failures roll back the page and defer that chat without blocking independent
+chats. `scanComplete` means the bounded pass ended, not that all journals were resolved.
+The retained-at-scan count is a historical observation, not a live uncertainty count.
+New fields and certificates are additive; existing policy states, ownership fences,
+receipt readers and all installed rollback floors remain required.
 
 ## Due scheduling and control scans
 
