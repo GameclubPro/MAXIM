@@ -5,6 +5,7 @@ export const karavanMarketplaceChatIdSchema = z.string().regex(/^-?\d{1,24}$/u);
 export const karavanMarketplaceActorIdSchema = z.string().regex(/^\d{1,24}$/u);
 export const karavanMarketplaceIdSchema = z.string().uuid();
 export const karavanMarketplaceActionSchema = z.enum([
+  'manage_shop',
   'create_marketplace',
   'read_chat_module',
   'bind_chat',

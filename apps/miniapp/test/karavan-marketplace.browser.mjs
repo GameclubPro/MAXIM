@@ -203,18 +203,10 @@ try {
             if (['partial', 'partial_bound'].includes(scenario)) {
               if (scenario === 'partial_bound') {
                 await page.getByRole('button', { name: 'Настроить черновик' }).click();
-                await page.waitForFunction(() => window.__karavanOpened.length === 1);
-                const handoff = await page.evaluate(() =>
-                  window.__karavanRequests.find((item) => item.path.endsWith('/handoffs')),
-                );
-                assert.ok(handoff, 'partial setup must preserve a verified Major return');
-                assert.equal(handoff.path, '/chats/-123/karavan-marketplace/handoffs');
-                assert.equal(handoff.body.destination, 'manage');
-                assert.equal(handoff.body.marketplaceId, 'a0d9b7ce-0040-4c85-a7ec-e3cf6da94c10');
-                assert.match(
-                  await page.evaluate(() => window.__karavanOpened[0]),
-                  /startapp=community_h_/u,
-                );
+                const panel = page.getByRole('dialog', { name: 'Настройки магазина', exact: true });
+                await panel.getByRole('button', { name: 'Каталог', exact: true }).waitFor();
+                assert.equal(await page.evaluate(() => window.__karavanOpened.length), 0);
+                await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
               } else {
                 assert.equal(
                   await page.getByRole('button', { name: 'Настроить черновик' }).count(),
@@ -232,7 +224,11 @@ try {
                   { exact: true },
                 )
                 .waitFor();
-            } else await page.getByText('Черновик', { exact: true }).waitFor();
+            } else
+              await page
+                .locator('.karavan-module__identity p')
+                .filter({ hasText: /^Черновик/u })
+                .waitFor();
             const requests = await page.evaluate(() =>
               window.__karavanRequests.filter((item) => item.path.endsWith('/setup')),
             );
@@ -315,12 +311,19 @@ try {
                 () => window.__karavanRequests.find((item) => item.path.endsWith('/setup')).body,
               );
               await page.reload();
-              await page.getByText('Открыт', { exact: true }).waitFor();
+              await page
+                .locator('.karavan-module__identity p')
+                .filter({ hasText: /^Открыт/u })
+                .waitFor();
               const retried = await page.evaluate(
                 () => window.__karavanRequests.find((item) => item.path.endsWith('/setup')).body,
               );
               assert.deepEqual(retried, initial, 'reload must preserve immutable existing setup');
-            } else await page.getByText('Открыт', { exact: true }).waitFor();
+            } else
+              await page
+                .locator('.karavan-module__identity p')
+                .filter({ hasText: /^Открыт/u })
+                .waitFor();
             const request = await page.evaluate(
               () => window.__karavanRequests.find((item) => item.path.endsWith('/setup')).body,
             );
@@ -346,7 +349,10 @@ try {
           }
           if (scenario === 'recovery') {
             await page.getByRole('button', { name: 'Восстановить подключение' }).click();
-            await page.getByText('Открыт', { exact: true }).waitFor();
+            await page
+              .locator('.karavan-module__identity p')
+              .filter({ hasText: /^Открыт/u })
+              .waitFor();
             const body = await page.evaluate(
               () => window.__karavanRequests.find((item) => item.path.includes('/bindings/')).body,
             );
@@ -354,7 +360,7 @@ try {
             assert.equal(body.expectedBindingGeneration, 1);
           }
           if (scenario === 'disconnect') {
-            await page.getByText('Настройки подключения', { exact: true }).click();
+            await page.getByRole('button', { name: 'Чаты', exact: true }).click();
             await page.getByRole('button', { name: 'Отключить этот чат' }).click();
             assert.equal(
               await page.evaluate(
@@ -368,9 +374,9 @@ try {
             await page.getByText('Чат отключён от магазина.').waitFor();
           }
           if (scenario === 'reviewer') {
-            await page.getByRole('button', { name: 'Заявки · 3' }).waitFor();
+            await page.getByRole('button', { name: 'Заявки', exact: true }).waitFor();
             assert.equal(
-              await page.getByRole('button', { name: 'Категории и правила' }).count(),
+              await page.getByRole('button', { name: 'Категории', exact: true }).count(),
               0,
             );
           }
@@ -379,12 +385,15 @@ try {
           if (scenario === 'draft_empty')
             assert.equal(
               await page.locator('.karavan-module__primary').innerText(),
-              'Пригласить продавцов',
+              'Открыть магазин',
             );
           if (scenario === 'active' || scenario === 'draft')
-            assert.equal(await page.locator('.karavan-module__primary').innerText(), 'Управлять');
+            assert.equal(
+              await page.locator('.karavan-module__primary').innerText(),
+              'Открыть магазин',
+            );
           if (['active', 'public_view'].includes(scenario)) {
-            await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
+            await page.getByRole('button', { name: 'Открыть магазин', exact: true }).click();
             await page.waitForFunction(() => window.__karavanOpened.length === 1);
             const request = await page.evaluate(() =>
               window.__karavanRequests.find((item) => item.path.endsWith('/handoffs')),
@@ -405,7 +414,7 @@ try {
             }
           }
           if (['draft', 'draft_empty', 'paused'].includes(scenario)) {
-            await page.getByRole('button', { name: 'Предпросмотр', exact: true }).click();
+            await page.getByRole('button', { name: 'Открыть магазин', exact: true }).click();
             await page.waitForFunction(() => window.__karavanOpened.length === 1);
             assert.equal(
               await page.evaluate(
@@ -417,17 +426,18 @@ try {
             );
           }
           if (scenario === 'preview_missing') {
+            await page.getByRole('button', { name: 'Открыть магазин', exact: true }).waitFor();
             assert.equal(
               await page.getByRole('button', { name: 'Предпросмотр', exact: true }).count(),
               0,
             );
             assert.equal(
-              await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).count(),
-              0,
+              await page.getByRole('button', { name: 'Открыть магазин', exact: true }).count(),
+              1,
             );
           }
           if (scenario === 'switch_chat') {
-            await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
+            await page.getByRole('button', { name: 'Открыть магазин', exact: true }).click();
             await page.waitForFunction(() => typeof window.__resolveKaravanHandoff === 'function');
             await page.evaluate(() => window.__switchKaravanChat());
             await page.getByRole('heading', { name: 'Другой магазин' }).waitFor();

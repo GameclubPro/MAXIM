@@ -44,7 +44,7 @@
     opacity: 0.5;
     cursor: default;
   }
-  body[data-miniapp-profile='moderation'] .karavan-module .karavan-module__primary {
+  body[data-miniapp-profile='moderation'] .karavan-module button.karavan-module__primary {
     background: var(--karavan-brand);
     border-color: var(--karavan-brand);
     color: var(--karavan-on-brand);

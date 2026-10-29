@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
+import ShopPublicationsEntry from './karavan-shop/publications-entry';
+import KaravanShopManager from './karavan-shop/manager';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   karavanMarketplaceSetupSchema,
@@ -31,9 +34,17 @@ import '../../styles/karavan-marketplace.css';
 export default function KaravanMarketplacePanel({
   api,
   chatId,
+  publications,
+  publicationsFooter,
+  publicationsDirty,
+  discardPublications,
 }: {
   api: ApiTransport;
   chatId: string;
+  publications?: ReactNode;
+  publicationsFooter?: ReactNode;
+  publicationsDirty?: boolean;
+  discardPublications?: () => void;
 }) {
   const queryClient = useQueryClient();
   const currentChat = useRef<string | null>(chatId);
@@ -50,7 +61,7 @@ export default function KaravanMarketplacePanel({
     staleTime: 15_000,
     retry: false,
   });
-  const [step, setStep] = useState<'intro' | 'wizard' | 'existing'>('intro');
+  const [step, setStep] = useState<'intro' | 'wizard' | 'existing' | 'add_chats'>('intro');
   const [saved, setSaved] = useState<KaravanMarketplaceSetup | null>(null);
   const [operation, setOperation] = useState<KaravanMarketplaceOperation | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -58,6 +69,16 @@ export default function KaravanMarketplacePanel({
   const module = query.data?.enabled ? query.data : null;
   const storageKey = module ? `karavan-setup:v1:${module.actorMaxUserId}:${chatId}` : null;
   const bind = useKaravanMarketplaceBinding(api, chatId, module?.actorMaxUserId);
+  const [pendingManagerOpen, setPendingManagerOpen] = useState(false);
+  const publicationEntry = publications ? (
+    <ShopPublicationsEntry
+      dirty={publicationsDirty}
+      discard={discardPublications}
+      footer={publicationsFooter}
+    >
+      {publications}
+    </ShopPublicationsEntry>
+  ) : null;
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
   const chats = useQuery({
     queryKey: ['karavan-setup-chats'],
@@ -200,6 +221,7 @@ export default function KaravanMarketplacePanel({
     return (
       <div className="karavan-module" role="status">
         <Spinner size="sm" label="Проверяем магазин" />
+        {publicationEntry}
       </div>
     );
   if (query.isError)
@@ -209,34 +231,23 @@ export default function KaravanMarketplacePanel({
         <button type="button" onClick={() => void query.refetch()}>
           Повторить
         </button>
+        {publicationEntry}
       </section>
     );
   if (!module)
     return (
       <div className="karavan-module" role="status">
         <p>Магазин чата пока недоступен.</p>
+        {publicationEntry}
       </div>
     );
   const marketplace = module.marketplace;
   const active = marketplace?.status === 'active';
-  const canReview = module.permissions.includes('review_listing');
-  const canManage = module.permissions.includes('manage_marketplace');
   const canOpen = module.permissions.length > 0;
   const canBind = module.permissions.includes('bind_chat');
   const busy = handoff.isPending || bind.isPending;
   const ready = hydrated && bind.hydrated;
   const canEnter = canOpen && module.binding?.state === 'verified';
-  const emptyDraft =
-    canManage &&
-    marketplace?.status === 'draft' &&
-    module.counts.listings === 0 &&
-    module.counts.pendingApplications === 0;
-  const primaryDestination =
-    !canManage && canReview ? 'applications' : emptyDraft ? 'invite_sellers' : 'manage';
-  const applicationsLabel =
-    module.counts.pendingApplications > 0
-      ? `Заявки · ${module.counts.pendingApplications}`
-      : 'Заявки';
   const startBinding = (action: 'unbind_chat' | 'recover_chat') => {
     if (!marketplace || !module.binding) return;
     setDisconnectConfirm(false);
@@ -378,154 +389,54 @@ export default function KaravanMarketplacePanel({
             </button>
           ) : null}
           {canEnter && operation?.checkpoints.marketplaceId === marketplace?.id ? (
-            <button type="button" disabled={busy} onClick={() => handoff.mutate('manage')}>
+            <button type="button" disabled={busy} onClick={() => setPendingManagerOpen(true)}>
               {handoff.isPending ? 'Открываем…' : 'Настроить черновик'}
             </button>
           ) : null}
         </>
       ) : marketplace && step === 'intro' ? (
-        <>
-          <div className="karavan-module__identity">
-            <h3>{marketplace.name}</h3>
-            <p>
-              {active
-                ? 'Открыт'
-                : marketplace.status === 'draft'
-                  ? 'Черновик'
-                  : marketplace.status === 'paused'
-                    ? 'На паузе'
-                    : 'В архиве'}
-            </p>
-          </div>
-          {module.binding?.state !== 'verified' ? (
-            <>
-              <p role="status">
-                {module.binding?.state === 'disconnected'
-                  ? 'Чат отключён от магазина.'
-                  : 'Подключение чата требует восстановления.'}
-              </p>
-              {canBind && marketplace.status !== 'archived' ? (
+        canEnter ? (
+          <KaravanShopManager
+            api={api}
+            chatId={chatId}
+            module={module}
+            busy={busy}
+            open={(destination) => handoff.mutate(destination)}
+            publications={publications}
+            publicationsFooter={publicationsFooter}
+            publicationsDirty={publicationsDirty}
+            discardPublications={discardPublications}
+            chats={
+              <>
+                <ul className="karavan-module__progress">
+                  {module.bindings?.map((binding) => (
+                    <li key={binding.id}>
+                      <span>{binding.chatTitle || 'Чат'}</span>
+                      <strong>
+                        {binding.state === 'verified'
+                          ? 'Подключён'
+                          : binding.state === 'disconnected'
+                            ? 'Отключён'
+                            : 'Нужна проверка'}
+                      </strong>
+                    </li>
+                  ))}
+                </ul>
                 <button
                   type="button"
-                  className="karavan-module__primary"
                   disabled={busy || !ready}
-                  onClick={() => startBinding('recover_chat')}
+                  onClick={() => setStep('add_chats')}
                 >
-                  Восстановить подключение
+                  Подключить чаты
                 </button>
-              ) : null}
-            </>
-          ) : null}
-          <div className="karavan-module__entry-actions">
-            {canEnter ? (
-              <button
-                type="button"
-                className="karavan-module__primary"
-                disabled={busy}
-                onClick={() => handoff.mutate(primaryDestination)}
-              >
-                {handoff.isPending
-                  ? 'Открываем…'
-                  : primaryDestination === 'applications'
-                    ? applicationsLabel
-                    : emptyDraft
-                      ? 'Пригласить продавцов'
-                      : 'Управлять'}
-              </button>
-            ) : null}
-            {active && module.buyerUrl ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  if (canEnter) handoff.mutate('view');
-                  else if (!openMaxBotLinkAndClose(module.buyerUrl!))
-                    setNotice('Откройте магазин из MAX.');
-                }}
-              >
-                Посмотреть магазин
-              </button>
-            ) : (marketplace.status === 'draft' || marketplace.status === 'paused') &&
-              module.previewUrl ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  if (canEnter) handoff.mutate('preview');
-                  else if (!openMaxBotLinkAndClose(module.previewUrl!))
-                    setNotice('Откройте магазин из MAX.');
-                }}
-              >
-                Предпросмотр
-              </button>
-            ) : null}
-          </div>
-          {canEnter ? (
-            <div className="karavan-module__actions karavan-module__tools">
-              {primaryDestination !== 'applications' &&
-              canReview &&
-              module.counts.pendingApplications > 0 ? (
-                <button
-                  type="button"
-                  disabled={handoff.isPending}
-                  onClick={() => handoff.mutate('applications')}
-                >
-                  {applicationsLabel}
+                <button type="button" disabled={busy || !ready} onClick={() => setStep('existing')}>
+                  Выбрать другой магазин
                 </button>
-              ) : null}
-              {canManage && marketplace.status !== 'archived' ? (
-                <button
-                  type="button"
-                  disabled={handoff.isPending}
-                  onClick={() => handoff.mutate(emptyDraft ? 'manage' : 'invite_sellers')}
-                >
-                  {emptyDraft ? 'Управлять' : 'Пригласить продавцов'}
-                </button>
-              ) : null}
-              {canManage && marketplace.status === 'draft' ? (
-                <button
-                  type="button"
-                  disabled={handoff.isPending}
-                  onClick={() => handoff.mutate('open_marketplace')}
-                >
-                  Открыть для покупателей
-                </button>
-              ) : null}
-            </div>
-          ) : !canOpen ? (
-            <p>Попросите владельца магазина предоставить доступ к управлению.</p>
-          ) : null}
-          {module.bindings?.length ? (
-            <details>
-              <summary>Подключённые чаты · {module.counts.chats}</summary>
-              <ul className="karavan-module__progress">
-                {module.bindings.map((binding) => (
-                  <li key={binding.id}>
-                    <span>{binding.chatTitle || 'Чат'}</span>
-                    <strong>
-                      {binding.state === 'verified'
-                        ? 'Подключён'
-                        : binding.state === 'disconnected'
-                          ? 'Отключён'
-                          : 'Нужна проверка'}
-                    </strong>
-                  </li>
-                ))}
-              </ul>
-              {module.counts.chats > module.bindings.length ? (
-                <p>Все подключения доступны в настройках магазина.</p>
-              ) : null}
-            </details>
-          ) : null}
-          {canBind ? (
-            <details>
-              <summary>Настройки подключения</summary>
-              <div className="karavan-module__actions">
                 {disconnectConfirm ? (
-                  <>
+                  <div className="karavan-module__actions">
                     <p>
-                      Этот чат перестанет открывать магазин. Если он последний, показ магазина
-                      покупателям приостановится. Витрины и заказы сохранятся.
+                      Этот чат перестанет открывать магазин. Если он последний, просмотр
+                      приостановится. Витрины и заказы сохранятся.
                     </p>
                     <button
                       type="button"
@@ -537,31 +448,55 @@ export default function KaravanMarketplacePanel({
                     <button type="button" onClick={() => setDisconnectConfirm(false)}>
                       Отмена
                     </button>
-                  </>
+                  </div>
                 ) : (
-                  <>
-                    <button
-                      type="button"
-                      disabled={busy || !ready}
-                      onClick={() => setStep('existing')}
-                    >
-                      Выбрать другой магазин
-                    </button>
-                    {module.binding?.state === 'verified' ? (
-                      <button
-                        type="button"
-                        disabled={busy || !ready}
-                        onClick={() => setDisconnectConfirm(true)}
-                      >
-                        Отключить этот чат
-                      </button>
-                    ) : null}
-                  </>
+                  <button
+                    type="button"
+                    disabled={busy || !ready}
+                    onClick={() => setDisconnectConfirm(true)}
+                  >
+                    Отключить этот чат
+                  </button>
                 )}
-              </div>
-            </details>
-          ) : null}
-        </>
+              </>
+            }
+          />
+        ) : (
+          <>
+            <h3>{marketplace.name}</h3>
+            <p role="status">
+              {module.binding?.state === 'disconnected'
+                ? 'Чат отключён от магазина.'
+                : module.binding?.state !== 'verified'
+                  ? 'Подключение чата требует восстановления.'
+                  : 'Не удалось подтвердить права администратора.'}
+            </p>
+            {canBind && marketplace.status !== 'archived' ? (
+              <button
+                type="button"
+                className="karavan-module__primary"
+                disabled={busy || !ready}
+                onClick={() => startBinding('recover_chat')}
+              >
+                Восстановить подключение
+              </button>
+            ) : null}
+            {active && module.buyerUrl ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!openMaxBotLinkAndClose(module.buyerUrl!))
+                    setNotice('Откройте магазин из MAX.');
+                }}
+              >
+                Открыть магазин
+              </button>
+            ) : null}
+            <button type="button" onClick={() => void query.refetch()}>
+              Проверить снова
+            </button>
+          </>
+        )
       ) : step === 'intro' ? (
         <>
           <h3>{module.currentChatTitle || 'Магазин вашего чата'}</h3>
@@ -580,11 +515,39 @@ export default function KaravanMarketplacePanel({
           chatId={chatId}
           chatTitle={module.currentChatTitle ?? ''}
           actorId={module.actorMaxUserId}
-          existing={step === 'existing'}
+          existing={step === 'existing' || step === 'add_chats'}
+          initialMarketplaceId={step === 'add_chats' ? marketplace?.id : undefined}
           onCancel={() => setStep('intro')}
           onSubmit={start}
         />
       )}
+      {!(marketplace && step === 'intro' && canEnter && !saved && !bind.request)
+        ? publicationEntry
+        : null}
+      {pendingManagerOpen && canEnter && marketplace ? (
+        <SettingsDrilldownPanel
+          id="karavan-pending-shop"
+          title="Настройки магазина"
+          open
+          onClose={() => setPendingManagerOpen(false)}
+          className="settings-storefront-panel"
+        >
+          <div className="karavan-module">
+            <KaravanShopManager
+              api={api}
+              chatId={chatId}
+              module={module}
+              busy={busy}
+              open={(destination) => handoff.mutate(destination)}
+              chats={
+                <button type="button" onClick={() => setPendingManagerOpen(false)}>
+                  Вернуться к подключению
+                </button>
+              }
+            />
+          </div>
+        </SettingsDrilldownPanel>
+      ) : null}
     </section>
   );
 }

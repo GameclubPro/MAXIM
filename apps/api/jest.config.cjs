@@ -17,8 +17,10 @@ module.exports = {
     '^@maxim/contracts/network-settings-metadata$':
       '<rootDir>/../../packages/contracts/src/network-settings-metadata.ts',
     '^@maxim/contracts/networks-stats$': '<rootDir>/../../packages/contracts/src/networks-stats.ts',
-    '^@maxim/contracts/statistics-central$': '<rootDir>/../../packages/contracts/src/statistics-central.ts',
-    '^@maxim/contracts/statistics-central-validation$': '<rootDir>/../../packages/contracts/src/statistics-central-validation.ts',
+    '^@maxim/contracts/statistics-central$':
+      '<rootDir>/../../packages/contracts/src/statistics-central.ts',
+    '^@maxim/contracts/statistics-central-validation$':
+      '<rootDir>/../../packages/contracts/src/statistics-central-validation.ts',
     '^@maxim/contracts/statistics-exchange-v3$':
       '<rootDir>/../../packages/contracts/src/statistics-exchange-v3.ts',
     '^@maxim/contracts/marketplace-integration$':
@@ -42,6 +44,8 @@ module.exports = {
     '^@maxim/contracts/giveaway$': '<rootDir>/../../packages/contracts/src/giveaway.ts',
     '^@maxim/contracts/karavan-marketplace$':
       '<rootDir>/../../packages/contracts/src/karavan-marketplace.ts',
+    '^@maxim/contracts/karavan-marketplace-management$':
+      '<rootDir>/../../packages/contracts/src/karavan-marketplace-management.ts',
     '^@maxim/contracts/karavan-storefront$':
       '<rootDir>/../../packages/contracts/src/karavan-storefront.ts',
     '^@maxim/contracts/managed-entities$':

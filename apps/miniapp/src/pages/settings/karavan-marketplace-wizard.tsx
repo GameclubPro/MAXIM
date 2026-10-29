@@ -46,6 +46,7 @@ export default function KaravanMarketplaceWizard({
   chatTitle,
   actorId,
   existing = false,
+  initialMarketplaceId,
   onSubmit,
   onCancel,
 }: {
@@ -54,13 +55,14 @@ export default function KaravanMarketplaceWizard({
   chatTitle: string;
   actorId: string;
   existing?: boolean;
+  initialMarketplaceId?: string;
   onSubmit: (input: KaravanMarketplaceSetup) => void;
   onCancel: () => void;
 }) {
-  const storageKey = `karavan-setup-draft:v1:${actorId}:${chatId}`;
+  const storageKey = `karavan-setup-draft:v1:${actorId}:${chatId}${initialMarketplaceId ? `:${initialMarketplaceId}` : ''}`;
   const [draft, setDraft] = useState<Draft>({
     mode: existing ? 'existing' : 'new',
-    existingId: null,
+    existingId: initialMarketplaceId ?? null,
     name: chatTitle.slice(0, 120),
     rules: defaultRules,
     categories: [],
@@ -265,7 +267,9 @@ export default function KaravanMarketplaceWizard({
       .filter(
         (item) =>
           item.marketplace.status !== 'archived' &&
-          (item.permissions.includes('bind_chat') || item.permissions.includes('manage_network')),
+          (item.permissions.includes('bind_chat') ||
+            item.permissions.includes('manage_network') ||
+            item.permissions.includes('manage_marketplace')),
       ) ?? [];
   const matchingChats =
     chats.data?.filter(
