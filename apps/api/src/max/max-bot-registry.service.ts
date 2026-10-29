@@ -14,7 +14,12 @@ import {
   isOperationalBotState,
 } from './max-bot-state.util';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
-import { MAX_ERASER_BOT_CONTACT_ID, MAX_ERASER_BOT_ID } from './max-service-bot-identities';
+import {
+  MAX_BIRZHIK_BOT_CONTACT_ID,
+  MAX_BIRZHIK_BOT_ID,
+  MAX_ERASER_BOT_CONTACT_ID,
+  MAX_ERASER_BOT_ID,
+} from './max-service-bot-identities';
 import {
   buildPublisherBotDescriptor,
   type PublisherBotDescriptor,
@@ -111,6 +116,8 @@ export class MaxBotRegistryService {
       ...botIdByUserIdVariant.keys(),
       ...buildBotIdVariants(MAX_ERASER_BOT_ID),
       ...buildBotIdVariants(MAX_ERASER_BOT_CONTACT_ID),
+      ...buildBotIdVariants(MAX_BIRZHIK_BOT_ID),
+      ...buildBotIdVariants(MAX_BIRZHIK_BOT_CONTACT_ID),
     ]);
   }
 

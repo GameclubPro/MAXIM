@@ -157,6 +157,32 @@ describe('MaxBotRegistryService webhook base URL', () => {
     },
   );
 
+  it('protects Birzhik without credentials or moderator routing', () => {
+    const service = createService();
+
+    for (const identity of [
+      '269798165',
+      'id613000037577_3_bot',
+      'id613000037577_3',
+      '613000037577_3',
+    ]) {
+      expect(service.isKnownBotUserId(identity)).toBe(true);
+      expect(service.resolveBotIdFromUserId(identity)).toBeNull();
+      expect(service.getBotById(identity)).toBeNull();
+      expect(service.getValidationTokensForBot(identity)).toEqual([]);
+      expect(service.getConfiguredWebhookSubscriptionTarget(identity)).toEqual({
+        url: null,
+        maskedUrl: null,
+      });
+    }
+    expect(service.isKnownBotUserId('269798166')).toBe(false);
+    expect(service.isKnownBotUserId('613000037577_4')).toBe(false);
+    expect(service.isKnownBotUserId('Биржик')).toBe(false);
+    expect(service.getAllBots().map((bot) => bot.id)).toEqual(['777000_bot']);
+    expect(service.getActionableBots().map((bot) => bot.id)).toEqual(['777000_bot']);
+    expect(service.getDiscoveryBots().map((bot) => bot.id)).toEqual(['777000_bot']);
+  });
+
   it('resolves id, numeric suffix, and contact ids to canonical bot ids', () => {
     const service = createService({
       MAX_BOT_ID: 'id613002203036_bot',
