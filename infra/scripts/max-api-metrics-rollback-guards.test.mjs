@@ -13,7 +13,7 @@ const paths = {
   keys: 'apps/api/src/max/max-api-metrics-key.util.ts',
 };
 const minuteReaderMarker = 'maxim_topology_require_max_api_metrics_minute_reader';
-const apiAuthorityMarker = 'maxim_topology_require_commercial_ai_pool_delete_reader';
+const apiAuthorityMarker = 'maxim_topology_require_statistics_authority_lifecycle';
 const previousReleaseMarker = 'select_release_recovery_base';
 const connect = readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8');
 
@@ -357,6 +357,18 @@ for (const [name, args] of [
       name,
       args,
       previousMarker: 'maxim_topology_require_commercial_ai_delete_guard',
+    });
+    assert.equal(probe.result.status, 0, probe.result.stderr);
+    assert.equal(probe.result.stdout, 'current\n');
+    assert.deepEqual(probe.arguments, args);
+    assert.ok(probe.gitCalls.includes('checkout main'));
+  });
+
+  test(`${name} upgrades pool-reader tooling before rollback with superseded statistics authorities`, (t) => {
+    const probe = bootstrapProbe(t, {
+      name,
+      args,
+      previousMarker: 'maxim_topology_require_commercial_ai_pool_delete_reader',
     });
     assert.equal(probe.result.status, 0, probe.result.stderr);
     assert.equal(probe.result.stdout, 'current\n');

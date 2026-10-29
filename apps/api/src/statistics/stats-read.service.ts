@@ -91,7 +91,7 @@ export class StatsReadService {
             data_revision: bigint;
             health: Record<string, { health: StatsHealth }>;
           }>
-        >`SELECT id,data_revision,health FROM stats_entities WHERE kind=${context.entity.kind} AND max_id=${context.entity.maxId}`
+        >`SELECT id,data_revision,health FROM stats_entities WHERE kind=${context.entity.kind} AND max_id=${context.entity.maxId} FOR SHARE`
       )[0];
       if (!e) return null;
       const view = await this.access.currentView(tx, e.id, context, consumer);

@@ -4912,8 +4912,12 @@ model StatsAuthority {
   checkedAt DateTime @map("checked_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
   nativeRef Json? @map("native_ref")
+  supersededBy String? @map("superseded_by") @db.Uuid
+  supersededAt DateTime? @map("superseded_at") @db.Timestamptz(6)
+  successor StatsAuthority? @relation("StatisticsAuthoritySuccessor",fields:[supersededBy],references:[id],onDelete:NoAction,onUpdate:NoAction)
+  predecessors StatsAuthority[] @relation("StatisticsAuthoritySuccessor")
   entity StatsEntity @relation(fields:[entityId],references:[id],onDelete:Cascade)
-  @@unique([issuer,role,entityId,producer,consumer,actorMaxId,botRef,purpose],map:"stats_authorities_scope_key")
+  // FLAG: The current-scope unique index is partial and is owned by the lifecycle migration.
   @@index([actorMaxId,entityId,purpose,role],map:"stats_authorities_actor_entity_idx")
   @@index([issuer,state,peerValidUntil,id],map:"stats_authorities_lease_idx")
   @@map("stats_authorities")

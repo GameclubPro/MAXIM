@@ -74,10 +74,11 @@ test('central audit has exact metadata grants, bounded routing and no default re
     new URL('./vps-provision-postgres-audit-role.sh', import.meta.url),
     'utf8',
   );
-  assert.equal(Object.values(CENTRAL_STATISTICS_AUDIT_COLUMNS).flat().length, 35);
+  assert.equal(Object.values(CENTRAL_STATISTICS_AUDIT_COLUMNS).flat().length, 36);
   assert.ok(provision.includes(buildCentralStatisticsProvisionSql()));
-  assert.match(buildCentralStatisticsPrivilegesSql(), /IN \(0,35\)/u);
-  assert.match(buildCentralStatisticsPrivilegesSql(true), /IN \(35\)/u);
+  assert.match(buildCentralStatisticsPrivilegesSql(), /IN \(0,36\)/u);
+  assert.match(buildCentralStatisticsPrivilegesSql(true), /IN \(36\)/u);
+  assert.match(buildCentralStatisticsAuditSql([ids]), /entity_id=e.id AND superseded_by IS NULL/u);
   assert.match(audit, /CENTRAL_STATISTICS_ARGS=\("\$\{@:2\}"\)/u);
   assert.match(audit, /central_privilege_args\+=\(--require-all\)/u);
   assert.match(audit, /statement_timeout=2500ms/u);
@@ -139,6 +140,17 @@ test(
         'utf8',
       ),
     );
+    for (const migration of [
+      '20261029193000_statistics_authority_successors',
+      '20261029193100_index_statistics_authority_heads',
+      '20261029193200_enable_statistics_authority_successors',
+    ])
+      await db.query(
+        readFileSync(
+          new URL(`../../apps/api/prisma/migrations/${migration}/migration.sql`, import.meta.url),
+          'utf8',
+        ),
+      );
     await db.query(
       readFileSync(new URL('./test-fixtures/network-statistics.sql', import.meta.url), 'utf8'),
     );
@@ -149,6 +161,14 @@ test(
     await db.query(
       'CREATE INDEX channel_posts_chat_id_latest_snapshot_at_idx ON channel_posts(chat_id,latest_snapshot_at DESC)',
     );
+    // Existing installations retain exactly the old 35 metadata grants until the
+    // reviewed postmigration provisioning adds only the terminal-head discriminator.
+    for (const [table, columns] of Object.entries(CENTRAL_STATISTICS_AUDIT_COLUMNS))
+      await db.query(
+        `GRANT SELECT(${columns.filter((column) => column !== 'superseded_by').join(',')}) ON ${table} TO ${role}`,
+      );
+    assert.equal(await privileges(), false);
+    assert.equal(await privileges(true), false);
     await db.query(replaceRole(buildCentralStatisticsProvisionSql()));
     assert.equal(await privileges(true), true);
     await db.query(`GRANT SELECT(value) ON stats_measurements TO ${role}`);
@@ -162,6 +182,7 @@ test(
         `REVOKE UPDATE(checked_at) ON stats_authorities FROM ${role}`,
       ],
       [`REVOKE SELECT(observed_to) ON stats_measurements FROM ${role}`, null],
+      [`REVOKE SELECT(superseded_by) ON stats_authorities FROM ${role}`, null],
     ]) {
       await db.query(grant);
       assert.equal(await privileges(), false);
@@ -178,6 +199,16 @@ test(
       (await db.query(readiness(buildCentralStatisticsIndexReadinessSql()))).rows[0]
         .central_statistics_indexes_ready;
     assert.equal(await ready(), true);
+    const currentHeadIndex = 'stats_authorities_current_scope_key';
+    const createCurrentIndex = `CREATE UNIQUE INDEX ${currentHeadIndex} ON stats_authorities(issuer,role,entity_id,producer,consumer,actor_max_id,bot_ref,purpose)`;
+    for (const predicate of ['', " WHERE state='ACTIVE'", ' WHERE superseded_by IS NOT NULL']) {
+      await db.query(`DROP INDEX ${currentHeadIndex}`);
+      await db.query(createCurrentIndex + predicate);
+      assert.equal(await ready(), false, `reject forged authority index predicate: ${predicate}`);
+    }
+    await db.query(`DROP INDEX ${currentHeadIndex}`);
+    await db.query(createCurrentIndex + ' WHERE superseded_by IS NULL');
+    assert.equal(await ready(), true);
     const channel = randomUUID();
     const chat = randomUUID();
     const epoch = randomUUID();
@@ -192,6 +223,20 @@ test(
       `INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at)
     SELECT gen_random_uuid(),$1,'EXCHANGE',r,'EXCHANGE','EXCHANGE','private-actor','private-bot','OWNER_ANALYTICS','[{}]',1,1,$2,'private-fence','ACTIVE',now()+interval '5 minutes',now()
     FROM (VALUES ('SOURCE'),('CONSUMER')) x(r)`,
+      [channel, epoch],
+    );
+    // The retained predecessors share the exact active scope. They must neither
+    // saturate the head sentinel nor be traversed before the current-head index.
+    await db.query(
+      `INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at,superseded_by,superseded_at)
+      SELECT gen_random_uuid(),a.entity_id,a.issuer,a.role,a.producer,a.consumer,a.actor_max_id,a.bot_ref,a.purpose,a.scopes,
+        n+1,n+1,a.producer_epoch,a.local_access_fence,'REVOKED',now()-interval '1 day',now()-interval '1 day',a.id,now()-interval '1 day'
+      FROM stats_authorities a CROSS JOIN generate_series(1,20000) n WHERE a.entity_id=$1 AND a.superseded_by IS NULL`,
+      [channel],
+    );
+    await db.query(
+      `INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at)
+      VALUES (gen_random_uuid(),$1,'MAXIM','SOURCE','MAXIM','EXCHANGE','private-revoked-actor','private-bot','OWNER_ANALYTICS','[{}]',1,1,$2,'private-fence','REVOKED',now()-interval '1 day',now())`,
       [channel, epoch],
     );
     await db.query(
@@ -222,6 +267,23 @@ test(
     assert.equal(report.entity_count, 2);
     assert.equal(report.authority_groups_capped, 1);
     assert.equal(report.candidate_pairs[0].entities_with_candidate_pairs, 1);
+    assert.equal(report.authority_scope, 'CURRENT_UNSUPERSEDED_HEADS');
+    const channelAuthorities = report.authorities.filter(
+      (row) => row.kind === 'CHANNEL' && row.issuer === 'EXCHANGE',
+    );
+    assert.equal(channelAuthorities.length, 2);
+    for (const group of channelAuthorities) {
+      assert.equal(Number(group.sampled_rows), 1);
+      assert.equal(Number(group.active_leases), 1);
+      assert.equal(Number(group.revoked_leases), 0);
+      assert.equal(group.capped, false);
+    }
+    const revokedHead = report.authorities.find(
+      (row) => row.kind === 'CHANNEL' && row.issuer === 'MAXIM',
+    );
+    assert.equal(Number(revokedHead.sampled_rows), 1);
+    assert.equal(Number(revokedHead.revoked_leases), 1);
+    assert.equal(Number(revokedHead.active_leases), 0);
     assert.equal(report.global_recent_receipts_capped, true);
     assert.equal(report.global_unpublished_sample_count, 256);
     assert.equal(report.global_unpublished_sample_capped, true);
@@ -249,7 +311,7 @@ test(
     assert.doesNotMatch(printed, /123456789|987654321|Seq Scan|Bitmap Heap Scan/u);
     for (const index of [
       'stats_entities_kind_max_id_key',
-      'stats_authorities_scope_key',
+      'stats_authorities_current_scope_key',
       'stats_measurements_entity_day_idx',
       'stats_ingest_requests_retention_idx',
       'stats_changes_retention_idx',
@@ -285,6 +347,10 @@ test(
       } else if (node && typeof node === 'object') {
         if (sourceCaps[node['Relation Name']] !== undefined)
           assert.ok(node['Actual Rows'] <= sourceCaps[node['Relation Name']], JSON.stringify(node));
+        if (node['Relation Name'] === 'stats_authorities') {
+          assert.equal(node['Index Name'], currentHeadIndex);
+          assert.equal(node['Rows Removed by Filter'] ?? 0, 0);
+        }
         for (const child of Object.values(node)) inspect(child);
       }
     };

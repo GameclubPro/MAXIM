@@ -769,7 +769,7 @@ test('central statistics catalog routes exact bounded IDs and remains opt-in', (
   assert.equal(runAudit(data, ['central-statistics', '-123,-456']).status, 0);
   let sql = readFileSync(data.sql, 'utf8');
   assert.match(sql, /central_statistics_privileges_ready/u);
-  assert.match(sql, /IN \(35\)/u);
+  assert.match(sql, /IN \(36\)/u);
   assert.match(sql, /'audit','central_statistics'/u);
   assert.match(sql, /LIMIT 1441/u);
   assert.match(readFileSync(data.dockerArgs, 'utf8'), /statement_timeout=2500ms/u);

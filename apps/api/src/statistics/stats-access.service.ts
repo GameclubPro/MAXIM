@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   StatsAuthorityRequest,
@@ -8,7 +8,14 @@ import type {
   StatsReadContext,
   StatsSourceDependency,
   StatsAuthorityRef,
+  StatsAuthorityOperation,
+  StatsAuthorityResolveRequest,
+  StatsAuthorityResolveResult,
 } from '@maxim/contracts/statistics-central';
+import {
+  statsAuthorityRequestSchema,
+  statsAuthorityResolveRequestSchema,
+} from '@maxim/contracts/statistics-central-validation';
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -42,14 +49,44 @@ export type AuthorityRow = {
   peer_valid_until: Date;
   checked_at: Date;
   native_ref: unknown;
+  superseded_by: string | null;
+  superseded_at: Date | null;
 };
 const active = (r: AuthorityRow) =>
-  r.state === 'ACTIVE' && r.peer_valid_until.getTime() > Date.now();
+  !r.superseded_by && r.state === 'ACTIVE' && r.peer_valid_until.getTime() > Date.now();
 const grants = (r: AuthorityRow, key: StatsMetricKey) =>
   r.scopes.some((s) => keyOf(s) === keyOf(key));
 
+function authorityDenial(error: unknown): StatsAuthorityResult['results'][number]['errorCode'] {
+  if (!(error instanceof StatsFailure)) return null;
+  const response = error.getResponse() as { error?: { code?: unknown } };
+  const code = response.error?.code;
+  return code === 'FORBIDDEN' || code === 'STALE_LOCAL_FENCE' || code === 'RETIRED_PRODUCER_EPOCH'
+    ? code
+    : null;
+}
+
+function authoritySqlCode(error: unknown, depth = 0): string | null {
+  if (!error || typeof error !== 'object' || depth > 4) return null;
+  const value = error as Record<string, unknown>;
+  for (const key of ['code', 'originalCode', 'sqlState'])
+    if (
+      typeof value[key] === 'string' &&
+      /^[0-9A-Z]{5}$/.test(value[key]) &&
+      !/^P\d{4}$/.test(value[key])
+    )
+      return value[key];
+  for (const key of ['meta', 'cause', 'driverAdapterError']) {
+    const code = authoritySqlCode(value[key], depth + 1);
+    if (code) return code;
+  }
+  if (value.code === 'P2034') return '40001';
+  return null;
+}
+
 @Injectable()
 export class StatsAccessService {
+  private readonly logger = new Logger(StatsAccessService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -62,103 +99,208 @@ export class StatsAccessService {
       throw new StatsFailure('RETIRED_PRODUCER_EPOCH', 403);
   }
   async attest(request: StatsAuthorityRequest): Promise<StatsAuthorityResult> {
-    return this.prisma.$transaction(
-      async (tx) => {
-        const results: StatsAuthorityResult['results'] = [];
-        for (const [index, op] of request.operations.entries()) {
-          this.checkEpoch(op.producerEpoch);
-          const entity = await ensureEntity(tx, op.entity);
-          const rows = await tx.$queryRaw<
-            AuthorityRow[]
-          >`SELECT * FROM stats_authorities WHERE id=${op.id}::uuid FOR UPDATE`;
-          const old = rows[0];
+    const parsed = statsAuthorityRequestSchema.safeParse(request);
+    if (!parsed.success) throw new StatsFailure('INVALID_REQUEST', 400, request.requestId);
+    const groups = new Map<string, Array<{ index: number; op: StatsAuthorityOperation }>>();
+    for (const [index, op] of parsed.data.operations.entries()) {
+      const key = `${op.entity.kind}/${op.entity.maxId}`;
+      const group = groups.get(key) ?? [];
+      group.push({ index, op });
+      groups.set(key, group);
+    }
+    const results: StatsAuthorityResult['results'] = [];
+    const deadline = Date.now() + 4_000;
+    // FLAG: Entity locks precede every authority lock. A failed platform cannot
+    // roll back another platform's committed renewal or retain its locks.
+    for (const [, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
+      let completed = false;
+      for (let attempt = 0; attempt < 2 && !completed; attempt++) {
+        try {
+          if (Date.now() >= deadline) throw new Error('Statistics authority deadline exceeded');
+          const accepted = await this.prisma.$transaction(
+            async (tx) => {
+              const entity = await ensureEntity(tx, group[0]!.op.entity);
+              const pending: StatsAuthorityResult['results'] = [];
+              for (const { op, index } of group)
+                pending.push(await this.attestOne(tx, entity.id, op, index, request.requestId));
+              return pending;
+            },
+            {
+              maxWait: Math.max(1, Math.min(1_000, deadline - Date.now())),
+              timeout: Math.max(1, deadline - Date.now()),
+            },
+          );
+          results.push(...accepted);
+          completed = true;
+        } catch (error) {
+          const code = authoritySqlCode(error);
           if (
-            old &&
-            (old.issuer !== 'EXCHANGE' ||
-              old.entity_id !== entity.id ||
-              old.role !== op.role ||
-              old.consumer !== op.consumer ||
-              old.actor_max_id !== op.actorMaxUserId ||
-              old.purpose !== op.purpose)
+            attempt === 0 &&
+            ['40P01', '40001'].includes(code ?? '') &&
+            Date.now() < deadline - 100
           )
-            throw new StatsFailure('FORBIDDEN', 403, request.requestId);
-          const reply = (
-            status: StatsAuthorityResult['results'][number]['status'],
-            r: AuthorityRow,
-            errorCode: StatsAuthorityResult['results'][number]['errorCode'] = null,
-          ) =>
-            results.push({
-              index,
-              id: r.id,
-              epoch: r.epoch.toString(),
-              state: !active(r) && r.state === 'ACTIVE' ? 'EXPIRED' : r.state,
-              status,
-              peerValidUntil: active(r) ? r.peer_valid_until.toISOString() : null,
-              errorCode,
-            });
-          if (old && BigInt(op.revision) < old.revision) {
-            reply('SUPERSEDED', old);
             continue;
-          }
-          const scopeChanged = old && canonical(old.scopes) !== canonical(op.scopes);
-          // FLAG: A current issuer proof may change the bot only with a newer
-          // revision. The new epoch fences every prior consumer/source reference.
-          const botChanged = old && old.bot_ref !== op.botRef;
-          if (
-            old &&
-            BigInt(op.revision) === old.revision &&
-            (botChanged ||
-              scopeChanged ||
-              old.local_access_fence !== op.localAccessFence ||
-              old.state !== (op.operation === 'ATTEST' ? 'ACTIVE' : 'REVOKED') ||
-              old.producer_epoch !== op.producerEpoch)
-          )
-            throw new StatsFailure('STALE_LOCAL_FENCE', 403, request.requestId);
-          const checked = new Date(op.checkedAt);
-          const validUntil = new Date(Math.min(checked.getTime() + 300_000, Date.now() + 300_000));
-          if (
-            op.operation === 'ATTEST' &&
-            (checked.getTime() > Date.now() + 30_000 || validUntil.getTime() <= Date.now())
-          ) {
-            results.push({
+          const reason = authorityDenial(error);
+          if (!reason)
+            this.logger.warn({
+              event: 'statistics.authority_entity_unavailable',
+              code: code ?? 'UNAVAILABLE',
+            });
+          results.push(
+            ...group.map(({ op, index }) => ({
               index,
               id: op.id,
-              epoch: old?.epoch.toString() ?? '0',
-              state: 'UNAVAILABLE',
-              status: 'DENIED',
+              epoch: '0',
+              state: 'UNAVAILABLE' as const,
+              status: 'DENIED' as const,
               peerValidUntil: null,
-              errorCode: 'STALE_LOCAL_FENCE',
-            });
-            continue;
-          }
-          const changed = !old || BigInt(op.revision) > old.revision;
-          const epoch = old ? old.epoch + (changed ? 1n : 0n) : 1n;
-          const state = op.operation === 'ATTEST' ? 'ACTIVE' : 'REVOKED';
-          await tx.$executeRaw`INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at)
-      VALUES(${op.id}::uuid,${entity.id}::uuid,'EXCHANGE',${op.role},'EXCHANGE',${op.consumer},${op.actorMaxUserId},${op.botRef},${op.purpose},${JSON.stringify(op.scopes)}::jsonb,${BigInt(op.revision)},${epoch},${op.producerEpoch}::uuid,${op.localAccessFence},${state},${validUntil},${checked})
-      ON CONFLICT(id) DO UPDATE SET bot_ref=EXCLUDED.bot_ref,scopes=EXCLUDED.scopes,revision=EXCLUDED.revision,epoch=EXCLUDED.epoch,producer_epoch=EXCLUDED.producer_epoch,local_access_fence=EXCLUDED.local_access_fence,state=EXCLUDED.state,peer_valid_until=EXCLUDED.peer_valid_until,checked_at=EXCLUDED.checked_at,updated_at=now()`;
-          if (changed) await touch(tx, entity.id, 'AUTHORITY', op.id);
-          const current = {
-            ...old,
-            id: op.id,
-            epoch,
-            state,
-            peer_valid_until: validUntil,
-          } as AuthorityRow;
-          reply(changed ? 'APPLIED' : op.operation === 'ATTEST' ? 'RENEWED' : 'DUPLICATE', current);
-          if (op.role === 'CONSUMER' && state === 'ACTIVE')
-            await this.nativeSources(
-              tx,
-              entity.id,
-              op.entity,
-              op.actorMaxUserId,
-              op.purpose,
-              op.consumer,
-            );
+              errorCode: reason,
+            })),
+          );
+          completed = true;
         }
-        return { contractVersion: 1, requestId: request.requestId, results };
-      },
-      { timeout: 10_000 },
+      }
+    }
+    results.sort((a, b) => a.index - b.index);
+    return { contractVersion: 1, requestId: request.requestId, results };
+  }
+
+  async resolve(request: StatsAuthorityResolveRequest): Promise<StatsAuthorityResolveResult> {
+    const parsed = statsAuthorityResolveRequestSchema.safeParse(request);
+    if (!parsed.success) throw new StatsFailure('INVALID_REQUEST', 400);
+    const scope = parsed.data;
+    this.checkEpoch(scope.producerEpoch);
+    const rows = await this.prisma.$queryRaw<AuthorityRow[]>`
+      SELECT a.* FROM stats_entities e JOIN stats_authorities a ON a.entity_id=e.id
+      WHERE e.kind=${scope.entity.kind} AND e.max_id=${scope.entity.maxId}
+        AND a.issuer='EXCHANGE' AND a.producer='EXCHANGE' AND a.producer_epoch=${scope.producerEpoch}::uuid
+        AND a.role=${scope.role} AND a.consumer=${scope.consumer} AND a.actor_max_id=${scope.actorMaxUserId}
+        AND a.bot_ref=${scope.botRef} AND a.purpose=${scope.purpose} AND a.superseded_by IS NULL LIMIT 1`;
+    const head = rows[0];
+    return {
+      contractVersion: 1,
+      head: head
+        ? {
+            id: head.id,
+            revision: head.revision.toString(),
+            epoch: head.epoch.toString(),
+            state: head.state === 'ACTIVE' && !active(head) ? 'EXPIRED' : head.state,
+          }
+        : null,
+    };
+  }
+
+  private async attestOne(
+    tx: Prisma.TransactionClient,
+    entityId: string,
+    op: StatsAuthorityOperation,
+    index: number,
+    requestId: string,
+  ): Promise<StatsAuthorityResult['results'][number]> {
+    this.checkEpoch(op.producerEpoch);
+    const old = (
+      await tx.$queryRaw<AuthorityRow[]>`
+      SELECT * FROM stats_authorities WHERE id=${op.id}::uuid FOR UPDATE`
+    )[0];
+    if (
+      old &&
+      (old.issuer !== 'EXCHANGE' ||
+        old.producer !== 'EXCHANGE' ||
+        old.entity_id !== entityId ||
+        old.role !== op.role ||
+        old.consumer !== op.consumer ||
+        old.actor_max_id !== op.actorMaxUserId ||
+        old.purpose !== op.purpose)
+    )
+      throw new StatsFailure('FORBIDDEN', 403, requestId);
+    const reply = (
+      status: StatsAuthorityResult['results'][number]['status'],
+      row: AuthorityRow,
+    ): StatsAuthorityResult['results'][number] => ({
+      index,
+      id: row.id,
+      epoch: row.epoch.toString(),
+      state: row.state === 'ACTIVE' && !active(row) ? 'EXPIRED' : row.state,
+      status,
+      peerValidUntil: active(row) ? row.peer_valid_until.toISOString() : null,
+      errorCode: null,
+    });
+    // FLAG: Supersession is terminal, including a delayed larger revision.
+    if (old?.superseded_by) return reply('SUPERSEDED', old);
+    if (old && BigInt(op.revision) < old.revision) return reply('SUPERSEDED', old);
+    const scopeChanged = old && canonical(old.scopes) !== canonical(op.scopes);
+    // FLAG: A current issuer proof may change the bot only with a newer
+    // revision. The new epoch fences every prior consumer/source reference.
+    const botChanged = old && old.bot_ref !== op.botRef;
+    if (
+      old &&
+      BigInt(op.revision) === old.revision &&
+      (botChanged ||
+        scopeChanged ||
+        old.local_access_fence !== op.localAccessFence ||
+        old.state !== (op.operation === 'ATTEST' ? 'ACTIVE' : 'REVOKED') ||
+        old.producer_epoch !== op.producerEpoch)
+    )
+      throw new StatsFailure('STALE_LOCAL_FENCE', 403, requestId);
+    const checked = new Date(op.checkedAt);
+    const validUntil = new Date(Math.min(checked.getTime() + 300_000, Date.now() + 300_000));
+    if (
+      op.operation === 'ATTEST' &&
+      (checked.getTime() > Date.now() + 30_000 || validUntil.getTime() <= Date.now())
+    )
+      throw new StatsFailure('STALE_LOCAL_FENCE', 403, requestId);
+    const head = (
+      await tx.$queryRaw<AuthorityRow[]>`
+      SELECT * FROM stats_authorities WHERE entity_id=${entityId}::uuid AND issuer='EXCHANGE'
+        AND producer='EXCHANGE' AND role=${op.role} AND consumer=${op.consumer} AND actor_max_id=${op.actorMaxUserId}
+        AND bot_ref=${op.botRef} AND purpose=${op.purpose} AND superseded_by IS NULL FOR UPDATE`
+    )[0];
+    if (head && head.id !== op.id) {
+      if (
+        head.state !== 'REVOKED' ||
+        head.producer_epoch !== op.producerEpoch ||
+        op.supersedes?.id !== head.id ||
+        op.supersedes.revision !== head.revision.toString() ||
+        op.supersedes.epoch !== head.epoch.toString()
+      )
+        throw new StatsFailure('STALE_LOCAL_FENCE', 403, requestId);
+      // The deferred FK permits retiring the head before inserting its successor.
+      await tx.$executeRaw`UPDATE stats_authorities SET superseded_by=${op.id}::uuid,superseded_at=now(),updated_at=now()
+        WHERE id=${head.id}::uuid`;
+      await touch(tx, entityId, 'AUTHORITY', head.id);
+    } else if (op.supersedes) {
+      const predecessor = (
+        await tx.$queryRaw<AuthorityRow[]>`
+        SELECT * FROM stats_authorities WHERE id=${op.supersedes.id}::uuid FOR SHARE`
+      )[0];
+      if (
+        !old ||
+        !predecessor ||
+        predecessor.superseded_by !== old.id ||
+        predecessor.revision.toString() !== op.supersedes.revision ||
+        predecessor.epoch.toString() !== op.supersedes.epoch
+      )
+        throw new StatsFailure('STALE_LOCAL_FENCE', 403, requestId);
+    }
+    const changed = !old || BigInt(op.revision) > old.revision;
+    const epoch = old ? old.epoch + (changed ? 1n : 0n) : 1n;
+    const state = op.operation === 'ATTEST' ? 'ACTIVE' : 'REVOKED';
+    await tx.$executeRaw`INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at)
+      VALUES(${op.id}::uuid,${entityId}::uuid,'EXCHANGE',${op.role},'EXCHANGE',${op.consumer},${op.actorMaxUserId},${op.botRef},${op.purpose},${JSON.stringify(op.scopes)}::jsonb,${BigInt(op.revision)},${epoch},${op.producerEpoch}::uuid,${op.localAccessFence},${state},${validUntil},${checked})
+      ON CONFLICT(id) DO UPDATE SET bot_ref=EXCLUDED.bot_ref,scopes=EXCLUDED.scopes,revision=EXCLUDED.revision,epoch=EXCLUDED.epoch,producer_epoch=EXCLUDED.producer_epoch,local_access_fence=EXCLUDED.local_access_fence,state=EXCLUDED.state,peer_valid_until=EXCLUDED.peer_valid_until,checked_at=EXCLUDED.checked_at,updated_at=now()`;
+    if (changed) await touch(tx, entityId, 'AUTHORITY', op.id);
+    const current = {
+      ...old,
+      id: op.id,
+      epoch,
+      state,
+      peer_valid_until: validUntil,
+    } as AuthorityRow;
+    if (op.role === 'CONSUMER' && state === 'ACTIVE')
+      await this.nativeSources(tx, entityId, op.entity, op.actorMaxUserId, op.purpose, op.consumer);
+    return reply(
+      changed ? 'APPLIED' : op.operation === 'ATTEST' ? 'RENEWED' : 'DUPLICATE',
+      current,
     );
   }
   async assertSource(
@@ -211,7 +353,7 @@ export class StatsAccessService {
       throw new StatsFailure('FORBIDDEN', 403);
     const sources = await tx.$queryRaw<
       AuthorityRow[]
-    >`SELECT * FROM stats_authorities WHERE entity_id=${entityId}::uuid AND actor_max_id=${context.actorMaxUserId} AND purpose=${context.purpose} AND role='SOURCE' AND state='ACTIVE' AND peer_valid_until>now() ORDER BY id LIMIT 64 FOR SHARE`;
+    >`SELECT * FROM stats_authorities WHERE entity_id=${entityId}::uuid AND actor_max_id=${context.actorMaxUserId} AND purpose=${context.purpose} AND role='SOURCE' AND superseded_by IS NULL AND state='ACTIVE' AND peer_valid_until>now() ORDER BY id LIMIT 64 FOR SHARE`;
     const native = await this.nativeProof(
       tx,
       context.entity,

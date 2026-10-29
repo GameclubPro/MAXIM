@@ -12,6 +12,7 @@ export const CENTRAL_STATISTICS_AUDIT_COLUMNS = {
     'bot_ref',
     'purpose',
     'state',
+    'superseded_by',
     'peer_valid_until',
     'checked_at',
   ],
@@ -130,7 +131,7 @@ $central_statistics_grants$;
 export function buildCentralStatisticsIndexReadinessSql() {
   return `WITH required(name,relation,keys,options,unique_required,predicate) AS (VALUES
     ('stats_entities_kind_max_id_key','stats_entities',ARRAY['kind','max_id'],ARRAY[0,0]::smallint[],true,NULL::text),
-    ('stats_authorities_scope_key','stats_authorities',ARRAY['issuer','role','entity_id','producer','consumer','actor_max_id','bot_ref','purpose'],ARRAY[0,0,0,0,0,0,0,0]::smallint[],true,NULL),
+    ('stats_authorities_current_scope_key','stats_authorities',ARRAY['issuer','role','entity_id','producer','consumer','actor_max_id','bot_ref','purpose'],ARRAY[0,0,0,0,0,0,0,0]::smallint[],true,'(superseded_by IS NULL)'),
     ('stats_measurements_entity_day_idx','stats_measurements',ARRAY['entity_id','day','metric','horizon'],ARRAY[0,0,0,0]::smallint[],false,NULL),
     ('stats_ingest_requests_retention_idx','stats_ingest_requests',ARRAY['created_at','producer','producer_epoch','record_kind','operation_key'],ARRAY[0,0,0,0,0]::smallint[],false,NULL),
     ('stats_changes_retention_idx','stats_changes',ARRAY['created_at','id'],ARRAY[0,0]::smallint[],false,NULL),
@@ -183,7 +184,7 @@ export function buildCentralStatisticsAuditSql(args) {
     FROM entities e CROSS JOIN (VALUES ('MAXIM','SOURCE'),('MAXIM','CONSUMER'),
       ('EXCHANGE','SOURCE'),('EXCHANGE','CONSUMER')) k(issuer,role)
     CROSS JOIN LATERAL (SELECT issuer,role,producer,consumer,actor_max_id,purpose,state,peer_valid_until,checked_at
-      FROM public.stats_authorities WHERE issuer=k.issuer AND role=k.role AND entity_id=e.id
+      FROM public.stats_authorities WHERE issuer=k.issuer AND role=k.role AND entity_id=e.id AND superseded_by IS NULL
       ORDER BY producer,consumer,actor_max_id,bot_ref,purpose LIMIT 65) a
   ), authority_groups AS MATERIALIZED (
     SELECT entity_id,kind,issuer,role,count(*) AS sampled_rows,count(*)>64 AS capped,
@@ -264,7 +265,7 @@ export function buildCentralStatisticsAuditSql(args) {
     'chat_entities',(SELECT count(*) FROM entities WHERE kind='CHAT'),
     'entity_revision_min',(SELECT min(data_revision) FROM entities),
     'entity_revision_max',(SELECT max(data_revision) FROM entities),
-    'authority_cap_per_entity_issuer_role',64,
+    'authority_scope','CURRENT_UNSUPERSEDED_HEADS','authority_cap_per_entity_issuer_role',64,
     'authority_groups_capped',(SELECT count(*) FROM authority_groups WHERE capped),
     'authorities',coalesce((SELECT json_agg(authority_summary ORDER BY kind,issuer,role) FROM authority_summary),'[]'::json),
     'candidate_pairs',coalesce((SELECT json_agg(paired_entities ORDER BY kind) FROM paired_entities),'[]'::json),

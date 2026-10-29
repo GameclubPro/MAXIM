@@ -90,7 +90,7 @@ export class StatsChangesService implements OnModuleInit, OnModuleDestroy {
       !/^\d{1,19}$/u.test(c.seq) ||
       BigInt(c.seq) > 9_223_372_036_854_775_807n ||
       typeof c.view !== 'string' ||
-      (c.view !== '' && !/^[a-f0-9-]{36}$/u.test(c.view))
+      (c.view !== '' && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(c.view))
     )
       throw new StatsFailure('INVALID_REQUEST', 400);
     if (c.expires <= Date.now()) throw new StatsFailure('CURSOR_EXPIRED', 410);
@@ -116,8 +116,23 @@ export class StatsChangesService implements OnModuleInit, OnModuleDestroy {
     >`
    SELECT ch.published_seq AS seq,a.id AS view_id,a.epoch,a.state,a.producer_epoch,a.peer_valid_until,e.kind,e.max_id,ch.entity_revision
    FROM stats_changes ch JOIN stats_entities e ON e.id=ch.entity_id
-   JOIN stats_authorities a ON a.entity_id=ch.entity_id AND a.role='CONSUMER' AND a.issuer='EXCHANGE' AND a.consumer='EXCHANGE'
-   WHERE ch.published_seq IS NOT NULL AND (ch.published_seq>${BigInt(c.seq)} OR (ch.published_seq=${BigInt(c.seq)} AND a.id::text>${c.view}))
+   CROSS JOIN LATERAL (
+     -- FLAG: Disjoint branches seek current consumers by entity/id and the exact
+     -- predecessor by PK. The per-change page cap resumes on the same seq/view.
+     (SELECT id,epoch,state,producer_epoch,peer_valid_until FROM stats_authorities
+     WHERE entity_id=ch.entity_id AND role='CONSUMER' AND issuer='EXCHANGE' AND consumer='EXCHANGE'
+       AND superseded_by IS NULL
+       AND id>=CASE WHEN ch.published_seq=${BigInt(c.seq)} THEN ${c.view || '00000000-0000-0000-0000-000000000000'}::uuid
+         ELSE '00000000-0000-0000-0000-000000000000'::uuid END
+       AND (ch.published_seq>${BigInt(c.seq)} OR ${c.view}='' OR id<>${c.view || '00000000-0000-0000-0000-000000000000'}::uuid)
+     ORDER BY id LIMIT ${limit + 1})
+     UNION ALL
+     SELECT id,epoch,state,producer_epoch,peer_valid_until FROM stats_authorities
+     WHERE id=ch.authority_id AND entity_id=ch.entity_id AND role='CONSUMER' AND issuer='EXCHANGE'
+       AND consumer='EXCHANGE' AND superseded_by IS NOT NULL
+   ) a
+   WHERE ch.published_seq IS NOT NULL AND ch.published_seq>=${BigInt(c.seq)}
+     AND (ch.published_seq>${BigInt(c.seq)} OR (ch.published_seq=${BigInt(c.seq)} AND a.id::text>${c.view}))
    ORDER BY ch.published_seq,a.id LIMIT ${limit + 1}`;
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);

@@ -3,6 +3,8 @@ import {
   STATS_LIMITS,
   type StatsAuthorityRequest,
   type StatsAuthorityResult,
+  type StatsAuthorityResolveRequest,
+  type StatsAuthorityResolveResult,
   type StatsIngestRequest,
   type StatsIngestResult,
   type StatsSummaryRequest,
@@ -347,8 +349,40 @@ const authorityOperation = z
     checkedAt: time,
     producerEpoch: uuid,
     localAccessFence: z.string().min(1).max(512),
+    supersedes: z.object({ id: uuid, revision: positive, epoch: positive }).strict().optional(),
   })
-  .strict();
+  .strict()
+  .refine((operation) => operation.supersedes?.id !== operation.id);
+export const statsAuthorityResolveRequestSchema = typed<StatsAuthorityResolveRequest>(
+  z
+    .object({
+      contractVersion: z.literal(1),
+      producerEpoch: uuid,
+      entity,
+      role: z.enum(['SOURCE', 'CONSUMER']),
+      actorMaxUserId: actor,
+      botRef: text,
+      consumer: producer,
+      purpose,
+    })
+    .strict(),
+);
+export const statsAuthorityResolveResultSchema = typed<StatsAuthorityResolveResult>(
+  z
+    .object({
+      contractVersion: z.literal(1),
+      head: z
+        .object({
+          id: uuid,
+          revision: positive,
+          epoch: positive,
+          state: z.enum(['ACTIVE', 'REVOKED', 'EXPIRED']),
+        })
+        .strict()
+        .nullable(),
+    })
+    .strict(),
+);
 export const statsAuthorityRequestSchema = typed<StatsAuthorityRequest>(
   z
     .object({

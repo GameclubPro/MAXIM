@@ -407,6 +407,13 @@ maxim_topology_require_exact_statistics_rollup_reader() {
   fi
 }
 
+maxim_topology_require_statistics_authority_lifecycle() {
+  local commit_sha="$1"
+  # FLAG: Superseded statistics authorities are permanent tombstones. A schema-compatible
+  # image must also retain the successor reader/writer fences after flags are disabled.
+  node "$(dirname "${BASH_SOURCE[0]}")/../assert-statistics-authority-source.mjs" "$commit_sha"
+}
+
 maxim_topology_require_managed_entity_activation() {
   local commit_sha="$1"
   # FLAG: Known denials, pending activation, capability ceilings and receipt-only
