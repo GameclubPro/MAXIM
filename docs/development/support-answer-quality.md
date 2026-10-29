@@ -47,6 +47,8 @@ limitations and sources. Separate mass-setting operation results from audience s
 filters from AI controls, native MAX features from Publisher, and platform support from project
 support. Customer facts must not contain internal imperatives, source metadata or invalid example
 links. A source ID in generated JSON does not prove every sentence is supported.
+Maintain the [project module inventory](support-project-knowledge.md) when public modules change;
+new facts also need semantic retrieval and followup coverage.
 
 Application-authored answer requirements may highlight conditions in retained facts. Keep them
 separate from the facts and untrusted question/history; rebuild them after context trimming.

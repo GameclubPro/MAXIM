@@ -357,6 +357,7 @@ test('Lastik disabling and longer retention cannot restore deleted messages', ()
     'message-retention',
     'lastik-exclusions',
     'lastik-progress',
+    'lastik-diagnostics',
     'lastik-permissions',
     'lastik-save-recovery',
     'lastik-stop-restore',

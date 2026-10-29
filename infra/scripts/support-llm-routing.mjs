@@ -126,6 +126,18 @@ const commercialPattern =
 const subscriptionPattern =
   /подписк|подписан|подписал|подписать|подписаться|подписыва|подпиш(?!и)|подпиши(?:те|сь|тесь)?\s+(?:(?:меня|нас|аккаунт|участник\p{L}*)\s+)?на\s+(?:(?:нужн\p{L}*|все|выбранн\p{L}*)\s+)?(?:канал|источник|групп)/iu;
 const topicPatterns = [
+  ['polls', /(?<![\p{L}])опрос\p{L}*|голосован|проголосова/iu],
+  ['giveaways', /розыгрыш|розыграш|конкурс|призов.{0,8}мест/iu],
+  [
+    'participants',
+    /карточк.{0,15}участник|список участников|поиск.{0,12}участник|без сообщений|баз.{0,8}спам/iu,
+  ],
+  ['channel-buttons', /быстр.{0,8}кноп|действие под публикац|подпис.{0,15}под пост/iu],
+  ['service', /сообщения и боты|свои.{0,12}сообщен|собственн.{0,12}сообщен|других ботов/iu],
+  [
+    'invitations',
+    /доступ за приглаш|сколько.{0,15}пригласить|приглас\p{L}*.{0,15}(?:участник|друз)/iu,
+  ],
   ['night', /ночн|закрыв.{0,20}чат|закры.{0,20}(?:чат|расписан)|чат.{0,20}закры|тишин/iu],
   [
     'duplicates',
@@ -141,7 +153,7 @@ const topicPatterns = [
   ['protection', /защит[ауые]|иммунитет/iu],
   ['links', /(?<![\p{L}])ссылк|домен|allowlist|whitelist/iu],
   ['limits', /ограничен|длин.{0,15}сообщен|частот|флуд|антиспам|стикер|медленн.{0,8}режим/iu],
-  ['reports', /жалоб|\breport\b/iu],
+  ['reports', /жалоб|пожалова|жаловаться|\breport\b/iu],
   [
     'retention',
     /(?<![\p{L}\p{N}_])ластик(?:а|у|ом|е)?(?![\p{L}\p{N}_])|стар.{0,15}сообщен|очист.{0,15}истор|удаление по срок/iu,
@@ -151,9 +163,12 @@ const topicPatterns = [
     'delivery',
     /[«"„]нужно проверить[»"“]|статус.{0,20}нужно проверить|результат.{0,20}(?:отправ|неизвест)|достав|(?:отправ|публиков).{0,25}(?:еще раз|повтор|заново)|(?:повтор|заново).{0,25}(?:отправ|публиков)/iu,
   ],
-  ['auto-replies', /автоответ|автоматическ.{0,8}ответ/iu],
+  ['auto-replies', /автоответ|автоматическ.{0,8}ответ|ответ.{0,20}ключев/iu],
   ['vk', /\bvk\b|(?:^|\s)вк(?:\s|[.!?,]|$)|вконтакт|согласован.{0,15}личк/iu],
-  ['suggestions', /предложк|при[её]м.{0,15}предлож|предложенн.{0,10}пост|предложить пост/iu],
+  [
+    'suggestions',
+    /предложк|[«"]?предложения[»"]?|при[её]м.{0,15}предлож|предложенн.{0,10}пост|предложить пост/iu,
+  ],
   ['notifications', /уведомлен|пуш|\bpush\b/iu],
   ['comments', /комментари|обсужден/iu],
   [
@@ -222,7 +237,10 @@ function conversation(text, history) {
     .filter((item) => ['user', 'assistant'].includes(item?.role) && typeof item.text === 'string')
     .slice(-8)
     .map(({ role, text: value }) => ({ role, text: normalize(value.slice(0, 1200)) }));
-  const current = normalize(text);
+  const current = normalize(text).replace(
+    /^.*?(?:разобрал(?:ся|ась|ись)|закончил[аи]?|готово)[.!]\s*(?:а\s+)?теперь\s+/iu,
+    '',
+  );
   // FLAG: Unrelated turns end topical inheritance; they must not revive an old support question.
   const boundary = prior.findLastIndex(
     (item) => item.role === 'user' && ordinaryConversation(item.text),
@@ -908,7 +926,7 @@ function commercialIntents(current, focus) {
       current,
     );
   if (/изображ|картин|фото|\bocr\b/iu.test(current)) intents.push('images');
-  if (/чувствительн|строго|мягко|баланс/iu.test(probe)) intents.push('sensitivity');
+  if (/чувствительн|строго|мягко|мягче|строже|баланс/iu.test(probe)) intents.push('sensitivity');
   if (/переключ|смен.{0,12}режим|обратно.{0,15}текстов|перейти.{0,70}текстов/iu.test(current))
     intents.push('switch-mode');
   if (/предупрежден|наказан|санкци|лестниц|мут|бан(?:ить|ил|а|ов)?(?![\p{L}])/iu.test(current))
@@ -951,6 +969,98 @@ function semanticFacts(text, state) {
   const add = (id, priority = 50) => facts.push({ id, priority });
   const { publisherRequest: publ, developer, commercialAi, mixedTopics } = state;
   const test = (pattern) => pattern.test(text);
+  if (
+    test(/(?:что|какие).{0,35}(?:умеет|возможност|модули|функци)|обзор.{0,15}(?:проект|модул)/iu) &&
+    test(/майор|проект|все.{0,10}модул|какие есть модули/iu)
+  )
+    add('project-modules', 125);
+  if (test(/номера?\s+телефон|телефонн.{0,8}номер|(?:разреш|запрет|удал).{0,15}телефон/iu))
+    add('phone-numbers', 115);
+  if (test(/доступ за приглаш|сколько.{0,15}пригласить|приглас\p{L}*.{0,15}(?:участник|друз)/iu))
+    add('invitation-access', 115);
+  if (
+    test(/сообщения и боты|других ботов/iu) ||
+    (test(/бот|модератор|майор|рэкс/iu) &&
+      test(/(?:сво\p{L}*|собственн\p{L}*).{0,12}(?:сообщен|ответ)/iu))
+  )
+    add('service-messages-and-bots', 115);
+  if (
+    test(/антидубл|одинаков.{0,15}(?:картин|фото)|повтор.{0,15}(?:картин|фото)/iu) &&
+    test(/картин|фото/iu)
+  )
+    add('duplicates-photo', 120);
+  if (
+    test(
+      /голосов|пересыл|переслан|тип.{0,10}(?:сообщен|вложен)|запрет.{0,15}(?:видео|файл|фото|стикер)/iu,
+    ) &&
+    test(/запрет|разреш|огранич|закрыть|выключ|отключ|тип.{0,10}(?:сообщен|вложен)/iu)
+  )
+    add('limits-attachments', 115);
+  if (test(/жалоб/iu) && test(/истори|24 часа|меры|огранич|результат|журнал|отклон/iu))
+    add('reports-outcomes', 120);
+  if (test(/карточк.{0,15}участник|список участников|поиск.{0,12}участник|найти.{0,15}участник/iu))
+    add('participants', 105);
+  if (
+    test(
+      /без сообщений|(?:временно|на время|срок|участник|ему).{0,25}(?:запретить(?: ему)? писать|ограничить сообщен)|(?:оставить|остался).{0,35}(?:писать|сообщен)/iu,
+    )
+  )
+    add('participant-mute', 120);
+  if (
+    test(
+      /сня(?:ть|тие).{0,15}(?:бан|блокиров|огранич|в max)|разблокир|разбан|действующ.{0,15}огранич|истори.{0,15}(?:санкц|огранич)|архив.{0,15}огранич/iu,
+    )
+  )
+    add('sanction-history', 115);
+  if (test(/баз.{0,8}спам|(?<![\p{L}])не спам(?![\p{L}])|подтверд\p{L}*\s+спам(?![\p{L}])/iu))
+    add('spammer-review', 125);
+  if (
+    test(/статистик|прирост|сводк.{0,20}(?:групп|чат)|баланс.{0,15}(?:вход|выход)/iu) &&
+    !test(/сетк|избранн|категори/iu)
+  )
+    add('chat-statistics', 105);
+  if (
+    test(
+      /по журналу|журнал.{0,15}(?:удален|модерац)|(?:где|как).{0,25}(?:посмотреть|найти).{0,15}(?:событи|журнал)|вход.{0,10}выход/iu,
+    )
+  )
+    add('chat-events', 150);
+  if (test(/(?<![\p{L}])опрос\p{L}*/iu)) {
+    add('poll-create', 90);
+    if (
+      test(
+        /аноним|имена|кто.{0,15}(?:голос|увид)|голосова|голос|заверш|закрыть|изменить.{0,12}(?:вопрос|вариант)/iu,
+      )
+    )
+      add('poll-voting', 125);
+    if (test(/проверк|завис|публикуется|заново|повтор|не (?:появ|обнов|опубликов)|черновики/iu))
+      add('poll-recovery', 130);
+  }
+  if (
+    test(/розыгрыш|розыграш|конкурс|призов.{0,8}мест/iu) &&
+    (!state.eraserRequest || test(/созда|запуст|организ|участв|выбрать победител/iu))
+  ) {
+    add('giveaway-create', 90);
+    if (test(/участв|заявк|допуск|подпис|выигрыш|(?:я|мне).{0,15}(?:побед|приз)/iu))
+      add('giveaway-participation', 140);
+    if (test(/итог|победител|выдач|выдан|забрал|подтвержден|завершить/iu))
+      add('giveaway-results', 120);
+  }
+  if (test(/быстр.{0,8}кноп/iu)) add('channel-quick-buttons', 125);
+  if (
+    test(
+      /действие под публикац|(?:постоянн|кажд).{0,25}(?:кноп|подпис)|(?:кноп|подпис|ссылк).{0,25}(?:кажд|публикац|под пост)/iu,
+    ) &&
+    test(/канал|действие под публикац/iu)
+  )
+    add('channel-post-action', 120);
+  if (test(/предложк|предложения|прием.{0,15}предлож/iu)) add('channel-suggestions-entry', 115);
+  if (
+    test(
+      /срок входа[^.!?\n]{0,40}истек|нужно открыть приложение заново|мини.?приложен.{0,30}(?:вход|открыть заново)|настройки.{0,20}не загружа/iu,
+    )
+  )
+    add('miniapp-relaunch', 120);
   if (state.reviewedIntents.eligibility) add('max-public-channel-eligibility', 140);
   if (state.reviewedIntents.evidence) add('support-incident-evidence', 140);
   if (commercialAi) {
@@ -1179,7 +1289,7 @@ function semanticFacts(text, state) {
     add('sanctions', 80);
   if (
     test(
-      /систем.{0,10}жалоб|жалоб.{0,30}(?:голос|порог|команд)|(?:отправ|подать).{0,15}жалоб|\breport\b/iu,
+      /систем.{0,10}жалоб|жалоб.{0,30}(?:голос|порог|команд)|(?:отправ|подать).{0,15}жалоб|(?:пожалова|жаловаться).{0,25}(?:пост|сообщен)|\breport\b/iu,
     )
   )
     add('community-reports', 100);
@@ -1208,13 +1318,18 @@ function semanticFacts(text, state) {
         (!connecting && test(/прав[ао]|правам|правами/iu)))
     )
       add('lastik-permissions', 140);
+    const partialDiagnostics = test(
+      /ожидают.{0,8}не менее|(?:сч[её]тчик|количеств|числ).{0,20}не менее|результат(?: удаления)? не подтвержд|не подтвержд[её]н результат(?: удаления)?|истори.{0,20}ещ[её] не провер|последн.{0,15}полн.{0,15}обход|неопредел[её]н.{0,15}результат/iu,
+    );
     if (
       !state.lastikWaitingOnly &&
-      test(
-        /прогресс|сколько.{0,20}(?:удал|обработ|остал|очищ)|статус|проверена|подробности|счетчик|числа|постепенн|очеред|завис|не удаля|не чист|остал/iu,
-      )
+      (partialDiagnostics ||
+        test(
+          /прогресс|сколько.{0,20}(?:удал|обработ|остал|очищ)|статус|проверена|подробности|счетчик|числа|постепенн|очеред|завис|не удаля|не чист|остал/iu,
+        ))
     )
       add('lastik-progress', 145);
+    if (!state.lastikWaitingOnly && partialDiagnostics) add('lastik-diagnostics', 150);
     const exclusionQuestion = test(
       /исключ|закреп|(?<![\p{L}])правил|розыгрыш|защищ|сообщен.{0,20}(?:админ|бот)|мои.{0,15}сообщен|(?:какие|каких).{0,50}не (?:удаля|трога|чист)|что.{0,25}не (?:удаля|трога|чист)/iu,
     );
@@ -1283,7 +1398,7 @@ function semanticFacts(text, state) {
     add(test(/профил|скрыть/iu) ? 'marketplace-profile' : 'advertising-capability', 100);
   if (publ) {
     add('publik', 40);
-    if (test(/автоответ|автоматическ.{0,8}ответ/iu)) {
+    if (test(/автоответ|автоматическ.{0,8}ответ|ответ.{0,20}ключев/iu)) {
       add(
         test(
           /опечат|не срабатыв|совпад|целое|внутри|пауз|частот|повторен|слишком часто|отдельное слово|галочк/iu,
@@ -1307,7 +1422,7 @@ function semanticFacts(text, state) {
       )
     ) {
       add(
-        test(/согласован|личк|получатель:|получать посты мне|присылать посты|одобри/iu)
+        test(/согласован|личк|получатель:|получать посты мне|присылать посты|одобр/iu)
           ? 'vk-review'
           : test(/авто|сразу|частот|очеред|пауз|фильтр/iu) && !test(/без автомат|не авториз/iu)
             ? 'publisher-vk-automation'
@@ -1317,7 +1432,10 @@ function semanticFacts(text, state) {
       add('publisher-vk-connect', 60);
       if (test(/авто|сразу|очеред/iu)) add('publisher-vk-automation', 65);
     }
-    if (test(/пересыл|пересл|импорт|пост из max/iu)) {
+    if (
+      test(/пересыл|пересл|импорт|пост из max/iu) ||
+      (test(/\bmax\b/iu) && test(/(?:забрать|перенести|скопир).{0,35}(?:редактор|публик)/iu))
+    ) {
       add('publisher-import-max', 105);
       add('publisher-post-media', 60);
       add('publisher-post-create', 65);
@@ -1402,7 +1520,7 @@ function semanticFacts(text, state) {
     if (test(/часов.{0,8}пояс|московск|время телефон/iu)) add('publisher-schedule-timezone', 110);
     if (
       test(
-        /закреп|автоудал|автоматическ.{0,15}удален|удали.{0,15}автомат|сами удаля|после публикац|удал.{0,80}после.{0,20}(?:выход|отправ|публикац)/iu,
+        /закреп|автоудал|автоматическ.{0,15}удален|удали.{0,15}автомат|сам[аио]?\s+удал|после публикац|удал.{0,80}после.{0,20}(?:выход|отправ|публикац)/iu,
       )
     )
       add('publisher-after-publish', 100);
@@ -1460,6 +1578,18 @@ function semanticFacts(text, state) {
   if (test(/ночн/iu) && test(/публик/iu)) add('bots', 60);
   if (test(/комментари/iu) && !publ)
     add(test(/max|нативн/iu) ? 'max-native-channel-comments' : 'channel-settings', 100);
+  if (test(/караван|интернет.?витрин|магазин.{0,12}чат|витрин.{0,20}(?:доллар|\$)/iu)) {
+    add('karavan-storefront', 110);
+    const setupRecovery = test(/не подтверд|неизвестн|частичн|неопредел[её]н|продолжить подключ/iu);
+    if (setupRecovery) add('karavan-setup-recovery', 145);
+    if (
+      (!setupRecovery || test(/(?:как|хочу|нужно).{0,15}создать/iu)) &&
+      test(/подключ|созда|черновик|правил|общ.{0,12}магазин|один.{0,12}магазин/iu)
+    )
+      add('karavan-chat-marketplace', 135);
+    if (test(/\$|публикац|ссылк|выбор|выбра|выбрат|витрин.{0,15}нескольк/iu))
+      add('karavan-storefront-publishing', 130);
+  }
   if (test(/настрой|област|нескольк.{0,12}чат|во всех.{0,12}(?:чат|групп|сообществ)/iu))
     add('settings', 65);
   if (
@@ -1549,7 +1679,11 @@ export function createSupportRouter(knowledge) {
       text.length <= 1200 &&
       !ordinaryConversation(ctx.current) &&
       (!roleOnly || freshClarification) &&
-      ((request && (domain.test(ctx.current) || advert.test(ctx.current) || switchingModerator)) ||
+      ((request &&
+        (domain.test(ctx.current) ||
+          advert.test(ctx.current) ||
+          topics(ctx.current).length ||
+          switchingModerator)) ||
         keywordHelp ||
         contextualReply ||
         /^(?:цена|тарифы?|платно|бесплатно|не работает|не открывается|помогите|подскажите)[.!?\s]*$/iu.test(
