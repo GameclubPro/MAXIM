@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
   "baselineThrough": "20261029010100_index_eraser_historical_work",
-  "baselineNamesSha256": "5b922bf3b718fff5ee957ec98b793726f05e3d2070d88c24e2a06e23ac0de016",
-  "baselineContentsSha256": "0da0209cfc0f684719f451a4fcf11626e926b42c7836305a4d42c6e20f7baad4",
+  "baselineNamesSha256": "e776dfa8944eb09ec8235add11a7b4f2c77b98a5f50412106ddda64fe3398109",
+  "baselineContentsSha256": "97b8d9ad7d0d0cc33fee82c5c57029dc8ba46eb17acbc07a00827429a9fb5b05",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -147,6 +147,11 @@
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "New tables start empty and old policy readers remain compatible before ownership. Transfer first revokes legacy execution and preserves all uncertain journals. Persisted ownership forbids moderator fallback even when the feature flag is off; both rollback paths require ownership-aware readers. New protection is bootstrapped and acknowledged before independent cleanup enables. Cold source writers must confirm additive Lastik holds before committing source dispositions."
     },
+    "20261028010000_karavan_chat_marketplace_authority": {
+      "reason": "Reviewed static additive trigger preserves a monotonic commerce revocation epoch on exact bot removal or proven permission denial. No DROP, DELETE, dynamic SQL or data backfill. Indexes are on new empty tables.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Default-disabled protocol and constant-zero additive column remain readable by older API roles. Existing membership writers automatically fence revoke-restore races. Before activation all action roles must understand the persisted v2 publication guard; rollback to older readers is forbidden while v2 queued jobs remain."
+    },
     "20261028010000_add_marketplace_button_policies": {
       "reason": "Reviewed static additive triggers remember exact binding/administrator access loss, clear the previous publication flag on known loss, and mirror only a proven legacy toggle-off receipt into PUBLICATIONS. A current-binding seed clears known REVOKED/USER_DENIED/member demotions before lazy import. No dynamic SQL, DROP, DELETE, retained history rewrite or dispatch mutation exists.",
       "twoPhaseRelease": true,
@@ -261,6 +266,12 @@
     },
     "20261026010000_add_eraser_bridge": {
       "reason": "Every ordinary index belongs to a new empty bridge table. Existing giveaway and retention-intent history indexes are isolated in separate concurrent migrations; this migration scans no retained source history."
+    },
+    "20261028010000_karavan_chat_marketplace_authority": {
+      "reason": "Indexes are created only on the five new empty Karavan protocol tables in the same additive migration; no existing data or table is scanned."
+    },
+    "20261028230000_karavan_private_publication_choice": {
+      "reason": "Every ordinary index belongs only to the new empty private choice table created in this additive migration. Existing tables are not indexed, rewritten or backfilled."
     },
     "20261028010000_add_marketplace_button_policies": {
       "reason": "The refresh index is created only on a new empty button-context table. The seed enumerates current bindings and indexed exact actor/platform access edges; retained event, statistics and receipt history is neither scanned nor backfilled. No existing history is indexed. Legacy publication opt-ins without known loss are reconciled in bounded runtime batches."

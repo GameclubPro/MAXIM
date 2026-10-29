@@ -1,0 +1,180 @@
+@layer workspace {
+  body[data-miniapp-profile='moderation'] .karavan-module {
+    --karavan-brand: #435ee9;
+    --karavan-on-brand: #ffffff;
+    --karavan-action-shadow: color-mix(in srgb, var(--karavan-brand) 15%, transparent);
+    --karavan-warning-surface: color-mix(in srgb, var(--warning) 10%, transparent);
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+    padding: 4px 0 24px;
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: 20px;
+    color: var(--text-primary);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module h3 {
+    margin: 0;
+    font-size: 23px;
+    line-height: 1.2;
+    letter-spacing: -0.035em;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module button {
+    min-height: 44px;
+    padding: 11px 14px;
+    border: 1px solid var(--color-border);
+    border-radius: 13px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module .karavan-module__primary {
+    background: var(--karavan-brand);
+    border-color: var(--karavan-brand);
+    color: var(--karavan-on-brand);
+    box-shadow: 0 5px 16px var(--karavan-action-shadow);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__identity {
+    display: grid;
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__entry-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__entry-actions > :only-child {
+    grid-column: 1 / -1;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__entry-actions button {
+    min-height: 48px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__tools button {
+    text-align: left;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__actions {
+    display: grid;
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__field {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__field input,
+  body[data-miniapp-profile='moderation'] .karavan-module__field textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 48px;
+    padding: 12px;
+    font: inherit;
+    font-size: 16px;
+    line-height: 1.45;
+    border-radius: 12px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-muted);
+    color: inherit;
+    resize: vertical;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__selected-chat {
+    font-size: 13px;
+    font-weight: 650;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__choices {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    margin: 0;
+    padding: 8px 0;
+    border: 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__choices legend {
+    font-size: 13px;
+    font-weight: 700;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__choices label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__choices input {
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    accent-color: var(--karavan-brand);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__progress {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__progress li {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module .karavan-module__notice {
+    padding: 12px;
+    border-left: 3px solid var(--warning);
+    background: var(--karavan-warning-surface);
+    color: inherit;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module :focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 3px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__wizard,
+  body[data-miniapp-profile='moderation'] .karavan-module__wizard-fields {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__subcategories {
+    padding-left: 30px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__rules {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-module__progress small {
+    display: block;
+    margin-top: 6px;
+    color: var(--text-secondary);
+  }
+}

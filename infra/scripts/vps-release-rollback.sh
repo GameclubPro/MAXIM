@@ -321,6 +321,7 @@ if [[ "$SELECT_API" -eq 1 ]]; then
   maxim_topology_require_participant_report_guard "$API_SOURCE_SHA"
   maxim_topology_require_message_retention_guard "$API_SOURCE_SHA"
   maxim_topology_require_eraser_bridge "$API_SOURCE_SHA"
+  maxim_topology_require_karavan_marketplaces "$API_SOURCE_SHA"
   maxim_topology_require_suggestion_subscription_guard "$API_SOURCE_SHA"
   maxim_topology_require_message_duplicate_delete_guard "$API_SOURCE_SHA"
   maxim_topology_require_multibot_authority "$API_SOURCE_SHA"
